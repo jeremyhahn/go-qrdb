@@ -97,6 +97,32 @@ qrdb --cert-file alice/cert.pem --key-file alice/key.pem kv list app/
 
 ## Troubleshooting
 
+**"was deleted and cannot be reused" when creating a tenant.** That id has
+been used and deleted. It is retired permanently — pick another name. The
+server cannot tell whether you are the same customer as the one that held the
+name before, and guessing wrong would hand you their data, so it does not
+guess. The message includes when the id was retired.
+
+**"id system is reserved" when deleting a tenant.** The platform's own tenant
+and the other reserved names (`default`, anything starting with `_`, anything
+containing `:`) cannot be deleted. Nothing was changed when you saw that
+message — no key was destroyed and no record was removed.
+
+**"still owns N database(s)" when deleting a tenant.** Teardown is bottom-up:
+drop the tenant's databases first, then delete the tenant. The error names
+them. Each database's own drop reclaims that database's data, which is what
+keeps the tenant's delete quick.
+
+**A tenant delete failed part-way.** Run it again. The teardown is idempotent
+and resumes; by the time anything can fail, the id is already retired, so
+nothing can attach to what is left. A delete against an id that was never used
+is still "not found".
+
+**A `volume` or `raft` tenant's directory after a delete.** It is removed,
+along with the key that protected it and the records that would have restored
+the barrier at the next restart. If the directory is still there, the delete
+reported an error — re-run it.
+
 **"tenant has data" when changing isolation.** Isolation is fixed once data
 exists. Migrate the data to a new tenant, or delete it first. Note `update` only
 accepts `barrier` and `prefix` in any case.

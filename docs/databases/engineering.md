@@ -192,6 +192,21 @@ serving volume-isolated tenants additionally attaches a
 `service.StoreResolver`, which routes those tenants' keys to their dedicated
 per-tenant Host instead of the system store.
 
+**The same service also implements `tenant.KeyspaceReclaimer`**, the
+tenant-scoped peer used by `DeleteTenant`. A database's keyspace and a
+tenant's are the same shapes of key over different scopes — the tenant scope
+is one segment shorter and adds the placement range — so there is one walk,
+not two. See
+[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for the
+tenant scope and for why deleting a tenant refuses while it still owns
+databases.
+
+`Manager.TenantDatabases` is the catalog that refusal reads. It reports what
+**this node's** catalog holds: a database's `meta.json` is node-local while
+its keys are in the replicated store, which is why the tenant reclamation
+scans the tenant's whole namespace rather than trusting the list to have
+bounded it.
+
 ## Test strategy
 
 - **Unit**: lifecycle (create/get/list/drop), **what a drop reclaims and in

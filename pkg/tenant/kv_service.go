@@ -45,7 +45,14 @@ var ErrBarrierIsolationUnavailable = errors.New("tenant: barrier isolation requi
 // CRUD with no-op barrier operations (TenantBarrierInit, TenantBarrierUnseal
 // return ErrBarrierNotEnabled).
 type kvTenantService struct {
-	store  kvstore.KVStore
+	store kvstore.KVStore
+
+	// teardownSeams carries DeleteTenant's optional dependencies. The no-seal
+	// service needs them for the same reason the barrier-backed one does:
+	// every tenant it serves is prefix-isolated, and a prefix tenant's data
+	// is the case that stays READABLE after a delete (go-qrdb#413).
+	teardownSeams
+
 	logger *slog.Logger
 }
 
@@ -82,6 +89,12 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 		return nil, ErrEmptyTenantName
 	}
 	if err := validateReservedTenantID(ctx, id); err != nil {
+		return nil, err
+	}
+	// A deleted id is retired, not released. kvstore.KVStore reports an
+	// absent key as (nil, nil) rather than an error, which checkTombstone
+	// handles; see tombstone.go.
+	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
 		return nil, err
 	}
 	if isolationType == "" {
@@ -232,6 +245,14 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
+	// A reserved id is not deletable, before any read and before any commit.
+	// The no-seal service needs this exactly as much as the barrier-backed
+	// one: it has no barrier and no reclaimer to refuse on its behalf, so
+	// without this guard "system" was the easiest tenant in the deployment to
+	// destroy. See validateDeletableTenantID.
+	if err := validateDeletableTenantID(tenantID); err != nil {
+		return err
+	}
 
 	key := metadataPrefix + tenantID
 	data, err := s.store.Get(ctx, key)
@@ -239,7 +260,47 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 		return &StoreError{Op: "get", Err: err}
 	}
 	if data == nil {
+		// An interrupted delete: the metadata is gone but the id is
+		// tombstoned, so resume the reclamation rather than reporting
+		// not-found. Mirrors TenantService.DeleteTenant.
+		if _, tombstoned, tErr := s.deletedAt(ctx, tenantID); tErr == nil && tombstoned {
+			return s.reclaim(ctx, tenantID)
+		}
 		return ErrTenantNotFound
+	}
+	var info TenantInfo
+	if uerr := json.Unmarshal(data, &info); uerr != nil {
+		// A record that will not decode still names a tenant that must be
+		// retired; the tombstone carries the id and nothing else.
+		info = TenantInfo{ID: tenantID}
+	}
+
+	// 1. Bottom-up refusal, 2. crypto-shred, 3. tombstone, 4. metadata
+	// delete, 5. reclaim. There is no barrier step here: this service exists
+	// precisely because the seal subsystem is off. The ordering and the
+	// reasoning behind it are documented on TenantService.DeleteTenant.
+	if s.databases != nil {
+		names, lErr := s.databases.TenantDatabases(ctx, tenantID)
+		if lErr != nil {
+			return &DatabaseListError{TenantID: tenantID, Err: lErr}
+		}
+		if len(names) > 0 {
+			return &TenantHasDatabasesError{TenantID: tenantID, Databases: names}
+		}
+	}
+
+	if s.dekShredder != nil {
+		if sErr := s.dekShredder.DeleteTenantDEK(ctx, tenantID); sErr != nil {
+			return &DEKShredError{TenantID: tenantID, Err: sErr}
+		}
+	}
+
+	tombstone, mErr := json.Marshal(newTombstone(&info, time.Now().UTC()))
+	if mErr != nil {
+		return &StoreError{Op: "marshal-tombstone", Err: mErr}
+	}
+	if pErr := s.store.Put(ctx, tombstoneKey(tenantID), tombstone); pErr != nil {
+		return &StoreError{Op: "put-tombstone", Err: pErr}
 	}
 
 	if err := s.store.Delete(ctx, key); err != nil {
@@ -248,6 +309,18 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 
 	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
 
+	return s.reclaim(ctx, tenantID)
+}
+
+// reclaim runs the configured KeyspaceReclaimer over the tenant. See
+// TenantService.reclaim.
+func (s *kvTenantService) reclaim(ctx context.Context, tenantID string) error {
+	if s.reclaimer == nil {
+		return nil
+	}
+	if err := s.reclaimer.ReclaimTenantKeyspace(ctx, tenantID); err != nil {
+		return &KeyspaceReclaimError{TenantID: tenantID, Err: err}
+	}
 	return nil
 }
 

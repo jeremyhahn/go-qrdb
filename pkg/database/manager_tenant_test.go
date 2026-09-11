@@ -678,3 +678,113 @@ func TestManager_ListForTenant_TenantIDInInfo(t *testing.T) {
 		t.Errorf("list[0].TenantID = %q, want %q", list[0].TenantID, "tenant-list-info")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TenantDatabases -- the catalog behind the tenant teardown's refusal
+// (go-qrdb#413)
+// ---------------------------------------------------------------------------
+
+// TestTenantDatabases_ReturnsOnlyTheTenantsOwn is the property the refusal
+// rests on: a tenant is refused for ITS databases, never another's.
+func TestTenantDatabases_ReturnsOnlyTheTenantsOwn(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	for _, tc := range []struct{ name, owner string }{
+		{"ledger", "acme"},
+		{"reports", "acme"},
+		{"books", "globex"},
+	} {
+		if _, err := m.Create(DatabaseConfig{
+			Name: tc.name, TenantID: tc.owner,
+			Engine: EngineKV, Backend: BackendMemory,
+		}); err != nil {
+			t.Fatalf("Create %s: %v", tc.name, err)
+		}
+	}
+
+	got, err := m.TenantDatabases(ctx, "acme")
+	if err != nil {
+		t.Fatalf("TenantDatabases: %v", err)
+	}
+	if len(got) != 2 || got[0] != "ledger" || got[1] != "reports" {
+		t.Errorf("TenantDatabases(acme) = %v, want [ledger reports] sorted", got)
+	}
+
+	other, err := m.TenantDatabases(ctx, "globex")
+	if err != nil {
+		t.Fatalf("TenantDatabases(globex): %v", err)
+	}
+	if len(other) != 1 || other[0] != "books" {
+		t.Errorf("TenantDatabases(globex) = %v, want [books]", other)
+	}
+}
+
+// TestTenantDatabases_UnknownTenantOwnsNone: "none" is not an error, because
+// a tenant with no databases is exactly the tenant a delete may proceed on.
+func TestTenantDatabases_UnknownTenantOwnsNone(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	got, err := m.TenantDatabases(ctx, "never-existed")
+	if err != nil {
+		t.Fatalf("TenantDatabases: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("TenantDatabases(unknown) = %v, want none", got)
+	}
+}
+
+// TestTenantDatabases_SystemTenantSeesUnownedDatabases matches
+// GetForTenant's view: a database recorded with no owner belongs to the
+// system tenant, and the two must not disagree about that.
+func TestTenantDatabases_SystemTenantSeesUnownedDatabases(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	if _, err := m.Create(DatabaseConfig{
+		Name: "bootstrap", Engine: EngineKV, Backend: BackendMemory,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.Create(DatabaseConfig{
+		Name: "owned", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := m.TenantDatabases(ctx, tenant.SystemTenantID)
+	if err != nil {
+		t.Fatalf("TenantDatabases: %v", err)
+	}
+	if len(got) != 1 || got[0] != "bootstrap" {
+		t.Errorf("TenantDatabases(system) = %v, want [bootstrap]", got)
+	}
+}
+
+// TestTenantDatabases_ReflectsADrop closes the loop the refusal describes:
+// drop the databases and the tenant becomes deletable.
+func TestTenantDatabases_ReflectsADrop(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	if _, err := m.Create(DatabaseConfig{
+		Name: "ledger", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.Drop(ctx, "ledger"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	got, err := m.TenantDatabases(ctx, "acme")
+	if err != nil {
+		t.Fatalf("TenantDatabases: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("TenantDatabases after the drop = %v, want none", got)
+	}
+}

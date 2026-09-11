@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -95,6 +96,15 @@ type Infra struct {
 	// BarrierRegistry manages per-tenant barrier lifecycle. Required when
 	// SealBarrier is non-nil.
 	BarrierRegistry *seal.BarrierRegistry
+
+	// TenantDEKManager holds the per-tenant data encryption keys. When
+	// non-nil it is wired into the tenant service as the DEK shredder, so
+	// DeleteTenant destroys the tenant's key BEFORE its metadata -- which is
+	// what makes a dedicated-isolation tenant's data unreadable at the moment
+	// of deletion rather than after a reclamation finishes (go-qrdb#413).
+	// When nil the shred step is skipped, which is correct for a composition
+	// that never issued a tenant DEK.
+	TenantDEKManager dek.TenantDEKManager
 
 	// StrategyRegistry is the canonical name→factory lookup for sealing
 	// strategies. When non-nil it is injected into the TenantService so
@@ -582,6 +592,24 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, log); uafErr != nil {
 			return nil, uafErr
+		}
+	}
+
+	// DELETE TENANT teardown (go-qrdb#413). The tenant service is built above
+	// in both branches -- barrier-backed when the seal subsystem is on,
+	// KV-backed when it is off -- and both need the same three seams, because
+	// keyspace isolation is not a property of encryption and a prefix tenant
+	// on a seal-disabled node is exactly the case whose data stayed READABLE
+	// after a delete.
+	//
+	// The reclaimer is the SAME service DROP DATABASE uses. A tenant's
+	// keyspace and a database's are the same shapes of key over different
+	// scopes, so there is one walk, not two.
+	if w, ok := n.Tenant.(tenant.TeardownWiring); ok {
+		w.SetDatabaseLister(dbManager)
+		w.SetKeyspaceReclaimer(n.KeyspaceReclaim)
+		if infra.TenantDEKManager != nil {
+			w.SetDEKShredder(infra.TenantDEKManager)
 		}
 	}
 

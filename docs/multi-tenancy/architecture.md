@@ -84,6 +84,157 @@ raft     dedicated raft group per database, SM data under
 **Changing a tenant's isolation type after it holds data is rejected** with
 `ErrTenantHasData` (HTTP 409). Migrate or delete the data first.
 
+## Deleting a tenant
+
+**A deleted tenant id is retired, not released.** It can never be used again.
+
+### Problem
+
+A tenant id is a name the caller chose. Deleting a tenant used to remove its
+metadata and its barrier registration and leave its keyspace exactly where it
+was, so creating a tenant under the same id re-attached the NEW principal to
+the OLD principal's keys, secondary indexes, relational tables and identity
+records. The sequence needs no storage access: create `acme`, populate,
+delete, create `acme` again, read.
+
+The exposure differs by isolation mode, and was measured per mode rather than
+reasoned about:
+
+| Mode | What the second tenant got |
+|---|---|
+| **`prefix`** | The first tenant's data, **readable**. No cryptographic backstop exists at this rung. |
+| **`barrier`** | The first tenant's ciphertext, with the key path gone. |
+| **`volume`** / **`raft`** | The dedicated `DataRoot` is derived from the tenant id, so the id landed on the SAME directory over the SAME barrier store. A system-managed tenant failed with `barrier already initialized`; a self-managed tenant was created and was then permanently unusable — its barrier could neither be initialized (already is) nor unsealed (nobody holds the first tenant's credential). Data unreadable; id bricked; directory leaked. |
+
+### Shape chosen
+
+The question a delete is supposed to answer — "is this the same principal?" —
+is one the system cannot answer about a caller-supplied string. So it does not
+guess. `DeleteTenant` records the id in a **tombstone** and `CreateTenant`
+refuses a tombstoned id forever.
+
+The order of the whole operation is chosen by asking, at each step, which
+crash is survivable:
+
+0. **Refuse a reserved id outright**, before any read. The reserved set —
+   `system`, `default`, `_*`, `*:*` — is declared in exactly one place and
+   consulted by creation and deletion alike; see "One reserved set, two
+   policies" below.
+1. **Refuse while the tenant still owns databases.** Teardown is bottom-up. A
+   database's own drop reclaims the keyspace that database owns, so by the
+   time a tenant's delete runs, what is left under it is its identity records.
+2. **Shred the tenant DEK**, before anything else is touched. A failure here
+   aborts with nothing changed. Shred-then-delete can strand metadata for a
+   tenant whose key is gone — recoverable, inspectable, already unreadable.
+   Delete-then-shred can strand a key nothing names *and* leave the data
+   readable in the window.
+3. **Write the tombstone.** From here the id is retired, so no later principal
+   can inherit whatever step 6 has not yet removed. This step closes the
+   security half on its own.
+4. **Delete the metadata record.**
+5. **Destroy the barrier**, including the durable records behind it — see
+   "Unregistering a barrier is not destroying it" below.
+6. **Reclaim the keyspace.**
+
+A failure in step 6 leaves the id retired and is reported as such; re-issuing
+the delete resumes the reclamation, which is idempotent.
+
+### One reserved set, two policies
+
+The reserved-id rule used to be applied only at creation, so the ids this
+system declares un-creatable were freely **deletable**: `DeleteTenant` took a
+caller-supplied `system` and ran the whole irreversible teardown against it.
+The reclamation in step 6 already refused the system tenant — *"a reclamation
+that accepted it would empty the store it was asked to tidy"* — but that
+guards the **last** step, and steps 2 to 4 are the irreversible ones. The same
+judgement now sits at the front, where it prevents the commits rather than
+only the destructive read.
+
+The bottom-up database refusal is **not** a substitute for it. It returns
+without refusing when no `DatabaseLister` is wired, and where one is wired it
+catches the system tenant only by accident of configuration — the system
+tenant happens to own the default `system` database. A guard that depends on a
+database existing is not a guard.
+
+The set is written down **once**. Creation and deletion are two call sites
+with exactly one documented difference:
+
+| Path | Honours the first-boot bypass? | Why |
+|---|---|---|
+| **create** | yes | bootstrap must be able to create the system tenant |
+| **delete** | **no** | nothing legitimately deletes a reserved tenant, at boot or afterwards, and the operation is irreversible |
+
+### Reclamation is synchronous
+
+Step 1 bounds step 6. After the databases are dropped, what remains under a
+tenant is its identity records — users, roles, permission scopes, invitations
+— which the quota plane already limits by `MaxUsers` and `MaxRoles`. That is
+strictly less work than `DROP DATABASE` already performs inline on the same
+key-at-a-time path.
+
+**A background reclaimer was considered and rejected on that measurement.** It
+would add a restartable, idempotent, observable subsystem — a work queue, a
+scheduler, a progress surface — in order to do less work than a call this
+system already makes synchronously. The reasoning that makes an asynchronous
+purge attractive ("an unbounded keyspace walk inside a synchronous API call is
+a denial of service on your own control plane") is sound, and bottom-up
+refusal is what removes its premise.
+
+The reclamation scope is nonetheless the tenant's WHOLE namespace, not just
+the identity residue, because the database catalog is node-local while the
+keyspace is replicated: a node whose catalog under-reports would otherwise
+leave a tenant's data behind with nothing left to name it.
+
+### What a tenant owns
+
+`service.TenantKeyPrefixes` is the declaration. Five ranges, not one:
+
+| Range | Why it is separate |
+|---|---|
+| `{tenant}/` | Identity records AND every `{tenant}/{db}/` namespace, since the first contains the second. |
+| `ts:{tenant}/` | Time-series points. The namespace lands INSIDE the series prefix, because it is the metric NAME the namespaced view prefixes, not the key. |
+| `idx:metric:{tenant}/` | Time-series metric index, same reason. |
+| `retention:{tenant}/` | Time-series retention policies, same reason. |
+| `__sys:placement/{tenant}/` | A dedicated-raft database's replica assignment: keyed by tenant, OUTSIDE the namespace. The per-node reconciler watches this range, so removing an entry is what stops the shard and purges its data dir on **every** node holding a replica — which the local node's `DataRoot` removal cannot reach. |
+
+Plus the secondary-index catalog and the vector namespaces, which are
+namespaces of their own rather than ranges of keys and are enumerated
+separately.
+
+The **system tenant is refused**: `system/` holds the bootstrap database and
+every system identity record, so a reclamation that accepted it would empty
+the store.
+
+### Unregistering a barrier is not destroying it
+
+`BarrierRegistry.UnregisterTenant` seals and forgets the IN-MEMORY barrier.
+Two durable records outlive it — the `DataRoot` record and the volume-pool
+slot assignment — and the boot path reads the first, so a deleted volume or
+raft tenant's barrier was re-registered on the next restart at the same
+directory over the same store. `BarrierRegistry.DestroyTenant` is the
+operation a deletion needs: it removes both records, closes the per-tenant
+store and removes the `DataRoot`.
+
+### The identity plane fails closed too
+
+`tenant.StoreResolver.Resolve` deliberately falls through to the shared store
+for an **unknown** tenant, which keeps lookups working for callers that never
+registered metadata. A **deleted** tenant must not get that fall-through, or
+its id resolves to the keyspace the deletion just reclaimed. The resolver
+consults the tombstone and refuses.
+
+### Alternatives rejected
+
+- **Delete as a pure purge, no tombstone.** Rejected: the walk is unbounded
+  without bottom-up refusal, and even a complete purge leaves the id
+  available, which is the question the delete was asked.
+- **Delete as a pure tombstone, no purge.** Rejected: a permanent storage leak
+  is not a delete.
+- **A background reclaimer.** Rejected on the measurement above.
+- **Releasing the id after a retention period.** Rejected: "enough time has
+  passed" is not evidence that the second `acme` is the same principal as the
+  first.
+
 ## The three governance planes
 
 The planes are deliberately kept orthogonal. A provisioning call must pass

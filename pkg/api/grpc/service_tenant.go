@@ -262,6 +262,9 @@ func mapTenantError(err error) error {
 	var idre *tenant.InvalidDataRootError
 	var dne *tenant.DataRootNotEmptyError
 	var dite *tenant.DataRootIsolationTypeError
+	var tde *tenant.TenantDeletedError
+	var thd *tenant.TenantHasDatabasesError
+	var rte *tenant.ReservedTenantIDError
 
 	switch {
 	case errors.As(err, &tse):
@@ -296,11 +299,21 @@ func mapTenantError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, tenant.ErrTenantAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.As(err, &tde):
+		// A deleted tenant id is retired permanently: the id is taken, in
+		// exactly the sense ErrTenantAlreadyExists means it is taken.
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.As(err, &thd):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, tenant.ErrTenantHasData):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, tenant.ErrTenantNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.As(err, &ite):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &rte):
+		// A reserved id is not the caller's to name, on create or on delete.
+		// It fell through to Internal before.
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.As(err, &se):
 		return status.Error(codes.Internal, err.Error())

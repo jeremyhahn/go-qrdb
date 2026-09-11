@@ -17,6 +17,8 @@ package tenant
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 var (
@@ -299,3 +301,115 @@ func (e *InvalidStrategyError) Error() string {
 	}
 	return "tenant: invalid seal strategy: " + e.Strategy + " (available: " + avail + ")"
 }
+
+// TenantDeletedError is returned by CreateTenant when the requested tenant id
+// has already been used and deleted.
+//
+// A deleted tenant id is retired permanently. Tenant ids are caller-supplied
+// names, so "is this the same principal as the one that held the id before?"
+// is a question the system cannot answer -- and a delete that silently
+// answered "yes" would re-attach a new principal to the previous principal's
+// keyspace, which is what go-qrdb#413 measured. The refusal is the answer.
+//
+// It maps to 409 Conflict on REST and codes.AlreadyExists on gRPC/QUIC: the
+// id is not available, in the same sense ErrTenantAlreadyExists means it is
+// not available.
+type TenantDeletedError struct {
+	// TenantID is the retired id.
+	TenantID string
+	// DeletedAt is when the id was retired. It is the zero time when the
+	// tombstone could not be decoded, which does not change the refusal.
+	DeletedAt time.Time
+}
+
+func (e *TenantDeletedError) Error() string {
+	if e.DeletedAt.IsZero() {
+		return "tenant: id " + e.TenantID + " was deleted and cannot be reused"
+	}
+	return "tenant: id " + e.TenantID + " was deleted at " +
+		e.DeletedAt.UTC().Format(time.RFC3339) + " and cannot be reused"
+}
+
+// TenantHasDatabasesError is returned by DeleteTenant when the tenant still
+// owns databases.
+//
+// Teardown is bottom-up: a database's own drop reclaims the keyspace that
+// database owns (go-qrdb#412), so refusing here keeps every layer's teardown
+// bounded and makes the leak structurally impossible rather than merely
+// handled. The error names the databases so the caller knows exactly what to
+// drop.
+//
+// It maps to 409 Conflict on REST and codes.FailedPrecondition on gRPC/QUIC.
+type TenantHasDatabasesError struct {
+	// TenantID is the tenant whose deletion was refused.
+	TenantID string
+	// Databases are the names still owned by the tenant, sorted.
+	Databases []string
+}
+
+func (e *TenantHasDatabasesError) Error() string {
+	list := ""
+	for i, d := range e.Databases {
+		if i > 0 {
+			list += ", "
+		}
+		list += d
+	}
+	return "tenant: " + e.TenantID + " still owns " +
+		strconv.Itoa(len(e.Databases)) + " database(s) (" + list +
+		"); drop them before deleting the tenant"
+}
+
+// DEKShredError is returned by DeleteTenant when the tenant's data encryption
+// key could not be destroyed.
+//
+// The shred runs FIRST, before the tombstone and before the metadata delete,
+// and a failure aborts the whole deletion with nothing changed. The ordering
+// is chosen by asking which crash is survivable: shred-then-delete can strand
+// metadata for a tenant whose key is gone, which is recoverable, inspectable,
+// and already unreadable; delete-then-shred can strand a key nothing names
+// AND leave the data readable in the window.
+type DEKShredError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *DEKShredError) Error() string {
+	return "tenant: dek shred for " + e.TenantID + ": " + e.Err.Error()
+}
+
+func (e *DEKShredError) Unwrap() error { return e.Err }
+
+// KeyspaceReclaimError is returned by DeleteTenant when the tenant's
+// keyspace could not be reclaimed.
+//
+// It is raised AFTER the tombstone and the metadata delete have committed, so
+// the id is already retired and unusable when it surfaces: the security half
+// of the deletion has taken effect and what failed is the reclamation of the
+// bytes. Re-issuing DeleteTenant is the remedy -- the reclamation is
+// idempotent, and the delete of an already-tombstoned tenant resumes it.
+type KeyspaceReclaimError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *KeyspaceReclaimError) Error() string {
+	return "tenant: keyspace reclaim for " + e.TenantID + ": " + e.Err.Error()
+}
+
+func (e *KeyspaceReclaimError) Unwrap() error { return e.Err }
+
+// DatabaseListError is returned by DeleteTenant when the tenant's databases
+// could not be enumerated, so the bottom-up refusal cannot be evaluated. It
+// fails the deletion rather than proceeding: an unanswerable "does this
+// tenant still own databases?" is not the same answer as "no".
+type DatabaseListError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *DatabaseListError) Error() string {
+	return "tenant: list databases for " + e.TenantID + ": " + e.Err.Error()
+}
+
+func (e *DatabaseListError) Unwrap() error { return e.Err }

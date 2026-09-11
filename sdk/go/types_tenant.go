@@ -116,3 +116,94 @@ var ErrTenantMissing = tenant.ErrTenantNotFound
 // A composing service should map it to 422 Unprocessable Entity on REST and
 // codes.FailedPrecondition on gRPC, matching qrdb's own transport canon.)
 var ErrTenantBarrierNotEnabled = tenant.ErrBarrierNotEnabled
+
+// ---------------------------------------------------------------------------
+// Tenant teardown (go-qrdb#413)
+//
+// Deleting a tenant RETIRES its id. The id cannot be used again, because the
+// system cannot answer "is this the same principal?" for a caller-supplied
+// name, and answering it wrongly re-attaches a new principal to the previous
+// one's keyspace.
+//
+// A consumer provisioning tenants therefore has to handle one new outcome --
+// "that id was used and deleted" -- which is why the error type is aliased
+// here rather than left behind an opaque string.
+// ---------------------------------------------------------------------------
+
+// TenantTombstone is the durable record of a deleted tenant id: the id, the
+// display name and isolation type it had, its dedicated DataRoot when it had
+// one, and when it was created and deleted. (Aliases pkg/tenant.Tombstone.)
+type TenantTombstone = tenant.Tombstone
+
+// TenantDeletedError is returned by CreateTenant when the requested id has
+// already been used and deleted. It carries the retirement timestamp. A
+// composing service should map it to 409 Conflict on REST and
+// codes.AlreadyExists on gRPC, matching qrdb's own transport canon.
+// (Aliases pkg/tenant.TenantDeletedError.)
+type TenantDeletedError = tenant.TenantDeletedError
+
+// TenantHasDatabasesError is returned by DeleteTenant while the tenant still
+// owns databases, and names them. Teardown is bottom-up: each database's own
+// drop reclaims the keyspace that database owns, so the tenant's is refused
+// until they are gone. Maps to 409 Conflict / codes.FailedPrecondition.
+// (Aliases pkg/tenant.TenantHasDatabasesError.)
+type TenantHasDatabasesError = tenant.TenantHasDatabasesError
+
+// TenantDEKShredError is returned by DeleteTenant when the tenant's data
+// encryption key could not be destroyed. The shred runs first, so this
+// failure leaves the tenant entirely intact. (Aliases pkg/tenant.DEKShredError.)
+type TenantDEKShredError = tenant.DEKShredError
+
+// TenantKeyspaceReclaimError is returned by DeleteTenant when the tenant's
+// keyspace could not be reclaimed. It surfaces AFTER the id is retired, so
+// the security half of the deletion has taken effect and re-issuing the
+// delete resumes the reclamation. (Aliases pkg/tenant.KeyspaceReclaimError.)
+type TenantKeyspaceReclaimError = tenant.KeyspaceReclaimError
+
+// TenantDatabaseListError is returned by DeleteTenant when the tenant's
+// databases could not be enumerated, so the bottom-up refusal cannot be
+// evaluated. (Aliases pkg/tenant.DatabaseListError.)
+type TenantDatabaseListError = tenant.DatabaseListError
+
+// ---------------------------------------------------------------------------
+// Tenant teardown seams (Tier 2 -- composition plane)
+//
+// Each is a Go interface a composition supplies in-process, so none of them
+// can be shipped over a transport. They are wired through TenantTeardownWiring
+// on the TenantServicer the node built.
+// ---------------------------------------------------------------------------
+
+// TenantDatabaseLister reports the databases a tenant still owns; it is what
+// DeleteTenant consults for its bottom-up refusal. qrdb's own database
+// manager satisfies it. (Aliases pkg/tenant.DatabaseLister.)
+type TenantDatabaseLister = tenant.DatabaseLister
+
+// TenantDEKShredder destroys a tenant's data encryption key, which is what
+// makes a dedicated-isolation tenant's data unreadable at the moment of
+// deletion. The tenant DEK manager satisfies it.
+// (Aliases pkg/tenant.DEKShredder.)
+type TenantDEKShredder = tenant.DEKShredder
+
+// TenantKeyspaceReclaimer deletes the data a tenant owns in the shared store.
+// qrdb's KeyspaceReclaimService satisfies it, and the same instance serves
+// DROP DATABASE. (Aliases pkg/tenant.KeyspaceReclaimer.)
+type TenantKeyspaceReclaimer = tenant.KeyspaceReclaimer
+
+// TenantTeardownWiring is the post-construction wiring surface for the three
+// seams above, implemented by every TenantServicer qrdb ships. A composition
+// resolves it from the tenant service it built. (Aliases
+// pkg/tenant.TeardownWiring.)
+type TenantTeardownWiring = tenant.TeardownWiring
+
+// WithTenantDatabaseLister injects the catalog DeleteTenant consults before
+// it refuses a tenant that still owns databases.
+// (Aliases pkg/tenant.WithDatabaseLister.)
+var WithTenantDatabaseLister = tenant.WithDatabaseLister
+
+// WithTenantDEKShredder injects the tenant DEK manager whose key DeleteTenant
+// destroys. (Aliases pkg/tenant.WithDEKShredder.)
+var WithTenantDEKShredder = tenant.WithDEKShredder
+
+// WithTenantKeyspaceReclaimer injects the reclaimer DeleteTenant runs after
+// the tombstone commits. (Aliases pkg/tenant.WithKeyspaceReclaimer.)
+var WithTenantKeyspaceReclaimer = tenant.WithKeyspaceReclaimer

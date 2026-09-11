@@ -115,6 +115,15 @@ type defaultStoreResolver struct {
 	registry barrierLookup
 	tenants  isolationLookup
 
+	// tombstones answers "was this id deleted?" so an UNKNOWN tenant can be
+	// told apart from a RETIRED one. Without it, Resolve's deliberate
+	// fall-through for unknown tenants hands a deleted tenant's id its old
+	// identity keyspace back -- reclaimed and empty after go-qrdb#413, but
+	// resolvable, which is one layer of defence short of the refusal
+	// CreateTenant now makes. It is nil only when the caller supplied a
+	// TenantServicer from outside this package.
+	tombstones tombstoneLookup
+
 	wrappers sync.Map // map[string]kvstore.KVStore — barrier-tenant wrappers
 	// namespaced caches the shared-store confinement wrapper per "{tenant}/"
 	// prefix.
@@ -135,6 +144,13 @@ func NewStoreResolver(shared kvstore.KVStore, registry *seal.BarrierRegistry, te
 	r := &defaultStoreResolver{
 		shared:  shared,
 		tenants: tenants,
+	}
+	// Both tenant services this package ships satisfy tombstoneLookup (the
+	// assertions are in tombstone.go). A foreign TenantServicer does not and
+	// cannot -- the method is unexported -- so such a composition gets
+	// metadata-only resolution and relies on CreateTenant's refusal alone.
+	if tl, ok := tenants.(tombstoneLookup); ok {
+		r.tombstones = tl
 	}
 	// The registry is OPTIONAL, because keyspace isolation must not depend on
 	// encryption being enabled.
@@ -179,6 +195,16 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 		// have not (yet) registered tenant metadata. Only a tenant that is
 		// explicitly barrier-isolated is routed through a barrier.
 		if errors.Is(err, ErrTenantNotFound) {
+			// "No metadata" has two meanings, and only one of them may fall
+			// through to the shared store. A tenant that was never
+			// registered is served as a logical-prefix tenant, which is what
+			// keeps lookups by global id working for callers that have not
+			// registered metadata. A tenant that was DELETED must not be:
+			// its id is retired, and resolving it would hand a caller the
+			// keyspace the deletion just reclaimed.
+			if dErr := r.refuseIfDeleted(ctx, tenantID); dErr != nil {
+				return nil, dErr
+			}
 			return r.sharedFor(ctx, tenantID)
 		}
 		return nil, err
@@ -196,6 +222,26 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 	}
 
 	return r.resolveBarrier(ctx, tenantID)
+}
+
+// refuseIfDeleted returns a *TenantDeletedError when tenantID has been
+// deleted, the store's error when the question could not be answered, and nil
+// otherwise.
+//
+// An unanswerable question FAILS the resolution rather than falling through:
+// the fall-through is what a deleted id must not get.
+func (r *defaultStoreResolver) refuseIfDeleted(ctx context.Context, tenantID string) error {
+	if r.tombstones == nil {
+		return nil
+	}
+	at, tombstoned, err := r.tombstones.deletedAt(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if !tombstoned {
+		return nil
+	}
+	return &TenantDeletedError{TenantID: tenantID, DeletedAt: at}
 }
 
 // IdentityNamespace returns the keyspace prefix a tenant's IDENTITY records

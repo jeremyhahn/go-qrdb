@@ -1166,6 +1166,93 @@ func (r *BarrierRegistry) UnregisterTenant(tenantID string) error {
 	return r.RemoveTenant(tenantID)
 }
 
+// DestroyTenant removes a tenant barrier AND every durable record that would
+// bring it back.
+//
+// UnregisterTenant seals and forgets the in-memory barrier, which is the
+// right operation for a node shutting a tenant down. It is NOT the right
+// operation for a tenant that has been deleted: the DataRoot record under
+// "__registry:tenant_root/" and the volume-pool slot assignment survive it,
+// and RestoreVolumeTenants reads exactly those records at boot -- so a
+// deleted volume or raft tenant's barrier is re-registered on the next
+// restart, at the same DataRoot, over the same on-disk store (go-qrdb#413).
+//
+// It also removes the tenant's dedicated DataRoot from disk. That directory
+// holds the tenant's own Raft state machines and its barrier store; nothing
+// names it once the records above are gone, so leaving it is a permanent
+// filesystem leak of the deleted tenant's (now key-less) ciphertext.
+//
+// The steps run in the order that survives a crash at any point: close the
+// store, drop the records that would restore it, then remove the bytes. An
+// interrupted call leaves a directory nothing references, which the next call
+// removes -- DestroyTenant is idempotent and an already-destroyed tenant
+// returns ErrTenantNotFound only when it was not registered here at all.
+//
+// A tenant that is registered but has no DataRoot (IsolationBarrier in
+// keyspace mode, or a memory-backed test tenant) skips the filesystem step.
+func (r *BarrierRegistry) DestroyTenant(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return ErrEmptyTenantID
+	}
+
+	dataRoot, hasRoot := r.tenantDataRoots.Load(tenantID)
+	if !hasRoot {
+		// Not registered on this node in this process (a follower, or a
+		// restart that has not re-attached yet). The persisted record is
+		// still authoritative for where the data is.
+		if rec, found, err := r.loadTenantRoot(ctx, tenantID); err == nil && found {
+			dataRoot, hasRoot = rec.DataRoot, rec.DataRoot != ""
+		}
+	}
+
+	removeErr := r.RemoveTenant(tenantID)
+	if removeErr != nil && !errors.Is(removeErr, ErrTenantNotFound) {
+		return removeErr
+	}
+	r.tenantDataRoots.Delete(tenantID)
+
+	// Close the per-tenant Pebble before the directory holding it is removed,
+	// so the files are released rather than unlinked from under an open
+	// handle.
+	if _, _, perTenantReg := r.poolResources(); perTenantReg != nil {
+		if err := perTenantReg.Close(ctx, tenantID); err != nil {
+			return &TenantStoreCloseError{TenantID: tenantID, Err: err}
+		}
+	}
+
+	// Drop the records the boot path restores from. Both are best-effort in
+	// the sense that a missing key is success, but a live failure is not:
+	// leaving either behind resurrects the barrier at the next restart.
+	if r.system != nil && !r.system.IsSealed() {
+		if err := r.system.Delete(ctx, tenantRootStorePrefix+tenantID); err != nil &&
+			!errors.Is(err, ErrSecretNotFound) {
+			return &TenantRecordDeleteError{TenantID: tenantID, Record: "tenant-root", Err: err}
+		}
+	}
+	if slotStore := r.replicatedSlotStore(); slotStore != nil {
+		if err := slotStore.Delete(ctx, slotAssignmentPrefix+tenantID); err != nil &&
+			!errors.Is(err, ErrSecretNotFound) {
+			return &TenantRecordDeleteError{TenantID: tenantID, Record: "slot-assignment", Err: err}
+		}
+	}
+
+	if hasRoot {
+		root, _ := dataRoot.(string)
+		if root != "" {
+			if err := os.RemoveAll(root); err != nil {
+				return &TenantDataRootRemoveError{TenantID: tenantID, DataRoot: root, Err: err}
+			}
+			if r.logger != nil {
+				r.logger.Info("registry: destroyed tenant data root",
+					slog.String("tenant", tenantID),
+					slog.String("data_root", root))
+			}
+		}
+	}
+
+	return removeErr
+}
+
 // InitializeTenant initializes the tenant barrier identified by tenantID.
 // The tenant must already be registered via RegisterTenant.
 func (r *BarrierRegistry) InitializeTenant(ctx context.Context, tenantID string, creds Credentials) error {

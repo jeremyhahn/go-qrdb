@@ -458,3 +458,60 @@ func (e *MigrationRecoveryError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *MigrationRecoveryError) Unwrap() error { return e.Err }
+
+// TenantStoreCloseError is returned by DestroyTenant when the tenant's
+// per-tenant Pebble could not be closed. The destroy stops there rather than
+// continuing: removing a directory whose files are still open would unlink
+// them from under a live handle, and the caller can retry once the store is
+// quiescent.
+type TenantStoreCloseError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the close failure.
+func (e *TenantStoreCloseError) Error() string {
+	return "qrdb/seal: close tenant store for " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantStoreCloseError) Unwrap() error { return e.Err }
+
+// TenantRecordDeleteError is returned by DestroyTenant when one of the
+// durable records that would RESTORE a tenant barrier at boot -- its DataRoot
+// record or its volume-pool slot assignment -- could not be removed. Leaving
+// either behind resurrects a deleted tenant's barrier on the next restart, so
+// the failure is reported rather than logged.
+type TenantRecordDeleteError struct {
+	TenantID string
+	// Record names which record failed: "tenant-root" or "slot-assignment".
+	Record string
+	Err    error
+}
+
+// Error returns a human-readable description of the record-delete failure.
+func (e *TenantRecordDeleteError) Error() string {
+	return "qrdb/seal: delete " + e.Record + " record for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantRecordDeleteError) Unwrap() error { return e.Err }
+
+// TenantDataRootRemoveError is returned by DestroyTenant when the tenant's
+// dedicated DataRoot could not be removed from disk. The barrier and its
+// records are already gone at that point, so the tenant is unreachable and
+// its remaining bytes are unreadable -- what is left is a directory to
+// reclaim, which a retry or an operator can finish.
+type TenantDataRootRemoveError struct {
+	TenantID string
+	DataRoot string
+	Err      error
+}
+
+// Error returns a human-readable description of the removal failure.
+func (e *TenantDataRootRemoveError) Error() string {
+	return "qrdb/seal: remove data root " + e.DataRoot + " for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *TenantDataRootRemoveError) Unwrap() error { return e.Err }

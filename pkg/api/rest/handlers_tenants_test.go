@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1976,4 +1977,47 @@ func TestHandleTenantBarrierSealVote_ServiceError(t *testing.T) {
 
 func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
+}
+
+// TestMapTenantError_TeardownRefusals pins the statuses for the three
+// refusals the tenant teardown added (go-qrdb#413).
+//
+// ReservedTenantIDError is in the table because it had NO mapping at all: it
+// fell through to 500, reporting a client naming a reserved id as a server
+// fault. That was latent on the create path and became reachable on the
+// delete path when the reserved-id guard was hoisted there.
+func TestMapTenantError_TeardownRefusals(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{
+			name: "deleted id is not available",
+			err:  &tenant.TenantDeletedError{TenantID: "acme", DeletedAt: time.Now().UTC()},
+			want: http.StatusConflict,
+		},
+		{
+			name: "tenant still owns databases",
+			err:  &tenant.TenantHasDatabasesError{TenantID: "acme", Databases: []string{"ledger"}},
+			want: http.StatusConflict,
+		},
+		{
+			name: "reserved id is a client error, not a server fault",
+			err:  &tenant.ReservedTenantIDError{TenantID: "system", Reason: "reserved"},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "reserved id wrapped by a caller",
+			err:  fmt.Errorf("delete: %w", &tenant.ReservedTenantIDError{TenantID: "system", Reason: "reserved"}),
+			want: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapTenantError(tc.err); got != tc.want {
+				t.Errorf("mapTenantError(%v) = %d, want %d", tc.err, got, tc.want)
+			}
+		})
+	}
 }

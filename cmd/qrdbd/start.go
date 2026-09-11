@@ -1473,6 +1473,7 @@ func runStart(f *startFlags) error {
 				KVOptions:                 nil,
 				SealBarrier:               sealBarrier,
 				BarrierRegistry:           barrierRegistry,
+				TenantDEKManager:          tenantDEKMgr,
 				CredentialCoreSvc:         credCoreSvc,
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,

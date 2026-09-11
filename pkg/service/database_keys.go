@@ -14,7 +14,11 @@
 
 package service
 
-import "github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
+)
 
 // ---------------------------------------------------------------------------
 // What a database owns
@@ -153,4 +157,73 @@ func DatabaseIndexNamePrefixes(ns, database string) []string {
 		return nil
 	}
 	return prefixes
+}
+
+// TenantKeyPrefixes returns every physical key prefix the named tenant owns
+// in the store serving it.
+//
+// It is the tenant-scoped peer of NamespacedKeyPrefixes and is built the same
+// way, one segment shorter. A database's keys are rooted at
+// tenant.ComposeNamespace's "<tenant>/<db>/", and a tenant's IDENTITY records
+// -- users, roles, permission scopes, invitations -- are rooted at
+// tenant.IdentityNamespace's "<tenant>/", which is the PARENT of every one of
+// its databases' namespaces. So a single "<tenant>/" range covers both, and
+// the time-series prefixes are returned separately for exactly the reason
+// NamespacedKeyPrefixes returns them separately: the namespace lands INSIDE
+// the series prefix, because it is the metric NAME that the namespaced view
+// prefixes rather than the key.
+//
+// It does NOT return timeseries.KeyPrefixTagIndex, for the reason
+// NamespacedKeyPrefixes does not: a tag index key carries no metric and is
+// therefore shared by every tenant.
+//
+// It does not return the pre-go-qrdb#441 root-keyed collection prefixes
+// either. Those carry a database segment and NO tenant, so no tenant owns
+// them and no tenant-scoped scan can find them; they are reclaimed by the
+// drop of the database that wrote them, which DeleteTenant's bottom-up
+// refusal requires to have happened already.
+//
+// It DOES return the tenant's placement range. A dedicated-raft database's
+// replica assignment lives at "__sys:placement/{tenant}/{db}", outside the
+// tenant's namespace and keyed by tenant, and the per-node reconciler watches
+// that range: removing an entry is what stops and purges the shard on every
+// node that holds a replica. A tenant whose placement entries outlived it
+// kept its shards running and its shard data dirs on disk on every replica --
+// which the local node's DataRoot removal cannot reach.
+//
+// The SYSTEM tenant returns nil. "<tenant>/" for the system tenant is
+// "system/", which is where the bootstrap database and every system identity
+// record live; a reclamation that accepted it would empty the store it was
+// asked to tidy. An empty tenantID returns nil for the same reason, since
+// tenant.IdentityNamespace canonicalizes it to the system tenant.
+func TenantKeyPrefixes(tenantID string) []string {
+	if tenantID == "" || tenant.IsSystemTenant(tenantID) {
+		return nil
+	}
+	ns := tenant.IdentityNamespace(tenantID)
+	return []string{
+		ns,
+		timeseries.KeyPrefixPoints + ns,
+		timeseries.KeyPrefixMetricIndex + ns,
+		timeseries.KeyPrefixRetention + ns,
+		placement.PlacementPrefix + ns,
+	}
+}
+
+// TenantIndexNamePrefixes returns every secondary-index NAME prefix a tenant
+// owns in the state machine's index catalog.
+//
+// An index created through a registry-resolved IndexServicer is named under
+// the composite "<tenant>/<db>/" namespace, so the tenant segment alone
+// selects every index of every database the tenant owns. The catalog is a
+// namespace of its own and is not reached by deleting keys, which is why it
+// is enumerated separately -- see DatabaseIndexNamePrefixes.
+//
+// The system tenant and an empty id return nil, for the reason
+// TenantKeyPrefixes returns nil for them.
+func TenantIndexNamePrefixes(tenantID string) []string {
+	if tenantID == "" || tenant.IsSystemTenant(tenantID) {
+		return nil
+	}
+	return []string{tenant.IdentityNamespace(tenantID)}
 }

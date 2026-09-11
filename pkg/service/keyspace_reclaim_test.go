@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -657,4 +659,244 @@ func TestKeyspaceReclaim_NilEnginesAreSkipped(t *testing.T) {
 // so the filtered and unfiltered enumerations are the same call.
 func (f *failingReclaimKV) ListAll(a0 context.Context, a1 string) ([]string, error) {
 	return f.List(a0, a1)
+}
+
+// ---------------------------------------------------------------------------
+// The tenant scope (go-qrdb#413)
+//
+// Deleting a tenant reclaims everything the tenant owns, not everything one
+// of its databases owns. The scope is one segment shorter -- "<tenant>/" is
+// the PARENT of every "<tenant>/<db>/" its databases use and also the root of
+// its identity records -- plus the placement range, which is keyed by tenant
+// outside the namespace entirely.
+// ---------------------------------------------------------------------------
+
+// tenantPopulatedStore holds one key of every shape a TENANT owns, plus keys
+// that must survive: another tenant's, a database-agnostic system record, and
+// the tag index, which carries no metric and so belongs to nobody.
+func tenantPopulatedStore() *memoryKVSvc {
+	kv := newMemoryKVSvc()
+	ctx := context.Background()
+	put := func(k string) { _ = kv.Put(ctx, k, []byte("v")) }
+
+	id := tenant.IdentityNamespace("acme")
+	// Identity: tenant-wide, one segment above any database.
+	put(id + "user/alice")
+	put(id + "role/admin")
+	// Two databases of the same tenant, both under the same tenant segment.
+	put(tenant.ComposeNamespace("acme", "reports") + "greeting")
+	put(tenant.ComposeNamespace("acme", "ledger") + "greeting")
+	// Time series, whose namespace lands inside the series prefixes.
+	put(timeseries.KeyPrefixPoints + tenant.ComposeNamespace("acme", "reports") + "cpu:1:a")
+	put(timeseries.KeyPrefixMetricIndex + tenant.ComposeNamespace("acme", "reports") + "cpu")
+	put(timeseries.KeyPrefixRetention + tenant.ComposeNamespace("acme", "reports") + "cpu")
+	// A dedicated-raft database's placement entry: keyed by tenant, OUTSIDE
+	// the tenant's namespace. Removing it is what stops the shard on every
+	// node holding a replica.
+	put(placement.PlacementPrefix + "acme/reports")
+
+	// Must survive.
+	put(tenant.IdentityNamespace("other") + "user/bob")
+	put(tenant.ComposeNamespace("other", "reports") + "keep")
+	put(placement.PlacementPrefix + "other/reports")
+	put("__sys:roles/admin")
+	put(timeseries.KeyPrefixTagIndex + "host:web1")
+	return kv
+}
+
+// tenantSurvivors is the set tenantPopulatedStore holds that no reclamation
+// of "acme" may touch.
+func tenantSurvivors() []string {
+	keep := []string{
+		"__sys:roles/admin",
+		placement.PlacementPrefix + "other/reports",
+		tenant.ComposeNamespace("other", "reports") + "keep",
+		tenant.IdentityNamespace("other") + "user/bob",
+		timeseries.KeyPrefixTagIndex + "host:web1",
+	}
+	sort.Strings(keep)
+	return keep
+}
+
+// TestReclaimTenant_ReclaimsEveryShapeATenantOwns is the failing-first test
+// for go-qrdb#413: before this existed, DeleteTenant removed the metadata and
+// the barrier registration and left every one of these keys in place.
+func TestReclaimTenant_ReclaimsEveryShapeATenantOwns(t *testing.T) {
+	kv := tenantPopulatedStore()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	require.NoError(t, svc.ReclaimTenantKeyspace(context.Background(), "acme"))
+
+	assert.Equal(t, tenantSurvivors(), allKeys(t, kv),
+		"deleting a tenant must leave exactly the keys that belong to other tenants and to no tenant")
+}
+
+// TestReclaimTenant_ReclaimsBothPlanes states the property that makes one
+// range enough for two planes: identity is tenant-wide ("<tenant>/") and data
+// is per-database ("<tenant>/<db>/"), and the first contains the second.
+func TestReclaimTenant_ReclaimsBothPlanes(t *testing.T) {
+	id := tenant.IdentityNamespace("acme")
+	ns := tenant.ComposeNamespace("acme", "reports")
+	require.True(t, strings.HasPrefix(ns, id),
+		"the composite namespace %q must sit under the identity namespace %q, "+
+			"or a tenant reclamation needs a second range per database", ns, id)
+}
+
+// TestReclaimTenant_ReclaimsTheIndexCatalog: index names are namespaced too,
+// and the catalog is not a range of keys, so it is enumerated separately.
+func TestReclaimTenant_ReclaimsTheIndexCatalog(t *testing.T) {
+	idx := newReclaimIndexCatalog(
+		tenant.ComposeNamespace("acme", "reports")+"by_customer",
+		tenant.ComposeNamespace("acme", "ledger")+"by_date",
+		tenant.ComposeNamespace("other", "reports")+"by_customer",
+		"unrelated",
+	)
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Index: idx})
+
+	require.NoError(t, svc.ReclaimTenantKeyspace(context.Background(), "acme"))
+
+	assert.Equal(t, []string{
+		tenant.ComposeNamespace("other", "reports") + "by_customer",
+		"unrelated",
+	}, idx.remaining())
+}
+
+// TestReclaimTenant_ReclaimsVectorNamespaces: vectors live in their own
+// per-node store and likewise survive a key-prefix delete.
+func TestReclaimTenant_ReclaimsVectorNamespaces(t *testing.T) {
+	vec := newReclaimVectorStore(
+		tenant.ComposeNamespace("acme", "reports")+"docs",
+		tenant.ComposeNamespace("acme", "ledger")+"docs",
+		tenant.ComposeNamespace("other", "reports")+"docs",
+	)
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vec})
+
+	require.NoError(t, svc.ReclaimTenantKeyspace(context.Background(), "acme"))
+
+	assert.Equal(t, []string{tenant.ComposeNamespace("other", "reports") + "docs"}, vec.remaining())
+}
+
+// TestReclaimTenant_RefusesTheSystemTenant is the guard that keeps a tenant
+// reclamation from emptying the store: "system/" holds the bootstrap database
+// and every system identity record.
+func TestReclaimTenant_RefusesTheSystemTenant(t *testing.T) {
+	for _, id := range []string{tenant.SystemTenantID, ""} {
+		kv := tenantPopulatedStore()
+		before := allKeys(t, kv)
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+		var scope *ReclaimScopeError
+		err := svc.ReclaimTenantKeyspace(context.Background(), id)
+		require.ErrorAs(t, err, &scope, "ReclaimTenantKeyspace(%q) must be refused", id)
+		assert.Equal(t, before, allKeys(t, kv), "a refused reclamation must delete nothing")
+	}
+}
+
+// TestReclaimTenant_IsIdempotent: a keyspace that is already empty is the
+// success case, which is what lets a re-issued delete finish an interrupted
+// one.
+func TestReclaimTenant_IsIdempotent(t *testing.T) {
+	kv := tenantPopulatedStore()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+	ctx := context.Background()
+
+	require.NoError(t, svc.ReclaimTenantKeyspace(ctx, "acme"))
+	require.NoError(t, svc.ReclaimTenantKeyspace(ctx, "acme"))
+	assert.Equal(t, tenantSurvivors(), allKeys(t, kv))
+}
+
+// TestReclaimTenant_UsesTheSystemStore pins the one way the tenant scope
+// differs from the database scope: no StoreResolver hop. A volume tenant's
+// IAM ciphertext is in the shared store, and the dedicated store its data
+// lived on has been destroyed wholesale by the time this runs -- routing
+// there would ask a store that no longer exists to delete keys that are
+// already gone.
+func TestReclaimTenant_UsesTheSystemStore(t *testing.T) {
+	system := tenantPopulatedStore()
+	dedicated := newMemoryKVSvc()
+	require.NoError(t, dedicated.Put(context.Background(),
+		tenant.ComposeNamespace("acme", "reports")+"onDedicated", []byte("v")))
+
+	resolver := &fixedStoreResolver{target: ReclaimTarget{KV: dedicated}, dedicated: true}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(resolver)
+
+	require.NoError(t, svc.ReclaimTenantKeyspace(context.Background(), "acme"))
+
+	assert.Equal(t, 0, resolver.calls, "the tenant scope must not consult the store resolver")
+	assert.Equal(t, tenantSurvivors(), allKeys(t, system))
+}
+
+// TestReclaimTenant_FailuresAreTyped: every failure fails the delete rather
+// than being logged and skipped, and each names which plane it came from.
+func TestReclaimTenant_FailuresAreTyped(t *testing.T) {
+	ctx := context.Background()
+	sentinel := errors.New("boom")
+
+	t.Run("keys", func(t *testing.T) {
+		svc := NewKeyspaceReclaimService(ReclaimTarget{
+			KV: &failingReclaimKV{listErr: sentinel},
+		})
+		var pe *ReclaimPrefixError
+		require.ErrorAs(t, svc.ReclaimTenantKeyspace(ctx, "acme"), &pe)
+		assert.Equal(t, "list", pe.Op)
+	})
+
+	t.Run("indexes", func(t *testing.T) {
+		idx := newReclaimIndexCatalog()
+		idx.listErr = sentinel
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Index: idx})
+		var ie *ReclaimIndexError
+		require.ErrorAs(t, svc.ReclaimTenantKeyspace(ctx, "acme"), &ie)
+		assert.Equal(t, "list", ie.Op)
+	})
+
+	t.Run("vectors", func(t *testing.T) {
+		vec := newReclaimVectorStore()
+		vec.listErr = sentinel
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vec})
+		var ve *ReclaimVectorError
+		require.ErrorAs(t, svc.ReclaimTenantKeyspace(ctx, "acme"), &ve)
+		assert.Equal(t, "list", ve.Op)
+	})
+}
+
+// TestTenantKeyPrefixes_CoverEveryOwnedShape is the declaration side of the
+// same property, asserted against keys built from the layout constants rather
+// than from literals.
+func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
+	prefixes := TenantKeyPrefixes("acme")
+	require.NotEmpty(t, prefixes)
+
+	owned := []string{
+		tenant.IdentityNamespace("acme") + "user/alice",
+		tenant.ComposeNamespace("acme", "reports") + "greeting",
+		timeseries.KeyPrefixPoints + tenant.ComposeNamespace("acme", "reports") + "cpu:1:a",
+		timeseries.KeyPrefixMetricIndex + tenant.ComposeNamespace("acme", "reports") + "cpu",
+		timeseries.KeyPrefixRetention + tenant.ComposeNamespace("acme", "reports") + "cpu",
+		placement.PlacementPrefix + "acme/reports",
+	}
+	for _, key := range owned {
+		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
+	}
+
+	notOwned := []string{
+		tenant.IdentityNamespace("other") + "user/bob",
+		"__sys:roles/admin",
+		timeseries.KeyPrefixTagIndex + "host:web1",
+		placement.PlacementPrefix + "other/reports",
+	}
+	for _, key := range notOwned {
+		assert.False(t, hasAnyPrefix(key, prefixes), "a tenant prefix wrongly covers %q", key)
+	}
+}
+
+// TestTenantKeyPrefixes_SystemTenantAndEmptyReturnNothing: an unscoped
+// reclamation must reclaim nothing, never everything.
+func TestTenantKeyPrefixes_SystemTenantAndEmptyReturnNothing(t *testing.T) {
+	assert.Nil(t, TenantKeyPrefixes(tenant.SystemTenantID))
+	assert.Nil(t, TenantKeyPrefixes(""))
+	assert.Nil(t, TenantIndexNamePrefixes(tenant.SystemTenantID))
+	assert.Nil(t, TenantIndexNamePrefixes(""))
+	assert.Equal(t, []string{tenant.IdentityNamespace("acme")}, TenantIndexNamePrefixes("acme"))
 }

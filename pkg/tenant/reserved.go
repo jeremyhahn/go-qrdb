@@ -26,35 +26,16 @@ import (
 // (or a reverted config) cannot re-create a tenant under the old name.
 const legacyDefaultTenantID = "default"
 
-// validateReservedTenantID rejects tenant ids that the platform reserves
-// for its own use. The check is bypassed when the context is marked as an
-// internal call via WithInternalCall — that path is reserved for first-boot
-// bootstrap of the system tenant. Returns a typed error when the id is
-// rejected.
-//
-// Reserved ids:
-//   - SystemTenantID ("system") — structurally privileged platform tenant.
-//   - legacyDefaultTenantID ("default") — retired; permanently reserved.
-//   - any id starting with "_" — reserved for internal future use.
-//   - any id containing ":" — reserved for compound-id schemes.
-//
-// Additionally, any id containing a control character (byte < 0x20) or the
-// unit-separator byte (0x1f) used as the scoped-key separator is rejected with
-// an *InvalidTenantIDCharError regardless of the internal-call bypass, as is
-// any id containing a path separator ('/' or '\') or equal to "." or ".." —
-// tenant ids become filesystem path segments under barrier isolation
-// (volume-pool directories), so a path-traversal id like "../../x" must be
-// rejected before it ever reaches a filepath.Join sink.
 // validateTenantIDCharset rejects an id that would corrupt a scoped storage
 // key or escape a directory.
 //
-// It is shared by tenant creation and by the store resolver, which builds a
-// keyspace prefix from an id it may never have seen — an unknown tenant
-// deliberately falls through to the shared store. A '/' there would nest one
-// tenant's namespace INSIDE another's ("acme/system/system/" sits under
-// "acme/system/"), so a scan by the outer tenant would list the inner one's
-// keys. The check therefore has to run where the prefix is built, not only
-// where tenants are created.
+// It is shared by tenant creation, tenant deletion and the store resolver,
+// which builds a keyspace prefix from an id it may never have seen — an
+// unknown tenant deliberately falls through to the shared store. A '/' there
+// would nest one tenant's namespace INSIDE another's ("acme/system/system/"
+// sits under "acme/system/"), so a scan by the outer tenant would list the
+// inner one's keys. The check therefore has to run where the prefix is built,
+// not only where tenants are created.
 func validateTenantIDCharset(id string) error {
 	for _, b := range []byte(id) {
 		if b < 0x20 || b == '/' || b == '\\' {
@@ -77,23 +58,35 @@ func validateTenantIDCharset(id string) error {
 	return nil
 }
 
-func validateReservedTenantID(ctx context.Context, id string) error {
-	// Charset check applies to ALL callers — even internal calls must not
-	// create a tenant whose id would corrupt scoped storage keys or escape
-	// its volume-pool directory.
-	if err := validateTenantIDCharset(id); err != nil {
-		return err
-	}
-	if id == "." || id == ".." {
-		return &InvalidTenantIDError{
-			TenantID: id,
-			Reason:   "id must not be a relative path segment",
-		}
-	}
+// ---------------------------------------------------------------------------
+// The reserved set has ONE declaration and TWO policies
+//
+// reservedTenantIDReason below is the only place the reserved set is written
+// down. Two call sites consult it and they differ in exactly one respect,
+// which is a difference in POLICY rather than a second copy of the rule:
+//
+//   - validateReservedTenantID (CREATE) honours the first-boot bypass.
+//     Bootstrap has to be able to create the system tenant, so a context
+//     marked WithInternalCall skips the set.
+//
+//   - validateDeletableTenantID (DELETE) does NOT. Nothing in this system
+//     legitimately deletes a reserved tenant, at boot or afterwards, and a
+//     delete is irreversible: it shreds the tenant DEK, retires the id and
+//     removes the metadata record. A bypass on that path would be a bypass of
+//     the only guard standing between a caller and the platform's own tenant.
+//
+// Writing the set twice is what would let the two drift; giving one set two
+// bypass policies is the actual requirement. (go-qrdb#413 review.)
+// ---------------------------------------------------------------------------
 
-	if isInternalCall(ctx) {
-		return nil
-	}
+// reservedTenantIDReason returns the reason the platform reserves id, or nil
+// when the id is free. It is THE declaration of the reserved set:
+//
+//   - SystemTenantID ("system") — structurally privileged platform tenant.
+//   - legacyDefaultTenantID ("default") — retired; permanently reserved.
+//   - any id starting with "_" — reserved for internal future use.
+//   - any id containing ":" — reserved for compound-id schemes.
+func reservedTenantIDReason(id string) error {
 	switch {
 	case id == SystemTenantID:
 		return &ReservedTenantIDError{
@@ -117,4 +110,67 @@ func validateReservedTenantID(ctx context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+// validateTenantIDShape rejects an id whose SHAPE is unusable, independently
+// of whether it is reserved: one that would corrupt a scoped storage key, or
+// that names a relative path segment. It binds every caller, internal ones
+// included — bootstrap may create the system tenant, but nothing may create a
+// tenant whose id escapes its volume-pool directory.
+func validateTenantIDShape(id string) error {
+	if err := validateTenantIDCharset(id); err != nil {
+		return err
+	}
+	if id == "." || id == ".." {
+		return &InvalidTenantIDError{
+			TenantID: id,
+			Reason:   "id must not be a relative path segment",
+		}
+	}
+	return nil
+}
+
+// validateReservedTenantID rejects tenant ids that the platform reserves for
+// its own use, on the CREATE path.
+//
+// The check is bypassed when the context is marked as an internal call via
+// WithInternalCall — that path is reserved for first-boot bootstrap of the
+// system tenant. The shape check above is NOT bypassed. Returns a typed error
+// when the id is rejected.
+func validateReservedTenantID(ctx context.Context, id string) error {
+	if err := validateTenantIDShape(id); err != nil {
+		return err
+	}
+	if isInternalCall(ctx) {
+		return nil
+	}
+	return reservedTenantIDReason(id)
+}
+
+// validateDeletableTenantID rejects tenant ids that the platform reserves, on
+// the DELETE path, with NO internal-call bypass.
+//
+// It exists because the reserved-id rule was applied only at creation, so the
+// ids this file declares un-creatable were freely DELETABLE: DeleteTenant took
+// a caller-supplied id and ran the irreversible teardown — shred the DEK,
+// write the tombstone, remove "__sys:tenants/{id}" — against it, and reported
+// success (go-qrdb#413 review).
+//
+// The reclamation already refused the system tenant (see
+// service.TenantKeyPrefixes: "a reclamation that accepted it would empty the
+// store it was asked to tidy"), but that guards the LAST step of the teardown
+// and the three irreversible control-plane mutations come before it. This is
+// the same judgement, hoisted to the front where it can prevent the commits
+// rather than only the destructive read.
+//
+// It deliberately does NOT lean on DeleteTenant's bottom-up database refusal.
+// That refusal returns nil when no DatabaseLister is wired, and where one IS
+// wired it catches the system tenant only by accident of configuration — it
+// happens to own the default "system" database. A guard that depends on a
+// database existing is not a guard.
+func validateDeletableTenantID(id string) error {
+	if err := validateTenantIDShape(id); err != nil {
+		return err
+	}
+	return reservedTenantIDReason(id)
 }

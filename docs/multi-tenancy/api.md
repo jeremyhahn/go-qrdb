@@ -103,6 +103,28 @@ may wipe the slice it supplied as soon as the call returns, and the daemon
 wipes the slice its decoder produced before the handler returns. See
 [../barrier-seal/api.md](../barrier-seal/api.md#the-barrier-credential-is-bytes-and-therefore-base64-in-rest-json).
 
+## Delete semantics
+
+`DELETE /v1/tenants/{id}` (and its peers on every transport) is **permanent in
+both directions**: it reclaims the tenant's data AND retires the id.
+
+- It **refuses a reserved id** — `system`, `default`, anything starting with
+  `_`, anything containing `:` — with 400, before it reads anything. The
+  platform's own tenant is not deletable through the API, and no flag makes it
+  so.
+- It **refuses while the tenant still owns databases**, naming them. Drop them
+  first.
+- It **destroys the tenant's data encryption key** before anything else.
+- It **records the id as deleted.** A later `POST /v1/tenants` with the same id
+  is refused with 409, permanently. There is no release, no retention window
+  and no force flag.
+- It **reclaims the tenant's keyspace** synchronously before returning.
+
+Re-issuing a delete that failed part-way is the supported remedy and is safe:
+the reclamation is idempotent, and a tenant whose metadata is already gone but
+whose id is retired resumes rather than reporting 404. An id that was never
+used is still 404.
+
 ## Governance ordering
 
 **Entitlements are checked before quotas.** A plan that does not include a tier
@@ -122,6 +144,11 @@ leaks to a caller with no access to the tier.
 | Barrier endpoint on a `prefix` tenant | 409 | `FAILED_PRECONDITION` |
 | Tenant barrier sealed | 503 | `UNAVAILABLE` |
 | Unknown tenant, tenant service configured | 404 | `NOT_FOUND` |
+| Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError`. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
+| Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
+| Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |
+| Delete: DEK shred failed | 500 | `INTERNAL` — `*DEKShredError`; nothing changed |
+| Delete: keyspace reclaim failed | 500 | `INTERNAL` — `*KeyspaceReclaimError`; the id is already retired, retry to resume |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
 > **Deployment gap, recorded deliberately.** If the data-plane service registry

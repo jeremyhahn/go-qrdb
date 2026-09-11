@@ -222,6 +222,128 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   nodes**; `TenantShardReconciler` converges each node's assigned replicas and
   they survive restarts via the persistent placement table.
 
+## Tenant teardown
+
+`TenantService.DeleteTenant` and `kvTenantService.DeleteTenant` run the same
+six steps in the same order, because keyspace isolation is not a property of
+encryption: a node with the seal subsystem off still has prefix tenants, and
+they are exactly the tenants whose data stayed readable after a delete.
+
+```
+refuse a RESERVED id
+  -> refuse if databases remain
+  -> shred the tenant DEK
+  -> write the tombstone
+  -> delete the metadata record
+  -> destroy the barrier and its durable records   (seal-enabled only)
+  -> reclaim the keyspace
+```
+
+### The reserved-id guard runs first
+
+`validateDeletableTenantID` is the front of both `DeleteTenant`
+implementations, before the metadata read and before any commit. It shares
+`reservedTenantIDReason` — the single declaration of the reserved set — with
+`validateReservedTenantID` on the create path, and differs from it in one
+respect only: the create path honours the `WithInternalCall` first-boot
+bypass and the delete path has none.
+
+It also applies `validateTenantIDShape`, so an id carrying a path separator is
+refused on the delete path too rather than composing a tombstone key outside
+its own range.
+
+`*ReservedTenantIDError` maps to **400 / `InvalidArgument`**. It previously
+had no mapping on any transport and fell through to 500 / `Internal`, which
+reported a client naming a reserved id as a server fault — latent on the
+create path, reachable on the delete path once the guard was hoisted there.
+
+### The tombstone
+
+- **Key:** `__sys:tenants-deleted/{id}`, holding a `tenant.Tombstone`.
+- **Sibling of `__sys:tenants/`, not a child.** `ListTenants` scans the
+  metadata prefix; a tombstone nested under it would have to be filtered out
+  at every reader.
+- **Written to the tenant metadata store**, which in a cluster is the
+  replicated system shard, so the refusal survives restart and holds on every
+  node.
+- **A record that will not decode still retires the id.** The existence of the
+  record is the fact that matters; releasing an id because of a decode failure
+  is the one outcome the tombstone exists to prevent.
+- **An unreadable store fails the create.** Creating a tenant is the operation
+  whose whole safety property is that the id was never used; an unanswerable
+  "was it?" must not be read as "no".
+
+### The three seams
+
+`DeleteTenant` reaches four things this package cannot touch, so three are
+interfaces wired at composition time (the fourth, the barrier registry, is
+already held). All three are optional; a composition that wires none still
+retires the id, which is the security half.
+
+| Seam | Satisfied by | Wired at |
+|---|---|---|
+| `tenant.DatabaseLister` | `*database.Manager` (`TenantDatabases`) | `lifecycle.BuildServices` |
+| `tenant.DEKShredder` | `dek.TenantDEKManager` (`DeleteTenantDEK`) | `lifecycle.BuildServices`, from `Infra.TenantDEKManager` |
+| `tenant.KeyspaceReclaimer` | `*service.KeyspaceReclaimService` | `lifecycle.BuildServices` |
+
+They are set through `tenant.TeardownWiring`, resolved from the
+`TenantServicer` the node built, for the ordering reason
+`database.Manager.SetKeyspaceReclaimer` exists: the tenant service is
+constructed before the data plane it needs.
+
+**`*service.KeyspaceReclaimService` satisfies both `database.KeyspaceReclaimer`
+and `tenant.KeyspaceReclaimer`.** One walk, two scopes. A database's keyspace
+and a tenant's are the same shapes of key over different scopes, so a second
+implementation would be a duplicate that drifts the first time a sixth shape
+is added.
+
+### With no lister wired, the delete proceeds
+
+That is not a fail-open. Correctness does not rest on the refusal: the
+tombstone retires the id and the reclamation removes the bytes whether or not
+the databases were dropped first. The refusal buys a BOUND on the reclamation
+and an explicit teardown order. An enumeration that FAILS is a different
+matter and aborts the delete — "I could not find out" is not "none".
+
+Every composition `lifecycle.BuildServices` produces wires it, because the
+database manager is never nil there.
+
+### `DestroyTenant`, not `UnregisterTenant`
+
+`UnregisterTenant` seals and forgets the in-memory barrier and leaves two
+durable records in place:
+
+| Record | Read by |
+|---|---|
+| `__registry:tenant_root/{id}` | `BarrierRegistry.RestoreVolumeTenants` at boot |
+| `__sys:volumepool/assign/{id}` | `resolveTenantPoolBase` on the next provision |
+
+So a deleted tenant's barrier came back on the next restart.
+`BarrierRegistry.DestroyTenant` closes the per-tenant Pebble, deletes both
+records and removes the `DataRoot`, in that order — the files are released
+before the directory holding them is unlinked, and an interrupted call leaves
+a directory nothing references, which the next call removes.
+
+It returns `ErrTenantNotFound` when the tenant was not registered here at all,
+which `DeleteTenant` treats as success so the delete stays re-issuable.
+
+### Failure modes
+
+| Step fails | State afterwards | Remedy |
+|---|---|---|
+| Reserved or malformed id | nothing changed — no read, no commit | the id is not deletable; there is no remedy and none is wanted |
+| Database enumeration | nothing changed | fix the catalog, retry |
+| Databases remain | nothing changed | drop them; the error names them |
+| DEK shred | nothing changed — tenant intact, id not retired | retry |
+| Tombstone write | nothing changed | retry |
+| Metadata delete | id retired, record still present | retry; the delete resumes |
+| Barrier destroy | id retired, metadata gone | retry; `DestroyTenant` is idempotent |
+| Keyspace reclaim | id retired, metadata gone, bytes remain | retry; the reclamation is idempotent and a tombstoned tenant is still deletable |
+
+Re-issuing `DeleteTenant` on a tenant whose metadata is already gone but whose
+id is tombstoned resumes the reclamation rather than reporting not-found. An
+id that was never used is still `ErrTenantNotFound`.
+
 ## Governance planes
 
 | Plane | Controls | Enforced at |
@@ -331,6 +453,16 @@ isolation gap.
 | Unknown tenant, tenant service configured | rejected | **yes** |
 | Unknown tenant, **no** tenant service | **accepted** — the documented gap above | **no** |
 | Tenant barrier sealed | tenant operations refused | **yes** |
+| Deleting a RESERVED tenant id (`system`, `default`, `_*`, `*:*`) | `*ReservedTenantIDError`, 400 / `InvalidArgument`, nothing committed | **yes** |
+| Deleting a malformed tenant id | `*InvalidTenantIDCharError` / `*InvalidTenantIDError`, nothing committed | **yes** |
+| Creating a tenant under a DELETED id | `*TenantDeletedError`, 409 / `AlreadyExists` | **yes** |
+| Deleting a tenant that still owns databases | `*TenantHasDatabasesError`, 409 / `FailedPrecondition` | **yes** |
+| Tombstone store unreadable during create | `*StoreError{Op: "tombstone-check"}` | **yes** |
+| Tenant DEK shred fails during delete | `*DEKShredError`, nothing changed | **yes** |
+| Database enumeration fails during delete | `*DatabaseListError`, nothing changed | **yes** |
+| Keyspace reclaim fails during delete | `*KeyspaceReclaimError`, id already retired | **yes** |
+| Resolving a DELETED tenant's keyspace | `*TenantDeletedError`, no fall-through | **yes** |
+| Reclaiming the SYSTEM tenant's keyspace | `*service.ReclaimScopeError`, nothing deleted | **yes** |
 | Tenant shard elects no leader in 15s | `*ShardLeaderWaitError` (wraps `ErrTenantShardNoLeader`), host build refused | **yes** |
 
 ### Why the no-leader error carries a measurement

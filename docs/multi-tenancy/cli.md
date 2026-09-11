@@ -38,6 +38,31 @@ present. It is off by default and entitlement-gated for that reason.
 
 Positional tenant ID; no flags.
 
+**`delete` is permanent in both directions.** It reclaims the tenant's data
+AND retires the id: `qrdb tenant create` with the same id afterwards is
+refused, for good. There is no release, no retention window and no force flag,
+because "is this the same customer as the one that held the name before?" is
+not a question the server can answer about a name you chose.
+
+It refuses reserved ids outright — `system`, `default`, anything starting with
+`_`, anything containing `:`. The platform's own tenant is not yours to
+delete, and nothing was committed when it says so.
+
+It refuses while the tenant still owns databases and tells you which:
+
+```
+$ qrdb tenant delete acme
+Error: tenant: acme still owns 2 database(s) (ledger, reports); drop them before deleting the tenant
+
+$ qrdb database drop ledger
+$ qrdb database drop reports
+$ qrdb tenant delete acme
+```
+
+If a delete fails part-way, **re-run the same command**. The teardown is
+idempotent and resumes where it stopped; the id is already retired by then, so
+nothing can attach to whatever is left.
+
 ### `qrdb tenant update <id>`
 
 | Flag | Type | Meaning |

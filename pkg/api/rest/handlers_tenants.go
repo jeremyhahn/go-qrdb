@@ -1059,6 +1059,9 @@ func mapTenantError(err error) int {
 	var idre *tenant.InvalidDataRootError
 	var dne *tenant.DataRootNotEmptyError
 	var dite *tenant.DataRootIsolationTypeError
+	var tde *tenant.TenantDeletedError
+	var thd *tenant.TenantHasDatabasesError
+	var rte *tenant.ReservedTenantIDError
 
 	switch {
 	case errors.As(err, &tse):
@@ -1093,11 +1096,26 @@ func mapTenantError(err error) int {
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, tenant.ErrTenantAlreadyExists):
 		return http.StatusConflict
+	case errors.As(err, &tde):
+		// A deleted tenant id is retired permanently, so the id is not
+		// available -- the same answer ErrTenantAlreadyExists gives, for the
+		// same reason. 410 Gone would describe the deleted TENANT; what the
+		// caller asked for is the ID, and the conflict is with the deletion.
+		return http.StatusConflict
+	case errors.As(err, &thd):
+		// The tenant still owns databases. A precondition the caller can
+		// satisfy by dropping them, which the error names.
+		return http.StatusConflict
 	case errors.Is(err, tenant.ErrTenantHasData):
 		return http.StatusConflict
 	case errors.Is(err, tenant.ErrTenantNotFound):
 		return http.StatusNotFound
 	case errors.As(err, &ite):
+		return http.StatusBadRequest
+	case errors.As(err, &rte):
+		// A reserved id is not the caller's to name, on create or on delete.
+		// It fell through to 500 before, which reported a client error as a
+		// server fault.
 		return http.StatusBadRequest
 	case errors.As(err, &se):
 		return http.StatusInternalServerError

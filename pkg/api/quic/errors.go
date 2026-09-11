@@ -605,6 +605,27 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusUnavailable, msg
 	}
 
+	var rte *tenant.ReservedTenantIDError
+	if errors.As(err, &rte) {
+		// A reserved id is not the caller's to name, on create or on delete.
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var tde *tenant.TenantDeletedError
+	if errors.As(err, &tde) {
+		// A deleted tenant id is retired permanently: the id is taken, in
+		// exactly the sense an already-existing tenant's id is taken. Mirrors
+		// the gRPC AlreadyExists and REST 409 mappings.
+		return wire.StatusAlreadyExists, msg
+	}
+
+	var thd *tenant.TenantHasDatabasesError
+	if errors.As(err, &thd) {
+		// The tenant still owns databases: a precondition the caller can
+		// satisfy by dropping the databases the error names.
+		return wire.StatusFailedPrecondition, msg
+	}
+
 	if errors.Is(err, tenant.ErrTenantSealed) {
 		// A barrier-isolated tenant's IAM (user/role) store resolved to a
 		// SEALED barrier. The StoreResolver fails closed rather than leaking

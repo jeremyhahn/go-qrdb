@@ -283,6 +283,35 @@ and per-tenant barrier configuration lives in
 - **Compatibility**: the sealed blob format carries a version sentinel — see
   [seal/sealed-window.md](../seal/sealed-window.md).
 
+### A per-tenant barrier has durable records beyond the sealed blob
+
+Two records outlive a `BarrierRegistry.UnregisterTenant`, and they exist so
+that a node can bring a dedicated-isolation tenant back up after a restart:
+
+| Record | Written by | Read by |
+|---|---|---|
+| `__registry:tenant_root/{id}` | `RegisterVolumeTenant` | `RestoreVolumeTenants` at boot |
+| `__sys:volumepool/assign/{id}` | `recordSlotAssignment` | `resolveTenantPoolBase` on the next provision |
+
+**`UnregisterTenant` is therefore not a delete.** It seals and forgets the
+in-memory barrier and leaves both records in place, so a tenant "removed" that
+way is re-registered at the next boot, at the same `DataRoot`, over the same
+on-disk store. `BarrierRegistry.DestroyTenant` is the operation a tenant
+deletion needs: it closes the per-tenant Pebble, removes both records and
+removes the `DataRoot`, **in that order** — the files are released before the
+directory holding them is unlinked.
+
+`DestroyTenant` is idempotent. An interrupted call leaves a directory nothing
+references, which a re-issue removes; a tenant that was never registered on
+this node returns `ErrTenantNotFound`, which the tenant teardown treats as
+success. Its failures are typed — `*TenantStoreCloseError`,
+`*TenantRecordDeleteError`, `*TenantDataRootRemoveError` — and each stops the
+sequence rather than being logged, because leaving either record behind
+resurrects the barrier.
+
+See [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for
+where it sits in the tenant teardown order.
+
 ## Secure-memory rules, and what enforces them
 
 Key material in this repository is held through `pkg/secure`, a facade over a

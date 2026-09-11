@@ -216,3 +216,41 @@ func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, co
 
 	return m.UpdateConnection(name, conn)
 }
+
+// Compile-time interface check: the tenant teardown's refusal reads this
+// catalog, and a drift in its signature must fail here rather than at the
+// wiring site.
+var _ tenant.DatabaseLister = (*Manager)(nil)
+
+// TenantDatabases returns the names of the databases owned by tenantID,
+// sorted.
+//
+// It is the catalog behind tenant.TenantService's bottom-up refusal, which is
+// why it takes the tenant as an ARGUMENT rather than reading it from the
+// context the way ListForTenant does: the caller is a tenant teardown acting
+// ON a tenant, not a request acting AS one, and binding a synthetic tenant
+// context just to read it back would be the kind of round trip that hides a
+// mismatch.
+//
+// It reports what THIS node's catalog holds. A database's meta.json is
+// node-local while its keys are in the replicated store, so a node whose
+// catalog is incomplete under-reports -- which is the reason the tenant
+// reclamation scans the tenant's whole namespace rather than trusting this
+// list to have bounded it.
+//
+// An unknown tenant owns no databases, which is not an error. The system
+// tenant is answered like any other: its databases are those recorded with
+// no owner or with the system owner, matching GetForTenant's view.
+func (m *Manager) TenantDatabases(_ context.Context, tenantID string) ([]string, error) {
+	var names []string
+	m.databases.Range(func(_, value any) bool {
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		owner := db.TenantID()
+		if owner == tenantID || (tenant.IsSystemTenant(tenantID) && tenant.IsSystemTenant(owner)) {
+			names = append(names, db.Name())
+		}
+		return true
+	})
+	sort.Strings(names)
+	return names, nil
+}

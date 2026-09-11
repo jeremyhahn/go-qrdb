@@ -144,9 +144,19 @@ type KeyspaceReclaimService struct {
 	resolver StoreResolver
 }
 
-// Compile-time interface check: the Manager's seam is the only consumer, and
-// a drift in its signature must fail here rather than at a wiring site.
-var _ database.KeyspaceReclaimer = (*KeyspaceReclaimService)(nil)
+// Compile-time interface checks: the two teardown seams are the only
+// consumers, and a drift in either signature must fail here rather than at a
+// wiring site in another package.
+//
+// ONE type satisfies both on purpose. A database's keyspace and a tenant's
+// keyspace are the same SHAPES of key -- namespaced ranges, time-series
+// ranges, index-catalog names, vector namespaces -- over different scopes, so
+// a second implementation of that walk would be a duplicate of this one that
+// drifts the first time a fifth shape is added.
+var (
+	_ database.KeyspaceReclaimer = (*KeyspaceReclaimService)(nil)
+	_ tenant.KeyspaceReclaimer   = (*KeyspaceReclaimService)(nil)
+)
 
 // NewKeyspaceReclaimService returns a reclaimer over the system store --
 // the store that holds every shared-store database's namespaced keys and, for
@@ -208,6 +218,46 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	}
 	ns := tenant.ComposeNamespace(tenantID, db)
 	return s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns, ""), ns)
+}
+
+// ReclaimTenantKeyspace deletes everything tenantID owns in the system store:
+// every key under its "<tenant>/" namespace, the three time-series ranges
+// that carry the namespace inside the series prefix, its placement range,
+// every secondary-index catalog entry named under it, and every vector
+// namespace beneath it.
+//
+// The scope is the TENANT segment, which is the parent of every
+// "<tenant>/<db>/" namespace its databases use and also the root of its
+// identity records, so one range covers both planes. In practice a tenant
+// reaching here has no databases left -- DeleteTenant refuses while it does
+// -- so what this removes is the identity residue. The wider scope is kept
+// anyway because the database catalog is node-local while the keyspace is
+// replicated: a node whose catalog under-reports would otherwise leave a
+// tenant's data behind with nothing left to name it.
+//
+// It runs against the SYSTEM store, with no StoreResolver hop, which is the
+// one place this differs from ReclaimDatabaseKeyspace. A prefix or barrier
+// tenant keeps everything there. A volume or raft tenant keeps its IAM there
+// too -- encrypted under its own DEK, because identity must be resolvable on
+// every replica (see seal.NewTenantSharedKVStore) -- while its data-plane
+// keys are on a dedicated store that DeleteTenant has already destroyed
+// wholesale, key material and directory together. Routing there would be
+// asking a store that no longer exists to delete keys that are already gone.
+//
+// The SYSTEM tenant is refused. Its namespace is "system/", which holds the
+// bootstrap database and every system identity record, so a reclamation that
+// accepted it would empty the store.
+//
+// It is idempotent. A keyspace that is already empty is the success case, not
+// a not-found error, which is what lets a re-issued delete finish an
+// interrupted one.
+func (s *KeyspaceReclaimService) ReclaimTenantKeyspace(ctx context.Context, tenantID string) error {
+	prefixes := TenantKeyPrefixes(tenantID)
+	if len(prefixes) == 0 {
+		return &ReclaimScopeError{TenantID: tenantID}
+	}
+	return s.reclaim(ctx, s.system, prefixes,
+		TenantIndexNamePrefixes(tenantID), tenant.IdentityNamespace(tenantID))
 }
 
 // namespacedTarget returns the store holding tenantID's composite-namespaced
