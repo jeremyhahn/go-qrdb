@@ -26,6 +26,7 @@ package quic
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -64,10 +65,10 @@ func (m *grpcModule) RegisterQUIC(reg grpc.ServiceRegistrar) {
 // (qrdb.v1.permission) proto descriptor option resolves through the global
 // proto registry the same way it would for any module's own compiled proto
 // package -- but wires a hand-built Handler that has nothing to do with the
-// built-in kv.Put handler. It flips *called and returns a canned
+// built-in kv.Put handler. It flips called and returns a canned
 // PutResponse, proving the round trip below actually reached THIS handler
 // through the projection, not the server's real KV service.
-func putProjectionDesc(called *bool) *grpc.ServiceDesc {
+func putProjectionDesc(called *atomic.Bool) *grpc.ServiceDesc {
 	return &grpc.ServiceDesc{
 		ServiceName: "qrdb.v1.QRDBService",
 		HandlerType: (*any)(nil),
@@ -79,7 +80,7 @@ func putProjectionDesc(called *bool) *grpc.ServiceDesc {
 					if err := dec(&req); err != nil {
 						return nil, err
 					}
-					*called = true
+					called.Store(true)
 					return &pb.PutResponse{}, nil
 				},
 			},
@@ -95,7 +96,7 @@ func putProjectionDesc(called *bool) *grpc.ServiceDesc {
 // no longer exists) or the round trip comes back StatusUnimplemented because
 // no handler was ever registered for the method.
 func TestModuleRegisteredOnceReachesQUIC(t *testing.T) {
-	var called bool
+	var called atomic.Bool
 	module := &grpcModule{desc: putProjectionDesc(&called), impl: struct{}{}}
 
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{},
@@ -116,7 +117,7 @@ func TestModuleRegisteredOnceReachesQUIC(t *testing.T) {
 	if status != wire.StatusOK {
 		t.Fatalf("status = %d, want StatusOK (%d)", status, wire.StatusOK)
 	}
-	if !called {
+	if !called.Load() {
 		t.Fatal("the module's projected Handler was never invoked -- the frame did not reach the module")
 	}
 
