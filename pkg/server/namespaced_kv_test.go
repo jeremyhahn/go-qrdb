@@ -742,3 +742,9 @@ var _ service.KVServicer = (*namespacedKVService)(nil)
 func (*failingInnerKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (f *failingInnerKV) ListAll(a0 context.Context, a1 string) ([]string, error) {
+	return f.List(a0, a1)
+}

@@ -55,8 +55,11 @@ type DatabaseServicer interface {
 	// List returns information about all open databases.
 	List() ([]database.DatabaseInfo, error)
 
-	// Drop closes and removes a database, deleting its data.
-	Drop(name string) error
+	// Drop closes and removes a database, deleting its data — both the
+	// files it owns on this node and the keys it owns in the store it
+	// shares with other databases. It takes a context because the second
+	// half is a replicated operation (go-qrdb#412).
+	Drop(ctx context.Context, name string) error
 
 	// UpdateProtocol updates the wire protocol configuration for a database
 	// and returns the updated runtime information.
@@ -800,9 +803,11 @@ func (s *DatabaseService) List() ([]database.DatabaseInfo, error) {
 	return s.manager.List(), nil
 }
 
-// Drop closes and removes a database, deleting its data directory.
-func (s *DatabaseService) Drop(name string) error {
-	return s.manager.Drop(name)
+// Drop closes and removes a database, reclaiming its shared-store keyspace,
+// its barrier and its data directory. See database.Manager.Drop for the
+// ordering and for what an interrupted drop leaves behind.
+func (s *DatabaseService) Drop(ctx context.Context, name string) error {
+	return s.manager.Drop(ctx, name)
 }
 
 // UpdateProtocol updates the wire protocol configuration for the named
@@ -1419,7 +1424,7 @@ func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info
 func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
-		return s.Drop(name)
+		return s.Drop(ctx, name)
 	}
 	// Capture the backend and replica count before dropping so the raft-group
 	// and total-replica counters can be released for a dedicated-raft database.

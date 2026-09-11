@@ -674,3 +674,9 @@ func TestM14_LookupByCredentialKey_RevokedFactorRejected(t *testing.T) {
 		t.Fatal("login via revoked factor should not return 200")
 	}
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *intKV) ListAll(a0 context.Context, prefix string) ([]string, error) {
+	return m.List(a0, prefix)
+}

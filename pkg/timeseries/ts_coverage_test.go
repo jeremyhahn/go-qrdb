@@ -163,7 +163,7 @@ func TestStorage_GetRetentionPolicy_CorruptData(t *testing.T) {
 	s := newStorage(t)
 
 	// Write corrupt retention policy data (fewer than 17 bytes required).
-	key := []byte(prefixRetention + "corrupt.metric")
+	key := []byte(KeyPrefixRetention + "corrupt.metric")
 	corruptData := []byte{0x01, 0x02} // too short for a valid policy
 	if err := s.DB().Set(key, corruptData, pebble.Sync); err != nil {
 		t.Fatalf("DB.Set corrupt data: %v", err)

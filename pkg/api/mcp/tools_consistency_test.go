@@ -1007,3 +1007,9 @@ func (c *captureMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevi
 func (*captureKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *captureKVService) ListAll(a0 context.Context, a1 string) ([]string, error) {
+	return m.List(a0, a1)
+}

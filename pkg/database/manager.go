@@ -72,6 +72,14 @@ type Manager struct {
 	factory    BackendFactory
 	barrierMgr *DatabaseBarrierManager
 	allocator  *shard.Allocator
+	reclaimer  KeyspaceReclaimer
+
+	// dropping holds the name of every database with a Drop in flight, so
+	// two concurrent drops of one database cannot both report success. Drop
+	// no longer removes the catalog entry first (see Drop), and that entry
+	// was what used to decide the race: DropForTenant releases quota on a
+	// successful drop, so two successes would release it twice.
+	dropping sync.Map // name (string) -> struct{}
 }
 
 // NewManager creates a new Manager rooted at the given data directory.
@@ -430,29 +438,71 @@ func (m *Manager) Get(name string) (*Database, error) {
 	return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
-// Drop closes and removes a database, deleting its data directory.
-func (m *Manager) Drop(name string) error {
-	val, loaded := m.databases.LoadAndDelete(name)
-	if !loaded {
+// Drop closes and removes a database: the data it owns in the shared store,
+// its barrier, its data directory and finally its catalog entry.
+//
+// Ordering: DEPENDENTS FIRST, THE RECORD THAT MAKES THE DATABASE RESOLVABLE
+// LAST. This is the ordering pkg/sql/provider's Database.DropTable and
+// CollectionService.DropCollection already use, and reversing it is exactly
+// the defect go-qrdb#412 reports. Until this change the catalog entry went
+// first, so a shared-store database's keys were orphaned the instant the
+// entry was gone: nothing in the system named that keyspace again, the
+// residue was permanent, and a database recreated under the same name
+// inherited all of it.
+//
+// The worst state an interrupted Drop can leave is therefore a LIVE, EMPTY
+// database — still resolvable, still serving, with some or all of its data
+// already reclaimed. Re-issuing the drop completes it, because every step is
+// idempotent and the name stays occupied until the last one. No state exists
+// in which a later CREATE silently adopts a previous database's data.
+//
+// A reclamation failure fails the whole drop rather than being skipped:
+// reporting success over data that is still there is the defect itself, and
+// the surviving catalog entry is what makes the retry possible.
+func (m *Manager) Drop(ctx context.Context, name string) error {
+	val, ok := m.databases.Load(name)
+	if !ok {
 		return &NotFoundError{Name: name}
 	}
-
 	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+
+	if _, inFlight := m.dropping.LoadOrStore(name, struct{}{}); inFlight {
+		return &DropInProgressError{Name: name}
+	}
+	defer m.dropping.Delete(name)
+
+	// 1. The data the database owns in a store it shares with others. Nothing
+	//    below this line can reach it, and everything below this line makes it
+	//    unreachable.
+	if m.reclaimer != nil {
+		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name); err != nil {
+			return &KeyspaceReclaimError{Name: name, TenantID: db.TenantID(), Err: err}
+		}
+	}
+
+	// 2. Close the database's own backend, so a dedicated store releases its
+	//    files before the directory holding them is removed.
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
 		}
 	}
 
-	// Remove barrier if it was enabled.
+	// 3. Remove barrier if it was enabled.
 	if db.BarrierEnabled() && m.barrierMgr != nil {
 		_ = m.barrierMgr.RemoveBarrier(name)
 	}
 
+	// 4. The durable catalog record: meta.json, and a dedicated store's data.
 	dbDir := m.dbDir(name)
 	if err := os.RemoveAll(dbDir); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
+
+	// 5. The in-memory mirror of the record removed in step 4. Last, and
+	//    adjacent to it, so the window in which the two disagree is as narrow
+	//    as it can be made without a persisted marker (go-qrdb#425).
+	m.databases.Delete(name)
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil

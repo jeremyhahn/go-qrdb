@@ -175,6 +175,18 @@ func (s *BackendKVService) List(ctx context.Context, prefix string) ([]string, e
 	return filtered, nil
 }
 
+// ListAll returns sorted keys matching the given prefix WITHOUT the
+// internal-key discovery guard. See KVServicer.ListAll for why it exists and
+// who may call it.
+func (s *BackendKVService) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := s.backend.List(ctx, prefix)
+	if err != nil {
+		return nil, s.translateSealed(err)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
 // Scan returns all key-value pairs matching the given prefix.
 func (s *BackendKVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
 	keys, err := s.List(ctx, prefix)

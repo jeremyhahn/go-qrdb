@@ -28,6 +28,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -144,16 +145,33 @@ func (m *mockKVService) ExistsWithConsistency(_ context.Context, key string, _ c
 	return ok, nil
 }
 
+// List is the USER-FACING enumeration and applies the internal-key discovery
+// guard, exactly as every production KVServicer does. See memoryKVSvc.List in
+// pkg/service for why a double that skips the guard is narrower than
+// production in the one dimension a teardown depends on (go-qrdb#412).
 func (m *mockKVService) List(_ context.Context, prefix string) ([]string, error) {
+	return service.FilterInternalKeys(m.listAll(prefix), prefix), nil
+}
+
+// ListAll is the unfiltered enumeration, matching service.KVServicer.ListAll.
+func (m *mockKVService) ListAll(_ context.Context, prefix string) ([]string, error) {
+	return m.listAll(prefix), nil
+}
+
+// listAll is the shared half of List and ListAll, so the two cannot differ in
+// anything but the filter.
+func (m *mockKVService) listAll(prefix string) []string {
 	var keys []string
 	for k := range m.store {
 		if prefix == "" || strings.HasPrefix(k, prefix) {
 			keys = append(keys, k)
 		}
 	}
-	return keys, nil
+	sort.Strings(keys)
+	return keys
 }
 
+// Scan applies the internal-key guard for the reason List does.
 func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 	for k, v := range m.store {
@@ -161,7 +179,7 @@ func (m *mockKVService) Scan(_ context.Context, prefix string) (map[string][]byt
 			result[k] = v
 		}
 	}
-	return result, nil
+	return service.FilterInternalMap(result, prefix), nil
 }
 
 func (m *mockKVService) PutEntity(_ context.Context, _ *service.PutEntityRequest) (*service.PutEntityResponse, error) {

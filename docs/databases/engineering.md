@@ -1,6 +1,6 @@
 # Databases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -117,6 +117,19 @@ path, not the body.
   unscoped client. A transport with no per-database support returns the receiver
   unchanged.
 - **`DropDatabase` deletes all of the database's data and is irreversible.**
+  All of it means the keyspace as well as the directory — see
+  [architecture.md](architecture.md) "What a drop reclaims" for the shapes and
+  the order. Three properties follow and are tested as such:
+  - **The reclamation runs before the catalog record is removed**, so an
+    interrupted drop leaves a live, empty database rather than an unreachable
+    keyspace, and re-issuing the drop finishes it.
+  - **The reclamation is idempotent.** An already-empty keyspace is success,
+    not a not-found error.
+  - **A reclamation failure fails the drop.** Nothing is removed, and the
+    drop is retried.
+- **A second concurrent drop of the same database is refused**, not merged.
+  Exactly one caller may report success, because the tenant-scoped drop
+  releases quota on success.
 - **A sealed database fails reads and writes closed** until unsealed with its
   secret.
 
@@ -149,6 +162,9 @@ Deliberately finer than one grant per verb:
 | etcd enabled on a non-`kv`/non-`raft` database | rejected at configuration time | **yes** |
 | Unseal with a wrong secret | refused; the database stays sealed | **yes** |
 | Operating on a sealed database | refused | **yes** |
+| The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError`; the drop fails and nothing is removed | **yes** |
+| A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and nothing is removed | **yes** |
+| A drop is already in flight for the database | `database.DropInProgressError` | **yes** |
 | Missing any `databases:*` permission | permission denied | **yes** |
 
 ## Configuration
@@ -162,15 +178,36 @@ and [../barrier-seal/](../barrier-seal/) for the barrier fields.
 
 Database metadata lives in the internal namespace, replicated like any other
 state-machine record. A database with a `DataDir` owns that directory; one
-without shares the default store.
+without shares the default store — and for a shared-store database the
+directory holds configuration only, which is why its teardown cannot be a
+directory removal.
+
+The seam that reclaims the keyspace is `database.KeyspaceReclaimer`,
+implemented by `service.KeyspaceReclaimService` and wired into the database
+manager where the manager and the data-plane engines first meet. It enumerates
+through `KVServicer.ListAll`, the unfiltered listing, rather than `List` —
+see [architecture.md](architecture.md) for why a teardown must not read
+through the discovery guard. A composer
+serving volume-isolated tenants additionally attaches a
+`service.StoreResolver`, which routes those tenants' keys to their dedicated
+per-tenant Host instead of the system store.
 
 ## Test strategy
 
-- **Unit**: lifecycle (create/get/list/drop), each update verb, the
+- **Unit**: lifecycle (create/get/list/drop), **what a drop reclaims and in
+  what order** (every key shape, both index-name shapes, vector namespaces,
+  idempotence, retry after a failed reclamation, and the refusal of an
+  unscoped request), each update verb, the
   shared-store barrier refusal, scale bounds, the `engine`/`backend`
   immutability rule, and `DatabaseScoped` producing an independent client.
 - **The shared-store barrier refusal is a security test**, not a config test —
   it is what keeps a barrier from being decorative.
+- **The reclamation has a test against a real engine and a real key/value
+  service**, not only against in-memory doubles, and it probes residue by
+  exact key rather than by listing. Both properties are load bearing: a double
+  that skipped the discovery guard, and an assertion that listed through it,
+  each independently hide a teardown that deletes nothing. Doubles standing in
+  for the key/value service apply the guard for the same reason.
 - **Integration**: database parity across transports in the standalone stage;
   `scale` and dedicated-raft creation belong to the cluster stage, which is
   **not currently wired into CI**.

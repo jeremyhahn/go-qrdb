@@ -60,7 +60,7 @@ func (m *bindingDatabaseService) List() ([]database.DatabaseInfo, error) {
 	return m.listFn()
 }
 
-func (m *bindingDatabaseService) Drop(name string) error {
+func (m *bindingDatabaseService) Drop(_ context.Context, name string) error {
 	return m.dropFn(name)
 }
 

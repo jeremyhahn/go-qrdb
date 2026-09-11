@@ -44,7 +44,7 @@ func (f *fakeDatabaseServicer) Get(_ string) (*database.DatabaseInfo, error) {
 func (f *fakeDatabaseServicer) List() ([]database.DatabaseInfo, error) {
 	return []database.DatabaseInfo{{Name: "testdb"}}, nil
 }
-func (f *fakeDatabaseServicer) Drop(_ string) error { return nil }
+func (f *fakeDatabaseServicer) Drop(_ context.Context, _ string) error { return nil }
 func (f *fakeDatabaseServicer) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil
 }

@@ -618,3 +618,9 @@ func TestAuthFactorService_RevokeFactor_alreadyRevoked(t *testing.T) {
 func (*afMockKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *afMockKV) ListAll(a0 context.Context, prefix string) ([]string, error) {
+	return m.List(a0, prefix)
+}

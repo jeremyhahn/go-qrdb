@@ -102,6 +102,22 @@ func (s *namespacedKVService) List(ctx context.Context, prefix string) ([]string
 	return s.visibleKeys(keys, prefix), nil
 }
 
+// ListAll returns sorted keys matching the given prefix within the namespace
+// WITHOUT the internal-key discovery guard, with the namespace prefix
+// stripped. See service.KVServicer.ListAll.
+//
+// The namespace confinement is NOT relaxed with the guard: the inner call is
+// still rooted at this view's prefix, so an unfiltered enumeration still sees
+// only this (tenant, database)'s keys. Only the guard is dropped, and only
+// the guard.
+func (s *namespacedKVService) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := s.inner.ListAll(ctx, s.prefix+prefix)
+	if err != nil {
+		return nil, err
+	}
+	return s.stripPrefix(keys), nil
+}
+
 // Scan returns all key-value pairs matching the given prefix within the
 // namespace. The namespace prefix is stripped from the returned keys.
 func (s *namespacedKVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {

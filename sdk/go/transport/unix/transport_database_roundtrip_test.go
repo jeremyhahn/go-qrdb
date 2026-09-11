@@ -80,7 +80,7 @@ func (m *mockDatabaseSvc) List() ([]database.DatabaseInfo, error) {
 	}, nil
 }
 
-func (m *mockDatabaseSvc) Drop(name string) error {
+func (m *mockDatabaseSvc) Drop(_ context.Context, name string) error {
 	if m.dropFn != nil {
 		return m.dropFn(name)
 	}
@@ -162,7 +162,7 @@ func (m *mockDatabaseSvc) ListForTenant(_ context.Context) ([]database.DatabaseI
 }
 
 func (m *mockDatabaseSvc) DropForTenant(_ context.Context, name string) error {
-	return m.Drop(name)
+	return m.Drop(context.Background(), name)
 }
 
 func (m *mockDatabaseSvc) UpdateProtocolForTenant(_ context.Context, name string, p database.ProtocolConfig) (*database.DatabaseInfo, error) {

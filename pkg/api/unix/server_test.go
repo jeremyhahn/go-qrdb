@@ -1370,7 +1370,7 @@ func (s *stubDatabaseSvc) Create(_ database.DatabaseConfig) (*database.DatabaseI
 }
 func (s *stubDatabaseSvc) Get(_ string) (*database.DatabaseInfo, error) { return nil, nil }
 func (s *stubDatabaseSvc) List() ([]database.DatabaseInfo, error)       { return nil, nil }
-func (s *stubDatabaseSvc) Drop(_ string) error                          { return nil }
+func (s *stubDatabaseSvc) Drop(_ context.Context, _ string) error       { return nil }
 func (s *stubDatabaseSvc) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
 }
@@ -1706,4 +1706,10 @@ func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, 
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
 func (s *stubRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
+}
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *mockKVService) ListAll(a0 context.Context, prefix string) ([]string, error) {
+	return m.List(a0, prefix)
 }

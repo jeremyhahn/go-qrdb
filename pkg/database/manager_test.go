@@ -339,7 +339,7 @@ func TestManager_Drop(t *testing.T) {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
 
-	if err := mgr.Drop("drop-db"); err != nil {
+	if err := mgr.Drop(context.Background(), "drop-db"); err != nil {
 		t.Fatalf("Drop() returned unexpected error: %v", err)
 	}
 
@@ -370,7 +370,7 @@ func TestManager_Drop_NotFound(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	err := mgr.Drop("phantom-db")
+	err := mgr.Drop(context.Background(), "phantom-db")
 	if err == nil {
 		t.Fatal("Drop() returned nil, want *NotFoundError")
 	}
@@ -611,7 +611,7 @@ func TestManager_Drop_VerifiesDirectoryCleanup(t *testing.T) {
 		t.Fatalf("database directory does not exist before Drop(): %s", dbDir)
 	}
 
-	if err := mgr.Drop("pebble-drop"); err != nil {
+	if err := mgr.Drop(context.Background(), "pebble-drop"); err != nil {
 		t.Fatalf("Drop() returned unexpected error: %v", err)
 	}
 
@@ -747,7 +747,7 @@ func TestManager_Drop_ClosedDatabase(t *testing.T) {
 	}
 
 	// Drop should succeed even when the database is already closed.
-	if err := mgr.Drop("drop-closed-db"); err != nil {
+	if err := mgr.Drop(context.Background(), "drop-closed-db"); err != nil {
 		t.Fatalf("Drop() on closed database returned unexpected error: %v", err)
 	}
 
@@ -840,7 +840,7 @@ func TestManager_Drop_CloseError(t *testing.T) {
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-drop-db")
 	mgr.databases.Store("fail-drop-db", db)
 
-	err := mgr.Drop("fail-drop-db")
+	err := mgr.Drop(context.Background(), "fail-drop-db")
 	if err == nil {
 		t.Fatal("Drop() returned nil, want *DropError")
 	}

@@ -109,7 +109,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 		}
 	}
 
-	return m.Drop(name)
+	return m.Drop(ctx, name)
 }
 
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.

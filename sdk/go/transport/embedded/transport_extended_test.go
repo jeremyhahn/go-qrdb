@@ -2044,7 +2044,7 @@ func (m *mockDatabaseService) List() ([]database.DatabaseInfo, error) {
 	return nil, nil
 }
 
-func (m *mockDatabaseService) Drop(name string) error {
+func (m *mockDatabaseService) Drop(_ context.Context, name string) error {
 	if m.dropFn != nil {
 		return m.dropFn(name)
 	}
@@ -2105,7 +2105,7 @@ func (m *mockDatabaseService) ListForTenant(_ context.Context) ([]database.Datab
 	return m.List()
 }
 func (m *mockDatabaseService) DropForTenant(_ context.Context, name string) error {
-	return m.Drop(name)
+	return m.Drop(context.Background(), name)
 }
 func (m *mockDatabaseService) UpdateProtocolForTenant(_ context.Context, name string, p database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateProtocol(name, p)

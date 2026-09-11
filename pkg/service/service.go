@@ -94,7 +94,38 @@ type KVServicer interface {
 
 	// List returns sorted keys matching the given prefix with a
 	// linearizable read. An empty prefix returns all keys.
+	//
+	// It is the USER-FACING enumeration and applies the internal-key
+	// discovery guard (see internal_keys.go): a subsystem's private keys are
+	// removed from the results unless the requested prefix lies inside a
+	// namespace whose owner reads its records back this way. A caller that
+	// needs to see everything under a prefix must say so with ListAll.
 	List(ctx context.Context, prefix string) ([]string, error)
+
+	// ListAll returns sorted keys matching the given prefix WITHOUT the
+	// internal-key discovery guard, so a subsystem's private keys are
+	// included. An empty prefix returns every key in the store.
+	//
+	// It exists because the guard is a property of the user-facing surface
+	// and some callers are not users. A database teardown must delete the
+	// time-series points, metric index and retention records the dropped
+	// database owns; those keys are internal, their prefixes are not inside
+	// a namespace the guard waives, and List therefore returns an EMPTY list
+	// for them -- so a reclamation built on List reported success over data
+	// it had not touched (go-qrdb#412). The name is deliberately distinct
+	// rather than a flag on List, because the failure mode was a filtered
+	// implementation silently satisfying an interface that asked for an
+	// unfiltered one.
+	//
+	// It grants no capability the guard did not already concede.
+	// SkipInternalKeyFilter already serves a caller that names a reserved
+	// prefix outright, Get already reads any key by name, and the guard's
+	// own documentation calls it a discovery guard rather than a
+	// confidentiality boundary -- confidentiality between principals is the
+	// authorization layer's job (pkg/auth/middleware). What ListAll changes
+	// is that the bypass is now NAMED, so a reviewer can see which callers
+	// take it. Data-plane request handlers must call List.
+	ListAll(ctx context.Context, prefix string) ([]string, error)
 
 	// Scan returns all key-value pairs matching the given prefix
 	// using a PrefixQuery for compatibility with the FastStateMachine.
@@ -546,6 +577,26 @@ func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 
 	return FilterInternalKeys(keys, prefix), nil
+}
+
+// ListAll returns sorted keys matching the given prefix with a linearizable
+// read and WITHOUT the internal-key discovery guard. See KVServicer.ListAll
+// for why it exists and who may call it.
+func (s *KVService) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	result, err := s.host.SyncRead(ctx, s.shardID, kv.ListQuery{Prefix: prefix})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+
+	keys, ok := result.([]string)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	return keys, nil
 }
 
 // Scan returns all key-value pairs matching the given prefix. Uses a

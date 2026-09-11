@@ -323,7 +323,7 @@ func (m *mockDatabaseService) List() ([]database.DatabaseInfo, error) {
 	}
 	return m.listResult, nil
 }
-func (m *mockDatabaseService) Drop(_ string) error {
+func (m *mockDatabaseService) Drop(_ context.Context, _ string) error {
 	return m.dropErr
 }
 func (m *mockDatabaseService) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {

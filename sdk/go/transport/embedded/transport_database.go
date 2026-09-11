@@ -106,11 +106,11 @@ func (t *Transport) ListDatabases(_ context.Context) ([]transport.DatabaseInfo, 
 // DropDatabase removes a database by name by delegating to the injected
 // DatabaseServicer. Returns NilServiceError when no database service
 // has been configured.
-func (t *Transport) DropDatabase(_ context.Context, name string) error {
+func (t *Transport) DropDatabase(ctx context.Context, name string) error {
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
-	return t.dbSvc.Drop(name)
+	return t.dbSvc.Drop(ctx, name)
 }
 
 // UpdateDatabaseProtocol updates the wire protocol configuration for a

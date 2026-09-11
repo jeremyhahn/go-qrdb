@@ -54,6 +54,16 @@ Drop a database and delete all of its data. **Irreversible.** No flags.
 qrdb database drop scratch
 ```
 
+"All of its data" means every key, collection, document, table, row,
+secondary index, sequence and vector namespace the database owns — not only
+the directory that holds its configuration. The name is released last, so:
+
+- **A drop that fails has removed nothing.** Re-issue it.
+- **A drop interrupted part way leaves the database in place and emptier.**
+  Re-issue it; the second drop finishes the first.
+- **A name reused after a successful drop starts empty.** It inherits nothing
+  from the database that held it.
+
 ## `qrdb database scale <name>`
 
 Change the replication factor of an existing **dedicated-raft** database, adding

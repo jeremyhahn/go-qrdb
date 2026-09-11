@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"context"
 	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -406,14 +407,21 @@ func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
 // ReservedDatabaseNameError for the reserved system schemas -- the only
 // write against pg_catalog that is syntactically reachable at all, since
 // none of its relations implements a write-capability interface.
-func (p *Provider) DropDatabase(_ *sqle.Context, name string) error {
+//
+// The SQL context's own context.Context is threaded through to the manager,
+// because the drop reclaims the database's keys from the shared store and
+// that is a replicated operation. DROP DATABASE over the MySQL and
+// PostgreSQL wire protocols reaches the manager directly rather than through
+// DatabaseServicer, so passing a background context here would leave the one
+// drop path an operator is most likely to use uncancellable.
+func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
 	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "DROP DATABASE"}
 	}
-	if err := p.manager.Drop(name); err != nil {
+	if err := p.manager.Drop(providerContext(ctx), name); err != nil {
 		return &DropDatabaseError{Name: name, Err: err}
 	}
 	return nil
@@ -684,4 +692,15 @@ func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
 	}
 
 	return tables, nil
+}
+
+// providerContext returns the context.Context a *sqle.Context carries, or
+// context.Background() when the engine handed us a nil one. go-mysql-server
+// embeds a context.Context in every *sqle.Context, so the fallback is for the
+// test and analyser paths that construct one without.
+func providerContext(ctx *sqle.Context) context.Context {
+	if ctx == nil || ctx.Context == nil {
+		return context.Background()
+	}
+	return ctx.Context
 }

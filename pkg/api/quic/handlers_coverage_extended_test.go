@@ -315,7 +315,7 @@ func (m *mockDbSvc) List() ([]database.DatabaseInfo, error) {
 	}
 	return []database.DatabaseInfo{}, nil
 }
-func (m *mockDbSvc) Drop(name string) error {
+func (m *mockDbSvc) Drop(_ context.Context, name string) error {
 	if m.dropFn != nil {
 		return m.dropFn(name)
 	}

@@ -130,3 +130,9 @@ func TestBuildUserAuthFactorServiceOption_NilKV(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, opt)
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard, so
+// the filtered and unfiltered enumerations are the same call.
+func (f fakeAuthFactorKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	return f.List(ctx, prefix)
+}

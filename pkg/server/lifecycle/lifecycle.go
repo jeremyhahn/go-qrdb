@@ -231,6 +231,14 @@ type Node struct {
 	// forward seam for the SDK to expose; there is no SDK accessor yet.
 	StoreResolver tenant.StoreResolver
 
+	// KeyspaceReclaim reclaims a dropped database's data from the store it
+	// shares with other databases. It is always non-nil and is already wired
+	// into the database manager; it is exposed so a composer that serves
+	// volume-isolated tenants can attach the StoreResolver that routes their
+	// keys to their dedicated per-tenant Host (SetStoreResolver), which does
+	// not exist yet at the point BuildServices runs.
+	KeyspaceReclaim *service.KeyspaceReclaimService
+
 	// PlacementStore is the replicated placement table for dedicated tenant
 	// Raft groups (Phase 4c). It is always non-nil: the DatabaseService writes
 	// a database's computed placement here on create, and the daemon threads it
@@ -456,6 +464,24 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		return nil, &VectorServiceError{Err: err}
 	}
 	n.Vector = vectorSvc
+
+	// DROP DATABASE reclamation (go-qrdb#412). The manager's own teardown
+	// reclaims what a database holds on this node's filesystem; for a
+	// shared-store database -- the default shape -- none of its data is
+	// there, and before this seam existed the drop orphaned every key it
+	// owned. This is the one place the database manager and the data-plane
+	// engines meet in EVERY composition that can drop a database (the
+	// daemon, the SDK's in-process node, an embedding), which is why it is
+	// wired here rather than at a server.
+	//
+	// It is wired after n.Vector because a vector namespace is part of what a
+	// database owns and is not reached by deleting keys.
+	n.KeyspaceReclaim = service.NewKeyspaceReclaimService(service.ReclaimTarget{
+		KV:     n.KV,
+		Index:  n.Index,
+		Vector: n.Vector,
+	})
+	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
 
 	// Embedding and RAG services: constructed only when providers are
 	// configured. buildEmbeddingAndRAG is a no-op stub in non-vector builds.

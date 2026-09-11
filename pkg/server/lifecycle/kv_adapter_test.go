@@ -647,3 +647,9 @@ func TestResolveReplicaID_NonZeroPassesThrough(t *testing.T) {
 // contract. They are replaced by kv_adapter_index_test.go, which asserts
 // the engine-backed answers and the typed refusal.
 // ---------------------------------------------------------------------------
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *mockKVServicer) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}

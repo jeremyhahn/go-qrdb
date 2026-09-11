@@ -188,7 +188,7 @@ func (m *mockDatabaseServiceQuic) Get(_ string) (*database.DatabaseInfo, error) 
 func (m *mockDatabaseServiceQuic) List() ([]database.DatabaseInfo, error) {
 	return []database.DatabaseInfo{}, nil
 }
-func (m *mockDatabaseServiceQuic) Drop(_ string) error { return nil }
+func (m *mockDatabaseServiceQuic) Drop(_ context.Context, _ string) error { return nil }
 func (m *mockDatabaseServiceQuic) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{}, nil
 }
@@ -232,7 +232,7 @@ func (m *mockDatabaseServiceQuic) ListForTenant(ctx context.Context) ([]database
 	return m.List()
 }
 func (m *mockDatabaseServiceQuic) DropForTenant(ctx context.Context, name string) error {
-	return m.Drop(name)
+	return m.Drop(context.Background(), name)
 }
 func (m *mockDatabaseServiceQuic) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateProtocol(name, protocol)

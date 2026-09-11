@@ -628,3 +628,9 @@ func TestKVServiceAdapter_ImplementsKVStore(t *testing.T) {
 	// Confirm the adapter satisfies kvstore.KVStore at runtime.
 	require.NotNil(t, adapter)
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (m *mockKVServicer) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	return m.List(ctx, prefix)
+}

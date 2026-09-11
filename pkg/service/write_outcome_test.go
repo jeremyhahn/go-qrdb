@@ -83,7 +83,7 @@ var writeVerbs = map[string]func(context.Context, KVServicer) error{
 // tell "read" from "forgotten".
 var readVerbs = map[string]struct{}{
 	"Get": {}, "GetStale": {}, "GetWithConsistency": {},
-	"List": {}, "ListStale": {}, "ListWithConsistency": {},
+	"List": {}, "ListAll": {}, "ListStale": {}, "ListWithConsistency": {},
 	"Scan": {}, "ScanStale": {}, "ScanWithConsistency": {},
 	"ExistsWithConsistency": {},
 	"GetEntity":             {}, "ListEntities": {},

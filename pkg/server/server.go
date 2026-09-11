@@ -189,6 +189,7 @@ type serverOptions struct {
 	backupSvc          service.BackupServicer
 	rebalanceSvc       service.RebalanceServicer
 	dbRegistry         *DatabaseServiceRegistry
+	keyspaceReclaim    *service.KeyspaceReclaimService
 	tenantHosts        *TenantHostRegistry
 	raftBackend        *RaftBackendFactory
 	quotaAccountant    *quota.Accountant
@@ -521,6 +522,20 @@ func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
 	}
 }
 
+// WithKeyspaceReclaimService supplies the service that reclaims a dropped
+// database's data from the store it shares with other databases
+// (lifecycle.Node.KeyspaceReclaim). It is already wired into the database
+// manager by the time it reaches here; the server's interest is narrower --
+// it is the only layer that knows which tenants are volume isolated, so it
+// attaches the StoreResolver that routes those tenants' keys to their
+// dedicated per-tenant Host. Without it a volume-isolated tenant's drop
+// scans the system store, finds nothing and reports success (go-qrdb#412).
+func WithKeyspaceReclaimService(svc *service.KeyspaceReclaimService) ServerOption {
+	return func(o *serverOptions) {
+		o.keyspaceReclaim = svc
+	}
+}
+
 // WithDatabaseServiceRegistry sets the per-database service registry.
 // When set, protocol handlers can resolve the correct service set for a
 // given database name instead of falling back to the single shared set.
@@ -738,7 +753,34 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 		s.adminSvc = s.opts.adminSvc
 	}
 
+	s.wireVolumeStoreResolver()
+
 	return s
+}
+
+// wireVolumeStoreResolver completes the DROP DATABASE reclamation seam for
+// the one isolation mode whose keys are not in the system store.
+//
+// lifecycle.BuildServices already wired a service.KeyspaceReclaimService into
+// the database manager over the system store, which is where every
+// shared-store database's keys are. A volume-isolated tenant's databases
+// share a dedicated per-tenant Host instead, and the registry that resolves
+// it only exists here -- so the resolver is attached here, and a reclamation
+// that would otherwise scan the system store and find nothing is routed to
+// the store that actually holds the data (go-qrdb#412).
+//
+// It is a no-op without a TenantHostRegistry, because then no volume-isolated
+// tenant can be served at all, and without the reclaim service, because then
+// there is nothing to attach it to.
+func (s *Server) wireVolumeStoreResolver() {
+	if s.opts.keyspaceReclaim == nil || s.opts.tenantHosts == nil {
+		return
+	}
+	s.opts.keyspaceReclaim.SetStoreResolver(&volumeStoreResolver{
+		hosts:        s.opts.tenantHosts,
+		tenantSvc:    s.opts.tenantSvc,
+		systemTenant: tenant.SystemTenantID,
+	})
 }
 
 // ensureAuthFactorService completes the WithFactorRegistry contract: when

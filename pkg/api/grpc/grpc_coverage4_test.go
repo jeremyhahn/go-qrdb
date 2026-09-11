@@ -250,7 +250,7 @@ func (m *databaseSvcMini) Get(_ string) (*database.DatabaseInfo, error) {
 func (m *databaseSvcMini) List() ([]database.DatabaseInfo, error) {
 	return m.listResult, m.listErr
 }
-func (m *databaseSvcMini) Drop(_ string) error { return m.dropErr }
+func (m *databaseSvcMini) Drop(_ context.Context, _ string) error { return m.dropErr }
 func (m *databaseSvcMini) UpdateProtocol(_ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }

@@ -1688,3 +1688,9 @@ func TestEmbedded_LoginAuthFactor_NotImplemented(t *testing.T) {
 		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
 	}
 }
+
+// ListAll mirrors List on this double: it applies no internal-key guard,
+// so the filtered and unfiltered enumerations are the same call.
+func (e *errorKVService) ListAll(a0 context.Context, a1 string) ([]string, error) {
+	return e.List(a0, a1)
+}

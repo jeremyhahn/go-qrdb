@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -72,31 +73,58 @@ func (m *memoryKVSvc) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// List is the USER-FACING enumeration and applies the internal-key discovery
+// guard, exactly as every production KVServicer does.
+//
+// The guard is here deliberately, and it was added after a double WITHOUT it
+// let a defect through review (go-qrdb#412). The reclamation that drops a
+// database enumerates prefixes under "ts:", whose keys the guard strips: on
+// this double the reclamation saw them and deleted them, on the real
+// *KVService it saw an empty list, deleted nothing, and reported the drop a
+// success. The test was checking the change's arithmetic against its own
+// assumptions.
+//
+// A double that stands in for a service whose real implementation TRANSFORMS
+// its results has to transform them the same way, or it is narrower than
+// production in precisely the dimension the caller depends on.
 func (m *memoryKVSvc) List(_ context.Context, prefix string) ([]string, error) {
+	return FilterInternalKeys(m.listAll(prefix), prefix), nil
+}
+
+// ListAll is the unfiltered enumeration, matching KVServicer.ListAll.
+func (m *memoryKVSvc) ListAll(_ context.Context, prefix string) ([]string, error) {
+	return m.listAll(prefix), nil
+}
+
+// listAll returns every key under prefix, sorted, with no guard applied. It is
+// the shared half of List and ListAll so the two cannot differ in anything but
+// the filter.
+func (m *memoryKVSvc) listAll(prefix string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var keys []string
 	for k := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+		if strings.HasPrefix(k, prefix) {
 			keys = append(keys, k)
 		}
 	}
 	sort.Strings(keys)
-	return keys, nil
+	return keys
 }
 
+// Scan applies the internal-key guard for the reason List does.
 func (m *memoryKVSvc) Scan(_ context.Context, prefix string) (map[string][]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make(map[string][]byte)
 	for k, v := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+		if strings.HasPrefix(k, prefix) {
 			cp := make([]byte, len(v))
 			copy(cp, v)
 			result[k] = cp
 		}
 	}
-	return result, nil
+	return FilterInternalMap(result, prefix), nil
 }
 
 func (m *memoryKVSvc) PutWithMode(ctx context.Context, key string, value []byte, _ writemode.Mode) error {

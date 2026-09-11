@@ -42,6 +42,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -1164,5 +1165,185 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 	}
 	if got, gerr := node.User.GetUser(ctx, acme.ID); gerr != nil || got.TenantID != "acme" {
 		t.Fatalf("by-id routing on a seal-disabled node: (%+v, %v)", got, gerr)
+	}
+}
+
+// TestBuildServices_WiresTheKeyspaceReclaimerIntoTheManager pins the wiring
+// go-qrdb#412 depends on.
+//
+// This is the ONE place the database manager and the data-plane engines meet
+// in every composition that can drop a database -- the daemon, the SDK's
+// in-process node, an embedding -- which is why the reclaimer is wired here
+// rather than at a server. A manager without one reclaims a dropped
+// database's directory and leaves every key it owned in the shared store.
+func TestBuildServices_WiresTheKeyspaceReclaimerIntoTheManager(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	mgr := database.NewManager(nil, t.TempDir())
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		DatabaseManager: mgr,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.KeyspaceReclaim == nil {
+		t.Fatal("Node.KeyspaceReclaim is nil; a composer has nothing to attach a StoreResolver to")
+	}
+	wired := mgr.KeyspaceReclaimer()
+	if wired == nil {
+		t.Fatal("the database manager has no keyspace reclaimer; every drop would leak the database's keys")
+	}
+	if wired != database.KeyspaceReclaimer(node.KeyspaceReclaim) {
+		t.Error("the manager must hold the same reclaimer the Node exposes, or a StoreResolver attached to one never reaches the other")
+	}
+}
+
+// TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns is the
+// behavioural half of the wiring, and the one test in this change that runs
+// against a REAL engine and a REAL *service.KVService rather than a double.
+//
+// It exists because a double let a defect through. Every other reclamation
+// test drives service.ReclaimKV with an in-memory double, and until it was
+// made faithful that double applied no internal-key guard while the
+// production *KVService does. The reclaimer enumerated "ts:<tenant>/<db>/"
+// through the user-facing List, which returns an EMPTY list for it -- the
+// keys are internal and the prefix is not inside a namespace the guard
+// waives -- so it deleted nothing under the three time-series prefixes and
+// reported the drop a success. Measured, not reasoned: this test failed on
+// exactly those three keys and passed on the other five (go-qrdb#412).
+//
+// Two properties of its construction matter:
+//
+//   - The residue is probed with Get on the EXACT key, never with List. A
+//     List-based assertion would be vacuous for precisely the keys that were
+//     leaking, because the guard hides them whether or not they are there.
+//   - Every shape database_keys.go claims is in the fixture, so the test
+//     fails on the first one a future change stops reclaiming rather than on
+//     whichever one someone remembered.
+func TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns(t *testing.T) {
+	ctx := context.Background()
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	mgr := database.NewManager(nil, t.TempDir())
+	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         t.TempDir(),
+		DatabaseManager: mgr,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(ctx) }()
+
+	if _, err := mgr.Create(database.DatabaseConfig{
+		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
+	other := tenant.ComposeNamespace(tenant.SystemTenantID, "ledger")
+
+	reclaimed := map[string]string{
+		"plain kv":               ns + "greeting",
+		"relational catalog":     ns + "__sys:tables/reports/orders",
+		"relational row":         ns + "__tbl:reports:7/pk1",
+		"relational index entry": ns + "__idx:reports:7:by_customer/acme",
+		"table-id sequence":      ns + "__seq:reports:__tableid",
+		"auto-increment":         ns + "__seq:reports:__autoinc:7",
+		"privilege":              ns + "__sys:privs/reports/alice",
+		"time-series point":      timeseries.KeyPrefixPoints + ns + "cpu:0001:abcd",
+		"time-series metric idx": timeseries.KeyPrefixMetricIndex + ns + "cpu",
+		"time-series retention":  timeseries.KeyPrefixRetention + ns + "cpu",
+	}
+	kept := map[string]string{
+		"another database":    other + "greeting",
+		"another db's series": timeseries.KeyPrefixPoints + other + "cpu:0001:abcd",
+		"no database owns it": "__sys:roles/admin",
+		"the tag index":       timeseries.KeyPrefixTagIndex + "host:web1",
+	}
+
+	for _, set := range []map[string]string{reclaimed, kept} {
+		for _, k := range set {
+			if err := node.KV.Put(ctx, k, []byte("v")); err != nil {
+				t.Fatalf("put %q: %v", k, err)
+			}
+		}
+	}
+
+	if err := mgr.Drop(ctx, "reports"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	for what, key := range reclaimed {
+		if _, err := node.KV.Get(ctx, key); err == nil {
+			t.Errorf("%s survived the drop: %q", what, key)
+		}
+	}
+	for what, key := range kept {
+		if _, err := node.KV.Get(ctx, key); err != nil {
+			t.Errorf("%s must not be reclaimed by another database's drop: %q (%v)", what, key, err)
+		}
+	}
+}
+
+// TestBuildServices_ReclaimerDoesNotDependOnTheDiscoveryFilter states the
+// root cause as a property rather than a story.
+//
+// The production List is filtered and returns nothing for a time-series
+// prefix; ListAll is not and returns the keys. A reclamation that reads
+// through the first cannot see what it is meant to delete. If these two ever
+// agree again for this prefix, either the guard changed or the seam collapsed
+// back into the filtered call, and both are the regression.
+func TestBuildServices_ReclaimerDoesNotDependOnTheDiscoveryFilter(t *testing.T) {
+	ctx := context.Background()
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+		Host: host, WatchHub: hub, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(ctx) }()
+
+	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
+	prefix := timeseries.KeyPrefixPoints + ns
+	if err := node.KV.Put(ctx, prefix+"cpu:0001:abcd", []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	filtered, err := node.KV.List(ctx, prefix)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Errorf("List(%q) = %v, want empty — the discovery guard is what makes a List-based reclamation a no-op", prefix, filtered)
+	}
+
+	all, err := node.KV.ListAll(ctx, prefix)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("ListAll(%q) = %v, want the one key — the reclaimer reads through this, and it must see it", prefix, all)
 	}
 }

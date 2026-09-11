@@ -313,6 +313,36 @@ func (s *MVCCKVService) List(ctx context.Context, prefix string) ([]string, erro
 	return rangeResultKeys(rr, prefix), nil
 }
 
+// ListAll returns sorted keys matching the given prefix with a linearizable
+// read and WITHOUT the internal-key discovery guard. See KVServicer.ListAll
+// for why it exists and who may call it.
+func (s *MVCCKVService) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	var start, end []byte
+	if prefix == "" {
+		start = []byte{0x00}
+		end = []byte{0xFF}
+	} else {
+		start = []byte(prefix)
+		end = prefixEnd(start)
+	}
+
+	result, err := s.host.SyncRead(ctx, s.shardID, MVCCRangeQuery{
+		Start:    start,
+		End:      end,
+		KeysOnly: true,
+	})
+	if err != nil {
+		return nil, s.translateReadError(err)
+	}
+
+	rr, ok := result.(*MVCCRangeResult)
+	if !ok {
+		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
+	}
+
+	return rangeResultKeysUnfiltered(rr), nil
+}
+
 // Scan returns all key-value pairs matching the given prefix. Uses a
 // PrefixQuery for compatibility with the basic FastStateMachine. Internal
 // keys in the internal namespace are excluded from the results unless the
@@ -917,11 +947,19 @@ func (s *MVCCKVService) ListEntities(ctx context.Context, req *ListEntitiesReque
 // its own, which is exactly why forgetting it in one of the three would leak
 // the internal keyspace through that one method alone.
 func rangeResultKeys(rr *MVCCRangeResult, prefix string) []string {
+	return FilterInternalKeys(rangeResultKeysUnfiltered(rr), prefix)
+}
+
+// rangeResultKeysUnfiltered extracts every key from a range result with no
+// guard applied. It is the shared half of rangeResultKeys and ListAll, so the
+// filtered and unfiltered enumerations cannot drift in how they read a range
+// result -- only in whether they filter it.
+func rangeResultKeysUnfiltered(rr *MVCCRangeResult) []string {
 	keys := make([]string, 0, len(rr.KeyValues))
 	for _, kv := range rr.KeyValues {
 		keys = append(keys, string(kv.Key))
 	}
-	return FilterInternalKeys(keys, prefix)
+	return keys
 }
 
 // translateProposeError converts QuicRaft proposal errors to service-level

@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
 // ---------------------------------------------------------------------------
@@ -136,11 +137,12 @@ var internalKeyPrefixes = []internalKeyPrefix{
 
 	// Time-series points, indexes, and retention policies. The time-series
 	// subsystem reads through its own storage engine (pkg/timeseries), never
-	// through KV enumeration.
-	{prefix: "ts:"},
-	{prefix: "idx:metric:"},
-	{prefix: "idx:tag:"},
-	{prefix: "retention:"},
+	// through KV enumeration. The constants are cited rather than repeated,
+	// for the reason the relational entries above cite theirs.
+	{prefix: timeseries.KeyPrefixPoints},
+	{prefix: timeseries.KeyPrefixMetricIndex},
+	{prefix: timeseries.KeyPrefixTagIndex},
+	{prefix: timeseries.KeyPrefixRetention},
 }
 
 // InternalKeyPrefixes returns a copy of the canonical internal key prefixes.

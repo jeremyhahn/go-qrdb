@@ -1969,6 +1969,13 @@ func runStart(f *startFlags) error {
 				server.WithCollectionService(collectionSvc),
 				server.WithDatabaseService(dbSvc),
 				server.WithDatabaseManager(dbManager),
+				// The seam that routes a volume-isolated tenant's DROP
+				// DATABASE reclamation to its dedicated per-tenant Host
+				// rather than the system store (go-qrdb#412). The reclaim
+				// service itself is already wired into dbManager by
+				// lifecycle.BuildServices; only the tenant routing is the
+				// server's to supply.
+				server.WithKeyspaceReclaimService(svcNode.KeyspaceReclaim),
 			}
 			// The transaction/CAS family is served in BOTH modes (owner
 			// ruling 2026-08-23, go-qrdb#62): a standalone node is

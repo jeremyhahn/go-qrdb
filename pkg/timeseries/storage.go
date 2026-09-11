@@ -35,20 +35,6 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
-const (
-	// keyPrefix is the namespace prefix for all time-series data point keys.
-	keyPrefix = "ts:"
-
-	// prefixMetricIdx is the namespace prefix for the metric name index.
-	prefixMetricIdx = "idx:metric:"
-
-	// prefixTagIdx is the namespace prefix for tag key:value indexes.
-	prefixTagIdx = "idx:tag:"
-
-	// prefixRetention is the namespace prefix for retention policy storage.
-	prefixRetention = "retention:"
-)
-
 // Storage provides time-series data storage and aggregation over PebbleDB.
 // All methods are safe for concurrent use.
 type Storage struct {
@@ -222,7 +208,7 @@ func (s *Storage) WriteBatch(points []DataPoint) error {
 
 	// Add metric index entries to the batch.
 	for metric := range uniqueMetrics {
-		idxKey := []byte(prefixMetricIdx + metric)
+		idxKey := []byte(KeyPrefixMetricIndex + metric)
 		if err := batch.Set(idxKey, []byte{1}, nil); err != nil {
 			return &WriteError{Err: err}
 		}
@@ -230,7 +216,7 @@ func (s *Storage) WriteBatch(points []DataPoint) error {
 
 	// Add tag index entries to the batch.
 	for tagKV := range uniqueTags {
-		idxKey := []byte(prefixTagIdx + tagKV)
+		idxKey := []byte(KeyPrefixTagIndex + tagKV)
 		if err := batch.Set(idxKey, []byte{1}, nil); err != nil {
 			return &WriteError{Err: err}
 		}
@@ -439,7 +425,7 @@ func (s *Storage) DeleteSeries(_ context.Context, req *DeleteRequest) error {
 	// If deleting all points for metric (no tag filter, full time range),
 	// remove metric index too.
 	if len(req.Tags) == 0 && req.StartTime.IsZero() && req.EndTime.IsZero() {
-		metricKey := []byte(prefixMetricIdx + req.Metric)
+		metricKey := []byte(KeyPrefixMetricIndex + req.Metric)
 		if err := batch.Delete(metricKey, nil); err != nil {
 			return &WriteError{Err: err}
 		}
@@ -458,7 +444,7 @@ func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error) {
 		return nil, &ClosedError{}
 	}
 
-	key := []byte(prefixRetention + metric)
+	key := []byte(KeyPrefixRetention + metric)
 	data, closer, err := s.db.Get(key)
 	if err != nil {
 		// Return default policy if not found.
@@ -478,7 +464,7 @@ func (s *Storage) SetRetentionPolicy(metric string, policy *RetentionPolicy) err
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
-	key := []byte(prefixRetention + metric)
+	key := []byte(KeyPrefixRetention + metric)
 	data, err := encodeRetentionPolicy(policy)
 	if err != nil {
 		return &WriteError{Err: err}
@@ -497,11 +483,11 @@ func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error) {
 		return nil, &ClosedError{}
 	}
 
-	lowerBound := []byte(prefixMetricIdx)
-	upperBound := []byte(prefixMetricIdx + "\xff")
+	lowerBound := []byte(KeyPrefixMetricIndex)
+	upperBound := []byte(KeyPrefixMetricIndex + "\xff")
 	if prefix != "" {
-		lowerBound = []byte(prefixMetricIdx + prefix)
-		upperBound = []byte(prefixMetricIdx + prefix + "\xff")
+		lowerBound = []byte(KeyPrefixMetricIndex + prefix)
+		upperBound = []byte(KeyPrefixMetricIndex + prefix + "\xff")
 	}
 
 	iter, err := s.db.NewIter(&pebble.IterOptions{
@@ -516,8 +502,8 @@ func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error) {
 	metrics := make([]string, 0)
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := string(iter.Key())
-		if len(key) > len(prefixMetricIdx) {
-			metric := key[len(prefixMetricIdx):]
+		if len(key) > len(KeyPrefixMetricIndex) {
+			metric := key[len(KeyPrefixMetricIndex):]
 			metrics = append(metrics, metric)
 		}
 		if limit > 0 && len(metrics) >= limit {
@@ -638,7 +624,7 @@ func (s *Storage) Close() error {
 
 // updateMetricIndex writes a metric name into the metric index.
 func (s *Storage) updateMetricIndex(metric string) error {
-	key := []byte(prefixMetricIdx + metric)
+	key := []byte(KeyPrefixMetricIndex + metric)
 	if err := s.db.Set(key, []byte{1}, pebble.Sync); err != nil {
 		return &WriteError{Err: err}
 	}
@@ -657,7 +643,7 @@ func (s *Storage) updateTagIndexes(metric string, tags map[string]string) error 
 	sort.Strings(tagKeys)
 
 	for _, k := range tagKeys {
-		key := []byte(prefixTagIdx + k + ":" + tags[k])
+		key := []byte(KeyPrefixTagIndex + k + ":" + tags[k])
 		if err := s.db.Set(key, []byte{1}, pebble.Sync); err != nil {
 			return &WriteError{Err: err}
 		}
@@ -671,10 +657,10 @@ func buildDataPointKey(metric string, timestamp time.Time, tags map[string]strin
 	tagHash := hashTags(tags)
 
 	// "ts:" + metric + ":" + 8 bytes timestamp + ":" + 16 hex chars
-	keyLen := len(keyPrefix) + len(metric) + 1 + 8 + 1 + 16
+	keyLen := len(KeyPrefixPoints) + len(metric) + 1 + 8 + 1 + 16
 	key := make([]byte, 0, keyLen)
 
-	key = append(key, keyPrefix...)
+	key = append(key, KeyPrefixPoints...)
 	key = append(key, metric...)
 	key = append(key, ':')
 
@@ -692,10 +678,10 @@ func buildDataPointKey(metric string, timestamp time.Time, tags map[string]strin
 // given metric and timestamp.
 // Format: "ts:" + metric + ":" + timestamp_ns(8 bytes BE).
 func buildRangeStartKey(metric string, t time.Time) []byte {
-	keyLen := len(keyPrefix) + len(metric) + 1 + 8
+	keyLen := len(KeyPrefixPoints) + len(metric) + 1 + 8
 	key := make([]byte, 0, keyLen)
 
-	key = append(key, keyPrefix...)
+	key = append(key, KeyPrefixPoints...)
 	key = append(key, metric...)
 	key = append(key, ':')
 

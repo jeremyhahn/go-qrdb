@@ -92,7 +92,7 @@ func (m *mockDatabaseSvc) List() ([]database.DatabaseInfo, error) {
 	return []database.DatabaseInfo{*m.infoResp}, nil
 }
 
-func (m *mockDatabaseSvc) Drop(name string) error {
+func (m *mockDatabaseSvc) Drop(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastName = name
@@ -160,7 +160,7 @@ func (m *mockDatabaseSvc) ListForTenant(_ context.Context) ([]database.DatabaseI
 }
 
 func (m *mockDatabaseSvc) DropForTenant(_ context.Context, name string) error {
-	return m.Drop(name)
+	return m.Drop(context.Background(), name)
 }
 
 func (m *mockDatabaseSvc) UpdateProtocolForTenant(_ context.Context, name string, p database.ProtocolConfig) (*database.DatabaseInfo, error) {

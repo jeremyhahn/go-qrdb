@@ -178,7 +178,7 @@ func TestDatabaseService_Drop(t *testing.T) {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
 
-	if err := svc.Drop("dropdb"); err != nil {
+	if err := svc.Drop(context.Background(), "dropdb"); err != nil {
 		t.Fatalf("Drop() returned unexpected error: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestDatabaseService_Drop(t *testing.T) {
 func TestDatabaseService_Drop_NotFound(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	err := svc.Drop("phantom")
+	err := svc.Drop(context.Background(), "phantom")
 	if err == nil {
 		t.Fatal("Drop() returned nil, want *database.NotFoundError")
 	}

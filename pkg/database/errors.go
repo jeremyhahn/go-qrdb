@@ -162,6 +162,45 @@ func (e *DropError) Unwrap() error {
 	return e.Err
 }
 
+// DropInProgressError is returned when a Drop is issued for a database that
+// already has one in flight on this node.
+//
+// It exists because Drop reclaims a database's data BEFORE it removes the
+// catalog entry, so the entry no longer decides the race the way
+// LoadAndDelete used to. Letting both callers run to completion would report
+// success twice for one database, and DropForTenant releases the tenant's
+// quota on success — so the second success would release quota the tenant
+// never held.
+type DropInProgressError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the in-flight drop.
+func (e *DropInProgressError) Error() string {
+	return "database: drop already in progress for database " + strconv.Quote(e.Name)
+}
+
+// KeyspaceReclaimError is returned when a database's data could not be
+// reclaimed from the store it shares with other databases, which fails the
+// whole drop: the database, its catalog entry and its data are all left
+// exactly as they were, and re-issuing the drop retries the reclamation.
+type KeyspaceReclaimError struct {
+	Name     string
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the reclamation failure.
+func (e *KeyspaceReclaimError) Error() string {
+	return "database: failed to reclaim the shared-store keyspace of database " +
+		strconv.Quote(e.Name) + " (tenant: " + strconv.Quote(e.TenantID) + "): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *KeyspaceReclaimError) Unwrap() error {
+	return e.Err
+}
+
 // StorageCreateError is returned when the storage layer cannot be initialized
 // for a database with the specified backend.
 type StorageCreateError struct {

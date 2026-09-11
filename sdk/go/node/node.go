@@ -2107,6 +2107,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.tenantHosts != nil {
 		allOpts = append(allOpts, server.WithTenantHostRegistry(n.tenantHosts))
 	}
+	// The seam that routes a volume-isolated tenant's DROP DATABASE
+	// reclamation to its dedicated per-tenant Host rather than the system
+	// store (go-qrdb#412). The reclaim service is already wired into the
+	// database manager by lifecycle.BuildServices; only the tenant routing is
+	// the server's to supply, and it is a no-op without a host registry.
+	if svcNode.KeyspaceReclaim != nil {
+		allOpts = append(allOpts, server.WithKeyspaceReclaimService(svcNode.KeyspaceReclaim))
+	}
 	// Wire the IsolationRaft backend factory into every transport so
 	// dedicated-raft tenant database requests resolve to the right live shard
 	// on the shared system host. Non-nil only on a clustered node that has

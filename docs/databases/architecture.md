@@ -1,6 +1,6 @@
 # Databases — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Problem
 
@@ -71,6 +71,55 @@ pair up in `service.Registry`, which returns the servicer bound to that
 database's engine, backend, shard and barrier. This is the single point where a
 database becomes a concrete set of services, and it is why a database's
 configuration cannot leak into another's request path.
+
+### What a drop reclaims
+
+A database is a keyspace, not a directory, and its teardown has to reclaim the
+keyspace. `DROP DATABASE` therefore reclaims, in this order:
+
+1. **The data the database owns in the store it shares with other databases**
+   — done first, while the database is still resolvable.
+2. Its barrier, if it had one.
+3. Its configuration directory, which for a database with a dedicated store
+   also holds that store's files.
+4. Its catalog entry.
+
+**Dependents first, the record that makes the database resolvable last.** The
+reverse order is what makes a residue permanent rather than merely present:
+once the catalog record is gone, nothing in the system names the keyspace
+again, so no later drop and no operator command can reach it. With this
+order, the worst an interrupted drop leaves is a **live, empty database**,
+and re-issuing the drop finishes it — the reclamation is idempotent, and an
+already-empty keyspace is a success.
+
+A reclamation that fails **fails the whole drop**. The database, its catalog
+record and its data are left exactly as they were, because reporting a
+successful drop over data that is still in the store is worse than refusing.
+
+The data a database owns is addressed in two shapes, and a teardown that
+reclaimed only the first would leave every document behind:
+
+| Shape | Holds | Scoped by |
+|---|---|---|
+| `<tenant>/<db>/…` | plain KV and MVCC keys, the relational catalog, rows, index entries, every sequence counter (including the per-database table-id counter), the privilege catalog | tenant **and** database |
+| `ts:<tenant>/<db>/…`, metric-index and retention records | time-series points, metric index, retention policies | tenant and database, inside the series prefixes, because it is the metric NAME that is namespaced |
+| `__sys:collections/<db>/…`, `__col:<db>:…` | collection catalog entries and documents written before the collection surface moved behind the per-(tenant, database) resolver | **database only** — the surface that wrote them carried no tenant. A collection created today lands in the composite namespace above instead; these prefixes are kept to reclaim the older layout |
+| secondary index catalog | index names under `<tenant>/<db>/` and under `<db>.` | a namespace of its own inside the state machine, not reached by deleting keys |
+| vector namespaces | namespaces under `<tenant>/<db>/` | their own per-node store, likewise not reached by deleting keys |
+
+Two things are deliberately **not** reclaimed, because no single database owns
+them: the time-series tag index, whose keys are `tag key:value` and carry no
+metric, and any record that is database-agnostic (roles, users, tenants).
+
+**The reclamation reads through an unfiltered enumeration**, not the
+user-facing one. Several of the shapes above are in the internal key
+namespace, which the ordinary key listing hides from callers — a discovery
+guard that is correct for a request handler and wrong for a teardown, which is
+not a caller but the owner of the data. A reclamation built on the filtered
+listing sees an empty result for the time-series prefixes and reports a
+successful drop over data it never touched. The distinction is carried by a
+separately named verb rather than a flag, so a filtered implementation cannot
+satisfy the teardown's contract by accident.
 
 ## Trust boundaries
 

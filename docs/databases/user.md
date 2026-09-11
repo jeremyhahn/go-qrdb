@@ -95,11 +95,15 @@ qrdb database info billing --output json
 qrdb db list
 ```
 
-**Delete one.** Everything in it goes, permanently.
+**Delete one.** Everything in it goes, permanently — keys, collections,
+documents, tables, rows, indexes and vector namespaces alike.
 
 ```bash
 qrdb database drop scratch
 ```
+
+Creating a database under a name you dropped gives you an empty one. It does
+not pick up anything the old database left.
 
 ## Troubleshooting
 
@@ -110,6 +114,16 @@ volume/raft-isolated tenant.
 
 **`--replicas` or `--cluster-mode` was rejected.** Those apply to
 `--backend raft` only.
+
+**`qrdb database drop` failed and the database is still there.** That is the
+intended behaviour: a drop that cannot reclaim the database's data does not
+report success and does not remove anything. Fix what it reported — most often
+a store or a per-tenant volume that is unreachable, or a sealed barrier — and
+run the same command again.
+
+**`qrdb database drop` says a drop is already in progress.** Another drop of
+the same database has not finished. Wait for it rather than re-running; only
+one of them can succeed.
 
 **`qrdb database scale` says the database is not eligible.** Scaling works on
 dedicated-raft databases. A pebble-backed database has no replicas to change.

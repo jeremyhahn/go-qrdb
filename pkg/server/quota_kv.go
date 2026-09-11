@@ -310,6 +310,12 @@ func (s *quotaKVService) List(ctx context.Context, prefix string) ([]string, err
 	return s.inner.List(ctx, prefix)
 }
 
+// ListAll passes the unfiltered enumeration through unchanged: a storage-byte
+// quota bounds writes, and has nothing to say about which keys a read sees.
+func (s *quotaKVService) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	return s.inner.ListAll(ctx, prefix)
+}
+
 func (s *quotaKVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
 	return s.inner.Scan(ctx, prefix)
 }
