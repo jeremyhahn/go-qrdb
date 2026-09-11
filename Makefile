@@ -1579,6 +1579,59 @@ dead-code-baseline:
 	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -tags "$(LINT_TAGS)" \
 		-baseline $(DEADCODE_BASELINE) -write-baseline
 
+# ============================================================================
+# Interface-method call sweep (go-qrdb#271)
+# ============================================================================
+#
+# ANSWERS A DIFFERENT QUESTION THAN dead-code, ABOVE. dead-code reports
+# unreachable FUNCTIONS via RTA/CHA, and by its own design treats every method
+# of a runtime-instantiated type as reachable once the type is ever converted
+# to ANY interface -- so a concrete type's method that is never actually
+# invoked through the interface still reads as reachable there. This sweep
+# asks the narrower, method-level question directly: does at least one
+# non-test call site select THIS METHOD on THIS INTERFACE (identity =
+# package + interface + method, resolved through go/types, never by name)?
+# See test/tools/ifacesweep/main.go's package doc for the full rationale,
+# including the pass-through false-positive class this method is known to
+# produce (a narrow local interface passed to a function whose parameter is a
+# structurally-identical sibling interface shows as "uncalled" even though
+# the capability is used -- Go loses the "declared via THIS interface"
+# identity at that conversion). Findings are NOT a delete list; they are the
+# measurement, triaged by hand.
+#
+# TWO TAG CONFIGURATIONS, NEVER MERGED -- a call site behind a tag this run
+# did not use is invisible to it, and the two reports can and do disagree in
+# both directions. Comparing them is the reader's job.
+IFACESWEEP_DIR := test/tools/ifacesweep/findings
+
+.PHONY: iface-sweep
+iface-sweep:
+	@mkdir -p $(IFACESWEEP_DIR)
+	@go run ./test/tools/ifacesweep -tags "$(MIN_TAGS)" -out $(IFACESWEEP_DIR)/min-tags.tsv
+	@go run ./test/tools/ifacesweep -tags "$(LINT_TAGS)" -out $(IFACESWEEP_DIR)/full-tags.tsv
+
+# The committed findings/*.tsv are a reference measurement, not scratch
+# output -- their whole value is being stable and diffable across checkouts.
+# main.go's relFile already refuses to emit anything but a clean,
+# repo-relative path, but this is a SECOND, independent check on the
+# committed ARTIFACT: a regression in relFile's next revision is caught here
+# even by a reviewer who does not re-read main.go's reasoning, and even if
+# nobody runs `make iface-sweep` again before merging. go-qrdb#271 shipped an
+# absolute, workstation-specific path on 996 of 996 rows once already,
+# uncaught by review and outside check-publication-bound.sh's docs/*/ scope
+# -- this is that gap closed for this artifact specifically (the scope gap
+# itself is tracked separately, not widened here).
+.PHONY: check-iface-sweep-findings
+check-iface-sweep-findings:
+	@./scripts/check-iface-sweep-findings.sh
+
+# The guard's rejecting branches, which the step above never reaches while
+# the tree is clean -- same reasoning as test-publication-bound and every
+# other *_test.sh guard in this file. No network, no Go build.
+.PHONY: test-iface-sweep-findings
+test-iface-sweep-findings:
+	@./scripts/check-iface-sweep-findings_test.sh
+
 .PHONY: vet
 vet:
 	$(GOVET) $(TAG_FLAG) ./...

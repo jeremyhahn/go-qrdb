@@ -280,6 +280,18 @@ jobs:
       - name: Test the publication-bound guard
         run: make test-publication-bound
 
+      # go-qrdb#271. The committed test/tools/ifacesweep/findings/*.tsv are a
+      # reference measurement whose entire value is being stable and diffable
+      # across checkouts -- which an absolute, workstation-specific path in
+      # the `file` column defeats, and is exactly what shipped once already,
+      # uncaught by review and outside check-publication-bound.sh's docs/*/
+      # scope (tracked separately as its own gap, not widened here).
+      - name: iface-sweep findings carry no absolute paths
+        run: make check-iface-sweep-findings
+
+      - name: Test the iface-sweep findings guard
+        run: make test-iface-sweep-findings
+
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
       # unmapped module, an empty or rootless discovery, a partial traversal —

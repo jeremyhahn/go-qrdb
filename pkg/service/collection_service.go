@@ -75,6 +75,14 @@ type CollectionService struct {
 
 // kvService is the minimal KV interface needed by CollectionService.
 // It matches the subset of KVServicer used for collection operations.
+//
+// No List-only variant of the consistency reads is declared: every read
+// CollectionService performs -- GetDocument, ListDocuments -- needs the
+// document VALUES, never a keys-only listing, so GetWithConsistency and
+// ScanWithConsistency are the pair actually reachable from this service's
+// methods (go-qrdb#271: a prior ListWithConsistency here had zero callers,
+// confirmed by tracing every kvSvc.* call site in this file -- ListDocuments
+// always calls Scan/ScanWithConsistency for the values, never List).
 type kvService interface {
 	Put(ctx context.Context, key string, value []byte) error
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -84,7 +92,6 @@ type kvService interface {
 	PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error
 	DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error
 	GetWithConsistency(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error)
-	ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error)
 	ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error)
 }
 
