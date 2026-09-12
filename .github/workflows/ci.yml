@@ -267,6 +267,23 @@ jobs:
       - name: Every workflow action is pinned to a commit SHA
         run: make check-action-pins
 
+      # #478. nightly.yml's `signal` job turns that workflow's verdict into a
+      # tracking issue, and it is told which jobs to watch by an explicit `-job`
+      # list -- because `join(needs.*.result)` is a GitHub extension that reads
+      # as the empty string on Gitea (devops.md §1), so a gate built on it
+      # passes while jobs fail.
+      #
+      # A list has to be kept in step with what it lists. The tool refuses to
+      # run when its `-job` set does not match nightly.yml's own `jobs:` block,
+      # but that refusal happens at 03:00 on a night nobody is watching -- the
+      # same failure the signal exists to end. THIS STEP IS THE SAME ASSERTION,
+      # ON THE PUSH THAT FORGETS THE FLAG. It also runs the decision table's
+      # rejecting branches, which a healthy nightly never reaches.
+      #
+      # No network, no token, no scanner.
+      - name: The nightly signal watches every job nightly.yml declares
+        run: make test-nightly-signal
+
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
       # sees one diff, and a violation can be contributed by neither side of a

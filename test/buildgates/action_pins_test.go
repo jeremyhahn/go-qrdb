@@ -96,7 +96,13 @@ const (
 	// The floor fired on that deletion, which is exactly the behaviour it is
 	// for: the number is lowered here, in the same commit, by someone who
 	// counted.
-	minActionRefs = 20
+	//
+	// Raised to 22 on 2026-09-12 by #478, which added nightly.yml's `signal`
+	// job and with it a checkout and a setup-go. RAISING IS NOT BOOK-KEEPING: a
+	// floor left at 20 would go on passing after both new refs were deleted,
+	// and the number exists so that a scan finding less than it did before is a
+	// red run rather than a quiet one.
+	minActionRefs = 22
 )
 
 // isWorkflowFile reports whether name is a file Actions loads.

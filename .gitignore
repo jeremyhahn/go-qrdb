@@ -58,6 +58,11 @@ go.work.sum
 # `go build ./test/tools/deadcode` drops its binary at the module root, named
 # for the package. It was committed once (#337) before this line existed.
 /deadcode
+# The same trap, the same way, caught in review of #478: `go build
+# ./test/tools/nightlysignal` drops 9.9 MB at the module root and a later
+# `git add -A` swept it in. The entry is added here rather than the habit being
+# relied on, because the second instance of a trap is evidence about the trap.
+/nightlysignal
 
 # scripts/secure-analyzer_test.sh plants its probe package here (#429). It has
 # to be INSIDE the root module for memguard to resolve, and the leading dot is

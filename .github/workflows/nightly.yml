@@ -313,3 +313,99 @@ jobs:
       # not the thing that decides this job.
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy
+
+  # ==========================================================================
+  # THE VERDICT HAS TO REACH SOMEBODY (#478).
+  #
+  # Measured 2026-09-12: the API retained 22 runs of this workflow, back to
+  # 2026-08-22, and EVERY ONE WAS RED. Run 16597 had correctly caught
+  # CVE-2026-84445 against google.golang.org/grpc in all three go.mod files, on
+  # a database downloaded that morning, and nobody saw it -- the advisory
+  # reached this repository a day later only because an agent happened to run
+  # `make security` on a workstation (#451). devops.md §8a accepts a window in
+  # alpha, where a CVE surfaces at the next nightly rather than at the push that
+  # introduces it; that bargain assumes the nightly's verdict is READ.
+  #
+  # A PLAIN NOTIFIER WOULD HAVE REPRODUCED THE DEFECT. One that fired on each of
+  # twenty-two consecutive failures trains its reader to ignore it inside a
+  # week, and then the mechanism is intact while the property is gone. So this
+  # job signals a STATE: it opens ONE tracking issue on the transition to red,
+  # REWRITES that issue in place (no comment, no bell) while the job stays red,
+  # and CLOSES it on the first green run. A new issue in the queue means
+  # something broke; an old open one means it is still broken.
+  #
+  # An issue rather than a channel because AGENTS.md already names this
+  # repository's open issues as the inbound work queue -- it is read at session
+  # start -- so nothing has to subscribe to anything, and there is no external
+  # service and no second credential. The full rationale, including why a job
+  # that has NEVER been green is treated as louder than one that just broke,
+  # is in test/tools/nightlysignal/main.go.
+  #
+  # IT GATES NOTHING. It is absent from ci-gate's `needs` because it is not in
+  # ci.yml at all, it does not make this workflow a required check, and it does
+  # not move `trivy fs` onto the push path -- both are separate decisions
+  # (devops.md §8a, docs/seal/fips140-mode.md "Arming the gate").
+  #
+  # ITS OWN RED MEANS ITS OWN FAILURE, never the nightly's. The tool exits 0
+  # when every job was decided and every decision applied, INCLUDING when the
+  # answer was "both jobs are on fire". It exits non-zero only when it could not
+  # do its job -- which is the only way a silent notifier can be told apart from
+  # a quiet night.
+  signal:
+    name: Signal
+    needs: [fips, trivy]
+    # `always()` IS LOAD-BEARING. Without it this job is skipped on exactly the
+    # runs it exists for, and the workflow would look complete while signalling
+    # nothing.
+    #
+    # The github.com guard follows automerge.yml: the issue queue this writes to
+    # is the Gitea one, and AGENT_TOKEN is a Gitea credential. On github.com the
+    # job does not run rather than failing on a secret that host does not have
+    # (devops.md §6).
+    if: always() && github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # EVERY WATCHED JOB IS LISTED EXPLICITLY, and the tool refuses to run
+      # unless this list matches nightly.yml's own `jobs:` block minus `-self`.
+      #
+      # devops.md §1: `join(needs.*.result)` is a GitHub extension that
+      # evaluates to the EMPTY STRING on Gitea, so a gate built on it passes
+      # while jobs fail -- list every job explicitly and fail closed when the
+      # results cannot be read. This is that list; the coverage assertion in
+      # test/tools/nightlysignal/workflow.go is the "fail closed". Adding a job
+      # above without adding a `-job` line here turns this job red, which is the
+      # cost that keeps a new job from being unwatched.
+      - name: Open, update or close the tracking issue
+        env:
+          # The PROJECT AGENT's token, as automerge.yml uses. The issues this
+          # opens are the project agent's own, filed on its own repository,
+          # which is what §0/§1 of conventions/sdlc.md describe.
+          NIGHTLY_SIGNAL_TOKEN: ${{ secrets.AGENT_TOKEN }}
+          RESULT_FIPS: ${{ needs.fips.result }}
+          RESULT_TRIVY: ${{ needs.trivy.result }}
+        run: |
+          set -euo pipefail
+
+          # Fail closed, naming the secret. A blank token would send
+          # `Authorization: token ` and Gitea would answer as an anonymous
+          # caller -- on a private repository that is a 404, which reads as "no
+          # tracking issue exists" and opens a duplicate every night. The tool
+          # refuses an empty token for the same reason; this says so earlier and
+          # in the workflow's own words.
+          [ -n "${NIGHTLY_SIGNAL_TOKEN:-}" ] || {
+            echo "::error::AGENT_TOKEN is not set on this repository."
+            echo "::error::Without it the nightly's verdict reaches nobody, which is #478."
+            exit 1; }
+
+          go run ./test/tools/nightlysignal \
+            -mode apply \
+            -self signal \
+            -job "fips=FIPS 140-3=${RESULT_FIPS}" \
+            -job "trivy=Trivy=${RESULT_TRIVY}"

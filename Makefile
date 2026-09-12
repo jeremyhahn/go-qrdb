@@ -1426,7 +1426,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1615,6 +1615,64 @@ test-publication-bound:
 .PHONY: check-action-pins
 check-action-pins:
 	$(GOTEST) ./test/buildgates/...
+
+# The nightly's verdict has to reach somebody (#478).
+#
+# `nightly.yml`'s signal job turns that workflow's result into a tracking issue
+# on this repository: opened on the transition to red, REWRITTEN in place while
+# the job stays red, closed on the first green run. The measurement that earned
+# it is in test/tools/nightlysignal/main.go -- 22 retained runs of this
+# workflow on 2026-09-12, all red, one of them carrying a HIGH advisory that
+# reached this repository only because someone ran `make security` by hand.
+#
+# The knobs, all overridable from the environment. They default to what a
+# workflow already sets, so inside a run the target needs none of them; on a
+# workstation the forge address has to be given, and an unset one fails with a
+# sentence naming the flag rather than by talking to nothing.
+#
+# The two RESULT knobs default to `failure` because "what would the signal do if
+# this went red" is the question a developer has to ask, and the answer is
+# uninteresting when everything is green.
+NIGHTLY_SIGNAL_SERVER ?= $(GITHUB_SERVER_URL)
+NIGHTLY_SIGNAL_API    ?= $(if $(NIGHTLY_SIGNAL_SERVER),$(NIGHTLY_SIGNAL_SERVER)/api/v1,)
+NIGHTLY_SIGNAL_REPO   ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_REPOSITORY),jeremyhahn/go-qrdb)
+NIGHTLY_SIGNAL_REF    ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
+NIGHTLY_SIGNAL_FIPS   ?= failure
+NIGHTLY_SIGNAL_TRIVY  ?= failure
+
+# REPORT MODE HERE, deliberately. devops.md §4 says CI runs the same target a
+# developer runs, and this is that target -- but a developer running it must not
+# file issues as a side effect of asking what the nightly thinks. `-mode apply`
+# exists in exactly one place, the workflow step, where the writes are the
+# point. Both halves need NIGHTLY_SIGNAL_TOKEN: every route is a read of a
+# private repository, and an anonymous read answers 404, which would read as
+# "no tracking issue exists".
+.PHONY: nightly-signal
+nightly-signal: ## Report what the nightly signal would open, update or close
+	$(GO) run ./test/tools/nightlysignal \
+		-mode report \
+		-repo $(NIGHTLY_SIGNAL_REPO) \
+		-api $(NIGHTLY_SIGNAL_API) \
+		-ref $(NIGHTLY_SIGNAL_REF) \
+		-self signal \
+		-job "fips=FIPS 140-3=$(NIGHTLY_SIGNAL_FIPS)" \
+		-job "trivy=Trivy=$(NIGHTLY_SIGNAL_TRIVY)"
+
+# The decision table, the coverage floor and the rendering, over the REAL
+# nightly.yml. Same reasoning as test-require-tool and test-trivy-db: on a
+# healthy tree the mechanism only ever runs its accepting branches, so every
+# refusal would otherwise ship untested -- and this one refuses by staying
+# silent, which is what success looks like.
+#
+# It also carries the assertion that nightly.yml's `-job` list covers every job
+# nightly.yml declares. That check exists at runtime too, but the runtime copy
+# fires at 03:00 on a night nobody is watching, which is the same failure the
+# tool exists to end. Here it fires in the Lint job on the push that forgets it.
+#
+# No network, no token, no Go build beyond this one package.
+.PHONY: test-nightly-signal
+test-nightly-signal: ## Test the nightly signal and its workflow coverage floor
+	$(GOTEST) ./test/tools/nightlysignal/...
 
 # The four analyser pins are written in four files, and a Dockerfile cannot read
 # a make variable (#323). #322 first removed the duplication outright, by giving
