@@ -67,6 +67,16 @@ func (n *namespacedKV) Put(ctx context.Context, key string, value []byte) error 
 	return n.inner.Put(ctx, n.ns+key, value)
 }
 
+// PutIfAbsent namespaces the key and delegates, so the conditional is decided
+// against the SAME key the collection service will later read. Stubbing this
+// to a constant would make the double narrower than production in exactly the
+// way go-qrdb#489 is about: the guarded insert #466 added exists to report
+// which of two concurrent callers won, and a double that always reports "won"
+// cannot fail the test that checks it.
+func (n *namespacedKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return n.inner.PutIfAbsent(ctx, n.ns+key, value)
+}
+
 func (n *namespacedKV) Get(ctx context.Context, key string) ([]byte, error) {
 	return n.inner.Get(ctx, n.ns+key)
 }
