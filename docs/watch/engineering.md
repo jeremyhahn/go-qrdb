@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -55,6 +55,14 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
 
 - **The channel is closed exactly once**, when the stream ends. A caller ranging
   over it terminates rather than blocking forever.
+- **Cancelling a watch releases the goroutine behind it.** A consumer ends a
+  watch by cancelling the context it opened it with, and the transport goroutine
+  forwarding responses to it selects on that context for *every* operation,
+  including the send. It has to: a consumer that has stopped reading is the
+  normal way a watch ends, so a bare send on the handover channel parks
+  permanently the first time a cancel races a delivery — one goroutine per
+  cancelled watch, silently, in proportion to watch churn. Buffering the channel
+  does not change this; it moves the block to the send after the buffer fills.
 - **`WatchResponse.Err()` is the only correct way to test a response for
   failure.** It returns `nil` unless `Canceled` is set, and otherwise classifies
   `CancelReason` into a typed error. Comparing the reason string directly is a
@@ -71,17 +79,23 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
   duplicate-free; see *Known limitations*.
 - **`PrevKV` is opt-in** because retaining the prior value costs a lookup per
   event.
-- **Cancellation is in-band, never a silent close — on the five wire
-  transports.** REST, gRPC, Unix, QUIC and MCP each consult `watcher.Err()` when
-  the hub closes the event channel and synthesize a terminal frame from it, so
-  every abnormal termination reaches the client carrying `Canceled: true` and a
-  reason. **The embedded transport does not**: `embedded.Transport.Watch` and
-  `WatchPrefix` range the watcher's events and close their own channel without
-  reading `watcher.Err()`, and `pkg/watch` never sets `Canceled` itself. So an
-  in-process consumer sees a hub-side eviction — a watcher dropped for overflow,
-  or a compaction racing an in-progress replay — as an ordinary clean close.
-  Corrected here to match the code; the invariant is the goal, and embedded is
-  the transport that does not yet meet it.
+- **Cancellation is in-band, never a silent close.** `pkg/watch` never sets
+  `Canceled` itself: the hub ends a watch it evicts by recording the reason on
+  the watcher and closing the event channel, and it is the transport that turns
+  that into a frame. All six do. REST, gRPC, Unix, QUIC and MCP consult
+  `watcher.Err()` in their server-side handler and synthesize the terminal
+  frame there; the embedded transport, which is its own server, does the same in
+  the goroutine that forwards the watcher to the caller's channel. So an
+  abnormal termination — a watcher dropped for overflow, a compaction racing an
+  in-progress replay — reaches every consumer carrying `Canceled: true` and a
+  reason, and a watch that ended cleanly carries no frame at all, which is what
+  keeps the two apart.
+
+  The reason text is the watcher error's own message on every transport, which
+  is what lets `WatchResponse.Err()` classify the same hub-side condition into
+  the same typed error everywhere. The embedded transport was the one exception
+  to this invariant until it was fixed; the qualification that used to stand
+  here is gone because the exception is.
 - **Closing a watcher is synchronous with deregistration.** When `Close`
   returns, the watcher is out of the hub registry and `Hub.WatchCount` no
   longer counts it, so no further event can be dispatched to it. A caller may

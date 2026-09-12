@@ -16,7 +16,7 @@ limitations under the License.
 
 # Coordination — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Where it lives
 
@@ -484,26 +484,20 @@ elsewhere.
 
 ## Known limitations
 
-Both are properties of the **embedded** transport, verified in code, and both
-are fail-open rather than fail-closed. A consumer whose watch correctness
-matters should prefer a wire transport, or reconcile periodically regardless of
-what `Err()` said.
+**None specific to a transport.** Two were recorded here — an eviction reaching
+an embedded consumer as a clean close, and a watch cancelled mid-hand-over
+parking the embedded transport's forwarding goroutine — and both were properties
+of `embedded.Transport.WatchPrefix` alone. Both are fixed, and the coordination
+layer needs no transport-specific caveat as a result: an eviction now arrives
+with its reason on every transport, and cancelling a watch releases everything
+behind it on every transport. See the invariants in
+[../watch/engineering.md](../watch/engineering.md).
 
-- **An eviction reaches an embedded consumer as a clean close.** The hub records
-  the eviction reason on the watcher rather than emitting a terminal response,
-  and every *server-side* protocol handler — REST, gRPC, Unix, QUIC, MCP —
-  consults `watcher.Err()` when the channel closes and synthesizes a terminal
-  cancellation frame from it. `embedded.Transport.WatchPrefix` does not: it
-  ranges the watcher's events and closes its own channel. So on the embedded
-  transport an overflow eviction arrives as `Err() == nil` — indistinguishable
-  from a clean server close, in exactly the case the terminal contract exists to
-  distinguish.
-- **Cancelling a watch mid-hand-over parks a goroutine.**
-  `embedded.Transport.WatchPrefix`'s forwarding goroutine sends on an unbuffered
-  channel without selecting on the context. If the caller cancels while a
-  response is being handed over, the coordination drain returns on `ctx.Done()`
-  and that send has no reader, so the goroutine stays parked. One per affected
-  watch.
+What remains is not a limitation but the design above: `Err()` is meaningful
+only after `Events()` has closed, and a consumer whose correctness depends on
+seeing every change should still reconcile against current state when a watch
+ends with a non-nil, non-context error — that is what the terminal reason is
+*for*.
 
 ## Configuration
 

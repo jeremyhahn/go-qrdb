@@ -1173,6 +1173,12 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 // WatchClient implementation
 // ---------------------------------------------------------------------------
 
+// watchOpener opens a watcher over the embedded watch service.
+// service.WatchServicer.Watch and service.WatchServicer.WatchPrefix both have
+// this signature, so Watch and WatchPrefix differ only in the method value
+// they hand to watchStream.
+type watchOpener func(context.Context, string, ...watch.WatchOption) (watch.Watcher, error)
+
 // Watch creates a watcher that delivers events for the specified key
 // through the embedded watch service.
 func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
@@ -1183,20 +1189,7 @@ func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchO
 		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
-	watcher, err := t.watchSvc.Watch(ctx, key, toServiceWatchOpts(opts)...)
-	if err != nil {
-		return nil, translateError(err)
-	}
-
-	ch := make(chan transport.WatchResponse)
-	go func() {
-		defer close(ch)
-		for resp := range watcher.Events() {
-			ch <- toTransportWatchResponse(resp)
-		}
-	}()
-
-	return ch, nil
+	return t.watchStream(ctx, t.watchSvc.Watch, key, opts)
 }
 
 // WatchPrefix creates a watcher that delivers events for all keys
@@ -1209,20 +1202,106 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
-	watcher, err := t.watchSvc.WatchPrefix(ctx, prefix, toServiceWatchOpts(opts)...)
+	return t.watchStream(ctx, t.watchSvc.WatchPrefix, prefix, opts)
+}
+
+// watchStream opens a watcher for target through open and spawns the goroutine
+// that forwards its responses to the returned channel.
+func (t *Transport) watchStream(ctx context.Context, open watchOpener, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	watcher, err := open(ctx, target, toServiceWatchOpts(opts)...)
 	if err != nil {
 		return nil, translateError(err)
 	}
 
 	ch := make(chan transport.WatchResponse)
-	go func() {
-		defer close(ch)
-		for resp := range watcher.Events() {
-			ch <- toTransportWatchResponse(resp)
-		}
-	}()
+	go forwardWatchResponses(ctx, watcher, ch)
 
 	return ch, nil
+}
+
+// forwardWatchResponses relays responses from watcher to ch until the watcher's
+// event channel closes or ctx is done. The channel is always closed on exit,
+// and the watcher is always closed with it: this goroutine owns the watcher for
+// the rest of its life, exactly as the wire transports' server-side handlers do
+// (pkg/api/grpc/service.go, pkg/api/quic/handlers_watch.go).
+//
+// Every channel operation selects on ctx.Done(). A consumer abandons this
+// stream by cancelling ctx — sdk/go's Coordinator.Watch drain returns on
+// ctx.Done() and never reads the raw channel again — so a bare send would park
+// this goroutine for the life of the process the moment a cancel raced a
+// delivery, one leaked goroutine per cancelled watch and no error anywhere
+// (go-qrdb#406). A buffer would not fix that; it would only move the block to
+// the send after the buffer fills. The select is what releases it.
+//
+// The embedded transport is its own server, so it carries the server-side half
+// of the watch contract too: when the hub evicts a watcher it records the
+// reason on the watcher and closes the event channel WITHOUT emitting a
+// terminal response, and it is the handler that turns that into one. Every
+// wire transport already does — the identical `if wErr := w.Err()` on the
+// channel-closed path in pkg/api/rest/handlers_watch.go, pkg/api/grpc/service.go,
+// pkg/api/quic/handlers_watch.go and pkg/api/mcp/tools_watch.go — and embedded
+// skipping it made an overflow eviction, or a compaction racing a replay,
+// indistinguishable from a clean close on the transport where the failure is
+// quietest (go-qrdb#405).
+func forwardWatchResponses(ctx context.Context, watcher watch.Watcher, ch chan<- transport.WatchResponse) {
+	defer close(ch)
+	defer func() { _ = watcher.Close() }()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resp, ok := <-watcher.Events():
+			if !ok {
+				sendTerminalWatchResponse(ctx, watcher, ch)
+				return
+			}
+			out := toTransportWatchResponse(resp)
+			select {
+			case ch <- out:
+			case <-ctx.Done():
+				return
+			}
+			// A terminal response ends the stream. The wire clients all stop
+			// reading after one rather than waiting for a close that can say
+			// nothing more.
+			if out.Canceled {
+				return
+			}
+		}
+	}
+}
+
+// sendTerminalWatchResponse synthesizes the terminal frame for a watcher whose
+// event channel has closed, and sends nothing when the watch ended cleanly —
+// the distinction a caller reads through transport.WatchResponse.Err().
+//
+// The reason is the watcher error's own message, verbatim, because that is what
+// the wire transports carry: pkg/api/rest/handlers_watch.go writes wErr.Error()
+// straight into CancelReason, and pkg/api/grpc and pkg/api/quic pass it through
+// mapServiceError, whose message is err.Error(), for their clients to read back
+// off the status. Keeping the text identical is what makes
+// transport.WatchResponse.Err() classify an embedded cancellation into the same
+// typed error — WatchCompactedError, WatchStartRevisionUnsupportedError, or a
+// generic WatchCanceledError — as every other transport does for the same
+// hub-side condition.
+//
+// WatchID is populated because it is available here, as it is in the REST
+// handler that synthesizes the same frame. The gRPC and QUIC clients leave it
+// zero only because a transport status carries no watch id to recover it from.
+func sendTerminalWatchResponse(ctx context.Context, watcher watch.Watcher, ch chan<- transport.WatchResponse) {
+	wErr := watcher.Err()
+	if wErr == nil {
+		return
+	}
+	select {
+	case ch <- transport.WatchResponse{
+		WatchID:      watcher.WatchID(),
+		Canceled:     true,
+		CancelReason: wErr.Error(),
+	}:
+	case <-ctx.Done():
+	}
 }
 
 // ---------------------------------------------------------------------------

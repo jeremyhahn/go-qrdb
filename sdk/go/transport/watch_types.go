@@ -78,8 +78,8 @@ func (r WatchResponse) Err() error {
 // code must not depend on server-internal packages), so these two helpers
 // classify by matching the stable message substring — however it arrived,
 // whether as a request-time error (REST/gRPC/QUIC/unix) or as the
-// CancelReason of a terminal WatchResponse delivered mid-stream (all five
-// transports).
+// CancelReason of a terminal WatchResponse delivered mid-stream (all six
+// transports, embedded included since go-qrdb#405).
 
 const (
 	watchCompactedReasonSubstr          = "required start revision has been compacted"
