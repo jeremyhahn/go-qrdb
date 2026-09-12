@@ -67,6 +67,18 @@ the root of tenant isolation in every other feature.
 presented certificate into a user. Because the thumbprint is over the public
 key, a renewed certificate for the same key resolves to the same user.
 
+**Once an account has at least one binding, only a certificate matching one of
+them authenticates as it** — the CN and OU select the account, the thumbprint
+proves the holder. A certificate naming an enrolled account that matches none
+of its bindings is refused with **401**, and the message carries the presented
+thumbprint so an operator can enrol it if the refusal was a missed enrolment.
+An account with NO bindings is unchanged: it authenticates on the CN and OU
+alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims).
+
+`POST /users/{id}/cert-bindings` is therefore an authentication-affecting
+write, not bookkeeping. It is **additive** — enrol a new key alongside the old
+one and both work, which is how a key rotation happens without an interruption.
+
 ## Schemas
 
 `Role`:

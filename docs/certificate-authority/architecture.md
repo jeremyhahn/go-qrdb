@@ -242,6 +242,20 @@ derives an identity's tenant from exactly that OU, so an unchecked cross-tenant
 mint would hand the caller a CA-signed credential for another tenant rather
 than merely misfiling a record.
 
+**Issuance is not the only layer that has to hold.** The gate above is what
+stops the certificate being minted; the certificate-binding gate in
+[../identity-rbac/](../identity-rbac/architecture.md#what-a-certificate-actually-claims)
+is what stops a minted one being believed. For an **enrolled** account — one
+with at least one SPKI `CertBindings` entry — a certificate naming it that was
+issued for a different key does not authenticate as it, whatever this CA
+signed. That is what keeps the severity of a future unguarded issuance path at
+"a bad certificate exists" rather than "an identity was handed out".
+
+It holds only for enrolled accounts, which is why **issuing a client
+certificate and enrolling it are two steps and both are the operator's**.
+`GenerateClientCert` writes no binding: `POST /users/{id}/cert-bindings` does,
+and until it runs the certificate authenticates on its CN and OU alone.
+
 `certs:export` needs no gate and deliberately has none: the caller supplies
 both the certificate and the private key, the server holds neither, and the
 archive that comes back contains only what the caller already had. There is

@@ -117,7 +117,41 @@ const (
 )
 ```
 
-`User.MatchesCert(cert)` is the authoritative check.
+`User.MatchesCert(cert)` is the authoritative check — SPKI-based and
+expiry-checked — and `auth/middleware.finalizeIdentity` is the one caller that
+decides a login with it:
+
+```go
+// pkg/auth/middleware/cert_binding.go
+func checkCertBinding(ctx context.Context, u *user.User, method authMethod) error
+```
+
+It admits in exactly three cases and refuses otherwise:
+
+| Case | Result | Why |
+|---|---|---|
+| `len(u.CertBindings) == 0` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
+| method is not cert-bound (`certBoundMethods`) | admit | a forwarded on-behalf assertion and a capability module's session token present no certificate of the SUBJECT's — the connection's certificate is the forwarder's |
+| `u.MatchesCert(cert)` | admit | possession proved by the handshake |
+| enrolled, cert-bound method, no readable peer certificate | **refuse** | the account has enrolled certificates and this request produced none to compare |
+| enrolled, cert-bound method, thumbprint matches nothing | **refuse** | `*CertBindingNotPermittedError` |
+
+`*CertBindingNotPermittedError` classifies as `AuthFailureUnauthenticated`
+(401), not `AuthFailureUnauthorized` (403). The contrast with
+`*AuthMethodNotPermittedError` beside it is deliberate: there the credential IS
+the account's and the WAY in is refused, so retrying is futile; here the
+credential was never the account's, and presenting the enrolled certificate
+works. The error carries the presented thumbprint, which is the value an
+operator enrols if the refusal turns out to be a missed enrolment.
+
+The certificate is re-read from the connection state on the context rather than
+carried on the identity: `Identity.Metadata` is a map the fallback and
+on-behalf paths build themselves, so a thumbprint carried there would be a
+claim, while the TLS state is the fact the authenticator read.
+
+`certBoundMethods` is a map keyed by the normalized method name, so adding a
+second certificate-presenting authenticator to the chain is one entry, and a
+reader asking what the gate applies to gets a list rather than a condition.
 
 ### Permission vocabulary — `pkg/permission`
 
@@ -292,6 +326,12 @@ wrong fails a test rather than passing a typed-in column.
 - **`CertBindingSPKIThumbprint` is the canonical default.**
   `CertBindingFullCertFingerprint` pins an exact certificate and breaks on
   renewal — that is its purpose, and it is not the default.
+- **Enrolment is a login gate, not only a lookup seam.** Binding a thumbprint
+  to an account narrows what may authenticate as it; binding the WRONG
+  thumbprint, or binding one and then rotating the key without enrolling the
+  new one, refuses that account. Enrolment is additive, so the recovery is to
+  enrol the new key — ideally before retiring the old one, which never
+  interrupts access.
 - **`RoleBindings` are additive to `RoleIDs`**, not a replacement. Effective
   permissions are the union.
 - **Effective permissions resolve through one PDP** on every transport;
@@ -461,7 +501,17 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   over `RoleIDs` ∪ `RoleBindings`, `Parse` rejecting unregistered strings, and
   the undeletability of system users and built-in roles.
 - **Renewal stability is its own test** — it is the property the SPKI choice
-  exists for.
+  exists for, and it is asserted through the login path as well as on the
+  model, because a renewal that stopped authenticating would be a lockout.
+- **The binding gate is tested against the REAL authenticator and the REAL
+  user store**, never a double. The predicate lives on `user.User`, so a
+  narrower double that "checks the binding" would assert the double rather than
+  the authentication path. Both directions of the empty-set admission are
+  asserted on ONE account, so the only difference between them is the
+  enrolment.
+- **First boot is tested in both postures**: bootstrapped with no `CertBinder`
+  (admin unenrolled, authenticates) and with one (admin enrolled, its own
+  certificate admitted and another certificate naming it refused).
 - **Authorization tests are security tests**: every transport must reach the
   same decision for the same identity and permission.
 - **Error tests** per function.

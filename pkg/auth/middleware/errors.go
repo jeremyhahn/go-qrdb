@@ -147,6 +147,42 @@ func (e *AuthMethodNotPermittedError) Error() string {
 		" (permitted: " + strings.Join(e.Permitted, ", ") + ")"
 }
 
+// CertBindingNotPermittedError is returned when a client certificate names an
+// account that has enrolled mTLS certificate bindings and the presented
+// certificate matches none of them.
+//
+// It is an AUTHENTICATION failure, not an authorization one, and that is the
+// difference from AuthMethodNotPermittedError above it. There the credential
+// IS the account's and the WAY in is refused; here the credential was never
+// the account's, so the caller has not established who it is. The
+// certificate's Subject CN and OU say one thing, the account's enrolled public
+// keys say another, and the enrolment wins.
+//
+// PresentedThumbprint is the SPKI thumbprint of the certificate that was
+// refused. It is a hash of a public key the caller itself presented, so it is
+// not a secret, and it is exactly the value an operator needs in order to
+// enrol that certificate when the refusal turns out to be a missed enrolment
+// rather than an impersonation.
+type CertBindingNotPermittedError struct {
+	Username string
+	TenantID string
+
+	// PresentedThumbprint is the canonical SPKI thumbprint of the refused
+	// certificate, or empty when no peer certificate could be read at all.
+	PresentedThumbprint string
+}
+
+// Error returns a human-readable description naming the account and the
+// thumbprint that was refused.
+func (e *CertBindingNotPermittedError) Error() string {
+	presented := e.PresentedThumbprint
+	if presented == "" {
+		presented = "<no peer certificate>"
+	}
+	return "auth/middleware: presented certificate " + presented +
+		" is not bound to " + e.Username + " in tenant " + e.TenantID
+}
+
 // RateLimitedError is returned by authorize (go-qrdb#201) when the caller has
 // exceeded the Policy declared for the permission it is invoking. It carries
 // enough for a transport to answer a caller that can act on the refusal: the

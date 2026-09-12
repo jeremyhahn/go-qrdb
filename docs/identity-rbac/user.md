@@ -143,7 +143,25 @@ your certificate, and that it has a role.
 
 **You renewed a certificate and got locked out.** Renewal with the *same key*
 keeps the same binding. If you generated a new key, add a binding for it
-(`POST /users/{id}/cert-bindings`) or issue against the original key.
+(`POST /users/{id}/cert-bindings`) or issue against the original key. Bindings
+are additive, so the safe order for a key rotation is: enrol the new key first,
+then retire the old certificate. Done that way there is no window where you
+cannot log in.
+
+**"presented certificate … is not bound to …" (401).** The account has enrolled
+certificate bindings and the one you presented matches none of them. The CN and
+the OU on a certificate say which account you are attempting; the key is what
+proves it is yours, and this account has said which keys are its. Either you
+are using a certificate issued for a different key — enrol it, with the
+thumbprint the message quotes — or the certificate was issued for someone other
+than its subject, which is the case this check exists for.
+
+**Nobody can log in and there is no second administrator.** This is the
+standing break-glass for total credential loss and it is unchanged: restart the
+node with authentication disabled, enrol the certificate you do hold, and
+restart with authentication on. An account you never enrolled is not affected
+by any of this — it authenticates on its certificate's CN and OU as it always
+did.
 
 **"permission denied" on something you think you have.** Run
 `qrdb roles resolve-permissions` over the user's roles and look for the exact

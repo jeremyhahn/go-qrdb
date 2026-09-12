@@ -38,6 +38,18 @@ type Authorizer = auth.Authorizer
 // deployments.
 type NoopAuthorizer = auth.NoopAuthorizer
 
+// MethodMTLS is the name the built-in mTLS authenticator reports, and
+// therefore the exact token a user's permitted-method policy
+// (CreateUserRequest.AuthMethods / UpdateUserRequest.AuthMethods) must spell
+// to allow an mTLS login. It is re-exported so a consumer writing that policy
+// never has to guess the spelling the server compares against.
+//
+// It is also the method the certificate-binding gate applies to: an account
+// that has enrolled cert bindings (see AddCertBinding and
+// ComputeSPKIThumbprint) authenticates over mTLS only with a certificate whose
+// SPKI thumbprint matches one of them.
+const MethodMTLS = auth.MethodMTLS
+
 // ---------------------------------------------------------------------------
 // Auth context helpers
 // ---------------------------------------------------------------------------

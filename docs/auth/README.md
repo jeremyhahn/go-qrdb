@@ -34,8 +34,17 @@ Extracts identity from TLS peer certificates:
 | Field | Source |
 |-------|--------|
 | `Subject` | Certificate Subject CN |
-| `TenantID` | Certificate Subject OU[0] |
+| `TenantID` | the tenant-scoped SPIFFE URI SAN when present (with a configured trust domain PINNED), otherwise Certificate Subject OU[0] |
 | `Roles` | Not populated (external RBAC) |
+
+**Those fields SELECT the account; they do not prove it.** The authenticator
+produces a claim, and `auth/middleware.finalizeIdentity` then decides whether
+to believe it: an account with at least one SPKI `CertBindings` entry
+authenticates only with a certificate matching one of them
+(`*CertBindingNotPermittedError`, 401), while an account with none
+authenticates on the CN and OU alone. The SPIFFE SAN is not exempt — the same
+CA issues it. See
+[../identity-rbac/architecture.md](../identity-rbac/architecture.md#what-a-certificate-actually-claims).
 
 **It also enforces certificate revocation, on every request.** A peer
 certificate whose serial has been revoked is refused (`ErrCertificateRevoked`,

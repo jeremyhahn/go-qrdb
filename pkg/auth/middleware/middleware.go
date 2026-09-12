@@ -247,8 +247,10 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 }
 
 // finalizeIdentity enriches a base identity with its persistent role
-// assignments from the user store, enforces the user-enabled check, then binds
-// the identity and its tenant into the returned context. The base identity's
+// assignments from the user store, enforces the user-enabled check, the
+// account's mTLS certificate enrolment (checkCertBinding) and its
+// permitted-method policy (checkAuthMethod), then binds the identity and its
+// tenant into the returned context. The base identity's
 // Roles are overwritten with the store's RoleIDs: roles are ALWAYS resolved
 // from the authorization store, never trusted from the identity's origin (a
 // certificate, a token, or -- critically -- a forwarded on-behalf assertion).
@@ -335,6 +337,26 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 					Lifecycle: string(u.Lifecycle),
 				}
 			}
+			// Enforce the account's mTLS certificate enrolment BEFORE its
+			// permitted-method policy, because the two answer different
+			// questions and this one comes first: "is this credential
+			// yours?" precedes "may you come in this way?". A certificate
+			// that names an account it is not bound to has not identified
+			// anyone, so it must not be told which methods that account is
+			// permitted -- which is also why the two errors classify
+			// differently (401 versus 403).
+			//
+			// This is the layer that contains an unguarded certificate
+			// issuance path. Without it the Subject CN and OU ARE the
+			// authentication claim, and any path that mints a certificate
+			// naming someone else mints their identity. See checkCertBinding
+			// for what it does and does not enforce -- in particular that an
+			// account with no enrolled bindings authenticates exactly as
+			// before.
+			if cerr := checkCertBinding(ctx, u, method); cerr != nil {
+				return ctx, nil, cerr
+			}
+
 			// Enforce the account's permitted-method policy.
 			//
 			// User.AuthMethods says what an account MAY present. Storing it

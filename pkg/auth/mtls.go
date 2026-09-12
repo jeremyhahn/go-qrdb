@@ -111,9 +111,19 @@ func newMTLSAuthenticator(trustDomain string, opts []MTLSOption) *MTLSAuthentica
 	return a
 }
 
-// Name returns "mtls".
+// MethodMTLS is the name MTLSAuthenticator reports, and therefore the token a
+// user's permitted-method policy (user.User.AuthMethods) spells to allow an
+// mTLS login.
+//
+// It is a constant rather than a literal because two things now compare
+// against it — the permitted-method policy and the certificate-binding gate in
+// auth/middleware — and a second copy of the string is a second place for the
+// two to disagree.
+const MethodMTLS = "mtls"
+
+// Name returns MethodMTLS.
 func (a *MTLSAuthenticator) Name() string {
-	return "mtls"
+	return MethodMTLS
 }
 
 // TenantFromCert derives the tenant from a verified client certificate using

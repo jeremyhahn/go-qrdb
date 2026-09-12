@@ -156,6 +156,15 @@ var authFailureRules = []struct {
 		var e *AuthMethodNotPermittedError
 		return AuthFailureUnauthorized, errors.As(err, &e)
 	}},
+	// The certificate is not this account's credential at all, so the caller
+	// never established who it is: 401, not 403. Contrast the rule immediately
+	// above, where the credential IS the account's -- there, retrying is
+	// futile and the answer is "forbidden"; here, presenting the certificate
+	// the account actually enrolled works.
+	{"CertBindingNotPermittedError", func(err error) (AuthFailureClass, bool) {
+		var e *CertBindingNotPermittedError
+		return AuthFailureUnauthenticated, errors.As(err, &e)
+	}},
 	{"AuthChainError", func(err error) (AuthFailureClass, bool) {
 		var e *AuthChainError
 		return AuthFailureUnauthenticated, errors.As(err, &e)

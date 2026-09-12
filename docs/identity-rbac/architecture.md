@@ -41,6 +41,54 @@ renewed certificate for the same key produces the same thumbprint, so bindings
 survive renewal — which is what makes certificate rotation an operation rather
 than a re-enrolment.
 
+### What a certificate actually claims
+
+The three fields above are not equally trusted, and the difference is the whole
+of mTLS security here:
+
+| Field | What it is |
+|---|---|
+| Subject CN, Subject OU, SPIFFE tenant SAN | **an assertion by the CA** about who this certificate is for. They select WHICH account the login is attempted against. |
+| SPKI thumbprint | **proof of possession**, established by the TLS handshake itself. The peer signed with the private key; nobody else could have. |
+
+So the CN and the OU say who the holder claims to be, and only the thumbprint
+says who the holder demonstrably is. An account is **enrolled** when it has at
+least one `CertBindings` entry, and enrolment is what makes the difference
+load-bearing:
+
+- **An enrolled account authenticates only by possession.** The certificate is
+  matched against the account's bindings with `User.MatchesCert`, which is
+  SPKI-based and expiry-checked. A certificate whose CN and OU name that
+  account but whose key it never enrolled is refused — even when the
+  certificate is validly signed by the cluster CA, and even when its tenant
+  came from a SPIFFE SAN rather than the OU fallback. **The SAN carries no
+  extra weight: it is issued by the same CA as the OU.**
+- **An unenrolled account authenticates by the CA's assertion alone**, exactly
+  as every deployment did before enrolment was enforced. An empty binding set
+  states no restriction, the same statement an empty `AuthMethods` makes.
+
+This is deliberately **fail-closed per account rather than per fleet**. The
+alternative — requiring a binding of everyone — locks out every account nobody
+has enrolled, including the bootstrap admin on a node whose first boot wired no
+`CertBinder` (there is then no certificate in existence to have enrolled), and
+the way back in needs a permission that needs a login. Refusing to admit an
+unenrolled account is therefore a migration event; admitting it is not, and the
+cost of admitting it is stated above rather than hidden.
+
+**The consequence for certificate issuance** is that every path that mints a
+certificate remains security-relevant for unenrolled accounts — an unguarded
+one hands out an identity, not merely a misfiled certificate. Enrolment is what
+contains that, one layer below issuance: see
+[../certificate-authority/](../certificate-authority/architecture.md).
+
+The check runs in `auth/middleware.finalizeIdentity`, the single funnel every
+authenticated identity crosses on every transport, beside the lifecycle and
+permitted-method gates. It applies only where the presented credential IS the
+certificate on the connection: a forwarded on-behalf assertion and a capability
+module's own session-token plane reach that funnel with no observable method,
+and the certificate on those connections belongs to the forwarding node or the
+module, not to the subject.
+
 ### Three authorization inputs on one user
 
 | Field | Model | Meaning |
@@ -157,7 +205,10 @@ handle, so a global index would forbid that while buying nothing.
 - **The tenant comes from the certificate, never from the request.** This is the
   root of tenant isolation across every feature.
 - **Enrolment bindings are SPKI thumbprints**, so possession of the private key
-  is what authenticates.
+  is what authenticates. An account holding at least one binding is refused any
+  certificate that matches none of them, whatever its CN, OU or SPIFFE SAN say;
+  an account holding none states no restriction. See
+  [What a certificate actually claims](#what-a-certificate-actually-claims).
 - **`Lifecycle` is the single source of truth for whether an account may
   authenticate** — `pending` · `active` · `suspended` · `locked` · `disabled` ·
   `deleting`, with `Enabled` a derived projection (`Lifecycle == active`)
