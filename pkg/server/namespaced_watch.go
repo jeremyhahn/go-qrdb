@@ -48,7 +48,7 @@ func (s *namespacedWatchService) Watch(ctx context.Context, key string, opts ...
 	if err != nil {
 		return nil, err
 	}
-	return newNamespacedWatcher(w, s.prefix), nil
+	return newNamespacedWatcher(ctx, w, s.prefix), nil
 }
 
 // WatchPrefix watches all keys matching the given prefix within the namespace,
@@ -58,7 +58,7 @@ func (s *namespacedWatchService) WatchPrefix(ctx context.Context, prefix string,
 	if err != nil {
 		return nil, err
 	}
-	return newNamespacedWatcher(w, s.prefix), nil
+	return newNamespacedWatcher(ctx, w, s.prefix), nil
 }
 
 // WatchEntity watches a specific entity, prefixing its ID so the watched key is
@@ -73,7 +73,7 @@ func (s *namespacedWatchService) WatchEntity(ctx context.Context, req *service.W
 	if err != nil {
 		return nil, err
 	}
-	return s.pumpEntityEvents(in, false), nil
+	return s.pumpEntityEvents(ctx, in, false), nil
 }
 
 // WatchEntityType watches all entities of a type, filtering delivered events to
@@ -83,7 +83,7 @@ func (s *namespacedWatchService) WatchEntityType(ctx context.Context, req *servi
 	if err != nil {
 		return nil, err
 	}
-	return s.pumpEntityEvents(in, true), nil
+	return s.pumpEntityEvents(ctx, in, true), nil
 }
 
 // pumpEntityEvents forwards entity events, stripping the namespace prefix from
@@ -96,20 +96,46 @@ func (s *namespacedWatchService) WatchEntityType(ctx context.Context, req *servi
 // cannot reconstruct, handing back the silent close the service layer just
 // stopped producing. It is also the last thing the stream says, so the pump
 // stops there rather than waiting for a close that can add nothing.
-func (s *namespacedWatchService) pumpEntityEvents(in <-chan service.WatchEntityEvent, filter bool) <-chan service.WatchEntityEvent {
+//
+// EVERY channel operation selects on ctx. A consumer ends a watch by cancelling
+// the context it opened it with, so a cancel racing a delivery is the ordinary
+// way this stream finishes, and a bare send on the unbuffered handover would
+// have no reader and park for the life of the process — one goroutine per
+// cancelled watch, and the deferred close(out) never running, on a wrapper
+// every namespaced deployment puts on every watch (go-qrdb#499). Buffering does
+// not fix that; it moves the block to the send after the buffer fills. The
+// service layer's own relay already selects (service.WatchService.
+// relayEntityEvents), which is why the cancel released it and stopped one hop
+// short of here.
+func (s *namespacedWatchService) pumpEntityEvents(ctx context.Context, in <-chan service.WatchEntityEvent, filter bool) <-chan service.WatchEntityEvent {
 	out := make(chan service.WatchEntityEvent)
 	go func() {
 		defer close(out)
-		for ev := range in {
-			if ev.Canceled {
-				out <- ev
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case ev, ok := <-in:
+				if !ok {
+					return
+				}
+				if ev.Canceled {
+					select {
+					case out <- ev:
+					case <-ctx.Done():
+					}
+					return
+				}
+				if filter && !strings.HasPrefix(ev.ID, s.prefix) {
+					continue
+				}
+				ev.ID = strings.TrimPrefix(ev.ID, s.prefix)
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
 			}
-			if filter && !strings.HasPrefix(ev.ID, s.prefix) {
-				continue
-			}
-			ev.ID = strings.TrimPrefix(ev.ID, s.prefix)
-			out <- ev
 		}
 	}()
 	return out
@@ -128,24 +154,53 @@ var _ watch.Watcher = (*namespacedWatcher)(nil)
 
 // newNamespacedWatcher creates a watcher that strips the namespace prefix from
 // event keys. It launches a goroutine that forwards events from the inner
-// watcher until the inner channel is closed (which happens on Close).
-func newNamespacedWatcher(inner watch.Watcher, prefix string) *namespacedWatcher {
+// watcher until the inner channel is closed (which happens on Close) or ctx is
+// done. ctx is the context the watch was opened with — the one whose
+// cancellation is how a consumer ends the watch.
+func newNamespacedWatcher(ctx context.Context, inner watch.Watcher, prefix string) *namespacedWatcher {
 	w := &namespacedWatcher{
 		inner:  inner,
 		prefix: prefix,
 		out:    make(chan watch.WatchResponse),
 	}
-	go w.pump()
+	go w.pump(ctx)
 	return w
 }
 
 // pump forwards responses from the inner watcher, stripping event keys, until
-// the inner channel is closed.
-func (w *namespacedWatcher) pump() {
+// the inner channel is closed or ctx is done.
+//
+// EVERY channel operation selects on ctx, for the reason spelled out on
+// pumpEntityEvents: cancelling the watch is how a consumer leaves, so an
+// unguarded send on the unbuffered handover parks forever the first time a
+// cancel races a delivery (go-qrdb#499). The inner watcher's own event channel
+// closing is NOT enough to release it — the parked send never gets back to the
+// receive that would observe the close.
+//
+// The pump does not close the inner watcher on its way out, and that is
+// deliberate: namespacedWatcher IS a watch.Watcher, so its consumer owns it and
+// releases it through Close, which forwards. Closing here would make the
+// wrapper a second owner of a watcher it was handed. Nothing is stranded by
+// that — the inner watcher was opened with this same ctx, so the hub's own
+// cleanup deregisters it when the ctx is cancelled whether or not anyone calls
+// Close.
+func (w *namespacedWatcher) pump(ctx context.Context) {
 	defer close(w.out)
-	for resp := range w.inner.Events() {
-		resp.Events = w.stripEvents(resp.Events)
-		w.out <- resp
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resp, ok := <-w.inner.Events():
+			if !ok {
+				return
+			}
+			resp.Events = w.stripEvents(resp.Events)
+			select {
+			case w.out <- resp:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
 

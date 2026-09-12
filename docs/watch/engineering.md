@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-12
 
 ## Exported surface
 
@@ -55,14 +55,26 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
 
 - **The channel is closed exactly once**, when the stream ends. A caller ranging
   over it terminates rather than blocking forever.
-- **Cancelling a watch releases the goroutine behind it.** A consumer ends a
-  watch by cancelling the context it opened it with, and the transport goroutine
-  forwarding responses to it selects on that context for *every* operation,
-  including the send. It has to: a consumer that has stopped reading is the
-  normal way a watch ends, so a bare send on the handover channel parks
-  permanently the first time a cancel races a delivery — one goroutine per
+- **Cancelling a watch releases every goroutine behind it.** A consumer ends a
+  watch by cancelling the context it opened it with, and *each* goroutine
+  forwarding responses along the chain selects on that context for *every*
+  channel operation, including the send. It has to: a consumer that has stopped
+  reading is the normal way a watch ends, so a bare send on a handover channel
+  parks permanently the first time a cancel races a delivery — one goroutine per
   cancelled watch, silently, in proportion to watch churn. Buffering the channel
   does not change this; it moves the block to the send after the buffer fills.
+
+  **The chain, not just its last link.** A namespaced (tenant, database) watch
+  runs through a wrapper between the service layer and the transport, and it has
+  a forwarding goroutine of its own for the key/prefix stream and another for
+  the entity stream. A select in the service relay and a select in the transport
+  do not cover a hop between them, so the guarantee is stated over the whole
+  chain and each hop is measured the same way: churn abandoned watches with a
+  delivery in flight at the cancel and assert the live goroutine count returns
+  to its baseline. A leak reproduces only when the reader is *already gone while
+  a send is in flight* — a cancel with nothing pending lets even an unguarded
+  loop see the inner channel close and exit, which is why a plain
+  cancel-and-assert-closed test passes against the defect.
 - **`WatchResponse.Err()` is the only correct way to test a response for
   failure.** It returns `nil` unless `Canceled` is set, and otherwise classifies
   `CancelReason` into a typed error. Comparing the reason string directly is a
@@ -130,13 +142,31 @@ maximum instead of reaching zero.
 
 ## Error semantics
 
-`ClassifyWatchError` and `WatchResponse.Err()` map a cancel reason to:
+`ClassifyWatchError` and `WatchResponse.Err()` map a reason to:
 
 | Typed error | Raised when | Caller's move |
 |---|---|---|
 | `WatchCompactedError` | the requested start revision has been compacted away | re-read current state, then watch live |
 | `WatchStartRevisionUnsupportedError` | the store keeps no revision history (`raft.sm_type` is not `mvcc`) | drop `StartRevision` and watch live |
 | `WatchCanceledError` | any other cancellation, reason carried verbatim | inspect the reason |
+
+**A refused start revision is validated at open**, before any watcher exists, so
+it reaches the caller as the error `Watch`/`WatchPrefix` returns rather than as
+a terminal response — there is no stream yet for one to travel on. The two
+helpers are the two arrival paths for the same condition, and which one a
+transport uses is a property of the transport, not of the condition:
+
+| Arrival | Transports | Classified by |
+|---|---|---|
+| the error returned by the open call | embedded, REST, gRPC, Unix | `ClassifyWatchError` |
+| a terminal response on the stream | QUIC, MCP; and on every transport when a compaction outruns an in-progress replay | `WatchResponse.Err()` |
+
+Both produce the same typed error for the same hub-side condition, so
+`errors.As` is written once and is correct on all six. That is an invariant, not
+a coincidence: every transport that reports the refusal as an open error routes
+it through `ClassifyWatchError`, and a transport that translated it as an
+ordinary service error would hand back a generic `RequestError` and break
+`errors.As` for that caller alone.
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|

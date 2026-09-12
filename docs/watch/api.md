@@ -1,6 +1,6 @@
 # Watch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-12
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its method matches the gRPC column.
@@ -88,13 +88,25 @@ consumer should not compare it against a literal.
 | Missing permission | 403 | `PERMISSION_DENIED` | refused at open |
 | Barrier sealed | 503 | `UNAVAILABLE` | refused at open |
 | Start revision above current | 400 | `INVALID_ARGUMENT` | refused at open |
-| Start revision compacted away | — | — | in-band: `canceled: true`, reason classifies to `WatchCompactedError` |
-| Store cannot replay (`raft.sm_type` is not `mvcc`) | — | — | in-band: reason classifies to `WatchStartRevisionUnsupportedError` |
+| Start revision compacted away | 416 | `OUT_OF_RANGE` | refused at open; the SDK error classifies to `WatchCompactedError` |
+| Store cannot replay (`raft.sm_type` is not `mvcc`) | 501 | `UNIMPLEMENTED` | refused at open; the SDK error classifies to `WatchStartRevisionUnsupportedError` |
+| Compaction outruns an in-progress replay | — | — | in-band: `canceled: true`, reason classifies to `WatchCompactedError` |
 | Server shutting down | — | — | in-band: `canceled: true` with reason |
+
+A start revision the store cannot serve is validated **before** the stream
+opens, so it is answered with a status rather than in-band: the two revision
+rows above are refusals, not cancellations. QUIC and MCP are the exception by
+construction — both return their channel before the server has answered, so
+their refusal arrives as the stream's first and only terminal response.
 
 Failures **after** the stream opens are reported in-band rather than as a status
 code, because by then the status line is already sent. That is why every
 abnormal termination carries a reason and no stream ever closes silently.
+
+Either arrival yields the same typed SDK error, so a caller writes one
+`errors.As` and it holds on every transport: the open error is classified by
+`ClassifyWatchError` and the terminal response by `WatchResponse.Err()`. See
+[engineering.md](engineering.md) § *Error semantics*.
 
 ## Pagination
 

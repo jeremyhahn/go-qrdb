@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -458,5 +459,143 @@ func TestEmbeddedWatch_InBandCancellationEndsTheStream(t *testing.T) {
 	}
 	if !got[0].Canceled || got[0].CancelReason != "hub evicted the watcher" {
 		t.Fatalf("terminal frame = %+v", got[0])
+	}
+}
+
+// ===========================================================================
+// Open-time refusal (go-qrdb#495)
+//
+// A start revision the hub refuses fails the OPEN call, before any watcher
+// exists, so there is no stream for a terminal frame to travel on and no
+// WatchResponse.Err() to classify it. The three request/response transports
+// run that error through transport.ClassifyWatchError so the caller still gets
+// the typed error (sdk/go/transport/{grpc,unix,rest}/transport_watch.go); the
+// embedded transport translated it as an ordinary service error and handed back
+// a generic *transport.RequestError, so errors.As for the documented remedy —
+// drop StartRevision and retry live — matched on four transports and silently
+// did not on the fifth.
+// ===========================================================================
+
+// openWatchFn names one of the two WatchClient entry points. They are separate
+// interface methods reached by different callers, so every open-time case runs
+// against both.
+type openWatchFn func(*Transport, context.Context, string, transport.WatchOptions) (<-chan transport.WatchResponse, error)
+
+// watchOpeners are the two entry points under test, by the name a caller knows.
+var watchOpeners = map[string]openWatchFn{
+	"Watch": func(tr *Transport, ctx context.Context, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+		return tr.Watch(ctx, target, opts)
+	},
+	"WatchPrefix": func(tr *Transport, ctx context.Context, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+		return tr.WatchPrefix(ctx, target, opts)
+	},
+}
+
+// TestEmbeddedWatch_UnsupportedStartRevisionIsTyped asserts a hub with no
+// history replayer refuses a start revision with the typed error a caller can
+// match, on both entry points.
+func TestEmbeddedWatch_UnsupportedStartRevisionIsTyped(t *testing.T) {
+	for name, open := range watchOpeners {
+		t.Run(name, func(t *testing.T) {
+			tr, _ := realWatchTransport(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch, err := open(tr, ctx, "history", transport.WatchOptions{StartRevision: 5})
+			if err == nil {
+				t.Fatalf("%s opened a watch a hub with no history can not serve; channel %v", name, ch)
+			}
+
+			var unsupported *transport.WatchStartRevisionUnsupportedError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("%s open error = %T (%v), want *transport.WatchStartRevisionUnsupportedError", name, err, err)
+			}
+			if !strings.Contains(unsupported.Reason, watch.ErrStartRevisionUnsupported.Error()) {
+				t.Errorf("Reason = %q, want it to carry %q", unsupported.Reason, watch.ErrStartRevisionUnsupported.Error())
+			}
+		})
+	}
+}
+
+// TestEmbeddedWatch_CompactedStartRevisionIsTyped asserts a start revision
+// already compacted out of the change history is refused with the typed error,
+// on both entry points. It is the condition whose documented remedy differs
+// from the unsupported one — resume from the compacted revision rather than
+// abandon replay entirely — so telling them apart is the point.
+func TestEmbeddedWatch_CompactedStartRevisionIsTyped(t *testing.T) {
+	for name, open := range watchOpeners {
+		t.Run(name, func(t *testing.T) {
+			tr, hub := realWatchTransport(t)
+			hub.SetHistory(&stubHistory{current: 10, compacted: 7})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch, err := open(tr, ctx, "history", transport.WatchOptions{StartRevision: 5})
+			if err == nil {
+				t.Fatalf("%s opened a watch from a compacted revision; channel %v", name, ch)
+			}
+
+			var compacted *transport.WatchCompactedError
+			if !errors.As(err, &compacted) {
+				t.Fatalf("%s open error = %T (%v), want *transport.WatchCompactedError", name, err, err)
+			}
+			if !strings.Contains(compacted.Reason, watch.ErrCompacted.Error()) {
+				t.Errorf("Reason = %q, want it to carry %q", compacted.Reason, watch.ErrCompacted.Error())
+			}
+		})
+	}
+}
+
+// TestEmbeddedWatch_AcceptedStartRevisionOpensCleanly is the negative half: a
+// start revision the hub CAN serve still opens, delivers, and reports no error.
+// Classification runs only on the failure path, and a test that only ever looks
+// at failures would not notice if it started rejecting good opens.
+func TestEmbeddedWatch_AcceptedStartRevisionOpensCleanly(t *testing.T) {
+	for name, open := range watchOpeners {
+		t.Run(name, func(t *testing.T) {
+			tr, hub := realWatchTransport(t)
+			hub.SetHistory(&stubHistory{current: 10, compacted: 2})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch, err := open(tr, ctx, "history", transport.WatchOptions{StartRevision: 5})
+			if err != nil {
+				t.Fatalf("%s refused a start revision the hub can serve: %T (%v)", name, err, err)
+			}
+			if ch == nil {
+				t.Fatalf("%s returned a nil channel with a nil error", name)
+			}
+		})
+	}
+}
+
+// TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation is the other negative:
+// classifying the watch conditions must not displace the translation every
+// other service error goes through. A refusal that is not a watch-history
+// condition still arrives as the transport type translateError maps it to.
+func TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation(t *testing.T) {
+	for name, open := range watchOpeners {
+		t.Run(name, func(t *testing.T) {
+			refuse := func(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
+				return nil, &service.CapabilityUnsupportedError{Message: "watch is not configured on this shard"}
+			}
+			tr := newExtTransport(t, WithWatchService(&mockWatchService{
+				watchFn:       refuse,
+				watchPrefixFn: refuse,
+			}))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			_, err := open(tr, ctx, "anything", transport.WatchOptions{})
+
+			var unsupported *transport.CapabilityUnsupportedError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("%s open error = %T (%v), want *transport.CapabilityUnsupportedError", name, err, err)
+			}
+		})
 	}
 }

@@ -1207,10 +1207,26 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 
 // watchStream opens a watcher for target through open and spawns the goroutine
 // that forwards its responses to the returned channel.
+//
+// A refused start revision fails HERE, before any watcher exists, so there is
+// no stream for a terminal frame to travel on and no WatchResponse.Err() to
+// classify it — the open error is all the caller ever sees. It therefore runs
+// through transport.ClassifyWatchError, exactly as the open error does in
+// sdk/go/transport/{grpc,unix,rest}/transport_watch.go, so a compacted or
+// unsupported start revision arrives as *transport.WatchCompactedError or
+// *transport.WatchStartRevisionUnsupportedError on this transport too.
+// Translating alone left it a generic RequestError, and the remedy the watch
+// error table documents — errors.As for the unsupported case, drop
+// StartRevision, retry live — matched on every other transport and silently
+// did not on this one (go-qrdb#495).
+//
+// Classification runs AFTER translateError, not instead of it: it inspects the
+// message and returns its argument unchanged when nothing matches, so every
+// non-watch refusal keeps the transport type translateError maps it to.
 func (t *Transport) watchStream(ctx context.Context, open watchOpener, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
 	watcher, err := open(ctx, target, toServiceWatchOpts(opts)...)
 	if err != nil {
-		return nil, translateError(err)
+		return nil, transport.ClassifyWatchError(translateError(err))
 	}
 
 	ch := make(chan transport.WatchResponse)

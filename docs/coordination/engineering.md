@@ -16,7 +16,7 @@ limitations under the License.
 
 # Coordination — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-12
 
 ## Where it lives
 
@@ -490,8 +490,14 @@ parking the embedded transport's forwarding goroutine — and both were properti
 of `embedded.Transport.WatchPrefix` alone. Both are fixed, and the coordination
 layer needs no transport-specific caveat as a result: an eviction now arrives
 with its reason on every transport, and cancelling a watch releases everything
-behind it on every transport. See the invariants in
-[../watch/engineering.md](../watch/engineering.md).
+behind it.
+
+That second guarantee is stated over the whole forwarding chain rather than
+over the transport, because the chain is longer than one hop: a namespaced
+(tenant, database) watch passes through a server-side wrapper with forwarding
+goroutines of its own, and it parked on exactly the same unguarded handover
+after the transport had stopped. Every hop selects on the caller's context now.
+See the invariants in [../watch/engineering.md](../watch/engineering.md).
 
 What remains is not a limitation but the design above: `Err()` is meaningful
 only after `Events()` has closed, and a consumer whose correctness depends on
