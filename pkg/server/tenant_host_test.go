@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/jeremyhahn/go-objstore/pkg/local"
@@ -231,18 +230,9 @@ func TestTenantHost_FullEngineIsolationAndEncryption(t *testing.T) {
 		t.Error("tb MVCC.Get found ta-only key — isolation breach")
 	}
 
-	// Time-series engine works (proves the full state machine).
-	ts := time.Now()
-	if err := ha.services.TimeSeries.Write(ctx, "cpu", 0.42, ts, map[string]string{"host": "a"}); err != nil {
-		t.Fatalf("ta TimeSeries.Write: %v", err)
-	}
-	points, err := ha.services.TimeSeries.Query(ctx, "cpu", ts.Add(-time.Minute), ts.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("ta TimeSeries.Query: %v", err)
-	}
-	if len(points) == 0 {
-		t.Error("ta TimeSeries.Query returned no points")
-	}
+	// Time-series engine reached through the same seam (proves the full state
+	// machine, not KV-only).
+	assertTimeSeriesLeg(ctx, t, ha.services.TimeSeries, "ta ", "cpu")
 
 	// Encryption at rest: close ta's host so files flush, then scan every file
 	// under its DataRoot/databases for the plaintext secret. It must not appear.

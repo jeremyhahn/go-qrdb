@@ -124,12 +124,40 @@ func TestDedicatedStore_PutIfAbsentStoresExactlyOnce(t *testing.T) {
 	assert.Equal(t, strconv.FormatInt(winner.Load(), 10), string(got))
 }
 
+// swapGuard is the value TestDedicatedStore_CompareAndSwapSwapsExactlyOnce seeds
+// the contended key with, and it is deliberately NOT of the form a claimant
+// can produce.
+//
+// CompareAndSwap is the only one of the three guarded verbs whose fixture can
+// build a next-value equal to its own expected-value, and that asymmetry is
+// worth stating because it is not obvious and it cost two issues to find
+// (go-qrdb#512, go-qrdb#513):
+//
+//   - PutIfAbsent has no next-vs-expected pair. Its guard is the key's
+//     ABSENCE, and no value a winner stores can restore that.
+//   - CompareAndDelete writes nothing. Its guard is a value that the winning
+//     delete removes, and a removed key cannot match it again.
+//   - CompareAndSwap writes a caller-chosen value over the guard. If that
+//     value EQUALS the guard, the winning swap is invisible: the key still
+//     holds the expected value, so the next claimant matches and legitimately
+//     wins too. Two winners is then the correct answer to what the fixture
+//     asked, and the exactly-once assertion fails against a correct
+//     primitive. The original fixture seeded "v0" and had claimant i swap to
+//     "v"+i, so claimant 0 re-armed the guard; it failed ~12/200 plain and
+//     near-always under -race.
+//
+// So: a claimant's next-value must be disjoint from the guard. Anyone adding a
+// fourth guarded verb whose success WRITES should reach for this rule rather
+// than for the value-generation pattern that preceded it.
+const swapGuard = "guard"
+
 func TestDedicatedStore_CompareAndSwapSwapsExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	kv := newDedicatedStoreKV(t)
-	require.NoError(t, kv.Put(ctx, "k", []byte("v0")))
+	require.NoError(t, kv.Put(ctx, "k", []byte(swapGuard)))
 
 	var swapped atomic.Int64
+	var winner atomic.Int64
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < claimants; i++ {
@@ -137,20 +165,30 @@ func TestDedicatedStore_CompareAndSwapSwapsExactlyOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			ok, err := kv.CompareAndSwap(ctx, "k", []byte("v0"), []byte("v"+strconv.Itoa(i)))
+			ok, err := kv.CompareAndSwap(ctx, "k", []byte(swapGuard), []byte("next-"+strconv.Itoa(i)))
 			if err != nil {
 				t.Errorf("CompareAndSwap: unexpected error %v", err)
 				return
 			}
 			if ok {
 				swapped.Add(1)
+				winner.Store(int64(i))
 			}
 		}(i)
 	}
 	close(start)
 	wg.Wait()
 
-	assert.Equal(t, int64(1), swapped.Load(), "more than one caller believed it won the swap")
+	require.Equal(t, int64(1), swapped.Load(), "more than one caller believed it won the swap")
+
+	// The stored value belongs to the single caller that was told it won --
+	// the assertion the guard collision was silently defeating, since an
+	// invisible self-swap leaves the key holding the guard and not a next
+	// value at all.
+	got, err := kv.Get(ctx, "k")
+	require.NoError(t, err)
+	assert.Equal(t, "next-"+strconv.FormatInt(winner.Load(), 10), string(got),
+		"the stored value is not the one whose swap reported success")
 }
 
 func TestDedicatedStore_CompareAndDeleteDeletesExactlyOnce(t *testing.T) {
@@ -179,7 +217,15 @@ func TestDedicatedStore_CompareAndDeleteDeletesExactlyOnce(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	assert.Equal(t, int64(1), deleted.Load(), "more than one caller believed it released the lock")
+	require.Equal(t, int64(1), deleted.Load(), "more than one caller believed it released the lock")
+
+	// The lock really is released. CompareAndDelete cannot re-arm its own
+	// guard -- it writes nothing -- but the outcome is still worth asserting,
+	// so a delete that reported success without removing anything is caught
+	// here rather than by whatever takes the lock next.
+	var notFound *KeyNotFoundError
+	_, err := kv.Get(ctx, "lock")
+	assert.ErrorAs(t, err, &notFound, "the winning delete reported success but the lock is still held")
 }
 
 // TestRemoteBackendKV_StillRefusesGuardedWrites keeps the refusal honest. The

@@ -163,13 +163,7 @@ func TestRaftBackendFactory_DataDirUnderTenantRoot(t *testing.T) {
 	if got, err := svcs.MVCC.Get(ctx, "m"); err != nil || string(got) != "mv" {
 		t.Fatalf("MVCC.Get = %q, %v; want mv", got, err)
 	}
-	ts := time.Now()
-	if err := svcs.TimeSeries.Write(ctx, "cpu", 0.5, ts, map[string]string{"h": "1"}); err != nil {
-		t.Fatalf("TimeSeries.Write: %v", err)
-	}
-	if pts, err := svcs.TimeSeries.Query(ctx, "cpu", ts.Add(-time.Minute), ts.Add(time.Minute)); err != nil || len(pts) == 0 {
-		t.Fatalf("TimeSeries.Query = %d points, %v; want >=1", len(pts), err)
-	}
+	assertTimeSeriesLeg(ctx, t, svcs.TimeSeries, "", "cpu")
 
 	// The SM data must live under {DataRoot}/databases/app/shard-<N>.
 	shardDir := filepath.Join(dataRoot, "databases", "app", "shard-1000")
