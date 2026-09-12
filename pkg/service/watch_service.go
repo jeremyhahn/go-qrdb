@@ -39,12 +39,19 @@ type WatchServicer interface {
 	// by its type and ID. Events are transformed from raw KV events
 	// into entity-typed events and delivered on the returned channel.
 	// The channel is closed when the context is canceled.
+	//
+	// A watch that ends for a reason — a watcher evicted for overflow, a
+	// compaction that outran an in-progress replay — delivers one final
+	// event with Canceled set and the reason carried verbatim before the
+	// channel closes. A watch that ends cleanly delivers no such event, so
+	// the two are told apart by what arrived, not by the closure.
 	WatchEntity(ctx context.Context, req *WatchEntityRequest) (<-chan WatchEntityEvent, error)
 
 	// WatchEntityType watches for changes to all entities of a given
 	// type. Events are transformed from raw KV prefix-watch events
 	// into entity-typed events and delivered on the returned channel.
-	// The channel is closed when the context is canceled.
+	// The channel is closed when the context is canceled. It carries the
+	// same terminal event as WatchEntity when the watch ends for a reason.
 	WatchEntityType(ctx context.Context, req *WatchEntityTypeRequest) (<-chan WatchEntityEvent, error)
 }
 
@@ -140,7 +147,16 @@ func (s *WatchService) WatchEntityType(ctx context.Context, req *WatchEntityType
 // relayEntityEvents reads from a raw watcher and transforms events into
 // entity-typed events, sending them on the output channel. The goroutine
 // exits when the watcher's event channel is closed or the context is
-// canceled.
+// canceled, and it always closes the output channel and the watcher on its
+// way out.
+//
+// It also carries the terminal half of the watch contract. The hub ends a
+// watch it evicts by recording the reason on the watcher and closing the
+// event channel WITHOUT emitting a terminal response, so turning that into
+// something the consumer can read is this relay's job — exactly as it is the
+// job of every transport handler on the key-value watch. Returning on channel
+// close without consulting Err() made an overflow eviction, or a compaction
+// racing an in-progress replay, arrive as an ordinary clean close.
 func (s *WatchService) relayEntityEvents(ctx context.Context, w watch.Watcher, entityType EntityType, out chan<- WatchEntityEvent) {
 	defer close(out)
 	defer func() {
@@ -155,6 +171,17 @@ func (s *WatchService) relayEntityEvents(ctx context.Context, w watch.Watcher, e
 			return
 		case resp, ok := <-w.Events():
 			if !ok {
+				if wErr := w.Err(); wErr != nil {
+					sendTerminalEntityEvent(ctx, entityType, wErr.Error(), out)
+				}
+				return
+			}
+			// A hub that fronts a remote stream reports a cancellation the way
+			// every wire client does: in-band on the response. Forward it and
+			// stop, as those clients do — a stream that has said why it ended
+			// has nothing further to say.
+			if resp.Canceled {
+				sendTerminalEntityEvent(ctx, entityType, resp.CancelReason, out)
 				return
 			}
 			for _, evt := range resp.Events {
@@ -186,5 +213,20 @@ func (s *WatchService) relayEntityEvents(ctx context.Context, w watch.Watcher, e
 				}
 			}
 		}
+	}
+}
+
+// sendTerminalEntityEvent delivers the single event that names why a watch
+// ended. It is only ever called with a reason: a watch that ended cleanly
+// sends nothing, which is what keeps the two apart for the consumer.
+//
+// The reason travels verbatim. transport.WatchResponse.Err() classifies a
+// cancellation by that text, so preserving it is what lets a compacted entity
+// replay be recognized in-process as the same condition it is over the wire;
+// summarizing or recoding it would break the classification silently.
+func sendTerminalEntityEvent(ctx context.Context, entityType EntityType, reason string, out chan<- WatchEntityEvent) {
+	select {
+	case out <- WatchEntityEvent{EntityType: entityType, Canceled: true, CancelReason: reason}:
+	case <-ctx.Done():
 	}
 }

@@ -89,11 +89,22 @@ func (s *namespacedWatchService) WatchEntityType(ctx context.Context, req *servi
 // pumpEntityEvents forwards entity events, stripping the namespace prefix from
 // each event ID. When filter is true, events whose ID does not fall under the
 // namespace are dropped (used for type-level watches that span the store).
+//
+// The terminal event is exempt from both. It reports why the STREAM ended and
+// names no entity, so it has no ID to strip and none to match the namespace
+// against — a filter applied to it would discard the one event the consumer
+// cannot reconstruct, handing back the silent close the service layer just
+// stopped producing. It is also the last thing the stream says, so the pump
+// stops there rather than waiting for a close that can add nothing.
 func (s *namespacedWatchService) pumpEntityEvents(in <-chan service.WatchEntityEvent, filter bool) <-chan service.WatchEntityEvent {
 	out := make(chan service.WatchEntityEvent)
 	go func() {
 		defer close(out)
 		for ev := range in {
+			if ev.Canceled {
+				out <- ev
+				return
+			}
 			if filter && !strings.HasPrefix(ev.ID, s.prefix) {
 				continue
 			}

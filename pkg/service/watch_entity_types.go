@@ -71,4 +71,26 @@ type WatchEntityEvent struct {
 
 	// Type indicates whether the entity was put or deleted.
 	Type WatchEventType
+
+	// Canceled marks the single terminal event a watch delivers when it ended
+	// for a reason rather than cleanly. It carries no entity change: ID, Data
+	// and Revision are zero, and only EntityType and CancelReason are set. A
+	// watch that ended cleanly — the caller cancelled its context, or the hub
+	// shut down without recording an error — delivers no such event at all and
+	// simply closes its channel. That asymmetry is the whole point: it is what
+	// makes "ended cleanly" and "ended for a reason" distinguishable without
+	// inspecting the closure.
+	//
+	// The pair mirrors watch.WatchResponse, which is how the key-value watch
+	// says the same thing at this layer and what every transport renders.
+	Canceled bool
+
+	// CancelReason is the reason the watch ended, set only when Canceled is
+	// true. It is the watcher error's own message, VERBATIM — never summarized
+	// and never recoded — because the reason text is what downstream
+	// classification reads: transport.WatchResponse.Err() turns exactly this
+	// string into a typed error, so a compacted replay is recognized in-process
+	// as the same condition it is over the wire. Reformatting it breaks that
+	// silently.
+	CancelReason string
 }

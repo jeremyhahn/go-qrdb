@@ -1,6 +1,6 @@
 # Watch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Problem
 
@@ -22,6 +22,28 @@ replayed from a caller-named revision.
 - **Cancellation is in-band.** A cancelled stream delivers a final response with
   `Canceled: true` and a reason, rather than closing silently.
 
+### Entity watch
+
+The same stream, projected onto entities. `WatchServicer.WatchEntity` and
+`WatchEntityType` watch one entity (`{type}/{id}`) or every entity of a type
+(`{type}/`), and transform raw key-value events into `WatchEntityEvent`s
+carrying the entity's type, ID, payload and revision. It is an in-process
+service-layer surface — no transport exposes it — and the namespacing wrapper
+that scopes a watch to one (tenant, database) pair is its only consumer.
+
+**Cancellation is in-band here too**, for the same reason and in the same
+shape: a `WatchEntityEvent` with `Canceled` set and a `CancelReason` is the
+last thing an entity stream delivers when it ended for a reason, and a stream
+that ended cleanly delivers no such event. The reason is the watcher error's
+message verbatim, so a termination classifies the same way it would on the
+key-value stream.
+
+The terminal event names no entity, which makes it the one event the
+namespacing wrapper forwards unfiltered: a type-level watch spans the store and
+the wrapper keeps only the IDs under its own namespace, so filtering an event
+that carries no ID would discard the only thing telling the consumer the stream
+died rather than ended.
+
 ### Alternatives rejected
 
 - **Long-polling.** Rejected: the same lost-update problem as polling, with more
@@ -35,6 +57,12 @@ replayed from a caller-named revision.
   server went away", "your revision was compacted", and "this store cannot
   replay". Each of those needs a different response from the caller, so the
   reason travels in the final message.
+- **A stream handle carrying an `Err()` for the entity watch**, in place of an
+  in-band terminal event. Rejected: a handle whose error is read after the
+  channel drains is the SDK layer's idiom, and the entity watch is a
+  service-layer surface, where an in-band terminal response is already how a
+  watch says why it ended. Taking both would leave one layer with two
+  mechanisms answering one question, and two mechanisms drift.
 - **A fully asynchronous `Close`** — cancel the context and let a goroutine
   deregister whenever it is scheduled. Rejected: it gives the caller no moment
   at which the watcher is known to be gone, so every caller that cares has to

@@ -1,6 +1,6 @@
 # Watch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its method matches the gRPC column.
@@ -55,6 +55,30 @@ A terminal response sets `"canceled": true` and carries `cancel_reason`. SDK
 callers should not parse that string: `WatchResponse.Err()` classifies it into
 `WatchCompactedError`, `WatchStartRevisionUnsupportedError`, or
 `WatchCanceledError`.
+
+## Entity watch (service layer)
+
+`WatchServicer.WatchEntity` and `WatchEntityType` project the same stream onto
+entities. They are in-process only — no transport exposes them, which is why
+they appear in no row of the capability matrix — and deliver
+`WatchEntityEvent`s rather than `WatchResponse`s:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `EntityType` | string | the entity's type |
+| `ID` | string | the entity's identifier within its type |
+| `Data` | bytes | the payload after the change; nil for a delete |
+| `Revision` | int64 | the MVCC revision of the change |
+| `Type` | enum | `0` put · `1` delete |
+| `Canceled` | bool | set on the single terminal event: the stream ended for a reason |
+| `CancelReason` | string | that reason, the watcher error's message verbatim |
+
+The terminal event names no entity — `ID`, `Data` and `Revision` are zero, and
+only `EntityType` and `CancelReason` are set. **A watch that ended cleanly
+delivers no terminal event at all**, so a consumer tells the two apart by what
+arrived rather than by the channel's closure. As on the key-value stream, the
+reason is carried verbatim so it classifies into the same typed error; a
+consumer should not compare it against a literal.
 
 ## Status and error mapping
 
