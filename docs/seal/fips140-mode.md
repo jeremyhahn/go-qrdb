@@ -348,15 +348,36 @@ path; a known-red job burning a runner slot per pull request produced a number
 we already had.) That is a strict improvement over having no FIPS coverage at
 all; it is not a claim of compliance.
 
-**No finding now stands between the job and green.** The last one — the Noise
-X25519 handshake — is **closed in this repository**, though not in the
-dependency it comes from, and the distinction matters: go-truststrap still
-performs X25519 in `pkg/noiseproto`, and go-qrdb no longer calls it in FIPS
-mode.
+**No finding now stands between the job and green** — but both of the last two
+were closed **in this repository**, and neither upstream, so the distinction is
+worth keeping rather than flattening into "clean".
+
+The Noise X25519 handshake is closed here because `pkg/clusterenroll` no longer
+reaches those call sites under `crypto/fips140.Enabled()`. go-truststrap still
+performs X25519 in `pkg/noiseproto`; the method is *unavailable* to a FIPS
+deployment, not substituted.
+
+The `cipher.NewGCM` fixture is closed here by replacing the constructor.
+
+**How the second one arrived is the part to remember.** This page previously
+said "one finding, and it is in a dependency", and that was true when it was
+measured. A test fixture added afterwards built its AEAD with `cipher.NewGCM`,
+four `pkg/tenant` tests went red under `fips140=only`, and this page went on
+asserting that the only remaining distance was upstream. **Nothing surfaced the
+divergence**: the job that catches it is nightly, and nobody receives a nightly
+result. It was found by a lane that happened to be measuring FIPS for the other
+finding.
+
+So the measurement on this page is only as current as the last time somebody
+looked. **Re-measure before quoting it**, and treat "the job should now be
+green" as a prediction to check rather than a property to state — at the time
+of writing this job has never had a green run in its retained history, so there
+is no green to compare against yet.
 
 | Finding | Call sites | Status |
 |---|---|---|
 | `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | **closed here**: `pkg/clusterenroll` no longer reaches those call sites when `crypto/fips140.Enabled()`. Still open upstream, and still the reason the method is unavailable rather than substituted. |
+| `pkg/tenant`'s teardown-fence test fixture built its AEAD with `cipher.NewGCM` | `teardown_fence_test.go` | **closed here**: the fixture uses `cipher.NewGCMWithRandomNonce`, which generates and prefixes the nonce itself. Test fixture only; no product path was involved. |
 | `go-quicraft` `pkg/seal` built the barrier AEAD with `cipher.NewGCM` | — | **closed** by the v0.8.0-alpha bump; see below |
 
 ### The Noise finding — what was decided, and what remains true

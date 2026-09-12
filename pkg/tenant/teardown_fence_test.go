@@ -32,7 +32,6 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"errors"
 	"strings"
 	"testing"
@@ -102,35 +101,29 @@ func (c *tenantCrypto) decrypts(ctx context.Context, t *testing.T, tenantID stri
 }
 
 // sealWith encrypts plaintext under key with AES-256-GCM, nonce prefixed.
+//
+// The nonce is the AEAD's, not this helper's. NewGCMWithRandomNonce generates
+// it and prefixes it to the ciphertext itself -- the same framing this helper
+// used to hand-roll, and the only one GODEBUG=fips140=only admits, because
+// FIPS 140-3 forbids caller-chosen GCM IVs.
 func sealWith(t *testing.T, key, plaintext []byte) []byte {
 	t.Helper()
-	gcm := gcmFor(t, key)
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		t.Fatalf("rand: %v", err)
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil)
+	return gcmFor(t, key).Seal(nil, nil, plaintext, nil)
 }
 
-// openWith is sealWith's inverse.
+// openWith is sealWith's inverse. The nonce travels inside the ciphertext, so
+// there is no prefix to split off and no length guard to get wrong.
 func openWith(key, ciphertext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	if len(ciphertext) < gcm.NonceSize() {
-		return nil, errShortCiphertext
-	}
-	return gcm.Open(nil, ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():], nil)
+	return gcm.Open(nil, nil, ciphertext, nil)
 }
-
-// errShortCiphertext guards openWith's slice. It is a test-local sentinel; the
-// production ciphertext framing lives in pkg/dek.
-var errShortCiphertext = errors.New("tenant: ciphertext shorter than the nonce")
 
 func gcmFor(t *testing.T, key []byte) cipher.AEAD {
 	t.Helper()
@@ -138,9 +131,9 @@ func gcmFor(t *testing.T, key []byte) cipher.AEAD {
 	if err != nil {
 		t.Fatalf("aes.NewCipher: %v", err)
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
-		t.Fatalf("cipher.NewGCM: %v", err)
+		t.Fatalf("cipher.NewGCMWithRandomNonce: %v", err)
 	}
 	return gcm
 }
