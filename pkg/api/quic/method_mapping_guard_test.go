@@ -142,6 +142,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"user.Disable":                       permission.UsersDisable,
 	"user.GetByCertThumbprint":           permission.UsersGetByCertThumbprint,
 	"user.AddCertBinding":                permission.UsersAddCertBinding,
+	"user.RemoveCertBinding":             permission.UsersRemoveCertBinding,
 	"role.Create":                        permission.RolesCreate,
 	"role.Get":                           permission.RolesRead,
 	"role.GetByName":                     permission.RolesRead,

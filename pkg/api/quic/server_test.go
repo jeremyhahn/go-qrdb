@@ -239,7 +239,8 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// User management
 		"user.Create": true, "user.Get": true, "user.GetByUsername": true,
 		"user.GetByEmail":          true,
-		"user.GetByCertThumbprint": true, "user.AddCertBinding": true, "user.Update": true,
+		"user.GetByCertThumbprint": true, "user.AddCertBinding": true,
+		"user.RemoveCertBinding": true, "user.Update": true,
 		"user.Delete": true, "user.List": true, "user.Enable": true,
 		"user.Disable": true,
 		// Role management

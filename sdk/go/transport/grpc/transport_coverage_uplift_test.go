@@ -108,8 +108,9 @@ type testQRDBServer struct {
 	imbalanceReportFn func(ctx context.Context, _ *emptypb.Empty) (*pb.ImbalanceReport, error)
 
 	// auth cert-binding
-	getUserByCertFn func(ctx context.Context, req *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error)
-	addCertBindFn   func(ctx context.Context, req *pb.AddCertBindingRequest) (*pb.UserResponse, error)
+	getUserByCertFn  func(ctx context.Context, req *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error)
+	addCertBindFn    func(ctx context.Context, req *pb.AddCertBindingRequest) (*pb.UserResponse, error)
+	removeCertBindFn func(ctx context.Context, req *pb.RemoveCertBindingRequest) (*pb.UserResponse, error)
 
 	// RAG
 	ragIngestFn    func(ctx context.Context, req *pb.RAGIngestDocumentRequest) (*pb.RAGIngestDocumentResponse, error)
@@ -315,6 +316,13 @@ func (s *testQRDBServer) GetUserByCertThumbprint(ctx context.Context, req *pb.Ge
 func (s *testQRDBServer) AddCertBinding(ctx context.Context, req *pb.AddCertBindingRequest) (*pb.UserResponse, error) {
 	if s.addCertBindFn != nil {
 		return s.addCertBindFn(ctx, req)
+	}
+	return &pb.UserResponse{Id: req.GetUserId(), Username: "cert-user"}, nil
+}
+
+func (s *testQRDBServer) RemoveCertBinding(ctx context.Context, req *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
+	if s.removeCertBindFn != nil {
+		return s.removeCertBindFn(ctx, req)
 	}
 	return &pb.UserResponse{Id: req.GetUserId(), Username: "cert-user"}, nil
 }
@@ -1347,6 +1355,57 @@ func TestGRPCAuth_AddCertBinding_RPCError(t *testing.T) {
 	_, err := tr.AddCertBinding(context.Background(), 999, "fp", 0)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RemoveCertBinding — the withdrawal verb (go-qrdb#518)
+// ---------------------------------------------------------------------------
+
+func TestGRPCAuth_RemoveCertBinding_Success(t *testing.T) {
+	var got *pb.RemoveCertBindingRequest
+	svc := &testQRDBServer{
+		removeCertBindFn: func(_ context.Context, req *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
+			got = req
+			return &pb.UserResponse{Id: req.GetUserId(), Username: "cert-user"}, nil
+		},
+	}
+	tr, cleanup := startTestServer(t, svc)
+	defer cleanup()
+
+	u, err := tr.RemoveCertBinding(context.Background(), 42, "fp:12:34")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if u == nil || u.ID != 42 {
+		t.Fatalf("unexpected user: %+v", u)
+	}
+	// Both arguments must cross the wire: a thumbprint that did not arrive
+	// withdraws nothing and reports a not-found.
+	if got.GetUserId() != 42 || got.GetThumbprint() != "fp:12:34" {
+		t.Fatalf("server saw %+v, want user 42 / fp:12:34", got)
+	}
+}
+
+func TestGRPCAuth_RemoveCertBinding_Closed(t *testing.T) {
+	_, err := newUpliftClosed().RemoveCertBinding(context.Background(), 1, "fp")
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestGRPCAuth_RemoveCertBinding_RPCError(t *testing.T) {
+	svc := &testQRDBServer{
+		removeCertBindFn: func(_ context.Context, _ *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
+			return nil, errors.New("binding not found")
+		},
+	}
+	tr, cleanup := startTestServer(t, svc)
+	defer cleanup()
+
+	if _, err := tr.RemoveCertBinding(context.Background(), 999, "fp"); err == nil {
+		t.Fatal("a refused withdrawal was reported as a success")
 	}
 }
 

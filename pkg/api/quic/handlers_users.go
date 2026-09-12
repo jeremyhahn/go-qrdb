@@ -76,6 +76,13 @@ type addCertBindingWireRequest struct {
 	NotAfterUnix int64  `json:"notAfterUnix"`
 }
 
+// removeCertBindingWireRequest is the JSON wire payload for
+// user.RemoveCertBinding. It carries no expiry: withdrawal is unconditional.
+type removeCertBindingWireRequest struct {
+	UserID     uint64 `json:"userID"`
+	Thumbprint string `json:"thumbprint"`
+}
+
 // updateUserWireRequest is the JSON wire payload for user.Update.
 type updateUserWireRequest struct {
 	ID       uint64   `json:"id"`
@@ -306,6 +313,32 @@ func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]by
 	}
 
 	u, err := s.userSvc.AddCertBinding(ctx, req.UserID, req.Thumbprint, req.NotAfterUnix)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(userToWireResponse(u))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleRemoveCertBinding unmarshals a JSON remove-cert-binding request,
+// withdraws the mTLS SPKI thumbprint via the service layer, and returns a JSON
+// user response. Withdrawing the LAST binding returns the account to admission
+// on the certificate's CN and OU alone.
+func (s *Server) handleRemoveCertBinding(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req removeCertBindingWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := s.userSvc.RemoveCertBinding(ctx, req.UserID, req.Thumbprint)
 	if err != nil {
 		return nil, err
 	}

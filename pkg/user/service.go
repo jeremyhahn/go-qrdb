@@ -47,6 +47,12 @@ type UserServicer interface {
 	// server-side enrollment seam used to bind an admin's cert to a user.
 	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 
+	// RemoveCertBinding withdraws the binding for thumbprint from the user
+	// so UserByCertThumbprint no longer resolves it and the presented
+	// certificate no longer authenticates. It is the counterpart of
+	// AddCertBinding and the only way to unenroll a key.
+	RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*User, error)
+
 	// UpdateUser applies partial updates to an existing user.
 	UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error)
 

@@ -62,6 +62,11 @@ func userTools(svc user.UserServicer) []serverTool {
 			Handler: handleUserAddCertBinding(svc),
 		},
 		{
+			Tool:    toolUserRemoveCertBinding(),
+			Perm:    permission.UsersRemoveCertBinding,
+			Handler: handleUserRemoveCertBinding(svc),
+		},
+		{
 			Tool:    toolUserUpdate(),
 			Perm:    permission.UsersUpdate,
 			Handler: handleUserUpdate(svc),
@@ -379,6 +384,55 @@ func handleUserAddCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(u)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserRemoveCertBinding defines the qrdb_user_remove_cert_binding tool
+// schema.
+func toolUserRemoveCertBinding() mcp.Tool {
+	return mcp.NewTool("qrdb_user_remove_cert_binding",
+		mcp.WithDescription("Withdraw an mTLS certificate's SPKI thumbprint from a user so it no longer resolves and no longer authenticates. Withdrawing the LAST binding returns the account to admission on the certificate's CN and OU alone."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The ID of the user to withdraw the binding from."),
+		),
+		mcp.WithString("thumbprint",
+			mcp.Required(),
+			mcp.Description("The base64url SPKI SHA-256 thumbprint to withdraw."),
+		),
+	)
+}
+
+// handleUserRemoveCertBinding returns a tool handler that delegates to
+// svc.RemoveCertBinding.
+func handleUserRemoveCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+
+		thumbprint := mcp.ParseString(req, "thumbprint", "")
+		if thumbprint == "" {
+			return mcp.NewToolResultError("thumbprint is required"), nil
+		}
+
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		u, err := svc.RemoveCertBinding(ctx, userID, thumbprint)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(u)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

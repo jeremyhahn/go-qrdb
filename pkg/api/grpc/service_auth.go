@@ -134,6 +134,20 @@ func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertB
 	return userToProto(u), nil
 }
 
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user.
+func (s *qrdbServiceServer) RemoveCertBinding(ctx context.Context, req *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "user"}).Error())
+	}
+
+	u, err := s.userSvc.RemoveCertBinding(ctx, req.GetUserId(), req.GetThumbprint())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return userToProto(u), nil
+}
+
 // UpdateUser applies partial updates to an existing user.
 func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserProtoRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
@@ -780,6 +794,15 @@ func mapAuthServiceError(err error) error {
 	// User errors
 	var unf *user.UserNotFoundError
 	if errors.As(err, &unf) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+
+	// A withdrawal naming a thumbprint the account does not hold is NotFound on
+	// the binding, exactly as a missing user is NotFound on the user. It is
+	// listed beside that branch because a caller distinguishes the two by the
+	// message, not the code: both mean "the thing you named is not there".
+	var cbnf *user.CertBindingNotFoundError
+	if errors.As(err, &cbnf) {
 		return status.Error(codes.NotFound, err.Error())
 	}
 

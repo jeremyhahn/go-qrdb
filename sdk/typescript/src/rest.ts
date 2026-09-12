@@ -1525,6 +1525,16 @@ export class RestClient implements Client {
                     { method: 'POST', ...jsonBody({ thumbprint, notAfterUnix }) },
                 );
             },
+            removeCertBinding: async (
+                userId: string,
+                thumbprint: string,
+            ): Promise<User> => {
+                this.ensureConnected();
+                return this.fetchJSON<User>(
+                    `/users/${encodeURIComponent(userId)}/cert-bindings/${encodeURIComponent(thumbprint)}`,
+                    { method: 'DELETE' },
+                );
+            },
         };
     }
 

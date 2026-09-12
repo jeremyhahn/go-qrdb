@@ -981,6 +981,12 @@ export class WailsClient implements Client {
             ): Promise<User> => {
                 return b.AddCertBinding(userId, thumbprint, notAfterUnix ?? 0) as Promise<User>;
             },
+            removeCertBinding: async (
+                userId: string,
+                thumbprint: string,
+            ): Promise<User> => {
+                return b.RemoveCertBinding(userId, thumbprint) as Promise<User>;
+            },
         };
     }
 

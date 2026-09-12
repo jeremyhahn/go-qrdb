@@ -1182,6 +1182,10 @@ func (s *stubUserService) AddCertBinding(_ context.Context, _ uint64, _ string, 
 	return nil, nil
 }
 
+func (s *stubUserService) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // stubRoleService is a minimal role.RoleServicer for option propagation tests.
 type stubRoleService struct{}
 

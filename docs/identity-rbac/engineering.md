@@ -136,6 +136,50 @@ It admits in exactly three cases and refuses otherwise:
 | enrolled, cert-bound method, no readable peer certificate | **refuse** | the account has enrolled certificates and this request produced none to compare |
 | enrolled, cert-bound method, thumbprint matches nothing | **refuse** | `*CertBindingNotPermittedError` |
 
+### Binding writes — `pkg/user/store.go`
+
+Both binding verbs go through one guarded path:
+
+```go
+func (s *kvUserStore) AddCertBinding(ctx, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
+func (s *kvUserStore) RemoveCertBinding(ctx, userID uint64, thumbprint string) (*User, error)
+// both:
+func (s *kvUserStore) mutateCertBindings(ctx, op string, userID uint64, mutate certBindingMutator) (*User, error)
+```
+
+`mutateCertBindings` reads the primary record's RAW bytes, hands the decoded
+record to the mutator, and commits the resulting set **against those same
+bytes** via `updateUserAt` — the half of `UpdateUser` that takes the base rather
+than re-reading it.
+
+**Why that split exists.** `UpdateUser` reads the record and guards on ITS read.
+A caller that read the record itself and then called `UpdateUser` had two reads
+with a window between them, and the conditional commit did not cover that
+window: a request derived from the earlier snapshot swapped cleanly over
+whatever landed in between. On `CertBindings` that is not an abstract lost
+update — an enrolment that read the set before a concurrent withdrawal
+committed would put the withdrawn credential back, on an account whose operator
+had been told the withdrawal succeeded. Passing `base` straight through makes
+that a **lost swap** instead.
+
+A lost swap is then **retried**, not reported, on the argument `mergeLastAuth`
+makes: "add T" and "remove T" are complete specifications of what to do to the
+set, independent of what the caller last saw it contain, so re-reading and
+re-applying against the record that actually won is always correct. The bound
+(`certBindingMutationAttempts`) is small and there is no sleep — re-reading is
+the only thing that can change the outcome. Exhausting it reports
+`*ConcurrentUpdateError`: an operator withdrawing a compromised key must never
+read a success that did not happen.
+
+**Withdrawal deliberately does not validate the thumbprint's shape.**
+`IsValidSPKIThumbprint` is a write-side gate added after the field existed, so a
+record written before it can hold a non-canonical string; refusing to withdraw
+one would make exactly the entries the gate exists to keep out the only entries
+nobody can remove. A withdrawal that matches nothing returns
+`*CertBindingNotFoundError` (404 / `codes.NotFound`) rather than succeeding
+vacuously, and a withdrawal that empties the set emits an audit event carrying
+`last_binding_removed: true`, because that is the moment the account widens.
+
 `*CertBindingNotPermittedError` classifies as `AuthFailureUnauthenticated`
 (401), not `AuthFailureUnauthorized` (403). The contrast with
 `*AuthMethodNotPermittedError` beside it is deliberate: there the credential IS
@@ -332,6 +376,19 @@ wrong fails a test rather than passing a typed-in column.
   new one, refuses that account. Enrolment is additive, so the recovery is to
   enrol the new key — ideally before retiring the old one, which never
   interrupts access.
+- **Withdrawal is the only unenrolment, and it is a separate authority.**
+  `users:remove_cert_binding` is not folded into `users:add_cert_binding`
+  because enrolment only narrows an account while withdrawal of the LAST
+  binding widens it back to CN/OU admission. Both permissions declare
+  `ScopeSelf` explicitly: `LookupScope` returns `ScopeSelf` for anything nobody
+  tagged, so an omission and a decision are indistinguishable in the registry,
+  and these two decide which certificates authenticate as an account.
+- **Withdrawal and revocation are independent.** Revocation refuses a
+  certificate; a binding is over the key and outlives every certificate issued
+  for it, so a re-issue for the same key authenticates until the binding is
+  withdrawn. Revoking does not drop a matching binding, because a revoke
+  performed for routine rotation would then silently unenrol the key being
+  rotated.
 - **`RoleBindings` are additive to `RoleIDs`**, not a replacement. Effective
   permissions are the union.
 - **Effective permissions resolve through one PDP** on every transport;
@@ -509,6 +566,23 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   the authentication path. Both directions of the empty-set admission are
   asserted on ONE account, so the only difference between them is the
   enrolment.
+- **Withdrawal is tested through the same real authenticator**, for the same
+  reason: a withdrawn key must stop authenticating, a re-issue for that key
+  must stop authenticating with it, and a retained key must keep working — all
+  three on one account, so the only difference is the withdrawal. The
+  last-binding widening is asserted deliberately rather than discovered.
+- **The binding-write race is a test, and it is red against the obvious
+  implementation.** A withdrawal racing an enrolment of an unrelated key must
+  not end with the withdrawn binding present; the interleaving is FORCED
+  through a store hook rather than raced with goroutines, because a raced
+  version passes against broken code most of the time. The mirror case — an
+  enrolment racing a withdrawal — is asserted too, so neither verb can be fixed
+  by breaking the other.
+- **Cross-transport reachability is a conformance matrix**
+  (`sdk/go/conformance`): the whole enrol → withdraw → verify cycle over all six
+  transports. A withdrawal reachable on four of them is a surface that
+  disagrees with itself, and the disagreement is invisible from inside any one
+  of them.
 - **First boot is tested in both postures**: bootstrapped with no `CertBinder`
   (admin unenrolled, authenticates) and with one (admin enrolled, its own
   certificate admitted and another certificate naming it refused).

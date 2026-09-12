@@ -131,6 +131,26 @@ func (e *CertBindingConflictError) Error() string {
 	return "user: cert thumbprint " + e.Thumbprint + " is already bound to user " + strconv.FormatUint(e.BoundUserID, 10)
 }
 
+// CertBindingNotFoundError is returned when a withdrawal names a thumbprint
+// the account does not hold.
+//
+// Withdrawal REPORTS the miss rather than succeeding vacuously. It is a
+// security action — an operator withdrawing a key they believe is compromised —
+// and "the binding you asked me to remove was not there" is the one answer a
+// mistyped thumbprint must not be given quietly. A vacuous success would read
+// as "the key is withdrawn" when nothing was withdrawn and the real binding is
+// still live.
+type CertBindingNotFoundError struct {
+	UserID     uint64
+	Thumbprint string
+}
+
+// Error returns a human-readable description of the miss. The thumbprint is
+// included to aid operators; it is a public-key hash, not a secret.
+func (e *CertBindingNotFoundError) Error() string {
+	return "user: cert thumbprint " + e.Thumbprint + " is not bound to user " + strconv.FormatUint(e.UserID, 10)
+}
+
 // IndexCompensationError reports that an operation failed AND its rollback of
 // the secondary indexes did not fully succeed.
 //

@@ -121,6 +121,10 @@ func (m *mockUserSvc) AddCertBinding(_ context.Context, _ uint64, _ string, _ in
 	return nil, nil
 }
 
+func (m *mockUserSvc) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 var _ user.UserServicer = (*mockUserSvc)(nil)
 
 // ---------------------------------------------------------------------------

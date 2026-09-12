@@ -533,7 +533,11 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 2 orchestrator task-lifecycle perms (orchestrator:task_readmit,
 	//   orchestrator:task_block) = 362 total.
 	// + 1 CA-operator cross-scope perm (certs:revoke:cross) = 363 total.
-	const expectedTotal = 363
+	// + 1 cert-binding WITHDRAWAL perm (users:remove_cert_binding) = 364 total.
+	//   It is separate from users:add_cert_binding because enrolment only
+	//   narrows an account while withdrawing its last binding widens it back to
+	//   CN/OU admission (go-qrdb#518).
+	const expectedTotal = 364
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

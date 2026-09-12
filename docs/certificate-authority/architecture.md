@@ -256,6 +256,18 @@ certificate and enrolling it are two steps and both are the operator's**.
 `GenerateClientCert` writes no binding: `POST /users/{id}/cert-bindings` does,
 and until it runs the certificate authenticates on its CN and OU alone.
 
+**Revocation does not unenrol a key, and is not meant to.** A binding is over
+the `SubjectPublicKeyInfo`, so it outlives every certificate issued for that
+key: revoking one certificate stops that certificate being trusted and leaves
+the binding — and a re-issue for the same key authenticates again. That is the
+correct behaviour for the common case, a routine rotation, where silently
+dropping the binding would unenrol the very key being rotated. It also means
+revocation is **not** the remediation for a compromised private key.
+Withdrawing the binding is: `DELETE /users/{id}/cert-bindings/{thumbprint}`,
+described in [../identity-rbac/api.md](../identity-rbac/api.md). The two are
+separate operations answering separate questions, and an operator cleaning up
+after a key compromise performs both.
+
 `certs:export` needs no gate and deliberately has none: the caller supplies
 both the certificate and the private key, the server holds neither, and the
 archive that comes back contains only what the caller already had. There is

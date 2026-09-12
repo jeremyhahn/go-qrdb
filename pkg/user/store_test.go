@@ -53,6 +53,16 @@ type memKVStore struct {
 	// call under test and only ever read on that call's own goroutine.
 	beforeCAS func(key string)
 
+	// afterGet, when set, runs immediately after a Get resolves a key. It is
+	// how a test lands an interfering write in the window between a
+	// read-modify-write's READ and its commit — the window a conditional
+	// commit exists to close, and the one beforeCAS is on the wrong side of.
+	//
+	// It is a plain field rather than an atomic for the same reason beforeCAS
+	// is: it is set before the call under test and only ever read on that
+	// call's own goroutine.
+	afterGet func(key string)
+
 	// onDelete, when set, runs immediately before a Delete removes a key. It
 	// lets a test observe the store at the instant a cascade takes its first
 	// destructive step, which is the only place that can say whether the record
@@ -122,6 +132,9 @@ func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, nex
 
 func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := m.data.Load(key)
+	if m.afterGet != nil {
+		m.afterGet(key)
+	}
 	if !ok {
 		return nil, nil
 	}

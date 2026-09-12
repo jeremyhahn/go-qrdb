@@ -250,6 +250,21 @@ func (r *routingUserService) AddCertBinding(ctx context.Context, userID uint64, 
 	return svc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
 }
 
+// RemoveCertBinding routes on the tenant that holds the user id, exactly as
+// AddCertBinding does. Withdrawal must reach the same store the enrolment
+// wrote, or it would report success having removed nothing.
+func (r *routingUserService) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "withdraw user certificate binding")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	return svc.RemoveCertBinding(ctx, userID, thumbprint)
+}
+
 // UpdateUser routes on the tenant that holds the request's user id. The
 // request cannot move a user between tenants — UpdateUserRequest has no
 // tenant field — so the index entry stays correct across an update.

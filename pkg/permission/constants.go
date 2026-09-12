@@ -253,6 +253,21 @@ const (
 	// operation (it controls which certificates authenticate as the user), so
 	// it is a distinct permission rather than folded into UsersUpdate.
 	UsersAddCertBinding Permission = "users:add_cert_binding"
+	// UsersRemoveCertBinding grants access to WITHDRAW an mTLS certificate
+	// thumbprint from a user — the only way to unenroll a key, and the
+	// remediation for one an operator believes is compromised.
+	//
+	// It is separate from UsersAddCertBinding, not folded into it, because the
+	// two are not the same authority. Enrolment only ever NARROWS an account:
+	// the first binding closes it from "any certificate naming it" to "only
+	// these keys". Withdrawal can WIDEN it — removing the last binding returns
+	// the account to admitting any certificate whose CN and OU name it (see
+	// pkg/auth/middleware.checkCertBinding). A grant that lets a caller tighten
+	// an account's admission must not silently also let them loosen it, which
+	// is what a shared permission would mean. It is also the ordinary shape of
+	// an enrolment service: binding a certificate at invitation redemption is a
+	// routine automated act, withdrawing an operator's binding is not.
+	UsersRemoveCertBinding Permission = "users:remove_cert_binding"
 )
 
 // ---------------------------------------------------------------------------
@@ -833,6 +848,7 @@ var categories = []Category{
 			UsersCreate, UsersRead, UsersUpdate, UsersDelete,
 			UsersList, UsersEnable, UsersDisable,
 			UsersGetByCertThumbprint, UsersAddCertBinding,
+			UsersRemoveCertBinding,
 		},
 	},
 	{
@@ -1082,4 +1098,16 @@ func init() {
 	// permission to the system tenant so a tenant-scoped role can never satisfy
 	// it (latent cross-tenant hole — no built-in tenant role grants these).
 	RegisterScope(ScopeCross, credentialPermissions()...)
+	// The cert-binding PAIR declares its scope explicitly rather than taking
+	// the ScopeSelf default. Both resolve to ScopeSelf either way, so this
+	// changes no decision today — it states one.
+	//
+	// LookupScope returns ScopeSelf for any permission nobody tagged, so an
+	// omission and a decision are indistinguishable in the registry, and the
+	// omission is the one that admits. These two decide which certificates
+	// authenticate as an account, so "nobody has thought about this yet" is not
+	// an acceptable reading of their scope. The declaration is deliberately
+	// narrow: it says these two were considered, and says nothing about any
+	// other untagged permission in this package.
+	RegisterScope(ScopeSelf, UsersAddCertBinding, UsersRemoveCertBinding)
 }

@@ -868,6 +868,71 @@ func TestRESTAddCertBinding_ServerError(t *testing.T) {
 }
 
 // ===========================================================================
+// Auth: RemoveCertBinding — the withdrawal verb (go-qrdb#518)
+// ===========================================================================
+
+func TestRESTRemoveCertBinding_Success(t *testing.T) {
+	const thumbprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	var gotPath string
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(pathPrefix(http.MethodDelete, "/users/"), func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		writeJSON(w, &transport.User{ID: 1, Username: "alice"})
+	})
+	user, err := rt.RemoveCertBinding(context.Background(), 1, thumbprint)
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if user.ID != 1 {
+		t.Errorf("expected ID 1, got %d", user.ID)
+	}
+	// The thumbprint travels in the PATH. A segment that lost characters in
+	// escaping would withdraw nothing and report a not-found.
+	if want := "/users/1/cert-bindings/" + thumbprint; gotPath != want {
+		t.Fatalf("path = %q, want %q", gotPath, want)
+	}
+}
+
+func TestRESTRemoveCertBinding_AfterClose(t *testing.T) {
+	rt, _, _ := newExtTransport(t)
+	_ = rt.Close()
+	_, err := rt.RemoveCertBinding(context.Background(), 1, "X")
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}
+
+// TestRESTRemoveCertBinding_NotFoundIsTyped keeps a 404 classifiable without
+// reading the message, the same as every other user-addressed call.
+func TestRESTRemoveCertBinding_NotFoundIsTyped(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(pathPrefix(http.MethodDelete, "/users/"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := rt.RemoveCertBinding(context.Background(), 42, "CERT")
+	var unf *transport.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Fatalf("expected UserNotFoundError, got %T: %v", err, err)
+	}
+	if unf.ID != 42 {
+		t.Fatalf("UserNotFoundError.ID = %d, want 42", unf.ID)
+	}
+}
+
+func TestRESTRemoveCertBinding_ServerError(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(pathPrefix(http.MethodDelete, "/users/"), func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
+	_, err := rt.RemoveCertBinding(context.Background(), 1, "CERT")
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected RequestError, got %T", err)
+	}
+}
+
+// ===========================================================================
 // getJSONDecode error path (decode error)
 // ===========================================================================
 

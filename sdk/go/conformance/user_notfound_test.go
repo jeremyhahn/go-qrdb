@@ -200,6 +200,15 @@ var singleSubjectCalls = []userNotFoundCall{
 		_, err := c.users.AddCertBinding(ctx, missingUserID, validThumbprint, 0)
 		return err
 	}},
+	{"RemoveCertBinding", missingUserID, func(ctx context.Context, c userClients) error {
+		// The USER is missing, so this cell is unambiguous: the withdrawal
+		// never reaches the binding set. (A withdrawal naming a binding a
+		// REAL user does not hold is also a not-found and differs only in the
+		// server's message — see the note on singleSubjectCalls above; it is
+		// not a separate classification.)
+		_, err := c.users.RemoveCertBinding(ctx, missingUserID, validThumbprint)
+		return err
+	}},
 	{"UpdateUser", missingUserID, func(ctx context.Context, c userClients) error {
 		_, err := c.users.UpdateUser(ctx, &transport.UpdateUserRequest{ID: missingUserID})
 		return err
@@ -505,6 +514,7 @@ func seedIdentityFixtures(t *testing.T, n *node.Node) (roleID string, realUserID
 			permission.UsersDelete, permission.UsersList,
 			permission.UsersEnable, permission.UsersDisable,
 			permission.UsersGetByCertThumbprint, permission.UsersAddCertBinding,
+			permission.UsersRemoveCertBinding,
 			permission.RolesCreate, permission.RolesRead, permission.RolesList,
 			permission.RolesAssign, permission.RolesUnassign,
 			permission.AdminHealth, permission.AdminStatus,

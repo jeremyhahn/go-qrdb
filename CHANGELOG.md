@@ -13,6 +13,42 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **A cert binding can be withdrawn** (#518). `AddCertBinding` shipped on all
+  six transports and nothing removed a binding on any of them, so a binding
+  written today could not be withdrawn through any API. Since #505 made the
+  binding set what decides an account's mTLS admission, an enrolled key was an
+  irrevocable *credential* rather than a stale record — and revocation is not
+  the remedy, because a binding is over the `SubjectPublicKeyInfo` and outlives
+  every certificate issued for that key, so a re-issue for the same key
+  authenticates again. The exploitability is bounded (re-issuance needs
+  `certs:generate`, gated on the target tenant by #506); what it cost was an
+  operator who could not clean up after a key compromise.
+
+  `RemoveCertBinding(userID, thumbprint)` is now on all six transports —
+  `DELETE /users/{id}/cert-bindings/{thumbprint}`, the `RemoveCertBinding` RPC
+  (gRPC and unix), `user.RemoveCertBinding` (QUIC),
+  `qrdb_user_remove_cert_binding` (MCP) and `Client.Users()` (embedded) — and in
+  the TypeScript SDK. It removes the record entry, the tenant-scoped SPKI index
+  entry and the legacy un-scoped one.
+
+  **A narrow verb, not a whole-set replacement.** `UpdateUserRequest.CertBindings`
+  already replaced the set and maintained the index; exposing *that* over a
+  transport would make a caller's snapshot of the rest of the set part of every
+  withdrawal, and committing a snapshot is how a concurrent enrolment
+  resurrects a binding that was just withdrawn.
+
+  **`users:remove_cert_binding` is a separate permission**, not folded into
+  `users:add_cert_binding`. Enrolment only narrows an account; withdrawing its
+  LAST binding widens it back to admitting any certificate whose CN and OU name
+  it. Both permissions now declare `ScopeSelf` explicitly rather than inheriting
+  it, because `LookupScope` returns `ScopeSelf` for anything nobody tagged and
+  these two decide which certificates authenticate as an account.
+
+  **Revocation still does not drop a binding, on purpose.** Revoking during a
+  routine rotation would otherwise unenrol the key being rotated. The two are
+  separate operations answering separate questions, and an operator cleaning up
+  after a key compromise performs both.
+
 - **The MCP transport carries the guarded write verbs** (#127).
   `sdk/go/transport/mcp` now implements `transport.GuardedKVClient`, so a
   consumer's `client.KV().(transport.GuardedKVClient)` succeeds over MCP as it
@@ -258,6 +294,19 @@ are not reconstructed here — their history is in the git log.
   external consumers at the time of this change.
 
 ### Fixed
+
+- **A cert-binding write no longer commits a stale set** (#518).
+  `AddCertBinding` read the record and then called `UpdateUser`, which read it
+  again and guarded on ITS read — so the window between the two reads was
+  unguarded, and an enrolment that read the set before a concurrent withdrawal
+  committed would swap its stale set in cleanly afterwards, putting the
+  withdrawn credential back. Both binding verbs now commit against the bytes
+  they computed from (`updateUserAt`), which makes that a LOST swap, and retry
+  the lost swap against whatever won — correct because "add T" and "remove T"
+  say what to do to a set without depending on what the caller last saw it
+  contain. Exhausting the bound reports `*ConcurrentUpdateError`, because an
+  operator withdrawing a compromised key must never read a success that did not
+  happen.
 
 - **A first node can advertise cluster enrollment under `GODEBUG=fips140=only`**
   (#485). Noise_NK_25519_ChaChaPoly_SHA256 performs an X25519 handshake, which

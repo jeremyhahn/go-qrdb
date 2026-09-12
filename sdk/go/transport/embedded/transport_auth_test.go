@@ -34,16 +34,17 @@ import (
 
 // mockUserServicer implements user.UserServicer with function-field injection.
 type mockUserServicer struct {
-	createUserFn      func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getUserFn         func(ctx context.Context, id uint64) (*user.User, error)
-	getUserByUserFn   func(ctx context.Context, tenantID, username string) (*user.User, error)
-	getUserByEmailFn  func(ctx context.Context, tenantID, email string) (*user.User, error)
-	updateUserFn      func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteUserFn      func(ctx context.Context, id uint64) error
-	listUsersFn       func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableUserFn      func(ctx context.Context, id uint64) error
-	disableUserFn     func(ctx context.Context, id uint64) error
-	userByCertThumbFn func(ctx context.Context, thumbprint string) (*user.User, error)
+	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	getUserFn           func(ctx context.Context, id uint64) (*user.User, error)
+	getUserByUserFn     func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
+	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+	deleteUserFn        func(ctx context.Context, id uint64) error
+	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+	enableUserFn        func(ctx context.Context, id uint64) error
+	disableUserFn       func(ctx context.Context, id uint64) error
+	userByCertThumbFn   func(ctx context.Context, thumbprint string) (*user.User, error)
+	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserServicer) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -90,6 +91,13 @@ func (m *mockUserServicer) UserByCertThumbprint(ctx context.Context, thumbprint 
 }
 
 func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserServicer) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*user.User, error) {
+	if m.removeCertBindingFn != nil {
+		return m.removeCertBindingFn(ctx, userID, thumbprint)
+	}
 	return nil, nil
 }
 
@@ -1952,4 +1960,50 @@ func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (
 		return m.tenantForSerialFn(ctx, serial)
 	}
 	return "", false, nil
+}
+
+// TestEmbedded_RemoveCertBinding_DelegatesToTheService is the in-process half
+// of the withdrawal verb: both arguments reach the user service unchanged and
+// the returned record is converted to the transport type (go-qrdb#518).
+func TestEmbedded_RemoveCertBinding_DelegatesToTheService(t *testing.T) {
+	var gotID uint64
+	var gotThumbprint string
+	mock := &mockUserServicer{
+		removeCertBindingFn: func(_ context.Context, userID uint64, tp string) (*user.User, error) {
+			gotID, gotThumbprint = userID, tp
+			return &user.User{ID: userID, Username: "alice", TenantID: "acme"}, nil
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	got, err := tr.RemoveCertBinding(context.Background(), 7, "AABBCC")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if got == nil || got.ID != 7 || got.Username != "alice" {
+		t.Fatalf("unexpected user: %+v", got)
+	}
+	if gotID != 7 || gotThumbprint != "AABBCC" {
+		t.Fatalf("service saw (%d, %q), want (7, \"AABBCC\")", gotID, gotThumbprint)
+	}
+}
+
+// TestEmbedded_RemoveCertBinding_PropagatesTheServiceRefusal keeps the store's
+// TYPED refusal intact in-process. This is the one transport that can carry
+// *user.CertBindingNotFoundError itself rather than collapsing it to a wire
+// not-found, and a consumer holding a UserServicer through sdk/go depends on
+// that.
+func TestEmbedded_RemoveCertBinding_PropagatesTheServiceRefusal(t *testing.T) {
+	mock := &mockUserServicer{
+		removeCertBindingFn: func(_ context.Context, userID uint64, tp string) (*user.User, error) {
+			return nil, &user.CertBindingNotFoundError{UserID: userID, Thumbprint: tp}
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+
+	_, err := tr.RemoveCertBinding(context.Background(), 7, "AABBCC")
+	var nf *user.CertBindingNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("err = %T(%v), want *user.CertBindingNotFoundError", err, err)
+	}
 }

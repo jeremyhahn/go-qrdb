@@ -148,6 +148,38 @@ are additive, so the safe order for a key rotation is: enrol the new key first,
 then retire the old certificate. Done that way there is no window where you
 cannot log in.
 
+**A private key was exposed and you need it to stop working.** Withdraw its
+binding:
+
+```
+DELETE /users/{id}/cert-bindings/{thumbprint}
+```
+
+Revoking the certificate is **not** enough on its own. A binding is over the
+*key*, not the certificate, so a certificate re-issued for the same key
+authenticates again — which is exactly what a renewal does on purpose. Revoke
+the certificate *and* withdraw the binding; the first stops that certificate
+being trusted anywhere, the second stops that key being this account's
+credential.
+
+The order that never locks you out is: **enrol the replacement key first, then
+withdraw the compromised one.** Withdrawing is refused with a 404 if the
+thumbprint is not one this account holds — that is deliberate, so a typo cannot
+look like a successful withdrawal.
+
+**Careful: withdrawing an account's LAST binding opens it back up.** An account
+with no bindings accepts *any* certificate from your CA whose CN and OU name it
+— which is how every account behaved before anyone enrolled anything. So
+withdrawing the only binding on an account does not lock it down, it widens it.
+If your intent is "this account should not log in", disable the account
+(`POST /users/{id}/disable`); if your intent is "this key should not log in",
+make sure another key is enrolled first.
+
+Note that an **expired** binding is not the same as a withdrawn one. An expired
+binding stops working but still counts as an enrolment, so the account stays
+closed to everything except its other keys. Withdrawing the last binding is what
+empties the set.
+
 **"presented certificate … is not bound to …" (401).** The account has enrolled
 certificate bindings and the one you presented matches none of them. The CN and
 the OU on a certificate say which account you are attempting; the key is what

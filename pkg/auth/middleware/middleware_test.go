@@ -132,6 +132,10 @@ func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string,
 	return nil, nil
 }
 
+func (m *mockUserServicer) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 type mockAuditLogger struct {
 	entries []*audit.Entry
 	err     error

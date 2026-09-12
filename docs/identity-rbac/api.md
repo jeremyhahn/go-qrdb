@@ -15,6 +15,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Get by email (canonical login key) | `POST /users/lookup` | `GetUserByEmail` | `user.GetByEmail` | `qrdb_user_get_by_email` | `GetUserByEmail` | `users:read` |
 | Get by cert thumbprint | `GET /users/by-cert-thumbprint/{thumbprint}` | `GetUserByCertThumbprint` | `user.GetByCertThumbprint` | `qrdb_user_get_by_cert_thumbprint` | `GetUserByCertThumbprint` | `users:get_by_cert_thumbprint` |
 | Add cert binding | `POST /users/{id}/cert-bindings` | `AddCertBinding` | `user.AddCertBinding` | `qrdb_user_add_cert_binding` | `AddCertBinding` | `users:add_cert_binding` |
+| Withdraw cert binding | `DELETE /users/{id}/cert-bindings/{thumbprint}` | `RemoveCertBinding` | `user.RemoveCertBinding` | `qrdb_user_remove_cert_binding` | `RemoveCertBinding` | `users:remove_cert_binding` |
 | Update | `PUT /users/{id}` | `UpdateUser` | `user.Update` | `qrdb_user_update` | `UpdateUser` | `users:update` |
 | Delete | `DELETE /users/{id}` | `DeleteUser` | `user.Delete` | `qrdb_user_delete` | `DeleteUser` | `users:delete` |
 | List | `GET /users` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
@@ -78,6 +79,46 @@ alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims)
 `POST /users/{id}/cert-bindings` is therefore an authentication-affecting
 write, not bookkeeping. It is **additive** — enrol a new key alongside the old
 one and both work, which is how a key rotation happens without an interruption.
+
+### Withdrawing a binding
+
+`DELETE /users/{id}/cert-bindings/{thumbprint}` withdraws one binding. It
+removes the record entry and both index entries, so the thumbprint resolves
+nothing and a certificate issued for that key no longer authenticates as the
+account. It returns the user as it now stands.
+
+**Withdrawal is not revocation, and neither replaces the other.** They act on
+different objects and the two are deliberately NOT coupled:
+
+| | Acts on | Effect |
+|---|---|---|
+| `certs:revoke` | one **certificate**, by serial | that certificate is refused |
+| `users:remove_cert_binding` | one **key**, by SPKI thumbprint | every certificate for that key stops authenticating as this account |
+
+A binding is over the `SubjectPublicKeyInfo`, so it outlives every certificate
+issued for that key — a re-issue for the same key authenticates again until the
+binding is withdrawn. Conversely, revoking a certificate during a routine
+rotation must not silently unenrol the key being rotated, which is why revoking
+does not drop a matching binding. **Withdrawing the binding is the remediation
+for a compromised key; revoking the certificate is not.**
+
+**Withdrawing an account's LAST binding WIDENS it.** An empty binding set
+states no restriction, so the account returns to admitting any certificate
+whose CN and OU name it — the state every account was in before enrolment. That
+is a real posture change and it is audited as `remove_cert_binding` with
+`last_binding_removed: true`. **Enrol the replacement first, then withdraw.**
+
+A withdrawal naming a thumbprint the account does not hold is **404**, not a
+vacuous success: an operator who mistypes a thumbprint must not be told a live
+key was withdrawn. A 404 from this endpoint means the user or the binding is
+absent; the message says which.
+
+The verb is narrow — one thumbprint, named in the path — rather than a
+whole-set replacement, because a replacement carries the caller's snapshot of
+the rest of the set. Committing that snapshot is how a concurrent enrolment
+resurrects a binding that was just withdrawn. `add` and `withdraw` each say what
+to do to the set without depending on what the caller last saw it contain, so
+the server can re-apply them against whatever committed first.
 
 ## Schemas
 

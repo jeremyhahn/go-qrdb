@@ -45,6 +45,7 @@ type mockUserService struct {
 	listUsersFn               func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn              func(ctx context.Context, id uint64) error
 	disableUserFn             func(ctx context.Context, id uint64) error
+	removeCertBindingFn       func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -165,6 +166,13 @@ func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint s
 }
 
 func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+	return nil, nil
+}
+
+func (m *mockUserService) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*user.User, error) {
+	if m.removeCertBindingFn != nil {
+		return m.removeCertBindingFn(ctx, userID, thumbprint)
+	}
 	return nil, nil
 }
 
@@ -880,6 +888,7 @@ func TestUserTools_Registration(t *testing.T) {
 		"qrdb_user_get_by_email",
 		"qrdb_user_get_by_cert_thumbprint",
 		"qrdb_user_add_cert_binding",
+		"qrdb_user_remove_cert_binding",
 		"qrdb_user_update",
 		"qrdb_user_delete",
 		"qrdb_user_list",

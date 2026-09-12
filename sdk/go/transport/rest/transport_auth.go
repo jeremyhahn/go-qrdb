@@ -249,6 +249,29 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return &user, nil
 }
 
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user. Maps to
+// DELETE /users/{userID}/cert-bindings/{thumbprint}.
+//
+// A 404 means "the user or the binding you named is not there" and is typed as
+// a UserNotFoundError, the same as every other user-addressed call in this
+// interface. The two causes differ only in the server's message: classifying
+// them apart would mean matching on message text, which this transport does not
+// do. The in-process (embedded) transport passes the store's typed
+// *user.CertBindingNotFoundError through unchanged.
+func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var user transport.User
+	path := "/users/" + strconv.FormatUint(userID, 10) + "/cert-bindings/" + url.PathEscape(thumbprint)
+	if err := t.deleteJSONDecode(ctx, "RemoveCertBinding", path, &user); err != nil {
+		return nil, userNotFound(userID, err)
+	}
+
+	return &user, nil
+}
+
 // UpdateUser applies partial updates to an existing user. Maps to
 // PUT /users/{id}.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
@@ -664,6 +687,35 @@ func (t *Transport) postJSONDecode(ctx context.Context, method, path string, pay
 		return &transport.RequestError{Method: method, Err: err}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return t.decodeErrorResponse(method, resp)
+	}
+
+	if dest != nil {
+		if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+			return &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
+		}
+	}
+
+	return nil
+}
+
+// deleteJSONDecode issues a DELETE to the given path and decodes the JSON
+// response body into dest. It is the withdrawal shape: the resource removed is
+// named entirely by the path, and the server answers with the record as it now
+// stands.
+func (t *Transport) deleteJSONDecode(ctx context.Context, method, path string, dest any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, t.baseURL+path, nil)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
 
 	resp, err := t.client.Do(httpReq)
 	if err != nil {

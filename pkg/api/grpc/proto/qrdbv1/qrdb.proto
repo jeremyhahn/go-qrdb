@@ -505,6 +505,13 @@ service QRDBService {
         option (qrdb.v1.permission) = "users:add_cert_binding";
     }
 
+    // RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from a
+    // user so it no longer resolves and no longer authenticates. Withdrawing
+    // the LAST binding returns the account to CN/OU admission.
+    rpc RemoveCertBinding(RemoveCertBindingRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:remove_cert_binding";
+    }
+
     // UpdateUser applies partial updates to an existing user.
     rpc UpdateUser(UpdateUserProtoRequest) returns (UserResponse) {
         option (qrdb.v1.permission) = "users:update";
@@ -4589,4 +4596,12 @@ message UserAuthFactorLoginResponse {
     repeated string      roles     = 5;
     bool                 active    = 6;
     UserAuthFactorRecord factor    = 7;
+}
+
+// RemoveCertBindingRequest withdraws an mTLS certificate's SPKI thumbprint from
+// a user. It carries no expiry: withdrawal is unconditional, and it is the
+// counterpart of AddCertBinding rather than a variant of it.
+message RemoveCertBindingRequest {
+    uint64 user_id = 1;
+    string thumbprint = 2;
 }

@@ -375,6 +375,29 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return serverUserToTransport(&raw), nil
 }
 
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user. Calls the
+// qrdb_user_remove_cert_binding MCP tool.
+func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_remove_cert_binding", map[string]any{
+		"user_id":    strconv.FormatUint(userID, 10),
+		"thumbprint": thumbprint,
+	})
+	if err != nil {
+		return nil, mapUserNotFound(userID, err)
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RemoveCertBinding", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
 // UpdateUser applies partial updates to an existing user. Calls the
 // qrdb_user_update MCP tool.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {

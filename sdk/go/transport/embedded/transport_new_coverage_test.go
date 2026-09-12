@@ -1694,3 +1694,15 @@ func TestEmbedded_LoginAuthFactor_NotImplemented(t *testing.T) {
 func (e *errorKVService) ListAll(a0 context.Context, a1 string) ([]string, error) {
 	return e.List(a0, a1)
 }
+
+// TestEmbedded_RemoveCertBinding_NilService guards the withdrawal verb the
+// same way: with no user service wired it reports NotImplementedError rather
+// than dereferencing a nil interface (go-qrdb#518).
+func TestEmbedded_RemoveCertBinding_NilService(t *testing.T) {
+	tr := newExtTransport(t)
+	_, err := tr.RemoveCertBinding(context.Background(), 1, "AABBCC")
+	var nie *transport.NotImplementedError
+	if !errors.As(err, &nie) {
+		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
+	}
+}

@@ -78,6 +78,13 @@ type addCertBindingWireRequest struct {
 	NotAfterUnix int64  `json:"notAfterUnix"`
 }
 
+// removeCertBindingWireRequest is the JSON wire payload for
+// user.RemoveCertBinding. It carries no expiry: withdrawal is unconditional.
+type removeCertBindingWireRequest struct {
+	UserID     uint64 `json:"userID"`
+	Thumbprint string `json:"thumbprint"`
+}
+
 // updateUserWireRequest is the JSON wire payload for user.Update.
 type updateUserWireRequest struct {
 	ID       uint64   `json:"id"`
@@ -479,6 +486,34 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	var wire userWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, &transport.RequestError{Method: "AddCertBinding", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the QUIC
+// user.RemoveCertBinding method.
+func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(removeCertBindingWireRequest{
+		UserID:     userID,
+		Thumbprint: thumbprint,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RemoveCertBinding", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.RemoveCertBinding", payload)
+	if err != nil {
+		return nil, mapUserNotFound("RemoveCertBinding", userID, err)
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "RemoveCertBinding", Err: &UnmarshalError{Err: err}}
 	}
 
 	return wireToUser(&wire), nil

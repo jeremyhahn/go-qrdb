@@ -123,6 +123,19 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return userToTransport(u), nil
 }
 
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the
+// embedded user service.
+func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "RemoveCertBinding"}
+	}
+	u, err := t.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(u), nil
+}
+
 // UpdateUser applies partial updates to a user via the embedded user service.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
 	if t.userSvc == nil {

@@ -116,6 +116,9 @@ func TestUnixAuthCertOps_AfterClose(t *testing.T) {
 	if _, err := tr.AddCertBinding(context.Background(), 1, "CERT", 0); !errors.As(err, &ce) {
 		t.Errorf("AddCertBinding: expected ClosedError, got %T: %v", err, err)
 	}
+	if _, err := tr.RemoveCertBinding(context.Background(), 1, "CERT"); !errors.As(err, &ce) {
+		t.Errorf("RemoveCertBinding: expected ClosedError, got %T: %v", err, err)
+	}
 }
 
 // ===========================================================================
@@ -197,8 +200,9 @@ func TestProtoCustodianToInfo_ZeroOptionals(t *testing.T) {
 // mockUserSvcWithCert extends the existing mockUserSvc with thumbprint and binding methods.
 type mockUserSvcWithCert struct {
 	mockUserSvc
-	certThumbprintFn func(ctx context.Context, thumbprint string) (*user.User, error)
-	addCertBindingFn func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
+	certThumbprintFn    func(ctx context.Context, thumbprint string) (*user.User, error)
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
+	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserSvcWithCert) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
@@ -211,6 +215,13 @@ func (m *mockUserSvcWithCert) UserByCertThumbprint(ctx context.Context, thumbpri
 func (m *mockUserSvcWithCert) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
 	if m.addCertBindingFn != nil {
 		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
+	return &user.User{ID: userID, Username: "cert-user"}, nil
+}
+
+func (m *mockUserSvcWithCert) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*user.User, error) {
+	if m.removeCertBindingFn != nil {
+		return m.removeCertBindingFn(ctx, userID, thumbprint)
 	}
 	return &user.User{ID: userID, Username: "cert-user"}, nil
 }
@@ -449,5 +460,32 @@ func TestUnixRT_CeremonySubmitUnsealShare_WithData(t *testing.T) {
 	}
 	if resp.Required != 3 {
 		t.Errorf("expected Required=3, got %d", resp.Required)
+	}
+}
+
+// TestUnixRT_RemoveCertBinding round-trips the withdrawal verb over the unix
+// socket, asserting both arguments reach the service: a thumbprint that did
+// not arrive withdraws nothing and reports a not-found (go-qrdb#518).
+func TestUnixRT_RemoveCertBinding(t *testing.T) {
+	var gotID uint64
+	var gotThumbprint string
+	usvc := &mockUserSvcWithCert{
+		removeCertBindingFn: func(_ context.Context, userID uint64, tp string) (*user.User, error) {
+			gotID, gotThumbprint = userID, tp
+			return &user.User{ID: userID, Username: "cert-user"}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	got, err := tr.RemoveCertBinding(context.Background(), 7, "AABBCC")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if got == nil || got.Username != "cert-user" {
+		t.Errorf("unexpected result: %+v", got)
+	}
+	if gotID != 7 || gotThumbprint != "AABBCC" {
+		t.Fatalf("service saw (%d, %q), want (7, \"AABBCC\")", gotID, gotThumbprint)
 	}
 }

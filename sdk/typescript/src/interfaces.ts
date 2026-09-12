@@ -1059,6 +1059,27 @@ export interface UserClient {
      * @returns The updated user.
      */
     addCertBinding(userId: string, thumbprint: string, notAfterUnix?: number): Promise<User>;
+
+    /**
+     * Withdraws an mTLS certificate's SPKI thumbprint from a user so it no
+     * longer resolves and a certificate issued for that key no longer
+     * authenticates as the account. The counterpart of addCertBinding, and the
+     * only way to unenroll a key.
+     *
+     * This is NOT certificate revocation. Revocation refuses a certificate; a
+     * binding is over the SubjectPublicKeyInfo and outlives every certificate
+     * issued for that key, so a re-issue for the same key authenticates again
+     * until the binding is withdrawn.
+     *
+     * Withdrawing the LAST binding WIDENS the account: an empty binding set
+     * states no restriction, so it returns to admitting any certificate whose
+     * CN and OU name it. Enrol the replacement first.
+     *
+     * @param userId - User identifier to withdraw the thumbprint from.
+     * @param thumbprint - Base64url SHA-256 SPKI thumbprint to withdraw.
+     * @returns The updated user.
+     */
+    removeCertBinding(userId: string, thumbprint: string): Promise<User>;
 }
 
 // ---------------------------------------------------------------------------

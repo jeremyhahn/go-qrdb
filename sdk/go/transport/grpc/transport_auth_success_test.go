@@ -87,6 +87,10 @@ func (f *fakeUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string,
 	return nil, nil
 }
 
+func (f *fakeUserServicer) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // ===========================================================================
 // fakeRoleServicer
 // ===========================================================================

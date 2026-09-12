@@ -716,6 +716,10 @@ func (m *mockUserServiceForGRPC) AddCertBinding(_ context.Context, _ uint64, _ s
 	return nil, nil
 }
 
+func (m *mockUserServiceForGRPC) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Collection error-path tests
 // ---------------------------------------------------------------------------

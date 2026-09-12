@@ -180,6 +180,24 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return protoToUser(resp), nil
 }
 
+// RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the qrdb
+// RemoveCertBinding RPC over the unix socket.
+func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.RemoveCertBinding(ctx, &pb.RemoveCertBindingRequest{
+		UserId:     userID,
+		Thumbprint: thumbprint,
+	})
+	if err != nil {
+		return nil, mapUserNotFound("RemoveCertBinding", userID, err)
+	}
+
+	return protoToUser(resp), nil
+}
+
 // UpdateUser applies partial updates to an existing user.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
 	if t.closed.Load() {

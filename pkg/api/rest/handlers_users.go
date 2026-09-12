@@ -209,6 +209,8 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 //   - DELETE /users/{id}         -> delete user
 //   - POST   /users/{id}/enable  -> enable user
 //   - POST   /users/{id}/disable -> disable user
+//   - POST   /users/{id}/cert-bindings              -> enrol a cert binding
+//   - DELETE /users/{id}/cert-bindings/{thumbprint} -> withdraw one
 func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	if s.userSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "user"})
@@ -309,6 +311,30 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// DELETE /users/{id}/cert-bindings/{thumbprint} -> withdraw a binding.
+	//
+	// The thumbprint is a PATH segment, matching
+	// GET /users/by-cert-thumbprint/{thumbprint}. It is a hash of a PUBLIC key
+	// — the same value the certificate carries in the clear — so it is not the
+	// credential-adjacent identifier the email lookup moved into a body.
+	// Withdrawal is a DELETE on the binding resource, which is what makes it
+	// idempotent-shaped and distinguishable from the POST that creates one.
+	if r.Method == http.MethodDelete {
+		if idSeg, thumbprint, found := strings.Cut(rest, "/cert-bindings/"); found {
+			id, err := parseUserID(idSeg)
+			if err != nil {
+				writeErrorJSON(w, http.StatusBadRequest, err)
+				return
+			}
+			if thumbprint == "" {
+				writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "thumbprint"})
+				return
+			}
+			s.handleRemoveCertBinding(w, r, id, thumbprint)
+			return
+		}
 	}
 
 	// The remaining path is the user ID (no suffix).
@@ -447,6 +473,23 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 	writeJSON(w, userToResponse(u))
 }
 
+// handleRemoveCertBinding handles DELETE /users/{userID}/cert-bindings/{thumbprint}
+// -- withdraws an mTLS SPKI thumbprint so it no longer resolves and no longer
+// authenticates. Withdrawing the LAST binding returns the account to admission
+// on the certificate's CN and OU alone; see docs/identity-rbac/api.md.
+func (s *Server) handleRemoveCertBinding(w http.ResponseWriter, r *http.Request, userID uint64, thumbprint string) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := s.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
+	if err != nil {
+		writeErrorJSON(w, mapUserError(err), err)
+		return
+	}
+
+	writeJSON(w, userToResponse(u))
+}
+
 // handleUpdateUser handles PUT /users/{id} -- applies partial updates.
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uint64) {
 	var req updateUserRequest
@@ -571,6 +614,7 @@ func mapUserError(err error) int {
 	var si *user.SystemUserImmutableError
 	var il *user.InvalidLifecycleError
 	var lt *user.LifecycleTransitionError
+	var cbnf *user.CertBindingNotFoundError
 	var se *user.StoreError
 	var xt *tenant.CrossTenantDeniedError
 
@@ -606,6 +650,13 @@ func mapUserError(err error) int {
 	case errors.As(err, &ve):
 		return http.StatusBadRequest
 	case errors.As(err, &unf):
+		return http.StatusNotFound
+	case errors.As(err, &cbnf):
+		// A withdrawal naming a binding the account does not hold. 404 on the
+		// binding sub-resource, the same answer a DELETE of any absent resource
+		// gets — and deliberately NOT a 204, because a vacuous success would
+		// tell an operator who mistyped the thumbprint that a live key had been
+		// withdrawn.
 		return http.StatusNotFound
 	case errors.As(err, &ue):
 		return http.StatusConflict

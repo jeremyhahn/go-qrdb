@@ -479,6 +479,109 @@ func (s *kvUserStore) UserByCertThumbprint(ctx context.Context, thumbprint strin
 	return u, nil
 }
 
+// certBindingMutationAttempts bounds the retry on a lost conditional commit in
+// mutateCertBindings. Each attempt is a fresh read plus one compare-and-swap
+// with no backoff, and a binding write that loses three consecutive races to
+// other writers of the SAME record has a contention problem no retry count
+// will fix. It matches lastAuthMergeAttempts for the same reasons.
+const certBindingMutationAttempts = 3
+
+// certBindingMutator computes the binding set to commit from the record as
+// CURRENTLY COMMITTED. It returns the new set, whether anything changed (a
+// false skips the write entirely, so a no-op cannot lose a race), and any
+// refusal.
+//
+// It is handed the decoded record rather than just the slice because the
+// enrolment mutator needs the record's tenant to check the identity index.
+type certBindingMutator func(u *User) (bindings []CertBinding, changed bool, err error)
+
+// mutateCertBindings applies mutate to a user's cert bindings and commits the
+// result AGAINST THE RECORD THE MUTATOR SAW.
+//
+// Both binding verbs go through here, and both need it for the same reason.
+// "Add T" and "remove T" are complete specifications: they say what to do to a
+// set without depending on what the caller last saw it contain. What they must
+// never do is commit the CALLER'S VIEW of the rest of the set, because that
+// view is a snapshot and the rest of the set can move underneath it.
+//
+// Reading the record and then calling UpdateUser — which reads it again and
+// guards on ITS read — is exactly that mistake, and it is not theoretical. An
+// enrolment that read the set before a concurrent withdrawal committed would
+// swap its stale set in cleanly afterwards, putting the withdrawn credential
+// back on an account whose operator had been told the withdrawal succeeded
+// (go-qrdb#518). Passing base straight through to updateUserAt makes that a
+// LOST swap instead.
+//
+// A lost swap is then RETRIED rather than reported, on the same argument
+// mergeLastAuth makes: there is nothing stale for the caller to reconcile,
+// because re-reading and re-applying "add T" or "remove T" to the record that
+// actually won is always correct. The bound is small and there is no sleep —
+// re-reading is the only thing that can change the outcome.
+func (s *kvUserStore) mutateCertBindings(ctx context.Context, op string, userID uint64, mutate certBindingMutator) (*User, error) {
+	if _, ok := s.store.(kvstore.AtomicKVStore); !ok {
+		return nil, &StoreError{Op: op, Detail: "conditional commit", Err: ErrStoreNotAtomic}
+	}
+	if userID == 0 {
+		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
+	}
+
+	var lastConflict error
+	for attempt := 0; attempt < certBindingMutationAttempts; attempt++ {
+		base, err := s.store.Get(ctx, primaryKey(userID))
+		if err != nil {
+			return nil, &StoreError{Op: op, Detail: "primary lookup", Err: err}
+		}
+		if base == nil {
+			return nil, &UserNotFoundError{ID: userID}
+		}
+		existing := &User{}
+		if uerr := json.Unmarshal(base, existing); uerr != nil {
+			return nil, &StoreError{Op: op, Detail: "unmarshal", Err: uerr}
+		}
+		existing.normalize()
+
+		// A record whose deletion has BEGUN accepts no binding write in either
+		// direction. Enrolment is the obvious one — a certificate bound after
+		// the deletion cascade swept the index is an orphan credential by
+		// construction — but withdrawal is refused for the plainer reason that
+		// a terminal record accepts no edits at all, and the cascade has
+		// already removed the index entries a withdrawal would maintain.
+		//
+		// updateUserAt refuses it too; checking here as well keeps the refusal
+		// a guaranteed no-op and gives it before the mutator runs.
+		if existing.Lifecycle.Terminal() {
+			return nil, &LifecycleTransitionError{
+				ID:   existing.ID,
+				From: existing.Lifecycle,
+				To:   existing.Lifecycle,
+			}
+		}
+
+		bindings, changed, merr := mutate(existing)
+		if merr != nil {
+			return nil, merr
+		}
+		if !changed {
+			return existing, nil
+		}
+
+		updated, uerr := s.updateUserAt(ctx, &UpdateUserRequest{ID: userID, CertBindings: bindings}, base)
+		if uerr == nil {
+			return updated, nil
+		}
+		var lost *ConcurrentUpdateError
+		if !errors.As(uerr, &lost) {
+			return nil, uerr
+		}
+		lastConflict = uerr
+	}
+
+	// Exhausted the bound. Report the conflict rather than pretending: an
+	// operator withdrawing a compromised key must never read a success that
+	// did not happen.
+	return nil, lastConflict
+}
+
 // AddCertBinding binds an mTLS certificate's SPKI thumbprint to the user and
 // refreshes the secondary index so UserByCertThumbprint resolves it. A
 // notAfterUnix > 0 sets the binding's expiry; otherwise the binding never
@@ -494,55 +597,111 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 		return nil, &ValidationError{Field: "thumbprint", Reason: "must be a base64url-encoded SHA-256 SPKI thumbprint"}
 	}
 
-	u, err := s.GetUser(ctx, userID)
+	return s.mutateCertBindings(ctx, "add_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
+		// A thumbprint resolves to exactly one identity within a tenant. Reject
+		// binding a thumbprint that is already bound to a different user in the
+		// same tenant — silently overwriting it would let a caller hijack
+		// another user's mTLS identity. The index is tenant-scoped, so the
+		// conflict check is performed under the user's own tenant.
+		existingID, err := s.store.Get(ctx, certThumbprintIndexKey(u.TenantID, thumbprint))
+		if err != nil {
+			return nil, false, &StoreError{Op: "add_cert_binding", Detail: "index lookup", Err: err}
+		}
+		if existingID != nil {
+			boundID, decErr := decodeID(existingID)
+			if decErr != nil {
+				return nil, false, &StoreError{Op: "add_cert_binding", Detail: "decode index value", Err: decErr}
+			}
+			if boundID != userID {
+				return nil, false, &CertBindingConflictError{
+					Thumbprint:   thumbprint,
+					BoundUserID:  boundID,
+					TargetUserID: userID,
+				}
+			}
+		}
+		b := CertBinding{Thumbprint: thumbprint, Kind: CertBindingSPKIThumbprint}
+		if notAfterUnix > 0 {
+			b.NotAfter = time.Unix(notAfterUnix, 0).UTC()
+		}
+		// u is a local decode of the committed record; mutating it writes
+		// nothing. AddCertBinding de-duplicates by thumbprint, so re-binding an
+		// existing thumbprint refreshes its expiry rather than doubling it.
+		u.AddCertBinding(b)
+		return u.CertBindings, true, nil
+	})
+}
+
+// RemoveCertBinding withdraws the binding for thumbprint from the user: the
+// record entry goes, the tenant-scoped SPKI index entry goes, and the legacy
+// un-scoped entry goes with it, so neither lookup path resolves the key and a
+// certificate issued for it no longer authenticates as this account.
+//
+// It is the counterpart of AddCertBinding and the only way to unenroll a key.
+// Certificate revocation is a DIFFERENT operation on a different object:
+// revocation refuses a certificate, while a binding is over the
+// SubjectPublicKeyInfo and outlives every certificate issued for that key. The
+// two are deliberately not coupled — a revocation performed for routine
+// rotation must not silently unenroll the key it is rotating.
+//
+// REMOVING THE LAST BINDING WIDENS THE ACCOUNT. An empty binding set states no
+// restriction, so the account returns to admitting any certificate whose CN and
+// OU name it (see pkg/auth/middleware.checkCertBinding). That is a real posture
+// change, which is why it is audited with last_binding_removed rather than
+// being left to be discovered.
+//
+// It deliberately does NOT validate the thumbprint's shape. IsValidSPKIThumbprint
+// is a write-side gate added after the field existed, so a record written before
+// it can hold a non-canonical string; refusing to withdraw one would make
+// exactly the entries that gate exists to keep out the only entries nobody can
+// remove.
+func (s *kvUserStore) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*User, error) {
+	if thumbprint == "" {
+		return nil, &ValidationError{Field: "thumbprint", Reason: "must not be empty"}
+	}
+
+	updated, err := s.mutateCertBindings(ctx, "remove_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
+		next := make([]CertBinding, 0, len(u.CertBindings))
+		found := false
+		for _, b := range u.CertBindings {
+			if b.Thumbprint == thumbprint {
+				found = true
+				continue
+			}
+			next = append(next, b)
+		}
+		if !found {
+			// A withdrawal that removed nothing REPORTS it. Succeeding
+			// vacuously would read as "the key is withdrawn" to an operator who
+			// mistyped the thumbprint, while the real binding stays live.
+			return nil, false, &CertBindingNotFoundError{UserID: u.ID, Thumbprint: thumbprint}
+		}
+		return next, true, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// NEVER bind a credential to a record whose deletion has begun. This is the
-	// enrollment seam, so it is the single most consequential write to leave
-	// open on a deleting account: a certificate bound here after the deletion
-	// cascade has swept the index is a live credential belonging to an account
-	// that is on its way out — an orphan by construction.
-	if u.Lifecycle.Terminal() {
-		return nil, &LifecycleTransitionError{ID: u.ID, From: u.Lifecycle, To: u.Lifecycle}
-	}
-
-	// A thumbprint resolves to exactly one identity within a tenant. Reject
-	// binding a thumbprint that is already bound to a different user in the
-	// same tenant — silently overwriting it would let a caller hijack another
-	// user's mTLS identity. The index is tenant-scoped, so the conflict check
-	// is performed under the user's own tenant.
-	existingID, err := s.store.Get(ctx, certThumbprintIndexKey(u.TenantID, thumbprint))
-	if err != nil {
-		return nil, &StoreError{Op: "add_cert_binding", Detail: "index lookup", Err: err}
-	}
-	if existingID != nil {
-		boundID, decErr := decodeID(existingID)
-		if decErr != nil {
-			return nil, &StoreError{Op: "add_cert_binding", Detail: "decode index value", Err: decErr}
-		}
-		if boundID != userID {
-			return nil, &CertBindingConflictError{
-				Thumbprint:   thumbprint,
-				BoundUserID:  boundID,
-				TargetUserID: userID,
-			}
-		}
-	}
-	b := CertBinding{Thumbprint: thumbprint, Kind: CertBindingSPKIThumbprint}
-	if notAfterUnix > 0 {
-		b.NotAfter = time.Unix(notAfterUnix, 0).UTC()
-	}
-	u.AddCertBinding(b)
-	return s.UpdateUser(ctx, &UpdateUserRequest{ID: userID, CertBindings: u.CertBindings})
+	s.emitAudit(ctx, "remove_cert_binding", userID, map[string]any{
+		"username":             updated.Username,
+		"tenantID":             updated.TenantID,
+		"thumbprint":           thumbprint,
+		"bindings_remaining":   len(updated.CertBindings),
+		"last_binding_removed": len(updated.CertBindings) == 0,
+	})
+	return updated, nil
 }
 
 // UpdateUser applies partial updates to an existing user. An empty
 // Username means no change; a nil RoleIDs means no change. If the
 // username changes, uniqueness is re-validated and the secondary index
 // is updated atomically.
-func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (updated *User, retErr error) {
+//
+// It reads the record and then commits against THAT read (see updateUserAt).
+// A caller that computed its request from a record it read itself — the
+// cert-binding verbs do — must call updateUserAt with the bytes it read
+// instead, or the write is guarded against a version it never saw.
+func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
 	}
@@ -572,10 +731,40 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 		return s.mergeLastAuth(ctx, req.ID, req.LastAuth.UTC())
 	}
 
-	// The identity sets are validated FIRST, before the record is read and long
-	// before any index key is claimed or released. They are pure functions of
-	// the request, so a request that cannot produce a valid record must be
-	// refused while the store is still untouched.
+	// Read the record's RAW bytes, not just the decoded value: they are the
+	// version this update commits against. Two concurrent updates of the SAME
+	// user would otherwise both read it, both claim distinct new handles, both
+	// delete the shared old one, and both write the primary — leaving the loser's
+	// handle as a live alias resolving to a user whose canonical value is
+	// different, and reserved against every future account (Codex, PR #191).
+	base, err := s.store.Get(ctx, primaryKey(req.ID))
+	if err != nil {
+		return nil, &StoreError{Op: "update", Detail: "primary lookup", Err: err}
+	}
+	if base == nil {
+		return nil, &UserNotFoundError{ID: req.ID}
+	}
+	return s.updateUserAt(ctx, req, base)
+}
+
+// updateUserAt applies req to the record held in base and COMMITS AGAINST IT.
+//
+// base is the exact primary-record bytes the caller computed req from, and
+// splitting it out of UpdateUser is what lets a caller that read the record
+// itself keep the read and the commit on one version. Re-reading here instead
+// would reopen the window between the caller's read and this one: a request
+// derived from a stale snapshot would then swap cleanly over whatever landed
+// in between, silently reinstating the state the caller had seen. On
+// CertBindings that is not an abstract lost update — it resurrects a
+// credential a concurrent withdrawal had just removed (go-qrdb#518).
+//
+// req.ID must equal the record encoded in base; UpdateUser and the
+// cert-binding verbs are the only callers and both read base by that id.
+func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, base []byte) (updated *User, retErr error) {
+	// The identity sets are validated FIRST, before any index key is claimed or
+	// released. They are pure functions of the request, so a request that
+	// cannot produce a valid record must be refused while the store is still
+	// unwritten.
 	//
 	// Deferring them into the apply block below would have left the refusal
 	// dependent on the compensation path — and compensation is best-effort by
@@ -591,19 +780,6 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 		return nil, aerr
 	}
 
-	// Read the record's RAW bytes, not just the decoded value: they are the
-	// version this update commits against. Two concurrent updates of the SAME
-	// user would otherwise both read it, both claim distinct new handles, both
-	// delete the shared old one, and both write the primary — leaving the loser's
-	// handle as a live alias resolving to a user whose canonical value is
-	// different, and reserved against every future account (Codex, PR #191).
-	base, err := s.store.Get(ctx, primaryKey(req.ID))
-	if err != nil {
-		return nil, &StoreError{Op: "update", Detail: "primary lookup", Err: err}
-	}
-	if base == nil {
-		return nil, &UserNotFoundError{ID: req.ID}
-	}
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}

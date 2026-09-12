@@ -545,6 +545,17 @@ func TestRoutingUserService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 	if _, err := svc.AddCertBinding(ctx, created.ID, thumbprint, 0); err != nil {
 		t.Fatalf("AddCertBinding by id: %v", err)
 	}
+	// Withdrawal must reach the SAME tenant store the enrolment wrote, or it
+	// would report success having removed nothing.
+	if _, err := svc.RemoveCertBinding(ctx, created.ID, thumbprint); err != nil {
+		t.Fatalf("RemoveCertBinding by id: %v — the by-id route did not reach the tenant holding the record", err)
+	}
+	if _, err := svc.UserByCertThumbprint(tenant.WithTenantID(ctx, "acme"), thumbprint); err == nil {
+		t.Fatal("the withdrawn thumbprint still resolves in the owning tenant")
+	}
+	if _, err := svc.AddCertBinding(ctx, created.ID, thumbprint, 0); err != nil {
+		t.Fatalf("re-enrolling after a withdrawal: %v", err)
+	}
 	if _, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: created.ID, Username: "dana2"}); err != nil {
 		t.Fatalf("UpdateUser by id: %v", err)
 	}
@@ -607,6 +618,10 @@ func TestRoutingUserService_ByIDFailsClosedWhenOwnerSealed(t *testing.T) {
 		}},
 		{"AddCertBinding", func() error {
 			_, e := svc.AddCertBinding(ctx, created.ID, sealedThumbprint(t), 0)
+			return e
+		}},
+		{"RemoveCertBinding", func() error {
+			_, e := svc.RemoveCertBinding(ctx, created.ID, sealedThumbprint(t))
 			return e
 		}},
 		{"EnableUser", func() error { return svc.EnableUser(ctx, created.ID) }},

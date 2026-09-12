@@ -125,6 +125,10 @@ func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, 
 	return nil, nil
 }
 
+func (m *mockUserService) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Mock role service
 // ---------------------------------------------------------------------------

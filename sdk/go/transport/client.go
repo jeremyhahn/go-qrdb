@@ -460,6 +460,22 @@ type UserClient interface {
 	// the enrollment seam used to bind an admin's certificate to a user.
 	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 
+	// RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from
+	// the user server-side, so GetUserByCertThumbprint no longer resolves it
+	// and a certificate issued for that key no longer authenticates as the
+	// account. It is the counterpart of AddCertBinding and the only way to
+	// unenroll a key.
+	//
+	// It is NOT certificate revocation. Revocation refuses a certificate;
+	// a binding is over the SubjectPublicKeyInfo and outlives every
+	// certificate issued for that key, so a re-issue for the same key
+	// authenticates again until the binding is withdrawn.
+	//
+	// Withdrawing the LAST binding WIDENS the account: an empty binding set
+	// states no restriction, so it returns to admitting any certificate whose
+	// CN and OU name it. Enrol the replacement first.
+	RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*User, error)
+
 	// UpdateUser applies partial updates to an existing user.
 	UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error)
 

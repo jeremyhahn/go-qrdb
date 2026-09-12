@@ -113,6 +113,9 @@ func (f *fakeUserService) UserByCertThumbprint(context.Context, string) (*user.U
 func (f *fakeUserService) AddCertBinding(context.Context, uint64, string, int64) (*user.User, error) {
 	return nil, errors.ErrUnsupported
 }
+func (f *fakeUserService) RemoveCertBinding(context.Context, uint64, string) (*user.User, error) {
+	return nil, errors.ErrUnsupported
+}
 func (f *fakeUserService) UpdateUser(context.Context, *user.UpdateUserRequest) (*user.User, error) {
 	return nil, errors.ErrUnsupported
 }

@@ -481,6 +481,10 @@ func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string,
 	return nil, nil
 }
 
+func (m *mockUserServicer) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // mockRoleServicer satisfies role.RoleServicer for bootstrap testing.
 type mockRoleServicer struct {
 	createRoleFn    func(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error)

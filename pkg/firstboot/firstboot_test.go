@@ -173,6 +173,10 @@ func (f *fakeUsers) AddCertBinding(_ context.Context, _ uint64, _ string, _ int6
 	return nil, nil
 }
 
+func (f *fakeUsers) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
+	return nil, nil
+}
+
 // fakeRoles satisfies role.RoleServicer.
 type fakeRoles struct {
 	createCount  atomic.Int32

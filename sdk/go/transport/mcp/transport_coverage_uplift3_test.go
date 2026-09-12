@@ -272,3 +272,24 @@ func TestMCP_UserAuthFactor_GetRemove_PathExercise(t *testing.T) {
 		t.Errorf("LoginAuthFactor: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RemoveCertBinding — the withdrawal verb (go-qrdb#518)
+// ---------------------------------------------------------------------------
+
+func TestMCP_Auth_RemoveCertBinding_Success(t *testing.T) {
+	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), nil, nil)
+	defer cleanup()
+
+	// mockUserSvc.RemoveCertBinding returns nil,nil → success with nil user
+	_, err := tr.RemoveCertBinding(context.Background(), 1, "aa:bb:cc")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+}
+
+func TestMCP_Auth_RemoveCertBinding_Closed(t *testing.T) {
+	tr := newClosedTransport()
+	_, err := tr.RemoveCertBinding(context.Background(), 1, "tp")
+	assertClosed(t, err)
+}

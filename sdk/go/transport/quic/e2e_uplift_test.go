@@ -707,3 +707,41 @@ func TestE2E_Auth_AddCertBinding_RPCError(t *testing.T) {
 	_, err := tr.AddCertBinding(context.Background(), 999, "fp", 0)
 	assertQuicRequestError(t, err)
 }
+
+// ---------------------------------------------------------------------------
+// RemoveCertBinding — the withdrawal verb (go-qrdb#518)
+// ---------------------------------------------------------------------------
+
+func TestE2E_Auth_RemoveCertBinding_Success(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("user.RemoveCertBinding", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshalJSON(map[string]any{
+			"id": uint64(42), "username": "cert-user", "enabled": true,
+		})
+	})
+	user, err := tr.RemoveCertBinding(context.Background(), 42, "fp:12:34")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if user == nil || user.ID != 42 {
+		t.Fatalf("unexpected user: %+v", user)
+	}
+}
+
+func TestE2E_Auth_RemoveCertBinding_Closed(t *testing.T) {
+	_, err := newQuicClosed().RemoveCertBinding(context.Background(), 1, "fp")
+	assertQuicClosed(t, err)
+}
+
+// TestE2E_Auth_RemoveCertBinding_NotFound keeps the server's refusal typed at
+// the client. A withdrawal that removed nothing must not read as a success.
+func TestE2E_Auth_RemoveCertBinding_NotFound(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("user.RemoveCertBinding", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, []byte("user: cert thumbprint fp is not bound to user 42")
+	})
+	_, err := tr.RemoveCertBinding(context.Background(), 42, "fp")
+	if err == nil {
+		t.Fatal("a refused withdrawal was reported as a success")
+	}
+}
