@@ -23,6 +23,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -30,29 +31,64 @@ import (
 
 // certTools returns the MCP tool registrations for certificate management
 // operations.
-func certTools(svc cert.CertProvider) []serverTool {
+//
+// The Perm on each registration is authorized against the CALLER's tenant by
+// AuthorizeMCP. It cannot authorize the tenant the TOOL CALL names, and three
+// of these four name theirs — tenant_id on generate, tenant_id on list, and,
+// indirectly, the serial revoke resolves. So mw is threaded into the handlers
+// for the second question, answered by the one cross-transport home of the
+// rule (pkg/auth/middleware/cert_authz.go).
+//
+// qrdb_cert_list is the sharpest case here: its tenant_id DEFAULTS to the
+// system tenant when omitted, so without the gate a tenant-local agent that
+// simply left the argument off read the platform's own inventory.
+//
+// mw may be nil (no-auth deployments), in which case the gates are no-ops.
+func certTools(svc cert.CertProvider, mw *authmw.AuthMiddleware) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolCertGenerate(),
 			Perm:    permission.CertsGenerate,
-			Handler: handleCertGenerate(svc),
+			Handler: handleCertGenerate(svc, mw),
 		},
 		{
-			Tool:    toolCertExport(),
-			Perm:    permission.CertsExport,
+			Tool: toolCertExport(),
+			Perm: permission.CertsExport,
+			// No tenancy gate: export re-encodes the certificate and key the
+			// CALLER supplied and reads no server-held material, so it names
+			// no tenant and there is nothing for a gate to protect.
 			Handler: handleCertExport(svc),
 		},
 		{
 			Tool:    toolCertRevoke(),
 			Perm:    permission.CertsRevoke,
-			Handler: handleCertRevoke(svc),
+			Handler: handleCertRevoke(svc, mw),
 		},
 		{
 			Tool:    toolCertList(),
 			Perm:    permission.CertsList,
-			Handler: handleCertList(svc),
+			Handler: handleCertList(svc, mw),
 		},
 	}
+}
+
+// authorizeCertTenantTool gates a certificate tool on the tenant the CALL
+// names rather than on the tenant the caller happens to be in. A nil middleware
+// is the no-auth posture and admits.
+func authorizeCertTenantTool(ctx context.Context, mw *authmw.AuthMiddleware, tenantID string, perm permission.Permission) error {
+	if mw == nil {
+		return nil
+	}
+	return mw.AuthorizeCertTenant(ctx, tenantID, perm)
+}
+
+// authorizeCertRevokeTool gates a revocation on the tenant that owns the
+// serial, falling back to the CA-operator authority for deny-by-serial.
+func authorizeCertRevokeTool(ctx context.Context, mw *authmw.AuthMiddleware, svc cert.CertProvider, serial string) error {
+	if mw == nil {
+		return nil
+	}
+	return mw.AuthorizeCertRevoke(ctx, serial, svc)
 }
 
 // toolCertGenerate defines the qrdb_cert_generate tool schema.
@@ -74,7 +110,7 @@ func toolCertGenerate() mcp.Tool {
 
 // handleCertGenerate returns a tool handler that delegates to
 // svc.GenerateClientCert.
-func handleCertGenerate(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+func handleCertGenerate(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		username := mcp.ParseString(req, "username", "")
 		if username == "" {
@@ -93,6 +129,12 @@ func handleCertGenerate(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
 				return mcp.NewToolResultError("invalid ttl duration: " + err.Error()), nil
 			}
 			genReq.TTL = ttl
+		}
+
+		// The call's tenant_id becomes the certificate's Subject OU, and the
+		// mTLS authenticator derives an identity's tenant from that OU.
+		if err := authorizeCertTenantTool(ctx, mw, genReq.TenantID, permission.CertsGenerate); err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_generate", Err: err}
 		}
 
 		bundle, err := svc.GenerateClientCert(ctx, genReq)
@@ -191,11 +233,15 @@ type certRevokeResponse struct {
 
 // handleCertRevoke returns a tool handler that delegates to
 // svc.RevokeCert.
-func handleCertRevoke(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+func handleCertRevoke(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		serial := mcp.ParseString(req, "serial", "")
 		if serial == "" {
 			return mcp.NewToolResultError("serial is required"), nil
+		}
+
+		if err := authorizeCertRevokeTool(ctx, mw, svc, serial); err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_revoke", Err: err}
 		}
 
 		result, err := svc.RevokeCert(ctx, serial)
@@ -223,9 +269,13 @@ func toolCertList() mcp.Tool {
 }
 
 // handleCertList returns a tool handler that delegates to svc.ListCerts.
-func handleCertList(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
+func handleCertList(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", tenant.SystemTenantID)
+
+		if err := authorizeCertTenantTool(ctx, mw, tenantID, permission.CertsList); err != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_list", Err: err}
+		}
 
 		records, err := svc.ListCerts(ctx, tenantID)
 		if err != nil {

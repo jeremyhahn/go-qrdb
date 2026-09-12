@@ -193,6 +193,36 @@ service-level permission, not a scope change on the session one.
 **So the question to ask about a scope is what the permission is DECLARED to
 cover, not which endpoint prompted the complaint.**
 
+### A scope check only constrains what the request lets it constrain
+
+`ScopeSelf` compares the identity's tenant against `tenant.FromContext(ctx)`.
+On the ordinary authenticated path **that context tenant is bound FROM the
+identity**, so for a request that does not otherwise name a target the
+comparison is the caller's tenant against the caller's tenant — vacuously true,
+for every caller, always. The permission is checked; the scope is not.
+
+For most permissions this is harmless, because the SERVICE behind them is
+resolved per `(tenant, database)` and confined by its namespace whether or not
+the scope check does anything. **It is not harmless for a permission whose
+operation names a global identifier and whose service is a process-wide
+singleton** — there the scope check is the only confinement, and it is inert.
+
+The remedy is not a different default: it is for the handler to establish the
+TARGET and authorize against it, through `AuthMiddleware.AuthorizeTenant` (or a
+capability-specific wrapper over it), which injects the target so the same
+scope rule evaluates against the request rather than against the ambient
+tenant. The certificate-authority surface is the worked example — see
+[../certificate-authority/architecture.md](../certificate-authority/architecture.md#which-tenant-a-certs-call-may-act-on),
+where generate and list take the target from the request and revoke resolves it
+from the serial.
+
+**When the target cannot be established at all, that is not a self-scope
+operation.** A revocation of a serial no record matches names no tenant, so it
+gets its own cross-scope permission (`certs:revoke:cross`) rather than riding
+on a self-scope one whose check can never fire. Declaring a second, cross-scope
+permission for the unattributable case is the pattern; `audit:read:cross`
+beside `audit:read` is the same shape.
+
 **Pin the scope of each member of a family, not the family.** Before that fix
 nothing asserted the scope of any individual permission in the family — the
 registration looped over one list and so did the test — so a single

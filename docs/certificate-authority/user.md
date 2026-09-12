@@ -37,6 +37,12 @@ qrdb --server https://db.example.com --ca-file ca.pem \
 **The certificate is the identity.** There is no password, which is why issuing
 one is a privileged act and why revoking one matters.
 
+**And OU is why `--tenant-id` is not bookkeeping.** A login reads the tenant out
+of the OU, so issuing a certificate into a tenant is issuing a credential for
+that tenant. You may name your own tenant; naming another is refused unless you
+are a platform operator in the `system` tenant. The same rule governs
+`ca list`.
+
 ## Common tasks
 
 **Issue for a specific tenant, with a shorter life.**
@@ -62,9 +68,14 @@ already has an open connection. Revocation cannot be undone.
 qrdb ca revoke --serial 3f2a9c...
 ```
 
-Revoking a serial this system never issued also succeeds, and takes effect —
-that is how you revoke a certificate issued by a peer. The command tells you
-which case happened:
+Revoking a serial this system never issued also takes effect — that is how you
+revoke a certificate issued by a peer — but it is a **platform-operator**
+action, allowed only from the `system` tenant. A serial that matches no record
+here belongs to nobody this system can name, so it cannot be told apart from
+another customer's serial, and the effect applies to every tenant. Revoking a
+serial your own tenant holds needs nothing special.
+
+The command tells you which case happened:
 
 ```
 OK: certificate record found and marked revoked
@@ -133,6 +144,15 @@ redirect stub. Note the REST paths were **not** renamed and are still
 
 **The certificate authenticates but you cannot do anything.** Authentication and
 authorization are separate. Check the user binding and the role assignment.
+
+**`ca issue`, `ca list` or `ca revoke` was refused with a permission error even
+though you hold the `certs:*` permissions.** Those permissions apply to your own
+tenant. Naming a different `--tenant-id`, or revoking a serial another tenant
+owns, is refused for everyone outside the `system` tenant — holding the
+permission is not the same as the certificate being yours to act on. Revoking a
+serial nobody here issued needs `certs:revoke:cross`, which only the `system`
+tenant can exercise. If you are the platform operator, use a credential in the
+`system` tenant; otherwise ask the tenant that owns the certificate.
 
 **A certificate expired.** Issue a new one and revoke the old. There is no
 renewal workflow.

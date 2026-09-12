@@ -45,6 +45,24 @@ const (
 	// per-tenant AuditRead permission constrains tenant-local auditors to
 	// their own tenant's audit log.
 	AuditReadCross Permission = "audit:read:cross"
+
+	// CertsRevokeCross grants the CA-operator revocation: writing a
+	// cluster-wide deny marker for a serial this node holds NO issued
+	// record for. Reserved for the system tenant.
+	//
+	// This is the authority behind deny-by-serial (see
+	// docs/certificate-authority/architecture.md). A serial that resolves to
+	// no record names no tenant, so no tenant-local caller can show the
+	// certificate is theirs — "revoke another tenant's serial" and "revoke a
+	// serial issued by a peer" are the same request on the wire, and the
+	// marker IsRevoked reads lives in one namespace shared by every tenant.
+	// The CA is a platform asset held by a single process-wide provider, so
+	// acting on serials it cannot attribute is a platform-operator act.
+	//
+	// CertsRevoke remains the ordinary, self-scope verb: it revokes a serial
+	// whose issued record names the caller's own tenant, which is the case
+	// every tenant admin actually has.
+	CertsRevokeCross Permission = "certs:revoke:cross"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,6 +133,7 @@ func crossScopePermissions() []Permission {
 		TenantsCreateCross,
 		TenantsApprove,
 		AuditReadCross,
+		CertsRevokeCross,
 		VolumePoolCreate,
 		VolumePoolList,
 		VolumePoolRead,

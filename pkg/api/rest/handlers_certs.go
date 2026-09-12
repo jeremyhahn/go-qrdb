@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,42 @@ type certRecordResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// Cert tenancy gates
+//
+// The route permission on each /certs/* entry is checked against the CALLER's
+// own tenant. It cannot say which tenant's certificates the call reaches,
+// because three of these four verbs name their target in the request: the
+// tenantID in the generate body, the tenantID in the list query, and, for
+// revoke, a serial that resolves to a tenant only by looking it up.
+//
+// So each handler asks a second question through the shared gate in
+// pkg/auth/middleware -- the one cross-transport home of the rule, which the
+// gRPC service calls too.
+//
+// When no auth middleware is configured the gates are no-ops, mirroring every
+// other handler-level gate on this server (see authorizeTenantBarrierOp).
+// ---------------------------------------------------------------------------
+
+// authorizeCertTenant gates a certificate operation on the tenant the REQUEST
+// names, rather than on the tenant the caller happens to be in.
+func (s *Server) authorizeCertTenant(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertTenant(ctx, tenantID, perm)
+}
+
+// authorizeCertRevoke gates a revocation on the tenant that owns the serial,
+// falling back to the CA-operator authority when the serial owns no record
+// here (deny-by-serial).
+func (s *Server) authorizeCertRevoke(ctx context.Context, serial string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertRevoke(ctx, serial, s.certProv)
+}
+
+// ---------------------------------------------------------------------------
 // Cert handlers
 // ---------------------------------------------------------------------------
 
@@ -126,6 +163,15 @@ func (s *Server) handleGenerateCert(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	// The body's tenantID becomes the certificate's Subject OU, and the mTLS
+	// authenticator derives an identity's tenant from exactly that OU. An
+	// unchecked cross-tenant mint therefore does not merely misfile a record
+	// -- it hands the caller a CA-signed credential for another tenant.
+	if err := s.authorizeCertTenant(ctx, genReq.TenantID, permission.CertsGenerate); err != nil {
+		writeAuthzErrorJSON(w, err)
+		return
+	}
+
 	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
 	if err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
@@ -145,6 +191,13 @@ func (s *Server) handleGenerateCert(w http.ResponseWriter, r *http.Request) {
 // and private key as a PKCS#12 archive for browser import. The client
 // must supply the PEM-encoded certificate and key originally returned
 // by the generate endpoint, since the server does not retain private keys.
+//
+// NO TENANCY GATE, deliberately, and this is the one certs verb that needs
+// none. It reads no server-held certificate material and names no tenant: the
+// caller supplies both the certificate and the private key, so the archive it
+// gets back contains only what it already had. There is nothing here for a
+// tenancy check to protect. The revocation check inside ExportPKCS12 is an
+// operator signal, not a containment control, for the same reason.
 func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 	if s.certProv == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "cert"})
@@ -201,6 +254,11 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authorizeCertRevoke(ctx, req.Serial); err != nil {
+		writeAuthzErrorJSON(w, err)
+		return
+	}
+
 	result, err := s.certProv.RevokeCert(ctx, req.Serial)
 	if err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
@@ -227,6 +285,11 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {
+		writeAuthzErrorJSON(w, err)
+		return
+	}
 
 	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {

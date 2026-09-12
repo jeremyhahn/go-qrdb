@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -159,6 +160,15 @@ func WithRegisterCredentialService(svc service.CredentialServicer) RegisterOptio
 // WithRegisterCertProvider attaches a certificate provider for the registered gRPC service.
 func WithRegisterCertProvider(svc cert.CertProvider) RegisterOption {
 	return func(s *qrdbServiceServer) { s.certProv = svc }
+}
+
+// WithRegisterAuthMiddleware attaches the auth middleware the registered gRPC
+// service needs for its HANDLER-level tenancy gates — the certs surface, whose
+// target tenant is in the request rather than in the caller's identity. It is
+// the same instance the interceptors use; a transport that omits it gets the
+// no-auth posture, in which the gates are no-ops.
+func WithRegisterAuthMiddleware(mw *authmw.AuthMiddleware) RegisterOption {
+	return func(s *qrdbServiceServer) { s.authMW = mw }
 }
 
 // WithRegisterCollectionService attaches a collection service for the registered gRPC service.

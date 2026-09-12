@@ -449,3 +449,10 @@ func TestGRPCUser_NewIdentityFieldsRoundTrip(t *testing.T) {
 func (f *fakeRoleServicer) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
+
+// TenantForSerial holds no records, so every serial is the deny-by-serial
+// case. Answering otherwise would let a cross-tenant revocation pass a test
+// written to catch one.
+func (f *fakeCertProvider) TenantForSerial(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}

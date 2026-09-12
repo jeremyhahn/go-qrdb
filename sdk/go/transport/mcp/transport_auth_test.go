@@ -1145,3 +1145,20 @@ func (m *mockRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID string) 
 	}
 	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
+
+// TenantForSerial derives the owning tenant from this double's OWN listResp,
+// so it cannot answer "tenant t1 owns it" while reporting an inventory that
+// says otherwise. A serial absent from listResp is the deny-by-serial case.
+func (m *mockCertProvider) TenantForSerial(_ context.Context, serial string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return "", false, m.listErr
+	}
+	for _, rec := range m.listResp {
+		if rec != nil && rec.Serial == serial {
+			return rec.TenantID, true, nil
+		}
+	}
+	return "", false, nil
+}

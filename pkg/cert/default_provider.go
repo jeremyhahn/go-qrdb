@@ -427,25 +427,11 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 		return nil, &ValidationError{Field: "serial", Reason: "must not be empty"}
 	}
 
-	// Locate the certificate record for this serial. We scan all tenants
-	// because the caller provides only the serial. This runs first so that a
-	// scan failure aborts before anything is written.
-	var (
-		recordKey string
-		record    *CertRecord
-	)
-	if err := p.kvStore.Scan(ctx, prefixCerts, func(key string, value []byte) error {
-		if record != nil || !hasSerialSuffix(key, serial) {
-			return nil
-		}
-		var rec CertRecord
-		if err := json.Unmarshal(value, &rec); err != nil {
-			return nil // skip corrupt records
-		}
-		recordKey, record = key, &rec
-		return nil
-	}); err != nil {
-		return nil, &StoreError{Op: "scan", Detail: prefixCerts, Err: err}
+	// Locate the certificate record for this serial. This runs first so that
+	// a scan failure aborts before anything is written.
+	recordKey, record, err := p.findBySerial(ctx, serial)
+	if err != nil {
+		return nil, err
 	}
 
 	entry := revocationEntry{Serial: serial, RevokedAt: time.Now().UTC()}
@@ -486,6 +472,65 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*R
 	}
 
 	return &RevokeResult{Serial: serial, Outcome: outcome}, nil
+}
+
+// findBySerial locates the issued certificate record for a serial and
+// returns its store key alongside it. A serial this node holds no record for
+// yields ("", nil, nil) -- not an error, because that is the deny-by-serial
+// case RevokeCert exists to serve.
+//
+// The scan covers EVERY tenant because the caller supplies only a serial, and
+// a serial carries no tenant. That is exactly why the result must reach the
+// authorization layer: TenantForSerial is the only way a caller's claim on a
+// serial can be checked at all.
+func (p *DefaultCertProvider) findBySerial(ctx context.Context, serial string) (string, *CertRecord, error) {
+	var (
+		recordKey string
+		record    *CertRecord
+	)
+	if err := p.kvStore.Scan(ctx, prefixCerts, func(key string, value []byte) error {
+		if record != nil || !hasSerialSuffix(key, serial) {
+			return nil
+		}
+		var rec CertRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return nil // skip corrupt records
+		}
+		recordKey, record = key, &rec
+		return nil
+	}); err != nil {
+		return "", nil, &StoreError{Op: "scan", Detail: prefixCerts, Err: err}
+	}
+	return recordKey, record, nil
+}
+
+// TenantForSerial reports which tenant owns the issued certificate bearing
+// the given serial, and whether this node holds such a record at all.
+//
+// It is the seam that lets an authorization layer answer "is this serial the
+// caller's to act on?", a question RevokeCert's signature cannot answer on its
+// own. found == false is the deny-by-serial case: the serial names no tenant
+// here, so no tenant-local caller can claim it (see
+// permission.CertsRevokeCross).
+//
+// Reading the record is not itself privileged -- it returns a tenant name, not
+// certificate material -- so it deliberately takes no authorization argument;
+// the decision belongs to the caller that has an identity.
+func (p *DefaultCertProvider) TenantForSerial(ctx context.Context, serial string) (tenantID string, found bool, err error) {
+	if p.barrier.IsSealed() {
+		return "", false, &BarrierSealedError{}
+	}
+	if serial == "" {
+		return "", false, &ValidationError{Field: "serial", Reason: "must not be empty"}
+	}
+	_, record, err := p.findBySerial(ctx, serial)
+	if err != nil {
+		return "", false, err
+	}
+	if record == nil {
+		return "", false, nil
+	}
+	return record.TenantID, true, nil
 }
 
 // IsRevoked checks whether a certificate serial is marked as revoked.

@@ -591,6 +591,14 @@ func (s *Server) Start() error {
 	if s.registry != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterServiceRegistry(s.registry))
 	}
+	// The SAME middleware instance the interceptors above use. The handler-
+	// level certs gates need it: the interceptor authorizes against the
+	// caller's tenant, and the certs RPCs name their target in the request.
+	// Omitting it here would leave the Unix transport reaching the same
+	// process-wide CertProvider with the gate switched off.
+	if s.authMW != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterAuthMiddleware(s.authMW))
+	}
 
 	// Reuse the gRPC package's service registration.
 	grpcpkg.RegisterService(s.server, s.kvSvc, s.adminSvc, regOpts...)

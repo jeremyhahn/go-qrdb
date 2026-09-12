@@ -519,6 +519,7 @@ func (s *Server) Start() error {
 		rebalanceSvc:  s.rebalanceSvc,
 		sqlSvc:        s.sqlSvc,
 		registry:      s.registry,
+		authMW:        s.authMW,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
 

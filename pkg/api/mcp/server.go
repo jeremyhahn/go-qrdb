@@ -564,7 +564,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(roleTools(s.roleSvc, s.userSvc)...)
 	}
 	if s.certProv != nil {
-		s.addTools(certTools(s.certProv)...)
+		s.addTools(certTools(s.certProv, s.authMW)...)
 	}
 	// Registered when either the singleton is wired or a registry is
 	// configured: the per-(tenant, database) collection servicer resolves at

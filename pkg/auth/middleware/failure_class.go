@@ -160,6 +160,14 @@ var authFailureRules = []struct {
 		var e *AuthChainError
 		return AuthFailureUnauthenticated, errors.As(err, &e)
 	}},
+	// The node could not establish WHICH tenant a revocation targets, so it
+	// could not decide. 503, not 403: the caller's grant was never consulted,
+	// and answering "forbidden" would send an entitled operator to fix a
+	// permission that is not the problem.
+	{"CertSerialUnresolvableError", func(err error) (AuthFailureClass, bool) {
+		var e *CertSerialUnresolvableError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 	{"RateLimitedError", func(err error) (AuthFailureClass, bool) {
 		var e *RateLimitedError
 		return AuthFailureRateLimited, errors.As(err, &e)

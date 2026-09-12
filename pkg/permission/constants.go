@@ -967,6 +967,13 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "CA Operator",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			CertsRevokeCross,
+		},
+	},
+	{
 		Name:  "Database Management",
 		Group: "Management Services",
 		Permissions: []Permission{

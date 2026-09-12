@@ -1949,3 +1949,19 @@ func TestCreateAndUpdateUser_ProtoCarriesIdentityFields(t *testing.T) {
 		t.Errorf("LastAuth = %v, want nil for last_auth_unix=0", svc.lastUpdateReq.LastAuth)
 	}
 }
+
+// TenantForSerial derives the owning tenant from this double's OWN
+// listResult, so the double cannot answer "tenant B owns it" while reporting a
+// certificate inventory that says otherwise. A serial absent from listResult is
+// the deny-by-serial case.
+func (m *mockCertProvider) TenantForSerial(_ context.Context, serial string) (string, bool, error) {
+	if m.listErr != nil {
+		return "", false, m.listErr
+	}
+	for _, rec := range m.listResult {
+		if rec != nil && rec.Serial == serial {
+			return rec.TenantID, true, nil
+		}
+	}
+	return "", false, nil
+}

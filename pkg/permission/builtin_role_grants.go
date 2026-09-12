@@ -185,6 +185,11 @@ func registerAdminGrants() {
 		RegistrationConfigRead, RegistrationConfigUpdate,
 		// Cross-scope audit — only effective for system-tenant Admin.
 		AuditReadCross,
+		// Cross-scope CA-operator revocation (deny-by-serial for a serial
+		// this node holds no record for) — only effective for system-tenant
+		// Admin. The self-scope CertsRevoke above still covers every
+		// revocation of the tenant's own issued certificates.
+		CertsRevokeCross,
 		// Broker-domain tenant security surfaces (ScopeTenantOnly: a tenant
 		// admin manages their OWN tenant's secret vault, trust pool, and ACME
 		// issuance; the system tenant is structurally denied by the

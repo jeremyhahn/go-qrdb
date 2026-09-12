@@ -40,6 +40,15 @@ type CertProvider interface {
 	// IsRevoked checks whether a certificate serial is revoked.
 	IsRevoked(ctx context.Context, serial string) (bool, error)
 
+	// TenantForSerial reports which tenant owns the issued certificate
+	// bearing the given serial, and whether this node holds such a record.
+	//
+	// RevokeCert takes only a serial, and a serial carries no tenant, so
+	// this is the only way an authorization layer can establish the TARGET
+	// of a revocation rather than assuming the caller's own tenant. found ==
+	// false is the deny-by-serial case (permission.CertsRevokeCross).
+	TenantForSerial(ctx context.Context, serial string) (tenantID string, found bool, err error)
+
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
 

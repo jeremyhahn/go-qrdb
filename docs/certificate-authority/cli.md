@@ -78,10 +78,17 @@ the not-revoked answer for `auth.revocation_cache_ttl` (default `30s`), and
 **that value is the window during which the revoked certificate still
 authenticates**. Set it to `0` to close the window entirely.
 
-**Revoking a serial this node holds no record for is allowed and reports
-success.** The marker is written and the serial is denied from then on;
-revoking a certificate issued by a peer is the case this behaviour exists
-for. The command tells you which case occurred:
+**Revoking a serial this node holds no record for requires platform-operator
+authority.** The behaviour is unchanged — the marker is written and the serial
+is denied from then on, which is what revoking a peer-issued certificate needs
+— but only an identity in the `system` tenant holding `certs:revoke:cross` may
+ask for it. A serial that matches no record names no tenant, so there is no way
+to tell "revoke a peer's certificate" from "revoke another customer's
+certificate", and the marker applies cluster-wide to both. A tenant admin
+revoking a serial its **own** tenant holds is unaffected and needs nothing
+extra.
+
+The command tells you which case occurred:
 
 ```
 OK: certificate record found and marked revoked
@@ -94,6 +101,27 @@ the serial against `qrdb ca list` rather than as an error — the command
 cannot tell the two apart on its own.
 
 **There is no unrevoke.** No verb removes a revocation, on any transport.
+
+### Which certificates you may act on
+
+`issue`, `revoke` and `list` are authorized against the tenant the COMMAND
+names, not the tenant your credential is in:
+
+| Command | Refused with `PERMISSION_DENIED` when |
+|---|---|
+| `ca issue --tenant-id <t>` | `<t>` is not your tenant and you are not in `system` |
+| `ca list --tenant-id <t>` | `<t>` is not your tenant and you are not in `system` |
+| `ca revoke --serial <s>` | `<s>` belongs to another tenant, or matches no record and you lack `certs:revoke:cross` |
+
+`ca issue` is the one to watch: `--tenant-id` becomes the certificate's OU, and
+the OU is where an mTLS login reads the tenant from. Issuing into a tenant is
+issuing a credential FOR that tenant.
+
+An operator in the `system` tenant is unrestricted, which is how a platform
+administrator provisions and audits customer tenants.
+
+`ca export-bundle` names no tenant: it re-encodes the certificate and key you
+supply, and the server holds neither.
 
 ## `qrdb ca export-bundle`
 

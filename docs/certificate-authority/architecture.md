@@ -190,8 +190,10 @@ prefix is collision-avoidance and tenant confinement, not authorization, and no
 prefix is exempt from tenant namespacing.
 
 1. **Revoke is reachable only through the certificate service, under RBAC**
-   (`certs:revoke`), on every transport. The key-value row is an implementation
-   detail nothing outside `pkg/cert` touches.
+   (`certs:revoke`), on every transport, **and gated on the tenant that owns
+   the serial** — see [Which tenant a certs call may act on](#which-tenant-a-certs-call-may-act-on)
+   below. The key-value row is an implementation detail nothing outside
+   `pkg/cert` touches.
 2. **Nothing un-revokes.** There is no unrevoke operation on any transport, and
    the single code path that deletes a marker deletes only markers whose
    certificate has already expired.
@@ -219,6 +221,77 @@ for certificates this node did issue carry the certificate's `notAfter` and are
 so dropping its marker cannot restore access. Every revocation reaps, which is
 what bounds a namespace that would otherwise only grow.
 
+## Which tenant a certs call may act on
+
+A permission answers "may this caller do this kind of thing". It does **not**
+answer "to whose certificates", and on this surface those are different
+questions, because one process-wide `CertProvider` serves every tenant. Three
+of the four certs verbs name their target **in the request**:
+
+| Verb | Where the target tenant comes from | Gate |
+|---|---|---|
+| `certs:generate` | the request's `tenantID` | authorized against that tenant |
+| `certs:list` | the request's `tenantID` | authorized against that tenant |
+| `certs:revoke` | **resolved from the serial** | authorized against the owning tenant |
+| `certs:export` | nowhere — none is named | none needed (see below) |
+
+`certs:generate` and `certs:list` are checked against the tenant the request
+names, not the tenant the caller is in. `certs:generate` matters most: the
+`tenantID` becomes the certificate's Subject **OU**, and the mTLS authenticator
+derives an identity's tenant from exactly that OU, so an unchecked cross-tenant
+mint would hand the caller a CA-signed credential for another tenant rather
+than merely misfiling a record.
+
+`certs:export` needs no gate and deliberately has none: the caller supplies
+both the certificate and the private key, the server holds neither, and the
+archive that comes back contains only what the caller already had. There is
+nothing for a tenancy check to protect. (The revocation check inside the export
+is an operator signal for the same reason — it withholds nothing.)
+
+### Revoke resolves its target, and the two authorities that follow
+
+`RevokeCert` takes a serial, and a serial carries no tenant. So the target is
+**resolved first**, through `TenantForSerial`, and the answer selects which
+authority is required:
+
+- **The serial resolves to an issued record.** The record names the owning
+  tenant, and the ordinary self-scope `certs:revoke` is checked against *that*
+  tenant. A tenant admin revoking its own certificate is admitted; the same
+  admin reaching for another tenant's serial is refused; an identity in the
+  system tenant is admitted by the system-tenant rule.
+
+- **The serial resolves to nothing.** This is deny-by-serial, and it requires
+  `certs:revoke:cross`, which is cross-scope and therefore **system tenant
+  only**.
+
+The second rule is the substantive one. A serial that resolves to no record
+names no tenant, so no tenant-local caller can show the certificate is theirs —
+"revoke another tenant's serial" and "revoke a serial a peer issued" are the
+**same request on the wire**, and the marker written is read by every tenant.
+Admitting that on a self-scope permission means there is no cross-tenant
+revocation the system can refuse. Deny-by-serial is retained in full; what
+changed is that it is now recognised as the **CA-operator** capability it
+always was, and the CA is a platform asset held by a single provider.
+
+A resolution failure is **not** treated as "no owner". The tenancy of the
+operation is unknown, and an unknown target is not an absent one, so the
+request is refused as unavailable rather than routed into the deny-by-serial
+branch — otherwise a store hiccup would silently widen the authority every
+revocation runs under.
+
+### One rule, four transports
+
+The rule lives once, in the auth middleware, and REST, gRPC, QUIC and MCP all
+call it. They reach the *same* process-wide provider, so a rule enforced on
+three of four surfaces is a rule with a door beside it. In a deployment with no
+authentication configured the gates are no-ops, matching every other
+handler-level gate.
+
+On MCP, `qrdb_cert_list` deserves a note: its `tenant_id` argument defaults to
+the **system tenant** when omitted, so the least deliberate call an agent can
+make is also the most privileged one. It is gated exactly like an explicit
+cross-tenant request.
+
 ## Cryptographic properties
 
 | Property | Value |
@@ -231,6 +304,12 @@ what bounds a namespace that would otherwise only grow.
 | Serial number | 128-bit random |
 | PKCS#12 export | `software.sslmate.com/src/go-pkcs12` |
 
+**A serial is unguessable, not secret.** 128 bits of randomness puts it beyond
+enumeration, but it travels in the peer certificate of every mTLS connection
+and in any CRL that carries it, and `certs:list` serves a tenant's serials on
+request. So confidentiality of the serial is not, and was never, what keeps one
+tenant from acting on another's certificate. The tenancy gates above are.
+
 Client certificates carry `ClientAuth` and nothing else — a certificate issued
 here cannot be used to impersonate a server.
 
@@ -241,6 +320,11 @@ The certificate **is** the identity:
 - **CN** → the username.
 - **OU** → the tenant ID.
 - The **SPKI thumbprint** is what a user record binds to.
+
+The OU line is why `certs:generate` is gated on the tenant the request names
+rather than on the caller's own: minting a certificate for a tenant is minting
+a credential that authenticates as that tenant. See
+[Which tenant a certs call may act on](#which-tenant-a-certs-call-may-act-on).
 
 That is why issuance is a privileged operation and why revocation matters: there
 is no password to change. Revocation is the only way to withdraw an identity

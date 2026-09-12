@@ -278,6 +278,7 @@ type mockCertProvider struct {
 	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantForSerialFn    func(ctx context.Context, serial string) (string, bool, error)
 	caCertPEMFn          func() []byte
 }
 
@@ -1858,7 +1859,7 @@ func TestPermissionsResolveTool_EmptyPermissionsResult(t *testing.T) {
 
 func TestCertGenerateTool_Success(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertGenerate(svc)
+	handler := handleCertGenerate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "alice",
@@ -1888,7 +1889,7 @@ func TestCertGenerateTool_WithTenantAndTTL(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleCertGenerate(svc)
+	handler := handleCertGenerate(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"username":  "bob",
@@ -1915,7 +1916,7 @@ func TestCertGenerateTool_WithTenantAndTTL(t *testing.T) {
 
 func TestCertGenerateTool_MissingUsername(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertGenerate(svc)
+	handler := handleCertGenerate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -1928,7 +1929,7 @@ func TestCertGenerateTool_MissingUsername(t *testing.T) {
 
 func TestCertGenerateTool_InvalidTTL(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertGenerate(svc)
+	handler := handleCertGenerate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "alice",
@@ -1948,7 +1949,7 @@ func TestCertGenerateTool_ServiceError(t *testing.T) {
 			return nil, &certGenerateError{Msg: "CA key sealed"}
 		},
 	}
-	handler := handleCertGenerate(svc)
+	handler := handleCertGenerate(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "alice",
@@ -2059,7 +2060,7 @@ func TestCertExportTool_ServiceError(t *testing.T) {
 
 func TestCertRevokeTool_Success(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertRevoke(svc)
+	handler := handleCertRevoke(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"serial": "AABBCCDD",
@@ -2086,7 +2087,7 @@ func TestCertRevokeTool_DenyBySerial(t *testing.T) {
 			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
 		},
 	}
-	handler := handleCertRevoke(svc)
+	handler := handleCertRevoke(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"serial": "peer-issued",
@@ -2106,7 +2107,7 @@ func TestCertRevokeTool_DenyBySerial(t *testing.T) {
 
 func TestCertRevokeTool_MissingSerial(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertRevoke(svc)
+	handler := handleCertRevoke(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -2123,7 +2124,7 @@ func TestCertRevokeTool_ServiceError(t *testing.T) {
 			return nil, errors.New("certificate not found")
 		},
 	}
-	handler := handleCertRevoke(svc)
+	handler := handleCertRevoke(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"serial": "DEADBEEF",
@@ -2139,7 +2140,7 @@ func TestCertRevokeTool_ServiceError(t *testing.T) {
 
 func TestCertListTool_Success(t *testing.T) {
 	svc := &mockCertProvider{}
-	handler := handleCertList(svc)
+	handler := handleCertList(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -2166,7 +2167,7 @@ func TestCertListTool_WithTenantID(t *testing.T) {
 			return []*cert.CertRecord{}, nil
 		},
 	}
-	handler := handleCertList(svc)
+	handler := handleCertList(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"tenant_id": "custom-tenant",
@@ -2187,7 +2188,7 @@ func TestCertListTool_SystemTenantID(t *testing.T) {
 			return []*cert.CertRecord{}, nil
 		},
 	}
-	handler := handleCertList(svc)
+	handler := handleCertList(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -2204,7 +2205,7 @@ func TestCertListTool_ServiceError(t *testing.T) {
 			return nil, errors.New("storage unavailable")
 		},
 	}
-	handler := handleCertList(svc)
+	handler := handleCertList(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err == nil {
@@ -2222,7 +2223,7 @@ func TestCertListTool_ServiceError(t *testing.T) {
 
 func TestCertTools_Registration(t *testing.T) {
 	svc := &mockCertProvider{}
-	tools := certTools(svc)
+	tools := certTools(svc, nil)
 
 	expectedNames := []string{
 		"qrdb_cert_generate",
@@ -2744,4 +2745,15 @@ func (m *mockRoleService) ReconcileBuiltInRoles(ctx context.Context, tenantID st
 		return m.reconcileFn(ctx, tenantID)
 	}
 	return &role.ReconcileReport{TenantID: tenantID}, nil
+}
+
+// TenantForSerial resolves the owning tenant for a serial. The default is
+// ("", false, nil) -- the deny-by-serial case -- because a double holding no
+// records genuinely owns no serials, and a double that claimed otherwise would
+// let a cross-tenant revocation pass a test written to catch one.
+func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (string, bool, error) {
+	if m.tenantForSerialFn != nil {
+		return m.tenantForSerialFn(ctx, serial)
+	}
+	return "", false, nil
 }

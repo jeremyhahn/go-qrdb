@@ -502,7 +502,8 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 10 Seal (4 existing + 6 new) + 8 Ceremony + 3 Audit
 	// + 5 AuthFactor = 144 self-scope perms.
 	// + 11 cross-scope perms (3 Tenants:*:cross + 1 AuditReadCross
-	//   + 5 VolumePool + 2 RegistrationConfig) = 155.
+	//   + 5 VolumePool + 2 RegistrationConfig) = 155. (CertsRevokeCross is
+	//   a twelfth cross-scope perm, added at the bottom of this tally.)
 	// + 4 tenant-only perms (tenant_barrier:init/unseal/seal/status) = 159.
 	// + 43 authorization-hardening perms = 202 total:
 	//   5 Databases + 7 Collections + 5 Locks + 8 Credentials + 4 Shard-control
@@ -531,7 +532,8 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 1 selective point-in-time restore perm (mvcc:restore) = 360 total.
 	// + 2 orchestrator task-lifecycle perms (orchestrator:task_readmit,
 	//   orchestrator:task_block) = 362 total.
-	const expectedTotal = 362
+	// + 1 CA-operator cross-scope perm (certs:revoke:cross) = 363 total.
+	const expectedTotal = 363
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

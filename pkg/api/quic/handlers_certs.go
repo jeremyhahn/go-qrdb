@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,41 @@ type certRecordWireResponse struct {
 // Cert handlers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cert tenancy gates
+//
+// The QUIC dispatcher authorizes each opcode's declared permission against the
+// CALLER's tenant. It cannot authorize the tenant the REQUEST names, and three
+// of these four verbs name theirs. The gates below ask that second question
+// through the shared home of the rule (pkg/auth/middleware/cert_authz.go),
+// which the REST and gRPC surfaces call too.
+//
+// This transport matters as much as the others: it reaches the SAME
+// process-wide CertProvider, so a gate on REST alone would be a gate with a
+// door beside it.
+//
+// With no auth middleware wired the gates are no-ops.
+// ---------------------------------------------------------------------------
+
+// authorizeCertTenant gates a certificate operation on the tenant the request
+// names rather than on the tenant the caller happens to be in.
+func (s *Server) authorizeCertTenant(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertTenant(ctx, tenantID, perm)
+}
+
+// authorizeCertRevoke gates a revocation on the tenant that owns the serial,
+// falling back to the CA-operator authority when the serial owns no record
+// here (deny-by-serial).
+func (s *Server) authorizeCertRevoke(ctx context.Context, serial string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertRevoke(ctx, serial, s.certProv)
+}
+
 // handleGenerateCert unmarshals a JSON generate cert request, creates a
 // client certificate signed by the internal CA, and returns a serialized
 // JSON certificate bundle response.
@@ -116,6 +152,12 @@ func (s *Server) handleGenerateCert(ctx context.Context, payload []byte) ([]byte
 			return nil, &InvalidTTLError{Value: req.TTL, Err: err}
 		}
 		genReq.TTL = ttl
+	}
+
+	// The request's tenantID becomes the certificate's Subject OU, and the
+	// mTLS authenticator derives an identity's tenant from that OU.
+	if err := s.authorizeCertTenant(ctx, genReq.TenantID, permission.CertsGenerate); err != nil {
+		return nil, err
 	}
 
 	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
@@ -187,6 +229,10 @@ func (s *Server) handleRevokeCert(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := s.authorizeCertRevoke(ctx, req.Serial); err != nil {
+		return nil, err
+	}
+
 	result, err := s.certProv.RevokeCert(ctx, req.Serial)
 	if err != nil {
 		return nil, err
@@ -210,6 +256,10 @@ func (s *Server) handleListCerts(ctx context.Context, payload []byte) ([]byte, e
 	var req listCertsWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.authorizeCertTenant(ctx, req.TenantID, permission.CertsList); err != nil {
+		return nil, err
 	}
 
 	records, err := s.certProv.ListCerts(ctx, req.TenantID)

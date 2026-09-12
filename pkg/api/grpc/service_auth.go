@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -524,7 +525,35 @@ func permissionsToStrings(perms []permission.Permission) []string {
 
 // ---------------------------------------------------------------------------
 // Certificate management handlers
+//
+// The unary interceptor authorizes each RPC's declared permission against the
+// CALLER's tenant. It cannot authorize the tenant the REQUEST names, and three
+// of these four RPCs name theirs. The gates below ask that second question
+// through the shared home of the rule in pkg/auth/middleware, which the REST
+// server calls too — see pkg/auth/middleware/cert_authz.go.
+//
+// With no auth middleware wired the gates are no-ops, matching every other
+// handler-level gate in this stack.
 // ---------------------------------------------------------------------------
+
+// authorizeCertTenant gates a certificate operation on the tenant the request
+// names rather than on the tenant the caller happens to be in.
+func (s *qrdbServiceServer) authorizeCertTenant(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertTenant(ctx, tenantID, perm)
+}
+
+// authorizeCertRevoke gates a revocation on the tenant that owns the serial,
+// falling back to the CA-operator authority when the serial owns no record
+// here (deny-by-serial).
+func (s *qrdbServiceServer) authorizeCertRevoke(ctx context.Context, serial string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeCertRevoke(ctx, serial, s.certProv)
+}
 
 // GenerateCert creates a client certificate.
 func (s *qrdbServiceServer) GenerateCert(ctx context.Context, req *pb.GenerateCertRequest) (*pb.CertBundleResponse, error) {
@@ -543,6 +572,14 @@ func (s *qrdbServiceServer) GenerateCert(ctx context.Context, req *pb.GenerateCe
 			return nil, status.Error(codes.InvalidArgument, (&TTLParseError{Value: req.GetTtl(), Err: err}).Error())
 		}
 		genReq.TTL = ttl
+	}
+
+	// The request's tenant_id becomes the certificate's Subject OU, and the
+	// mTLS authenticator derives an identity's tenant from that OU. An
+	// unchecked cross-tenant mint hands the caller a CA-signed credential for
+	// another tenant.
+	if err := s.authorizeCertTenant(ctx, genReq.TenantID, permission.CertsGenerate); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
 
 	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
@@ -585,6 +622,10 @@ func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRe
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "cert"}).Error())
 	}
 
+	if err := s.authorizeCertRevoke(ctx, req.GetSerial()); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+
 	result, err := s.certProv.RevokeCert(ctx, req.GetSerial())
 	if err != nil {
 		return nil, mapAuthServiceError(err)
@@ -597,6 +638,10 @@ func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRe
 func (s *qrdbServiceServer) ListCerts(ctx context.Context, req *pb.ListCertsRequest) (*pb.ListCertsResponse, error) {
 	if s.certProv == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "cert"}).Error())
+	}
+
+	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.CertsList); err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
 
 	records, err := s.certProv.ListCerts(ctx, req.GetTenantId())

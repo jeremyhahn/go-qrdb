@@ -140,6 +140,7 @@ type mockCertProvider struct {
 	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
+	tenantForSerialFn    func(ctx context.Context, serial string) (string, bool, error)
 	caCertPEMFn          func() []byte
 }
 
@@ -205,4 +206,15 @@ func (m *mockRoleService) ReconcileBuiltInRoles(ctx context.Context, tenantID st
 		return m.reconcileFn(ctx, tenantID)
 	}
 	return &role.ReconcileReport{TenantID: tenantID}, nil
+}
+
+// TenantForSerial resolves the owning tenant for a serial. The default is
+// ("", false, nil) -- the deny-by-serial case -- because a double holding no
+// records genuinely owns no serials, and a double that claimed otherwise would
+// let a cross-tenant revocation pass a test written to catch one.
+func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (string, bool, error) {
+	if m.tenantForSerialFn != nil {
+		return m.tenantForSerialFn(ctx, serial)
+	}
+	return "", false, nil
 }

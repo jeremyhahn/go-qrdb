@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -314,6 +315,15 @@ type qrdbServiceServer struct {
 	// scope. When nil the singleton service fields above are used (embedded /
 	// single-database deployments).
 	registry service.Registry
+
+	// authMW is the SAME middleware instance the interceptors use. The
+	// interceptor authorizes an RPC's declared permission against the
+	// CALLER's tenant; it cannot authorize the tenant the REQUEST names, and
+	// the certs RPCs name theirs (GenerateCert.tenant_id, ListCerts.tenant_id,
+	// and, indirectly, the serial RevokeCert resolves). Nil in deployments
+	// with no authentication, where the gates are no-ops exactly as they are
+	// on the REST server.
+	authMW *authmw.AuthMiddleware
 }
 
 // ---------------------------------------------------------------------------

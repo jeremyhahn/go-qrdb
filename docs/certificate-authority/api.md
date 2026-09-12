@@ -17,6 +17,31 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 
 Four capabilities on all six transports, plus the public bootstrap route.
 
+### The permission column is only half the authorization
+
+The `scp` permission above is checked against the **caller's own tenant**. It
+does not say *whose* certificates the call may reach, and on this surface those
+are separate questions — one process-wide certificate provider serves every
+tenant. A second check establishes the target:
+
+| Capability | Target tenant | Additional permission |
+|---|---|---|
+| Generate | the request's `tenantID` / `tenant_id` | — (`certs:generate` re-checked against the target) |
+| List | the request's `tenantID` / `tenant_id` | — (`certs:list` re-checked against the target) |
+| Revoke, serial **known** to this node | the owning tenant, resolved from the serial | — (`certs:revoke` re-checked against the owner) |
+| Revoke, serial **unknown** to this node | none — deny-by-serial | **`certs:revoke:cross`** (system tenant only) |
+| Export | none named | — |
+
+A caller acting inside its own tenant sees no change. A caller naming another
+tenant is refused unless it is in the system tenant, whose members the
+system-tenant rule lifts. See
+[architecture.md](architecture.md#which-tenant-a-certs-call-may-act-on) for why
+deny-by-serial is a CA-operator capability.
+
+`tenant_id` on the MCP `qrdb_cert_list` tool defaults to the **system tenant**
+when omitted; that default is gated exactly like an explicit cross-tenant
+request.
+
 **Note the path prefix.** These are `/certs/...`, unversioned, even though the
 CLI group is `qrdb ca`. The CLI was renamed (`certs` → `ca`); the routes were
 not. `qrdb certs` remains as a redirect stub that only prints where to go.
@@ -102,6 +127,9 @@ than merely inert.
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError` |
 | Generation or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Target tenant is not the caller's, and the caller is not in the system tenant | 403 | `PERMISSION_DENIED` |
+| Deny-by-serial attempted without `certs:revoke:cross` | 403 | `PERMISSION_DENIED` |
+| Owning tenant could not be resolved (no provider wired, store unreachable) | 503 | `UNAVAILABLE` — the decision was never made, so 403 would be a lie |
 
 `POST /certs/revoke` returns **200 / `OK` whether or not this node holds a
 record for the serial**: the marker is written either way (deny-by-serial), so

@@ -2345,3 +2345,8 @@ func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, 
 func (s *stubRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
+
+// TenantForSerial holds no records, so every serial is the deny-by-serial case.
+func (s *stubCertProvider) TenantForSerial(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}

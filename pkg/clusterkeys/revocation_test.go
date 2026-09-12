@@ -750,3 +750,10 @@ func TestFormatSerialAgreement(t *testing.T) {
 		t.Errorf("FormatSerial(255) = %q, want %q", got, "ff")
 	}
 }
+
+// TenantForSerial is not exercised by the revocation cache -- it consumes
+// IsRevoked only -- so this double owns no tenant mapping and reports the
+// deny-by-serial case. It exists to satisfy cert.CertProvider.
+func (f *fakeCertAuthority) TenantForSerial(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}

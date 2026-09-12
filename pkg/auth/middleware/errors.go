@@ -173,3 +173,23 @@ func (e *RateLimitedError) Error() string {
 	return "auth/middleware: rate limit exceeded for " + e.Subject + " in tenant " + e.TenantID +
 		" on " + e.Permission.String() + "; retry after " + e.RetryAfter.String()
 }
+
+// CertSerialUnresolvableError reports that a revocation could not be
+// authorized because this node had no way to establish which tenant owns the
+// serial.
+//
+// It is a WIRING fault, not a caller fault, which is why it classifies as
+// unavailable rather than forbidden: telling an entitled operator it lacks
+// permission would send it to fix a grant that was never the problem. The
+// request is still refused -- an unknown target is not an absent one.
+type CertSerialUnresolvableError struct {
+	// Serial is the certificate serial whose owning tenant could not be
+	// established.
+	Serial string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *CertSerialUnresolvableError) Error() string {
+	return "auth/middleware: cannot authorize revocation of serial " + e.Serial +
+		": no certificate provider is wired to resolve its owning tenant"
+}

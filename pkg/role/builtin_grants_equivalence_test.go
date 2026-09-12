@@ -116,6 +116,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
 	permission.AuditReadCross,
+	permission.CertsRevokeCross,
 	permission.SecretsRead, permission.SecretsWrite, permission.SecretsDelete,
 	permission.SecretsList,
 	permission.TrustRead, permission.TrustWrite,

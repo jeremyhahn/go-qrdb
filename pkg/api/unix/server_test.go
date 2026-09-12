@@ -1713,3 +1713,8 @@ func (s *stubRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID string) 
 func (m *mockKVService) ListAll(a0 context.Context, prefix string) ([]string, error) {
 	return m.List(a0, prefix)
 }
+
+// TenantForSerial holds no records, so every serial is the deny-by-serial case.
+func (s *stubCertProv) TenantForSerial(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}

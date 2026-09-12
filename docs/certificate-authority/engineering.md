@@ -25,6 +25,13 @@ type CertProvider interface {
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
+	// TenantForSerial reports which tenant owns the issued certificate
+	// bearing this serial, and whether this node holds such a record.
+	// RevokeCert takes only a serial, and a serial carries no tenant, so
+	// this is the only way an authorization layer can establish the TARGET
+	// of a revocation rather than assuming the caller's own tenant.
+	// found == false is the deny-by-serial case.
+	TenantForSerial(ctx context.Context, serial string) (tenantID string, found bool, err error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
 	CACertPEM() []byte
 }
@@ -211,6 +218,20 @@ type AuthMiddlewareConfig struct {
   certificate is a real CA operation. It succeeds either way, and the returned
   `RevokeResult.Outcome` reports which case occurred rather than the error
   return, since both are successes.
+- **Deny-by-serial is authorized as a CA-operator act.** `RevokeCert` itself is
+  unchanged and still writes the marker; what is gated is who may ask for it.
+  A serial that resolves to no record names no tenant, so no tenant-local
+  caller can show the certificate is theirs — "revoke another tenant's serial"
+  and "revoke a serial a peer issued" are the same request — and the marker is
+  read by every tenant. The gate therefore requires `certs:revoke:cross`
+  (cross-scope, system tenant only) for that branch, and the ordinary
+  self-scope `certs:revoke` against the OWNING tenant when the serial resolves.
+  See [architecture.md](architecture.md#which-tenant-a-certs-call-may-act-on).
+- **The provider stays authorization-free.** `TenantForSerial` takes no
+  identity and makes no decision; it reports a fact. The decision lives in
+  `pkg/auth/middleware` (`AuthorizeCertTenant`, `AuthorizeCertRevoke`), once,
+  and REST, gRPC, QUIC and MCP all call it. Putting the rule in each handler
+  is how three of four surfaces end up enforcing it.
 - **`ExportPKCS12` consults revocation before encoding.** It parses `certPEM`,
   derives the serial with `FormatSerial`, and refuses with `*CertRevokedError`
   when `IsRevoked` says the serial is revoked. There is no override: an export
@@ -295,8 +316,19 @@ enumeration.
 | Generate certificate | `certs:generate` |
 | Export PKCS#12 | `certs:export` |
 | Revoke certificate | `certs:revoke` |
+| Revoke a serial this node holds no record for (deny-by-serial) | `certs:revoke` **and** `certs:revoke:cross` |
 | List certificates | `certs:list` |
 | Read certificate metadata | `certs:read` |
+
+`certs:revoke:cross` is **cross-scope**: the RBAC authorizer admits it only for
+identities in the system tenant. It is an escalation ON TOP of `certs:revoke`,
+not a substitute for it — the same relationship `audit:read:cross` has to
+`audit:read` — so a caller needs both, and the built-in Admin role grants both.
+
+Every other permission in the table is **self-scope**, and for generate, revoke
+and list the gate re-checks it against the tenant the REQUEST names rather than
+the tenant the caller is in. A caller acting inside its own tenant is
+unaffected.
 
 ## Configuration
 
@@ -354,6 +386,25 @@ key patterns are the on-disk contract for this feature.
   the two `RevokeOutcome` values are distinct. `ExportPKCS12`'s revocation
   refusal is mutation-tested: disabling the check is what proves the test
   would have caught a revoked certificate shipping in a PKCS#12 archive.
+- **Tenancy is tested at two layers, on purpose.** What the gate DECIDES is
+  settled once, against the real RBAC authorizer, beside the gate. What each
+  transport must prove is that it CALLS the gate — every transport reaches the
+  same process-wide provider, so a rule enforced on three of four surfaces is a
+  rule with a door beside it, and that failure is invisible from inside the
+  middleware package.
+- **The cross-tenant tests use two tenants over ONE shared store**, with the
+  real `DefaultCertProvider` and the real authorizer. A double narrower than
+  production would hide this defect rather than catch it: the defect is that
+  the real scope check is vacuous, so a test double that "checks the tenant"
+  proves the opposite of what it appears to.
+- **Each refusal ships with its control.** Own-tenant generate, revoke and list
+  keep working, the system tenant still reaches every tenant, and a
+  no-middleware deployment is still served — otherwise "deny everything" would
+  pass every test above.
+- **The transport tests fail the double when the effect runs.** The provider
+  used for the QUIC and MCP gate tests calls `t.Fatal` from
+  `GenerateClientCert`/`RevokeCert`/`ListCerts`, so a handler that authorizes
+  AFTER acting fails rather than passing on the returned error.
 
 ## Known limitations
 
