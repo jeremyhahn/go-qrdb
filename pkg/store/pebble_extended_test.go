@@ -1223,18 +1223,16 @@ func TestPebbleStateMachine_WatchMVCCPut(t *testing.T) {
 func TestPebbleStateMachine_UnknownOp(t *testing.T) {
 	s := openExtendedStore(t)
 
-	// Use an opcode that is not registered.
+	// Use an opcode that is not registered. It is REFUSED in the result
+	// payload, not returned to Raft: an opcode with no handler says nothing
+	// about the health of the storage underneath, and returning it halted the
+	// shard (go-qrdb#520).
 	cmd := []byte{200, 0, 0}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown opcode")
-	}
-	var unknownErr *protocol.UnknownOpError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("expected UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 func TestPebbleStateMachine_EmptyCommand(t *testing.T) {

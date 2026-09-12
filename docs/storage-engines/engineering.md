@@ -94,6 +94,18 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
 
 ## Invariants
 
+- **An engine returns an error from `Update` only when the state machine cannot
+  continue.** Raft treats a non-nil `Update` error as a fatal apply failure, so
+  returning one for an outcome that is a deterministic consequence of valid
+  committed input — an opcode this engine does not implement, a subsystem it was
+  not constructed with — stops `lastApplied` advancing and costs the shard every
+  subsequent linearizable read, on every engine sharing it. Such an outcome is
+  ENCODED into `sm.Result.Data` instead. The error itself declares which it is,
+  by implementing `protocol.CapabilityError`; anything that declares nothing is
+  a fault and halts. `pkg/engine`, `pkg/store` and `pkg/statemachine` share one
+  classifier, `statemachine.ResolveApplyError`, and `test/buildgates` fails the
+  build if an apply seam does not route through it. The full contract is in
+  [key-value/engineering.md](../key-value/engineering.md#refusal-and-fault-at-the-apply-seam).
 - **`Storage` is a cross-repo contract.** go-xkms imports
   `go-qrdb/pkg/storage` for all its storage operations and wraps the go-qrdb
   SDK client into this interface for distributed mode. Changing the signature
@@ -178,6 +190,8 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Non-pebble `sm_storage` with a pebble-native state machine | rejected | **yes** |
 | `VolumePools()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 | Pool `Pick` with an unknown pool name | not-found | yes |
+| Opcode an engine has no handler for | refused in the result payload; the apply loop keeps advancing | **yes** |
+| Engine write fault under a committed entry | returned from `Update`, halting Apply on that replica | **yes** |
 
 The nil return from `Client.VolumePools()` is the one sharp edge here: it is not
 an error value, so an unchecked call panics rather than failing cleanly.

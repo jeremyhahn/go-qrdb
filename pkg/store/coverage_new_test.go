@@ -599,10 +599,9 @@ func TestPebbleStateMachine_Batch_UnknownOpType(t *testing.T) {
 	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op type in batch")
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------

@@ -229,7 +229,7 @@ func (f *FastStateMachine) Update(ctx context.Context, entries []sm.Entry, resul
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
-		resolved, stop, applyErr := resolveApplyError(f.logger, entries[i].Index, result, err)
+		resolved, stop, applyErr := ResolveApplyError(f.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}

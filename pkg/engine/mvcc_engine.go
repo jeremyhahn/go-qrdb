@@ -209,21 +209,35 @@ func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, resu
 	for i, entry := range entries {
 		cmd, err := protocol.DecodeCommand(entry.Cmd)
 		if err != nil {
+			// A committed entry this build cannot decode is divergence, not a
+			// refusal: those bytes are already in the log on every replica.
 			return nil, err
 		}
 
+		var result sm.Result
+		var notifs []Notification
 		handler, ok := e.updateHandlers[cmd.Op]
-		if !ok {
-			return nil, &protocol.UnknownOpError{Op: cmd.Op}
+		if ok {
+			result, notifs, err = handler(e.store, e.lessor, batch, cmd.Payload)
+		} else {
+			err = &protocol.UnknownOpError{Op: cmd.Op}
 		}
 
-		result, notifs, err := handler(e.store, e.lessor, batch, cmd.Payload)
-		if err != nil {
-			return nil, err
+		// Classify before assigning. An absent capability -- an opcode this
+		// engine has no handler for, a subsystem compiled out of this binary --
+		// is answered in the result payload; anything else halts Apply. This
+		// engine had NO classification at all until go-qrdb#520, so both of
+		// those refusals reached Raft as fatal Apply failures and cost the
+		// shard every subsequent linearizable read, on every engine sharing it.
+		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entry.Index, result, err)
+		if stop {
+			return nil, applyErr
 		}
-		results[i] = result
+		results[i] = resolved
 
-		if len(notifs) > 0 {
+		// Notifications from a refused entry are deliberately dropped: it
+		// mutated nothing, so there is nothing for a watcher to observe.
+		if err == nil && len(notifs) > 0 {
 			notifications = append(notifications, notifs...)
 		}
 	}
@@ -560,6 +574,42 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 // appErrResult builds a non-fatal application-error result payload.
 func appErrResult(msg string) sm.Result {
 	return sm.Result{Data: protocol.EncodeAppError(msg)}
+}
+
+// decodedOpSupported reports whether executeDecodedOpWithNotify can execute
+// op. It is the single definition of that set, so the pre-flight check below
+// and the dispatch itself cannot drift apart.
+func decodedOpSupported(op byte) bool {
+	switch op {
+	case protocol.OpMVCCPut, protocol.OpMVCCDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateDecodedOps rejects an operation set naming an operation this engine
+// cannot execute, BEFORE any of it is applied.
+//
+// The batch and transaction handlers walk their operations applying each in
+// turn into the caller's storage.Batch, so without this they refuse only on
+// REACHING the unknown one, having already staged every operation before it --
+// and the apply loop commits that batch regardless. While such a refusal
+// halted Apply that was the lesser of two problems: the shard was poisoned
+// anyway. Now that an unrecognised opcode is an application-level refusal the
+// shard survives (go-qrdb#520), a partial write would become a lie the caller
+// acts on: told the batch was refused, with half of it committed.
+// pkg/statemachine closed the same hole for the same reason (go-qrdb#129,
+// validateBatchOps).
+//
+// A batch is atomic or it is nothing.
+func validateDecodedOps(ops []protocol.DecodedOp) error {
+	for _, op := range ops {
+		if !decodedOpSupported(op.Type) {
+			return &protocol.UnknownOpError{Op: op.Type}
+		}
+	}
+	return nil
 }
 
 // asAppErrResult converts a unique-constraint violation into a non-fatal
@@ -1096,6 +1146,12 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 		ops = txn.FailureOps
 	}
 
+	// Pre-validate the OPCODES of the selected set first: an operation this
+	// engine cannot execute refuses the whole transaction and stages nothing.
+	if verr := validateDecodedOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
+	}
+
 	// Pre-validate unique-index constraints for the whole selected op set
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
@@ -1133,6 +1189,12 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+
+	// Pre-validate the OPCODES first: an operation this engine cannot execute
+	// refuses the whole batch and stages nothing (validateDecodedOps).
+	if verr := validateDecodedOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
 	}
 
 	// Pre-validate unique-index constraints for the whole batch (read-only,

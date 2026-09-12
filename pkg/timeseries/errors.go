@@ -18,7 +18,37 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
+
+// NotCompiledError reports that time-series support was not built into this
+// binary. It is the refusal every operation on the stub Storage returns.
+//
+// It is a TYPE, not a bare errors.New sentinel, because the Apply classifier
+// reads the protocol.CapabilityError declaration below to tell a refusal from
+// a fault. As an untyped sentinel this error took the fatal branch: one
+// refused time-series write halted the shard's state machine, and every later
+// linearizable read on it — including plain KV reads of keys written and read
+// successfully microseconds earlier — burned the caller's deadline and
+// reported a consensus timeout (go-qrdb#520). The sentence "time-series
+// support is not compiled in" was always an absent capability; it just had no
+// way to say so.
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables the subsystem.
+func (e *NotCompiledError) Error() string {
+	return "timeseries support not compiled: build with -tags qrdb_ts"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "timeseries"
+}
+
+// NotCompiledError is an absent capability, not a fault.
+var _ protocol.CapabilityError = (*NotCompiledError)(nil)
 
 // ClosedError is returned when an operation is attempted on closed storage.
 type ClosedError struct{}

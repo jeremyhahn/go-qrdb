@@ -369,14 +369,9 @@ func TestMVCCStateMachine_UnknownOpCode(t *testing.T) {
 	cmd := []byte{0xFF, 0x01, 0x02}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op code")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 func TestMVCCStateMachine_UnknownOpCodeDifferentValue(t *testing.T) {
@@ -388,14 +383,9 @@ func TestMVCCStateMachine_UnknownOpCodeDifferentValue(t *testing.T) {
 	cmd := []byte{0xFD, 0x00}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op code")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // TestMVCCStateMachine_PutIfAbsent pins that the MVCC state machine applies
@@ -1807,14 +1797,9 @@ func TestMVCCStateMachine_BatchUnknownOpTypeReturnsError(t *testing.T) {
 	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op type in batch")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 func TestMVCCStateMachine_TransactionUnknownOpTypeReturnsError(t *testing.T) {
@@ -1825,14 +1810,9 @@ func TestMVCCStateMachine_TransactionUnknownOpTypeReturnsError(t *testing.T) {
 	txnCmd := mustEncode(protocol.EncodeTransaction(nil, [][]byte{unknownOp}, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op type in transaction")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------

@@ -939,14 +939,12 @@ func TestKVEngine_BatchUnsupportedOp(t *testing.T) {
 	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unsupported batch op")
-	}
-	var uoe *UnsupportedOperationError
-	if !errors.As(err, &uoe) {
-		t.Errorf("expected *UnsupportedOperationError, got %T: %v", err, err)
-	}
+
+	// A batch naming an operation this engine cannot execute is REFUSED, not
+	// fatal: the refusal travels in the result payload. Until go-qrdb#520 it
+	// was returned to Raft, which halted the shard.
+	assertRefusedNotHalted(t, eng.Update(context.Background(), entries, results),
+		results[0], "unsupported operation")
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,10 +1070,9 @@ func TestKVEngine_Update_UnsupportedOp(t *testing.T) {
 	cmd, _ := kv.EncodeGet([]byte("key"))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unsupported base KV op")
-	}
+
+	assertRefusedNotHalted(t, eng.Update(context.Background(), entries, results),
+		results[0], "unsupported operation")
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,14 +1089,9 @@ func TestKVEngine_Update_UnsupportedExtendedOp(t *testing.T) {
 	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for MVCC op in KV engine")
-	}
-	var uoe *UnsupportedOperationError
-	if !errors.As(err, &uoe) {
-		t.Errorf("expected *UnsupportedOperationError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, eng.Update(context.Background(), entries, results),
+		results[0], "unsupported operation")
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,17 +1107,14 @@ func TestKVEngine_Update_InvalidCommand(t *testing.T) {
 	// A single byte too short to be a base-KV command (header is 3 bytes),
 	// but long enough to decode as an extended-protocol command with an
 	// unrecognized op (0x00 is not registered in extHandlers). This is the
-	// sibling "unknown ext op" case, which correctly returns a Go error.
+	// sibling "unknown ext op" case, and it is a refusal: the engine has no
+	// handler for the verb, which says nothing about the health of its
+	// storage.
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0}}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unrecognized extended op")
-	}
-	var uoe *UnsupportedOperationError
-	if !errors.As(err, &uoe) {
-		t.Errorf("expected *UnsupportedOperationError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, eng.Update(context.Background(), entries, results),
+		results[0], "unsupported operation")
 }
 
 // TestKVEngine_Update_UndecodableByBothProtocols exercises the case where a

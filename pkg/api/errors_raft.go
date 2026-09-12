@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // =============================================================================
@@ -273,6 +274,18 @@ type UnknownOperationError struct {
 func (e *UnknownOperationError) Error() string {
 	return "unknown operation: " + e.Operation
 }
+
+// Capability names the absent verb, declaring this an application-level
+// refusal rather than a fault. A state machine that does not implement an
+// operation must ANSWER the proposer: returning the refusal to Raft halts the
+// apply loop, and every later linearizable read on the shard burns the
+// caller's deadline (go-qrdb#520). See protocol.CapabilityError.
+func (e *UnknownOperationError) Capability() string {
+	return e.Operation
+}
+
+// UnknownOperationError is an absent capability, not a fault.
+var _ protocol.CapabilityError = (*UnknownOperationError)(nil)
 
 // NewUnknownOperationError creates a QRDBError for an unknown operation.
 func NewUnknownOperationError(op, operation string) *dberrors.QRDBError {

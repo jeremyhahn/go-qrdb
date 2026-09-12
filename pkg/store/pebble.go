@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -295,29 +296,40 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			return &protocol.InvalidCommandError{Reason: "empty command"}
 		}
 
+		var result sm.Result
+		var notifs []pebbleNotification
+		var err error
+
 		op := e.Cmd[0]
 		handler, ok := s.updateHandlers[op]
-		if !ok {
-			return &protocol.UnknownOpError{Op: op}
+		if ok {
+			// Base KV handlers decode through kv.DecodeCommand and therefore
+			// need the full command including its op byte; extended protocol
+			// handlers take the payload with the op byte stripped. The split is
+			// by decoder, not by numeric range: kv.OpPutIfAbsent sorts above
+			// kv.OpDelete but is still a base KV command.
+			payload := e.Cmd
+			if !isBaseKVOp(op) {
+				payload = e.Cmd[1:]
+			}
+			result, notifs, err = handler(s, batch, payload)
+		} else {
+			err = &protocol.UnknownOpError{Op: op}
 		}
 
-		// Base KV handlers decode through kv.DecodeCommand and therefore need
-		// the full command including its op byte; extended protocol handlers
-		// take the payload with the op byte stripped. The split is by decoder,
-		// not by numeric range: kv.OpPutIfAbsent sorts above kv.OpDelete but is
-		// still a base KV command.
-		payload := e.Cmd
-		if !isBaseKVOp(op) {
-			payload = e.Cmd[1:]
+		// An opcode this state machine has no handler for is a refusal, not a
+		// fault: it is answered in the result payload rather than halting Apply
+		// and costing the shard every subsequent linearizable read
+		// (go-qrdb#520).
+		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), e.Index, result, err)
+		if stop {
+			return applyErr
 		}
+		results[i] = resolved
 
-		result, notifs, err := handler(s, batch, payload)
-		if err != nil {
-			return err
-		}
-		results[i] = result
-
-		if len(notifs) > 0 {
+		// Notifications from a refused entry are deliberately dropped: it
+		// mutated nothing, so there is nothing for a watcher to observe.
+		if err == nil && len(notifs) > 0 {
 			notifications = append(notifications, notifs...)
 		}
 
@@ -1211,6 +1223,12 @@ func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byt
 		return sm.Result{}, nil, err
 	}
 
+	// Pre-validate the OPCODES: an operation this state machine cannot execute
+	// refuses the whole batch and stages nothing (validatePebbleOps).
+	if verr := validatePebbleOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
+	}
+
 	var notifs []pebbleNotification
 	for _, op := range ops {
 		opNotifs, execErr := pebbleExecuteOp(s, batch, op)
@@ -1271,6 +1289,12 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 		ops = txn.SuccessOps
 	} else {
 		ops = txn.FailureOps
+	}
+
+	// Pre-validate the OPCODES of the selected set: an operation this state
+	// machine cannot execute refuses the whole transaction and stages nothing.
+	if verr := validatePebbleOps(ops); verr != nil {
+		return sm.Result{}, nil, verr
 	}
 
 	// Execute all operations atomically.
@@ -1370,6 +1394,40 @@ func evaluateCompareInt(result byte, actual, expected int64) bool {
 	default:
 		return false
 	}
+}
+
+// pebbleOpSupported reports whether pebbleExecuteOp can execute op. It is the
+// single definition of that set, so the pre-flight check below and the
+// dispatch itself cannot drift apart.
+func pebbleOpSupported(op byte) bool {
+	switch op {
+	case protocol.OpMVCCPut, protocol.OpMVCCDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// validatePebbleOps rejects an operation set naming an operation this state
+// machine cannot execute, BEFORE any of it is staged into the batch.
+//
+// The batch and transaction handlers walk their operations applying each in
+// turn into the caller's pebble.Batch, so without this they refuse only on
+// REACHING the unknown one, having already staged every operation before it --
+// and the apply loop commits that batch regardless. While such a refusal
+// halted Apply that was the lesser of two problems: the shard was poisoned
+// anyway. Now that an unrecognised opcode is an application-level refusal the
+// shard survives (go-qrdb#520), a partial write would become a lie the caller
+// acts on: told the batch was refused, with half of it committed.
+//
+// A batch is atomic or it is nothing.
+func validatePebbleOps(ops []protocol.DecodedOp) error {
+	for _, op := range ops {
+		if !pebbleOpSupported(op.Type) {
+			return &protocol.UnknownOpError{Op: op.Type}
+		}
+	}
+	return nil
 }
 
 // pebbleExecuteOp executes a single decoded operation (Put or Delete)

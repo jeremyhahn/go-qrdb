@@ -1068,14 +1068,12 @@ func TestMVCCHandleBatch_UnknownOpType(t *testing.T) {
 	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op type in batch")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	// Refused in the result payload, not returned to Raft: an opcode with no
+	// handler says nothing about the health of the storage underneath, and
+	// returning it halted the shard (go-qrdb#520).
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,10 +1098,9 @@ func TestMVCCHandleTransaction_UnknownOpInSuccessOps(t *testing.T) {
 	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{unknownOp}, nil))
 	entries := []sm.Entry{{Index: 2, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op in transaction success ops")
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,14 +1114,9 @@ func TestMVCCStateMachine_UpdateUnknownOpCode(t *testing.T) {
 	cmd := []byte{0xFE, 0x00}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op code")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------

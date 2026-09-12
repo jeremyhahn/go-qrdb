@@ -27,8 +27,6 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // openStore is a test helper that creates, opens, and registers cleanup for
@@ -353,18 +351,13 @@ func TestPebbleStateMachine_GetEntryIsNoop(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_UpdateInvalidCommandReturnsError(t *testing.T) {
+func TestPebbleStateMachine_UpdateInvalidCommandIsRefusedNotFatal(t *testing.T) {
 	s := openStore(t)
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0xFF}}} // invalid op
 	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid command")
-	}
-	var uoe *protocol.UnknownOpError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected *protocol.UnknownOpError, got %T: %v", err, err)
-	}
+
+	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 func TestPebbleStateMachine_UpdateEmptyEntries(t *testing.T) {

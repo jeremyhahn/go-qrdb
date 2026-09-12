@@ -119,7 +119,7 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 // unrecoverable infrastructure errors (disk full, corrupt storage) may
 // be returned.
 //
-// resolveApplyError is the single place that draws that line, shared with
+// ResolveApplyError is the single place that draws that line, shared with
 // the regular, fast and concurrent state machines, so the rule is stated
 // once rather than re-derived in four dispatch loops. An application-level
 // condition becomes a result whose Data carries the encoded error and
@@ -142,7 +142,7 @@ func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
-		resolved, stop, applyErr := resolveApplyError(k.logger, entries[i].Index, result, err)
+		resolved, stop, applyErr := ResolveApplyError(k.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}

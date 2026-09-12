@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -73,6 +75,7 @@ func TestRaftE2E_ResolveIgnoresLocalCatalog(t *testing.T) {
 // the end-to-end test exercises the real create→resolve→data-plane vertical
 // through the in-process service seam (no transport/mTLS).
 type raftE2EStack struct {
+	host     *quicraft.Host
 	reg      *seal.BarrierRegistry
 	tenants  *tenant.TenantService
 	manager  *database.Manager
@@ -143,6 +146,7 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 	}
 
 	return &raftE2EStack{
+		host:     host,
 		reg:      reg,
 		tenants:  tenants,
 		manager:  mgr,

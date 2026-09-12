@@ -19,13 +19,14 @@
 package ivf
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // Stub errors for when vector support is not compiled in.
 var (
-	ErrNotCompiled = errors.New("vector support not compiled: build with -tags qrdb_vector")
+	ErrNotCompiled error = &NotCompiledError{}
 )
 
 // Config holds IVF index configuration parameters.
@@ -153,3 +154,25 @@ type Result struct {
 func NewIndex(config *Config) (Index, error) {
 	return nil, ErrNotCompiled
 }
+
+// NotCompiledError reports that vector support was not built into this
+// binary. It is a TYPE, not a bare errors.New sentinel, because the Raft Apply
+// classifier reads the protocol.CapabilityError declaration below to tell a
+// refusal from a fault: an untyped sentinel takes the fatal branch, halting
+// the state machine that received it and costing the shard every subsequent
+// linearizable read (go-qrdb#520).
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables the subsystem.
+func (e *NotCompiledError) Error() string {
+	return "vector support not compiled: build with -tags qrdb_vector"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "vector"
+}
+
+// NotCompiledError is an absent capability, not a fault.
+var _ protocol.CapabilityError = (*NotCompiledError)(nil)

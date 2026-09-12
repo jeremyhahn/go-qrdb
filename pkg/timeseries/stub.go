@@ -23,7 +23,6 @@ package timeseries
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -34,8 +33,9 @@ import (
 )
 
 // ErrNotCompiled is returned by every storage operation when time-series
-// support is not compiled in.
-var ErrNotCompiled = errors.New("timeseries support not compiled: build with -tags qrdb_ts")
+// support is not compiled in. The type it holds — not the identity of this
+// var — is what the Apply classifier reads; see NotCompiledError.
+var ErrNotCompiled error = &NotCompiledError{}
 
 // ---------------------------------------------------------------------------
 // Data types (real definitions — identical to the qrdb_ts build)

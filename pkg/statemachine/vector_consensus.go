@@ -266,10 +266,15 @@ func (v *VectorConsensusFSM) Update(_ context.Context, entries []sm.Entry, resul
 			result = sm.Result{Value: 1}
 		}
 
-		if err != nil {
-			return err
+		// An operation this state machine does not implement is a refusal, not
+		// a fault: it is encoded into the result payload rather than halting
+		// the apply loop (go-qrdb#520). Anything else is returned, so a
+		// replica that has diverged stops.
+		resolved, stop, fatal := ResolveApplyError(nil, entries[i].Index, result, err)
+		if stop {
+			return fatal
 		}
-		results[i] = result
+		results[i] = resolved
 	}
 
 	return nil

@@ -37,3 +37,13 @@ type UnknownOpError struct {
 func (e *UnknownOpError) Error() string {
 	return "protocol: unknown op code: " + strconv.Itoa(int(e.Op))
 }
+
+// Capability names the absent verb, declaring this an application-level
+// refusal rather than a fault so an unrecognised opcode is answered instead of
+// halting the state machine that received it. See CapabilityError.
+func (e *UnknownOpError) Capability() string {
+	return "opcode " + strconv.Itoa(int(e.Op))
+}
+
+// UnknownOpError is an absent capability, not a fault.
+var _ CapabilityError = (*UnknownOpError)(nil)

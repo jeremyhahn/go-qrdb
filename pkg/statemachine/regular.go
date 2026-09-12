@@ -201,7 +201,7 @@ func (r *RegularStateMachine) Update(_ context.Context, entries []sm.Entry, resu
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
-		resolved, stop, applyErr := resolveApplyError(r.logger, entries[i].Index, result, err)
+		resolved, stop, applyErr := ResolveApplyError(r.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}

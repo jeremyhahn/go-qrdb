@@ -17,11 +17,13 @@ package backend
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -61,7 +63,9 @@ func NewSimpleStateMachine(store storage.Storage, hub *watch.Hub) *SimpleStateMa
 // Update applies a batch of entries to the underlying storage engine.
 // Each entry is decoded using the kv wire protocol and dispatched to the
 // appropriate handler. Results are written to the corresponding index in
-// the results slice.
+// the results slice. An opcode this state machine does not implement is
+// refused in the result payload rather than halting Apply
+// (statemachine.ResolveApplyError; go-qrdb#520).
 func (s *SimpleStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		cmd, err := kv.DecodeCommand(entries[i].Cmd)
@@ -70,18 +74,23 @@ func (s *SimpleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			continue
 		}
 
+		var result sm.Result
 		handler, ok := s.handlers[cmd.Op]
-		if !ok {
-			results[i] = sm.Result{Value: 1}
-			return &UnsupportedOperationError{Op: cmd.Op}
+		if ok {
+			result, err = handler(cmd)
+		} else {
+			err = &UnsupportedOperationError{Op: cmd.Op}
 		}
 
-		result, err := handler(cmd)
-		if err != nil {
+		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, err)
+		if stop {
+			// The failure marker predates the classifier and is kept: Raft
+			// discards results for a halted Apply, but LocalBackend calls
+			// Update directly and reads them.
 			results[i] = sm.Result{Value: 1}
-			return err
+			return applyErr
 		}
-		results[i] = result
+		results[i] = resolved
 	}
 	return nil
 }

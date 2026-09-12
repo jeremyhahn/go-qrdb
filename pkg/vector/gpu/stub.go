@@ -19,11 +19,33 @@
 package gpu
 
 import (
-	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // Sentinel errors for GPU operations.
 var (
 	// ErrGPUNotCompiled indicates GPU support was not compiled into the binary.
-	ErrGPUNotCompiled = errors.New("GPU support not compiled (build with -tags gpu)")
+	ErrGPUNotCompiled error = &NotCompiledError{}
 )
+
+// NotCompiledError reports that GPU support was not built into this
+// binary. It is a TYPE, not a bare errors.New sentinel, because the Raft Apply
+// classifier reads the protocol.CapabilityError declaration below to tell a
+// refusal from a fault: an untyped sentinel takes the fatal branch, halting
+// the state machine that received it and costing the shard every subsequent
+// linearizable read (go-qrdb#520).
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables the subsystem.
+func (e *NotCompiledError) Error() string {
+	return "GPU support not compiled (build with -tags gpu)"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "gpu"
+}
+
+// NotCompiledError is an absent capability, not a fault.
+var _ protocol.CapabilityError = (*NotCompiledError)(nil)

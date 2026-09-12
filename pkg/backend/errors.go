@@ -17,6 +17,7 @@ package backend
 import (
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -43,6 +44,16 @@ type UnsupportedOperationError struct {
 func (e *UnsupportedOperationError) Error() string {
 	return "backend: unsupported operation: 0x" + strconv.FormatUint(uint64(e.Op), 16)
 }
+
+// Capability names the absent verb, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *UnsupportedOperationError) Capability() string {
+	return "opcode 0x" + strconv.FormatUint(uint64(e.Op), 16)
+}
+
+// UnsupportedOperationError is an absent capability, not a fault: a state
+// machine that has no handler for an opcode must answer the proposer, not halt.
+var _ protocol.CapabilityError = (*UnsupportedOperationError)(nil)
 
 // BackendClosedError is returned when an operation is attempted on a
 // LocalBackend that has already been closed.

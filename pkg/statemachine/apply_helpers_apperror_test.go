@@ -40,12 +40,12 @@ import (
 func TestResolveApplyError_NotConfiguredIsEncodedAsADecodableAppError(t *testing.T) {
 	handlerErr := &ServiceNotConfiguredError{Service: "mvcc"}
 
-	result, stop, err := resolveApplyError(nil, 3, sm.Result{}, handlerErr)
+	result, stop, err := ResolveApplyError(nil, 3, sm.Result{}, handlerErr)
 
 	// It must NOT go back to Raft: a non-nil Update error is a fatal apply
 	// failure that stalls every subsequent read on the shard.
 	if stop || err != nil {
-		t.Fatalf("resolveApplyError returned stop=%v err=%v; a not-configured "+
+		t.Fatalf("ResolveApplyError returned stop=%v err=%v; a not-configured "+
 			"subsystem must be reported through the result, never to Raft", stop, err)
 	}
 
@@ -65,9 +65,9 @@ func TestResolveApplyError_NotConfiguredIsEncodedAsADecodableAppError(t *testing
 func TestResolveApplyError_OtherErrorsStillStopApply(t *testing.T) {
 	sentinel := errors.New("storage is broken")
 
-	_, stop, err := resolveApplyError(nil, 3, sm.Result{}, sentinel)
+	_, stop, err := ResolveApplyError(nil, 3, sm.Result{}, sentinel)
 	if !stop || !errors.Is(err, sentinel) {
-		t.Fatalf("resolveApplyError returned stop=%v err=%v; a genuine failure must "+
+		t.Fatalf("ResolveApplyError returned stop=%v err=%v; a genuine failure must "+
 			"halt Apply rather than being encoded as a result", stop, err)
 	}
 }

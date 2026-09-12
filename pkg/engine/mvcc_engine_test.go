@@ -2467,10 +2467,12 @@ func TestMVCCEngine_BatchUnsupportedOp(t *testing.T) {
 	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unsupported batch op")
-	}
+
+	// A batch naming an operation this engine cannot execute is REFUSED, not
+	// fatal: the refusal travels in the result payload. Until go-qrdb#520 it
+	// was returned to Raft, which halted the shard.
+	assertRefusedNotHalted(t, eng.Update(context.Background(), entries, results),
+		results[0], "unknown op code")
 }
 
 // ---------------------------------------------------------------------------

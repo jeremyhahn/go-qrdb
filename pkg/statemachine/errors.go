@@ -14,7 +14,21 @@
 
 package statemachine
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+)
+
+// InvalidOpcodeError and ServiceNotConfiguredError are the two absent-capability
+// refusals this package raises. Both declare themselves to the Apply classifier
+// by implementing protocol.CapabilityError; the assertions below are what fail
+// at compile time if a Capability method is ever dropped, rather than at a
+// halted shard (go-qrdb#520).
+var (
+	_ protocol.CapabilityError = (*InvalidOpcodeError)(nil)
+	_ protocol.CapabilityError = (*ServiceNotConfiguredError)(nil)
+)
 
 // InvalidOpcodeError is returned when the state machine receives an entry
 // with an unrecognized operation code.
@@ -25,6 +39,12 @@ type InvalidOpcodeError struct {
 // Error returns a human-readable description of the unknown op code.
 func (e *InvalidOpcodeError) Error() string {
 	return "statemachine: unknown opcode: " + strconv.Itoa(int(e.Op))
+}
+
+// Capability names the absent verb, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *InvalidOpcodeError) Capability() string {
+	return "opcode " + strconv.Itoa(int(e.Op))
 }
 
 // IncompleteDataError is returned when a command payload is truncated
@@ -80,4 +100,10 @@ type ServiceNotConfiguredError struct {
 // Error returns a human-readable description of the missing service.
 func (e *ServiceNotConfiguredError) Error() string {
 	return "statemachine: " + e.Service + " not configured"
+}
+
+// Capability names the unwired subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *ServiceNotConfiguredError) Capability() string {
+	return e.Service
 }

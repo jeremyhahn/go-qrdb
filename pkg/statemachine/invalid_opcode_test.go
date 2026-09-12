@@ -89,7 +89,7 @@ func assertRefusalNamesOpcode(t *testing.T, result sm.Result, op byte) {
 // keyed by the leading op byte. An entry naming an op the map has no handler
 // for is a CLIENT-INPUT fault — the proposer asked for a verb this state
 // machine was not built with — and the SM.Update contract, stated in
-// resolveApplyError's own doc comment, is that such a condition must never be
+// ResolveApplyError's own doc comment, is that such a condition must never be
 // returned to Raft.
 //
 // go-qrdb#129: it was. Returning it makes go-quicraft treat the entry as a
@@ -210,12 +210,12 @@ func TestUpdate_UnimplementedOpcodeDoesNotPoisonRaft(t *testing.T) {
 // tests in guarded_ops_test.go.
 
 // TestResolveApplyError_ClassifiesInvalidOpcodeAsApplicationError covers the
-// classification seam directly. resolveApplyError is the single place that
+// classification seam directly. ResolveApplyError is the single place that
 // decides whether an error halts Apply, so the rule lives here rather than
 // being restated in each of the four Update loops.
 func TestResolveApplyError_ClassifiesInvalidOpcodeAsApplicationError(t *testing.T) {
 	t.Run("invalid opcode is encoded and does not stop", func(t *testing.T) {
-		res, stop, err := resolveApplyError(nil, 7, sm.Result{}, &InvalidOpcodeError{Op: unimplementedOpcode})
+		res, stop, err := ResolveApplyError(nil, 7, sm.Result{}, &InvalidOpcodeError{Op: unimplementedOpcode})
 		if stop {
 			t.Error("stop = true; an unrecognised opcode is a client-input fault, not an " +
 				"infrastructure failure, and must not halt Apply")
@@ -237,7 +237,7 @@ func TestResolveApplyError_ClassifiesInvalidOpcodeAsApplicationError(t *testing.
 	// the whole reason Update is allowed to return an error at all.
 	t.Run("a storage failure still stops", func(t *testing.T) {
 		storageErr := &StorageError{Op: "put", Inner: context.DeadlineExceeded}
-		_, stop, err := resolveApplyError(nil, 7, sm.Result{}, storageErr)
+		_, stop, err := ResolveApplyError(nil, 7, sm.Result{}, storageErr)
 		if !stop {
 			t.Error("stop = false for a StorageError; an infrastructure failure must still halt Apply")
 		}

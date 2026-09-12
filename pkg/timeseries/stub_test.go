@@ -21,6 +21,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // TestStubErrNotCompiledMessage verifies the disabled-feature sentinel keeps
@@ -227,5 +229,47 @@ func TestStubQueryOptions(t *testing.T) {
 	got := ApplyTSQueryOptions([]TSQueryOption{WithTags(tags), WithTSLimit(7), WithDescending()})
 	if got.Tags["host"] != "a" || got.Limit != 7 || !got.Descending {
 		t.Errorf("ApplyTSQueryOptions = %+v, want tags host=a, limit 7, descending", got)
+	}
+}
+
+// TestStubRefusalIsAnAbsentCapabilityNotAFault is the narrow half of
+// go-qrdb#520. ErrNotCompiled used to be a bare errors.New, so the Apply
+// classifier could not tell "this build has no time-series" from "the storage
+// under this replica is broken" and took the fatal branch: one refused write
+// halted the shard, and every later linearizable read on it — including plain
+// KV reads on unrelated keys — burned the caller's deadline.
+func TestStubRefusalIsAnAbsentCapabilityNotAFault(t *testing.T) {
+	capErr, ok := protocol.AsCapabilityError(ErrNotCompiled)
+	if !ok {
+		t.Fatal("ErrNotCompiled is not recognised as an absent capability; a refused " +
+			"time-series write would halt the state machine (go-qrdb#520)")
+	}
+	if got, want := capErr.Capability(), "timeseries"; got != want {
+		t.Errorf("Capability() = %q, want %q", got, want)
+	}
+}
+
+// TestStubStorageRefusalsAreAllAbsentCapabilities walks the write operations
+// that reach a Raft state machine. Every one of them must refuse in a way the
+// classifier forgives; one that does not is a shard-killing entry point.
+func TestStubStorageRefusalsAreAllAbsentCapabilities(t *testing.T) {
+	s := &Storage{}
+	ctx := context.Background()
+	for name, op := range map[string]func() error{
+		"Write":              func() error { return s.Write("m", 1, time.Now(), nil) },
+		"WritePoint":         func() error { return s.WritePoint(ctx, &DataPoint{Metric: "m", Timestamp: time.Now()}) },
+		"WriteBatch":         func() error { return s.WriteBatch([]DataPoint{{Metric: "m", Timestamp: time.Now()}}) },
+		"DeleteSeries":       func() error { return s.DeleteSeries(ctx, &DeleteRequest{Metric: "m"}) },
+		"SetRetentionPolicy": func() error { return s.SetRetentionPolicy("m", &RetentionPolicy{}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := op()
+			if err == nil {
+				t.Fatalf("%s returned nil in the stub build", name)
+			}
+			if _, ok := protocol.AsCapabilityError(err); !ok {
+				t.Errorf("%s refusal %v is not an absent capability; it would halt Apply", name, err)
+			}
+		})
 	}
 }

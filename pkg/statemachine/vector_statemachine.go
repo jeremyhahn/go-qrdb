@@ -676,18 +676,25 @@ func (vsm *VectorStateMachine) Update(ctx context.Context, entries []sm.Entry, r
 		}
 
 		result, err := vsm.applyEntry(entry)
-		if err != nil {
+
+		// An operation this state machine does not implement is a refusal, not
+		// a fault: it is encoded into the result payload so the proposer hears
+		// it without the apply loop halting (go-qrdb#520). Anything else is
+		// returned, so a replica that has diverged stops.
+		resolved, stop, fatal := ResolveApplyError(nil, entry.Index, result, err)
+		if stop {
 			vsm.metrics.mu.Lock()
 			vsm.metrics.ErrorCount++
 			vsm.metrics.mu.Unlock()
 
 			vsm.logger.WithFields(map[string]interface{}{
 				"index": entry.Index,
-				"error": err.Error(),
+				"error": fatal.Error(),
 			}).Error("failed to apply vector entry")
 
-			return err
+			return fatal
 		}
+		result = resolved
 
 		results[i] = result
 

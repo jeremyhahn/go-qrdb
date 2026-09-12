@@ -77,7 +77,7 @@ func TestStateMachines_DispatchEveryGuardedOpcode(t *testing.T) {
 // refused opcode also yields a zero Result.Value — so "declines a mismatch"
 // and every other negative assertion passes just as well against a state
 // machine that has no handler for the opcode at all. The refusal itself
-// travels in Result.Data (resolveApplyError encodes it there so the proposer
+// travels in Result.Data (ResolveApplyError encodes it there so the proposer
 // can read it), and that is the only place the two outcomes differ.
 //
 // Measured on this branch: with the four handler-map entries removed, the

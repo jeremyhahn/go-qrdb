@@ -240,7 +240,7 @@ func (c *ConcurrentStateMachine) Update(_ context.Context, entries []sm.Entry, r
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
-		resolved, stop, applyErr := resolveApplyError(c.logger, entries[i].Index, result, err)
+		resolved, stop, applyErr := ResolveApplyError(c.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}

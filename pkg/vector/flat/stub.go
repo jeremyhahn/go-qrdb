@@ -23,16 +23,18 @@ import (
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // Stub errors for when vector support is not compiled in.
 var (
-	ErrEmptyIndex    = errors.New("flat index is empty")
-	ErrInvalidVector = errors.New("invalid vector dimensions")
-	ErrNotFound      = errors.New("vector not found")
-	ErrDuplicateID   = errors.New("duplicate vector ID")
-	ErrInvalidK      = errors.New("k must be greater than zero")
-	ErrNotCompiled   = errors.New("vector support not compiled: build with -tags qrdb_vector")
+	ErrEmptyIndex          = errors.New("flat index is empty")
+	ErrInvalidVector       = errors.New("invalid vector dimensions")
+	ErrNotFound            = errors.New("vector not found")
+	ErrDuplicateID         = errors.New("duplicate vector ID")
+	ErrInvalidK            = errors.New("k must be greater than zero")
+	ErrNotCompiled   error = &NotCompiledError{}
 )
 
 // DimensionMismatchError indicates a vector has the wrong number of dimensions.
@@ -100,3 +102,25 @@ func (idx *Index) Dimensions() int {
 func (idx *Index) Close() error {
 	return nil
 }
+
+// NotCompiledError reports that vector support was not built into this
+// binary. It is a TYPE, not a bare errors.New sentinel, because the Raft Apply
+// classifier reads the protocol.CapabilityError declaration below to tell a
+// refusal from a fault: an untyped sentinel takes the fatal branch, halting
+// the state machine that received it and costing the shard every subsequent
+// linearizable read (go-qrdb#520).
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables the subsystem.
+func (e *NotCompiledError) Error() string {
+	return "vector support not compiled: build with -tags qrdb_vector"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "vector"
+}
+
+// NotCompiledError is an absent capability, not a fault.
+var _ protocol.CapabilityError = (*NotCompiledError)(nil)

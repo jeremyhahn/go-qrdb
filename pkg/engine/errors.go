@@ -14,6 +14,8 @@
 
 package engine
 
+import "github.com/jeremyhahn/go-qrdb/pkg/protocol"
+
 // NotOpenError is returned when an engine operation is attempted before
 // the engine has been initialized.
 type NotOpenError struct{}
@@ -31,6 +33,16 @@ type UnsupportedOperationError struct {
 func (e *UnsupportedOperationError) Error() string {
 	return "engine: unsupported operation: 0x" + hexByte(e.Op)
 }
+
+// Capability names the absent verb, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *UnsupportedOperationError) Capability() string {
+	return "opcode 0x" + hexByte(e.Op)
+}
+
+// UnsupportedOperationError is an absent capability, not a fault: an engine
+// that has no handler for an opcode must answer the proposer, not halt.
+var _ protocol.CapabilityError = (*UnsupportedOperationError)(nil)
 
 // InvalidQueryError is returned when a Lookup receives an unsupported
 // query type or invalid parameters.

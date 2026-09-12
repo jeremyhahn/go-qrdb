@@ -17,6 +17,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"sort"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -146,26 +147,33 @@ func (e *KVEngine) Type() string { return "kv" }
 // Update applies a batch of entries to the underlying storage engine.
 // Each entry is decoded using the base KV wire protocol first. If that
 // fails, the extended protocol is tried to support index operations.
-// MVCC, lease, transaction, and time-series opcodes return
-// UnsupportedOperationError. An entry undecodable by both protocols yields
-// an application-error result (see CommandDecodeError) rather than being
-// silently reported as applied.
+// MVCC, lease, transaction, and time-series opcodes are refused with
+// UnsupportedOperationError, which travels back in the result payload rather
+// than halting Apply (statemachine.ResolveApplyError; go-qrdb#520). An entry
+// undecodable by both protocols yields an application-error result (see
+// CommandDecodeError) rather than being silently reported as applied.
 func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		// Try base KV protocol (OpPut=1, OpDelete=3).
 		cmd, err := kv.DecodeCommand(entries[i].Cmd)
 		if err == nil {
+			var result sm.Result
+			var hErr error
 			handler, ok := e.handlers[cmd.Op]
-			if !ok {
-				results[i] = sm.Result{Value: 1}
-				return &UnsupportedOperationError{Op: cmd.Op}
+			if ok {
+				result, hErr = handler(e, cmd)
+			} else {
+				hErr = &UnsupportedOperationError{Op: cmd.Op}
 			}
-			result, hErr := handler(e, cmd)
-			if hErr != nil {
+			resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, hErr)
+			if stop {
+				// The failure marker predates the classifier and is kept: Raft
+				// discards results for a halted Apply, but LocalBackend calls
+				// Update directly and reads them.
 				results[i] = sm.Result{Value: 1}
-				return hErr
+				return applyErr
 			}
-			results[i] = result
+			results[i] = resolved
 			continue
 		}
 
@@ -183,18 +191,20 @@ func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Re
 			continue
 		}
 
+		var result sm.Result
+		var extHErr error
 		extFn, ok := e.extHandlers[extCmd.Op]
-		if !ok {
-			results[i] = sm.Result{Value: 1}
-			return &UnsupportedOperationError{Op: extCmd.Op}
+		if ok {
+			result, extHErr = extFn(extCmd.Payload)
+		} else {
+			extHErr = &UnsupportedOperationError{Op: extCmd.Op}
 		}
-
-		result, extHErr := extFn(extCmd.Payload)
-		if extHErr != nil {
+		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, extHErr)
+		if stop {
 			results[i] = sm.Result{Value: 1}
-			return extHErr
+			return applyErr
 		}
-		results[i] = result
+		results[i] = resolved
 	}
 	return nil
 }

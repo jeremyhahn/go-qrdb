@@ -244,12 +244,17 @@ func (tsm *TimeSeriesStateMachine) Update(ctx context.Context, entries []sm.Entr
 			return err
 		}
 
-		if err := tsm.applyEntry(entry); err != nil {
-			tsm.logger.Errorf("failed to apply timeseries entry: %v", err)
-			return err
+		// An operation this state machine does not implement is a refusal, not
+		// a fault: it is encoded into the result payload so the proposer hears
+		// it without the apply loop halting (go-qrdb#520). Anything else is
+		// returned, so a replica that has diverged stops.
+		applyErr := tsm.applyEntry(entry)
+		resolved, stop, fatal := ResolveApplyError(nil, entry.Index, sm.Result{Value: 1}, applyErr)
+		if stop {
+			tsm.logger.Errorf("failed to apply timeseries entry: %v", fatal)
+			return fatal
 		}
-
-		results[i] = sm.Result{Value: 1}
+		results[i] = resolved
 
 		// PostUpdate hook
 		if err := tsm.PostUpdate(entry, results[i]); err != nil {

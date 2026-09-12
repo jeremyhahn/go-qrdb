@@ -136,6 +136,63 @@ sweep becoming an enumeration of the internal keyspace.
   zero-length value for the second; `Exists` is false and true respectively.
   This is a promise about the read plane, not about any one state machine —
   see [Point reads and absence](#point-reads-and-absence).
+- **A refusal never costs the shard its reads.** Raft treats any non-nil error
+  out of `Update` as a fatal apply failure: `lastApplied` stops advancing, and
+  every subsequent linearizable read on that shard — on any engine sharing it,
+  on keys written and read successfully microseconds earlier — waits out the
+  caller's deadline and reports a consensus timeout. So an outcome that is a
+  deterministic consequence of valid committed input travels back in
+  `Result.Data`, never as a Go error. See
+  [Refusal and fault at the apply seam](#refusal-and-fault-at-the-apply-seam).
+
+### Refusal and fault at the apply seam
+
+Two things can go wrong while a committed entry is being applied, and they need
+opposite answers.
+
+A **refusal** is "this state machine was not built to do that": an opcode it has
+no handler for, a subsystem not wired into this instance, a subsystem compiled
+out of this binary. It says nothing about the health of the storage underneath,
+so it must be answered — the proposer hears it, the apply loop keeps advancing,
+the shard keeps serving.
+
+A **fault** is divergence: a committed entry that will not decode, a storage
+write that failed. A replica that cannot apply what its peers applied must stop
+rather than serve state its peers do not have.
+
+**The error declares which it is.** An error implementing
+`protocol.CapabilityError` — an `error` with a `Capability() string` method
+naming the absent verb or subsystem — is a refusal, and
+`statemachine.ResolveApplyError` encodes it into `Result.Data` with the
+capability marker, which the service layer turns into a typed
+`CapabilityUnsupportedError` for the caller. **Everything else is a fault and
+halts Apply.** Silence means fatal; only a declaration means benign.
+
+That direction is deliberate and is the safe one. Inverting it — halting only on
+errors explicitly marked fatal — would make a forgotten marker into a swallowed
+storage fault and a diverged replica serving wrong data. Under the rule as
+written, a forgotten declaration costs availability on one shard and is loud;
+the alternative costs correctness and is silent.
+
+Two consequences worth stating, because both have been defects here:
+
+- **The classification is a property of the error, not a list kept elsewhere.**
+  A new compiled-out subsystem declares its own refusal type beside the code
+  that returns it. Nothing central is edited, so nothing central can be
+  forgotten. `test/buildgates` fails the build if a stub declares a
+  not-compiled refusal as a bare `errors.New` sentinel.
+- **Every apply seam classifies, and that is enforced rather than reviewed.**
+  `test/buildgates` finds every method in `pkg/` that takes `[]sm.Entry` and
+  requires it to route handler errors through `ResolveApplyError` or to be
+  listed, with a reason, as a delegator that forwards to a seam which does. A
+  new state machine is red until it does one or the other: the gate is
+  default-deny, because the absence of a call is not something a reviewer
+  reading one diff can see.
+
+**A refused batch or transaction stages nothing.** Opcodes are validated before
+any operation in the set is applied. Applying until the unrecognised one is
+reached would commit half the batch while telling the caller it was refused —
+which, while a refusal was fatal, was masked by the shard dying anyway.
 
 ### Point reads and absence
 
@@ -420,6 +477,8 @@ boundary as a typed value and is mapped per transport by
 | Barrier sealed | request refused; no plaintext and no ciphertext served | **yes** |
 | Node is not the leader and consistency requires it | routed to the leader, or refused when no resolver is configured | yes |
 | Node closed its store under an in-flight operation | typed error matching `sdk.ErrStorageClosed`; never a panic | **yes** |
+| Verb the state machine does not implement, or subsystem not compiled in | `CapabilityUnsupportedError`; the shard keeps serving reads and writes | **yes** |
+| Committed entry that will not decode, or a storage write fault | Apply halts on that replica rather than diverging | **yes** |
 
 The restore refusal on `__sys:` has no override by design: restoring
 `__sys:roles/…` or `__sys:users/…` to an earlier revision would undo a

@@ -396,14 +396,14 @@ func TestShardedStateMachines_FailedClaimDoesNotEraseALaterWrite(t *testing.T) {
 // machine ... returns an error" AND "Returns error only for fatal,
 // non-recoverable failures" (pkg/sm/interfaces.go:50). pkg/sm/types.go:38
 // records that a returned Update error wedges the shard on replay, which is why
-// resolveApplyError returns a genuine storage fault VERBATIM (stop=true): Apply
+// ResolveApplyError returns a genuine storage fault VERBATIM (stop=true): Apply
 // HALTS, lastApplied does not advance, and the committed entries replay from the
 // log on restart. A mid-batch guarded fault therefore never acknowledges a
 // write it then loses -- it halts, and replay converges the replica on the same
 // state. In-call rollback of the earlier entry (Codex's round-2 suggestion) is
 // unnecessary for correctness and is declined for this release.
 //
-// The regression this guards: mutate resolveApplyError to SWALLOW the fault
+// The regression this guards: mutate ResolveApplyError to SWALLOW the fault
 // (return it as a per-entry result with stop=false). Update would then return
 // nil -- an ACK -- while "second" never reached disk, and the err!=nil
 // assertion below goes red.
@@ -439,7 +439,7 @@ func TestShardedStateMachines_GuardedFaultMidBatchHaltsForReplay(t *testing.T) {
 			results := make([]sm.Result, len(batch))
 			err := tg.update(context.Background(), batch, results)
 
-			// HALT, not ack. resolveApplyError returns the fatal fault so Raft
+			// HALT, not ack. ResolveApplyError returns the fatal fault so Raft
 			// stops Apply; the swallow mutant makes this nil.
 			if err == nil {
 				t.Fatalf("a mid-batch guarded persist fault was not returned; Apply would "+

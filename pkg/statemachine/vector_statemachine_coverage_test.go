@@ -30,6 +30,7 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
@@ -2069,7 +2070,11 @@ func TestVectorStateMachine_Update_InvalidCommand(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("unknown operation returns error", func(t *testing.T) {
+	// An operation this state machine does not implement is REFUSED in the
+	// result payload rather than returned to Raft. Returning it halted the
+	// apply loop, after which every linearizable read on the shard burned the
+	// caller's deadline (go-qrdb#520).
+	t.Run("unknown operation is refused, not fatal", func(t *testing.T) {
 		adapter := NewMockStorageAdapter()
 		adapter.vecStor = NewMockVectorStorageWrapper()
 		log := newTestLogger()
@@ -2083,11 +2088,19 @@ func TestVectorStateMachine_Update_InvalidCommand(t *testing.T) {
 		data, err := cmd.Encode()
 		require.NoError(t, err)
 
-		err = vsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: data}}, make([]sm.Result, 1))
-		assert.Error(t, err)
+		results := make([]sm.Result, 1)
+		require.NoError(t, vsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: data}}, results))
+
+		msg, capability, ok := protocol.DecodeAppErrorKind(results[0].Data)
+		require.True(t, ok, "refusal carries no encoded application error")
+		assert.True(t, capability, "refusal %q lost the capability marker", msg)
+		assert.Contains(t, msg, "unknown operation")
 	})
 
-	t.Run("update increments error count on failure", func(t *testing.T) {
+	// A refusal is not a fault, so it does not move the fault counter. The
+	// counter still exists and still counts: the case above it — undecodable
+	// bytes in a committed entry — is genuine divergence and does halt.
+	t.Run("a refusal does not increment the error count", func(t *testing.T) {
 		adapter := NewMockStorageAdapter()
 		adapter.vecStor = NewMockVectorStorageWrapper()
 		log := newTestLogger()
@@ -2102,8 +2115,18 @@ func TestVectorStateMachine_Update_InvalidCommand(t *testing.T) {
 		require.NoError(t, err)
 
 		_ = vsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: data}}, make([]sm.Result, 1))
-		metrics := vsm.GetMetrics()
-		assert.Equal(t, uint64(1), metrics.ErrorCount)
+		assert.Equal(t, uint64(0), vsm.GetMetrics().ErrorCount)
+	})
+
+	t.Run("a decode fault increments the error count", func(t *testing.T) {
+		adapter := NewMockStorageAdapter()
+		adapter.vecStor = NewMockVectorStorageWrapper()
+		log := newTestLogger()
+		vsm, err := NewVectorStateMachine(1, 1, "node1", adapter, nil, nil, nil, log)
+		require.NoError(t, err)
+
+		_ = vsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: []byte("garbage")}}, make([]sm.Result, 1))
+		assert.Equal(t, uint64(1), vsm.GetMetrics().ErrorCount)
 	})
 }
 

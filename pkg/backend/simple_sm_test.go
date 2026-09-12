@@ -251,30 +251,39 @@ func TestSimpleStateMachine_Update_UnsupportedOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err = ssm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unsupported op")
-	}
-	var uoe *UnsupportedOperationError
-	if !errors.As(err, &uoe) {
-		t.Fatalf("expected UnsupportedOperationError, got %T: %v", err, err)
-	}
+	// Refused in the result payload, not returned to Raft: an opcode this
+	// state machine does not implement says nothing about the health of its
+	// storage, and returning it halted the shard (go-qrdb#520).
+	assertRefusedNotHalted(t, ssm.Update(context.Background(), entries, results),
+		results[0], "unsupported operation")
 }
 
-func TestSimpleStateMachine_Update_UnsupportedOp_ResultMarked(t *testing.T) {
+// TestSimpleStateMachine_Update_UnsupportedOp_KeepsServing is the local shape
+// of go-qrdb#520: a refused entry must not cost the entries applied after it.
+func TestSimpleStateMachine_Update_UnsupportedOp_KeepsServing(t *testing.T) {
 	ssm := newTestSSM()
 	defer func() { _ = ssm.Close(context.Background()) }()
 
-	cmd, err := kv.EncodeGet([]byte("k1"))
+	refused, err := kv.EncodeGet([]byte("k1"))
 	if err != nil {
 		t.Fatalf("EncodeGet: %v", err)
 	}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
+	put, err := kv.EncodePut([]byte("after"), []byte("value"))
+	if err != nil {
+		t.Fatalf("EncodePut: %v", err)
+	}
+	entries := []sm.Entry{{Index: 1, Cmd: refused}, {Index: 2, Cmd: put}}
+	results := make([]sm.Result, 2)
 
-	_ = ssm.Update(context.Background(), entries, results)
-	if results[0].Value != 1 {
-		t.Fatalf("expected failure marker in result, got %d", results[0].Value)
+	if err := ssm.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := ssm.Lookup(context.Background(), []byte("after"))
+	if err != nil {
+		t.Fatalf("Lookup after a refused entry: %v", err)
+	}
+	if b, ok := got.([]byte); !ok || string(b) != "value" {
+		t.Fatalf("Lookup after a refused entry = %v, want \"value\"", got)
 	}
 }
 
