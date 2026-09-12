@@ -84,7 +84,15 @@ const (
 	// minWorkflowFiles is the number of workflow files across both directories.
 	// Measured 2026-09-10: automerge, ci, claude-review, nightly,
 	// opencode-review, release-lockstep.
-	minWorkflowFiles = 6
+	//
+	// Lowered to 3 on 2026-09-12: QuicBaaS became the sole orchestrator, so
+	// automerge.yml and claude-review.yml went in 90c9f368 and
+	// opencode-review.yml in 192338e8 — a project's workflows now run CI and
+	// nothing else. ci, nightly and release-lockstep remain. The floor fired on
+	// those deletions, which is the behaviour it is for; the number is lowered
+	// here by someone who counted, and it was NOT lowered in the same commit
+	// as the deletions, which is the defect this change repairs.
+	minWorkflowFiles = 3
 
 	// minActionRefs is the number of `uses: <action>@<ref>` refs those files
 	// carry. Measured 2026-09-10 at 21 (#367 pinned all of them); lowered to
@@ -102,7 +110,15 @@ const (
 	// floor left at 20 would go on passing after both new refs were deleted,
 	// and the number exists so that a scan finding less than it did before is a
 	// red run rather than a quiet one.
-	minActionRefs = 22
+	//
+	// Lowered to 21 on 2026-09-12 alongside minWorkflowFiles. The three removed
+	// orchestration workflows carried exactly one `uses:` ref between them:
+	// opencode-review.yml's, while automerge.yml and claude-review.yml carried
+	// none. Counted at 90c9f368^ (ci 13, nightly 7, opencode-review 1,
+	// release-lockstep 1 = 22) and at 192338e8 (ci 13, nightly 7,
+	// release-lockstep 1 = 21), so the drop is accounted for in full and hides
+	// no second regression.
+	minActionRefs = 21
 )
 
 // isWorkflowFile reports whether name is a file Actions loads.
