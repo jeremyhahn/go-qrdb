@@ -9,8 +9,9 @@ This document records how go-qrdb is verified against the Go Cryptographic
 Module, what had to change on the way to approved-algorithm clean, the
 exemption register for anything that is deliberately not clean, and — in
 [Open blockers](#open-blockers) — exactly how far from clean the module still
-is. **go-qrdb does not yet operate under `fips140=only`**; do not read this
-document as a compliance claim.
+is. **The root module's suite passes under `fips140=only`; the SDK module's
+status is unknown and the gate is not armed**, so do not read this document as
+a compliance claim.
 
 ## The job
 
@@ -104,11 +105,14 @@ for identifiers persisted before the migration. It is recorded under
 [UUIDv8 identifiers](#uuidv8--sha-1-role-and-custodian-identifiers) below
 rather than in [Open blockers](#open-blockers), where it used to sit.
 
-**Every remaining FIPS failure in this repository is upstream.** As of the
-measurement below there is not one non-approved primitive left on a go-qrdb
-call site — all 15 remaining rejections come from `go-truststrap`'s Noise
-handshake. The `go-quicraft` barrier AEAD accounted for 693 of them until the
-v0.8.0-alpha bump closed that class; see [Open blockers](#open-blockers).
+**There is no non-approved primitive left on a go-qrdb call site, and no
+non-approved primitive is reached in a dependency either.** The `go-quicraft`
+barrier AEAD accounted for 693 rejections until the v0.8.0-alpha bump closed
+that class; `go-truststrap`'s Noise handshake accounted for the last 15 until
+`pkg/clusterenroll` stopped calling it in FIPS mode. That X25519 is still in
+the dependency — it is simply not on any path this module takes when
+`crypto/fips140.Enabled()`. See [Open blockers](#open-blockers) for the ruling
+and for what remains permanently unavailable as a result.
 
 ### AES-GCM — `cipher.NewGCM` → `cipher.NewGCMWithRandomNonce`
 
@@ -146,6 +150,33 @@ per message from `crypto/rand`, so the collision bound is unchanged. The
 tightest case is `pkg/seal/encfs`, whose AEAD is bound to one file's DEK and
 seals once per 4 KiB block write — 2^32 blocks is 16 TiB of writes through a
 single DEK.
+
+### X25519 — Noise NK enrollment excluded in FIPS mode
+
+Noise_NK_25519_ChaChaPoly_SHA256 mandates X25519 key agreement, which
+`crypto/ecdh` rejects under `only`. There is no approved DH to substitute, so
+the METHOD is what goes rather than the primitive within it.
+
+`pkg/clusterenroll` reads `crypto/fips140.Enabled()` through
+`clusterenroll.NoiseAvailable()` and, when it is false:
+
+- a **first node** starts its advertiser WITHOUT the Noise listener and serves
+  the approved methods — SPKI-pinned TLS, DANE and direct HTTPS all fetch the
+  same bundle from `/v1/ca/bootstrap` — writing no `noise-key.hex`;
+- a **joining node** has Noise dropped from the truststrap method order when an
+  approved method is also configured;
+- a **joining node with Noise as its only method** is refused with
+  `*NoiseFIPSUnavailableError`, before the first dial and before anything is
+  written to the data directory.
+
+Every exclusion logs at WARN naming FIPS. `Enabled()` rather than `Enforced()`,
+for the reason given below for external officers.
+
+The cost is stated plainly in
+[../clustering/architecture.md](../clustering/architecture.md): a FIPS
+deployment cannot use the Noise bootstrap method, in either the shared-CA-key or
+the attested anchor mode, and that is permanent rather than pending an upstream
+fix.
 
 ### X25519 — refused for Ed25519 external officers in FIPS mode
 
@@ -304,71 +335,91 @@ it is reachable from the code as well as from here.
 
 ## Open blockers
 
-**Read this before describing go-qrdb as FIPS 140-3 clean: it is not, yet.**
-The `FIPS 140-3` job fails today, it is **not** a required check, and it must
-not be presented as an enforceable compliance gate until it passes. Its purpose
-until then is to measure the remaining distance under the enforcement level the
-policy requires, nightly, where the number cannot be quietly lost. (It ran on
+**Read this before describing go-qrdb as FIPS 140-3 clean.** The root module's
+`make test` now passes under `fips140=only`; the `sdk/go` module's status is
+still **unknown rather than clean** (see [Measured status](#measured-status)),
+and the job is **not yet a required check**. Do not present it as an enforceable
+compliance gate until both halves have had a clean run and the gate is armed —
+see [Arming the gate](#arming-the-gate). Its purpose until then is to measure
+the remaining distance under the enforcement level the policy requires,
+nightly, where the number cannot be quietly lost. (It ran on
 every pull request until the known-red and long-horizon jobs moved off the push
 path; a known-red job burning a runner slot per pull request produced a number
 we already had.) That is a strict improvement over having no FIPS coverage at
 all; it is not a claim of compliance.
 
-**One finding** now stands between the job and green, and it is **in a
-dependency**. It cannot be closed from this repository: the composition
-direction is one-way, and go-qrdb consumes the module as a tagged release.
+**No finding now stands between the job and green.** The last one — the Noise
+X25519 handshake — is **closed in this repository**, though not in the
+dependency it comes from, and the distinction matters: go-truststrap still
+performs X25519 in `pkg/noiseproto`, and go-qrdb no longer calls it in FIPS
+mode.
 
-| Finding | Call sites | Effect on the suite | Tracking |
-|---|---|---|---|
-| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` and `cmd/qrdbd` fail with `crypto/ecdh: use of X25519 is not allowed` | open upstream in `go-truststrap`, against `pkg/noiseproto` — two findings, both unfixed as of the v0.8.0-alpha bump |
+| Finding | Call sites | Status |
+|---|---|---|
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | **closed here**: `pkg/clusterenroll` no longer reaches those call sites when `crypto/fips140.Enabled()`. Still open upstream, and still the reason the method is unavailable rather than substituted. |
+| `go-quicraft` `pkg/seal` built the barrier AEAD with `cipher.NewGCM` | — | **closed** by the v0.8.0-alpha bump; see below |
 
-**The `go-quicraft` AEAD finding is CLOSED.** It read, until the go-quicraft
-v0.8.0-alpha bump landed here:
+### The Noise finding — what was decided, and what remains true
 
-> `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` —
-> every sealed-storage test fails, covering `pkg/atrest`, `pkg/seal`,
-> `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more.
-
-and it predicted that the bump "turns 14 of the 16 failing packages green on
-its own", leaving `pkg/clusterenroll` and `cmd/qrdbd` red. **Measured on both
-sides of the bump from the same base commit, that is exactly what happened**:
-14 packages moved red to green, no regressions, and the two survivors are the
-predicted pair. The GCM-with-arbitrary-IV rejection count went from 699 to
-**zero**; the X25519 count did not move, because it is the other finding.
-
-Taking that release was not a free bump — go-quicraft v0.7.0-alpha changed the
-exported AEAD's calling convention, and `pkg/seal/unsealkey.go` had to absorb it
-without moving the wrapped-root-key wire format. See the CHANGELOG entry for
-v0.9.0-alpha.
-
-**go-truststrap has not fixed its finding, and it is not a bug fix.**
-`pkg/noiseproto/keys.go` on `main` still calls `curve25519.X25519`. Noise_NK has
-no FIPS-approved DH to move to, so there is nothing to substitute; the question
-is what a FIPS deployment does about cluster enrollment, and it is a product
-decision rather than an engineering one. The two candidate answers on the table
-are compiling `noiseproto` out under the `fips` tag — the precedent go-quicraft
-set for ChaCha20 — or having `pkg/clusterenroll` refuse enrollment when
-`fips140.Enabled()`, exactly as `pkg/ceremony` already refuses an Ed25519
-external officer. **Neither is go-qrdb's call to make.**
-
-Consumers whose own FIPS jobs pass `-tags fips` would compile go-truststrap's
-`noiseproto` fips variant and close this; go-qrdb's job does not pass that tag,
-which is why the finding is still counted here.
-
-**go-truststrap has not, and it is not a bug fix.** `pkg/noiseproto/keys.go` on
-`main` still calls `curve25519.X25519`. Noise_NK has no FIPS-approved DH to move
-to, so there is nothing to substitute; the question is what a FIPS deployment
+The earlier text of this section read: *"the question is what a FIPS deployment
 does about cluster enrollment, and it is a product decision rather than an
 engineering one. The two candidate answers on the table are compiling
-`noiseproto` out under the `fips` tag — the precedent go-quicraft just set for
-ChaCha20 — or having `pkg/clusterenroll` refuse enrollment when
-`fips140.Enabled()`, exactly as `pkg/ceremony` already refuses an Ed25519
-external officer. **Neither is go-qrdb's call to make.**
+`noiseproto` out under the `fips` tag [...] or having `pkg/clusterenroll` refuse
+enrollment when `fips140.Enabled()` [...] Neither is go-qrdb's call to make."*
+
+**It was ruled, and it is the second answer with one correction.** Noise is
+refused at run time on `fips140.Enabled()`, as `pkg/ceremony` refuses an Ed25519
+external officer — not compiled out under a build tag, because a build tag would
+ship two binaries whose enrollment surfaces differ invisibly while `GODEBUG` is
+a run-time switch. The correction is that **enrollment itself is not refused**:
+
+- A **first node** excludes Noise and advertises the approved methods —
+  SPKI-pinned TLS, DANE and direct HTTPS, all of which fetch the same CA bundle
+  from `/v1/ca/bootstrap`. The operator never chose a transport (there is no
+  advertise-method option), so refusing the node's whole reason for existing
+  over a method a FIPS deployment could not use would have been the wrong
+  trade.
+- A **joining node** that named Noise alongside an approved method has Noise
+  dropped from the candidate list.
+- A **joining node that named Noise and nothing else** IS refused, at
+  configuration time, with an error whose first clause names FIPS.
+
+Every exclusion logs at WARN. A bootstrap method downgraded in silence is its
+own defect.
+
+**The error message was the other half of the finding.** `noiseproto`'s
+`newStaticKey` wraps any key-derivation failure in `ErrInvalidKeySize`, so a
+FIPS refusal used to surface as
+
+```
+noise: invalid key size: crypto/ecdh: use of X25519 is not allowed in FIPS 140-only mode
+```
+
+whose leading clause sends an operator after a key-length bug that is not there.
+go-qrdb now refuses above that call, so the string is unreachable from a FIPS
+deployment of this repository; the mis-wrapping itself is a defect in the
+dependency and is filed there.
+
+### What remains FIPS-incompatible
+
+Naming it precisely, because this was invisible for eleven nightly runs and an
+accurate gap list is worth more than a claim of completeness:
+
+| Capability | Status under `fips140=only` | Consequence |
+|---|---|---|
+| **Noise NK peer enrollment** (`--bootstrap-noise-key`, the first node's Noise listener) | **unavailable, permanently** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over SPKI, DANE or direct HTTPS. This does not go away when the dependency is fixed — there is nothing to fix it to. |
+| **Attested (anchor-mode) enrollment over Noise** — `StartAnchorAdvertiser` / `FetchAnchor` | **unavailable over Noise** | Same cause. `FetchAnchor` over SPKI / DANE / direct HTTPS is unaffected. |
+| Ed25519 external-officer share sealing | refused | see [X25519](#x25519--refused-for-ed25519-external-officers-in-fips-mode) |
+| PKCS#12 export | refused under `Enforced()` | see the [exemption register](#exemption-register) |
+
+Everything else in `pkg/` and `cmd/` is approved-algorithm clean as measured
+below. **The `sdk/go` module's status is a separate question** and is still
+open — see [Measured status](#measured-status).
 
 ### Measured status
 
 Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
-**120 packages pass, 2 fail**, and both attribute to the one finding above.
+**124 packages pass, 2 fail**, and NEITHER failure is the Noise finding.
 `go build ./...` against the module is clean.
 
 **These figures are the ROOT MODULE ONLY.** `make test` is
@@ -382,23 +433,42 @@ record them; if the SDK turns out not to be FIPS-clean, that is a finding to add
 to [Open blockers](#open-blockers) — not a reason to narrow the job's scope,
 which is forbidden here for the reason stated at the top of this section.
 
-| Blocker | Failing packages |
-|---|---|
-| Noise X25519 | `pkg/clusterenroll`, `cmd/qrdbd` |
+| Failing package | Cause | FIPS finding? |
+|---|---|---|
+| `pkg/tenant` | `teardown_fence_test.go` builds its AEAD with `cipher.NewGCM` | **yes**, and it is a TEST FIXTURE — case 3 of [Handling a failure](#handling-a-failure). Tracked separately. |
+| `pkg/service` | the test binary does not compile: `*namespacedKV` no longer satisfies `kvService` | **no.** It fails identically with FIPS off. Tracked separately. |
 
-Rejection counts on the same run: **0** `use of GCM with arbitrary IVs`, **15**
+`pkg/clusterenroll` and `cmd/qrdbd`, the two packages this table named until
+now, both pass.
+
+Rejection counts on the same run: **4** `use of GCM with arbitrary IVs`, all
+four in `pkg/tenant/teardown_fence_test.go`, and **0**
 `use of X25519 is not allowed`.
 
-Previously **106 pass / 16 fail** with 699 GCM rejections. The go-quicraft
-v0.8.0-alpha bump closed the GCM finding outright; see [Open
-blockers](#open-blockers) for the before/after and how it was attributed.
+Previously **120 pass / 2 fail** with 0 GCM and 15 X25519 rejections, and
+**106 pass / 16 fail** with 699 GCM rejections before that. The X25519 count
+went to zero when `pkg/clusterenroll` stopped calling the Noise handshake in
+FIPS mode; the GCM count went from 0 back to 4 because a test fixture
+introduced after the previous measurement reintroduced `cipher.NewGCM`, which
+is the second time that has happened and is why
+[Reproducing this measurement](#reproducing-this-measurement) says to re-measure
+after the last commit that touches test code.
 
-Five tests report `--- SKIP` on this run. Three predate this section; **two are
-the caller-nonce tests** registered under [Skipped tests under
-`fips140=only`](#skipped-tests-under-fips140only), and they are unreachable
-code rather than hidden red. A skip count is not a failure count, and neither
-is it self-explanatory — check a `--- SKIP` against that register before
-reading it either way.
+Four tests report `--- SKIP` on this run: `TestHelperProcess_Boot1Kill`,
+`TestTSEncoders_RefuseATagBlockThatOverflowsWithTheFixedFields`, and **the two
+caller-nonce tests** registered under [Skipped tests under
+`fips140=only`](#skipped-tests-under-fips140only), which are unreachable code
+rather than hidden red. A skip count is not a failure count, and neither is it
+self-explanatory — check a `--- SKIP` against that register before reading it
+either way.
+
+**No test was skipped to close the Noise finding**, and the two packages it
+affected acquired no skip guards. Where a live Noise listener became unreachable
+under `fips140=only`, the test asserts the contract that replaces one — an
+advertiser that is present, serves no Noise, and never touched the key file —
+which is strictly stronger than a skip, because a regression that resumed
+reading the key file in FIPS mode fails it. See
+[../clustering/engineering.md](../clustering/engineering.md#test-strategy).
 
 ### Reproducing this measurement
 
@@ -420,10 +490,11 @@ ways of getting them wrong have already been hit in this repository:
 Check the log is complete before counting it — a suite killed midway produces a
 short count that looks like an improvement.
 
-**Zero** occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
-allowed in FIPS 140-only mode` remain. All **15** rejections in the current run
-are `crypto/ecdh: use of X25519 is not allowed`, from the Noise handshake. There
-are zero `crypto/sha1` panics, which is what the UUIDv8 migration was for, and
+**Zero** occurrences of `crypto/ecdh: use of X25519 is not allowed` remain: the
+Noise handshake is no longer reached in FIPS mode. The **four** remaining
+rejections are all `crypto/cipher: use of GCM with arbitrary IVs`, all four in
+`pkg/tenant/teardown_fence_test.go`, a test fixture added after the previous
+measurement. There are zero `crypto/sha1` panics, which is what the UUIDv8 migration was for, and
 zero `crypto/hmac: use of keys shorter than 112 bits`, which is what the
 shared-secret minimum was for. Re-derive the attribution with:
 
@@ -438,16 +509,21 @@ error and none of them a qrdb call site. That whole class is gone; the sentence
 is kept as history because the attribution is the evidence the remediation
 worked, not because the number is current.
 
-Every failing test in both remaining packages carries the X25519 rejection in
-its own output. There is no residue: no failing test in this suite is explained
-by anything other than a dependency's non-approved primitive.
+**Attribute every failing test before counting it, because one of the two
+failing packages is not a FIPS failure at all.** `pkg/service` reports
+`[build failed]`, which prints as a single `FAIL` line among 124 `ok` lines and
+looks exactly like a rejection until you read it; it fails identically with FIPS
+off. Only `pkg/tenant` carries a FIPS rejection, and it carries it in a test
+fixture rather than on a product path. A count taken without that distinction
+would say "two FIPS failures" and be wrong by half.
 
 ### Arming the gate
 
-Once the remaining finding is closed, this module bumps to approved-algorithm
-dependency releases, **and the SDK has had a clean run** (see [Measured
+Once the remaining test-fixture failure is fixed, `pkg/service` compiles again,
+**and the SDK has had a clean run** (see [Measured
 status](#measured-status) — its status is currently unknown, not clean), `fips`
-becomes a required check. The job lives in `.github/workflows/nightly.yml`, so
+becomes a required check. The dependency findings that used to head this list
+are closed; what is left is two defects of this repository's own, both tracked. The job lives in `.github/workflows/nightly.yml`, so
 arming it is four moves and they are one act: move the job into
 `.github/workflows/ci.yml`, add `fips` to `ci-gate`'s `needs`, add
 `RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop. Do

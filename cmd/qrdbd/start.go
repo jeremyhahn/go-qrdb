@@ -2128,6 +2128,13 @@ func runStart(f *startFlags) error {
 			if svcNode.Rebalance != nil && !standalone {
 				serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
 			}
+			// A non-nil advertiser means this node advertises enrollment, NOT
+			// that a Noise listener is running (clusterenroll.Advertiser). The
+			// distinction is what keeps a FIPS 140-3 first node joinable: Noise
+			// is excluded there, and /v1/ca/bootstrap -- the endpoint SPKI, DANE
+			// and direct HTTPS all fetch -- is the approved half of the same
+			// surface, so it has to be registered on exactly this condition
+			// rather than on the presence of a Noise server.
 			if bootServers != nil {
 				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
 			}

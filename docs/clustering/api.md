@@ -104,6 +104,19 @@ rather than streaming, so it works over unary-only REST.
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Node draining | 503 | `UNAVAILABLE` |
 
+Cluster enrollment is not an API surface — it runs at daemon startup, below
+every transport — so its failures are startup errors rather than status codes.
+The Go surface is in `pkg/clusterenroll`, re-exported from
+`sdk/go/clusterenroll`:
+
+| Symbol | Meaning |
+|---|---|
+| `NoiseAvailable() bool` | whether this runtime may use the Noise NK method; false in FIPS 140-3 mode |
+| `*NoiseFIPSUnavailableError` | a join configured with Noise as its only method, in FIPS 140-3 mode; the message names FIPS and the approved methods |
+| `(*Advertiser).NoiseEnabled() bool` | whether this first node is running a Noise listener; a non-nil `Advertiser` means the node advertises enrollment, which is a different question |
+
+See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable).
+
 ## Pagination
 
 None of these results are paginated. `Peers`, `GetTopology` and the imbalance

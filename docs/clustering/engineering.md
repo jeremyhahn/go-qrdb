@@ -217,6 +217,63 @@ is fully exercised by the package's own tests and does nothing at all for the
 daemon, which is the only production consumer — so the assertion that pins this
 lives in `cmd/qrdbd`, against `resolveTLS`, not against `Resolve`.
 
+### FIPS 140-3 — the Noise NK method is unavailable
+
+Noise_NK_25519_ChaChaPoly_SHA256 mandates X25519 key agreement, which is not an
+approved scheme under SP 800-56A Rev. 3. Under `GODEBUG=fips140=only` the Go
+Cryptographic Module refuses it outright; under `GODEBUG=fips140=on` the module
+permits it and **this package still declines to use it**, for the reason
+`pkg/ceremony` declines an Ed25519 external officer: a deployment that has ASKED
+for FIPS mode should not be handed non-approved cryptography because the runtime
+tolerates it. The predicate is therefore `crypto/fips140.Enabled()`, not
+`Enforced()`, and it is read through `clusterenroll.NoiseAvailable()`.
+
+**The ruling has two halves, and what separates them is the operator's stated
+intent.**
+
+| Situation | Behaviour |
+|---|---|
+| **First node** — no advertise-method option exists to choose; the operator asked to be the first node of a multi-node cluster | Noise is **excluded**. `StartAdvertiser` returns a non-nil `Advertiser` whose `NoiseEnabled()` is false, binds nothing, publishes no key and writes no `noise-key.hex`. The node advertises the approved methods. |
+| **Joining node, Noise configured alongside an approved method** | Noise is **excluded** from the truststrap `MethodOrder`; SPKI, DANE or direct HTTPS carry the join. `truststrap.AutoFetch` is a fallback chain by construction, so a preference list is exactly what the operator gave. |
+| **Joining node, Noise configured as the ONLY method** | **Refused**, at configuration time, with `*NoiseFIPSUnavailableError`. There is nothing to select among: the operator named Noise and this runtime cannot provide it. |
+
+**None of the three is silent.** The two exclusions log at WARN — from
+`startNoiseAdvertiser` and again from `logAdvertiserInfo` on the advertise side,
+and from `buildAutoConfig` on the join side — naming FIPS, naming the method
+that was dropped, and naming the approved methods to configure instead. The
+refusal's message leads with FIPS. A bootstrap method downgraded without saying
+so is its own defect.
+
+**An `Advertiser` means "this node advertises enrollment", not "a Noise listener
+is running."** The two were the same pointer while Noise was the only advertise
+mechanism, and they are not any more: `cmd/qrdbd` registers the
+`/v1/ca/bootstrap` endpoint — which is what SPKI, DANE and direct HTTPS all
+fetch — on exactly the condition that produced a non-`nil` advertiser. Gating
+that endpoint on a live Noise server instead would leave a FIPS first node
+unreachable by *every* method rather than by one, silently, which is the shape
+[Enrollment role](#enrollment-role) exists to keep out of this package. Ask
+`Advertiser.NoiseEnabled()` when you need to know about the Noise listener
+specifically.
+
+**The bind host stays required in FIPS mode.** `AdvertiseOptions.validate()` is
+a configuration-completeness check and does not read the runtime: a
+configuration that is incomplete is incomplete in both modes, and making its
+validity depend on `GODEBUG` would mean the same file passing on one host and
+failing on another.
+
+**The decision is taken at run time.** `go-truststrap` also ships a `fips` build
+tag that compiles its X25519 helpers out, and taking that route would mean two
+binaries whose enrollment surfaces differ and whose difference is invisible in
+the artifact. One binary that reads the runtime it was started in is the smaller
+claim, and it is the claim `GODEBUG` itself makes.
+
+**What this does NOT do.** It does not make the Noise transport work under FIPS —
+nothing can, short of a different handshake — and it does not decide whether the
+shared-CA-key enrollment mode should be served over Noise at all, which is a
+separate open question. See
+[fips140-mode.md](../seal/fips140-mode.md) for the FIPS register and the
+remaining gaps.
+
 ### Dynamic membership — `pkg/cluster`
 
 `MembershipManager`, built against two narrow interfaces so it is testable and
@@ -329,6 +386,12 @@ type ImbalanceReport struct {
   load the CA from cache, and it comes back on the same persisted Noise static
   key so a peer that pinned that key still enrolls — see
   [Enrollment role](#enrollment-role).
+- **In FIPS 140-3 mode a first node still advertises, over the approved methods
+  only.** The Noise NK listener is excluded — its X25519 handshake is not
+  approved — and the node comes up serving `/v1/ca/bootstrap` for SPKI, DANE and
+  direct HTTPS, saying so at WARN. A join configured with Noise as its only
+  method is refused at configuration time instead. See
+  [FIPS 140-3](#fips-140-3--the-noise-nk-method-is-unavailable).
 - **A node whose data directory holds cluster CA material with no recorded
   enrollment role refuses to start.** The role cannot be recovered from the
   material, so the node cannot know whether it owes the cluster a listener, and
@@ -386,6 +449,9 @@ type ImbalanceReport struct {
 | Discovery finds no peers | `BootstrapShard` fails at the quorum check | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
+| FIPS 140-3 mode, bootstrap join configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
+| FIPS 140-3 mode, bootstrap join configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the join | n/a |
+| FIPS 140-3 mode, first node | advertises the approved methods with a WARN naming FIPS; no Noise listener, no `noise-key.hex` | n/a |
 | `AddMember` for an existing replica | skipped (idempotent) | n/a |
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |
 | Reconfiguration transient failure | retried with capped exponential backoff | — |
@@ -405,6 +471,10 @@ Discovery lives under the `discovery` block — see
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
 | `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the first node's enrollment listener; **zero means the fixed default 63006, not an ephemeral port** |
 | `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
+
+Both `bootstrap.noise_*` settings are accepted and validated in FIPS 140-3 mode
+and neither opens a listener there — see
+[FIPS 140-3](#fips-140-3--the-noise-nk-method-is-unavailable).
 
 ## Test strategy
 
@@ -427,6 +497,23 @@ Discovery lives under the `discovery` block — see
   loopback, because a port proven free at one address says nothing about the
   same number at another. This has reddened CI three times — see
   `reserveNoisePort` in `cmd/qrdbd/enrollment_resume_test.go` for the history.
+- **The FIPS ruling is asserted in BOTH runtimes, and nothing is skipped.**
+  `clusterenroll.noiseAvailable` is an overridable variable, as `readFileFn`
+  already is, so a test can assert the FIPS ruling from an ordinary runtime.
+  Only `false` is safe to force everywhere: forcing `true` under
+  `fips140=only` tells the package Noise may be used while the module still
+  refuses the X25519 underneath it. That is why method selection lives in its
+  own `buildAutoConfig`, which performs no cryptography — it is where the
+  "a non-FIPS node still selects Noise" regression guard can run under
+  `fips140=only` as well as under `fips140=off`.
+- **Where a live Noise listener is genuinely unreachable, the test asserts the
+  contract that REPLACES it rather than skipping.** A fault planted in
+  `noise-key.hex` or in the listen port cannot fire when neither is touched, so
+  the assertion becomes "the fixture was not reached, and the advertiser came up
+  without Noise" — which is strictly stronger than a skip, because a regression
+  that started reading the key file in FIPS mode fails it. `assertAdvertises`
+  and `assertNoiseFaultUnreachable` in `pkg/clusterenroll`, and
+  `assertAdvertisesWithoutNoise` in `cmd/qrdbd`, express this once each.
 - **Integration**: the 3-node Raft suites — `isolation_raft_cluster_test.go`,
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,

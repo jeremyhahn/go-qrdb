@@ -40,10 +40,18 @@ import (
 
 // dialable asserts something is accepting connections at the advertiser's
 // bound address.
-func dialable(t *testing.T, adv *Advertiser) {
+// dialable asserts that the enrollment listener a first node owes the cluster
+// is really there, and reports whether this runtime serves Noise at all so a
+// caller can go on to assert Noise-specific properties of it.
+//
+// In FIPS 140-3 mode there is no socket to dial and assertAdvertises has
+// already asserted the contract that replaces one -- an advertiser that is
+// present and serving the approved methods. A caller that returns on false has
+// therefore asserted the whole of the contract that holds in its runtime.
+func dialable(t *testing.T, adv *Advertiser) bool {
 	t.Helper()
-	if adv == nil {
-		t.Fatal("no advertiser: the enrollment listener was not started")
+	if !assertAdvertises(t, adv) {
+		return false
 	}
 	conn, err := net.DialTimeout("tcp", adv.Addr(), 5*time.Second)
 	if err != nil {
@@ -52,6 +60,7 @@ func dialable(t *testing.T, adv *Advertiser) {
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close probe conn: %v", err)
 	}
+	return true
 }
 
 func firstNodeOpts(t *testing.T, dir string, port int) *Options {
@@ -82,7 +91,7 @@ func TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot 1: %v", err)
 	}
-	dialable(t, adv1)
+	servesNoise := dialable(t, adv1)
 	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
 	adv1.Stop() // the process exits
 
@@ -95,7 +104,15 @@ func TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 			"silently unjoinable, and nothing reports it (go-qrdb#241)")
 	}
 	t.Cleanup(adv2.Stop)
-	dialable(t, adv2)
+	if dialable(t, adv2) != servesNoise {
+		t.Fatal("the two boots disagree about whether Noise is served; the ruling is a property of the runtime, not of the boot")
+	}
+	if !servesNoise {
+		// FIPS 140-3: there is no static key, so the identity-stability
+		// assertion below has no subject. What go-qrdb#241 is about -- boot 2
+		// coming back advertising -- has just been asserted.
+		return
+	}
 
 	// The resumed listener must carry the SAME Noise identity. A joining node
 	// pins this key; coming back on a fresh one would be a listener that is
@@ -118,6 +135,28 @@ func TestResolve_FirstNodeResumesAfterAnAdvertiserStartFailure(t *testing.T) {
 		t.Fatalf("occupy the Noise port: %v", err)
 	}
 	opts := firstNodeOpts(t, dir, port)
+
+	if !noiseAvailable() {
+		// No port is bound in FIPS 140-3 mode, so the fault this test injects
+		// cannot occur: attempt 1 succeeds. The property that matters -- the
+		// node advertises on both boots -- still gets asserted, and a
+		// regression that started binding a port here would fail on the
+		// occupied one.
+		defer func() { _ = blocker.Close() }()
+		_, advA, errA := Resolve(context.Background(), opts, discardLogger())
+		if errA != nil {
+			t.Fatalf("attempt 1 must not bind a port when the Noise method is unavailable: %v", errA)
+		}
+		dialable(t, advA)
+		advA.Stop()
+		_, advB, errB := Resolve(context.Background(), opts, discardLogger())
+		if errB != nil {
+			t.Fatalf("attempt 2 (cached path): %v", errB)
+		}
+		t.Cleanup(advB.Stop)
+		dialable(t, advB)
+		return
+	}
 
 	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err == nil {
 		if adv != nil {
@@ -427,7 +466,7 @@ func TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot 1: %v", err)
 	}
-	dialable(t, adv1)
+	servesNoise := dialable(t, adv1)
 	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
 	adv1.Stop()
 
@@ -439,7 +478,12 @@ func TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
 		t.Fatal("ResolveCA boot 2 returned no advertiser (go-qrdb#241)")
 	}
 	t.Cleanup(adv2.Stop)
-	dialable(t, adv2)
+	if dialable(t, adv2) != servesNoise {
+		t.Fatal("the two boots disagree about whether Noise is served; the ruling is a property of the runtime, not of the boot")
+	}
+	if !servesNoise {
+		return
+	}
 	if !bytes.Equal(key1, adv2.NoisePublicKey()) {
 		t.Error("the resumed listener came back on a different Noise static key")
 	}

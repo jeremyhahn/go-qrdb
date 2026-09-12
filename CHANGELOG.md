@@ -259,6 +259,68 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A first node can advertise cluster enrollment under `GODEBUG=fips140=only`**
+  (#485). Noise_NK_25519_ChaChaPoly_SHA256 performs an X25519 handshake, which
+  is not a FIPS 140-3 approved key-agreement scheme, so `crypto/ecdh` refuses
+  it. `clusterenroll.StartAdvertiser` returned that refusal as an error and the
+  node failed to start: **cluster enrollment did not degrade in FIPS mode, it
+  did not start.** The nightly `FIPS 140-3` job had reported this correctly for
+  eleven consecutive runs.
+
+  Noise is now excluded rather than attempted, on `crypto/fips140.Enabled()` —
+  `Enabled()`, not `Enforced()`, matching the call `pkg/ceremony` makes for an
+  Ed25519 external officer, because a deployment that asked for FIPS mode
+  should not be handed non-approved cryptography just because `fips140=on`
+  tolerates it. The ruling splits on the operator's stated intent:
+
+  - **A first node** excludes Noise and comes up advertising the approved
+    methods. It never chose a transport — there is no advertise-method option —
+    and SPKI-pinned TLS, DANE and direct HTTPS all fetch the same CA bundle
+    from `/v1/ca/bootstrap`. Refusing to boot would mean no multi-node cluster
+    under FIPS at all, over a method a FIPS deployment could not use.
+  - **A joining node that named Noise alongside an approved method** has Noise
+    dropped from the truststrap method order; `AutoFetch` is a fallback chain by
+    construction, so a preference list is what was given.
+  - **A joining node that named Noise and nothing else** is refused at
+    configuration time with `*clusterenroll.NoiseFIPSUnavailableError`, before
+    the first dial and before anything reaches the data directory.
+
+  **No downgrade is silent.** Both exclusions log at WARN naming FIPS, the
+  method dropped and the approved methods to use instead, and the refusal's
+  message leads with FIPS. That matters for the message as much as the
+  behaviour: go-truststrap wraps a FIPS refusal in its `ErrInvalidKeySize`, so
+  what an operator used to see was `noise: invalid key size: crypto/ecdh: use
+  of X25519 ...` — a leading clause that sends them after a key-length bug that
+  is not there. qrdb now refuses above that call, so the string is unreachable
+  from a FIPS deployment; the mis-wrapping is filed upstream.
+
+  **BREAKING, in the sense that matters here: a non-`nil` `Advertiser` now
+  means "this node advertises enrollment", not "a Noise listener is running."**
+  `cmd/qrdbd` registers `/v1/ca/bootstrap` on exactly that condition, and
+  collapsing the two again would leave a FIPS first node unreachable by *every*
+  method rather than by one — silently, which is the shape go-qrdb#241 exists to
+  keep out of this package. Ask the new `(*Advertiser).NoiseEnabled()` when the
+  Noise listener specifically is the question. `clusterenroll.NoiseAvailable()`
+  and `*NoiseFIPSUnavailableError` are exported and re-exported from
+  `sdk/go/clusterenroll`.
+
+  No test was skipped to get there, and the ruling is asserted in BOTH runtimes:
+  `noiseAvailable` is an overridable variable, as `readFileFn` already is, and
+  method selection was split into a `buildAutoConfig` that performs no
+  cryptography — which is what lets "a non-FIPS node still selects Noise" run
+  under `fips140=only` as well as under `fips140=off`. Where a live Noise
+  listener became genuinely unreachable, the test asserts the contract that
+  replaces one rather than skipping, so a regression that resumed reading
+  `noise-key.hex` in FIPS mode fails it.
+
+  Measured, Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only make test`:
+  **124 pass / 2 fail** against 120/2 before, with X25519 rejections at **0**
+  from 15. `pkg/clusterenroll` and `cmd/qrdbd` are green. The two survivors are
+  separate pre-existing defects, both filed: `pkg/tenant` has a `cipher.NewGCM`
+  test fixture, and `pkg/service`'s test binary does not compile at all (which
+  is not a FIPS failure — it fails with FIPS off too). See
+  `docs/seal/fips140-mode.md` and `docs/clustering/`.
+
 - **`secure.StdinProvider` no longer leaves the passphrase in an unwipeable
   heap buffer** (#184). It read through a `bufio.Reader`, which staged the
   passphrase in an ordinary heap allocation that was never wiped — in the one

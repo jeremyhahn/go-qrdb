@@ -17,8 +17,11 @@ package main
 import (
 	"context"
 	encoding_hex "encoding/hex"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -225,6 +228,21 @@ func TestResolveTLS_FirstNode(t *testing.T) {
 	}
 	defer servers.Stop()
 
+	if !noiseServed() {
+		// FIPS 140-3: the node advertises the approved methods only. It is a
+		// first node either way, which is what registers /v1/ca/bootstrap.
+		if servers.NoiseEnabled() {
+			t.Fatal("NoiseEnabled() = true, want false when the method is unavailable")
+		}
+		if fileExists(filepath.Join(dir, noiseKeyFile)) {
+			t.Errorf("%s must not be persisted when the Noise method is unavailable", noiseKeyFile)
+		}
+		if !fileExists(filepath.Join(dir, "ca.pem")) {
+			t.Error("expected ca.pem to be persisted")
+		}
+		return
+	}
+
 	if servers.Addr() == "" {
 		t.Fatal("expected Noise server to be running")
 	}
@@ -350,6 +368,11 @@ func TestStartBootstrapServers_GeneratesKey(t *testing.T) {
 	// 63006 (go-qrdb#313). See reserveNoisePort in enrollment_resume_test.go.
 	reserveNoisePort(t, f)
 
+	if !noiseServed() {
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
+	}
+
 	servers, err := startBootstrapServers(bundle, f, testLogger())
 	if err != nil {
 		t.Fatalf("startBootstrapServers: %v", err)
@@ -441,6 +464,12 @@ func TestStartBootstrapServers_InvalidExistingKey(t *testing.T) {
 	// grepping for the field, rather than one that has to be re-derived from
 	// control flow site by site (go-qrdb#313).
 	reserveNoisePort(t, f)
+
+	if !noiseServed() {
+		// The planted key is never read, so there is nothing to reject.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
+	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
 	if err == nil {
@@ -535,6 +564,11 @@ func TestBootstrapTLS_Noise_Success(t *testing.T) {
 	// but generateLeafFromCA fails because the CA private key is not
 	// included in the response. This test verifies the fetch + handshake
 	// path is exercised and that the resulting error is correctly typed.
+	if !noiseServed() {
+		assertNoiseJoinRefusedByName(t, &startFlags{dataDir: t.TempDir()})
+		return
+	}
+
 	bundle, err := generateCATLS()
 	if err != nil {
 		t.Fatalf("generateCATLS: %v", err)
@@ -568,6 +602,14 @@ func TestBootstrapTLS_Noise_FetchError(t *testing.T) {
 		bootstrapNoiseAddr: "127.0.0.1:1",
 	}
 
+	if !noiseServed() {
+		// The method is excluded before the dial, so the failure is a refusal
+		// rather than a fetch error -- which is the whole point of raising it
+		// at configuration time.
+		assertNoiseJoinRefusedByName(t, f)
+		return
+	}
+
 	_, err := bootstrapTLS(f, testLogger())
 	if err == nil {
 		t.Fatal("expected error for unreachable noise server")
@@ -585,6 +627,11 @@ func TestBootstrapTLS_Noise_PersistError(t *testing.T) {
 	// BootstrapError, confirming the fetch succeeded but downstream
 	// processing failed. The bad dataDir ensures that even if
 	// generateLeafFromCA were to succeed, persist would still fail.
+	if !noiseServed() {
+		assertNoiseJoinRefusedByName(t, &startFlags{dataDir: t.TempDir()})
+		return
+	}
+
 	bundle, err := generateCATLS()
 	if err != nil {
 		t.Fatalf("generateCATLS: %v", err)
@@ -692,6 +739,33 @@ func TestBootstrapTLS_MultipleMethods_Fallback(t *testing.T) {
 	// strips non-CERTIFICATE PEM blocks. A BootstrapError confirms that
 	// the Noise fetch succeeded (BootstrapFetchError would indicate the
 	// fetch itself failed).
+	if !noiseServed() {
+		// FIPS 140-3: Noise is dropped from the candidate list, and because an
+		// approved method WAS also configured the join proceeds on it and
+		// fails on the network. It must NOT be refused -- the operator gave a
+		// preference list, and refusing it would break a deployment over a
+		// method it also named.
+		f := &startFlags{
+			dataDir:            t.TempDir(),
+			bootstrapSPKIPin:   "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			bootstrapAddr:      net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t))),
+			bootstrapNoiseKey:  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+			bootstrapNoiseAddr: net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t))),
+		}
+		_, err := bootstrapTLS(f, testLogger())
+		if err == nil {
+			t.Fatal("expected the remaining approved method to fail against a dead address")
+		}
+		var fipsErr *clusterenroll.NoiseFIPSUnavailableError
+		if errors.As(err, &fipsErr) {
+			t.Fatalf("a join with an approved method configured must not be refused for FIPS reasons: %v", err)
+		}
+		if _, ok := err.(*BootstrapFetchError); !ok {
+			t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
+		}
+		return
+	}
+
 	bundle, err := generateCATLS()
 	if err != nil {
 		t.Fatalf("generateCATLS: %v", err)
@@ -796,6 +870,28 @@ func TestResolveTLS_Path4_JoiningNode(t *testing.T) {
 	// the bootstrap protocol strips non-CERTIFICATE PEM blocks. This
 	// test verifies that Path 4 is exercised (bootstrap flags detected)
 	// and that the error propagates correctly from bootstrapTLS.
+	if !noiseServed() {
+		// Path 4 is still selected -- the bootstrap flags are what choose it --
+		// and the refusal comes from the method, by name.
+		f := &startFlags{
+			dataDir:         t.TempDir(),
+			discoveryMethod: "static",
+			peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+			host:            testBindHost,
+		}
+		f.bootstrapNoiseKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+		f.bootstrapNoiseAddr = net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t)))
+		if !hasBootstrapFlags(f) {
+			t.Fatal("the Noise coordinates must still select path 4")
+		}
+		_, _, err := resolveTLS(f, testLogger())
+		var fipsErr *clusterenroll.NoiseFIPSUnavailableError
+		if !errors.As(err, &fipsErr) {
+			t.Fatalf("error = %v (%T), want *clusterenroll.NoiseFIPSUnavailableError", err, err)
+		}
+		return
+	}
+
 	bundle, err := generateCATLS()
 	if err != nil {
 		t.Fatalf("generateCATLS: %v", err)
@@ -871,6 +967,24 @@ func TestResolveTLS_Path5_BootstrapServerStartError(t *testing.T) {
 	// Fails on the planted key before the listener opens; reserved anyway,
 	// for the reason given in TestStartBootstrapServers_InvalidExistingKey.
 	reserveNoisePort(t, f)
+
+	if !noiseServed() {
+		// The planted key is never read, so path 5 completes: the node comes
+		// up advertising the approved methods. A regression that started
+		// reading the key file in FIPS mode would fail here.
+		_, servers, err := resolveTLS(f, testLogger())
+		if err != nil {
+			t.Fatalf("resolveTLS must not read the Noise key file when the method is unavailable: %v", err)
+		}
+		if servers == nil {
+			t.Fatal("expected an advertiser for the first-node path")
+		}
+		defer servers.Stop()
+		if servers.NoiseEnabled() {
+			t.Fatal("NoiseEnabled() = true, want false when the method is unavailable")
+		}
+		return
+	}
 
 	_, _, err := resolveTLS(f, testLogger())
 	if err == nil {

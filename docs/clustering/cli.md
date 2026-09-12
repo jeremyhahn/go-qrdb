@@ -150,6 +150,24 @@ Discovery and bootstrap are `qrdbd` configuration, not client verbs:
 
 Dynamic membership is **off by default**, leader-only, and quorum-guarded.
 
+Peer enrollment is configured on the joining node:
+
+| Flag | Method |
+|---|---|
+| `--bootstrap-noise-key` with `--bootstrap-noise-addr` | Noise NK — **not available in FIPS 140-3 mode** |
+| `--bootstrap-spki-pin` with `--bootstrap-addr` | SPKI-pinned TLS |
+| `--bootstrap-dane-dns` | DANE TLSA |
+| `--bootstrap-direct-url` | direct HTTPS |
+
+Under `GODEBUG=fips140=only` or `fips140=on`, Noise NK is excluded: its X25519
+handshake is not a FIPS 140-3 approved key-agreement scheme.
+`--bootstrap-noise-key` on its own is refused at startup with an error that
+names FIPS and lists the approved flags; given alongside one of them, it is
+dropped with a WARN and the approved method is used. The first node's
+`--bootstrap-noise-port` / `--bootstrap-noise-host` are still accepted and
+validated, and open no listener. See
+[user.md](user.md#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
+
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite. The

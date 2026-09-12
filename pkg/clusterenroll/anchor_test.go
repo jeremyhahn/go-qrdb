@@ -104,6 +104,21 @@ func TestStartAnchorAdvertiser_ServesAnchorRoundTrip(t *testing.T) {
 	}
 	defer adv.Stop()
 
+	if !assertAdvertises(t, adv) {
+		// FIPS 140-3: there is no Noise channel to round-trip over, and a
+		// joiner configured with Noise alone is refused rather than left to
+		// time out against a listener that was never opened.
+		_, err := FetchAnchor(context.Background(), &Options{Bootstrap: BootstrapOptions{
+			NoiseKey:  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+			NoiseAddr: "192.0.2.10:63006",
+		}}, discardLogger())
+		var fipsErr *NoiseFIPSUnavailableError
+		if !errors.As(err, &fipsErr) {
+			t.Fatalf("FetchAnchor error = %v (%T), want *NoiseFIPSUnavailableError", err, err)
+		}
+		return
+	}
+
 	if adv.Addr() == "" {
 		t.Fatal("expected a listen address")
 	}
@@ -161,6 +176,13 @@ func TestFetchAnchor_SharedKeyModeServerYieldsCertOnly(t *testing.T) {
 		t.Fatalf("StartAdvertiser: %v", err)
 	}
 	defer adv.Stop()
+
+	if !assertAdvertises(t, adv) {
+		// FIPS 140-3: the Noise transport whose filtering this test measures
+		// is not served at all, so nothing can be delivered over it -- which
+		// is a stronger statement than the cert-only one below, not a weaker.
+		return
+	}
 
 	opts := &Options{
 		Bootstrap: BootstrapOptions{

@@ -204,3 +204,21 @@ var ResolveServerURL = clusterenroll.ResolveServerURL
 // ExtractHostFromPeer extracts the host portion from a peer specification in
 // the format "id=host:port".
 var ExtractHostFromPeer = clusterenroll.ExtractHostFromPeer
+
+// NoiseAvailable reports whether the Noise NK enrollment method may be used in
+// this process. It is false in FIPS 140-3 mode, where Noise's X25519 handshake
+// is not an approved key-agreement scheme: a first node then advertises over
+// the approved methods only (SPKI-pinned TLS, DANE, direct HTTPS against
+// /v1/ca/bootstrap) and a join configured with Noise alone is refused.
+//
+// Consumers call this to describe the enrollment surface they are about to
+// stand up. Reading crypto/fips140 directly gives a different answer on
+// GODEBUG=fips140=on, where the module permits X25519 and this stack still
+// declines it.
+var NoiseAvailable = clusterenroll.NoiseAvailable
+
+// NoiseFIPSUnavailableError is returned when an enrollment operation cannot
+// proceed without the Noise NK method and the process is in FIPS 140-3 mode.
+// Its message names FIPS and the approved methods rather than the misleading
+// "noise: invalid key size" the Noise library reports for a FIPS refusal.
+type NoiseFIPSUnavailableError = clusterenroll.NoiseFIPSUnavailableError

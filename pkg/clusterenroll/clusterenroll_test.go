@@ -288,6 +288,15 @@ func TestResolve_Path5_FirstNode_ReturnsAdvertiser(t *testing.T) {
 	}
 	defer adv.Stop()
 
+	if !assertAdvertises(t, adv) {
+		// FIPS 140-3: the advertiser is up and serves the approved methods.
+		// No Noise identity exists, so none is persisted either.
+		if fileExists(filepath.Join(dir, NoiseKeyFile)) {
+			t.Errorf("%s must not be persisted when the Noise method is unavailable", NoiseKeyFile)
+		}
+		return
+	}
+
 	if adv.Addr() == "" {
 		t.Fatal("expected Advertiser to have a listen address")
 	}
@@ -316,6 +325,14 @@ func TestResolve_Path5_FirstNode_ReloadsExistingKey(t *testing.T) {
 	_, adv1, err := Resolve(context.Background(), opts, discardLogger())
 	if err != nil {
 		t.Fatalf("Resolve (first): %v", err)
+	}
+	if !assertAdvertises(t, adv1) {
+		// FIPS 140-3: there is no static key to reload, and the reload branch
+		// this test covers is not reached. That the second boot still comes
+		// back advertising is asserted by
+		// TestResumeAdvertiser_UnderFIPSFirstNodeStillAdvertisesOnRestart.
+		adv1.Stop()
+		return
 	}
 	pubKey1 := append([]byte{}, adv1.NoisePublicKey()...)
 	adv1.Stop()
@@ -563,7 +580,13 @@ func TestStartAdvertiser_InvalidExistingKey(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
+	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
+	_, err = StartAdvertiser(mat, opts, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error for invalid noise key file")
 	}
@@ -594,6 +617,12 @@ func TestStartAdvertiser_KeyReadFails(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
 	sentinel := errors.New("read key: injected")
 	orig := readFileFn
 	t.Cleanup(func() { readFileFn = orig })
@@ -604,7 +633,7 @@ func TestStartAdvertiser_KeyReadFails(t *testing.T) {
 		return orig(name)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, opts, dir, discardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("StartAdvertiser error = %v, want the injected read error", err)
 	}
@@ -630,7 +659,13 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
+	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
+	_, err = StartAdvertiser(mat, opts, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error when noise key path is a directory")
 	}
@@ -746,11 +781,13 @@ func TestResolveCA_FirstNode_ReturnsAdvertiser(t *testing.T) {
 		t.Fatal("expected non-nil Advertiser for first-node path")
 	}
 
-	if adv.Addr() == "" {
-		t.Error("expected non-empty Advertiser listen address")
-	}
-	if len(adv.NoisePublicKey()) == 0 {
-		t.Error("expected non-empty Advertiser Noise public key")
+	if assertAdvertises(t, adv) {
+		if adv.Addr() == "" {
+			t.Error("expected non-empty Advertiser listen address")
+		}
+		if len(adv.NoisePublicKey()) == 0 {
+			t.Error("expected non-empty Advertiser Noise public key")
+		}
 	}
 	if len(caCertPEM) == 0 {
 		t.Error("expected non-empty caCertPEM")

@@ -3486,6 +3486,12 @@ func TestStartBootstrapServers_MkdirError(t *testing.T) {
 		host:    testBindHost,
 	}
 
+	if !noiseServed() {
+		// No key is generated, so the data directory is never created and the fault is not reached.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
+	}
+
 	_, err = startBootstrapServers(bundle, f, testLogger())
 	require.Error(t, err)
 
@@ -3507,6 +3513,12 @@ func TestStartBootstrapServers_KeyWriteError(t *testing.T) {
 	f := &startFlags{
 		dataDir: dir,
 		host:    testBindHost,
+	}
+
+	if !noiseServed() {
+		// No key is written, so the blocking directory is never opened.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
@@ -3544,6 +3556,12 @@ func TestStartBootstrapServers_KeyError(t *testing.T) {
 	f := &startFlags{
 		dataDir: dir,
 		host:    testBindHost,
+	}
+
+	if !noiseServed() {
+		// The planted key is never read, so there is no advertiser failure to surface.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())

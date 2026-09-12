@@ -994,6 +994,12 @@ func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
 	// (go-qrdb#313).
 	reserveNoisePort(t, f)
 
+	if !noiseServed() {
+		// No key is generated, so the blocking directory is never opened.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
+	}
+
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
 	require.Error(t, err)
 	var bsErr *BootstrapServerError
@@ -1020,6 +1026,12 @@ func TestStartBootstrapServers_StartFails(t *testing.T) {
 		dataDir:            dir,
 		bootstrapNoisePort: occupiedTCPPort(t),
 		host:               testBindHost,
+	}
+
+	if !noiseServed() {
+		// No listener is opened, so there is no address to collide with.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
 	}
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())

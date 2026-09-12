@@ -35,6 +35,28 @@ Bootstrap runs: discover peers → validate addresses → add self → check quo
 start the shard. If discovery finds too few peers, bootstrap fails at the quorum
 check rather than starting a cluster that cannot commit.
 
+### In FIPS 140-3 mode, do not use the Noise bootstrap method
+
+If you run the daemon with `GODEBUG=fips140=only` (or `fips140=on`), the Noise
+NK enrollment method is unavailable: its handshake uses X25519, which is not a
+FIPS 140-3 approved key-agreement scheme.
+
+Nothing about forming a cluster is blocked by this, but the way peers enroll
+changes, and the node tells you so at startup:
+
+- **The first node still advertises.** It comes up without a Noise listener and
+  logs a WARN saying so. Joining nodes reach its `/v1/ca/bootstrap` endpoint on
+  the admin port instead.
+- **Joining nodes must use an approved method**: `--bootstrap-spki-pin` (with
+  `--bootstrap-addr`), `--bootstrap-dane-dns`, or `--bootstrap-direct-url`.
+- **`--bootstrap-noise-key` on its own is refused at startup**, with an error
+  that names FIPS and lists the methods to use instead. If you give it
+  alongside an approved method, the approved one is used and the Noise entry is
+  dropped with a WARN.
+
+`--bootstrap-noise-port` and `--bootstrap-noise-host` are still accepted and
+validated; they simply configure a listener that is not opened.
+
 ## Watching the cluster
 
 ```bash
@@ -151,6 +173,19 @@ works over unary-only transports. It is not a streaming feed.
 **Rebalance execute failed some moves.** The result counts them and reports the
 final imbalance. Re-plan and re-run — the plan is computed from current state,
 so a second pass picks up where the first stopped.
+
+**A joining node reports that Noise NK is not FIPS 140-3 approved.** The daemon
+is running in FIPS mode, where that method cannot be used. Configure
+`--bootstrap-spki-pin` (with `--bootstrap-addr`), `--bootstrap-dane-dns` or
+`--bootstrap-direct-url` instead — see
+[Forming a cluster](#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
+The refusal happens before the node dials anything, so nothing was written.
+
+**A FIPS first node logs no Noise public key.** That is correct there. It logs a
+WARN naming FIPS and the admin port instead; point joining nodes at
+`/v1/ca/bootstrap` with an approved method. `noise-key.hex` is not written in
+FIPS mode, because it would be a key produced by a primitive the deployment has
+declared it may not use.
 
 **Cluster verbs return "requires mode: raft".** The server is standalone.
 

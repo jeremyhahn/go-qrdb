@@ -182,6 +182,27 @@ cadence is `DefaultMembershipPollInterval`.
 - **Dynamic membership on by default.** Rejected: automatic Raft reconfiguration
   is exactly the machinery that can destroy a cluster during a transient
   liveness blip. It is opt-in, leader-only, and quorum-guarded.
+- **Refusing to start a first node in FIPS 140-3 mode.** Rejected. The Noise NK
+  enrollment listener cannot run there — its X25519 handshake is not an approved
+  key-agreement scheme — but nothing about being a first node requires Noise:
+  SPKI-pinned TLS, DANE and direct HTTPS all fetch the same CA bundle from
+  `/v1/ca/bootstrap`, and the operator never chose a method in the first place
+  (there is no advertise-method option to choose). Refusing would mean go-qrdb
+  cannot form a multi-node cluster under FIPS at all, over a method a FIPS
+  deployment could not have used. So Noise is excluded, loudly, and the node
+  advertises the approved methods.
+- **Falling back from Noise without saying so.** Rejected on both sides. A
+  bootstrap method downgraded in silence is its own defect: the operator is
+  running a smaller enrollment surface than the documentation describes, and the
+  only other thing that ever reports it is a peer's join failing on a different
+  machine. Every exclusion logs at WARN naming FIPS, and the case with nothing
+  left to select — a join configured with Noise and nothing else — is refused
+  outright at configuration time.
+- **Compiling the Noise transport out under a `fips` build tag.** Rejected, even
+  though go-truststrap offers exactly that tag. It would produce two binaries
+  whose enrollment surfaces differ and whose difference is invisible in the
+  artifact, while `GODEBUG=fips140` is a run-time switch. One binary that reads
+  the runtime it was started in is the smaller claim.
 - **A revision-resumed membership watch.** Rejected in favour of a full
   `ListMembers` snapshot on startup and after a watch re-subscribe. It is
   O(cluster size), membership sets are small, and reconnects are rare — the
@@ -222,5 +243,8 @@ cadence is `DefaultMembershipPollInterval`.
 - **No service discovery.** Application service registries are a consumer
   concern built on lease + watch + KV.
 - **No trust bootstrap.** See [../trust-bootstrap/](../trust-bootstrap/).
+- **No FIPS-approved replacement for Noise NK.** Noise_NK_25519 has no approved
+  DH to substitute; in FIPS 140-3 mode the method is excluded rather than
+  swapped. See [../seal/fips140-mode.md](../seal/fips140-mode.md).
 - **No automatic rebalancing.** Plans are generated and executed deliberately.
 - **No cross-cluster federation.**

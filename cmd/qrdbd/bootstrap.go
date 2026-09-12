@@ -207,8 +207,26 @@ func startBootstrapServers(bundle *TLSBundle, f *startFlags, logger *slog.Logger
 // logBootstrapInfo logs the information that operators need to configure
 // joining nodes. This includes the Noise public key (hex-encoded) and
 // the bootstrap server address.
+//
+// In FIPS 140-3 mode this node advertises no Noise listener (see
+// pkg/clusterenroll.Advertiser), and that is said out loud here rather than
+// passed over: the operator is being handed a smaller set of enrollment methods
+// than the documentation describes, and the alternative to saying so is that
+// they find out from a peer's join failing on a different machine.
 func logBootstrapInfo(bundle *TLSBundle, servers *bootstrapServers, f *startFlags) {
-	if servers == nil || len(servers.NoisePublicKey()) == 0 {
+	if servers == nil {
+		return
+	}
+
+	// No Noise public key is the FIPS 140-3 case, and it is the only one: the
+	// advertiser carries a key whenever it carries a listener.
+	if len(servers.NoisePublicKey()) == 0 {
+		slog.Warn("FIPS 140-3 mode: the Noise NK enrollment method is unavailable because its "+
+			"X25519 handshake is not FIPS 140-3 approved; this node advertises enrollment on "+
+			"/v1/ca/bootstrap only. Point joining nodes at --bootstrap-spki-pin, "+
+			"--bootstrap-dane-dns or --bootstrap-direct-url rather than --bootstrap-noise-key",
+			"admin_port", f.adminPort,
+		)
 		return
 	}
 

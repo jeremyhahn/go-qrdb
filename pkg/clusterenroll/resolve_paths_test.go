@@ -224,6 +224,12 @@ func TestResolveCAFirstNodeStartsAnAdvertiser(t *testing.T) {
 	if len(certPEM) == 0 || len(keyPEM) == 0 {
 		t.Fatal("expected CA material")
 	}
+	if !assertAdvertises(t, adv) {
+		if fileExists(filepath.Join(dir, NoiseKeyFile)) {
+			t.Errorf("%s must not be persisted when the Noise method is unavailable", NoiseKeyFile)
+		}
+		return
+	}
 	if len(adv.NoisePublicKey()) == 0 {
 		t.Fatal("advertiser must expose a Noise public key")
 	}
@@ -281,7 +287,16 @@ func TestStartAdvertiserRejectsAnUnusablePort(t *testing.T) {
 	t.Cleanup(func() { _ = occupied.Close() })
 	port := occupied.Addr().(*net.TCPAddr).Port
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}, dir, discardLogger())
+	opts := AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		// No listener is opened at all, so there is no address to collide
+		// with -- and an advertiser that reported a bind failure here would
+		// mean the FIPS branch had stopped short-circuiting the listen.
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
+	_, err = StartAdvertiser(mat, opts, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected StartAdvertiser to fail on an already-bound port")
 	}

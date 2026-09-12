@@ -47,6 +47,13 @@ func TestStartAdvertiser_BindsConfiguredHost(t *testing.T) {
 	}
 	t.Cleanup(adv.Stop)
 
+	if !assertAdvertises(t, adv) {
+		// The containment question this test exists for does not arise when
+		// no socket is opened, and assertAdvertises has already asserted that
+		// none was.
+		return
+	}
+
 	host, gotPort, err := net.SplitHostPort(adv.Addr())
 	if err != nil {
 		t.Fatalf("SplitHostPort(%q): %v", adv.Addr(), err)
@@ -198,8 +205,10 @@ func TestResolve_FirstNode_RetryAfterCorrectingBindHostAdvertises(t *testing.T) 
 		t.Fatal("Resolve returned a nil Advertiser on the corrected retry: the first attempt persisted material, so this boot took the cached path and started no enrollment listener")
 	}
 	t.Cleanup(adv.Stop)
-	if host := hostOf(t, adv.Addr()); host != testBindHost {
-		t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+	if assertAdvertises(t, adv) {
+		if host := hostOf(t, adv.Addr()); host != testBindHost {
+			t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+		}
 	}
 }
 
@@ -231,8 +240,10 @@ func TestResolveCA_FirstNode_RetryAfterCorrectingBindHostAdvertises(t *testing.T
 		t.Fatal("ResolveCA returned a nil Advertiser on the corrected retry: the first attempt persisted CA material, so this boot took the cached path and started no enrollment listener")
 	}
 	t.Cleanup(adv.Stop)
-	if host := hostOf(t, adv.Addr()); host != testBindHost {
-		t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+	if assertAdvertises(t, adv) {
+		if host := hostOf(t, adv.Addr()); host != testBindHost {
+			t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+		}
 	}
 }
 

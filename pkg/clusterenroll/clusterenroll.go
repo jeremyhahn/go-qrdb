@@ -187,10 +187,23 @@ type AdvertiseOptions struct {
 	AdminPort int
 }
 
-// Advertiser holds the running Noise NK bootstrap server started on the first
-// node for peer enrollment. The Noise NK server allows joining nodes to
-// securely fetch the cluster CA bundle using only the server's Curve25519
-// public key as the trust anchor.
+// Advertiser is a first node's enrollment surface. It is returned by every path
+// that decides this node owes the cluster one, and must be stopped during
+// graceful shutdown.
+//
+// It USUALLY holds a running Noise NK bootstrap server, which lets joining
+// nodes fetch the cluster CA bundle using only the server's Curve25519 public
+// key as the trust anchor. In FIPS 140-3 mode it holds no Noise server at all
+// (see noiseAvailable), and a non-nil Advertiser whose NoiseEnabled reports
+// false is the ordinary expected value there rather than a failure.
+//
+// A NON-NIL ADVERTISER MEANS "THIS NODE ADVERTISES ENROLLMENT", NOT "A NOISE
+// LISTENER IS RUNNING". Callers gate on it accordingly: cmd/qrdbd uses it to
+// decide whether to register the /v1/ca/bootstrap endpoint, which is the
+// approved-method (SPKI-pinned TLS, DANE, direct HTTPS) half of the same
+// surface. The two were the same pointer while Noise was the only advertise
+// mechanism; collapsing them again would leave a FIPS first node unreachable by
+// EVERY method rather than by one, silently, which is the go-qrdb#241 shape.
 type Advertiser struct {
 	noiseSrv *noiseboot.Server
 	noiseKey *noiseproto.StaticKey
@@ -242,6 +255,18 @@ func (a *Advertiser) Addr() string {
 		return ""
 	}
 	return a.noiseSrv.Addr().String()
+}
+
+// NoiseEnabled reports whether this Advertiser is running a Noise NK listener.
+// It is false on a nil Advertiser and on the Advertiser a first node gets in
+// FIPS 140-3 mode, where the method is unavailable (see noiseAvailable) and
+// joining nodes bootstrap over SPKI-pinned TLS, DANE or direct HTTPS instead.
+//
+// Callers that need to know whether Noise is being served ask this rather than
+// testing the Advertiser pointer, which answers a different question -- see the
+// Advertiser doc comment.
+func (a *Advertiser) NoiseEnabled() bool {
+	return a != nil && a.noiseSrv != nil
 }
 
 // FetchError is returned when fetching the CA bundle from a bootstrap server
@@ -664,6 +689,35 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		return nil, err
 	}
 
+	// FIPS 140-3 mode: this node still advertises enrollment, over the approved
+	// methods only. It is NOT a refusal, because the operator never chose Noise
+	// here -- there is no advertise-method option to choose; NoisePort and
+	// NoiseHost say where a listener binds, not whether enrollment happens.
+	// What was asked for is "be the first node of a multi-node cluster", and
+	// that is still satisfiable: SPKI-pinned TLS, DANE and direct HTTPS all
+	// fetch /v1/ca/bootstrap from this node's admin server, which cmd/qrdbd
+	// registers for exactly the nodes that get an Advertiser back.
+	//
+	// Refusing to boot instead would mean go-qrdb cannot form a multi-node
+	// cluster under FIPS at all, for a method that is not the one a FIPS
+	// deployment can use anyway. Returning nil instead -- "no advertiser" --
+	// would be worse than either: nil is how this package says "this node owes
+	// the cluster nothing", and a first node saying that is the silently
+	// unjoinable node of go-qrdb#241.
+	//
+	// It is not a silent downgrade. The advisory is logged at WARN here, the
+	// caller logs it again through logAdvertiserInfo with the admin port the
+	// joining nodes need, and the state is readable afterwards through
+	// Advertiser.NoiseEnabled.
+	if !noiseAvailable() {
+		logger.Warn(fipsNoiseAdvisory+"; this node advertises enrollment over the approved "+
+			"methods only, so joining nodes must use SPKI-pinned TLS, DANE or direct HTTPS "+
+			"against its admin endpoint rather than --bootstrap-noise-key",
+			"admin_port", opts.AdminPort,
+		)
+		return &Advertiser{}, nil
+	}
+
 	keyPath := filepath.Join(dataDir, NoiseKeyFile)
 
 	var noiseKey *noiseproto.StaticKey
@@ -803,9 +857,48 @@ func ExtractHostFromPeer(peer string) string {
 
 // autoFetchBundle builds a truststrap AutoConfig from opts and calls AutoFetch
 // to retrieve the cluster CA bundle PEM from an existing cluster node.
-// It is shared by Join and ResolveCA to avoid duplicating the truststrap
-// configuration logic.
+// It is shared by Join, ResolveCA and FetchAnchor to avoid duplicating the
+// truststrap configuration logic.
 func autoFetchBundle(ctx context.Context, opts *Options, logger *slog.Logger) ([]byte, error) {
+	cfg, err := buildAutoConfig(opts, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	resp, err := truststrap.AutoFetch(fetchCtx, cfg)
+	if err != nil {
+		return nil, &FetchError{Method: "auto", Err: err}
+	}
+
+	return resp.BundlePEM, nil
+}
+
+// buildAutoConfig turns BootstrapOptions into a truststrap AutoConfig and the
+// ordered candidate method list, applying the FIPS 140-3 ruling on the way.
+//
+// It is separated from autoFetchBundle so the selection can be asserted without
+// a network: the ruling it implements is the whole of this change, and a test
+// that had to stand up a bootstrap server to read the method list would be
+// measuring the server rather than the selector.
+//
+// The FIPS ruling has two halves and the difference between them is the
+// operator's stated intent:
+//
+//   - Noise configured ALONGSIDE an approved method. The operator supplied a
+//     preference list and truststrap.AutoFetch is a fallback chain by
+//     construction, so "any of these" is what was asked for. Noise is dropped
+//     from the list, loudly, and the approved methods carry the join.
+//   - Noise configured as the ONLY method. There is nothing to select among:
+//     the operator named Noise, and this runtime cannot provide it. That is
+//     refused here -- before the first network dial and before anything touches
+//     the data directory -- rather than after a 15-second per-method timeout
+//     ending in a message about a key size.
+//
+// Neither half is a silent fallback, which is the one shape this must not take.
+func buildAutoConfig(opts *Options, logger *slog.Logger) (*truststrap.AutoConfig, error) {
 	cfg := &truststrap.AutoConfig{
 		PerMethodTimeout: DefaultTimeout,
 		Logger:           logger,
@@ -814,7 +907,15 @@ func autoFetchBundle(ctx context.Context, opts *Options, logger *slog.Logger) ([
 	var methods []truststrap.Method
 
 	// Configure Noise NK if both key and address are provided.
-	if opts.Bootstrap.NoiseKey != "" && opts.Bootstrap.NoiseAddr != "" {
+	noiseConfigured := opts.Bootstrap.NoiseKey != "" && opts.Bootstrap.NoiseAddr != ""
+	noiseDroppedForFIPS := noiseConfigured && !noiseAvailable()
+	if noiseDroppedForFIPS {
+		logger.Warn(fipsNoiseAdvisory+"; the configured Noise bootstrap server is excluded "+
+			"from this node's join attempt",
+			"noise_addr", opts.Bootstrap.NoiseAddr,
+		)
+	}
+	if noiseConfigured && noiseAvailable() {
 		cfg.Noise = &truststrap.NoiseConfig{
 			ServerAddr:      opts.Bootstrap.NoiseAddr,
 			ServerStaticKey: opts.Bootstrap.NoiseKey,
@@ -859,19 +960,20 @@ func autoFetchBundle(ctx context.Context, opts *Options, logger *slog.Logger) ([
 		methods = append(methods, truststrap.MethodDirect)
 	}
 
+	// Refused only when FIPS is what emptied the list. An empty list arrived at
+	// any other way -- a SPKIPin with no ServerAddr, say -- keeps the behaviour
+	// it has always had, because this ruling has nothing to say about it and a
+	// FIPS error on a configuration FIPS did not reject would be a wrong answer
+	// that happens to fail.
+	if len(methods) == 0 && noiseDroppedForFIPS {
+		return nil, &NoiseFIPSUnavailableError{Operation: "this node's cluster enrollment join"}
+	}
+
 	if len(methods) > 0 {
 		cfg.MethodOrder = methods
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	resp, err := truststrap.AutoFetch(fetchCtx, cfg)
-	if err != nil {
-		return nil, &FetchError{Method: "auto", Err: err}
-	}
-
-	return resp.BundlePEM, nil
+	return cfg, nil
 }
 
 // splitCABundle splits a concatenated CA certificate + CA private key PEM
@@ -900,8 +1002,27 @@ func splitCABundle(bundlePEM []byte) (caCertPEM, caKeyPEM []byte, err error) {
 // logAdvertiserInfo logs the information operators need to configure joining
 // nodes: the Noise public key (hex-encoded), the bootstrap server address, and
 // the admin server port.
+//
+// In FIPS 140-3 mode there is no Noise key to report, and this says so rather
+// than returning quietly. A first node that advertises fewer methods than its
+// operator expects has to announce the fact at the moment it decides: the only
+// other thing that ever reports it is a peer's join failing on another machine,
+// which is the failure mode go-qrdb#241 exists to keep out of this package.
 func logAdvertiserInfo(adv *Advertiser, opts AdvertiseOptions) {
-	if adv == nil || adv.noiseKey == nil {
+	if adv == nil {
+		return
+	}
+	// No Noise identity is the FIPS 140-3 case, and it is the ONLY case: the
+	// advertiser is constructed with a key whenever it is constructed with a
+	// server, so "no key" and "no listener" are one condition and are tested as
+	// one. A second, separately-reachable-looking guard here would be code that
+	// cannot run.
+	if adv.noiseKey == nil {
+		slog.Warn(fipsNoiseAdvisory+"; no Noise public key is advertised. Joining nodes must "+
+			"bootstrap over an approved method -- SPKI-pinned TLS, DANE or direct HTTPS -- "+
+			"against this node's /v1/ca/bootstrap endpoint",
+			"admin_port", opts.AdminPort,
+		)
 		return
 	}
 	// The admin port is reported as configured. Substituting a literal here

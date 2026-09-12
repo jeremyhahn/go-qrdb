@@ -105,6 +105,21 @@ func TestResolveTLS_FirstNodeResumesEnrollmentOnRestart(t *testing.T) {
 	}
 	t.Cleanup(servers2.Stop)
 
+	if !noiseServed() {
+		// FIPS 140-3: there is no Noise socket to dial on either boot. What
+		// go-qrdb#241 is about -- boot 2 coming back with an enrollment
+		// surface rather than silently without one -- has just been asserted,
+		// and it is the non-nil advertiser that makes cmd/qrdbd register
+		// /v1/ca/bootstrap on this boot as on the first.
+		if servers1.NoiseEnabled() || servers2.NoiseEnabled() {
+			t.Fatal("NoiseEnabled() = true, want false when the method is unavailable")
+		}
+		if addr != "" {
+			t.Errorf("boot 1 Addr() = %q, want empty", addr)
+		}
+		return
+	}
+
 	conn, err := net.DialTimeout("tcp", servers2.Addr(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial the resumed listener at %s: %v; non-nil but nothing is listening",

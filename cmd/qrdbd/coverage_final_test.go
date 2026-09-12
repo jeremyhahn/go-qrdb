@@ -370,6 +370,12 @@ func TestStartBootstrapServers_InvalidNoiseKeyFile(t *testing.T) {
 	// TestStartBootstrapServers_InvalidExistingKey (go-qrdb#313).
 	reserveNoisePort(t, f)
 
+	if !noiseServed() {
+		// The garbage key is never read, so DecodeStaticKey is never called.
+		assertAdvertisesWithoutNoise(t, bundle, f)
+		return
+	}
+
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
 	require.Error(t, err)
 	var bsErr *BootstrapServerError
