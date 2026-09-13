@@ -16,17 +16,34 @@
 # for the reasons below; `trivy` was in it and is removed by this change, per
 # go-qrdb#48.
 #
-# WHEN THEIR ISSUES LAND, moving a job back to ci.yml is a deliberate act, not
-# an automatic one: add it to ci.yml, add it to ci-gate's `needs`, and add a
-# `check` call to the gate loop. A job that can pass and is not required is a
-# fail-open gate.
+# WHEN THEIR REASON FOR BEING HERE ENDS, moving a job back to ci.yml is a
+# deliberate act, not an automatic one: add it to ci.yml, add it to ci-gate's
+# `needs`, and add a `check` call to the gate loop. A job that can pass and is
+# not required is a fail-open gate, and `fips` and `trivy` are now BOTH in
+# exactly that state — a cost being carried deliberately, with a stated
+# condition for ending it, rather than an oversight. Read the per-job notes
+# below for what each is waiting on; they are not waiting on the same thing,
+# and `signal` is waiting on nothing because it is not that kind of job: it
+# reports this workflow's verdict and is never a candidate for ci.yml.
 #
-#   * fips — go-qrdb#18 and #20. Two upstream findings keep it red, both
-#     described in full on those issues: go-quicraft's barrier AEAD and
-#     go-truststrap's Noise handshake over X25519. What is forbidden meanwhile
-#     is making it green dishonestly — setting it back to fips140=on, adding
-#     continue-on-error, tag-gating a failing package out, or trimming the
-#     package list.
+#   * fips — go-qrdb#18 and #20. This line read "two upstream findings keep it
+#     red" until go-qrdb#523; both are closed, and on 2026-09-12 run 17302
+#     became the FIRST green scheduled run on main in the workflow's retained
+#     history — the twenty-two scheduled runs before it, back to 2026-08-22,
+#     all failed. So it is no longer a known-red job and it stays here anyway,
+#     on a DIFFERENT reason that is written down rather than assumed: arming it
+#     waits on a stability record of fourteen consecutive green scheduled runs
+#     on main, because one pass is not a track record and a required check that
+#     is bypassed the first time it fails is worth less than no check. The
+#     other half is shape: required checks gate pull requests, this is a
+#     nightly, and its five green runs took 17m54s to 34m57s — a required check
+#     is paid at the worst of those on EVERY push. The reasoning, the numbers
+#     and the four moves that arm it are in docs/seal/fips140-mode.md
+#     §"Arming the gate", which is the authority; this comment is a pointer.
+#     What is forbidden meanwhile is unchanged and now matters more, because a
+#     green job is easier to keep green dishonestly than a red one: no setting
+#     it back to fips140=on, no continue-on-error, no tag-gating a failing
+#     package out, no trimming the package list.
 #   * trivy — go-qrdb#48, and the reason is the PHASE, not a known-red job.
 #     This line read "go-qrdb#42" until #451; #42 is the golangci-lint panic
 #     that reddened Lint, closed long ago, and it never had anything to do with
@@ -93,11 +110,16 @@ jobs:
     # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
     # a build tag that skips the job, or narrow the package list.
     #
-    # It IS red today, on three tracked findings, and it is deliberately not
-    # part of ci-gate while that is true -- see the comment on ci-gate below
-    # and the "Open blockers" section of docs/seal/fips140-mode.md. Nothing in
-    # this repository claims the module operates under fips140=only until this
-    # job passes and joins ci-gate.
+    # It is GREEN as of 2026-09-12 and still deliberately not part of ci-gate
+    # -- this line said "It IS red today, on three tracked findings" until
+    # go-qrdb#523, and all three are closed. What keeps it out is now the
+    # stability record in the header comment, not a finding.
+    #
+    # The sentence that does NOT change with the colour: nothing in this
+    # repository claims the module operates under fips140=only until this job
+    # passes AND joins ci-gate. It passes. It has not joined. A measurement is
+    # not an enforceable property, and the gap between the two is exactly what
+    # docs/seal/fips140-mode.md §"Arming the gate" is carrying deliberately.
     env:
       GOFIPS140: latest
       GODEBUG: fips140=only
@@ -141,17 +163,21 @@ jobs:
       # this job had silently become the "FIPS job over a subset of the suite"
       # its own comment above rules out. go-qrdb#132 added `make test-sdk` to
       # ci.yml so the gate covers both modules; this job was not updated and the
-      # two scopes diverged. The uncovered surface is the whole SDK — every
+      # two scopes diverged. The uncovered surface was the whole SDK — every
       # transport, sdk/go/node, the driver, the DAO layer and the conformance
-      # matrix (go-qrdb#121) — and whether any of it operates under
-      # fips140=only is, as of this change, still unknown.
+      # matrix (go-qrdb#121). It is covered now, and MEASURED: 18 packages, 0
+      # failures, 0 rejections of any class, run 17302 on 2026-09-12. This line
+      # said "still unknown" until go-qrdb#523.
       #
-      # `if: always()` IS LOAD-BEARING AND IS NOT BOILERPLATE. This job is
-      # known-red on the root module today (#18, #20). A plain sequential step
-      # would therefore never execute: the root suite fails, the job stops, and
-      # sdk/go stays exactly as unexercised as it was — the change would satisfy
-      # the words of #142 while delivering none of it. Both suites run, and
-      # either one failing fails the job.
+      # `if: always()` IS LOAD-BEARING AND IS NOT BOILERPLATE. It is what got
+      # that first SDK number at all: the root module was known-red (#18, #20)
+      # for the whole of the period this step was added in, so a plain
+      # sequential step would never have executed — the root suite fails, the
+      # job stops, and sdk/go stays exactly as unexercised as it was, satisfying
+      # the words of #142 while delivering none of it. KEEP IT NOW THAT BOTH
+      # ARE GREEN. Its value is unchanged and only becomes visible again at the
+      # next root-module regression, which is precisely when removing it would
+      # cost a measurement. Both suites run; either failing fails the job.
       #
       # Its own log file, because the reporting step below parses these by
       # package and a single file could not say which module a `FAIL` came from
@@ -236,9 +262,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # GitHub leg: a fresh source-scoped scan is uploaded to code scanning on
-      # every run so the dashboard never reflects a stale analysis, then a
-      # second pass gates on CRITICAL/HIGH. test/ holds benchmark harnesses
-      # that ship in no release.
+      # every run so the dashboard never reflects a stale analysis. The gate
+      # and the report are the two `make` steps further down, on both hosts.
+      # test/ holds benchmark harnesses that ship in no release.
       #
       # trivy-action was `@master` here until #367 -- not a mutable TAG but a
       # moving BRANCH, re-resolved on every nightly, so this job ran whatever
@@ -249,10 +275,13 @@ jobs:
       # the time of pinning was d2a0b607, ahead of v0.36.0; that difference is
       # the deliberate part of this change and not a transcription error.
       #
-      # Both trivy steps and the SARIF upload are gated on
+      # ONLY this SARIF scan and its upload are gated on
       # `github.server_url == 'https://github.com'`, so on this Gitea they do
-      # not execute at all. Pinned regardless: an action that runs nowhere
-      # today is exactly the one whose ref nobody notices moving.
+      # not execute at all. The CLI gate (`make trivy`) and the report
+      # (`make trivy-report`) below carry no host guard and run on BOTH hosts;
+      # test/buildgates/trivy_severity_test.go fails if either acquires one.
+      # Pinned regardless: an action that runs nowhere today is exactly the
+      # one whose ref nobody notices moving.
       - name: Trivy scan (SARIF for code scanning)
         if: github.server_url == 'https://github.com'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -314,6 +343,31 @@ jobs:
       - name: Trivy gate (fail on CRITICAL/HIGH)
         run: make trivy
 
+      # The sub-threshold report (#522). Everything below the gate's floor was
+      # reported by NOTHING until this step existed, so a green Trivy job could
+      # not distinguish "there are no MEDIUMs" from "nothing looked" — and two
+      # real advisories sat under it for the whole of this repository's history,
+      # surfacing only because someone widened the severity list by hand for an
+      # unrelated demonstration.
+      #
+      # It is SECOND, and that ordering is the disambiguation. A step's
+      # conclusion is what a reader of a red nightly sees first, and these two
+      # mean very different things: the gate red is a CRITICAL/HIGH and blocks a
+      # release; this red is a MEDIUM to disposition. Because the gate runs
+      # first, a failure there skips this one entirely — so "gate green, report
+      # red" is unambiguous from the step list, with no second job and no second
+      # copy of the install-with-retry block above.
+      #
+      # It fails the step rather than printing at exit 0, and that is not a
+      # gate: this job is not in `ci-gate`'s `needs` while the repo is alpha
+      # (devops.md §8a), so nothing here blocks a merge. An exit-0 step in a
+      # nightly is indistinguishable from no step at all, which is the state
+      # #522 is about; a signal that can transition to red is the only kind
+      # anyone reads (#478). What is dispositioned how is written on the target
+      # in the Makefile.
+      - name: Trivy sub-threshold report (MEDIUM/LOW; blocks no merge)
+        run: make trivy-report
+
   # ==========================================================================
   # THE VERDICT HAS TO REACH SOMEBODY (#478).
   #
@@ -358,10 +412,12 @@ jobs:
     # runs it exists for, and the workflow would look complete while signalling
     # nothing.
     #
-    # The github.com guard follows automerge.yml: the issue queue this writes to
-    # is the Gitea one, and AGENT_TOKEN is a Gitea credential. On github.com the
-    # job does not run rather than failing on a secret that host does not have
-    # (devops.md §6).
+    # The github.com guard: the issue queue this writes to is the Gitea one,
+    # and AGENT_TOKEN is a Gitea credential. On github.com the job does not
+    # run rather than failing on a secret that host does not have (devops.md
+    # §6). The orchestration workflows this guard was copied from (automerge,
+    # the review workflows) are gone -- QuicBaaS owns orchestration and a
+    # project's workflows run CI only -- so this is now the guard's one home.
     if: always() && github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -384,9 +440,9 @@ jobs:
       # cost that keeps a new job from being unwatched.
       - name: Open, update or close the tracking issue
         env:
-          # The PROJECT AGENT's token, as automerge.yml uses. The issues this
-          # opens are the project agent's own, filed on its own repository,
-          # which is what §0/§1 of conventions/sdlc.md describe.
+          # The PROJECT AGENT's token. The issues this opens are the project
+          # agent's own, filed on its own repository, which is what §0/§1 of
+          # conventions/sdlc.md describe.
           NIGHTLY_SIGNAL_TOKEN: ${{ secrets.AGENT_TOKEN }}
           RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}

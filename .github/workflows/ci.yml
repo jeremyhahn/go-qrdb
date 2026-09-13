@@ -39,8 +39,8 @@ on:
 #   - The group is per-REF: a PR's runs and main's push runs never cancel each
 #     other, and two PRs never cancel each other.
 #   - release-lockstep.yml deliberately does NOT get this — cancelling a
-#     release mid-publish risks a partial tag or publish — nor do nightly.yml,
-#     claude-review.yml or opencode-review.yml.
+#     release mid-publish risks a partial tag or publish — nor does
+#     nightly.yml.
 #   - ADOPTION BOUNDARY, expect it exactly once: Gitea groups a run using the
 #     workflow file OF THAT RUN, so the first push after this lands cannot
 #     supersede a run created before it. Check with
@@ -248,9 +248,10 @@ jobs:
         run: make test-compose-targets
 
       # #367. Every `uses:` in every workflow must resolve to a 40-hex commit.
-      # A tag is a ref its owner can move, and opencode-review.yml's job holds a
-      # WRITE-SCOPED token -- where auto-merge is armed, a moved tag runs
-      # attacker-controlled code with credentials that can merge. go-quicraft
+      # A tag is a ref its owner can move, and the review workflow's job held a
+      # WRITE-SCOPED token while it existed -- where auto-merge was armed, a
+      # moved tag ran attacker-controlled code with credentials that could
+      # merge. The release and security jobs are the same shape. go-quicraft
       # has the sibling of this gate and it caught the identical line THREE
       # times, every time as an unnoticed template propagation whose real
       # payload was a model bump. Until now this repository had no gate, which

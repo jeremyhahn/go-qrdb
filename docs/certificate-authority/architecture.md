@@ -339,6 +339,40 @@ tenant from acting on another's certificate. The tenancy gates above are.
 Client certificates carry `ClientAuth` and nothing else — a certificate issued
 here cannot be used to impersonate a server.
 
+### `go-pkcs12` is used in ONE direction: encode
+
+The PKCS#12 dependency is reached from exactly one symbol in this repository,
+and knowing which one is what makes its advisories answerable. Measured over
+every `.go` file in the tree, tests included:
+
+```
+$ grep -rho "pkcs12\.[A-Za-z_0-9]*" $(find . -name '*.go' -not -path './.git/*') | sort | uniq -c
+      1 pkcs12.Modern2023
+```
+
+`pkcs12.Modern2023` is the **encoder**, at `pkg/cert/pkcs12.go`, and
+`ExportPKCS12` is its only caller. There is no `Decode`, `DecodeChain`,
+`DecodeTrustStore` or `ToPEM` anywhere in this repository. **Nothing here ever
+reads a PKCS#12 archive back**, so no attacker-supplied `.p12` bytes reach a
+parser through this code path: the CA writes bundles, and the consumer that
+imports one is somebody else's software.
+
+That matters because the library's advisories are largely about the parsing
+half. `GHSA-mpwr-8vm7-h73f` — "authentication bypass in Decode functions",
+fixed in v0.7.2 — is the worked example: read against a caller that only
+encodes it is **hygiene rather than exposure**, and the dependency is kept
+current for the ordinary reason rather than because this repository was
+exposed to that bug. The scanners disagreed about it for a measurable reason
+and both were right: trivy flagged the package VERSION, govulncheck was silent
+because the affected SYMBOLS are not in the call graph.
+
+**Re-measure the grep rather than citing this paragraph.** The claim is about
+the call graph on the day it was taken, and the first `DecodeChain` added to a
+truststore-import feature invalidates it silently. The direction of use is a
+property to check, not one to inherit. In particular, a clean `govulncheck` is
+not in general evidence about a `trivy` finding — the call-graph argument above
+is what settles this one, and settles only this one.
+
 ## Identity mapping
 
 The certificate **is** the identity:

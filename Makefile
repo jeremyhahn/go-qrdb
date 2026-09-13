@@ -1606,8 +1606,8 @@ test-publication-bound:
 # directions: a line-oriented pattern misses the spellings Actions accepts (a
 # flow mapping, a quoted key, an anchor + alias) and passes over them while the
 # floors stay satisfied -- and it also reports the word `uses:` in the 70 KB
-# agent prompt embedded in opencode-review.yml, which is prose in a block
-# scalar and not a step at all.
+# agent prompt that opencode-review.yml embedded while it existed, which is
+# prose in a block scalar and not a step at all.
 #
 # Its own floors and rejecting branches ship with it in the same package, for
 # the same reason every other guard here carries a self-test: this one fails by
@@ -2505,15 +2505,94 @@ TRIVY_DB_MAX_AGE_HOURS := 24
 # asks only for vuln.
 #
 # The check is deliberately NOT its own phony target. It has exactly one
-# correct call site -- between these two -- and a second entry point would be a
-# way to run it against a database no scan then uses, which is a report rather
-# than a gate.
+# correct call site -- ahead of every scan -- and a free-standing entry point
+# would be a way to run it against a database no scan then uses, which is a
+# report rather than a gate. It is a CANNED RECIPE rather than a target for
+# that reason: `trivy` and `trivy-report` below each open with it, and neither
+# can be invoked without it.
+define trivy-certified-db
+	trivy fs --scanners vuln --download-db-only .
+	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
+endef
+
+# The BLOCKING severity floor. It does not move, and #522 is the occasion on
+# which it was asked to and did not: devops.md §8 sets the gate at
+# CRITICAL/HIGH deliberately, and a gate that blocks a merge on a MEDIUM is one
+# people learn to route around. What moves is the REPORTING floor, immediately
+# below.
+TRIVY_GATE_SEVERITY := CRITICAL,HIGH
+
 .PHONY: trivy
 trivy:
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
-	trivy fs --scanners vuln --download-db-only .
-	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
-	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	$(trivy-certified-db)
+	trivy fs --scanners vuln,secret --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+
+# ----------------------------------------------------------------------------
+# The REPORTING floor (#522)
+#
+# THE DEFECT THIS CLOSES: with `CRITICAL,HIGH` the only severity list anywhere
+# in the repository, no leg of the pipeline could report a MEDIUM, so a green
+# Security signal could not distinguish "there are no MEDIUMs" from "nothing
+# looked". Two real advisories -- an authentication bypass in go-pkcs12's
+# Decode functions and an ECharts XSS -- sat under that floor for the whole of
+# the repository's history and surfaced only because someone widened the list
+# by hand for an unrelated demonstration. An advisory nobody has been shown is
+# not an accepted one.
+#
+# WHY IT EXITS NONZERO, given that #522 asks for reporting rather than gating.
+# "Reporting, not gating" is a statement about what blocks a MERGE, and this
+# blocks none: it runs in nightly.yml, in the Trivy job, which is not in
+# `ci-gate`'s `needs` while the repo is alpha (devops.md §8a). What it is not
+# is `--exit-code 0`, because an exit-0 step in a nightly is indistinguishable
+# from no step at all -- which is the status quo this exists to end. A signal
+# that can transition to red is the only kind anyone reads (#478).
+#
+# WHY IT LANDS GREEN. Measured on main at the time of writing, the entire
+# sub-threshold backlog was four findings and TWO distinct advisories -- the
+# go-pkcs12 one in all three go.mod files, and echarts in the frontend
+# lockfile. Both are fixed in the same change that adds this target, so the leg
+# is green on the day it arrives. That is deliberate and it is the same
+# reasoning scripts/check-publication-bound.sh records: a guard that is red on
+# the day it lands is a guard nobody arms.
+#
+# WHY LOW IS IN AND UNKNOWN IS NOT. LOW measured ZERO on this tree, so
+# including it costs nothing today and closes the band rather than leaving a
+# second invisible one. UNKNOWN is trivy's "no CVSS score was assigned", and on
+# this tree it is one finding -- golang.org/x/crypto/openpgp, deprecated
+# upstream, `Fixed Version` EMPTY because the fix is not to use the package.
+# There is no version to bump to, so a band that included it would be red from
+# the first run with nothing anyone could do, which is the failure mode the
+# paragraph above is about. It is not thereby invisible: the second invocation
+# below PRINTS the UNKNOWN band advisorily in the same run. Unreported and
+# non-blocking are different things, and the whole of #522 is that distinction.
+#
+# HOW A FINDING IS DISPOSITIONED, decided in advance rather than during the
+# first noisy week:
+#   1. A fix exists and the bump is not a major -- take it. The default.
+#   2. The vulnerable SYMBOL is measurably unreached -- record the measurement
+#      (the grep or the call graph, not the assertion) in the feature folder
+#      documenting that surface, and take the bump anyway when it is free.
+#      Reachability is argued per finding: govulncheck's silence is evidence
+#      only when the affected symbols are actually in its database (#451).
+#   3. Neither -- a .trivyignore entry with a written reason and a date
+#      (devops.md §8). Note that trivy applies .trivyignore to EVERY leg, so an
+#      entry added to quiet a MEDIUM also quiets that advisory in the blocking
+#      gate if it is later rescored. Say so in the entry.
+#
+# NOT in `security` and NOT in `_ci`, deliberately. `make security` is the
+# blocking contract and `make ci` claims to mirror the pull-request path; a
+# MEDIUM-red target in either would make MEDIUM blocking by the back door,
+# which is precisely what this must not do.
+TRIVY_REPORT_SEVERITY := MEDIUM,LOW
+
+.PHONY: trivy-report
+trivy-report: ## Report sub-threshold (MEDIUM/LOW) advisories; advisory in nightly, blocks no merge
+	$(call require-scanner,trivy,$(TRIVY_INSTALL))
+	$(trivy-certified-db)
+	trivy fs --scanners vuln,secret --severity $(TRIVY_REPORT_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	@echo "== UNKNOWN band (advisory; no score assigned, often no fix available) =="
+	trivy fs --scanners vuln --severity UNKNOWN --exit-code 0 --skip-db-update $(TRIVY_SKIP_DIRS) .
 
 # The rejecting branches of that check, which the target above never reaches
 # while the database is fresh -- and on any host where the suite is meant to
@@ -2994,8 +3073,11 @@ help:
 	@echo "  test-version-reconciled  Regression tests for the reconciliation check"
 	@echo ""
 	@echo "Security:"
+	@echo "  security               Blocking suite: gosec, govulncheck, go mod verify, trivy"
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
+	@echo "  trivy                  Blocking trivy leg (CRITICAL/HIGH)"
+	@echo "  trivy-report           Sub-threshold advisories (MEDIUM/LOW + UNKNOWN); blocks no merge"
 	@echo ""
 	@echo "Dev Cluster:"
 	@echo "  dev-cluster              Start a local 3-node cluster"
