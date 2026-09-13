@@ -11,43 +11,22 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.17.0-alpha] - 2026-09-13
+
+MINOR, not PATCH. Of the 99 commits on `main` between `v0.16.3-alpha` and this
+release, 20 carry a breaking marker in their subject, and three more (#402,
+#429, #485) change an exported interface or contract without one. Pre-1.0,
+MINOR is where breakage lives (release-versioning convention §1).
+
+This release exists to carry `pkg/secure/analyzer/scope.go` to consumers. At
+`0.16.3-alpha` the analyzer's only non-test source file is `analyzer.go`, so
+without the four scoping clauses it reports generated protobuf, `_test.go`
+files and wire DTOs as rule-3 findings — a gate wired against the pinned
+release is red for reasons no change in the consuming repository can fix.
+`scope.go` landed in `6d0c17b` (#429, #450) and has been unreachable to
+consumers ever since.
+
 ### Added
-
-- **A cert binding can be withdrawn** (#518). `AddCertBinding` shipped on all
-  six transports and nothing removed a binding on any of them, so a binding
-  written today could not be withdrawn through any API. Since #505 made the
-  binding set what decides an account's mTLS admission, an enrolled key was an
-  irrevocable *credential* rather than a stale record — and revocation is not
-  the remedy, because a binding is over the `SubjectPublicKeyInfo` and outlives
-  every certificate issued for that key, so a re-issue for the same key
-  authenticates again. The exploitability is bounded (re-issuance needs
-  `certs:generate`, gated on the target tenant by #506); what it cost was an
-  operator who could not clean up after a key compromise.
-
-  `RemoveCertBinding(userID, thumbprint)` is now on all six transports —
-  `DELETE /users/{id}/cert-bindings/{thumbprint}`, the `RemoveCertBinding` RPC
-  (gRPC and unix), `user.RemoveCertBinding` (QUIC),
-  `qrdb_user_remove_cert_binding` (MCP) and `Client.Users()` (embedded) — and in
-  the TypeScript SDK. It removes the record entry, the tenant-scoped SPKI index
-  entry and the legacy un-scoped one.
-
-  **A narrow verb, not a whole-set replacement.** `UpdateUserRequest.CertBindings`
-  already replaced the set and maintained the index; exposing *that* over a
-  transport would make a caller's snapshot of the rest of the set part of every
-  withdrawal, and committing a snapshot is how a concurrent enrolment
-  resurrects a binding that was just withdrawn.
-
-  **`users:remove_cert_binding` is a separate permission**, not folded into
-  `users:add_cert_binding`. Enrolment only narrows an account; withdrawing its
-  LAST binding widens it back to admitting any certificate whose CN and OU name
-  it. Both permissions now declare `ScopeSelf` explicitly rather than inheriting
-  it, because `LookupScope` returns `ScopeSelf` for anything nobody tagged and
-  these two decide which certificates authenticate as an account.
-
-  **Revocation still does not drop a binding, on purpose.** Revoking during a
-  routine rotation would otherwise unenrol the key being rotated. The two are
-  separate operations answering separate questions, and an operator cleaning up
-  after a key compromise performs both.
 
 - **The MCP transport carries the guarded write verbs** (#127).
   `sdk/go/transport/mcp` now implements `transport.GuardedKVClient`, so a
@@ -85,7 +64,79 @@ are not reconstructed here — their history is in the git log.
   (`transportKind.carriesTypedCapabilityRefusal`) rather than papered over;
   #169's error-typing sweep owns that surface.
 
+- **Rate limiting is centralized in the auth middleware** (#201, #394), one
+  limiter rather than a decision each handler made for itself.
+- **Typed lease not-found and lease-expired across gRPC, unix, MCP and QUIC**
+  (#385), so the condition is carried rather than reconstructed from prose.
+- **`pkg/secure/analyzer` is armed as a build gate, with rule 3 scoped to
+  where it can be satisfied** (#429, #450) — `scope.go`'s four clauses exempt
+  generated protobuf, `_test.go` files, flag targets and wire DTOs, which are
+  not holders of key material and cannot satisfy the rule. **This is the change
+  this release exists to publish.**
+- **A Trivy reporting floor below the blocking one** (#522). `make trivy`
+  gated on `CRITICAL,HIGH` and that was the only severity list in the
+  repository, so no leg could report a MEDIUM and a green Security signal
+  could not distinguish "no MEDIUMs" from "nothing looked". Two real
+  advisories, both fixed upstream, sat under that floor for the whole of the
+  repository's history. The blocking floor does not move; `make trivy-report`
+  scans `MEDIUM,LOW` as its own nightly step after the gate, exits nonzero on
+  a finding so the signal can go red, gates nothing, and prints `UNKNOWN`
+  without failing on it. `test/buildgates/trivy_severity_test.go` pins the
+  split by parsing the Makefile and nightly workflow: every severity band is
+  named by some leg, the gate names nothing below HIGH, the report leg is
+  unreachable from `security`/`ci`/`_ci` transitively, and nightly runs the
+  gate then the report. A local review of the first cut found the gate passed
+  with the report leg commented out, made transitively blocking, or unplugged
+  from nightly, and fixing those found a fourth: a column-0 make comment
+  between recipe lines truncated the parse. All four are watched reds.
+- **The FIPS document claims only what was measured** (#523). Nightly run
+  17302 on `133fa56` is the first *scheduled* `fips140=only` run on `main`
+  ever to pass, after twenty-two consecutive failures: root `make test` 126
+  packages pass / 0 fail, `sdk/go` `make test-sdk` 18 / 0, with zero
+  GCM-arbitrary-IV, X25519, `crypto/sha1` and short-key HMAC rejections.
+  `docs/seal/fips140-mode.md` states step by step what that run executed,
+  pins the figures to that commit with a statement that the tree has moved
+  since, and **withdraws** the earlier claim that `go build ./...` was clean
+  for `sdk/go`: the job does not run that step, so the SDK is compiled only
+  as far as `go test` compiles it. Arming the job as a required check now
+  waits on a stability record, fourteen consecutive green scheduled runs,
+  rather than on preconditions that are met.
+
+- **A red nightly opens a tracking issue, a still-red one rewrites it in place,
+  and a green one closes it** (#478, #525).
+- **`docs/coordination/`** (#173, #404) — the five-document feature folder the
+  coordination surface never had.
+
 ### Changed — BREAKING
+
+- **A refusal travels in the result payload, and no longer halts the shard**
+  (#520, #527). Raft treats any non-nil error out of `Update` as a fatal apply
+  failure: `lastApplied` stops advancing, and every subsequent linearizable
+  read on that shard — on any engine sharing it, on keys written and read
+  successfully microseconds earlier — waits out the caller's deadline and
+  reports a consensus timeout. The MVCC engine had **no** apply classification
+  at all, and the time-series stub could not say a refusal was a refusal, so
+  one refused time-series write cost the shard its reads. Measured, not
+  theorised, on both engines (#129 on KV, #520 on MVCC).
+
+  `statemachine.ResolveApplyError` is now THE classification seam for the
+  repository, and every `Update` in the tree routes through it. **The error
+  declares which it is**: an error implementing `protocol.CapabilityError` —
+  an `error` with a `Capability() string` method naming the absent verb or
+  subsystem — is a refusal and is encoded into `Result.Data` with a capability
+  marker, which the service layer turns into a typed
+  `CapabilityUnsupportedError` for the caller. Everything else is a fault and
+  still halts Apply. Silence means fatal; only a declaration means benign, so a
+  forgotten marker costs availability on one shard loudly rather than
+  swallowing a storage fault and serving diverged state silently.
+
+  `test/buildgates` finds every method in `pkg/` taking `[]sm.Entry` and
+  requires it to route through `ResolveApplyError` or to be listed, with a
+  reason, as a delegator — default-deny, because the absence of a call is not
+  something a reviewer reading one diff can see. A refused batch or transaction
+  now stages nothing: opcodes are validated before any operation in the set is
+  applied. **Reachable by any client able to propose an opcode this state
+  machine does not implement.**
 
 - **The MCP transport carries seventeen JSON-RPC error codes, and the
   substring classification is deleted** (#438). `pkg/api/mcp` had **no**
@@ -130,6 +181,11 @@ are not reconstructed here — their history is in the git log.
   transport's per-family classifiers through the new
   `grpc.ServiceErrorCode` and renders the result, so a condition cannot mean
   one thing over gRPC and another over MCP.
+
+  One message test remains, behind a code gate: the lease expired/absent
+  split, which no transport in this repository can separate by code because
+  gRPC maps both to `NOT_FOUND`. It fires only once the code has already said
+  not-found; it is not the ungated classification this change deleted.
 
 - **Two barrier-passphrase config fields are `*secure.Buffer`, and an unusable
   one is now an error rather than a downgrade** (#429). Arming
@@ -293,20 +349,85 @@ are not reconstructed here — their history is in the git log.
   `RevokeCert` is an unrelated API, not a consumer of this one. Zero verified
   external consumers at the time of this change.
 
-### Fixed
+- **`/certs/*` is gated on the tenant the REQUEST names, not the caller's**
+  (#474, #506). `certs:generate` took its `tenantID` from the request body
+  unchecked and wrote it into the certificate's Subject OU, which the mTLS
+  authenticator reads as the identity's tenant — so a caller could mint a
+  CA-signed certificate that authenticates as another tenant. Reachable on four
+  transports.
+- **The QUIC wire carries gRPC's seventeen conditions, not six** (#437, #461),
+  by meaning rather than by message text; four lanes were blocked on the
+  missing vocabulary.
+- **`LockServicer` resolves per (tenant, database)** (#455, #487). It was a
+  process singleton over pre-namespace engines, so two tenants sharing a shard
+  under `prefix` isolation took the same lock, and `List`/`Status` enumerated
+  each other's keys and holder ids.
+- **Collection documents are (tenant, database)-namespaced** (#441, #454), so
+  the collection service resolves like its twelve siblings.
+- **Auth factors are per-tenant** (#393, #463), routed through
+  `tenant.StoreResolver`.
+- **The SO-PIN gate fails closed** on the same lever as the authorisation gate
+  (#445, #471).
+- **A deleted tenant id is retired, not released** (#413, #468).
+- **`DROP DATABASE` reclaims the keyspace**, not just the directory (#412,
+  #458).
+- **`DropCollection` reclaims the collection's ID sequence** (#411, #449) —
+  `SequenceServicer` gains a delete verb.
+- **An explicit `_id` reserves the counter, and an insert never overwrites
+  silently** (#447, #465).
+- **A collection table honours the `_id` it declares as its primary key**
+  (#467, #475). `REPLACE INTO` never replaced, `ON DUPLICATE KEY UPDATE` never
+  updated, and `UPDATE ... SET _id` destroyed the document.
+- **`Emit` reports whether the record landed, and an unrecordable
+  authorisation decision is refused** (#335, #443).
+- **An evicted entity watch says why** (#496, #501) — a terminal variant on
+  `WatchEntityEvent`, and the one consumer that would have dropped it.
+- **A revoked peer certificate no longer authorizes on the cluster key plane**
+  (#285, #390).
+- **`gosec`'s `-tags` is comma-separated** (#295, #397); the gate had been
+  scanning the untagged tree.
 
-- **A cert-binding write no longer commits a stale set** (#518).
-  `AddCertBinding` read the record and then called `UpdateUser`, which read it
-  again and guarded on ITS read — so the window between the two reads was
-  unguarded, and an enrolment that read the set before a concurrent withdrawal
-  committed would swap its stale set in cleanly afterwards, putting the
-  withdrawn credential back. Both binding verbs now commit against the bytes
-  they computed from (`updateUserAt`), which makes that a LOST swap, and retry
-  the lost swap against whatever won — correct because "add T" and "remove T"
-  say what to do to a set without depending on what the caller last saw it
-  contain. Exhausting the bound reports `*ConcurrentUpdateError`, because an
-  operator withdrawing a compromised key must never read a success that did not
-  happen.
+- **A cert binding can be withdrawn** (#518). `AddCertBinding` shipped on all
+  six transports and nothing removed a binding on any of them, so a binding
+  written today could not be withdrawn through any API. Since #505 made the
+  binding set what decides an account's mTLS admission, an enrolled key was an
+  irrevocable *credential* rather than a stale record — and revocation is not
+  the remedy, because a binding is over the `SubjectPublicKeyInfo` and outlives
+  every certificate issued for that key, so a re-issue for the same key
+  authenticates again. The exploitability is bounded (re-issuance needs
+  `certs:generate`, gated on the target tenant by #506); what it cost was an
+  operator who could not clean up after a key compromise.
+
+  `RemoveCertBinding(userID, thumbprint)` is now on all six transports —
+  `DELETE /users/{id}/cert-bindings/{thumbprint}`, the `RemoveCertBinding` RPC
+  (gRPC and unix), `user.RemoveCertBinding` (QUIC),
+  `qrdb_user_remove_cert_binding` (MCP) and `Client.Users()` (embedded) — and in
+  the TypeScript SDK. It removes the record entry, the tenant-scoped SPKI index
+  entry and the legacy un-scoped one.
+
+  **A narrow verb, not a whole-set replacement.** `UpdateUserRequest.CertBindings`
+  already replaced the set and maintained the index; exposing *that* over a
+  transport would make a caller's snapshot of the rest of the set part of every
+  withdrawal, and committing a snapshot is how a concurrent enrolment
+  resurrects a binding that was just withdrawn.
+
+  **`users:remove_cert_binding` is a separate permission**, not folded into
+  `users:add_cert_binding`. Enrolment only narrows an account; withdrawing its
+  LAST binding widens it back to admitting any certificate whose CN and OU name
+  it. Both permissions now declare `ScopeSelf` explicitly rather than inheriting
+  it, because `LookupScope` returns `ScopeSelf` for anything nobody tagged and
+  these two decide which certificates authenticate as an account.
+
+  **Revocation still does not drop a binding, on purpose.** Revoking during a
+  routine rotation would otherwise unenrol the key being rotated. The two are
+  separate operations answering separate questions, and an operator cleaning up
+  after a key compromise performs both.
+
+- **`ServiceModule` gains `RegisterQUIC`** (#402). A fourth registration hook
+  beside `RegisterGRPC` (which serves gRPC and unix), `RegisterHTTP` and
+  `RegisterMCP`, so a module registered once reaches every network transport
+  instead of every one but QUIC. A type that implements the interface directly
+  rather than embedding `BaseModule` must add the method.
 
 - **A first node can advertise cluster enrollment under `GODEBUG=fips140=only`**
   (#485). Noise_NK_25519_ChaChaPoly_SHA256 performs an X25519 handshake, which
@@ -368,7 +489,50 @@ are not reconstructed here — their history is in the git log.
   separate pre-existing defects, both filed: `pkg/tenant` has a `cipher.NewGCM`
   test fixture, and `pkg/service`'s test binary does not compile at all (which
   is not a FIPS failure — it fails with FIPS off too). See
-  `docs/seal/fips140-mode.md` and `docs/clustering/`.
+  `docs/seal/fips140-mode.md` and `docs/clustering/`. **Both survivors were
+  closed later in this release**: the `pkg/tenant` fixture now uses an AEAD
+  FIPS admits (#511), and `pkg/service`'s test double gained the `PutIfAbsent`
+  its interface requires (#502).
+
+### Changed
+
+- `AGENTS.md` holds the rules and `CLAUDE.md` is the symlink (#376) — a
+  symlink is a mode-120000 blob in git, so every plumbing reader of the old
+  arrangement got a nine-byte path instead of the rules, silently and with exit
+  status 0.
+- `vet-tags` is armed in CI (#386). The recorded blocker was an untidy
+  `go.mod`; the measured blocker was a missing tag on the
+  `sdk/go/gorm/conformance` leg.
+- `sdk/go` is under the linter it had never been under (#364).
+- **A project's workflows run CI and nothing else.** The label-triggered
+  review and auto-merge workflows this range added and iterated (`v7` through
+  `v26`) are removed again: QuicBaaS is the sole orchestrator, and a review
+  engine duplicated into every repository was the defect, since a fix reached
+  one copy and silently missed the rest. Known gap, accepted by the owner:
+  until QuicBaaS can post a verdict, no automated review runs here and merges
+  need a human.
+- **Exported interface methods with no non-test caller are enumerated and
+  gated** (#271, #401): `test/tools/ifacesweep` records the findings per tag
+  set, and CI refuses a new one.
+- Build hygiene: module credentials point at the forge's new address and are
+  written once, not three times (#363); `Dockerfile.gpu` names its final
+  stage so the GPU integration lane can build (#365); the devcontainer stops
+  rebuilding its 6.5GB image on every source edit (#294, #389).
+
+### Fixed
+
+- **A cert-binding write no longer commits a stale set** (#518).
+  `AddCertBinding` read the record and then called `UpdateUser`, which read it
+  again and guarded on ITS read — so the window between the two reads was
+  unguarded, and an enrolment that read the set before a concurrent withdrawal
+  committed would swap its stale set in cleanly afterwards, putting the
+  withdrawn credential back. Both binding verbs now commit against the bytes
+  they computed from (`updateUserAt`), which makes that a LOST swap, and retry
+  the lost swap against whatever won — correct because "add T" and "remove T"
+  say what to do to a set without depending on what the caller last saw it
+  contain. Exhausting the bound reports `*ConcurrentUpdateError`, because an
+  operator withdrawing a compromised key must never read a success that did not
+  happen.
 
 - **`secure.StdinProvider` no longer leaves the passphrase in an unwipeable
   heap buffer** (#184). It read through a `bufio.Reader`, which staged the
@@ -395,6 +559,79 @@ are not reconstructed here — their history is in the git log.
   cluster. Gives `cert.CertRevokedError` its first producer: both REST (409)
   and gRPC (`FAILED_PRECONDITION`) mappings were previously unreachable
   except through a mock.
+
+- **Teardown is fenced** (#483, #488). `DeleteTenant` makes the retirement
+  durable before the irreversible shred, so a failed tombstone write no longer
+  leaves a live tenant whose data is permanently undecryptable. `DROP DATABASE`
+  stops deleting other tenants' unattributable collection records (#481). The
+  fixture uses an AEAD FIPS admits (#511).
+- **`StandaloneBackend` is an `AtomicBackend`** (#466, #490), so the collection
+  insert is a guarded write and `PutIfAbsent` works on the dedicated-store
+  path.
+- **The audit chain spans a rotation, and the verifier knows it** (#452, #476).
+- **A cancelled watch releases its goroutine, and a watch that ended for a
+  reason says so** (#405, #406, #494) — on the embedded transport and the
+  namespaced wrapper. The last two sites of the same pattern closed in #515: a
+  refused start revision keeps its type (#495), and a cancelled namespaced
+  watch releases its goroutines (#499).
+- **Secondary-index maintenance is scoped to the keys an index owns** (#410,
+  #448).
+- **A closed PebbleDB store returns `ErrStorageClosed` instead of panicking
+  `pebble: closed`** (#371, #435).
+- **`DropCollection` drops the indexes `CreateCollection` built** (#399, #439).
+- **`qrdb_watch` stops crediting its cursor from a replay it never delivered**
+  (#388).
+- **`pkg/discovery` compiles on darwin** (#359) — the `socket(2)` flags move
+  behind a platform seam.
+- **`secure` holds the borrow across seven traced reads, and the deadlock is
+  loud** (#74, #427).
+- **`sdk/go/node` resolves the scoped encryption router's tenant leg lazily**
+  (#384).
+
+### Security
+
+- **Cross-tenant certificate issuance is closed** (#474, #506) — see
+  `/certs/*` above. A caller could mint a CA-signed certificate that
+  authenticates as another tenant, on four transports.
+- **An enrolled account's mTLS login is decided by its SPKI binding**, not by
+  the certificate's CN and OU (#505, #516). Fail-closed per account: an account
+  that has enrolled a binding is refused a certificate that does not match it;
+  an account with none authenticates as before.
+- **`FinishLogin` resolves the factor on the login session's tenant, not the
+  caller's `ctx`** (#303, #392).
+- **Every request body is bounded** on the REST plane (#378), and a comment
+  claiming a bound six handlers lacked is gone.
+- **Every workflow action is pinned by commit digest, and it is gated** (#367,
+  #407). A tag is a ref its owner can move, and at the time the review job
+  held a write-scoped token; that job is gone (see Changed), the pin gate
+  stays.
+- **Volume-pool paths are validated before they are created** (#292, #366),
+  from one shared guard: absolute and canonical, no symlink, and no overlap
+  with another candidate in the same request. The request type is
+  wire-shaped, so the guard lands before the change that makes it reachable
+  from a transport. `gosec` cannot see this sink: G304 covers opens, not
+  directory creation.
+- **The module-fetch token never touches disk** (#326, #368). The docker
+  build's Gitea credentials reach `go mod download` as a BuildKit secret
+  sourced from the environment, not from a temp file an EXIT trap was
+  supposed to remove and did not on SIGKILL.
+- **`gosec` scans the tag-gated files and the `sdk` module** (#377), and the
+  91 test-file findings are triaged with the two measured reasons `-tests`
+  still cannot go on recorded (#395, #423).
+- **`software.sslmate.com/src/go-pkcs12` moves to v0.7.3 in all three
+  modules** (#522) for GHSA-mpwr-8vm7-h73f, an authentication bypass in the
+  package's decode functions. Measured rather than assumed: this repository
+  calls exactly one symbol from it, the `Modern2023` encoder behind
+  `ExportPKCS12`, and never decodes a `.p12`, so the bump is hygiene, not
+  exposure; the grep is recorded in `docs/certificate-authority/architecture.md`
+  beside the dependency.
+- **`echarts` moves to 6.1.0 in the frontend** (#522) for CVE-2026-45249, an
+  XSS. The major bump was blocked only by `svelte-echarts`, which nothing
+  imported; it is removed. The production build, `svelte-check` and the 31
+  time-series Playwright tests were run against the new major.
+- **`google.golang.org/grpc` moves to v1.83.2 for CVE-2026-84445, and a stale
+  trivy database now refuses to certify rather than certifying blindly**
+  (#451, #477).
 
 ## [0.16.3-alpha] - 2026-09-06
 
@@ -2155,7 +2392,8 @@ ProtoBuf codecs are unaffected.
 - Playwright's generated `playwright-report/` and `test-results/` output no
   longer ships in the repository.
 
-[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.6.0-alpha...HEAD
+[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.17.0-alpha...HEAD
+[0.17.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.16.3-alpha...v0.17.0-alpha
 [0.6.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.5.9-alpha...v0.6.0-alpha
 [0.3.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...v0.2.1-alpha
