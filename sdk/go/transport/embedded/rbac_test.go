@@ -194,6 +194,109 @@ func TestRBACClient_ListPermissions_ResolvesScopes(t *testing.T) {
 	}
 }
 
+// A wildcard grant is expanded to the registered permissions it matches,
+// each with ITS OWN declared scope. objstore:* is how the built-in Admin
+// role grants the broker data-plane family, and every member of that family
+// is ScopeTenantOnly — which the old projection reported as ScopeSelf, the
+// fail-open default go-qrdb#504 removed.
+func TestRBACClient_ListPermissions_ExpandsWildcardGrants(t *testing.T) {
+	mock := &mockRoleServicer{
+		resolvePermsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return []permission.Permission{permission.ObjStoreAll, permission.TenantsRead}, nil
+		},
+	}
+	tr := newRBACTransport(t, mock)
+	client := tr.RBACClient()
+
+	id := &transport.Identity{Subject: "alice", TenantID: "acme", Roles: []string{"role-admin"}}
+	got, err := client.ListPermissions(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	members := permission.ByResource("objstore")
+	if len(members) == 0 {
+		t.Fatal("objstore family is empty; the test has nothing to expand")
+	}
+	if want := len(members) + 1; len(got) != want {
+		t.Fatalf("expected %d permissions (%d objstore members + tenants:read), got %d", want, len(members), len(got))
+	}
+	gotByName := make(map[string]transport.PermissionInfo, len(got))
+	for i, p := range got {
+		if p.Name == permission.ObjStoreAll.String() {
+			t.Fatalf("the wildcard itself must not appear in the listing (index %d)", i)
+		}
+		if i > 0 && got[i-1].Name >= p.Name {
+			t.Fatalf("listing must be sorted by name: %q precedes %q", got[i-1].Name, p.Name)
+		}
+		gotByName[p.Name] = p
+	}
+	for _, m := range members {
+		info, ok := gotByName[m.String()]
+		if !ok {
+			t.Fatalf("expected objstore member %s in the expansion", m)
+		}
+		if info.Scope != transport.PermissionScopeTenantOnly {
+			t.Errorf("%s: expected ScopeTenantOnly, got %q", m, info.Scope)
+		}
+	}
+	if self := gotByName[permission.TenantsRead.String()]; self.Scope != transport.PermissionScopeSelf {
+		t.Errorf("tenants:read: expected ScopeSelf, got %q", self.Scope)
+	}
+}
+
+// A concrete grant that a wildcard also covers is listed once.
+func TestRBACClient_ListPermissions_DeduplicatesExpandedGrants(t *testing.T) {
+	mock := &mockRoleServicer{
+		resolvePermsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return []permission.Permission{permission.ObjStoreAll, permission.ByResource("objstore")[0]}, nil
+		},
+	}
+	tr := newRBACTransport(t, mock)
+	client := tr.RBACClient()
+
+	id := &transport.Identity{Subject: "alice", TenantID: "acme", Roles: []string{"role-admin"}}
+	got, err := client.ListPermissions(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := permission.ByResource("objstore")
+	if len(got) != len(want) {
+		t.Fatalf("expected %d permissions after deduplication, got %d", len(want), len(got))
+	}
+	gotNames := make(map[string]int, len(got))
+	for _, p := range got {
+		gotNames[p.Name]++
+	}
+	for _, m := range want {
+		if n := gotNames[m.String()]; n != 1 {
+			t.Errorf("%s listed %d times, want exactly once", m, n)
+		}
+	}
+}
+
+// A wildcard grant that matches no registered permission contributes
+// nothing: no error, no phantom entry. The listing is what the identity can
+// actually do, and a pattern over an empty family is not a capability.
+func TestRBACClient_ListPermissions_UnmatchedWildcardContributesNothing(t *testing.T) {
+	mock := &mockRoleServicer{
+		resolvePermsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {
+			return []permission.Permission{"no_such_resource:*", permission.TenantsRead}, nil
+		},
+	}
+	tr := newRBACTransport(t, mock)
+	client := tr.RBACClient()
+
+	id := &transport.Identity{Subject: "alice", TenantID: "acme", Roles: []string{"role-admin"}}
+	got, err := client.ListPermissions(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != permission.TenantsRead.String() {
+		t.Fatalf("expected only %s, got %+v", permission.TenantsRead, got)
+	}
+}
+
 func TestRBACClient_ListPermissions_ResolveError(t *testing.T) {
 	mock := &mockRoleServicer{
 		resolvePermsFn: func(_ context.Context, _ []string) ([]permission.Permission, error) {

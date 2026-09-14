@@ -68,14 +68,14 @@ func TestACMEAdminScope_ParseAndRegistered(t *testing.T) {
 }
 
 // TestACMEAdminScope_SelfScope verifies that the ACME-administration and
-// CA-hierarchy permissions take the default ScopeSelf. This is the behavioural
+// CA-hierarchy permissions are declared ScopeSelf. This is the behavioural
 // difference from the broker's acme:read / acme:write (ScopeTenantOnly): a
 // system-tenant Admin must be able to administer the ACME server and its CA
 // hierarchy, which ScopeTenantOnly would structurally deny.
 func TestACMEAdminScope_SelfScope(t *testing.T) {
 	for _, tc := range acmeAdminExpectations {
 		t.Run(string(tc.perm), func(t *testing.T) {
-			if got := LookupScope(tc.perm); got != ScopeSelf {
+			if got := mustScope(t, tc.perm); got != ScopeSelf {
 				t.Fatalf("LookupScope(%q): got %v, want %v", tc.perm, got, ScopeSelf)
 			}
 			if IsCrossScope(tc.perm) {
@@ -89,9 +89,9 @@ func TestACMEAdminScope_SelfScope(t *testing.T) {
 // administration family does not collide with, or silently re-scope, the
 // broker's tenant-owned acme:read / acme:write permissions.
 func TestACMEAdminScope_DistinctFromBrokerACME(t *testing.T) {
-	if LookupScope(ACMERead) != ScopeTenantOnly || LookupScope(ACMEWrite) != ScopeTenantOnly {
+	if mustScope(t, ACMERead) != ScopeTenantOnly || mustScope(t, ACMEWrite) != ScopeTenantOnly {
 		t.Fatalf("broker acme:read/acme:write must remain ScopeTenantOnly; got %v/%v",
-			LookupScope(ACMERead), LookupScope(ACMEWrite))
+			mustScope(t, ACMERead), mustScope(t, ACMEWrite))
 	}
 	for _, p := range ByResource("acme") {
 		if p != ACMERead && p != ACMEWrite {

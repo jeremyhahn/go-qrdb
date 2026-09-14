@@ -14,10 +14,37 @@
 
 package permission
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 // TestScope_String_KnownValues verifies the human-readable labels for the
 // declared scope constants.
+// mustScope returns the declared scope of p, failing the test if p has no
+// declared scope. Every built-in permission is declared (go-qrdb#504), so a
+// test reaching the failure branch has found an undeclared permission, which
+// is itself the defect this helper exists to surface.
+func mustScope(t *testing.T, p Permission) Scope {
+	t.Helper()
+	s, err := LookupScope(p)
+	if err != nil {
+		t.Fatalf("LookupScope(%q): %v", p, err)
+	}
+	return s
+}
+
+// mustScopeByName is mustScope over a raw permission string.
+func mustScopeByName(t *testing.T, name string) Scope {
+	t.Helper()
+	s, err := LookupScopeByName(name)
+	if err != nil {
+		t.Fatalf("LookupScopeByName(%q): %v", name, err)
+	}
+	return s
+}
+
 func TestScope_String_KnownValues(t *testing.T) {
 	cases := []struct {
 		scope Scope
@@ -43,19 +70,41 @@ func TestScope_String_UnknownValue(t *testing.T) {
 	}
 }
 
-// TestLookupScope_DefaultsToSelf verifies that a permission absent from
-// the scope registry resolves to ScopeSelf — the safe default that
-// confines the permission to the identity's own tenant.
-func TestLookupScope_DefaultsToSelf(t *testing.T) {
-	// KVPut is a built-in permission with no explicit scope registration.
-	if got := LookupScope(KVPut); got != ScopeSelf {
+// TestLookupScope_DeclaredSelfIsSelf verifies that a permission declared
+// ScopeSelf resolves to ScopeSelf — because it was declared so, not because
+// nothing else was said about it.
+func TestLookupScope_DeclaredSelfIsSelf(t *testing.T) {
+	// KVPut is a built-in permission declared ScopeSelf in self_scope.go.
+	// Before go-qrdb#504 it had no declaration and answered ScopeSelf by
+	// default; the answer is the same, the reason is not.
+	if got := mustScope(t, KVPut); got != ScopeSelf {
 		t.Errorf("LookupScope(KVPut) = %v, want %v", got, ScopeSelf)
 	}
+}
 
-	// An entirely unknown permission must also default to ScopeSelf.
+// TestLookupScope_UndeclaredIsAnError pins go-qrdb#504: a permission with no
+// declared scope is refused, not defaulted. The previous version of this
+// test asserted the opposite — "an entirely unknown permission must also
+// default to ScopeSelf" — which was the defect, stated as the contract.
+func TestLookupScope_UndeclaredIsAnError(t *testing.T) {
 	unknown := Permission("widgets:frob")
-	if got := LookupScope(unknown); got != ScopeSelf {
-		t.Errorf("LookupScope(unknown) = %v, want %v", got, ScopeSelf)
+	got, err := LookupScope(unknown)
+	if err == nil {
+		t.Fatalf("LookupScope(%q) = %v, nil; want *UndeclaredScopeError — an undeclared permission must not acquire a scope by omission", unknown, got)
+	}
+	var undeclared *UndeclaredScopeError
+	if !errors.As(err, &undeclared) {
+		t.Fatalf("LookupScope(%q) error = %T (%v), want *UndeclaredScopeError", unknown, err, err)
+	}
+	if undeclared.Permission != unknown {
+		t.Errorf("UndeclaredScopeError.Permission = %q, want %q", undeclared.Permission, unknown)
+	}
+	if !strings.Contains(err.Error(), string(unknown)) {
+		t.Errorf("error text %q does not name the permission", err.Error())
+	}
+	// IsCrossScope must not read an undeclared permission as anything.
+	if IsCrossScope(unknown) {
+		t.Errorf("IsCrossScope(%q) = true for an undeclared permission", unknown)
 	}
 }
 
@@ -77,7 +126,7 @@ func TestLookupScope_RegisteredCrossScopePermissions(t *testing.T) {
 		RegistrationConfigUpdate,
 	}
 	for _, p := range crossScopePerms {
-		if got := LookupScope(p); got != ScopeCross {
+		if got := mustScope(t, p); got != ScopeCross {
 			t.Errorf("LookupScope(%q) = %v, want %v", p, got, ScopeCross)
 		}
 		if !IsCrossScope(p) {
@@ -103,7 +152,7 @@ func TestLookupScope_SelfScopePermissionsRemainSelf(t *testing.T) {
 		UsersCreate,
 	}
 	for _, p := range selfScopePerms {
-		if got := LookupScope(p); got != ScopeSelf {
+		if got := mustScope(t, p); got != ScopeSelf {
 			t.Errorf("LookupScope(%q) = %v, want %v", p, got, ScopeSelf)
 		}
 		if IsCrossScope(p) {
@@ -123,12 +172,21 @@ func TestLookupScopeByName_DelegatesToLookupScope(t *testing.T) {
 		{"tenants:list:cross", ScopeCross},
 		{"volumepool:create", ScopeCross},
 		{"tenants:read", ScopeSelf},
-		{"unknown:perm", ScopeSelf},
 	}
 	for _, tc := range cases {
-		if got := LookupScopeByName(tc.name); got != tc.want {
+		if got := mustScopeByName(t, tc.name); got != tc.want {
 			t.Errorf("LookupScopeByName(%q) = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+	// And the refusal delegates too: an undeclared name is an error here
+	// exactly as it is through LookupScope.
+	got, err := LookupScopeByName("unknown:perm")
+	var undeclared *UndeclaredScopeError
+	if !errors.As(err, &undeclared) {
+		t.Fatalf("LookupScopeByName(%q) = %v, %v; want *UndeclaredScopeError", "unknown:perm", got, err)
+	}
+	if undeclared.Permission != "unknown:perm" {
+		t.Errorf("error names %q, want unknown:perm", undeclared.Permission)
 	}
 }
 
@@ -146,12 +204,12 @@ func TestRegisterScope_OverwritesPrevious(t *testing.T) {
 	})
 
 	RegisterScope(ScopeCross, probe)
-	if got := LookupScope(probe); got != ScopeCross {
+	if got := mustScope(t, probe); got != ScopeCross {
 		t.Fatalf("after first register: LookupScope(%q) = %v, want %v", probe, got, ScopeCross)
 	}
 
 	RegisterScope(ScopeSelf, probe)
-	if got := LookupScope(probe); got != ScopeSelf {
+	if got := mustScope(t, probe); got != ScopeSelf {
 		t.Fatalf("after second register: LookupScope(%q) = %v, want %v", probe, got, ScopeSelf)
 	}
 }
@@ -184,25 +242,43 @@ func TestRegisterScope_MultiplePerms(t *testing.T) {
 // and re-asserts the cross-scope registrations come back via init() on
 // the next package load (within this process, the helper just clears;
 // re-population requires a re-run).
-func TestResetScopeRegistryForTesting_ClearsAll(t *testing.T) {
-	// Snapshot current registry so we can restore it post-test.
+// withEmptyScopeRegistry empties the process-global scope registry for the
+// duration of the calling test and restores the previous contents on
+// cleanup. It is the ONLY sanctioned way for a test to reset the registry.
+//
+// Restoring is not optional: a test that resets and then merely resets again
+// on cleanup leaves the registry empty for every test that runs after it,
+// which is how TestTenantScopeStore_FallbackPrecedence silently emptied it
+// for the rest of the package until TestEveryPermissionDeclaresItsScope
+// walked All() and found 364 undeclared permissions.
+func withEmptyScopeRegistry(t *testing.T) {
+	t.Helper()
 	scopeMu.RLock()
 	snapshot := make(map[Permission]Scope, len(scopeRegistry))
 	for k, v := range scopeRegistry {
 		snapshot[k] = v
 	}
 	scopeMu.RUnlock()
-
 	t.Cleanup(func() {
 		scopeMu.Lock()
 		scopeRegistry = snapshot
 		scopeMu.Unlock()
 	})
-
 	resetScopeRegistryForTesting()
+}
 
-	// After reset, every permission lookup must default to ScopeSelf.
-	if got := LookupScope(TenantsListCross); got != ScopeSelf {
-		t.Errorf("after reset: LookupScope(TenantsListCross) = %v, want %v (default)", got, ScopeSelf)
+func TestResetScopeRegistryForTesting_ClearsAll(t *testing.T) {
+	withEmptyScopeRegistry(t)
+
+	// After reset there is no registry entry and therefore no answer: the
+	// lookup refuses. (It used to answer ScopeSelf here "by default" — the
+	// fail-open go-qrdb#504 removed.)
+	got, err := LookupScope(TenantsListCross)
+	var undeclared *UndeclaredScopeError
+	if !errors.As(err, &undeclared) {
+		t.Fatalf("after reset: LookupScope(TenantsListCross) = %v, %v; want *UndeclaredScopeError", got, err)
+	}
+	if undeclared.Permission != TenantsListCross {
+		t.Errorf("error names %q, want %q", undeclared.Permission, TenantsListCross)
 	}
 }

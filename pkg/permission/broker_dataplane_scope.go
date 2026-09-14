@@ -451,8 +451,9 @@ func brokerDataPlaneCategories() []Category {
 
 // nodeStateScopePermissions returns the broker data-plane permissions that
 // describe the DAEMON'S OWN state rather than material held on a tenant's
-// behalf. They are registered but deliberately NOT tagged ScopeTenantOnly, so
-// they take the ScopeSelf default (owner ruling 2026-09-02, go-qrdb#183).
+// behalf. They are registered but deliberately NOT tagged ScopeTenantOnly;
+// each is declared ScopeSelf by name in self_scope.go (owner ruling
+// 2026-09-02, go-qrdb#183).
 //
 // ScopeTenantOnly means "tenant-admin-only, system-admin-denied, no
 // cross-tenant", and scope.go states what that rule is FOR: per-tenant barrier
@@ -505,11 +506,15 @@ func init() {
 	tenantOnly := brokerDataPlaneScopePermissions()
 	nodeState := nodeStateScopePermissions()
 
-	// Both sets are REGISTERED; only the first is tagged ScopeTenantOnly.
-	// nodeState takes the ScopeSelf default by not being tagged, rather than
-	// by an explicit RegisterScope(ScopeSelf, ...) -- scope.go documents
-	// ScopeSelf as the default and registering it would suggest the other
-	// untagged permissions in this package had been considered and were not.
+	// Both sets are REGISTERED; only the first is tagged ScopeTenantOnly
+	// here. nodeState is ScopeSelf, and each of its members is declared so BY
+	// NAME in self_scope.go rather than by a RegisterScope(ScopeSelf,
+	// nodeState...) family call: a helper that later gains a member would tag
+	// that member silently, which is exactly how orchestrator:health was
+	// swept into ScopeTenantOnly the first time. There is no scope default to
+	// fall back on -- LookupScope refuses an undeclared permission, and
+	// TestEveryPermissionDeclaresItsScope keeps the build red until the new
+	// member's name is written down.
 	Register(tenantOnly...)
 	Register(nodeState...)
 	RegisterScope(ScopeTenantOnly, tenantOnly...)

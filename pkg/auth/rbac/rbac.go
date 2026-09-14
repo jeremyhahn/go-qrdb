@@ -43,10 +43,11 @@
 // Scope resolution is tenant-aware when a permission.ScopeResolver is
 // installed via WithScopeResolver: a caller-defined permission's scope is
 // resolved in the identity's own tenant (per-tenant store -> built-in
-// default -> ScopeSelf), so two tenants may use the same permission name
-// with different scopes without colliding. When no resolver is installed,
-// the authorizer falls back to the built-in process-global scope layer
-// (permission.LookupScope), preserving the prior behavior.
+// declaration), so two tenants may use the same permission name with
+// different scopes without colliding. When no resolver is installed, the
+// authorizer consults the built-in process-global scope layer
+// (permission.LookupScope) directly. There is no default at the end of
+// either chain: a permission with no declared scope is denied.
 package rbac
 
 import (
@@ -204,10 +205,10 @@ type RBACAuthorizer struct {
 
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
 	// authorizer resolves a permission's scope in the identity's own tenant
-	// (per-tenant store -> built-in default -> ScopeSelf) so that two
-	// tenants may use the same permission name with different scopes without
-	// colliding. When nil, the authorizer consults only the built-in
-	// process-global scope layer via permission.LookupScope (back-compat).
+	// (per-tenant store -> built-in declaration) so that two tenants may use
+	// the same permission name with different scopes without colliding. When
+	// nil, the authorizer consults only the built-in process-global scope
+	// layer via permission.LookupScope. Neither chain ends in a default.
 	//
 	// SECURITY: when scopes is set and ResolveScope returns an error — most
 	// importantly tenant.ErrTenantSealed for a sealed barrier tenant — the
@@ -512,7 +513,7 @@ func IsSystemTenant(identity *auth.Identity) bool {
 // fails — in which case the caller MUST deny.
 func (a *RBACAuthorizer) resolveScope(ctx context.Context, identity *auth.Identity, p permission.Permission) (permission.Scope, error) {
 	if a.scopes == nil {
-		return permission.LookupScope(p), nil
+		return permission.LookupScope(p)
 	}
 	return a.scopes.ResolveScope(ctx, identity.TenantID, p)
 }

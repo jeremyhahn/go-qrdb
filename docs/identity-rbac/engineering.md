@@ -229,7 +229,7 @@ the identity fails.
 
 | scope | tenant-local identity | system-tenant identity |
 |---|---|---|
-| `ScopeSelf` (**the default**) | own tenant only | **lifted across all tenants** |
+| `ScopeSelf` | own tenant only | **lifted across all tenants** |
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 
@@ -240,9 +240,26 @@ canonical case is per-tenant barrier key custody, which the platform operator
 must not hold. A permission that reads the **daemon's own** state is not that,
 even when it lives in a tenant-facing family.
 
-**A permission takes `ScopeSelf` by not being registered with a scope**, so the
-hazard is the opposite of the usual one: the mistake is not forgetting to
-classify, it is classifying a whole family in one call. Measured:
+**There is no default scope.** Every permission in `All()` declares its scope,
+`LookupScope` returns `*UndeclaredScopeError` for one that does not, and the
+authorizer denies on that error. `TestEveryPermissionDeclaresItsScope` in
+`pkg/permission/scope_gate_test.go` walks the registry and fails the build on
+the first undeclared member, so a permission added without a scope is a red
+test rather than a quiet admit. `ScopeSelf` is the zero value of `Scope`, and
+it is declared like the other two — `pkg/permission/self_scope.go` names each
+self-scoped permission individually.
+
+It used to be otherwise: `LookupScope` answered `ScopeSelf` for any permission
+nobody had tagged, and 221 of 362 permissions — not one of them registered
+`ScopeSelf` explicitly — took their scope by omission. An unconsidered
+permission was indistinguishable from one deliberately confined to its own
+tenant, and the unconsidered one is the one that admits. `certs:revoke` was the
+instance that surfaced it: no registry entry, defaulted to `ScopeSelf`, and a
+check that was vacuous on the ordinary REST path.
+
+The remaining hazard is the family call. **Declare each member of a family by
+name, never the family through a helper**: a helper that later gains a member
+tags that member silently. Measured:
 `RegisterScope(ScopeTenantOnly, brokerDataPlaneScopePermissions()...)` tagged
 the entire broker data-plane family, and `orchestrator:health` rode along. The
 result was that the operator persona — the one that exists to watch the node —
@@ -255,8 +272,8 @@ GET /api/v1/orchestrator/health
     tenant-only permission denied to system tenant
 ```
 
-It now sits in `nodeStateScopePermissions()`, registered but deliberately
-untagged.
+It now sits in `nodeStateScopePermissions()` and is declared `ScopeSelf` by
+name in `self_scope.go`.
 
 **The counter-example is in the same family, and it is the more instructive
 one.** `orchestrator:status` looks like the same case and is not: it is
@@ -380,9 +397,11 @@ wrong fails a test rather than passing a typed-in column.
   `users:remove_cert_binding` is not folded into `users:add_cert_binding`
   because enrolment only narrows an account while withdrawal of the LAST
   binding widens it back to CN/OU admission. Both permissions declare
-  `ScopeSelf` explicitly: `LookupScope` returns `ScopeSelf` for anything nobody
-  tagged, so an omission and a decision are indistinguishable in the registry,
-  and these two decide which certificates authenticate as an account.
+  `ScopeSelf` beside their definitions rather than in `self_scope.go`: they
+  were the first pair declared deliberately, back when `LookupScope` still
+  answered `ScopeSelf` for anything nobody tagged and an omission was
+  indistinguishable from a decision, and these two decide which certificates
+  authenticate as an account.
 - **Withdrawal and revocation are independent.** Revocation refuses a
   certificate; a binding is over the key and outlives every certificate issued
   for it, so a re-issue for the same key authenticates until the binding is

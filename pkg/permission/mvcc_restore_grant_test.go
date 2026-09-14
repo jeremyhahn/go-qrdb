@@ -93,9 +93,9 @@ func TestMVCCRestore_IsUndeclaredDuty(t *testing.T) {
 // which acts on the store-global revision counter and is therefore ScopeCross,
 // reserved for the system tenant — a restore names the keys it writes and is
 // confined to the caller's namespace by server.namespacedMVCCService, so it
-// keeps the default self scope and is usable by a tenant-local Admin.
+// is declared ScopeSelf and is usable by a tenant-local Admin.
 func TestMVCCRestore_IsSelfScoped(t *testing.T) {
-	if got := LookupScope(MVCCRestore); got != ScopeSelf {
+	if got := mustScope(t, MVCCRestore); got != ScopeSelf {
 		t.Fatalf("LookupScope(mvcc:restore) = %v, want %v", got, ScopeSelf)
 	}
 	if IsCrossScope(MVCCRestore) {

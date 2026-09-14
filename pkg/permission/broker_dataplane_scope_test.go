@@ -162,8 +162,8 @@ func TestBrokerDataPlane_ParseAndRegistered(t *testing.T) {
 // TestBrokerDataPlane_TenantOnlyScope verifies that every broker data-plane
 // permission is tagged ScopeTenantOnly in the built-in scope layer.
 // nodeStateExceptions are the broker data-plane permissions that describe the
-// DAEMON'S OWN state rather than tenant-held material, and therefore take the
-// ScopeSelf default instead of ScopeTenantOnly (owner ruling 2026-09-02,
+// DAEMON'S OWN state rather than tenant-held material, and are therefore
+// declared ScopeSelf instead of ScopeTenantOnly (owner ruling 2026-09-02,
 // go-qrdb#183).
 //
 // Enumerating the EXCEPTIONS rather than adding a scope column to
@@ -190,7 +190,7 @@ func TestBrokerDataPlane_TenantOnlyScope(t *testing.T) {
 			continue
 		}
 		t.Run(string(tc.perm), func(t *testing.T) {
-			if got := LookupScope(tc.perm); got != ScopeTenantOnly {
+			if got := mustScope(t, tc.perm); got != ScopeTenantOnly {
 				t.Fatalf("LookupScope(%q): got %v, want %v", tc.perm, got, ScopeTenantOnly)
 			}
 			if IsCrossScope(tc.perm) {
@@ -217,7 +217,7 @@ func TestBrokerDataPlane_NodeStateScopeIsSelf(t *testing.T) {
 				t.Fatalf("IsRegistered(%q): got false -- excluding a permission "+
 					"from the ScopeTenantOnly set must not unregister it", perm)
 			}
-			if got := LookupScope(perm); got != ScopeSelf {
+			if got := mustScope(t, perm); got != ScopeSelf {
 				t.Fatalf("LookupScope(%q): got %v, want ScopeSelf. A tenant-only "+
 					"scope denies this to the system tenant structurally "+
 					"(go-qrdb#183)", perm, got)

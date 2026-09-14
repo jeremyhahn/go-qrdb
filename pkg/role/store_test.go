@@ -1434,7 +1434,11 @@ func TestBrokerDataPlaneConcretePermsAreTenantOnly(t *testing.T) {
 		permission.ProjectRead, permission.OllamaEmbed,
 	}
 	for _, p := range concrete {
-		if got := permission.LookupScope(p); got != permission.ScopeTenantOnly {
+		got, err := permission.LookupScope(p)
+		if err != nil {
+			t.Fatalf("scope for %q: %v", p, err)
+		}
+		if got != permission.ScopeTenantOnly {
 			t.Errorf("scope for %q: got %v, want ScopeTenantOnly", p, got)
 		}
 	}

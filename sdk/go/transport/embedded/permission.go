@@ -33,28 +33,47 @@ type permissionClient struct {
 var _ transport.PermissionClient = (*permissionClient)(nil)
 
 // scopeFromDomain converts the domain-layer permission.Scope to the SDK
-// PermissionScope. Unknown values fall back to PermissionScopeSelf — the
-// safe default that confines a permission to the identity's own tenant.
-func scopeFromDomain(s permission.Scope) transport.PermissionScope {
+// PermissionScope. Every defined scope maps to its own SDK value; a value
+// outside the defined set is an error. This used to answer
+// PermissionScopeSelf for anything it did not name, and it did not name
+// ScopeTenantOnly — so every tenant-only permission crossed the SDK boundary
+// labelled "self", the one scope that the system-tenant rule lifts. The
+// projection was a fail-open of exactly the kind go-qrdb#504 removed from
+// LookupScope, one layer up.
+func scopeFromDomain(s permission.Scope) (transport.PermissionScope, error) {
 	switch s {
-	case permission.ScopeCross:
-		return transport.PermissionScopeCross
 	case permission.ScopeSelf:
-		return transport.PermissionScopeSelf
+		return transport.PermissionScopeSelf, nil
+	case permission.ScopeCross:
+		return transport.PermissionScopeCross, nil
+	case permission.ScopeTenantOnly:
+		return transport.PermissionScopeTenantOnly, nil
 	default:
-		return transport.PermissionScopeSelf
+		return "", &permission.InvalidScopeError{Value: s.String()}
 	}
 }
 
 // permissionToTransport projects a domain permission into the SDK shape,
-// resolving the scope from the global registry.
-func permissionToTransport(p permission.Permission) transport.PermissionInfo {
+// resolving the scope from the global registry. A registered permission
+// always has a declared scope (the build gate enforces it), so the error is
+// unreachable for anything All() returns — it is propagated rather than
+// swallowed because an unreachable error that is silently mapped to a scope
+// is how the default this replaces came to exist.
+func permissionToTransport(p permission.Permission) (transport.PermissionInfo, error) {
+	scope, err := permission.LookupScope(p)
+	if err != nil {
+		return transport.PermissionInfo{}, err
+	}
+	sdkScope, err := scopeFromDomain(scope)
+	if err != nil {
+		return transport.PermissionInfo{}, err
+	}
 	return transport.PermissionInfo{
 		Name:     p.String(),
 		Resource: permission.Resource(p),
 		Action:   permission.Action(p),
-		Scope:    scopeFromDomain(permission.LookupScope(p)),
-	}
+		Scope:    sdkScope,
+	}, nil
 }
 
 // List returns every registered permission, sorted by name.
@@ -68,7 +87,11 @@ func (c *permissionClient) List(ctx context.Context) ([]transport.PermissionInfo
 	all := permission.All()
 	out := make([]transport.PermissionInfo, len(all))
 	for i, p := range all {
-		out[i] = permissionToTransport(p)
+		info, err := permissionToTransport(p)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = info
 	}
 	return out, nil
 }
@@ -86,13 +109,18 @@ func (c *permissionClient) Lookup(ctx context.Context, name string) (transport.P
 	if !permission.IsRegistered(p) {
 		return transport.PermissionInfo{}, &transport.PermissionNotFoundError{Name: name}
 	}
-	return permissionToTransport(p), nil
+	return permissionToTransport(p)
 }
 
 // LookupScope returns the scope of the permission with the given name.
-// Unregistered names return PermissionScopeSelf and a nil error so
-// callers can rely on the result for self-scope gating without a
-// separate registration check.
+//
+// A name with no declared scope is an error, not PermissionScopeSelf. This
+// method used to answer Self for any unregistered name "so callers can rely
+// on the result for self-scope gating without a separate registration
+// check" — which is precisely the fail-open that go-qrdb#504 removed: a
+// caller gating on Self for a permission nobody had declared was gating on
+// nothing. The error names the permission; a caller that wants a registration
+// check has one.
 func (c *permissionClient) LookupScope(ctx context.Context, name string) (transport.PermissionScope, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -100,7 +128,11 @@ func (c *permissionClient) LookupScope(ctx context.Context, name string) (transp
 	if c.transport.closed.Load() {
 		return "", &transport.ClosedError{}
 	}
-	return scopeFromDomain(permission.LookupScopeByName(name)), nil
+	scope, err := permission.LookupScopeByName(name)
+	if err != nil {
+		return "", err
+	}
+	return scopeFromDomain(scope)
 }
 
 // PermissionClient returns the embedded permission registry projection.

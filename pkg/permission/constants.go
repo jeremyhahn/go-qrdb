@@ -63,7 +63,7 @@ const (
 	//
 	// Unlike mvcc:compact this is NOT store-global: a restore names the keys
 	// it writes and is confined to the caller's tenant and database namespace
-	// by server.namespacedMVCCService, so it keeps the default ScopeSelf.
+	// by server.namespacedMVCCService, so it is declared ScopeSelf.
 	MVCCRestore Permission = "mvcc:restore"
 )
 
@@ -1098,16 +1098,14 @@ func init() {
 	// permission to the system tenant so a tenant-scoped role can never satisfy
 	// it (latent cross-tenant hole — no built-in tenant role grants these).
 	RegisterScope(ScopeCross, credentialPermissions()...)
-	// The cert-binding PAIR declares its scope explicitly rather than taking
-	// the ScopeSelf default. Both resolve to ScopeSelf either way, so this
-	// changes no decision today — it states one.
-	//
-	// LookupScope returns ScopeSelf for any permission nobody tagged, so an
-	// omission and a decision are indistinguishable in the registry, and the
-	// omission is the one that admits. These two decide which certificates
-	// authenticate as an account, so "nobody has thought about this yet" is not
-	// an acceptable reading of their scope. The declaration is deliberately
-	// narrow: it says these two were considered, and says nothing about any
-	// other untagged permission in this package.
+	// The cert-binding PAIR is declared ScopeSelf here, beside its
+	// definitions, rather than in self_scope.go with the rest: it was the
+	// first pair declared deliberately, back when LookupScope still answered
+	// ScopeSelf for any permission nobody had tagged and an omission was
+	// indistinguishable from a decision. These two decide which certificates
+	// authenticate as an account, so "nobody has thought about this yet" was
+	// never an acceptable reading of their scope. That default is gone
+	// (go-qrdb#504) and every permission now declares; the rationale stays
+	// with the pair.
 	RegisterScope(ScopeSelf, UsersAddCertBinding, UsersRemoveCertBinding)
 }

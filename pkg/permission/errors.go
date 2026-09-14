@@ -54,6 +54,27 @@ func (e *InvalidScopeError) Error() string {
 	return "permission: invalid scope label: " + e.Value
 }
 
+// UndeclaredScopeError is returned by LookupScope when a permission has no
+// entry in the built-in scope registry. It exists so that an omission is a
+// refusal rather than an admission: before it, LookupScope answered ScopeSelf
+// for any untagged permission, which made "nobody has decided this
+// permission's tenancy reach" indistinguishable from "confined to the caller's
+// own tenant" — and the undecided one is the one that admitted (go-qrdb#474,
+// where certs:revoke reached every tenant through exactly that default).
+//
+// The RBAC authorizer denies on any scope-resolution error, so a permission
+// that reaches production undeclared is refused at every call, loudly, with
+// its name in the reason — and TestEveryPermissionDeclaresItsScope fails the
+// build before it can get there.
+type UndeclaredScopeError struct {
+	Permission Permission
+}
+
+// Error returns a human-readable description naming the undeclared permission.
+func (e *UndeclaredScopeError) Error() string {
+	return "permission: no scope declared for " + string(e.Permission) + " (register it in self_scope.go, tenant_scope.go or cross_scope.go)"
+}
+
 // EmptyPermissionError is returned by TenantScopeStore operations when an
 // empty permission name is supplied. A per-tenant scope definition must
 // name a non-empty permission.

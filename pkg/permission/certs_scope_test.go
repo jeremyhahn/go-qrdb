@@ -24,10 +24,12 @@ import "testing"
 
 // TestCertsRevokeCross_IsCrossScope is the load-bearing registration. If this
 // permission ever resolves to ScopeSelf, deny-by-serial becomes reachable by
-// every tenant again -- and it would do so silently, because an unregistered
-// permission gets ScopeSelf by default rather than failing.
+// every tenant again. When this test was written an unregistered permission
+// got ScopeSelf by default rather than failing, so the widening would have
+// been silent; LookupScope now refuses an undeclared permission, and this
+// test remains the statement of which scope the declaration must carry.
 func TestCertsRevokeCross_IsCrossScope(t *testing.T) {
-	if got := LookupScope(CertsRevokeCross); got != ScopeCross {
+	if got := mustScope(t, CertsRevokeCross); got != ScopeCross {
 		t.Fatalf("LookupScope(%s) = %v, want ScopeCross", CertsRevokeCross, got)
 	}
 	if !IsCrossScope(CertsRevokeCross) {
@@ -65,7 +67,7 @@ func TestCertsRevokeCross_IsRegisteredAndGranted(t *testing.T) {
 // defaulted into.
 func TestCertsSelfScopePermissions_StayScopeSelf(t *testing.T) {
 	for _, p := range []Permission{CertsGenerate, CertsExport, CertsRevoke, CertsList, CertsRead} {
-		if got := LookupScope(p); got != ScopeSelf {
+		if got := mustScope(t, p); got != ScopeSelf {
 			t.Errorf("LookupScope(%s) = %v, want ScopeSelf", p, got)
 		}
 	}

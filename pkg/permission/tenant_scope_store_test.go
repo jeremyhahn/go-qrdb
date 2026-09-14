@@ -241,8 +241,7 @@ func TestTenantScopeStore_DefsStoredInTenantStore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTenantScopeStore_FallbackPrecedence(t *testing.T) {
-	resetScopeRegistryForTesting()
-	t.Cleanup(resetScopeRegistryForTesting)
+	withEmptyScopeRegistry(t)
 
 	store, _ := newTenantScopeStore(t)
 	ctx := context.Background()
@@ -260,14 +259,18 @@ func TestTenantScopeStore_FallbackPrecedence(t *testing.T) {
 	}
 
 	// A wholly unknown permission with no override and no registry entry
-	// defaults to ScopeSelf (the safe, tenant-confined default).
+	// is refused, not defaulted — the bottom of the fallback chain is an
+	// *UndeclaredScopeError, and the authorizer denies on it (go-qrdb#504).
+	// This used to assert ScopeSelf as "the safe, tenant-confined default";
+	// it was the fail-open, stated as the contract.
 	const unknown Permission = "wholly:unknown"
 	got, err = store.ResolveScope(ctx, "tenant-a", unknown)
-	if err != nil {
-		t.Fatalf("ResolveScope(unknown): %v", err)
+	if err == nil {
+		t.Fatalf("ResolveScope(unknown) = %v, nil; want *UndeclaredScopeError", got)
 	}
-	if got != ScopeSelf {
-		t.Fatalf("unknown fallback = %v, want ScopeSelf", got)
+	var undeclared *UndeclaredScopeError
+	if !errors.As(err, &undeclared) || undeclared.Permission != unknown {
+		t.Fatalf("ResolveScope(unknown) error = %T (%v), want *UndeclaredScopeError for %q", err, err, unknown)
 	}
 
 	// A per-tenant override beats the global built-in.

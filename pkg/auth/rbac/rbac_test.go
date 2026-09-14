@@ -242,7 +242,13 @@ func TestAuthorize_WildcardGrants(t *testing.T) {
 		{"resource-wildcard-no-cross-resource", "keymaster", "certs", "generate", false},
 		{"action-wildcard-match", "reader", "backends", "read", true},
 		{"action-wildcard-no-cross-action", "reader", "backends", "list", false},
-		{"full-wildcard", "root", "anything", "whatever", true},
+		{"full-wildcard", "root", "keys", "sign", true},
+		// A wildcard grant matches the NAME; it does not conjure a permission
+		// that was never declared. anything:whatever has no scope, so the
+		// authorizer refuses it for root too (go-qrdb#504). This used to be
+		// allowed — a "*:*" holder was authorized for a permission that did
+		// not exist, because the undeclared name defaulted to ScopeSelf.
+		{"full-wildcard-undeclared-permission", "root", "anything", "whatever", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

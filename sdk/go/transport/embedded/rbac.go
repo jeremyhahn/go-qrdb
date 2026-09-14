@@ -16,8 +16,10 @@ package embedded
 
 import (
 	"context"
+	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -115,6 +117,15 @@ func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity
 // Scope tags that callers can use to filter a UI ("show only what you
 // can do here"). The Authorize gate is the canonical admission point;
 // this method exists for descriptive UI rendering.
+//
+// A whole-segment wildcard grant (objstore:*, *:read, *:*) is expanded to
+// the registered permissions it matches, each carrying its own declared
+// scope, and the result is deduplicated and sorted by name. A wildcard is
+// how the authorizer matches a name; it is not a permission and has no scope
+// of its own, so it cannot be projected as one. This method used to report
+// a wildcard as ScopeSelf — the fail-open default go-qrdb#504 removed — which
+// was false for every member of the tenant-only broker data-plane families
+// the built-in Admin role grants this way.
 func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Identity) ([]transport.PermissionInfo, error) {
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -129,9 +140,24 @@ func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Id
 	if err != nil {
 		return nil, err
 	}
-	out := make([]transport.PermissionInfo, len(perms))
-	for i, p := range perms {
-		out[i] = permissionToTransport(p)
+	concrete := make(map[permission.Permission]struct{}, len(perms))
+	for _, p := range perms {
+		for _, member := range permission.Expand(p) {
+			concrete[member] = struct{}{}
+		}
+	}
+	names := make([]permission.Permission, 0, len(concrete))
+	for p := range concrete {
+		names = append(names, p)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	out := make([]transport.PermissionInfo, len(names))
+	for i, p := range names {
+		info, err := permissionToTransport(p)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = info
 	}
 	return out, nil
 }

@@ -125,6 +125,20 @@ func Unregistered(perms []Permission) []Permission {
 	return out
 }
 
+// unregisterForTesting removes the given permissions from the registry. It
+// exists so a test that registers a probe permission can leave the
+// process-global registry as it found it: TestEveryPermissionDeclaresItsScope
+// walks All(), and a probe left behind by an earlier test reads as an
+// undeclared built-in. The function is unexported and not part of the
+// public API; production code never unregisters a permission.
+func unregisterForTesting(perms ...Permission) {
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range perms {
+		delete(registry, p)
+	}
+}
+
 // IsWildcard reports whether p uses a whole-segment "*" wildcard in its
 // resource or action component (e.g. "keys:*", "*:read", "*:*"). Wildcard
 // permissions are matched against concrete resource:action checks by the
@@ -132,6 +146,36 @@ func Unregistered(perms []Permission) []Permission {
 // listed in the concrete permission registry.
 func IsWildcard(p Permission) bool {
 	return Resource(p) == "*" || Action(p) == "*"
+}
+
+// Expand returns the concrete permissions p stands for: p itself when p is
+// concrete, and every registered permission it matches, sorted, when p is a
+// whole-segment wildcard. A wildcard is a name-matcher over the registry, not
+// a permission of its own -- it has no registry entry and no scope -- so a
+// caller that needs per-permission facts about a grant (its scope, above all)
+// asks about the members rather than the pattern. A wildcard that matches
+// nothing expands to nil. The expansion is concrete by construction: a
+// wildcard that something has put in the registry (Register does not refuse
+// one) is a pattern, not a member, and is never returned.
+func Expand(p Permission) []Permission {
+	if !IsWildcard(p) {
+		return []Permission{p}
+	}
+	resource, action := Resource(p), Action(p)
+	mu.RLock()
+	defer mu.RUnlock()
+	var out []Permission
+	for candidate := range registry {
+		if IsWildcard(candidate) {
+			continue
+		}
+		if (resource == "*" || Resource(candidate) == resource) &&
+			(action == "*" || Action(candidate) == action) {
+			out = append(out, candidate)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Parse validates a raw string and returns the corresponding Permission.

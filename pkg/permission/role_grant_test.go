@@ -25,10 +25,14 @@ func cleanupRoleGrant(t *testing.T, probes ...Permission) {
 	t.Helper()
 	t.Cleanup(func() {
 		roleGrantMu.Lock()
-		defer roleGrantMu.Unlock()
 		for _, p := range probes {
 			delete(roleGrantRegistry, p)
 		}
+		roleGrantMu.Unlock()
+		// A probe registered as a grant is also registered as a permission;
+		// leave neither behind, or TestEveryPermissionDeclaresItsScope reads
+		// the probe as an undeclared built-in in whatever test runs next.
+		unregisterForTesting(probes...)
 	})
 }
 

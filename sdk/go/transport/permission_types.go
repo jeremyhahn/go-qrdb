@@ -42,6 +42,15 @@ const (
 	// identities whose TenantID equals the system tenant id may exercise
 	// these.
 	PermissionScopeCross PermissionScope = "cross"
+
+	// PermissionScopeTenantOnly identifies a strictly tenant-local
+	// permission: admitted only against the identity's own tenant, and
+	// denied to the system tenant structurally — the system-tenant rule
+	// does not lift it. It exists for material held on a tenant's behalf
+	// that the platform operator must not reach. The label is the same one
+	// permission.Scope.String produces, so the wire form of a scope is the
+	// same whichever layer wrote it.
+	PermissionScopeTenantOnly PermissionScope = "tenant-only"
 )
 
 // PermissionInfo is the SDK projection of a registered permission. It
@@ -80,8 +89,8 @@ type PermissionClient interface {
 	Lookup(ctx context.Context, name string) (PermissionInfo, error)
 
 	// LookupScope returns the scope of the permission with the given name.
-	// Returns PermissionScopeSelf for unregistered names — that is the
-	// safe default that confines a permission to the identity's own
-	// tenant unless lifted by the system-tenant rule.
+	// A name with no declared scope is an error, never PermissionScopeSelf:
+	// every permission declares its scope, and a caller gating on Self for
+	// one nobody declared would be gating on nothing.
 	LookupScope(ctx context.Context, name string) (PermissionScope, error)
 }

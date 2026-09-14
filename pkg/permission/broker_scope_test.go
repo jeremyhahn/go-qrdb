@@ -75,7 +75,7 @@ func TestBrokerScope_ParseAndRegistered(t *testing.T) {
 func TestBrokerScope_TenantOnlyScope(t *testing.T) {
 	for _, tc := range brokerScopeExpectations {
 		t.Run(string(tc.perm), func(t *testing.T) {
-			if got := LookupScope(tc.perm); got != ScopeTenantOnly {
+			if got := mustScope(t, tc.perm); got != ScopeTenantOnly {
 				t.Fatalf("LookupScope(%q): got %v, want %v", tc.perm, got, ScopeTenantOnly)
 			}
 			if IsCrossScope(tc.perm) {

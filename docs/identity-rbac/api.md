@@ -267,6 +267,15 @@ strings, each validated against the registry.
 `ListPermissions` returns the registry, grouped into categories with display
 names for UI rendering.
 
+The embedded SDK's `RBAC().ListPermissions(identity)` is the per-identity
+view: the union of what the identity's roles grant, each entry carrying its
+declared scope (`self`, `cross` or `tenant-only`) so a UI can filter to what
+the caller can do where it is. A whole-segment wildcard grant (`objstore:*`,
+`*:read`, `*:*`) is expanded to the registered permissions it matches, each
+with its own scope, and the result is deduplicated and sorted by name — a
+wildcard is how the authorizer matches a name, not a permission with a scope
+of its own, and the listing never contains one.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
