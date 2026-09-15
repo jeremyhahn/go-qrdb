@@ -111,7 +111,7 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("acme-pass")},
+		Credentials:    seal.MustCredentials([]byte("acme-pass")),
 	}
 	err = n.EnableEncryption(ctx,
 		service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}, tenOpts)

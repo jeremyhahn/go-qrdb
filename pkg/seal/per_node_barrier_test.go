@@ -29,7 +29,7 @@ func newSoftwareBarrierWithPass(t *testing.T, pass string) *StorageBarrier {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := b.Initialize(context.Background(), Credentials{Secret: []byte(pass)}); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials([]byte(pass))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	return b

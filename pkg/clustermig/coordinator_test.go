@@ -40,7 +40,7 @@ func validOpts() seal.MigrationOptions {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("hunter2")},
+		Credentials:    seal.MustCredentials([]byte("hunter2")),
 	}
 }
 

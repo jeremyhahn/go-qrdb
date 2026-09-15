@@ -55,19 +55,20 @@ permissions:
   security-events: write
 
 env:
-  # Latest 1.26 patch (owner ruling 2026-08-20). setup-go 'stable' is prohibited
-  # as a spec — it flipped to 1.27.0 mid-campaign and broke every repo riding it.
+  # Go 1.27.0, forced by a Layer 0 dependency rather than chosen (#540):
+  # go-enclave v0.5.0-alpha's own `go` directive is 1.27.0, go-quicraft
+  # v0.11.0-alpha consumes it and moved with it, and this module cannot
+  # consume either and stay behind. The `go` directive is 1.27.0 in the root
+  # and every nested module (Go evaluates the language version from the MAIN
+  # module, so a nested one left behind fails with "requires go >= 1.27.0"
+  # rather than upgrading). setup-go 'stable' is prohibited as a spec — it
+  # flipped to 1.27.0 mid-campaign and broke every repo riding it; an exact
+  # version is pinned here for the same reason it always was.
   #
-  # The swiss BLOCKER THAT USED TO BE RECORDED HERE IS GONE (#177, 2026-09-02):
-  # cockroachdb/swiss widened its build tag to `!go1.28` and this module's pin
-  # moved, so both modules now compile clean under 1.27.0 — measured on this
-  # tree, `GOTOOLCHAIN=go1.27.0 go build ./...` exits 0 in the root and in
-  # sdk/go. What remains is not technical: raising the directive is the
-  # portfolio toolchain wave (#39), which is still `task:blocked` on the owner's
-  # ruling and is dispatched centrally, not per repo. So this stays at 1.26.7
-  # and #39 moves it — but nobody should re-derive a blocker from this comment,
-  # because there isn't one.
-  GO_VERSION: "1.26.7"
+  # The swiss blocker that used to be recorded here was gone before this
+  # move (#177, 2026-09-02): cockroachdb/swiss widened its build tag to
+  # `!go1.28`, and both modules had been measured clean under 1.27.0 since.
+  GO_VERSION: "1.27.0"
 
   # ANALYSIS TOOL PINS (#179, #195). These are the versions BAKED into the
   # self-hosted runner image; the steps below ASSERT the binary they got matches

@@ -147,7 +147,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToPassphrase(t *testing.
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("raft-migrate-pw")},
+		Credentials:    seal.MustCredentials([]byte("raft-migrate-pw")),
 	}
 	if err := s.raftReg.MigrateTenantEncryption(ctx, "rt", opts); err != nil {
 		t.Fatalf("MigrateTenantEncryption: %v", err)
@@ -314,7 +314,7 @@ func TestMigrateTenantEncryption_Unavailable(t *testing.T) {
 	var nilFactory *RaftBackendFactory
 	if err := nilFactory.MigrateTenantEncryption(ctx, "rt", seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap, Availability: seal.AvailabilityQuiesced,
-		Credentials: seal.Credentials{Secret: []byte("pw")},
+		Credentials: seal.MustCredentials([]byte("pw")),
 	}); !errors.Is(err, ErrRaftBackendUnavailable) {
 		t.Fatalf("nil factory MigrateTenantEncryption = %v, want ErrRaftBackendUnavailable", err)
 	}
@@ -352,7 +352,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_RecodeFailureRollsBack(t *te
 
 	opts := seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	}
 	if err := s.raftReg.MigrateTenantEncryption(ctx, "rt", opts); !errors.Is(err, boom) {
 		t.Fatalf("MigrateTenantEncryption = %v, want the injected recode failure", err)
@@ -404,7 +404,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_SealedSource(t *testing.T) {
 	}
 	err := s.raftReg.MigrateTenantEncryption(ctx, "rt", seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	})
 	if !errors.Is(err, seal.ErrSealed) {
 		t.Fatalf("MigrateTenantEncryption(sealed source) = %v, want ErrSealed", err)
@@ -429,7 +429,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_RetryAfterRollback(t *testin
 
 	opts := seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	}
 
 	// First attempt fails mid-recode → rolls back.
@@ -481,7 +481,7 @@ func TestScopedEncryptionMigrator_RoutesIsolationRaft(t *testing.T) {
 			TargetStrategy: seal.StrategyPassphrase,
 			Mechanism:      seal.MechanismSwap,
 			Availability:   seal.AvailabilityQuiesced,
-			Credentials:    seal.Credentials{Secret: []byte("pw")},
+			Credentials:    seal.MustCredentials([]byte("pw")),
 		})
 	if !errors.Is(err, ErrRaftDatabaseUnknown) {
 		t.Fatalf("IsolationRaft tenant routed to %v, want raft path (ErrRaftDatabaseUnknown)", err)
@@ -505,7 +505,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoShards(t *testing.T) {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("pw")},
+		Credentials:    seal.MustCredentials([]byte("pw")),
 	})
 	if !errors.Is(err, ErrRaftDatabaseUnknown) {
 		t.Fatalf("MigrateTenantEncryption(no shards) = %v, want ErrRaftDatabaseUnknown", err)

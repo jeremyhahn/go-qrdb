@@ -152,7 +152,7 @@ func TestAwaitUnseal_SuccessPath(t *testing.T) {
 	// DeferredSoftwareStrategy accepts the credentials.
 	require.NoError(t, sub.SealBarrier.Initialize(
 		context.Background(),
-		seal.Credentials{Secret: []byte("testpass-awaitUnseal")},
+		seal.MustCredentials([]byte("testpass-awaitUnseal")),
 	))
 
 	// awaitUnseal should detect !IsSealed() on the next tick and return.
@@ -236,7 +236,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 	// proceeds directly to firstboot.Initialize without re-initializing.
 	require.NoError(t, sub.SealBarrier.Initialize(
 		context.Background(),
-		seal.Credentials{Secret: []byte("testpass-runfirstboot")},
+		seal.MustCredentials([]byte("testpass-runfirstboot")),
 	))
 
 	userSvc := &mockUserServicer{

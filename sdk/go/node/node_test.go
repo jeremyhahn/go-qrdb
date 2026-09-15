@@ -414,7 +414,7 @@ func TestNode_Unseal_CompletesBootAndServesRequests(t *testing.T) {
 	assert.Nil(t, n2.Client())
 
 	// Unseal with the correct passphrase → full boot.
-	creds := seal.Credentials{Secret: []byte("my-passphrase")}
+	creds := seal.MustCredentials([]byte("my-passphrase"))
 	require.NoError(t, n2.Unseal(context.Background(), creds))
 
 	assert.False(t, n2.IsSealed(), "must be unsealed after Unseal()")
@@ -445,7 +445,7 @@ func TestNode_Unseal_WrongPassphrase_ReturnsError(t *testing.T) {
 	require.True(t, n2.IsSealed())
 
 	// Wrong passphrase must return an UnsealError.
-	err = n2.Unseal(context.Background(), seal.Credentials{Secret: []byte("wrong-passphrase")})
+	err = n2.Unseal(context.Background(), seal.MustCredentials([]byte("wrong-passphrase")))
 	var unsealErr *UnsealError
 	require.True(t, errors.As(err, &unsealErr), "expected UnsealError, got %T: %v", err, err)
 	assert.True(t, n2.IsSealed(), "node must remain sealed after failed Unseal")
@@ -467,7 +467,7 @@ func TestNode_Unseal_Idempotent(t *testing.T) {
 	require.False(t, n.IsSealed())
 
 	// Second Unseal on an already-unsealed node must not error.
-	assert.NoError(t, n.Unseal(context.Background(), seal.Credentials{Secret: []byte("idempotent-test")}))
+	assert.NoError(t, n.Unseal(context.Background(), seal.MustCredentials([]byte("idempotent-test"))))
 	assert.False(t, n.IsSealed())
 	require.NoError(t, n.Close())
 }

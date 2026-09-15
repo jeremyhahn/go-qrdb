@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -62,13 +62,26 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 		return nil, err
 	}
 
-	// NOTE: []byte(creds.Secret) does NOT copy when Secret is already a []byte —
-	// secret aliases the caller's credential buffer. SealAndDistribute wipes it
-	// on return, so creds.Secret is zeroed as a side effect; callers must not
-	// read creds.Secret after InitializeShamir returns.
-	secret := []byte(creds.Secret)
+	// The credential secret is protected memory; open it into a fresh locked
+	// enclave and hand SealAndDistribute a working copy it owns and wipes on
+	// return. The caller's credential is untouched — it still owns and
+	// destroys it — so the []byte aliasing this used to rely on (and warn
+	// about) no longer exists.
+	if creds.Secret == nil {
+		return nil, ErrInvalidPassphrase
+	}
+	secretEnclave, err := creds.Secret.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer secretEnclave.Destroy()
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		return nil, err
+	}
+	defer secretBuf.Destroy()
 
-	shareCount, err := b.distributor.SealAndDistribute(ctx, secret, threshold, total)
+	shareCount, err := b.distributor.SealAndDistribute(ctx, secretBuf.Bytes(), threshold, total)
 	if err != nil {
 		return nil, err
 	}
@@ -319,12 +332,26 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 		if err := b.unsealDirect(ctx, secretBuf.Bytes()); err != nil {
 			return nil, err
 		}
-	} else if err := b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()}); err != nil {
+	} else if err := b.unsealWithSecret(ctx, secretBuf.Bytes()); err != nil {
 		// Credential mode: the reconstructed secret is the password.
 		return nil, err
 	}
 
 	return prog, nil
+}
+
+// unsealWithSecret runs a credential-mode Unseal with secret as the
+// passphrase. NewCredentials moves the secret into protected memory and wipes
+// the source — which is the caller's protected buffer, destroyed on its own
+// return in any case — and the credential is destroyed as soon as the unseal
+// has consumed it.
+func (b *StorageBarrier) unsealWithSecret(ctx context.Context, secret []byte) error {
+	creds, err := NewCredentials(secret)
+	if err != nil {
+		return err
+	}
+	defer creds.Secret.Destroy()
+	return b.Unseal(ctx, creds)
 }
 
 // loadOrCreateAccumulator returns the current ShareAccumulator or creates a
@@ -414,7 +441,7 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		return b.unsealDirect(ctx, secretBuf.Bytes())
 	}
-	return b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()})
+	return b.unsealWithSecret(ctx, secretBuf.Bytes())
 }
 
 // Compile-time interface checks.

@@ -28,7 +28,7 @@ func testLogger() *slog.Logger {
 func initializeBarrier(t *testing.T, b *Barrier) {
 	t.Helper()
 	ctx := context.Background()
-	if err := b.Initialize(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
+	if err := b.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -98,7 +98,7 @@ func newShamirTestBarrierDirect(t *testing.T) (*Barrier, *captureDistributor) {
 func TestShamirInitializeShamir_CredentialMode_Success(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	result, err := b.InitializeShamir(ctx, creds)
 	if err != nil {
@@ -183,7 +183,7 @@ func TestShamirInitializeShamir_NotConfigured(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	_, err = b.InitializeShamir(context.Background(), Credentials{Secret: []byte("pw")})
+	_, err = b.InitializeShamir(context.Background(), MustCredentials([]byte("pw")))
 	if err != ErrShamirNotConfigured {
 		t.Errorf("expected ErrShamirNotConfigured, got %v", err)
 	}
@@ -215,7 +215,7 @@ func TestShamirInitializeShamir_ThresholdInvalid(t *testing.T) {
 			dist := newCaptureDistributor()
 			b.SetCeremonyDistributor(dist)
 
-			_, err = b.InitializeShamir(context.Background(), Credentials{Secret: []byte("pw")})
+			_, err = b.InitializeShamir(context.Background(), MustCredentials([]byte("pw")))
 			if err != ErrShamirThresholdInvalid {
 				t.Errorf("expected ErrShamirThresholdInvalid, got %v", err)
 			}
@@ -276,7 +276,7 @@ func TestShamirInitializeShamir_DirectMode_BaseExistsError(t *testing.T) {
 func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	result, err := b.InitializeShamir(ctx, creds)
 	if err != nil {
@@ -316,7 +316,7 @@ func TestShamirUnsealWithShare_IncrementalUnseal(t *testing.T) {
 func TestShamirUnsealWithShare_DuplicateShare(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
@@ -356,7 +356,7 @@ func TestShamirUnsealWithShare_NotConfigured(t *testing.T) {
 func TestShamirUnsealWithShare_AlreadyUnsealed(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
@@ -402,7 +402,7 @@ func TestShamirUnsealWithShare_DirectMode(t *testing.T) {
 func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
 	b, _ := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
@@ -446,7 +446,7 @@ func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
 func TestShamirUnsealWithShare_MalformedShareRejected(t *testing.T) {
 	b, _ := newShamirTestBarrier(t)
 	ctx := context.Background()
-	if _, err := b.InitializeShamir(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
+	if _, err := b.InitializeShamir(ctx, MustCredentials([]byte("test-password"))); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
 	if err := b.Seal(); err != nil {
@@ -465,7 +465,7 @@ func TestShamirUnsealWithShare_MalformedShareRejected(t *testing.T) {
 func TestShamirUnsealWithShares_BatchUnseal(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	result, err := b.InitializeShamir(ctx, creds)
 	if err != nil {
@@ -490,7 +490,7 @@ func TestShamirUnsealWithShares_BatchUnseal(t *testing.T) {
 func TestShamirUnsealWithShares_QuorumIncomplete(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	result, err := b.InitializeShamir(ctx, creds)
 	if err != nil {
@@ -526,7 +526,7 @@ func TestShamirUnsealWithShares_NotConfigured(t *testing.T) {
 func TestShamirUnsealWithShares_AlreadyUnsealed(t *testing.T) {
 	b, dist := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	result, err := b.InitializeShamir(ctx, creds)
 	if err != nil {
@@ -567,7 +567,7 @@ func TestShamirUnsealWithShares_DirectMode(t *testing.T) {
 func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
 	b, _ := newShamirTestBarrier(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("test-password")}
+	creds := MustCredentials([]byte("test-password"))
 
 	if _, err := b.InitializeShamir(ctx, creds); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
@@ -761,7 +761,7 @@ func TestBarrierStatus_ShamirFields_NonShamirBarrier(t *testing.T) {
 		t.Fatalf("NewBarrier: %v", err)
 	}
 
-	if err := b.Initialize(context.Background(), Credentials{Secret: []byte("pw")}); err != nil {
+	if err := b.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

@@ -312,7 +312,12 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 			SharesRequired: req.Barrier.SharesRequired,
 			SharesTotal:    req.Barrier.SharesTotal,
 		}
-		creds = seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+		var err error
+		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
+		defer creds.Secret.Destroy()
 		req.Barrier.Secret = ""
 	}
 

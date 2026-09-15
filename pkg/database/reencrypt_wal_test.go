@@ -58,7 +58,7 @@ func newKeyedBarrier(t *testing.T, rootKeyPath, passphrase string) *seal.Storage
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(keyed): %v", err)
 	}
-	if err := b.Initialize(context.Background(), seal.Credentials{Secret: []byte(passphrase)}); err != nil {
+	if err := b.Initialize(context.Background(), seal.MustCredentials([]byte(passphrase))); err != nil {
 		t.Fatalf("Initialize(keyed): %v", err)
 	}
 	return b

@@ -814,7 +814,7 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if err := sysBarrier.Initialize(context.Background(),
-		seal.Credentials{Secret: []byte("mux-shared-wal-test")}); err != nil {
+		seal.MustCredentials([]byte("mux-shared-wal-test"))); err != nil {
 		t.Fatalf("Initialize system barrier: %v", err)
 	}
 	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"),

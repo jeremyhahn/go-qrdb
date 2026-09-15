@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -31,12 +32,16 @@ type captureMCPMigrator struct {
 }
 
 type mcpMigrateCall struct {
-	scope service.BarrierScope
-	opts  seal.MigrationOptions
+	scope  service.BarrierScope
+	opts   seal.MigrationOptions
+	secret []byte // snapshot taken DURING the call; the handler destroys the credential after
 }
 
 func (m *captureMCPMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	m.ch <- mcpMigrateCall{scope: scope, opts: opts}
+	// The credential is a borrow valid for this call only: the handler's
+	// goroutine destroys it when this returns, so an early destroy would
+	// surface here as a panic from Snapshot rather than pass unnoticed.
+	m.ch <- mcpMigrateCall{scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
 	return m.err
 }
 
@@ -99,6 +104,9 @@ func TestHandleBarrierEnableEncryption_MCP_SystemStarts(t *testing.T) {
 	case call := <-mig.ch:
 		if call.scope.Kind != service.ScopeSystem {
 			t.Fatalf("scope.Kind = %v, want ScopeSystem", call.scope.Kind)
+		}
+		if string(call.secret) != "pw" {
+			t.Fatalf("passphrase not threaded to credentials: %q", call.secret)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("migrator was never invoked")

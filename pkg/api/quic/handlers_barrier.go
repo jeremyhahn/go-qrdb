@@ -274,16 +274,24 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 		availability = seal.AvailabilityOnline
 	}
 
+	// The request's passphrase is copied into protected memory and the
+	// decoded copy wiped at once — the credential is what the migration reads
+	// from here on, so nothing needs the request's plaintext past this line.
+	creds, err := seal.CredentialsFor(req.GetPassphrase())
+	secure.Wipe(req.GetPassphrase())
+	if err != nil {
+		return nil, err
+	}
 	opts := seal.MigrationOptions{
 		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
 		Mechanism:       mechanism,
 		Availability:    availability,
-		Credentials:     seal.Credentials{Secret: req.GetPassphrase()},
+		Credentials:     creds,
 		ShamirThreshold: int(req.GetShamirThreshold()),
 		ShamirTotal:     int(req.GetShamirTotal()),
 	}
 	if err := opts.Validate(); err != nil {
-		secure.Wipe(req.GetPassphrase())
+		creds.Secret.Destroy()
 		return nil, err
 	}
 
@@ -296,10 +304,10 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 	// migration must survive the response returning.
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
-		// request, so a deferred wipe in the handler would zero the
-		// passphrase out from under a running migration. The wipe belongs
-		// to the last reader, and that is this goroutine.
-		defer secure.Wipe(req.GetPassphrase())
+		// request, so destroying it in the handler would pull the
+		// passphrase out from under a running migration. The destroy
+		// belongs to the last reader, and that is this goroutine.
+		defer creds.Secret.Destroy()
 		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 

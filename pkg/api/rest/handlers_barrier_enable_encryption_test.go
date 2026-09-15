@@ -16,7 +16,6 @@
 package rest
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -35,18 +35,18 @@ type captureMigrator struct {
 }
 
 type migrateCall struct {
-	scope service.BarrierScope
-	opts  seal.MigrationOptions
+	scope  service.BarrierScope
+	opts   seal.MigrationOptions
+	secret []byte
 }
 
-// EnableEncryption records the call. opts.Credentials.Secret is a BORROW
-// valid only for the duration of this call — the handler owns that slice and
-// zeroizes it once the migration returns — so the recorded copy must be
-// deep. Recording the slice header instead would hand the assertions a
-// buffer that is legitimately zeroed out from under them.
+// EnableEncryption records the call. opts.Credentials is a BORROW valid only
+// for the duration of this call — the handler owns the credential and destroys
+// it once the migration returns — so the plaintext is snapshotted here.
+// Recording the credential instead would hand the assertions an enclave that
+// is legitimately destroyed out from under them.
 func (m *captureMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	opts.Credentials.Secret = bytes.Clone(opts.Credentials.Secret)
-	m.ch <- migrateCall{scope: scope, opts: opts}
+	m.ch <- migrateCall{scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
 	return m.err
 }
 
@@ -120,7 +120,7 @@ func TestHandleBarrierEnableEncryption_SystemStarts(t *testing.T) {
 		if call.opts.Mechanism != seal.MechanismSwap {
 			t.Fatalf("mechanism = %q, want swap", call.opts.Mechanism)
 		}
-		if string(call.opts.Credentials.Secret) != "pw" {
+		if string(call.secret) != "pw" {
 			t.Fatalf("passphrase not threaded to credentials")
 		}
 	case <-time.After(3 * time.Second):

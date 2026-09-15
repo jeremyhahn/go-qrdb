@@ -72,21 +72,21 @@ var _ service.EncryptionMigrator = (*daemonSystemMigrator)(nil)
 // error (the scoped composite should never deliver one here). A second request
 // while one is pending returns ErrSystemMigrationInProgress.
 func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	// On every path that does NOT hand the request off to the boot loop, wipe the
-	// plaintext unlock credential here — the recycler copied it for the async
-	// system path and only handleSystemMigration (the enqueued path) wipes it.
+	// On every path that does NOT hand the request off to the boot loop, destroy
+	// the unlock credential here — the recycler built it for the async system
+	// path and only handleSystemMigration (the enqueued path) destroys it.
 	if scope.Kind != service.ScopeSystem {
-		wipe(opts.Credentials.Secret)
+		opts.Credentials.Secret.Destroy()
 		return service.ErrMigrationProviderUnavailable
 	}
 	if err := opts.Validate(); err != nil {
-		wipe(opts.Credentials.Secret)
+		opts.Credentials.Secret.Destroy()
 		return err
 	}
 	req := &systemMigrationRequest{opts: opts, done: make(chan error, 1)}
 	select {
 	case m.ch <- req:
-		// Enqueued; the boot loop (handleSystemMigration) owns + wipes the
+		// Enqueued; the boot loop (handleSystemMigration) owns + destroys the
 		// credential. Wait for the recycle outcome.
 		select {
 		case err := <-req.done:
@@ -95,7 +95,7 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 			return ctx.Err()
 		}
 	default:
-		wipe(opts.Credentials.Secret)
+		opts.Credentials.Secret.Destroy()
 		return ErrSystemMigrationInProgress
 	}
 }
@@ -182,10 +182,10 @@ func handleSystemMigration(
 	walDir := filepath.Join(f.dataDir, "wal")
 
 	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, pebbleDirs, walDir, req.opts)
-	// The recycle has consumed the unlock credential; wipe the plaintext copy the
+	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
-	// wipe it because this recycle runs async across the in-process reboot).
-	wipe(req.opts.Credentials.Secret)
+	// destroy it because this recycle runs async across the in-process reboot).
+	req.opts.Credentials.Secret.Destroy()
 	req.done <- rerr
 	if rerr != nil {
 		// Do NOT reboot into a half-migrated state. The crash-safe journal plus

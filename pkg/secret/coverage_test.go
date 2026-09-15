@@ -180,7 +180,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := sysBarrier.Initialize(ctx, seal.Credentials{Secret: []byte("sys-pass")}); err != nil {
+	if err := sysBarrier.Initialize(ctx, seal.MustCredentials([]byte("sys-pass"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	registry, err := seal.NewBarrierRegistry(logger, sysBarrier)
@@ -197,7 +197,7 @@ func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) 
 		t.Fatalf("RegisterTenant: %v", err)
 	}
 	// Initialize and unseal the tenant barrier so the service builds OK.
-	if err := tb.Barrier().Initialize(ctx, seal.Credentials{Secret: []byte("tenant-pass")}); err != nil {
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials([]byte("tenant-pass"))); err != nil {
 		t.Fatalf("Initialize tenant: %v", err)
 	}
 

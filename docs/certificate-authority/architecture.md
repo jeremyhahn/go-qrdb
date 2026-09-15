@@ -409,7 +409,7 @@ Unseal
   └─ Cache CA key in memory
 
 Seal
-  ├─ memguard.WipeBytes(caKey) → zero memory
+  ├─ secure.Wipe(caKey) → zero memory
   ├─ nil CA key and cert references
   └─ All operations return BarrierSealedError
 

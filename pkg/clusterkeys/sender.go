@@ -27,7 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+	"github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -292,11 +292,11 @@ func (s *Sender) deliverSystemManaged(ctx context.Context, replica placement.Rep
 		return err
 	}
 	plaintext, err := marshalKeyPayload(imported)
-	enclave.WipeBytes(imported.RootKey) // wipe the exported root key immediately
+	enclave.Wipe(imported.RootKey) // wipe the exported root key immediately
 	if err != nil {
 		return errors.Join(ErrDelivery, err)
 	}
-	defer enclave.WipeBytes(plaintext)
+	defer enclave.Wipe(plaintext)
 	return s.Deliver(ctx, replica, meta, plaintext)
 }
 
@@ -308,6 +308,6 @@ func (s *Sender) deliverSelfManaged(ctx context.Context, replica placement.Repli
 	if err != nil {
 		return err
 	}
-	defer enclave.WipeBytes(blob)
+	defer enclave.Wipe(blob)
 	return s.Deliver(ctx, replica, meta, blob)
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -29,9 +30,11 @@ import (
 type mcpCredentialDatabaseMock struct {
 	service.DatabaseServicer
 
-	gotCfg   database.DatabaseConfig
-	gotCreds seal.Credentials
-	credited bool
+	gotCfg database.DatabaseConfig
+	// gotSecret is a snapshot of the credential's plaintext taken during the
+	// call: the handler destroys the credential when the call returns.
+	gotSecret []byte
+	credited  bool
 }
 
 func (m *mcpCredentialDatabaseMock) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -40,12 +43,12 @@ func (m *mcpCredentialDatabaseMock) CreateForTenant(_ context.Context, cfg datab
 }
 
 func (m *mcpCredentialDatabaseMock) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	m.gotCfg, m.gotCreds, m.credited = cfg, creds, true
+	m.gotCfg, m.gotSecret, m.credited = cfg, sealtest.Snapshot(creds), true
 	return &database.DatabaseInfo{Name: cfg.Name}, nil
 }
 
 func (m *mcpCredentialDatabaseMock) CreateForTenantWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	m.gotCfg, m.gotCreds, m.credited = cfg, creds, true
+	m.gotCfg, m.gotSecret, m.credited = cfg, sealtest.Snapshot(creds), true
 	return &database.DatabaseInfo{Name: cfg.Name}, nil
 }
 
@@ -77,8 +80,8 @@ func TestHandleDatabaseCreate_MCP_WithBarrierSecret_RoutesToCredentialedCreate(t
 	if !mock.credited {
 		t.Fatal("expected the credentialed create path to be used")
 	}
-	if string(mock.gotCreds.Secret) != "topsecret" {
-		t.Fatalf("secret = %q, want %q", mock.gotCreds.Secret, "topsecret")
+	if got := string(mock.gotSecret); got != "topsecret" {
+		t.Fatalf("secret = %q, want %q", got, "topsecret")
 	}
 	if mock.gotCfg.Barrier == nil || !mock.gotCfg.Barrier.Enabled {
 		t.Fatal("expected cfg.Barrier.Enabled to be true")

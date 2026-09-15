@@ -1899,7 +1899,16 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 			log.Info("node: seal strategy requires operator unseal", "strategy", strategyID)
 			return false
 		}
-		creds = seal.Credentials{Secret: passphrase}
+		// The option's slice stays the embedder's (WithSealPassphrase says
+		// the caller wipes it): CredentialsFor copies it into protected
+		// memory, and the credential is destroyed once this attempt has
+		// used it.
+		var err error
+		if creds, err = seal.CredentialsFor(passphrase); err != nil {
+			log.Warn("node: barrier credentials failed", "error", err)
+			return false
+		}
+		defer creds.Secret.Destroy()
 
 	default:
 		// Unknown / hardware strategy. Inspect the barrier's active strategy

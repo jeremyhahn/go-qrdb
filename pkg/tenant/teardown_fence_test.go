@@ -56,7 +56,7 @@ func newTenantCrypto(t *testing.T, ctx context.Context, reg *seal.BarrierRegistr
 	// newTestBarrierRegistry leaves the system barrier sealed; the key
 	// hierarchy the DEK manager wraps with starts one level below it.
 	system := reg.SystemBarrier()
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("system-pw")}); err != nil &&
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("system-pw"))); err != nil &&
 		!errors.Is(err, seal.ErrAlreadyInitialized) {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}

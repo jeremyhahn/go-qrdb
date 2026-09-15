@@ -61,8 +61,31 @@ type SymmetricEncrypter = seal.SymmetricEncrypter
 // StorageBackend is the backend interface for the seal subsystem.
 type StorageBackend = seal.StorageBackend
 
-// Credentials holds authentication credentials for barrier operations.
+// Credentials holds authentication credentials for barrier operations. The
+// secret is protected memory — a *enclave.SealedEnclave, never a []byte — and
+// is built with NewCredentials (consuming) or CredentialsFor (borrowing). The
+// zero value means "no credentials supplied". The caller OWNS a credential it
+// builds: destroy it (creds.Secret.Destroy(), nil-safe) once the seal or
+// unseal it was built for has returned; nothing downstream destroys it.
 type Credentials = seal.Credentials
+
+// NewCredentials moves a secret into protected memory and returns the
+// Credentials holding it. The source slice is WIPED on return, success or
+// failure — use it for material the caller made and will not read again. An
+// empty secret is refused. It allocates locked pages the kernel can refuse, and
+// on a GOEXPERIMENT=boringcrypto build it always fails (go-enclave seals through
+// the standard library's AES block, which boringcrypto replaces).
+var NewCredentials = seal.NewCredentials
+
+// CredentialsFor builds Credentials from a secret the caller has borrowed — a
+// request field, a config value — copying it into protected memory and leaving
+// the caller's slice as it was for the caller to wipe. Zero-length material
+// yields the zero Credentials ("no credentials supplied").
+var CredentialsFor = seal.CredentialsFor
+
+// MustCredentials is NewCredentials for fixtures; it panics where
+// NewCredentials would return an error.
+var MustCredentials = seal.MustCredentials
 
 // SealedRootKey is the serialized, encrypted root key blob.
 type SealedRootKey = seal.SealedRootKey
@@ -277,6 +300,14 @@ var NewSoftwareStrategy = seal.NewSoftwareStrategy
 // secret fails. Prefer it wherever the barrier is expected to authenticate the
 // caller that unseals it, and in any test asserting that it does.
 var NewDeferredSoftwareStrategy = seal.NewDeferredSoftwareStrategy
+
+// NewDeferredSoftwareStrategyWithParams is NewDeferredSoftwareStrategy carrying
+// an explicit KDF version and work factor, read off the strategy being replaced
+// with KDFVersion() and KDFParams(). A sealed root-key blob records the KDF
+// version and never the params, so a replacement strategy must carry the same
+// factor or the blob cannot be unsealed; the no-argument constructor resets a
+// hardened deployment to the defaults.
+var NewDeferredSoftwareStrategyWithParams = seal.NewDeferredSoftwareStrategyWithParams
 
 // NewSealStore creates a new SealStore backed by the given barrier.
 var NewSealStore = seal.NewSealStore

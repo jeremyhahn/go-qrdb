@@ -297,7 +297,7 @@ func TestLoadTenantRoot_CorruptJSON(t *testing.T) {
 	}
 	// Initialize so the system barrier is unsealed (loadTenantRoot bails out
 	// with (nil, false, nil) when the barrier is still sealed).
-	if err := sys.Initialize(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
+	if err := sys.Initialize(ctx, MustCredentials([]byte("test-password"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

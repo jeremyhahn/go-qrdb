@@ -20,7 +20,7 @@ A three-layer split, with **hardware arriving by composition rather than by
 import**.
 
 ```
-go-quicraft/pkg/seal/          Interfaces + memguard + minimal Barrier + Software/None/Shamir primitives
+go-quicraft/pkg/seal/          Interfaces + go-enclave protected memory + minimal Barrier + Software/None/Shamir primitives
         ↑
 go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
                                share exchange, StrategyRegistry (Software + None pre-registered)
@@ -211,7 +211,7 @@ The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-25
 2. Encrypt private key via `EncryptionBarrier.Encrypt()`
 3. Store wrapped blob in KVStore at `__sys:cert_ca/{tenantID}/wrapped_key`
 4. Store CA cert PEM in KVStore at `__sys:cert_ca/{tenantID}/cert_pem`
-5. Zero plaintext key (`memguard.WipeBytes`)
+5. Zero plaintext key (`secure.Wipe`)
 
 ### Unseal to Operational
 

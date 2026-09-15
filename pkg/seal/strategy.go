@@ -38,8 +38,71 @@ type SymmetricEncrypter = quicraftseal.SymmetricEncrypter
 // string keys. All methods accept context.Context and use string keys.
 type StorageBackend = quicraftseal.StorageBackend
 
-// Credentials holds authentication material for seal/unseal operations.
+// Credentials holds authentication material for seal/unseal operations. The
+// secret is protected memory — a *enclave.SealedEnclave, not a []byte — so a
+// caller cannot hand the barrier a passphrase that also lives on the heap.
+// Build one with NewCredentials; the zero value means "no credentials
+// supplied", which is what strategies that ignore credentials take.
+//
+// The caller OWNS the credential: destroy it (creds.Secret.Destroy(), nil-safe)
+// once the seal or unseal it was built for has returned. Nothing downstream
+// destroys it, because a credential that is passed through two layers would
+// otherwise be released by the first to finish with it.
 type Credentials = quicraftseal.Credentials
+
+// NewCredentials moves a secret into protected memory and returns the
+// Credentials holding it. The source slice is WIPED on return, success or
+// failure — that is the point of the constructor: material that reaches here
+// already existed unprotected, and the only thing left worth doing about it is
+// not leaving it there. An empty secret is refused with go-quicraft's own
+// seal.ErrInvalidPassphrase — a different sentinel from this package's
+// ErrInvalidPassphrase, which ChangePassword returns for the same fault.
+//
+// It allocates locked pages the kernel can refuse
+// (enclave.ErrLockedMemoryUnavailable), and on a GOEXPERIMENT=boringcrypto
+// build it ALWAYS fails with enclave.ErrSealFailed: go-enclave seals through
+// cipher.NewGCMWithRandomNonce, which requires the standard library's AES
+// block, and boringcrypto's is a different type. FIPS-certified crypto is
+// GOFIPS140=latest, which is unaffected.
+var NewCredentials = quicraftseal.NewCredentials
+
+// MustCredentials is NewCredentials for fixtures: a test's passphrase, a
+// constant a program cannot run without. It panics on the error NewCredentials
+// would return, which at such a site is a programming error or a host that
+// cannot lock memory at all — not a condition the caller has a way to recover
+// from. Production code takes secrets from callers and uses NewCredentials.
+func MustCredentials(secret []byte) Credentials {
+	creds, err := NewCredentials(secret)
+	if err != nil {
+		panic("qrdb/seal: MustCredentials: " + err.Error())
+	}
+	return creds
+}
+
+// CredentialsFor builds Credentials from a secret the caller has BORROWED — a
+// request field, a config value, an SDK argument the documented contract says
+// the caller owns. The secret is copied into protected memory and left exactly
+// as it was: whoever handed it over keeps what they had and stays responsible
+// for wiping it, and a transport that treats its request as a borrow (every
+// one of them does; see sdk/go/transport BarrierInitRequest) is not turned into
+// one that consumes it by the service beneath it. NewCredentials is the
+// consuming form, for material the caller made and will not read again.
+//
+// A secret that MAY be absent is the other reason this exists: zero-length
+// material yields the zero Credentials — "no credentials supplied", which is
+// what the none strategy takes and what a passphrase strategy refuses with its
+// own error — so the empty case is decided in one place rather than at every
+// site that turns an optional secret into a credential, and no such site can
+// seal an empty slice and turn "absent" into an error naming the wrong fault.
+//
+// The caller owns the result: destroy it when the operation it was built for
+// returns.
+func CredentialsFor(secret []byte) (Credentials, error) {
+	if len(secret) == 0 {
+		return Credentials{}, nil
+	}
+	return NewCredentials(append([]byte(nil), secret...))
+}
 
 // SealedRootKey is the persisted form of an encrypted root key.
 type SealedRootKey = quicraftseal.SealedRootKey
@@ -153,10 +216,22 @@ var FIPSEnabled = quicraftseal.FIPSEnabled
 // it, and in any test asserting that it does.
 //
 // It takes no KDF parameters, so a deferred strategy always carries the library
-// defaults for the selected algorithm. A tuned work factor cannot be expressed
-// through this constructor and therefore cannot survive a strategy replacement
-// — see #156 and go-quicraft#72.
+// defaults for the selected algorithm. A tuned work factor is carried across a
+// strategy replacement by NewDeferredSoftwareStrategyWithParams instead.
 var NewDeferredSoftwareStrategy = quicraftseal.NewDeferredSoftwareStrategy
+
+// NewDeferredSoftwareStrategyWithParams is NewDeferredSoftwareStrategy carrying
+// an explicit KDF version and work factor, read off the strategy being
+// replaced with KDFVersion() and KDFParams(). It exists for the replacement
+// case (go-quicraft#72, requested by #156): a sealed root-key blob records the
+// KDF VERSION byte and never the params, so a blob sealed at a non-default work
+// factor can only be unsealed by a strategy carrying that same factor — the
+// live strategy object is the only place the number exists, and a replacement
+// built with the no-argument constructor silently resets a hardened deployment
+// to the defaults. FIPS behaviour matches the bound constructors: a -tags fips
+// build has no Argon2id deriver and answers ErrKDFUnsupportedVersion; runtime
+// FIPS answers ErrKDFNotFIPSApproved.
+var NewDeferredSoftwareStrategyWithParams = quicraftseal.NewDeferredSoftwareStrategyWithParams
 
 // EpochBarrier is a type alias for go-quicraft's Barrier. The EpochBarrier
 // provides algorithm-agile authenticated encryption with epoch-based key

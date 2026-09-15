@@ -116,7 +116,7 @@ func TestRootTokenGenerateCredentialMode(t *testing.T) {
 		password := "credential-mode-password"
 
 		// Initialize using Shamir credential mode.
-		result, err := b.InitializeShamir(ctx, Credentials{Secret: []byte(password)})
+		result, err := b.InitializeShamir(ctx, MustCredentials([]byte(password)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +412,7 @@ func TestRootTokenVerifyCredentialMode(t *testing.T) {
 
 		ctx := context.Background()
 		password := "my-secret-pass"
-		if err := b.Initialize(ctx, Credentials{Secret: []byte(password)}); err != nil {
+		if err := b.Initialize(ctx, MustCredentials([]byte(password))); err != nil {
 			t.Fatal(err)
 		}
 
@@ -504,7 +504,7 @@ func TestVerifySecretAndGetRootKey_CredentialMode(t *testing.T) {
 	// InitializeShamir in credential mode: no ShamirStrategy is registered,
 	// so the credential secret ("the-password") is split. The barrier is
 	// also initialized inside InitializeShamir.
-	if _, err := b.InitializeShamir(ctx, Credentials{Secret: []byte("the-password")}); err != nil {
+	if _, err := b.InitializeShamir(ctx, MustCredentials([]byte("the-password"))); err != nil {
 		t.Fatalf("InitializeShamir (credential mode): %v", err)
 	}
 	shares := dist.Shares()

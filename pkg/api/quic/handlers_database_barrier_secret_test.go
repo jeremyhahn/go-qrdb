@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -32,9 +33,11 @@ import (
 type quicCredentialDatabaseMock struct {
 	service.DatabaseServicer
 
-	gotCfg   database.DatabaseConfig
-	gotCreds seal.Credentials
-	credited bool
+	gotCfg database.DatabaseConfig
+	// gotSecret is a snapshot of the credential's plaintext taken during the
+	// call: the handler destroys the credential when the call returns.
+	gotSecret []byte
+	credited  bool
 }
 
 func (m *quicCredentialDatabaseMock) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -43,12 +46,12 @@ func (m *quicCredentialDatabaseMock) CreateForTenant(_ context.Context, cfg data
 }
 
 func (m *quicCredentialDatabaseMock) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	m.gotCfg, m.gotCreds, m.credited = cfg, creds, true
+	m.gotCfg, m.gotSecret, m.credited = cfg, sealtest.Snapshot(creds), true
 	return &database.DatabaseInfo{Name: cfg.Name}, nil
 }
 
 func (m *quicCredentialDatabaseMock) CreateForTenantWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	m.gotCfg, m.gotCreds, m.credited = cfg, creds, true
+	m.gotCfg, m.gotSecret, m.credited = cfg, sealtest.Snapshot(creds), true
 	return &database.DatabaseInfo{Name: cfg.Name}, nil
 }
 
@@ -83,8 +86,8 @@ func TestHandleDatabaseCreate_WithBarrierSecret_RoutesToCredentialedCreate(t *te
 	if !mock.credited {
 		t.Fatal("expected the credentialed create path to be used")
 	}
-	if string(mock.gotCreds.Secret) != "topsecret" {
-		t.Fatalf("secret = %q, want %q", mock.gotCreds.Secret, "topsecret")
+	if got := string(mock.gotSecret); got != "topsecret" {
+		t.Fatalf("secret = %q, want %q", got, "topsecret")
 	}
 	if mock.gotCfg.Barrier == nil || !mock.gotCfg.Barrier.Enabled {
 		t.Fatal("expected cfg.Barrier.Enabled to be true")
@@ -106,8 +109,8 @@ func TestHandleDatabaseCreate_WithoutBarrier_EmptyCredentials(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(mock.gotCreds.Secret) != 0 {
-		t.Fatalf("expected empty credentials, got %q", mock.gotCreds.Secret)
+	if len(mock.gotSecret) != 0 {
+		t.Fatalf("expected empty credentials, got %q", mock.gotSecret)
 	}
 	if mock.gotCfg.Barrier != nil {
 		t.Fatalf("expected nil cfg.Barrier when no barrier config supplied, got %+v", mock.gotCfg.Barrier)

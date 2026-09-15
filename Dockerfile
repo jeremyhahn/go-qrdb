@@ -15,7 +15,7 @@
 # --------------------------------------------------------------------------
 # Stage 1: Build
 # --------------------------------------------------------------------------
-FROM golang:1.26.6-bookworm AS builder
+FROM golang:1.27.0-bookworm AS builder
 
 WORKDIR /build
 
@@ -57,8 +57,8 @@ COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
 RUN --mount=type=secret,id=gomodauth \
     set -eu; \
     mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap; \
-    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.1\n' > /tmp/stubs/go-quicraft/go.mod; \
-    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.1\n' > /tmp/stubs/go-truststrap/go.mod; \
+    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.27.0\n' > /tmp/stubs/go-quicraft/go.mod; \
+    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.27.0\n' > /tmp/stubs/go-truststrap/go.mod; \
     cp go.mod go.mod.orig; \
     sed -i 's|=> \.\./go-quicraft|=> /tmp/stubs/go-quicraft|' go.mod; \
     sed -i 's|=> \.\./go-truststrap|=> /tmp/stubs/go-truststrap|' go.mod; \

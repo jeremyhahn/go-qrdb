@@ -41,10 +41,10 @@ func (p *fakeMigrationProvider) StoreDirs(_ context.Context, _ BarrierScope) ([]
 }
 
 func (p *fakeMigrationProvider) MintKeyedTarget(ctx context.Context, _ BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
-	strategy, err := seal.NewSoftwareStrategy(opts.Credentials.Secret)
-	if err != nil {
-		return nil, err
-	}
+	// Deferred, as the production provider mints it (sdk/go/node
+	// keyedStrategyForStrategy): the passphrase is read from the credential
+	// at each seal and unseal, so the fake never materializes it.
+	strategy := seal.NewDeferredSoftwareStrategy()
 	b, err := seal.NewStorageBarrier(testLogger(), p.sealBackend,
 		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, strategy)
 	if err != nil {
@@ -120,7 +120,7 @@ func validSwapOpts() seal.MigrationOptions {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("migrate-pass")},
+		Credentials:    seal.MustCredentials([]byte("migrate-pass")),
 	}
 }
 
@@ -232,7 +232,7 @@ func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPa
 	if err != nil {
 		t.Fatalf("barrier: %v", err)
 	}
-	if err := b.Unseal(context.Background(), seal.Credentials{Secret: []byte(passphrase)}); err != nil {
+	if err := b.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase))); err != nil {
 		t.Fatalf("unseal: %v", err)
 	}
 	return b

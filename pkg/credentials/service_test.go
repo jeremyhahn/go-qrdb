@@ -42,7 +42,7 @@ func newTestBarrier(t *testing.T) *seal.StorageBarrier {
 	require.NoError(t, err, "NewStorageBarrier")
 
 	ctx := context.Background()
-	err = b.Initialize(ctx, seal.Credentials{Secret: []byte("test-password-123")})
+	err = b.Initialize(ctx, seal.MustCredentials([]byte("test-password-123")))
 	require.NoError(t, err, "barrier Initialize")
 
 	return b

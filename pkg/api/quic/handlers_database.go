@@ -62,7 +62,11 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 			SharesRequired: req.Barrier.SharesRequired,
 			SharesTotal:    req.Barrier.SharesTotal,
 		}
-		creds = seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+		var err error
+		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+			return nil, err
+		}
+		defer creds.Secret.Destroy()
 	}
 
 	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)

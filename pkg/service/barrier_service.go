@@ -295,15 +295,29 @@ func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.C
 }
 
 // BarrierInitialize initializes the barrier with a secret credential by
-// delegating to the StorageBarrier's Initialize method.
+// delegating to the StorageBarrier's Initialize method. secret is BORROWED for
+// the duration of the call, as the interface says: it is copied into protected
+// memory, the credential built from it is destroyed when the initialization
+// returns, and the caller's slice is left as it was for the caller to wipe.
 func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
-	return s.barrier.Initialize(ctx, seal.Credentials{Secret: secret})
+	creds, err := seal.CredentialsFor(secret)
+	if err != nil {
+		return err
+	}
+	defer creds.Secret.Destroy()
+	return s.barrier.Initialize(ctx, creds)
 }
 
 // BarrierUnseal unseals the barrier with a secret credential by delegating
-// to the StorageBarrier's Unseal method.
+// to the StorageBarrier's Unseal method. secret is BORROWED, as in
+// BarrierInitialize.
 func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
-	return s.barrier.Unseal(ctx, seal.Credentials{Secret: secret})
+	creds, err := seal.CredentialsFor(secret)
+	if err != nil {
+		return err
+	}
+	defer creds.Secret.Destroy()
+	return s.barrier.Unseal(ctx, creds)
 }
 
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected
@@ -344,7 +358,13 @@ func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret []b
 		})
 	}
 
-	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: secret})
+	// secret is BORROWED, as in BarrierInitialize.
+	creds, err := seal.CredentialsFor(secret)
+	if err != nil {
+		return nil, err
+	}
+	defer creds.Secret.Destroy()
+	result, err := s.barrier.InitializeShamir(ctx, creds)
 	if err != nil {
 		return nil, err
 	}

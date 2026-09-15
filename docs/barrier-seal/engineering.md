@@ -64,29 +64,42 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 
 ## Invariants
 
-- **A barrier credential is a wipeable byte slice at every layer, and it is a
-  borrow.** The transport request field, the protobuf field, the service-layer
-  parameter and `seal.Credentials.Secret` are all `[]byte`, never `string`,
-  because a Go string is immutable and therefore cannot be zeroized.
+- **A barrier credential is a wipeable byte slice up to the service boundary,
+  and protected memory from there on.** The transport request field, the
+  protobuf field and the service-layer parameter are all `[]byte`, never
+  `string`, because a Go string is immutable and therefore cannot be zeroized.
+  `seal.Credentials.Secret` is a `*enclave.SealedEnclave` (go-enclave, as of
+  go-quicraft v0.11.0-alpha): the service copies the borrowed slice into a
+  sealed enclave with `seal.CredentialsFor`, and the strategy that needs the
+  passphrase opens that enclave itself for exactly as long as its KDF runs.
+  Nothing between the decoder and the KDF holds the plaintext as a `[]byte`.
 
-  The ownership rule that makes the type useful:
+  The ownership rule that makes the types useful:
 
-  - **The callee borrows and retains nothing.** `BarrierServicer`,
-    `TenantServicer` and the sealing strategies read the slice for the duration
-    of the call. `NewSoftwareStrategy` copies into its own enclave;
-    `InitializeShamir` hands the credential to `SealAndDistribute`, which wipes
-    it. Nothing keeps a reference past the call, which is what makes the caller
-    free to wipe.
-  - **The owner is whoever decoded it, and it wipes on every exit path.** Each
-    protocol handler `defer secure.Wipe`s the slice its decoder produced, so a
-    rejected unseal leaves no plaintext behind either.
+  - **The callee borrows the slice and retains nothing.** `BarrierServicer`
+    and `TenantServicer` read it for the duration of the call, build a
+    credential from a copy, and destroy that credential when the call returns.
+    `InitializeShamir` opens the credential into a working copy of its own
+    that `SealAndDistribute` wipes. Nothing keeps a reference past the call,
+    which is what makes the caller free to wipe.
+  - **The owner of the slice is whoever decoded it, and it wipes on every exit
+    path.** Each protocol handler `defer secure.Wipe`s the slice its decoder
+    produced, so a rejected unseal leaves no plaintext behind either.
+  - **The owner of a credential is whoever built it, and it destroys it.**
+    `creds.Secret.Destroy()` (nil-safe) once the seal or unseal it was built
+    for has returned. Nothing downstream destroys it, because a credential
+    passed through two layers would otherwise be released by the first to
+    finish with it.
   - **The exception is `enable-encryption`, and it is deliberate.** That
-    migration runs in a goroutine that OUTLIVES the request, so ownership
-    passes to the goroutine and the wipe is deferred there. A handler-level
-    `defer` would zero the credential out from under a running migration.
-  - **A test double must therefore deep-copy anything it records.** A double
-    that stores the slice header is holding a borrow, and it will read back as
-    zeros once the handler returns — correctly.
+    migration runs in a goroutine that OUTLIVES the request, so ownership of
+    the credential passes to the goroutine and it is destroyed there; the
+    decoded request slice is wiped by the handler the moment the credential
+    exists. A handler-level destroy would pull the credential out from under a
+    running migration.
+  - **A test double must therefore snapshot the plaintext DURING the call**
+    (`pkg/seal/sealtest.Snapshot`). A double that stores the credential is
+    holding a borrow, and it will find a destroyed enclave once the handler
+    returns — correctly.
   - **A wipe does not reach the encoders.** It destroys the slice and its
     aliases, not the transient copy serialization makes — base64 in a REST
     body, protobuf's out-of-place marshalling, the MCP JSON-RPC body. Those go

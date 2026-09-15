@@ -34,12 +34,13 @@ import (
 // nothing.
 func TestSoftwareStrategyBindingModes_CredentialSemantics(t *testing.T) {
 	ctx := context.Background()
-	correct := Credentials{Secret: []byte("correct-horse-battery-staple")}
-	wrong := Credentials{Secret: []byte("wrong-horse-battery-staple")}
+	const correctPassphrase = "correct-horse-battery-staple"
+	correct := MustCredentials([]byte(correctPassphrase))
+	wrong := MustCredentials([]byte("wrong-horse-battery-staple"))
 	rootKey := bytes.Repeat([]byte{0xA5}, 32)
 
 	t.Run("bound ignores unseal credentials", func(t *testing.T) {
-		strategy, err := NewSoftwareStrategy(correct.Secret)
+		strategy, err := NewSoftwareStrategy([]byte(correctPassphrase))
 		if err != nil {
 			t.Fatalf("NewSoftwareStrategy: %v", err)
 		}

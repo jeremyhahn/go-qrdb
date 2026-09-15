@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/sdk/go
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/awnumar/memguard v0.23.0
@@ -10,10 +10,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
 	github.com/jeremyhahn/go-qrdb v0.17.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.9.0-alpha
+	github.com/jeremyhahn/go-quicraft v0.11.0-alpha
 	github.com/mark3labs/mcp-go v0.45.0
-	github.com/quic-go/quic-go v0.61.0
-	github.com/stretchr/testify v1.11.1
+	github.com/quic-go/quic-go v0.62.0
+	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gorm.io/gorm v1.31.2
@@ -77,7 +77,6 @@ require (
 	github.com/cockroachdb/redact v1.1.8 // indirect
 	github.com/cockroachdb/swiss v0.0.0-20260820225851-333444432258 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 // indirect
 	github.com/dolthub/go-icu-regex v0.0.0-20260610153742-72563bc7ca83 // indirect
 	github.com/dolthub/jsonpath v0.0.2-0.20260807003725-336cd89c1c76 // indirect
@@ -113,13 +112,14 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
+	github.com/jeremyhahn/go-enclave v0.5.0-alpha // indirect
 	github.com/jeremyhahn/go-truststrap v0.2.0-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -139,10 +139,10 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.68.0 // indirect
-	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/prometheus/client_golang v1.24.1 // indirect
+	github.com/prometheus/client_model v0.6.3 // indirect
+	github.com/prometheus/common v0.70.1 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect

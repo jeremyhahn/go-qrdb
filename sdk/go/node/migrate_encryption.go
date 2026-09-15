@@ -309,6 +309,10 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			return serr
 		}
 		keyed, rerr := n.barrier.Load().ReopenKeyed(ctx, reopenStrat, p.creds)
+		// The caller of EnableEncryption owns the credential and destroys it
+		// once the migration returns; this was its last reader, so the
+		// reference is dropped rather than kept pointing at a dead enclave.
+		p.creds = seal.Credentials{}
 		if rerr != nil {
 			return rerr
 		}

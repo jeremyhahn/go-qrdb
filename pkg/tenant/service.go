@@ -1549,7 +1549,9 @@ func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, 
 // is used for the software-only strategies (passphrase, none).
 //
 // The passphrase field is required for the passphrase strategy; for all other
-// strategies (none, hardware/cloud KMS) it is ignored. The tenant must exist.
+// strategies (none, hardware/cloud KMS) it is ignored. It is BORROWED for the
+// duration of the call — copied into protected memory and left as it was for
+// the caller to wipe. The tenant must exist.
 //
 // Authorization — who may call this — is enforced at the API/transport
 // layer, not here.
@@ -1606,11 +1608,17 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	}
 
 	// Build credentials. For the passphrase strategy the Secret carries
-	// the tenant admin's passphrase; for all other strategies the
-	// Credentials struct is empty (the strategy's KEK handles wrapping).
+	// the tenant admin's passphrase, copied into protected memory (the
+	// caller's slice is borrowed, not consumed) and destroyed once the
+	// initialization has used it. For all other strategies the Credentials
+	// struct is empty (the strategy's KEK handles wrapping).
 	creds := seal.Credentials{}
 	if seal.IsPassphraseStrategy(strategyID) {
-		creds.Secret = passphrase
+		var err error
+		if creds, err = seal.CredentialsFor(passphrase); err != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
+		}
+		defer creds.Secret.Destroy()
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet
@@ -1789,7 +1797,14 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 		return err
 	}
 
-	creds := seal.Credentials{Secret: key}
+	// key is BORROWED: it is copied into protected memory and left for the
+	// caller to wipe, and the credential is destroyed once the unseal has
+	// used it.
+	creds, err := seal.CredentialsFor(key)
+	if err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
+	}
+	defer creds.Secret.Destroy()
 
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}

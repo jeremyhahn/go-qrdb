@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -399,7 +400,7 @@ func TestDatabaseService_UpdateBarrier_Success(t *testing.T) {
 	cfg := testDBConfig("barrier-db")
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
 		t.Fatalf("CreateWithCredentials() returned unexpected error: %v", err)
 	}
 
@@ -901,7 +902,7 @@ func TestDatabaseService_CreateWithCredentials_DedicatedStore(t *testing.T) {
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 
-	info, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret-passphrase")})
+	info, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret-passphrase")))
 	if err != nil {
 		t.Fatalf("CreateWithCredentials() returned unexpected error: %v", err)
 	}
@@ -924,7 +925,7 @@ func TestDatabaseService_CreateWithCredentials_SharedStoreRejected(t *testing.T)
 	cfg := testDBConfig("cred-shared-db") // no DataDir: shared store
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 
-	_, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")})
+	_, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret")))
 	if err == nil {
 		t.Fatal("CreateWithCredentials() on a shared-store database = nil, want *SharedStoreBarrierUnsupportedError")
 	}
@@ -942,7 +943,7 @@ func TestDatabaseService_CreateForTenantWithCredentials_SystemTenant(t *testing.
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 
-	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{Secret: []byte("s3cret")})
+	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret")))
 	if err != nil {
 		t.Fatalf("CreateForTenantWithCredentials(system) returned unexpected error: %v", err)
 	}
@@ -973,7 +974,7 @@ func TestDatabaseService_CreateForTenantWithCredentials_TenantScoped(t *testing.
 	cfg := testDBConfig("cred-tenant-db")
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 
-	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{Secret: []byte("s3cret")})
+	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret")))
 	if err != nil {
 		t.Fatalf("CreateForTenantWithCredentials(tenant) returned unexpected error: %v", err)
 	}
@@ -1009,7 +1010,7 @@ func TestDatabaseService_SealDatabase_UpdatesDatabaseStatus(t *testing.T) {
 	cfg := testDBConfig("seal-status-db")
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
 		t.Fatalf("CreateWithCredentials() error = %v", err)
 	}
 
@@ -1041,7 +1042,7 @@ func TestDatabaseService_UnsealDatabase_UpdatesDatabaseStatus(t *testing.T) {
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 	secret := []byte("s3cret-passphrase")
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: secret}); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
 		t.Fatalf("CreateWithCredentials() error = %v", err)
 	}
 	if err := svc.SealDatabase(context.Background(), "unseal-status-db"); err != nil {
@@ -1049,7 +1050,7 @@ func TestDatabaseService_UnsealDatabase_UpdatesDatabaseStatus(t *testing.T) {
 	}
 
 	// Wrong secret must fail and leave status sealed.
-	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.Credentials{Secret: []byte("wrong")}); err == nil {
+	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.MustCredentials([]byte("wrong"))); err == nil {
 		t.Fatal("UnsealDatabase() with wrong secret = nil, want error")
 	}
 	info, err := svc.Get("unseal-status-db")
@@ -1061,7 +1062,7 @@ func TestDatabaseService_UnsealDatabase_UpdatesDatabaseStatus(t *testing.T) {
 	}
 
 	// Correct secret succeeds and flips status back to open.
-	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.Credentials{Secret: secret}); err != nil {
+	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.MustCredentials(bytes.Clone(secret))); err != nil {
 		t.Fatalf("UnsealDatabase() with correct secret returned unexpected error: %v", err)
 	}
 	info, err = svc.Get("unseal-status-db")

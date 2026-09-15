@@ -30,7 +30,9 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return ErrSealed
 	}
 
-	if len(newCreds.Secret) == 0 {
+	// A nil secret is "no credentials supplied"; a destroyed one is a
+	// credential the caller has already released. Neither is a passphrase.
+	if newCreds.Secret == nil || !newCreds.Secret.IsAlive() {
 		return ErrInvalidPassphrase
 	}
 

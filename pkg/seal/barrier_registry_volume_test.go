@@ -136,7 +136,7 @@ func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
 func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
 func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestRegisterVolumeTenant_SystemManagedAutoUnseal(t *testing.T) {
 
 	// The pool system barrier starts sealed; the system-managed strategy needs
 	// it unsealed to act as the unseal authority.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := reg.SystemBarrier().Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -437,7 +437,7 @@ func TestRestoreVolumeTenants_RestoredAfterFreshRegistry(t *testing.T) {
 	system, opts, roots := newShareableComponents(t)
 
 	// Initialize the system barrier so persistTenantRoot can write.
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestRestoreVolumeTenants_AutoUnsealUnsealed(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -548,7 +548,7 @@ func TestRestoreVolumeTenants_SelfManagedStaysSealed(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -587,7 +587,7 @@ func TestRestoreVolumeTenants_IdempotentWhenAlreadyRegistered(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -632,7 +632,7 @@ func TestLocalTenantDataRoot_FallsBackToPersistentStore(t *testing.T) {
 	ctx := context.Background()
 	system, opts, roots := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -696,7 +696,7 @@ func TestRestoreVolumeTenants_SkipsEmptyDataRoot(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -728,7 +728,7 @@ func TestRestoreVolumeTenants_SkipsCorruptRecord(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -760,7 +760,7 @@ func TestRestoreVolumeTenants_ShortKeySkipped(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -795,7 +795,7 @@ func TestRestoreVolumeTenants_AutoUnsealFailure(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -839,7 +839,7 @@ func TestLocalTenantDataRoot_NotInPersistentStoreEither(t *testing.T) {
 	system, opts, _ := newShareableComponents(t)
 
 	// Unseal the system barrier so the persistent-store lookup is attempted.
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 

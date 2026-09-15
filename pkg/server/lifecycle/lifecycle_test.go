@@ -15,6 +15,7 @@
 package lifecycle_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/x509"
@@ -86,7 +87,7 @@ func newTestBarrier(t *testing.T) (
 	// Initialize transitions the barrier to the unsealed state directly.
 	// A subsequent Unseal call is not needed and would return ErrAlreadyUnsealed.
 	ctx := context.Background()
-	if err := b.Initialize(ctx, seal.Credentials{Secret: []byte(passphrase)}); err != nil {
+	if err := b.Initialize(ctx, seal.MustCredentials(bytes.Clone(passphrase))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

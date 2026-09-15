@@ -152,18 +152,26 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			availability = seal.AvailabilityOnline
 		}
 
+		// The passphrase argument is copied into protected memory and the
+		// decoded copy wiped at once — the credential is what the migration
+		// reads from here on.
 		passphrase := secretArg(req, "passphrase")
+		creds, err := seal.CredentialsFor(passphrase)
+		secure.Wipe(passphrase)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
+		}
 
 		opts := seal.MigrationOptions{
 			TargetStrategy:  seal.StrategyID(strategy),
 			Mechanism:       mechanism,
 			Availability:    availability,
-			Credentials:     seal.Credentials{Secret: passphrase},
+			Credentials:     creds,
 			ShamirThreshold: mcp.ParseInt(req, "shamir_threshold", 0),
 			ShamirTotal:     mcp.ParseInt(req, "shamir_total", 0),
 		}
 		if err := opts.Validate(); err != nil {
-			secure.Wipe(passphrase)
+			creds.Secret.Destroy()
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
 		}
 
@@ -175,10 +183,11 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// migration must survive the tool result returning.
 		go func() {
 			// The migration OWNS the credential from here: it outlives this
-			// tool call, so wiping in the handler would zero the passphrase
-			// out from under a running migration. The wipe belongs to
-			// whoever the last reader is, and that is this goroutine.
-			defer secure.Wipe(passphrase)
+			// tool call, so destroying it in the handler would pull the
+			// passphrase out from under a running migration. The destroy
+			// belongs to whoever the last reader is, and that is this
+			// goroutine.
+			defer creds.Secret.Destroy()
 			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 		}()
 

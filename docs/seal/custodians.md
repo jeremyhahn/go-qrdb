@@ -326,22 +326,24 @@ Nonce TTL: configurable (default 5 minutes). If custodian takes too long to sign
 
 ## Zeroization Guarantees
 
-All secret material is protected via `go-quicraft/pkg/enclave/ProtectedKey` (memguard wrapper):
+All secret material is protected via `go-enclave` (`MemoryEnclave` for
+material in use, `SealedEnclave` for material at rest in memory), consumed
+directly — go-quicraft's `pkg/enclave` wrapper is gone as of v0.11.0-alpha:
 
 ```go
 // Enrollment
 for each custodian {
-    share := shamir.Split()[custodian_index]  // Share in ProtectedKey (mlock'd memory)
+    share := shamir.SplitProtected()[custodian_index]  // Share in a MemoryEnclave (mlock'd memory)
     envelope := encryptShare(share, custodian_pubkey)
-    share.Zero()  // Secure wipe via memguard
+    share.Destroy()  // Secure wipe; the pages are unmapped
 }
 
 // Unseal
-custodian_shares := make([]*enclave.ProtectedKey, threshold)
+custodian_shares := make([]*shamir.ProtectedShare, threshold)
 for i := 0; i < threshold; i++ {
     custodian_shares[i] = decryptEnvelope(envelope)
 }
-root_key := shamir.Combine(custodian_shares)  // Reconstructed root key in ProtectedKey
+root_key := shamir.CombineProtected(custodian_shares)  // Reconstructed root key in a MemoryEnclave
 unseal(root_key)
 for i := range custodian_shares {
     custodian_shares[i].Destroy()  // Secure wipe
