@@ -45,6 +45,7 @@ type mockUserService struct {
 	listUsersFn               func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn              func(ctx context.Context, id uint64) error
 	disableUserFn             func(ctx context.Context, id uint64) error
+	addCertBindingFn          func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn       func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
@@ -165,7 +166,10 @@ func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint s
 	return nil, nil
 }
 
-func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserService) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 

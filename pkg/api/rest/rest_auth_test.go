@@ -46,6 +46,7 @@ type mockUserService struct {
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn        func(ctx context.Context, id uint64) error
 	disableUserFn       func(ctx context.Context, id uint64) error
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
@@ -116,7 +117,10 @@ func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*us
 	return nil, nil
 }
 
-func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserService) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 
@@ -2363,6 +2367,14 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			// and surfaced as 500 (Codex review, PR #191).
 			name:     "EmailExistsError",
 			err:      &user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"},
+			wantCode: http.StatusConflict,
+		},
+		{
+			// A thumbprint already bound to another user: the store's refusal
+			// of an mTLS identity takeover, a client-visible conflict and not
+			// a server fault. Fell through to 500 before go-qrdb#536.
+			name:     "CertBindingConflictError",
+			err:      &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
 			wantCode: http.StatusConflict,
 		},
 		{

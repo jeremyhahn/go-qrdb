@@ -615,6 +615,7 @@ func mapUserError(err error) int {
 	var il *user.InvalidLifecycleError
 	var lt *user.LifecycleTransitionError
 	var cbnf *user.CertBindingNotFoundError
+	var cbc *user.CertBindingConflictError
 	var se *user.StoreError
 	var xt *tenant.CrossTenantDeniedError
 
@@ -665,6 +666,15 @@ func mapUserError(err error) int {
 		// username is. Without this case it fell through to the StoreError arm
 		// and was reported as 500 — a server fault for a condition the caller
 		// can fix, and one that hides the real reason.
+		return http.StatusConflict
+	case errors.As(err, &cbc):
+		// A thumbprint already bound to ANOTHER user in the tenant. The store
+		// refuses to rebind it because doing so silently would let the caller
+		// take over that user's mTLS identity — one of the more
+		// security-relevant answers it gives, and without this arm it was
+		// reported as 500. 409 like the other taken handles; the message
+		// names the user that holds the thumbprint, which is the one fact an
+		// operator investigating a failed enrolment needs (go-qrdb#536).
 		return http.StatusConflict
 	case errors.As(err, &cu):
 		// Lost a concurrent update: nothing is wrong, the caller's view is

@@ -19,6 +19,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -112,5 +113,30 @@ func TestRemoveCertBinding_ConcurrentUpdateIsAborted(t *testing.T) {
 	})
 	if st, _ := status.FromError(err); st.Code() != codes.Aborted {
 		t.Fatalf("code = %s, want Aborted", st.Code())
+	}
+}
+
+// TestAddCertBinding_HijackAttemptIsAlreadyExists pins the code of the store's
+// most security-relevant refusal: a thumbprint already bound to ANOTHER user
+// is AlreadyExists, not Internal (go-qrdb#536), and the message names the
+// user that holds it.
+func TestAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, _ int64) (*user.User, error) {
+			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
+		},
+	}
+	s := &qrdbServiceServer{userSvc: svc}
+
+	_, err := s.AddCertBinding(context.Background(), &pb.AddCertBindingRequest{
+		UserId:     1001,
+		Thumbprint: "AAAA",
+	})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.AlreadyExists {
+		t.Fatalf("code = %s, want AlreadyExists", st.Code())
+	}
+	if !strings.Contains(st.Message(), "already bound to user 7") {
+		t.Fatalf("message must name the user that holds the thumbprint, got %q", st.Message())
 	}
 }

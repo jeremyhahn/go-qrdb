@@ -818,6 +818,16 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	}
 
+	// A thumbprint already bound to ANOTHER user in the tenant is AlreadyExists
+	// for the same reason again: the store refuses to rebind it, because doing
+	// so silently would let the caller take over that user's mTLS identity,
+	// and a deliberate refusal is not Internal. The message names the user
+	// that holds the thumbprint (go-qrdb#536).
+	var cbce *user.CertBindingConflictError
+	if errors.As(err, &cbce) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
 	// A lost concurrent update is Aborted — gRPC's designated code for a failed
 	// optimistic-concurrency check, which tells the client to re-read and retry.
 	var cue *user.ConcurrentUpdateError

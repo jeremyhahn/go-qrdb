@@ -80,6 +80,14 @@ alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims)
 write, not bookkeeping. It is **additive** — enrol a new key alongside the old
 one and both work, which is how a key rotation happens without an interruption.
 
+A thumbprint already bound to a **different** user in the same tenant is
+refused with 409 / `ALREADY_EXISTS`: a thumbprint resolves to exactly one
+identity, and silently rebinding it would let the caller take over that user's
+mTLS identity. The message names the user that holds the thumbprint, which is
+the fact an operator investigating a failed enrolment needs; QUIC and MCP
+answer with their `AlreadyExists` equivalents. Enrolling a thumbprint the
+**same** account already holds is not a conflict.
+
 ### Withdrawing a binding
 
 `DELETE /users/{id}/cert-bindings/{thumbprint}` withdraws one binding. It
@@ -284,6 +292,8 @@ of its own, and the listing never contains one.
 | User or role not found | 404 | `NOT_FOUND` |
 | Duplicate username within a tenant | 409 | `ALREADY_EXISTS` |
 | Duplicate email within a tenant | 409 | `ALREADY_EXISTS` |
+| Thumbprint already bound to another user in the tenant (the message names that user) | 409 | `ALREADY_EXISTS` |
+| Withdrawing a binding the account does not hold | 404 | `NOT_FOUND` |
 | Empty email without `without_email_login_key` | 400 | `INVALID_ARGUMENT` |
 | Lost a concurrent update (re-read and retry) | 409 | `ABORTED` |
 | Commit outcome unknown (reconcile, then retry) | 503 | `UNAVAILABLE` |

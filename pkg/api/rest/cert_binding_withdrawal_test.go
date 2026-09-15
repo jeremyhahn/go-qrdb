@@ -25,6 +25,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -150,4 +151,30 @@ func TestHandleRemoveCertBinding_ConcurrentUpdateIs409(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusConflict)
+}
+
+// TestHandleAddCertBinding_HijackAttemptIs409 pins the status of the store's
+// most security-relevant refusal: a thumbprint already bound to ANOTHER user
+// in the tenant is a 409, not a 500. Before go-qrdb#536 it fell through to the
+// StoreError arm, so an operator investigating a failed enrolment read "the
+// server broke" instead of the one fact that matters — which user holds the
+// thumbprint — and the body must carry that fact.
+func TestHandleAddCertBinding_HijackAttemptIs409(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, _ int64) (*user.User, error) {
+			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/cert-bindings",
+		strings.NewReader(`{"thumbprint":"AAAA"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+	if body := rec.Body.String(); !strings.Contains(body, "already bound to user 7") {
+		t.Fatalf("body must name the user that holds the thumbprint, got %q", body)
+	}
 }

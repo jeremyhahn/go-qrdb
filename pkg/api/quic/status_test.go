@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -210,6 +211,16 @@ var conditions = []conditionRow{
 	{"user missing by id", &transport.UserNotFoundError{ID: 999999}, wire.StatusNotFound, codes.NotFound},
 	{"user missing by lookup", &transport.UserNotFoundError{Lookup: "system/nope"}, wire.StatusNotFound, codes.NotFound},
 	{"role missing", &role.RoleNotFoundError{ID: "no-such-role"}, wire.StatusNotFound, codes.NotFound},
+
+	// --- go-qrdb#518 / #536: the cert-binding pair ----------------------
+	{"cert binding not held", &user.CertBindingNotFoundError{UserID: 7, Thumbprint: "AAAA"}, wire.StatusNotFound, codes.NotFound},
+	{"cert binding held by another user", &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9}, wire.StatusAlreadyExists, codes.AlreadyExists},
+	// The wrapper outranks its cause: a conflict whose rollback FAILED is a
+	// data-loss condition, not a conflict, and must not be downgraded by the
+	// arm above matching first.
+	{"cert binding conflict whose rollback failed", &user.IndexCompensationError{
+		Op: "update", Cause: &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
+	}, wire.StatusDataLoss, codes.DataLoss},
 
 	// --- go-qrdb#169: the lease family ---------------------------------
 	{"lease missing", &service.LeaseNotFoundError{LeaseID: 42}, wire.StatusNotFound, codes.NotFound},

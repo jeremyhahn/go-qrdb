@@ -56,6 +56,7 @@ type mockUserService struct {
 	lastCreateReq     *user.CreateUserRequest
 	lastUpdateReq     *user.UpdateUserRequest
 
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
@@ -115,7 +116,10 @@ func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*us
 	return nil, nil
 }
 
-func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserService) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 

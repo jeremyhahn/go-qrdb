@@ -21,8 +21,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -147,5 +149,40 @@ func TestToolUserRemoveCertBinding_DeclaresBothArgumentsRequired(t *testing.T) {
 		if !required[want] {
 			t.Fatalf("%q is not declared required; required = %v", want, tool.InputSchema.Required)
 		}
+	}
+}
+
+// TestHandleUserAddCertBinding_HijackAttemptIsAlreadyExists pins the code the
+// tool result carries for the store's most security-relevant refusal: a
+// thumbprint already bound to ANOTHER user is CodeAlreadyExists, not
+// CodeInternal (go-qrdb#536). The handler returns the typed error and the
+// classifier renders it; both are asserted.
+func TestHandleUserAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, _ int64) (*user.User, error) {
+			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
+		},
+	}
+	handler := handleUserAddCertBinding(svc)
+
+	_, err := handler(context.Background(),
+		buildCallToolRequest(t, "qrdb_user_add_cert_binding", map[string]any{
+			"user_id":    "1001",
+			"thumbprint": "AAAA",
+		}))
+	var conflict *user.CertBindingConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("err = %T(%v), want *user.CertBindingConflictError", err, err)
+	}
+	res := classifiedToolError("qrdb_user_add_cert_binding", err)
+	payload, ok := wire.DecodeErrorPayload(res.StructuredContent)
+	if !ok {
+		t.Fatal("tool result carries no error envelope")
+	}
+	if payload.Code != wire.CodeAlreadyExists {
+		t.Fatalf("code = %v, want CodeAlreadyExists", payload.Code)
+	}
+	if !strings.Contains(payload.Message, "already bound to user 7") {
+		t.Fatalf("message must name the user that holds the thumbprint, got %q", payload.Message)
 	}
 }

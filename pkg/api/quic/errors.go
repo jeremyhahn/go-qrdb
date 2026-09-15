@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -289,6 +290,36 @@ func mapServiceError(err error) (uint16, []byte) {
 	var unf *transport.UserNotFoundError
 	if errors.As(err, &unf) {
 		return wire.StatusNotFound, msg
+	}
+
+	// CHECKED BEFORE EVERY IDENTITY ARM THAT COULD BE ITS CAUSE, as in REST
+	// and gRPC. IndexCompensationError Unwraps to its cause, so a cause arm
+	// listed above it would win and report "taken" or "retry" while dropping
+	// the far more serious fact — that the rollback FAILED and a login index
+	// is inconsistent. DataLoss is the honest status: secondary state may be
+	// inconsistent and a blind client retry could compound it. The arm
+	// exists here because the cert-binding conflict arm below is the first
+	// cause of this wrapper this ladder classifies; before it every cause
+	// fell to StatusError, which was uninformative but never a lie.
+	var ice *user.IndexCompensationError
+	if errors.As(err, &ice) {
+		return wire.StatusDataLoss, msg
+	}
+
+	// The cert-binding pair, matching REST and gRPC (go-qrdb#518, #536). A
+	// withdrawal naming a binding the account does not hold is NotFound on
+	// the binding, as a missing user is NotFound on the user; a thumbprint
+	// already bound to ANOTHER user is AlreadyExists, the answer every other
+	// taken handle gets — the store refuses to rebind it because doing so
+	// silently would let the caller take over that user's mTLS identity, and
+	// a deliberate refusal is not StatusError.
+	var cbnf *user.CertBindingNotFoundError
+	if errors.As(err, &cbnf) {
+		return wire.StatusNotFound, msg
+	}
+	var cbc *user.CertBindingConflictError
+	if errors.As(err, &cbc) {
+		return wire.StatusAlreadyExists, msg
 	}
 
 	var rnfe *role.RoleNotFoundError

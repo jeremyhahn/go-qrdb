@@ -21,8 +21,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -115,5 +117,30 @@ func TestHandleRemoveCertBinding_PropagatesTheServiceRefusal(t *testing.T) {
 	var nf *user.CertBindingNotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %T(%v), want *user.CertBindingNotFoundError", err, err)
+	}
+}
+
+// TestHandleAddCertBinding_HijackAttemptIsAlreadyExists pins both halves for
+// this transport: the handler keeps the store's typed refusal, and the status
+// ladder renders it AlreadyExists rather than StatusError (go-qrdb#536).
+func TestHandleAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, _ int64) (*user.User, error) {
+			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
+		},
+	}
+	srv := NewServer(nil, nil, "localhost:0", WithUserService(svc))
+
+	payload, err := json.Marshal(addCertBindingWireRequest{UserID: 1001, Thumbprint: "AAAA"})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	_, err = srv.handleAddCertBinding(context.Background(), payload)
+	var conflict *user.CertBindingConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("err = %T(%v), want *user.CertBindingConflictError", err, err)
+	}
+	if st, msg := mapServiceError(err); st != wire.StatusAlreadyExists || !strings.Contains(string(msg), "already bound to user 7") {
+		t.Fatalf("status = %s, msg = %q; want AlreadyExists naming user 7", wire.StatusName(st), msg)
 	}
 }

@@ -161,6 +161,13 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			want: wire.CodeAlreadyExists,
 		},
 		{
+			name: "cert thumbprint bound to another user",
+			err:  &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
+			want: wire.CodeAlreadyExists,
+			why: "a hijack attempt the store refused on purpose; it was CodeInternal " +
+				"because the gRPC mapper this renders had no arm for it (go-qrdb#536)",
+		},
+		{
 			name: "unclassified",
 			err:  errors.New("something nobody typed"),
 			want: wire.CodeInternal,
