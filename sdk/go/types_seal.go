@@ -291,6 +291,31 @@ var NewShamirStrategy = seal.NewShamirStrategy
 // about whether credentials are checked at all.
 var NewSoftwareStrategy = seal.NewSoftwareStrategy
 
+// NewSoftwareStrategyWithParams is NewSoftwareStrategy with explicit Argon2id
+// work factors (time, memory in KiB, threads). Argon2id is refused under
+// FIPS 140; NewSoftwareStrategyFIPS is the tunable constructor for that leg.
+var NewSoftwareStrategyWithParams = seal.NewSoftwareStrategyWithParams
+
+// NewSoftwareStrategyFIPS is NewSoftwareStrategy with an explicit
+// PBKDF2-SHA256 iteration count; accepted under every FIPS policy.
+var NewSoftwareStrategyFIPS = seal.NewSoftwareStrategyFIPS
+
+// KDFVersion identifies the passphrase KDF a software strategy derives with:
+// KDFArgon2id or KDFPbkdf2SHA256.
+type KDFVersion = seal.KDFVersion
+
+// KDFParams carries a software strategy's work factor, read off it with
+// KDFVersion() and KDFParams(). It is not recorded in the sealed blob, so a
+// replacement strategy must carry the same factor to open it.
+type KDFParams = seal.KDFParams
+
+const (
+	// KDFArgon2id is the standard (non-FIPS) passphrase KDF.
+	KDFArgon2id = seal.KDFArgon2id
+	// KDFPbkdf2SHA256 is the FIPS 140 passphrase KDF.
+	KDFPbkdf2SHA256 = seal.KDFPbkdf2SHA256
+)
+
 // NewDeferredSoftwareStrategy creates a SoftwareStrategy that defers passphrase
 // binding to Seal/Unseal time. The passphrase is extracted from
 // Credentials.Secret on each call, enabling scenarios where the passphrase is

@@ -33,8 +33,18 @@ type StrategyFactory func() (SealingStrategy, error)
 
 func NewDefaultStrategyRegistry() StrategyRegistry
 func NewSoftwareStrategy(passphrase []byte) (*SoftwareStrategy, error)
+func NewSoftwareStrategyWithParams(passphrase []byte, time, memory uint32, threads uint8) (*SoftwareStrategy, error) // Argon2id, refused under FIPS
+func NewSoftwareStrategyFIPS(passphrase []byte, iterations int) (*SoftwareStrategy, error)                        // PBKDF2-SHA256
 func NewDeferredSoftwareStrategy() *SoftwareStrategy
+func NewDeferredSoftwareStrategyWithParams(version KDFVersion, params KDFParams) (*SoftwareStrategy, error)
 func NewNoneStrategy() SealingStrategy
+
+type KDFVersion = quicraftseal.KDFVersion // KDFArgon2id, KDFPbkdf2SHA256
+type KDFParams  = quicraftseal.KDFParams  // read off a strategy with KDFVersion() / KDFParams()
+
+func NewCredentials(secret []byte) (Credentials, error)  // consumes (wipes) secret
+func CredentialsFor(secret []byte) (Credentials, error)  // borrows secret; empty -> zero Credentials
+func MustCredentials(secret []byte) Credentials           // fixtures
 
 func FIPSEnabled() bool // the stack's single FIPS 140 predicate
 ```
@@ -152,17 +162,27 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
     the opposite one: a test asserting only that the root key comes back passes
     with either constructor, which is how a whole suite stayed green over a
     barrier that checked nothing.
-- **A barrier's KDF work factor is not preserved across a strategy
-  replacement, because it cannot currently be expressed.** The deferred
-  constructor takes no KDF parameters, so a deferred strategy always derives
-  with the library defaults for the selected algorithm; the tunable
-  constructors upstream return **bound** strategies, which `ChangePassword`
-  must not install. Tunability and deferred binding are disjoint today, so no
-  deployment can hold a tuned work factor for a password change to discard.
-  This is a latent trap for whoever adds a KDF tuning surface, not a live
-  weakening: adding that surface owns adding the preservation with it, and
-  depends on upstream accepting a deferred constructor that takes explicit KDF
-  parameters plus an accessor for reading them back.
+- **A barrier's KDF work factor is preserved across a password change, and
+  that is correctness, not hardening.** A sealed root-key blob records the KDF
+  *version* byte and never the params, so a blob sealed at a non-default factor
+  can only be unsealed by a strategy carrying that same factor — the live
+  strategy object is the only place the number exists. `ChangePassword` reads
+  the version and params off the strategy it is replacing (`KDFVersion()`,
+  `KDFParams()`) and builds the replacement with
+  `NewDeferredSoftwareStrategyWithParams`, which is deferred (it still
+  authenticates the caller) and tuned (it still opens the blob). The
+  no-argument deferred constructor reset the factor to the library defaults on
+  every password change, silently: the blob it wrote could be opened only by a
+  default-factor strategy, so a restart that constructed the deployment's
+  tuned strategy from its configuration could not unseal it — whichever
+  direction the tuning went — and a deployment tuned above the defaults was
+  also weakened on the credential that wraps the root key. The version
+  travels with the params
+  so the FIPS leg cannot be got wrong: a PBKDF2 strategy stays PBKDF2 and an
+  Argon2id one stays Argon2id, and a version the build or runtime policy
+  refuses is refused by the constructor. A strategy of another type registered
+  under `StrategyPassphrase` has no parameters to preserve and is refused with
+  `ErrPassphraseStrategyNotSoftware` rather than re-sealed under defaults.
 - **Multiple registered strategies require an explicit choice.**
   `ErrNoStrategySpecified` otherwise. Exactly one registered is selected
   unconditionally.

@@ -144,9 +144,13 @@ type ShamirConfig = quicraftseal.ShamirConfig
 // The software strategy auto-selects the KDF at construction time via
 // DefaultKDFVersion(): PBKDF2-SHA256 (600,000 iterations, NIST SP 800-132)
 // in FIPS 140 mode (see FIPSEnabled), Argon2id (OWASP defaults) otherwise.
-// Both KDF adapters are always registered so a FIPS binary can unseal a key
-// that was originally sealed by a non-FIPS binary, and vice-versa. The KDF
-// version is stored in SealedRootKey.Metadata[0] for cross-version routing.
+// The KDF version is stored in SealedRootKey.Metadata[0] for cross-version
+// routing, and the routing is one-way: a PBKDF2 blob unseals identically in
+// either mode, but a blob wrapped under Argon2id is REFUSED while FIPS is
+// active (ErrKDFNotFIPSApproved — unsealing re-derives the wrapping key with a
+// KDF the mode forbids) and cannot be derived at all in a -tags fips build,
+// which carries no Argon2id deriver. Migrate by unsealing once with FIPS off
+// and re-sealing with NewSoftwareStrategyFIPS.
 //
 // Strategy preference order (highest to lowest):
 //
@@ -191,6 +195,37 @@ type SoftwareStrategy = quicraftseal.SoftwareStrategy
 // #158 fixture whose wrong-passphrase assertion went red because the bound
 // fixture it was built on accepted the wrong passphrase (#162).
 var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
+
+// NewSoftwareStrategyWithParams is NewSoftwareStrategy with explicit Argon2id
+// work factors (time, memory in KiB, threads). It selects Argon2id explicitly
+// and is therefore refused under FIPS 140 (ErrKDFNotFIPSApproved at runtime,
+// ErrKDFUnsupportedVersion in a -tags fips build); NewSoftwareStrategyFIPS is
+// the tunable PBKDF2 constructor for that leg.
+var NewSoftwareStrategyWithParams = quicraftseal.NewSoftwareStrategyWithParams
+
+// NewSoftwareStrategyFIPS is NewSoftwareStrategy with an explicit PBKDF2-SHA256
+// iteration count; accepted under every FIPS policy.
+var NewSoftwareStrategyFIPS = quicraftseal.NewSoftwareStrategyFIPS
+
+// KDFVersion identifies the passphrase KDF a software strategy derives with
+// (KDFArgon2id or KDFPbkdf2SHA256). It is recorded in the sealed root-key blob
+// so an unseal routes to the KDF that sealed it — subject to policy: an
+// Argon2id blob is refused while FIPS is active, and a PBKDF2 blob opens in
+// either mode (see SoftwareStrategy).
+type KDFVersion = quicraftseal.KDFVersion
+
+// KDFParams carries a software strategy's work factor. It is NOT recorded in
+// the sealed blob: a blob sealed at a non-default factor can only be unsealed
+// by a strategy carrying the same one, which is why ChangePassword reads it
+// off the strategy being replaced.
+type KDFParams = quicraftseal.KDFParams
+
+const (
+	// KDFArgon2id is the standard (non-FIPS) passphrase KDF.
+	KDFArgon2id = quicraftseal.KDFArgon2id
+	// KDFPbkdf2SHA256 is the FIPS 140 passphrase KDF.
+	KDFPbkdf2SHA256 = quicraftseal.KDFPbkdf2SHA256
+)
 
 // FIPSEnabled is the single FIPS 140 mode predicate for the stack,
 // re-exported from go-quicraft/pkg/seal. Detection keys off the Go runtime's

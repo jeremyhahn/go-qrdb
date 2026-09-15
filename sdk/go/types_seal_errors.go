@@ -154,6 +154,14 @@ var (
 	// ErrInvalidPassphrase is returned when an empty passphrase is provided.
 	ErrInvalidPassphrase = seal.ErrInvalidPassphrase
 
+	// ErrPassphraseStrategyNotSoftware is returned by ChangePassword when the
+	// strategy registered under StrategyPassphrase is not a SoftwareStrategy:
+	// a password change re-seals under a replacement carrying the current
+	// strategy's KDF version and work factor, which only a SoftwareStrategy
+	// exposes, and re-sealing under library defaults instead would silently
+	// change the factor.
+	ErrPassphraseStrategyNotSoftware = seal.ErrPassphraseStrategyNotSoftware
+
 	// ErrDecryptionFailed is returned when a decryption operation fails,
 	// typically indicating an incorrect passphrase or tampered ciphertext.
 	ErrDecryptionFailed = quicraftseal.ErrDecryptionFailed

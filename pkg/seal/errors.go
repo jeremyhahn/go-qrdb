@@ -231,6 +231,15 @@ var (
 	// to ChangePassword.
 	ErrInvalidPassphrase = errors.New("qrdb/seal: passphrase must not be empty")
 
+	// ErrPassphraseStrategyNotSoftware is returned by ChangePassword when the
+	// strategy registered under StrategyPassphrase is not a SoftwareStrategy.
+	// A password change re-seals under a replacement built from the current
+	// strategy's KDF version and work factor, which only a SoftwareStrategy
+	// exposes; a strategy of another type registered under that ID is a
+	// composition error, and re-sealing under library defaults instead would
+	// be the silent work-factor reset #156 removed.
+	ErrPassphraseStrategyNotSoftware = errors.New("qrdb/seal: passphrase strategy is not a software strategy; cannot preserve its KDF parameters")
+
 	// ErrSealStoreSecretNotFound is returned when a named secret does
 	// not exist in the seal store.
 	ErrSealStoreSecretNotFound = errors.New("qrdb/seal: sealstore secret not found")

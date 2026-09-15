@@ -82,7 +82,30 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// no accessor — go-quicraft#43 asks for one), and a caller relying on
 	// credential-free unseal after a credential change is relying on the
 	// bypass. After a password change the password must be checked.
-	newStrat := NewDeferredSoftwareStrategy()
+	//
+	// The KDF version and work factor ARE preserved, and this is correctness
+	// rather than hardening (#156, go-quicraft#72). A sealed root-key blob
+	// records the KDF version byte and never the params, so a blob sealed at
+	// a non-default factor can only be unsealed by a strategy carrying that
+	// same factor — the live strategy object is the only place the number
+	// exists. Building the replacement with the no-argument constructor
+	// silently reset the factor to the library defaults on every password
+	// change: the blob it wrote could then be opened only by a default-factor
+	// strategy, which a restart constructing the deployment's tuned one from
+	// configuration is not, and for a deployment tuned ABOVE the defaults the
+	// reset also weakened the credential that wraps the root key. The version
+	// is carried with the params so the FIPS leg
+	// cannot be got wrong: a PBKDF2 strategy stays PBKDF2 and an Argon2id one
+	// stays Argon2id, and the constructor refuses a version the build or the
+	// runtime FIPS policy does not allow, exactly as the bound ones do.
+	software, ok := oldStrat.(*SoftwareStrategy)
+	if !ok {
+		return ErrPassphraseStrategyNotSoftware
+	}
+	newStrat, err := NewDeferredSoftwareStrategyWithParams(software.KDFVersion(), software.KDFParams())
+	if err != nil {
+		return err
+	}
 
 	// Re-seal the root key with the new strategy. The deferred path reads
 	// newCreds.Secret at this call, so the blob is wrapped under the NEW
