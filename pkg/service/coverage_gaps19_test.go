@@ -112,44 +112,6 @@ func TestAuthFactorService_ChallengeFactor_FactorNotInRegistry(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// authfactor_service.go – VerifyFactor: expired challenge (line 157-159)
-// ---------------------------------------------------------------------------
-
-func TestAuthFactorService_VerifyFactor_ExpiredChallenge(t *testing.T) {
-	svc, mockFactor := newPIVAuthFactorService(t)
-	ctx := context.Background()
-
-	// Enroll a factor.
-	enrollment, err := svc.EnrollFactor(ctx, "piv", "expire-user", authfactors.EnrollParams{})
-	if err != nil {
-		t.Logf("EnrollFactor returned: %v (may skip test)", err)
-		return
-	}
-	if enrollment == nil {
-		return
-	}
-
-	// Issue a challenge.
-	challenge, err := svc.ChallengeFactor(ctx, enrollment.EnrollmentID)
-	if err != nil {
-		t.Logf("ChallengeFactor returned: %v (may skip test)", err)
-		return
-	}
-	if challenge == nil {
-		return
-	}
-
-	// Manually expire the challenge by advancing its ExpiresAt to the past.
-	// Since authfactors.Challenge.Expired() checks its internal timer,
-	// we can't easily force expiry without modifying the challenge.
-	// Instead, just verify the VerifyFactor path is exercised normally.
-	err = svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, nil)
-	// Any result is fine — we just want the code path exercised.
-	_ = err
-	_ = mockFactor
-}
-
-// ---------------------------------------------------------------------------
 // authfactor_service.go – VerifyFactor: factor not in registry (line 167-169)
 // ---------------------------------------------------------------------------
 
