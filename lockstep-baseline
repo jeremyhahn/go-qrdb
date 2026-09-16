@@ -37,9 +37,13 @@
 
 sdk/go v0.1.0-alpha
 
-# go-qrdb#50 ruled this a third lockstep namespace on 2026-08-20 and its go.mod
-# exists, but it has never been released: it does not resolve standalone today
-# (`go mod tidy -diff` reports changes, because the upstream GORM suite it
-# imports is materialised on demand by `make gorm-suite-sync`). Flipping this to
-# a version is the act of deciding it joins, and belongs with the rest of #50.
-sdk/go/gorm/conformance unreleased
+# go-qrdb#50 ruled this a third lockstep namespace on 2026-08-20. It joins here,
+# at v0.18.0-alpha: `go mod tidy -diff` now passes on this module (the earlier
+# note recorded a failure measured with a toolchain older than the go directive,
+# which reports a load error rather than untidiness), and its go.mod is in the
+# same shape as sdk/go's -- real version requires on its parents plus the
+# intra-repo relative replaces the dependency-resolution convention sanctions
+# (the "etcd pattern"), which consumers ignore and sdk/go has shipped through
+# seventeen releases. A baseline may name a tag that does not exist yet only
+# when it is the release being cut: that is this one.
+sdk/go/gorm/conformance v0.18.0-alpha
