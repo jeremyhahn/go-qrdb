@@ -76,6 +76,9 @@ func registerSOGrants() {
 		KeysCreate, KeysDelete, KeysList, KeysGet,
 		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
 		KeysImport, KeysExport,
+		// Key escrow — full lifecycle (external custody is a key-management
+		// duty; parallels keys:import/export above).
+		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Hardware crypto backend inventory
 		BackendsList, BackendsRead,
 		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
@@ -121,6 +124,9 @@ func registerAdminGrants() {
 		KeysWrap, KeysUnwrap,
 		// Key material import/export (privileged lifecycle)
 		KeysImport, KeysExport,
+		// Key escrow — full lifecycle (parallels keys:import/export above; a
+		// tenant Admin escrows and recovers their OWN tenant's keys).
+		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Certificate management
 		CertsGenerate, CertsExport, CertsRevoke,
 		CertsList, CertsRead,
@@ -468,6 +474,10 @@ func registerAuditorGrants() {
 		TenantsList, TenantsRead,
 		// Key metadata (public fields only — no cryptographic operations)
 		KeysList, KeysGet,
+		// Key escrow inventory (metadata only — escrow ID, purpose, timestamps;
+		// never key material). Recovering or revoking an escrow is not
+		// visibility and stays off the Auditor role.
+		EscrowList,
 		// Ceremony status
 		CeremonyStatus,
 		// Auth factor listing

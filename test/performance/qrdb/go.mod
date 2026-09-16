@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/jeremyhahn/go-qrdb v0.7.0-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
-	github.com/jeremyhahn/go-quicraft/test/performance v0.0.0
+	github.com/jeremyhahn/go-quicraft/test/performance v0.11.0-alpha
 	github.com/quic-go/quic-go v0.61.0
 	google.golang.org/grpc v1.83.0
 )

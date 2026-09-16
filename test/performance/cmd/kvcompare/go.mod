@@ -2,4 +2,4 @@ module github.com/jeremyhahn/go-qrdb/test/performance/cmd/kvcompare
 
 go 1.27.0
 
-require github.com/jeremyhahn/go-quicraft/test/performance v0.0.0
+require github.com/jeremyhahn/go-quicraft/test/performance v0.11.0-alpha

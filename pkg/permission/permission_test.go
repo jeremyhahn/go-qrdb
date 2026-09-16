@@ -538,7 +538,8 @@ func TestAll_TotalCount(t *testing.T) {
 	//   It is separate from users:add_cert_binding because enrolment only
 	//   narrows an account while withdrawing its last binding widens it back to
 	//   CN/OU admission (go-qrdb#518).
-	const expectedTotal = 364
+	// + 4 key escrow perms (escrow:create/recover/list/revoke) = 368 total.
+	const expectedTotal = 368
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -98,8 +98,8 @@ Six exist from the first boot and cannot be deleted:
 
 | Role | For |
 |---|---|
-| Security Officer | governance — barrier, certificates, roles, users. **Crypto operations are explicitly denied**, on purpose |
-| Admin | key lifecycle, tenants, backups |
+| Security Officer | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
+| Admin | key lifecycle, tenants, backups, key escrow |
 | Operator | routine operations, including seal and unseal |
 | User | crypto operations only |
 | Auditor | read-only everywhere |

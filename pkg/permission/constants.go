@@ -751,6 +751,23 @@ const (
 	RAGDeleteDocument Permission = "rag:delete_document"
 )
 
+// Key escrow permissions. Escrow hands wrapped key material to an external
+// custodian (a KMIP server or a federation agent) so it can be reconstructed
+// outside the module that created it — the same key-entry/key-output duty as
+// keys:import/keys:export, not a cryptographic primitive on caller-supplied
+// input. escrow:recover and escrow:revoke are correspondingly privileged;
+// escrow:list is metadata only (escrow ID, purpose, timestamps) and never
+// returns key material. Consumed by go-xkms, which gates its KMIP and
+// federation-agent escrow transports on this family — qrdb owns the
+// vocabulary but ships no escrow implementation of its own (see the
+// PIV/SSH/Passwords families for the same split).
+const (
+	EscrowCreate  Permission = "escrow:create"
+	EscrowRecover Permission = "escrow:recover"
+	EscrowList    Permission = "escrow:list"
+	EscrowRevoke  Permission = "escrow:revoke"
+)
+
 // ---------------------------------------------------------------------------
 // Categories (for UI rendering)
 // ---------------------------------------------------------------------------
@@ -1070,6 +1087,13 @@ var categories = []Category{
 		Group: "AI Services",
 		Permissions: []Permission{
 			RAGIngest, RAGQuery, RAGListDocuments, RAGDeleteDocument,
+		},
+	},
+	{
+		Name:  "Key Escrow",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		},
 	},
 }

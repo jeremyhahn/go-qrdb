@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **A key-escrow permission family** (`escrow:create`, `escrow:recover`,
+  `escrow:list`, `escrow:revoke`). go-xkms's escrow subsystem sends wrapped
+  key material to an external custodian (KMIP or a federation agent) and
+  reconstructs it back, and every key-material route it exposes is gated by a
+  permission pair drawn from this registry — there was no escrow family for
+  it to use. Classified `DutyGovernance` (key entry/output, the same duty as
+  `keys:import`/`keys:export`, not a cryptographic primitive), scoped
+  `ScopeSelf`, and granted in full to the Security Officer and Admin roles,
+  with `escrow:list` (metadata only — never key material) also granted to
+  Auditor. qrdb owns the vocabulary; it ships no escrow implementation of its
+  own, matching the existing PIV/SSH/Passwords split.
+
 ## [0.17.0-alpha] - 2026-09-13
 
 MINOR, not PATCH. Of the 99 commits on `main` between `v0.16.3-alpha` and this
