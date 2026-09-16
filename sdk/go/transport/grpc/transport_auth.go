@@ -552,21 +552,40 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:          resp.GetId(),
-		TenantID:    resp.GetTenantId(),
-		Username:    resp.GetUsername(),
-		Email:       resp.GetEmail(),
-		Name:        resp.GetName(),
-		RoleIDs:     resp.GetRoleIds(),
-		Enabled:     resp.GetEnabled(),
-		System:      resp.GetSystem(),
-		Lifecycle:   resp.GetLifecycle(),
-		GroupIDs:    resp.GetGroupIds(),
-		AuthMethods: resp.GetAuthMethods(),
-		LastAuth:    unixToRFC3339(resp.GetLastAuthUnix()),
-		CreatedAt:   resp.GetCreatedAt(),
-		UpdatedAt:   resp.GetUpdatedAt(),
+		ID:           resp.GetId(),
+		TenantID:     resp.GetTenantId(),
+		Username:     resp.GetUsername(),
+		Email:        resp.GetEmail(),
+		Name:         resp.GetName(),
+		RoleIDs:      resp.GetRoleIds(),
+		Enabled:      resp.GetEnabled(),
+		System:       resp.GetSystem(),
+		Lifecycle:    resp.GetLifecycle(),
+		GroupIDs:     resp.GetGroupIds(),
+		AuthMethods:  resp.GetAuthMethods(),
+		LastAuth:     unixToRFC3339(resp.GetLastAuthUnix()),
+		CertBindings: protoToCertBindings(resp.GetCertBindings()),
+		CreatedAt:    resp.GetCreatedAt(),
+		UpdatedAt:    resp.GetUpdatedAt(),
 	}
+}
+
+// protoToCertBindings converts the proto binding list to the transport form.
+// Nil for an empty list, so an account with no bindings reads the same on
+// every transport.
+func protoToCertBindings(in []*pb.CertBinding) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{
+			Thumbprint: b.GetThumbprint(),
+			Kind:       b.GetKind(),
+			NotAfter:   unixToRFC3339(b.GetNotAfterUnix()),
+		}
+	}
+	return out
 }
 
 // protoToRole converts a proto RoleResponse to a transport Role.

@@ -20,6 +20,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // RoleBinding grants a role within a tenant scope. It is the tenant-scoped RBAC
@@ -44,6 +46,14 @@ const (
 	// CertBindingPIVAttested marks a binding established via PIV attestation.
 	CertBindingPIVAttested
 )
+
+// String returns the wire label for the kind ("spki_thumbprint",
+// "full_cert_fingerprint", "piv_attested"), the form every transport lists a
+// binding's kind in. The persisted form stays the ordinal; the label is a
+// projection, and the table it comes from lives with the wire type.
+func (k CertBindingKind) String() string {
+	return transport.CertBindingKindLabel(int(k))
+}
 
 // CertBinding binds an mTLS client certificate to a user. Thumbprint is the
 // canonical SPKI SHA-256 thumbprint (base64url) unless Kind says otherwise.
@@ -130,4 +140,26 @@ func (u *User) MatchesCert(cert *x509.Certificate) bool {
 		return false
 	}
 	return u.HasCertBinding(ComputeSPKIThumbprint(cert))
+}
+
+// WireCertBindings projects the account's bindings onto the SDK wire type,
+// in enrolment order and in full — expired ones included, because an expired
+// binding still holds the account in the enforcing posture (an account with any
+// binding admits only a matching certificate) and hiding it would misrepresent
+// why the account refuses one. NotAfter is RFC 3339, or empty for a binding
+// that does not expire on its own. The REST, QUIC and embedded projections
+// call this; gRPC carries the expiry as seconds and MCP marshals the domain
+// record, and each of those is pinned to the same shape by test.
+func WireCertBindings(bindings []CertBinding) []transport.CertBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind.String()}
+		if !b.NotAfter.IsZero() {
+			out[i].NotAfter = b.NotAfter.UTC().Format(time.RFC3339)
+		}
+	}
+	return out
 }

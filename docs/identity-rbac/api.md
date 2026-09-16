@@ -181,10 +181,24 @@ tenant; naming another returns the cross-tenant refusal.
   "authMethods": ["webauthn", "piv"], "lastAuth": "…",
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
   "attributes": { "department": "eng" },
-  "certBindings": [ { "thumbprint": "…", "kind": 0 } ],
+  "certBindings": [ { "thumbprint": "…", "kind": "spki_thumbprint", "notAfter": "…" } ],
   "factors": [ { "…": "opaque" } ],
   "createdAt": "…", "updatedAt": "…" }
 ```
+
+`certBindings` lists the account's enrolled mTLS keys on **every transport**
+(`cert_bindings` in the REST/SDK spelling), in enrolment order and **in full —
+an expired binding is listed with its `notAfter`** rather than hidden. It is
+listed because it still holds the account in the enforcing posture: an account
+with any binding admits only a matching certificate, so a reader who could not
+see the expired one could not explain why the account refuses a certificate.
+`kind` is `spki_thumbprint` (canonical), `full_cert_fingerprint` or
+`piv_attested`; `notAfter` is absent for a binding that does not expire on its
+own. The thumbprint is a hash of public material — listing it discloses
+nothing — and is read back byte-identical to the one enrolled, so it can be
+passed straight to the withdrawal verb. It is part of the record, so reading
+it needs what reading the record needs: `users:read` on a single user,
+`users:list` on a listing.
 
 `lifecycle` is the **canonical account state**: `pending` · `active` ·
 `suspended` · `locked` · `disabled` · `deleting`. `enabled` is a **derived

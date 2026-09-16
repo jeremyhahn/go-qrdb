@@ -143,8 +143,18 @@ type userWireResponse struct {
 	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	// CertBindings are the account's enrolled mTLS keys, expired ones
+	// included; the server renders {thumbprint, kind, notAfter}.
+	CertBindings []certBindingWire `json:"certBindings,omitempty"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt"`
+}
+
+// certBindingWire mirrors the server's JSON form of one enrolled mTLS key.
+type certBindingWire struct {
+	Thumbprint string `json:"thumbprint"`
+	Kind       string `json:"kind"`
+	NotAfter   string `json:"notAfter,omitempty"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -1012,21 +1022,35 @@ func wireToUser(w *userWireResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:          w.ID,
-		Username:    w.Username,
-		Email:       w.Email,
-		Name:        w.Name,
-		TenantID:    w.TenantID,
-		RoleIDs:     w.RoleIDs,
-		Enabled:     w.Enabled,
-		System:      w.System,
-		Lifecycle:   w.Lifecycle,
-		GroupIDs:    w.GroupIDs,
-		AuthMethods: w.AuthMethods,
-		LastAuth:    w.LastAuth,
-		CreatedAt:   w.CreatedAt,
-		UpdatedAt:   w.UpdatedAt,
+		ID:           w.ID,
+		Username:     w.Username,
+		Email:        w.Email,
+		Name:         w.Name,
+		TenantID:     w.TenantID,
+		RoleIDs:      w.RoleIDs,
+		Enabled:      w.Enabled,
+		System:       w.System,
+		Lifecycle:    w.Lifecycle,
+		GroupIDs:     w.GroupIDs,
+		AuthMethods:  w.AuthMethods,
+		LastAuth:     w.LastAuth,
+		CertBindings: wireToCertBindings(w.CertBindings),
+		CreatedAt:    w.CreatedAt,
+		UpdatedAt:    w.UpdatedAt,
 	}
+}
+
+// wireToCertBindings converts the wire binding list to the transport form;
+// nil for an empty list.
+func wireToCertBindings(in []certBindingWire) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
 }
 
 // wireToRole converts a role wire response to the transport Role type.

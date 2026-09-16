@@ -298,6 +298,17 @@ func printUser(u *transport.User) error {
 		_, _ = fmt.Fprintf(outputWriter, "RoleIDs:   %s\n", strings.Join(u.RoleIDs, ", "))
 		_, _ = fmt.Fprintf(outputWriter, "Enabled:   %s\n", strconv.FormatBool(u.Enabled))
 		_, _ = fmt.Fprintf(outputWriter, "System:    %s\n", strconv.FormatBool(u.System))
+		// The enrolled mTLS keys, expired ones included: after a key
+		// compromise "which keys authenticate as this account" is the first
+		// question, and the thumbprint printed here is the one the withdrawal
+		// verb takes.
+		for _, b := range u.CertBindings {
+			line := b.Thumbprint + " (" + b.Kind
+			if b.NotAfter != "" {
+				line += ", expires " + b.NotAfter
+			}
+			_, _ = fmt.Fprintf(outputWriter, "CertBinding: %s)\n", line)
+		}
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt: %s\n", u.CreatedAt)
 		_, _ = fmt.Fprintf(outputWriter, "UpdatedAt: %s\n", u.UpdatedAt)
 		return nil

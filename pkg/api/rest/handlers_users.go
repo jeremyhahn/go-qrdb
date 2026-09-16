@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -93,9 +94,13 @@ type userResponse struct {
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// LastAuth is RFC 3339, omitted entirely when the account has never
 	// authenticated — a zero timestamp would read as 1970 rather than "never".
-	LastAuth  string `json:"last_auth,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	LastAuth string `json:"last_auth,omitempty"`
+	// CertBindings are the account's enrolled mTLS keys, in full — expired
+	// ones included (go-qrdb#535). The wire type is the SDK's own, so the
+	// REST client decodes this field without a mirror.
+	CertBindings []transport.CertBinding `json:"cert_bindings,omitempty"`
+	CreatedAt    string                  `json:"created_at"`
+	UpdatedAt    string                  `json:"updated_at"`
 }
 
 // listUsersResponse is the JSON payload returned by GET /users/list.
@@ -585,20 +590,21 @@ func userToResponse(u *user.User) *userResponse {
 	}
 
 	return &userResponse{
-		ID:          u.ID,
-		Username:    u.Username,
-		Email:       u.Email,
-		Name:        u.Name,
-		TenantID:    u.TenantID,
-		RoleIDs:     roleIDs,
-		Enabled:     u.Enabled,
-		System:      u.System,
-		Lifecycle:   string(u.Lifecycle),
-		GroupIDs:    u.GroupIDs,
-		AuthMethods: u.AuthMethods,
-		LastAuth:    formatLastAuth(u.LastAuth),
-		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
+		ID:           u.ID,
+		Username:     u.Username,
+		Email:        u.Email,
+		Name:         u.Name,
+		TenantID:     u.TenantID,
+		RoleIDs:      roleIDs,
+		Enabled:      u.Enabled,
+		System:       u.System,
+		Lifecycle:    string(u.Lifecycle),
+		GroupIDs:     u.GroupIDs,
+		AuthMethods:  u.AuthMethods,
+		LastAuth:     formatLastAuth(u.LastAuth),
+		CertBindings: user.WireCertBindings(u.CertBindings),
+		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

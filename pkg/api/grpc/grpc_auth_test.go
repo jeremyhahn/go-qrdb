@@ -1829,6 +1829,31 @@ func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
 	}
 }
 
+// The binding set crosses the wire in full, expired ones included; the
+// expiry is seconds for the same reason last_auth_unix is (go-qrdb#535).
+func TestUserToProto_CarriesCertBindingsIncludingExpired(t *testing.T) {
+	expired := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := &user.User{ID: 3, Username: "carol", TenantID: "tenant-3", CreatedAt: testTime, UpdatedAt: testTime,
+		CertBindings: []user.CertBinding{
+			{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
+			{Thumbprint: "BBBB", Kind: user.CertBindingPIVAttested, NotAfter: expired},
+		}}
+	got := userToProto(u).GetCertBindings()
+	if len(got) != 2 {
+		t.Fatalf("cert_bindings: got %d, want 2", len(got))
+	}
+	if got[0].GetThumbprint() != "AAAA" || got[0].GetKind() != "spki_thumbprint" || got[0].GetNotAfterUnix() != 0 {
+		t.Errorf("cert_bindings[0] = %v", got[0])
+	}
+	if got[1].GetThumbprint() != "BBBB" || got[1].GetKind() != "piv_attested" || got[1].GetNotAfterUnix() != expired.Unix() {
+		t.Errorf("cert_bindings[1] = %v; the expired binding must be listed with its expiry", got[1])
+	}
+	u.CertBindings = nil
+	if got := userToProto(u).GetCertBindings(); len(got) != 0 {
+		t.Errorf("no bindings must render as none, got %v", got)
+	}
+}
+
 func TestLastAuthUnix(t *testing.T) {
 	if got := lastAuthUnix(nil); got != 0 {
 		t.Fatalf("nil: got %d, want 0", got)

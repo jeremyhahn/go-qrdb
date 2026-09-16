@@ -758,3 +758,28 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 		t.Errorf("never-authenticated lastAuth: got %q, want empty", got)
 	}
 }
+
+// The binding set crosses this wire in full, expired ones included, in the
+// same field-for-field shape the SDK's transport.CertBinding decodes
+// (go-qrdb#535).
+func TestUserToWireResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
+	expired := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := &user.User{ID: 4, Username: "dave", TenantID: "tenant-4", CertBindings: []user.CertBinding{
+		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
+		{Thumbprint: "BBBB", Kind: user.CertBindingFullCertFingerprint, NotAfter: expired},
+	}}
+	got := userToWireResponse(u).CertBindings
+	if len(got) != 2 {
+		t.Fatalf("certBindings: got %+v, want both bindings", got)
+	}
+	if got[0] != (certBindingWire{Thumbprint: "AAAA", Kind: "spki_thumbprint"}) {
+		t.Errorf("certBindings[0] = %+v", got[0])
+	}
+	if got[1] != (certBindingWire{Thumbprint: "BBBB", Kind: "full_cert_fingerprint", NotAfter: "2020-01-01T00:00:00Z"}) {
+		t.Errorf("certBindings[1] = %+v; the expired binding must be listed with its expiry", got[1])
+	}
+	u.CertBindings = nil
+	if got := userToWireResponse(u).CertBindings; got != nil {
+		t.Errorf("no bindings must render as absent, got %+v", got)
+	}
+}

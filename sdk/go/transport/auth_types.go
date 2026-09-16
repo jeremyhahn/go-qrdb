@@ -14,6 +14,8 @@
 
 package transport
 
+import "strconv"
+
 // ---------------------------------------------------------------------------
 // User management types
 // ---------------------------------------------------------------------------
@@ -51,9 +53,72 @@ type User struct {
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// LastAuth is the last successful authentication, RFC 3339. Empty when the
 	// account has never authenticated.
-	LastAuth  string `json:"last_auth,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	LastAuth string `json:"last_auth,omitempty"`
+	// CertBindings are the mTLS keys enrolled on the account, in the order
+	// they were enrolled. The set is what decides the account's mTLS
+	// admission: once it is non-empty, only a certificate matching one of
+	// them authenticates as the account. It is listed in full, EXPIRED
+	// bindings included — an expired binding no longer authenticates but
+	// still holds the account in that enforcing posture, so omitting it
+	// would misrepresent why the account refuses a certificate. A thumbprint
+	// read here is byte-identical to the one enrolled and can be passed
+	// straight to RemoveCertBinding. Empty when none are enrolled.
+	CertBindings []CertBinding `json:"cert_bindings,omitempty"`
+	CreatedAt    string        `json:"created_at"`
+	UpdatedAt    string        `json:"updated_at"`
+}
+
+// CertBinding is one mTLS key enrolled on a user: the hash the presented
+// certificate is matched by, what the hash is over, and when the binding stops
+// authenticating. The thumbprint is a hash of PUBLIC material, so listing it
+// discloses nothing; it is the handle the withdrawal verb takes.
+type CertBinding struct {
+	// Thumbprint is the base64url SHA-256 the certificate is matched by — of
+	// its SubjectPublicKeyInfo for the canonical kind, of the whole DER for
+	// a full-certificate pin.
+	Thumbprint string `json:"thumbprint"`
+	// Kind is what the thumbprint is over: one of the CertBindingKind*
+	// labels.
+	Kind string `json:"kind"`
+	// NotAfter is when the binding stops authenticating, RFC 3339. Empty
+	// when the binding does not expire on its own.
+	NotAfter string `json:"not_after,omitempty"`
+}
+
+// The labels a CertBinding.Kind carries. They are the wire form of
+// pkg/user's CertBindingKind and are ordered as that enumeration is, which
+// is what CertBindingKindLabel relies on.
+const (
+	// CertBindingKindSPKIThumbprint matches the certificate's
+	// SubjectPublicKeyInfo: the canonical kind, which survives a renewal for
+	// the same key.
+	CertBindingKindSPKIThumbprint = "spki_thumbprint"
+	// CertBindingKindFullCertFingerprint matches the whole certificate DER:
+	// exact-certificate pinning, which a renewal invalidates.
+	CertBindingKindFullCertFingerprint = "full_cert_fingerprint"
+	// CertBindingKindPIVAttested marks a binding established through PIV
+	// attestation.
+	CertBindingKindPIVAttested = "piv_attested"
+)
+
+// certBindingKindLabels is indexed by pkg/user.CertBindingKind's ordinal.
+var certBindingKindLabels = [...]string{
+	CertBindingKindSPKIThumbprint,
+	CertBindingKindFullCertFingerprint,
+	CertBindingKindPIVAttested,
+}
+
+// CertBindingKindLabel returns the wire label for a pkg/user.CertBindingKind
+// ordinal. An ordinal this build does not know — a newer server's kind
+// reaching an older client — is rendered "unknown(<ordinal>)" so it is
+// reported as unknown rather than as some other kind, and identically by
+// every transport: the server projections and the MCP client's decode of the
+// domain record both come here.
+func CertBindingKindLabel(ordinal int) string {
+	if ordinal < 0 || ordinal >= len(certBindingKindLabels) {
+		return "unknown(" + strconv.Itoa(ordinal) + ")"
+	}
+	return certBindingKindLabels[ordinal]
 }
 
 // CreateUserRequest holds parameters for creating a user.

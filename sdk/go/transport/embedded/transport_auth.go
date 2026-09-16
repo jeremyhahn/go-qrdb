@@ -473,20 +473,21 @@ func userToTransport(u *user.User) *transport.User {
 		roleIDs = []string{}
 	}
 	return &transport.User{
-		ID:          u.ID,
-		Username:    u.Username,
-		Email:       u.Email,
-		Name:        u.Name,
-		TenantID:    u.TenantID,
-		RoleIDs:     roleIDs,
-		Enabled:     u.Enabled,
-		System:      u.System,
-		Lifecycle:   string(u.Lifecycle),
-		GroupIDs:    u.GroupIDs,
-		AuthMethods: u.AuthMethods,
-		LastAuth:    formatLastAuth(u.LastAuth),
-		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
+		ID:           u.ID,
+		Username:     u.Username,
+		Email:        u.Email,
+		Name:         u.Name,
+		TenantID:     u.TenantID,
+		RoleIDs:      roleIDs,
+		Enabled:      u.Enabled,
+		System:       u.System,
+		Lifecycle:    string(u.Lifecycle),
+		GroupIDs:     u.GroupIDs,
+		AuthMethods:  u.AuthMethods,
+		LastAuth:     formatLastAuth(u.LastAuth),
+		CertBindings: user.WireCertBindings(u.CertBindings),
+		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

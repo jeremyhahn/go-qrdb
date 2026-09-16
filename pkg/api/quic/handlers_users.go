@@ -144,9 +144,21 @@ type userWireResponse struct {
 	AuthMethods []string `json:"authMethods,omitempty"`
 	// LastAuth is RFC 3339, omitted entirely when the account has never
 	// authenticated — a zero timestamp would read as 1970 rather than "never".
-	LastAuth  string `json:"lastAuth,omitempty"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	LastAuth string `json:"lastAuth,omitempty"`
+	// CertBindings are the account's enrolled mTLS keys, in full — expired
+	// ones included (go-qrdb#535). Each is {thumbprint, kind, notAfter}.
+	CertBindings []certBindingWire `json:"certBindings,omitempty"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt"`
+}
+
+// certBindingWire is the JSON wire form of one enrolled mTLS key, matching
+// the SDK's transport.CertBinding field for field in this transport's
+// camelCase.
+type certBindingWire struct {
+	Thumbprint string `json:"thumbprint"`
+	Kind       string `json:"kind"`
+	NotAfter   string `json:"notAfter,omitempty"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -518,21 +530,36 @@ func userToWireResponse(u *user.User) *userWireResponse {
 	}
 
 	return &userWireResponse{
-		ID:          u.ID,
-		Username:    u.Username,
-		Email:       u.Email,
-		Name:        u.Name,
-		TenantID:    u.TenantID,
-		RoleIDs:     roleIDs,
-		Enabled:     u.Enabled,
-		System:      u.System,
-		Lifecycle:   string(u.Lifecycle),
-		GroupIDs:    u.GroupIDs,
-		AuthMethods: u.AuthMethods,
-		LastAuth:    formatLastAuth(u.LastAuth),
-		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
+		ID:           u.ID,
+		Username:     u.Username,
+		Email:        u.Email,
+		Name:         u.Name,
+		TenantID:     u.TenantID,
+		RoleIDs:      roleIDs,
+		Enabled:      u.Enabled,
+		System:       u.System,
+		Lifecycle:    string(u.Lifecycle),
+		GroupIDs:     u.GroupIDs,
+		AuthMethods:  u.AuthMethods,
+		LastAuth:     formatLastAuth(u.LastAuth),
+		CertBindings: certBindingsToWire(u.CertBindings),
+		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// certBindingsToWire renders the account's bindings through the shared
+// projection, so this transport lists exactly what REST and gRPC list.
+func certBindingsToWire(bindings []user.CertBinding) []certBindingWire {
+	wire := user.WireCertBindings(bindings)
+	if wire == nil {
+		return nil
+	}
+	out := make([]certBindingWire, len(wire))
+	for i, b := range wire {
+		out[i] = certBindingWire{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
 }
 
 // formatLastAuth renders a nil-able last-authentication time as RFC 3339, or

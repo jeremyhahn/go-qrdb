@@ -696,9 +696,28 @@ func userToProto(u *user.User) *pb.UserResponse {
 		// compares and orders, not one it displays; zero says "never
 		// authenticated" without a second presence field.
 		LastAuthUnix: lastAuthUnix(u.LastAuth),
+		CertBindings: certBindingsToProto(u.CertBindings),
 		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// certBindingsToProto renders the account's bindings in full, expired ones
+// included, exactly as user.WireCertBindings does for the JSON transports;
+// only the expiry's encoding differs, seconds here for the same reason
+// last_auth_unix is seconds.
+func certBindingsToProto(bindings []user.CertBinding) []*pb.CertBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]*pb.CertBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = &pb.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind.String()}
+		if !b.NotAfter.IsZero() {
+			out[i].NotAfterUnix = b.NotAfter.UTC().Unix()
+		}
+	}
+	return out
 }
 
 // roleToProto converts a role.Role to its protobuf representation.

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -65,8 +66,40 @@ type serverUser struct {
 	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	// CertBindings decode the DOMAIN record's bindings: this transport
+	// marshals user.User itself, so the kind arrives as pkg/user's ordinal
+	// and notAfter as a time.Time, whose zero value marshals as
+	// 0001-01-01T00:00:00Z rather than being omitted.
+	CertBindings []serverCertBinding `json:"certBindings,omitempty"`
+	CreatedAt    string              `json:"createdAt"`
+	UpdatedAt    string              `json:"updatedAt"`
+}
+
+// serverCertBinding mirrors user.CertBinding for JSON decoding.
+type serverCertBinding struct {
+	Thumbprint string `json:"thumbprint"`
+	Kind       int    `json:"kind"`
+	NotAfter   string `json:"notAfter,omitempty"`
+}
+
+// serverCertBindingsToTransport converts the domain-shaped bindings to the
+// transport form: the kind ordinal becomes its wire label, and a zero
+// notAfter — a binding that does not expire on its own — becomes empty, as it
+// is on every other transport.
+func serverCertBindingsToTransport(in []serverCertBinding) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: transport.CertBindingKindLabel(b.Kind)}
+		if b.NotAfter != "" {
+			if at, err := time.Parse(time.RFC3339Nano, b.NotAfter); err == nil && !at.IsZero() {
+				out[i].NotAfter = at.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	return out
 }
 
 // serverListUsersResponse mirrors user.ListUsersResponse for JSON decoding.
@@ -147,20 +180,21 @@ type serverCertRecord struct {
 // representation.
 func serverUserToTransport(u *serverUser) *transport.User {
 	return &transport.User{
-		ID:          u.ID,
-		Username:    u.Username,
-		Email:       u.Email,
-		Name:        u.Name,
-		TenantID:    u.TenantID,
-		RoleIDs:     u.RoleIDs,
-		Enabled:     u.Enabled,
-		System:      u.System,
-		Lifecycle:   u.Lifecycle,
-		GroupIDs:    u.GroupIDs,
-		AuthMethods: u.AuthMethods,
-		LastAuth:    u.LastAuth,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:           u.ID,
+		Username:     u.Username,
+		Email:        u.Email,
+		Name:         u.Name,
+		TenantID:     u.TenantID,
+		RoleIDs:      u.RoleIDs,
+		Enabled:      u.Enabled,
+		System:       u.System,
+		Lifecycle:    u.Lifecycle,
+		GroupIDs:     u.GroupIDs,
+		AuthMethods:  u.AuthMethods,
+		LastAuth:     u.LastAuth,
+		CertBindings: serverCertBindingsToTransport(u.CertBindings),
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
 	}
 }
 

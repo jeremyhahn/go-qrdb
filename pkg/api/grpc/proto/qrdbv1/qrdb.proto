@@ -2549,6 +2549,24 @@ message UserResponse {
     // last_auth_unix is the last successful authentication, seconds since the
     // epoch UTC. Zero when the account has never authenticated.
     int64 last_auth_unix = 14;
+    // cert_bindings are the account's enrolled mTLS keys, in enrolment order
+    // and in full — expired ones included, because an expired binding still
+    // holds the account in the enforcing posture (only a matching certificate
+    // authenticates as an account with any binding). A thumbprint read here
+    // can be passed straight to RemoveCertBinding.
+    repeated CertBinding cert_bindings = 15;
+}
+
+// CertBinding is one mTLS key enrolled on a user.
+message CertBinding {
+    // thumbprint is the base64url SHA-256 the certificate is matched by.
+    string thumbprint = 1;
+    // kind is what the thumbprint is over: "spki_thumbprint" (canonical),
+    // "full_cert_fingerprint" or "piv_attested".
+    string kind = 2;
+    // not_after_unix is when the binding stops authenticating, seconds since
+    // the epoch UTC. Zero when the binding does not expire on its own.
+    int64 not_after_unix = 3;
 }
 
 // ===========================================================================

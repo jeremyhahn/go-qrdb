@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -3032,6 +3033,31 @@ func TestUserToResponse_CarriesEveryIdentityField(t *testing.T) {
 	}
 	if resp.LastAuth != at.Format(time.RFC3339) {
 		t.Errorf("last_auth: got %q, want %q", resp.LastAuth, at.Format(time.RFC3339))
+	}
+}
+
+// The binding set crosses the wire in full, expired ones included, with the
+// thumbprint byte-identical to the enrolled one (go-qrdb#535).
+func TestUserToResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
+	expired := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := testUser()
+	u.CertBindings = []user.CertBinding{
+		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
+		{Thumbprint: "BBBB", Kind: user.CertBindingSPKIThumbprint, NotAfter: expired},
+	}
+	resp := userToResponse(u)
+	if len(resp.CertBindings) != 2 {
+		t.Fatalf("cert_bindings: got %+v, want both bindings", resp.CertBindings)
+	}
+	if resp.CertBindings[0] != (transport.CertBinding{Thumbprint: "AAAA", Kind: "spki_thumbprint"}) {
+		t.Errorf("cert_bindings[0] = %+v", resp.CertBindings[0])
+	}
+	if resp.CertBindings[1] != (transport.CertBinding{Thumbprint: "BBBB", Kind: "spki_thumbprint", NotAfter: "2020-01-01T00:00:00Z"}) {
+		t.Errorf("cert_bindings[1] = %+v; the expired binding must be listed with its expiry", resp.CertBindings[1])
+	}
+	u.CertBindings = nil
+	if got := userToResponse(u).CertBindings; got != nil {
+		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }
 

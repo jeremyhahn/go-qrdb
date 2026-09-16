@@ -203,3 +203,105 @@ func TestCertBindingWithdrawal_LastBindingEmptiesTheSet(t *testing.T) {
 		})
 	}
 }
+
+// TestCertBindings_ListedOnEveryTransport pins the READ half (go-qrdb#535):
+// an account's enrolled keys are readable on every transport, the thumbprint
+// read back is byte-identical to the one enrolled — so it can be passed
+// straight to the withdrawal verb — and an EXPIRED binding is listed with its
+// expiry rather than hidden. It is listed because it still holds the account
+// in the enforcing posture: an account with any binding admits only a
+// matching certificate, and a reader who cannot see the expired one cannot
+// explain why the account refuses a certificate.
+//
+// Before this the binding set could only be observed indirectly — through a
+// second withdrawal returning not-found — because nothing on the wire carried
+// it.
+func TestCertBindings_ListedOnEveryTransport(t *testing.T) {
+	// Already expired when enrolled: the store accepts a past expiry, and it
+	// is the case that decides whether "listed in full" is true.
+	const expiredUnix = 1577836800 // 2020-01-01T00:00:00Z
+
+	for _, tk := range userNotFoundTransports {
+		t.Run(string(tk), func(t *testing.T) {
+			c := bootUserCell(t, tk)
+			ctx := boundedCtx(t)
+			target := newBindingTarget(t, c, "listed")
+
+			// Before any enrolment nothing is listed.
+			fresh, err := c.users.GetUser(ctx, target)
+			if err != nil {
+				t.Fatalf("%s: GetUser: %v", tk, err)
+			}
+			if len(fresh.CertBindings) != 0 {
+				t.Fatalf("%s: a new account lists bindings: %+v", tk, fresh.CertBindings)
+			}
+
+			if _, err := c.users.AddCertBinding(ctx, target, retainedThumbprint, 0); err != nil {
+				t.Fatalf("%s: AddCertBinding(live): %v", tk, err)
+			}
+			// The write's own response already carries the set.
+			enrolled, err := c.users.AddCertBinding(ctx, target, withdrawnThumbprint, expiredUnix)
+			if err != nil {
+				t.Fatalf("%s: AddCertBinding(expired): %v", tk, err)
+			}
+			if len(enrolled.CertBindings) != 2 {
+				t.Fatalf("%s: AddCertBinding's response lists %d bindings, want 2: %+v", tk, len(enrolled.CertBindings), enrolled.CertBindings)
+			}
+
+			got, err := c.users.GetUser(ctx, target)
+			if err != nil {
+				t.Fatalf("%s: GetUser: %v", tk, err)
+			}
+			if len(got.CertBindings) != 2 {
+				t.Fatalf("%s: GetUser lists %d bindings, want 2 (the expired one included): %+v", tk, len(got.CertBindings), got.CertBindings)
+			}
+			byThumbprint := map[string]transport.CertBinding{}
+			for _, b := range got.CertBindings {
+				byThumbprint[b.Thumbprint] = b
+			}
+			live, ok := byThumbprint[retainedThumbprint]
+			if !ok {
+				t.Fatalf("%s: the live binding is not listed: %+v", tk, got.CertBindings)
+			}
+			if live.Kind != transport.CertBindingKindSPKIThumbprint || live.NotAfter != "" {
+				t.Fatalf("%s: live binding = %+v, want spki_thumbprint with no expiry", tk, live)
+			}
+			expired, ok := byThumbprint[withdrawnThumbprint]
+			if !ok {
+				t.Fatalf("%s: the EXPIRED binding is not listed — it still holds the account in the enforcing posture: %+v", tk, got.CertBindings)
+			}
+			if expired.NotAfter != "2020-01-01T00:00:00Z" {
+				t.Fatalf("%s: expired binding NotAfter = %q, want 2020-01-01T00:00:00Z", tk, expired.NotAfter)
+			}
+
+			// The listing carries the same set as the single read: a UI that
+			// enumerates accounts sees their keys without a read per account.
+			listed, err := c.users.ListUsers(ctx, &transport.ListUsersRequest{TenantID: tenant.SystemTenantID, PageSize: 100})
+			if err != nil {
+				t.Fatalf("%s: ListUsers: %v", tk, err)
+			}
+			var inList *transport.User
+			for _, u := range listed.Users {
+				if u.ID == target {
+					inList = u
+				}
+			}
+			if inList == nil {
+				t.Fatalf("%s: ListUsers did not return user %d", tk, target)
+			}
+			if len(inList.CertBindings) != 2 {
+				t.Fatalf("%s: ListUsers lists %d bindings for the account, want 2: %+v", tk, len(inList.CertBindings), inList.CertBindings)
+			}
+
+			// The thumbprint read back is the handle the withdrawal verb takes:
+			// pass it straight through, and the set shrinks by exactly it.
+			after, err := c.users.RemoveCertBinding(ctx, target, expired.Thumbprint)
+			if err != nil {
+				t.Fatalf("%s: RemoveCertBinding(read-back thumbprint): %v", tk, err)
+			}
+			if len(after.CertBindings) != 1 || after.CertBindings[0].Thumbprint != retainedThumbprint {
+				t.Fatalf("%s: after withdrawal the set is %+v, want only %s", tk, after.CertBindings, retainedThumbprint)
+			}
+		})
+	}
+}
