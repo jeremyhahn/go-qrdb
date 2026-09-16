@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.18.0-alpha] - 2026-09-16
+
+MINOR, not PATCH. The release adds a permission family to the registry:
+new vocabulary is additive for existing callers, but pre-1.0 MINOR is where
+surface changes live (release-versioning convention §1), and a consumer that
+gates escrow routes on these permissions cannot resolve them from an earlier
+tag at all.
+
+This release exists to carry `escrow:create`, `escrow:recover`, `escrow:list`
+and `escrow:revoke` to go-xkms, whose escrow subsystem is implemented and
+wired but cannot be exposed on any network transport until the permissions it
+gates those routes with exist here.
+
 ### Added
 
 - **A key-escrow permission family** (`escrow:create`, `escrow:recover`,
