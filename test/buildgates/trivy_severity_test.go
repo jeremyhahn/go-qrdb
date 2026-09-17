@@ -313,7 +313,7 @@ func (m makefileRules) path(from, to string) []string {
 // `$(TRIVY_GATE_SEVERITY)`. A variable that cannot be resolved is left alone
 // and therefore fails the band assertions loudly, which is the right direction.
 func expand(src, recipe string) string {
-	for _, v := range []string{"TRIVY_GATE_SEVERITY", "TRIVY_REPORT_SEVERITY"} {
+	for _, v := range []string{"TRIVY_GATE_SEVERITY", "TRIVY_REPORT_SEVERITY", "TRIVY_SCOPE"} {
 		re := regexp.MustCompile(`(?m)^` + v + `\s*:?=\s*(\S+)\s*$`)
 		m := re.FindStringSubmatch(src)
 		if m == nil {
@@ -749,5 +749,43 @@ func TestTheSeverityGateRefusesAVacuousParse(t *testing.T) {
 	}
 	if r := mk.recipe("no-such-target-anywhere"); r != "" {
 		t.Errorf("a target that does not exist parsed to a recipe: %q", r)
+	}
+}
+
+// TestEveryScanLegIncludesDevDependencies is the assertion #530 turns on.
+//
+// trivy's npm parser EXCLUDES a lockfile's dev dependencies unless
+// `--include-dev-deps` is passed, so a scan line without the flag is green on
+// every HIGH in the frontend's build toolchain — the tools that produce the
+// shipped bundle. That is a scope gap, not a severity one: the severity gate
+// above at least reports the band above its floor, while this reported nothing
+// about a whole dependency tree, and three HIGHs sat AT the blocking floor
+// unseen. Every `trivy fs` scan on both legs must carry the flag; a leg that
+// drops it (or a `$(TRIVY_SCOPE)` that expands to nothing) fails here rather
+// than passing as a scan of the whole tree.
+func TestEveryScanLegIncludesDevDependencies(t *testing.T) {
+	src := makefile(t)
+	mk := parseMakefile(src)
+	var scans int
+	for _, target := range []string{"trivy", "trivy-report"} {
+		r := expand(src, mk.recipe(target))
+		if r == "" {
+			t.Fatalf("target %q has no recipe in the Makefile; this gate cannot rule on a tree it could not parse", target)
+		}
+		for _, line := range strings.Split(r, "\n") {
+			if !strings.Contains(line, "trivy fs") || strings.Contains(line, "--download-db-only") {
+				continue
+			}
+			scans++
+			if !strings.Contains(line, "--include-dev-deps") {
+				t.Errorf("target %q scan line lacks --include-dev-deps, so the frontend's build toolchain (vite, esbuild, postcss) is outside its scope and a HIGH there is invisible to it (go-qrdb#530):\n\t%s", target, line)
+			}
+		}
+	}
+	// A DISCOVERY FLOOR, for the same reason the action-pin gate carries one:
+	// the loop above reports success over zero scan lines. Three is what the
+	// tree holds today — one on the blocking leg, two on the report leg.
+	if scans < 3 {
+		t.Fatalf("found %d trivy scan lines across the two legs, expected at least 3; the recipe parse has broken and this gate is verifying nothing", scans)
 	}
 }

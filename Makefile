@@ -2522,11 +2522,34 @@ endef
 # below.
 TRIVY_GATE_SEVERITY := CRITICAL,HIGH
 
+# The SCOPE of the scan, which is a separate question from its severity floor
+# and was never asked until #530. trivy's npm parser EXCLUDES a lockfile's
+# dev dependencies unless told otherwise, so with the flag below absent the
+# blocking gate was green on three HIGH advisories -- two in nanoid, one in
+# postcss, all fixed upstream -- that `npm audit` reported and that sat squarely
+# AT the blocking floor. A severity floor at least reports the band above it;
+# a scope gap reports nothing about a whole dependency tree.
+#
+# Dev dependencies are IN scope here, on the blocking leg, by owner ruling
+# (2026-09-16). "Dev dependencies do not ship" is the usual argument for
+# leaving them out and it is weaker than usual for this tree: vite and esbuild
+# PRODUCE the shipped bundle, and a compromised build tool is a supply-chain
+# path into the artifact -- the class of risk this scanner exists to name. The
+# flag applies to every language ecosystem trivy parses, not only npm; Go has
+# no dev-dependency notion, so for the Go modules it changes nothing.
+#
+# Both legs carry it so the reporting floor below covers the same tree the
+# blocking floor does. The three findings that made this visible were fixed in
+# the same change that added the flag, so it landed green; a finding this
+# surfaces later is fixed by bumping the dependency, not by removing the flag.
+# test/buildgates asserts every scan line carries it.
+TRIVY_SCOPE := --include-dev-deps
+
 .PHONY: trivy
 trivy:
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
 	$(trivy-certified-db)
-	trivy fs --scanners vuln,secret --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	trivy fs --scanners vuln,secret $(TRIVY_SCOPE) --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
 
 # ----------------------------------------------------------------------------
 # The REPORTING floor (#522)
@@ -2590,9 +2613,9 @@ TRIVY_REPORT_SEVERITY := MEDIUM,LOW
 trivy-report: ## Report sub-threshold (MEDIUM/LOW) advisories; advisory in nightly, blocks no merge
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
 	$(trivy-certified-db)
-	trivy fs --scanners vuln,secret --severity $(TRIVY_REPORT_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	trivy fs --scanners vuln,secret $(TRIVY_SCOPE) --severity $(TRIVY_REPORT_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
 	@echo "== UNKNOWN band (advisory; no score assigned, often no fix available) =="
-	trivy fs --scanners vuln --severity UNKNOWN --exit-code 0 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	trivy fs --scanners vuln $(TRIVY_SCOPE) --severity UNKNOWN --exit-code 0 --skip-db-update $(TRIVY_SKIP_DIRS) .
 
 # The rejecting branches of that check, which the target above never reaches
 # while the database is fresh -- and on any host where the suite is meant to
