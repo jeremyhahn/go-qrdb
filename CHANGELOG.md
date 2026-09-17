@@ -11,7 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.19.0-alpha] - 2026-09-17
+
+MINOR, not PATCH. The release adds a scope to the permission vocabulary and
+moves an existing permission family onto it, which changes who may exercise
+those permissions — additive for the vocabulary, but a tenancy-reach change for
+`escrow:*`, and pre-1.0 MINOR is where surface changes live (release-versioning
+convention §1).
+
+This release exists to carry `ScopeSelfStrict` and the `KDFDescriber` seam to
+go-xkms: the first closes a cross-tenant escalation on escrowed key material,
+and the second unblocks every password-change path in that project.
+
 ### Added
+
 
 - **`permission.ScopeSelfStrict` — a permission confined to the identity's own
   tenant for EVERY identity, the system tenant included.** `ScopeSelf` lifts the
@@ -46,6 +59,49 @@ are not reconstructed here — their history is in the git log.
 - `seal.ErrPassphraseStrategyNotSoftware` now states the real condition
   ("does not report its KDF parameters"). The sentinel's name and identity are
   unchanged, so `errors.Is` callers are unaffected; only the message differs.
+
+- **The embedding manager's default provider may be one the embedder
+  registers.** `NewManager` validated `Config.Provider` against a literal list
+  of the four built-ins, so a config naming an out-of-tree provider — an NPU
+  backend, an OpenVINO sidecar through the existing provider bridge — was
+  refused with `ErrProviderInvalid` before any provider could be registered.
+  The asymmetry was the tell: `RegisterProvider` applies no allowlist, so a
+  consumer could register a provider it could not then select as the default.
+  The list is gone; an unknown name is answered where it is first used, by
+  `*ProviderNotFoundError`. The built-ins' own rules are untouched.
+
+### Fixed
+
+- **The standalone gate refuses with a service-layer error every transport
+  classifies.** Under mode `standalone` the raft-only gate refused MVCC, watch,
+  lease and lock with `*rest.ServiceNotImplementedError` — a REST transport type
+  only the REST transport classified. REST answered 501; gRPC, unix, QUIC and
+  MCP fell through to their unclassified default and reported the refusal as an
+  internal fault. Those tell a client library opposite things: "the server
+  broke, retry" versus "this node cannot do that, fall back". A consumer running
+  standalone and calling an MVCC verb was told its server was broken, for a
+  deployment mode. The gate, and the per-database registry's "not configured"
+  refusals beside it, now return `*service.CapabilityUnsupportedError`, which
+  every transport's classifier already maps to "unsupported".
+
+- **Two `pkg/service` skip guards were coverage gaps wearing a green tick.**
+  Both claimed the path they abandoned needed real storage; neither claim held —
+  the backup registry is an in-memory map in the same package. The tests now
+  corrupt a captured shard and assert `VerifyBackup` reports the mismatch with
+  both checksums, and that `RestoreBackup(ValidateFirst)` refuses with
+  `BackupChecksumMismatchError` before touching a shard.
+
+### Security
+
+- **trivy scans the frontend's dev dependencies; nanoid and postcss bumped past
+  three HIGHs.** trivy's npm parser excludes a lockfile's dev dependencies
+  unless `--include-dev-deps` is passed, so the blocking Security gate was green
+  on three HIGH advisories — CVE-2026-67213 and CVE-2026-67214 in nanoid 3.3.12,
+  CVE-2026-73646 in postcss 8.5.15 — that `npm audit` reported and that sat
+  squarely at the CRITICAL,HIGH floor. A scope gap, reporting nothing about a
+  whole dependency tree. Owner ruling (2026-09-16): dev dependencies are in
+  scope on the blocking leg, because vite and esbuild produce the shipped
+  bundle and a compromised build tool is a supply-chain path into the artifact.
 
 ## [0.18.0-alpha] - 2026-09-16
 
