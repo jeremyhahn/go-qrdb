@@ -42,6 +42,7 @@ var classifierFixtures = []struct {
 	{"data plane: missing key", &service.KeyNotFoundError{Key: "k"}, codes.NotFound},
 	{"data plane: closed store", &service.ProposeError{Err: storage.ErrStorageClosed}, codes.Unavailable},
 	{"data plane: capability refusal", &service.CapabilityUnsupportedError{Message: "mvcc not configured"}, codes.Unimplemented},
+	{"mode gate: raft-only capability under standalone", &service.CapabilityUnsupportedError{Message: "mvcc: not implemented on this server: requires mode: raft"}, codes.Unimplemented},
 	{"data plane: compacted revision", &service.RevisionCompactedError{}, codes.OutOfRange},
 	{"identity: missing user", &user.UserNotFoundError{ID: 3}, codes.NotFound},
 	{"identity: username taken", &user.UsernameExistsError{}, codes.AlreadyExists},

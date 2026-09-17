@@ -19,6 +19,9 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -102,12 +105,15 @@ func TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call()
-			var nie *rest.ServiceNotImplementedError
-			if !errors.As(err, &nie) {
-				t.Fatalf("got %v, want *rest.ServiceNotImplementedError", err)
+			// A SERVICE-layer refusal, the one every transport classifies as
+			// "this node cannot do that" (go-qrdb#473) — not a REST type that
+			// only REST recognised.
+			var cue *service.CapabilityUnsupportedError
+			if !errors.As(err, &cue) {
+				t.Fatalf("got %T (%v), want *service.CapabilityUnsupportedError", err, err)
 			}
-			if nie.Service != tc.name {
-				t.Errorf("Service = %q, want %q", nie.Service, tc.name)
+			if !strings.HasPrefix(cue.Message, tc.name+": ") {
+				t.Errorf("message %q must name the refused service %q", cue.Message, tc.name)
 			}
 			if !strings.Contains(err.Error(), StandaloneModeHint) {
 				t.Errorf("error %q must carry the hint %q", err.Error(), StandaloneModeHint)
@@ -212,5 +218,34 @@ func TestTransportServiceRegistry_ModeSelection(t *testing.T) {
 	// SQL keeps the ungated registry in both modes.
 	if _, gated := saSrv.buildServiceRegistry().(*raftOnlyGatedRegistry); gated {
 		t.Fatal("the SQL-facing registry must stay ungated in standalone mode")
+	}
+}
+
+// TestStandaloneGate_RefusalIsUnimplementedOnEveryClassifier is the assertion
+// go-qrdb#473 turns on. The gate's refusal used to be *rest.ServiceNotImplementedError,
+// which only REST classified: REST answered 501 while gRPC, unix, QUIC and MCP
+// fell through to their unclassified default and told a caller its server had
+// broken for a condition that is a deployment mode. The refusal is now the
+// service-layer error every transport maps to "this node cannot do that". This
+// runs the gate's ACTUAL error — not a hand-built one — through the shared
+// classifier the gRPC and MCP transports answer from, and asserts the hint
+// text survives; the per-transport tables in pkg/api pin the QUIC status and
+// the REST code for the same condition.
+func TestStandaloneGate_RefusalIsUnimplementedOnEveryClassifier(t *testing.T) {
+	gated := &raftOnlyGatedRegistry{inner: &stubRegistry{}}
+	_, err := gated.MVCCService("t", "db")
+	if err == nil {
+		t.Fatal("standalone gate did not refuse mvcc")
+	}
+	if got := grpcapi.ServiceErrorCode(err); got != codes.Unimplemented {
+		t.Fatalf("shared classifier answers %s for the standalone gate's refusal, want Unimplemented", got)
+	}
+	if !strings.Contains(err.Error(), StandaloneModeHint) {
+		t.Fatalf("the hint %q did not survive: %q", StandaloneModeHint, err.Error())
+	}
+	// And a rest-typed refusal would NOT have: this is the regression the
+	// service-layer type closes, pinned so nobody reintroduces the REST type.
+	if got := grpcapi.ServiceErrorCode(&rest.ServiceNotImplementedError{Service: "mvcc", Hint: StandaloneModeHint}); got == codes.Unimplemented {
+		t.Fatal("the shared classifier now recognises the REST type; this test's premise moved — re-read go-qrdb#473 before relaxing it")
 	}
 }

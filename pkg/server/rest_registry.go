@@ -586,7 +586,7 @@ func (r *restServiceRegistry) KVService(tenantID, db string) (service.KVServicer
 		return nil, err
 	}
 	if svcs.KV == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "kv"}
+		return nil, notImplemented("kv", "")
 	}
 	return svcs.KV, nil
 }
@@ -598,7 +598,7 @@ func (r *restServiceRegistry) MVCCService(tenantID, db string) (service.MVCCKVSe
 		return nil, err
 	}
 	if svcs.MVCC == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "mvcc"}
+		return nil, notImplemented("mvcc", "")
 	}
 	return svcs.MVCC, nil
 }
@@ -610,7 +610,7 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 		return nil, err
 	}
 	if svcs.Watch == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "watch"}
+		return nil, notImplemented("watch", "")
 	}
 	return svcs.Watch, nil
 }
@@ -622,7 +622,7 @@ func (r *restServiceRegistry) LeaseService(tenantID, db string) (service.LeaseSe
 		return nil, err
 	}
 	if svcs.Lease == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "lease"}
+		return nil, notImplemented("lease", "")
 	}
 	return svcs.Lease, nil
 }
@@ -634,7 +634,7 @@ func (r *restServiceRegistry) IndexService(tenantID, db string) (service.IndexSe
 		return nil, err
 	}
 	if svcs.Index == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "index"}
+		return nil, notImplemented("index", "")
 	}
 	return svcs.Index, nil
 }
@@ -646,7 +646,7 @@ func (r *restServiceRegistry) TimeSeriesService(tenantID, db string) (service.Ti
 		return nil, err
 	}
 	if svcs.TimeSeries == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "timeseries"}
+		return nil, notImplemented("timeseries", "")
 	}
 	return svcs.TimeSeries, nil
 }
@@ -662,7 +662,7 @@ func (r *restServiceRegistry) VectorService(tenantID, db string) (service.Vector
 		return nil, err
 	}
 	if svcs.Vector == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "vector"}
+		return nil, notImplemented("vector", "")
 	}
 	return svcs.Vector, nil
 }
@@ -674,7 +674,7 @@ func (r *restServiceRegistry) TransactionService(tenantID, db string) (service.T
 		return nil, err
 	}
 	if svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "transaction"}
+		return nil, notImplemented("transaction", "")
 	}
 	return svcs.Transaction, nil
 }
@@ -686,7 +686,7 @@ func (r *restServiceRegistry) BatchService(tenantID, db string) (service.BatchSe
 		return nil, err
 	}
 	if svcs.Batch == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "batch"}
+		return nil, notImplemented("batch", "")
 	}
 	return svcs.Batch, nil
 }
@@ -705,7 +705,7 @@ func (r *restServiceRegistry) TableService(tenantID, db string) (service.TableSe
 		return nil, err
 	}
 	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "table"}
+		return nil, notImplemented("table", "")
 	}
 	seq := service.NewSequenceService(svcs.MVCC, svcs.Transaction)
 	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq), nil
@@ -719,7 +719,7 @@ func (r *restServiceRegistry) SequenceService(tenantID, db string) (service.Sequ
 		return nil, err
 	}
 	if svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "sequence"}
+		return nil, notImplemented("sequence", "")
 	}
 	return service.NewSequenceService(svcs.MVCC, svcs.Transaction), nil
 }
@@ -736,7 +736,7 @@ func (r *restServiceRegistry) PrivilegeService(tenantID, db string) (service.Pri
 		return nil, err
 	}
 	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "privilege"}
+		return nil, notImplemented("privilege", "")
 	}
 	return service.NewPrivilegeService(svcs.KV, svcs.MVCC, svcs.Transaction), nil
 }
@@ -785,7 +785,7 @@ func (r *restServiceRegistry) LockService(tenantID, db string) (service.LockServ
 		return nil, err
 	}
 	if svcs.Transaction == nil || svcs.Lease == nil || svcs.Watch == nil || svcs.MVCC == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "lock"}
+		return nil, notImplemented("lock", "")
 	}
 	return service.NewLockService(svcs.Transaction, svcs.Lease, svcs.Watch, svcs.MVCC, nil)
 }
@@ -807,7 +807,7 @@ func (r *restServiceRegistry) CollectionService(tenantID, db string) (service.Co
 		return nil, err
 	}
 	if svcs.Collection == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "collection"}
+		return nil, notImplemented("collection", "")
 	}
 	return svcs.Collection, nil
 }

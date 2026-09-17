@@ -312,6 +312,9 @@ var conditions = []conditionRow{
 
 	// --- the node does not carry the verb ----------------------------------
 	{"capability unsupported", &service.CapabilityUnsupportedError{Message: "no opcode"}, wire.StatusUnimplemented, codes.Unimplemented},
+	// The standalone gate's refusal (go-qrdb#473). It used to be a REST-only
+	// type and fell through to StatusError here.
+	{"raft-only capability under standalone", &service.CapabilityUnsupportedError{Message: "watch: not implemented on this server: requires mode: raft"}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"service not configured", &ServiceNotConfiguredError{Service: "lease"}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"MVCC backend required", &service.MVCCBackendRequiredError{Err: errors.New("pebble")}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"watch replay unsupported", watch.ErrStartRevisionUnsupported, wire.StatusUnimplemented, codes.Unimplemented},

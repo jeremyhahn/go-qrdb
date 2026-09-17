@@ -31,22 +31,25 @@ typed error whose text names the remedy: **`requires mode: raft`**.
 | gRPC | `UNIMPLEMENTED` |
 | Unix (gRPC over UDS) | `UNIMPLEMENTED` |
 | QUIC | `Unimplemented` |
-| MCP | `INTERNAL` (−32603), with the same message — see below |
-| Embedded | typed Go error |
+| MCP | `UNIMPLEMENTED` (−32014), with the same message |
+| Embedded | typed Go error: `*service.CapabilityUnsupportedError` |
 
 Implemented by `pkg/server/standalone_gate.go` — nil singletons plus a gated
 per-database service registry — so the refusal is structural rather than a
 per-handler check that could be forgotten.
 
-**The MCP row is a stated gap, not a design.** The gated registry refuses with
-`rest.ServiceNotImplementedError`, and only the REST transport classifies that
-type — so on MCP the refusal is now CODED but coded `INTERNAL`, because no
-classifier recognises it. That is at least honest: `INTERNAL` is what the
-classifiers mean by "nothing here recognises this", and it is strictly better
-than the uncoded tool result the row described before. It is also wrong, and it
-is wrong on QUIC in the same way and for the same reason. Closing it means
-teaching the shared service-error classifier about the gated registry's
-refusal, which reaches both transports at once and is tracked separately.
+The refusal is a **service-layer** error, `*service.CapabilityUnsupportedError`,
+whose message names the refused service and the remedy
+(`mvcc: not implemented on this server: requires mode: raft`). That type is the
+one every transport's classifier already maps to "this node cannot do that",
+and the SDK rebuilds `CapabilityUnsupportedError` from each transport's
+rendering of it, so a client gets the same typed answer whichever transport it
+holds. It used to be a REST transport type that only REST classified: REST
+answered 501 while gRPC, unix, QUIC and MCP fell through to their unclassified
+default and reported the mode gate as an internal fault — "the server broke",
+retry — for a condition that is a deployment mode. The same type now also
+carries "not configured on this node" refusals from the per-database service
+registry, for the same reason.
 
 ## Capability families by mode
 

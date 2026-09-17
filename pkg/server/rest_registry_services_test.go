@@ -24,10 +24,11 @@ package server
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -63,33 +64,33 @@ func TestRelationalAccessorsRefuseAnIncompleteServiceSet(t *testing.T) {
 			if _, err := r.TableService(tenant.SystemTenantID, "default"); err == nil {
 				t.Error("TableService must refuse an incomplete service set")
 			} else {
-				var want *rest.ServiceNotImplementedError
+				var want *service.CapabilityUnsupportedError
 				if !errors.As(err, &want) {
-					t.Errorf("TableService error = %v (%T), want *rest.ServiceNotImplementedError", err, err)
-				} else if want.Service != "table" {
-					t.Errorf("Service = %q, want %q", want.Service, "table")
+					t.Errorf("TableService error = %v (%T), want *service.CapabilityUnsupportedError", err, err)
+				} else if !strings.HasPrefix(want.Message, "table: ") {
+					t.Errorf("message %q must name the refused service table", want.Message)
 				}
 			}
 
 			if _, err := r.SequenceService(tenant.SystemTenantID, "default"); err == nil {
 				t.Error("SequenceService must refuse an incomplete service set")
 			} else {
-				var want *rest.ServiceNotImplementedError
+				var want *service.CapabilityUnsupportedError
 				if !errors.As(err, &want) {
-					t.Errorf("SequenceService error = %v (%T), want *rest.ServiceNotImplementedError", err, err)
-				} else if want.Service != "sequence" {
-					t.Errorf("Service = %q, want %q", want.Service, "sequence")
+					t.Errorf("SequenceService error = %v (%T), want *service.CapabilityUnsupportedError", err, err)
+				} else if !strings.HasPrefix(want.Message, "sequence: ") {
+					t.Errorf("message %q must name the refused service sequence", want.Message)
 				}
 			}
 
 			if _, err := r.PrivilegeService(tenant.SystemTenantID, "default"); err == nil {
 				t.Error("PrivilegeService must refuse an incomplete service set")
 			} else {
-				var want *rest.ServiceNotImplementedError
+				var want *service.CapabilityUnsupportedError
 				if !errors.As(err, &want) {
-					t.Errorf("PrivilegeService error = %v (%T), want *rest.ServiceNotImplementedError", err, err)
-				} else if want.Service != "privilege" {
-					t.Errorf("Service = %q, want %q", want.Service, "privilege")
+					t.Errorf("PrivilegeService error = %v (%T), want *service.CapabilityUnsupportedError", err, err)
+				} else if !strings.HasPrefix(want.Message, "privilege: ") {
+					t.Errorf("message %q must name the refused service privilege", want.Message)
 				}
 			}
 		})

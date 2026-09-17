@@ -132,6 +132,14 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			why:  "go-qrdb#127's condition, and what the SDK rebuilds CapabilityUnsupportedError from",
 		},
 		{
+			name: "raft-only capability under standalone",
+			err:  &service.CapabilityUnsupportedError{Message: "lease: not implemented on this server: requires mode: raft"},
+			want: wire.CodeUnimplemented,
+			why: "the standalone gate's refusal was a REST-only type that no classifier " +
+				"recognised, so this transport coded it INTERNAL — 'the server broke' for " +
+				"a deployment mode (go-qrdb#473). It is a service-layer refusal now",
+		},
+		{
 			name: "refusal on the request's merits",
 			err:  &service.SMNotConfiguredError{Message: "lease ttl must be positive"},
 			want: wire.CodeInternal,

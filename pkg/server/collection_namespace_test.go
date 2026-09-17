@@ -263,8 +263,8 @@ func TestCollectionServiceResolvesThroughTheRegistryLikeItsSiblings(t *testing.T
 		reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
 		if _, err := reg.CollectionService(tenant.SystemTenantID, "appdb"); err == nil {
 			t.Fatal("expected an error for a bundle with no collection surface")
-		} else if _, ok := err.(*rest.ServiceNotImplementedError); !ok {
-			t.Fatalf("expected *rest.ServiceNotImplementedError, got %T: %v", err, err)
+		} else if _, ok := err.(*service.CapabilityUnsupportedError); !ok {
+			t.Fatalf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
 		}
 	})
 }
