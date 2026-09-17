@@ -71,8 +71,17 @@ func TestEveryPermissionDeclaresItsScope(t *testing.T) {
 		t.Fatalf("%d permission(s) have no declared scope — register each, by name, in self_scope.go, tenant_scope.go or cross_scope.go (pin the member, not the family):\n  %s",
 			len(undeclared), strings.Join(undeclared, "\n  "))
 	}
-	t.Logf("scope declarations: total=%d self=%d cross=%d tenantOnly=%d undeclared=0",
-		len(all), counts[ScopeSelf], counts[ScopeCross], counts[ScopeTenantOnly])
+	t.Logf("scope declarations: total=%d self=%d cross=%d tenantOnly=%d selfStrict=%d undeclared=0",
+		len(all), counts[ScopeSelf], counts[ScopeCross], counts[ScopeTenantOnly], counts[ScopeSelfStrict])
+
+	// The buckets must account for every permission. A scope added to the
+	// vocabulary without a count here leaves its members invisible in this
+	// census while `total` still counts them -- the tally would look right
+	// and be wrong, which is the failure this gate exists to prevent.
+	counted := counts[ScopeSelf] + counts[ScopeCross] + counts[ScopeTenantOnly] + counts[ScopeSelfStrict]
+	if counted != len(all) {
+		t.Errorf("scope census covers %d of %d permissions -- a scope exists that this census does not count", counted, len(all))
+	}
 }
 
 // TestScopeRegistryHasNoStrays is the other direction: every declared scope

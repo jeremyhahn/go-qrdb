@@ -697,6 +697,20 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			}
 		}
 		return nil
+	case permission.ScopeSelfStrict:
+		// Own tenant only, for EVERY identity. Unlike ScopeSelf the
+		// system-tenant rule does not lift this, and unlike ScopeTenantOnly
+		// the system tenant is not denied outright: it is confined to its own
+		// tenant exactly as every other tenant is.
+		if identity.TenantID == targetTenantID {
+			return nil
+		}
+		return &PermissionDeniedError{
+			Resource: resource,
+			Action:   action,
+			Subject:  identity.Subject,
+			Reason:   "self-strict permission: identity not in target tenant (the system tenant is not lifted)",
+		}
 	default:
 		return &PermissionDeniedError{
 			Resource: resource,

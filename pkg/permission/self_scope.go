@@ -165,12 +165,6 @@ func selfScopedPermissions() []Permission {
 		EmbeddingEmbed,
 		EmbeddingListModels,
 
-		// escrow
-		EscrowCreate,
-		EscrowList,
-		EscrowRecover,
-		EscrowRevoke,
-
 		// index
 		IndexCreate,
 		IndexDrop,

@@ -11,6 +11,42 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`permission.ScopeSelfStrict` — a permission confined to the identity's own
+  tenant for EVERY identity, the system tenant included.** `ScopeSelf` lifts the
+  system tenant across all tenants and `ScopeTenantOnly` denies it outright;
+  neither expresses "every tenant is its own boundary, the system tenant
+  included" — a permission the system tenant may exercise on its own data and
+  on nobody else's. The authorizer gains the matching arm (own tenant admits,
+  anything else denies, with no lift), `Scope.String`/`Valid`/`ParseScope` learn
+  the `self-strict` label, and the SDK gains
+  `transport.PermissionScopeSelfStrict` carrying that same label — the wire form
+  is identical whichever layer wrote it, so a persisted per-tenant override
+  decodes.
+
+### Changed
+
+- **`escrow:create/list/recover/revoke` move from `ScopeSelf` to
+  `ScopeSelfStrict`.** They were liftable, so an identity in the system tenant
+  could escrow, list, recover or revoke **any** tenant's key material — a
+  cross-tenant escalation wearing an admin role. Each tenant, the system tenant
+  included, now reaches its own escrowed material and no other's. The duty
+  classification (`DutyGovernance`, never `DutyCryptoUse`) and the built-in role
+  grants are unchanged.
+
+- `seal.ChangePassword` identifies the strategy it replaces through the new
+  exported `seal.KDFDescriber` interface (`KDFVersion()` + `KDFParams()`)
+  instead of asserting the concrete `*seal.SoftwareStrategy`. A strategy that
+  composes a software one — the shape a consumer reaches for to add auditing or
+  metrics around sealing — carries the very KDF parameters the re-seal needs,
+  and was being refused for its type rather than its behaviour. Extending the
+  seam is what this repo prescribes when an interface proves insufficient,
+  rather than having consumers keep a duplicate strategy of their own.
+- `seal.ErrPassphraseStrategyNotSoftware` now states the real condition
+  ("does not report its KDF parameters"). The sentinel's name and identity are
+  unchanged, so `errors.Is` callers are unaffected; only the message differs.
+
 ## [0.18.0-alpha] - 2026-09-16
 
 MINOR, not PATCH. The release adds a permission family to the registry:

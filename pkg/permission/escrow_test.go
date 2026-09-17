@@ -84,8 +84,16 @@ func TestEscrowPermissions_UnknownActionNotRegistered(t *testing.T) {
 }
 
 // TestEscrowPermissions_Scope requires every escrow permission to be
-// ScopeSelf: escrow acts on the caller's own tenant's keys, lifted across
-// tenants for the system tenant, exactly like keys:import/keys:export.
+// ScopeSelfStrict: escrow acts on the caller's own tenant's keys, and on
+// nobody else's.
+//
+// These were ScopeSelf, which reads the same until you reach the system
+// tenant: that scope's lift admitted an identity in the system tenant against
+// EVERY tenant, so a platform admin could recover any tenant's escrowed key
+// material. keys:import/keys:export share escrow's duty, but sharing a duty is
+// not sharing a tenancy reach. ScopeTenantOnly is not the answer either -- it
+// denies the system tenant outright, and the system tenant legitimately
+// escrows its own keys (an empty tenant scope is system-level escrow).
 func TestEscrowPermissions_Scope(t *testing.T) {
 	for _, tc := range escrowVocabulary {
 		got, err := LookupScope(tc.perm)
@@ -93,8 +101,8 @@ func TestEscrowPermissions_Scope(t *testing.T) {
 			t.Errorf("LookupScope(%q): unexpected error %v", tc.perm, err)
 			continue
 		}
-		if got != ScopeSelf {
-			t.Errorf("LookupScope(%q) = %s, want self", tc.perm, got)
+		if got != ScopeSelfStrict {
+			t.Errorf("LookupScope(%q) = %s, want self-strict", tc.perm, got)
 		}
 	}
 }

@@ -16,6 +16,29 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
+// KDFDescriber reports the KDF a strategy derives with. ChangePassword needs
+// exactly this much of the strategy it replaces: the version and work factor
+// to carry into the replacement, so a password change never silently resets a
+// deployment's tuned factor (#156).
+//
+// It is an interface rather than a concrete type because a strategy that
+// COMPOSES a software one -- the shape a consumer reaches for to add auditing
+// or metrics around sealing -- still holds the very parameters the re-seal
+// requires. Asserting *SoftwareStrategy refused those compositions even though
+// they could answer perfectly well, which pushed consumers toward keeping a
+// duplicate strategy of their own.
+type KDFDescriber interface {
+	// KDFVersion reports the KDF in use, so the replacement stays on the
+	// same FIPS leg: a PBKDF2 strategy stays PBKDF2, an Argon2id one stays
+	// Argon2id.
+	KDFVersion() KDFVersion
+
+	// KDFParams reports the work factor the sealed blob was written at. A
+	// blob records the KDF version byte and never the params, so the live
+	// strategy is the only place this number exists.
+	KDFParams() KDFParams
+}
+
 // ChangePassword re-wraps the root key with a new password-derived wrapping
 // key. The barrier must be unsealed and have a passphrase (software) strategy
 // registered under StrategyPassphrase.
@@ -98,7 +121,7 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// cannot be got wrong: a PBKDF2 strategy stays PBKDF2 and an Argon2id one
 	// stays Argon2id, and the constructor refuses a version the build or the
 	// runtime FIPS policy does not allow, exactly as the bound ones do.
-	software, ok := oldStrat.(*SoftwareStrategy)
+	software, ok := oldStrat.(KDFDescriber)
 	if !ok {
 		return ErrPassphraseStrategyNotSoftware
 	}

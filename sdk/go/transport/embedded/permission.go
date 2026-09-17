@@ -48,6 +48,8 @@ func scopeFromDomain(s permission.Scope) (transport.PermissionScope, error) {
 		return transport.PermissionScopeCross, nil
 	case permission.ScopeTenantOnly:
 		return transport.PermissionScopeTenantOnly, nil
+	case permission.ScopeSelfStrict:
+		return transport.PermissionScopeSelfStrict, nil
 	default:
 		return "", &permission.InvalidScopeError{Value: s.String()}
 	}

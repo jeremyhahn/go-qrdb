@@ -336,6 +336,53 @@ func TestChangePassword_NonSoftwarePassphraseStrategyIsRefused(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPassphraseStrategyNotSoftware)
 }
 
+// kdfDelegatingStrategy composes a software strategy the way a consumer adding
+// auditing or metrics would: it forwards the sealing behaviour and reports the
+// inner strategy's KDF parameters. It carries exactly what a re-seal needs, yet
+// a concrete *SoftwareStrategy assertion refused it.
+//
+// Unconstrained on purpose: a type whose method set straddles a build
+// constraint silently stops satisfying its interface under the excluded tag.
+type kdfDelegatingStrategy struct {
+	SealingStrategy
+	inner *SoftwareStrategy
+}
+
+func (s *kdfDelegatingStrategy) KDFVersion() KDFVersion { return s.inner.KDFVersion() }
+func (s *kdfDelegatingStrategy) KDFParams() KDFParams   { return s.inner.KDFParams() }
+
+// TestChangePassword_StrategyComposingSoftwareIsAccepted pins the seam as an
+// interface rather than a concrete type, and pins that the composition's tuned
+// work factor survives the change — accepting it but re-sealing under library
+// defaults would be the silent reset #156 removed, wearing a different hat.
+func TestChangePassword_StrategyComposingSoftwareIsAccepted(t *testing.T) {
+	ctx := context.Background()
+	const oldPassword, newPassword = "old-password-123", "new-password-456"
+	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
+	base := NewMemoryBackend()
+
+	inner, version, params := tunedPassphraseStrategy(t, oldPassword)
+	wrapped := &kdfDelegatingStrategy{SealingStrategy: inner, inner: inner}
+	require.Equal(t, StrategyPassphrase, wrapped.ID(),
+		"the composition must register under StrategyPassphrase to reach ChangePassword")
+
+	b, err := NewStorageBarrier(testLogger(), base, cfg, wrapped)
+	require.NoError(t, err)
+	require.NoError(t, b.Initialize(ctx, MustCredentials([]byte(oldPassword))))
+
+	require.NoError(t, b.ChangePassword(ctx, MustCredentials([]byte(newPassword))),
+		"a strategy composing a software one reports the KDF parameters and must be accepted")
+
+	// The tuned factor survived: a strategy carrying the SAME version and
+	// params opens the new blob.
+	preserved, err := NewDeferredSoftwareStrategyWithParams(version, params)
+	require.NoError(t, err)
+	b2, err := NewStorageBarrier(testLogger(), base, cfg, preserved)
+	require.NoError(t, err)
+	require.NoError(t, b2.Unseal(ctx, MustCredentials([]byte(newPassword))))
+	assert.False(t, b2.IsSealed())
+}
+
 // passphraseIDNoneStrategy is a none strategy that answers StrategyPassphrase
 // for its ID — the composition error the refusal exists for.
 type passphraseIDNoneStrategy struct{ SealingStrategy }

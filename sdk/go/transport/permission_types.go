@@ -51,6 +51,14 @@ const (
 	// permission.Scope.String produces, so the wire form of a scope is the
 	// same whichever layer wrote it.
 	PermissionScopeTenantOnly PermissionScope = "tenant-only"
+
+	// PermissionScopeSelfStrict identifies a permission confined to the
+	// identity's own tenant for every identity, the system tenant included:
+	// ScopeSelf without the system-tenant lift, and unlike tenant-only the
+	// system tenant is confined rather than denied. The label is the one
+	// permission.Scope.String produces, so the wire form of a scope is the
+	// same whichever layer wrote it.
+	PermissionScopeSelfStrict PermissionScope = "self-strict"
 )
 
 // PermissionInfo is the SDK projection of a registered permission. It

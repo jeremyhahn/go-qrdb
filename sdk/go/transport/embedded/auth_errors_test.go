@@ -79,6 +79,7 @@ func TestScopeFromDomain_EveryDefinedScope(t *testing.T) {
 		{permission.ScopeSelf, transport.PermissionScopeSelf},
 		{permission.ScopeCross, transport.PermissionScopeCross},
 		{permission.ScopeTenantOnly, transport.PermissionScopeTenantOnly},
+		{permission.ScopeSelfStrict, transport.PermissionScopeSelfStrict},
 	}
 	for _, tc := range cases {
 		got, err := scopeFromDomain(tc.in)

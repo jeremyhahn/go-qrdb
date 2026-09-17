@@ -112,6 +112,12 @@ type ShamirConfig = seal.ShamirConfig
 // SoftwareStrategy is the software-only sealing strategy.
 type SoftwareStrategy = seal.SoftwareStrategy
 
+// KDFDescriber reports a strategy's KDF version and work factor. ChangePassword
+// identifies the strategy it replaces through this interface, so a strategy that
+// composes a software one is accepted rather than refused for not being the
+// concrete type.
+type KDFDescriber = seal.KDFDescriber
+
 // EpochBarrier is the go-quicraft epoch barrier type.
 type EpochBarrier = seal.EpochBarrier
 

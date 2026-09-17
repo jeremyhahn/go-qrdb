@@ -59,6 +59,24 @@ const (
 	// (for example, per-tenant barrier key custody, which the platform
 	// operator must not hold).
 	ScopeTenantOnly
+
+	// ScopeSelfStrict is a permission confined to the identity's OWN tenant,
+	// for every identity -- the system tenant included. It is ScopeSelf
+	// without the system-tenant lift.
+	//
+	// It is distinct from both of its neighbours, and the difference is the
+	// system tenant's treatment. ScopeSelf lifts the system tenant across
+	// ALL tenants; ScopeTenantOnly denies the system tenant outright, which
+	// is right for material a platform operator must never hold. Neither
+	// expresses "every tenant is its own boundary, the system tenant
+	// included" -- a permission the system tenant may exercise on its own
+	// data and on nobody else's.
+	//
+	// Key escrow is the case that called for it: the system tenant escrows
+	// and recovers its own keys, but a platform admin reaching another
+	// tenant's escrowed key material would be a cross-tenant escalation
+	// wearing an admin role.
+	ScopeSelfStrict
 )
 
 // String returns a stable, human-readable label for the scope. The label
@@ -73,6 +91,8 @@ func (s Scope) String() string {
 		return "cross"
 	case ScopeTenantOnly:
 		return "tenant-only"
+	case ScopeSelfStrict:
+		return "self-strict"
 	default:
 		return "unknown"
 	}
@@ -83,7 +103,7 @@ func (s Scope) String() string {
 // valid.
 func (s Scope) Valid() bool {
 	switch s {
-	case ScopeSelf, ScopeCross, ScopeTenantOnly:
+	case ScopeSelf, ScopeCross, ScopeTenantOnly, ScopeSelfStrict:
 		return true
 	default:
 		return false
@@ -103,6 +123,8 @@ func ParseScope(label string) (Scope, error) {
 		return ScopeCross, nil
 	case "tenant-only":
 		return ScopeTenantOnly, nil
+	case "self-strict":
+		return ScopeSelfStrict, nil
 	default:
 		return ScopeSelf, &InvalidScopeError{Value: label}
 	}

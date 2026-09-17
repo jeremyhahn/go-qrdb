@@ -232,6 +232,7 @@ the identity fails.
 | `ScopeSelf` | own tenant only | **lifted across all tenants** |
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
+| `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
 
 **Choose by asking whose material the permission acts on, not who usually calls
 it.** `ScopeTenantOnly` means *"tenant-admin-only, system-admin-denied, no
