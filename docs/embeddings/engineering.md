@@ -86,6 +86,13 @@ Wired into every protocol server with `server.WithEmbedding()`.
   incomparable with everything already stored.
 - **`RegisterProvider` refuses a name that is already registered** rather than
   replacing it.
+- **A provider name is not an allowlist.** `embedding.NewManager` accepts any
+  `Provider` name — one of the built-ins or one an embedder registers itself
+  through `RegisterProvider` — so an out-of-tree provider can be the configured
+  default. A name with no provider registered under it is reported at first
+  use as `*ProviderNotFoundError` naming it, which is also what a typo in a
+  built-in's name gets. `ErrProviderInvalid` is no longer returned and is kept
+  only so existing matches compile.
 
 ## Configuration
 

@@ -80,12 +80,15 @@ func validateManagerConfig(c Config) error {
 	if c.Provider == "" {
 		return ErrProviderRequired
 	}
-	switch c.Provider {
-	case "openai", "ollama", "lmstudio", "voyage":
-		// valid
-	default:
-		return ErrProviderInvalid
-	}
+	// The provider NAME is not validated against a list. A Manager is built
+	// empty and providers are registered afterwards by whatever name the
+	// embedder chooses — RegisterProvider applies no allowlist — so a closed
+	// list here could only refuse a default that RegisterProvider would then
+	// accept, which is what it did to an out-of-tree provider (go-qrdb#528).
+	// The check a name needs is whether a provider by that name is registered
+	// when it is first used, and Embed already answers that with a typed
+	// *ProviderNotFoundError naming it. A typo in a built-in's name gets the
+	// same answer, at the same point, naming the same string.
 	if c.APIURL == "" {
 		return ErrAPIURLRequired
 	}

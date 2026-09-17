@@ -164,7 +164,13 @@ const (
 
 // Embedding configuration validation sentinel errors.
 var (
-	ErrEmbeddingProviderRequired     = embedding.ErrProviderRequired
+	ErrEmbeddingProviderRequired = embedding.ErrProviderRequired
+	// ErrEmbeddingProviderInvalid is no longer returned: NewEmbeddingManager
+	// accepts any provider name, and a name with no provider registered under
+	// it surfaces as *EmbeddingProviderNotFoundError at first use (go-qrdb#528).
+	//
+	// Deprecated: match *EmbeddingProviderNotFoundError instead.
+	//nolint:staticcheck // SA1019: re-exporting the deprecated sentinel is this var's purpose.
 	ErrEmbeddingProviderInvalid      = embedding.ErrProviderInvalid
 	ErrEmbeddingAPIURLRequired       = embedding.ErrAPIURLRequired
 	ErrEmbeddingAPIKeyRequired       = embedding.ErrAPIKeyRequired

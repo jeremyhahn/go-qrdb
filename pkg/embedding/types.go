@@ -132,7 +132,11 @@ type modelData struct {
 // provider selection, model settings, caching, and retry behaviour.
 // It is consumed by NewManager to construct and configure a Manager instance.
 type Config struct {
-	// Provider selects the backend: "openai", "ollama", "lmstudio", or "voyage".
+	// Provider names the manager's default provider — one of the built-ins
+	// ("openai", "ollama", "lmstudio", "voyage") or any name an embedder
+	// registers through Manager.RegisterProvider. The name is not checked at
+	// construction; a name with no provider registered under it is reported
+	// at first use as *ProviderNotFoundError.
 	Provider string `yaml:"provider" json:"provider"`
 
 	// APIURL is the base URL of the embedding API endpoint.
