@@ -776,3 +776,100 @@ func TestEtcdListenAddrRequiredError_TypeAssertion(t *testing.T) {
 		t.Fatal("errors.As failed for *EtcdListenAddrRequiredError")
 	}
 }
+
+// The message tests below cover the typed errors whose Error() had no test at
+// all. A typed error's message IS its public surface -- it is what an operator
+// reads and what a support transcript quotes -- and an untested one drifts the
+// moment a field is renamed, because nothing else in the package reads it.
+//
+// Each case asserts the WHOLE string rather than a substring: a partial match
+// passes when a field silently stops being interpolated, which is the failure
+// these are for.
+
+func TestDropInProgressError_Message(t *testing.T) {
+	err := &DropInProgressError{Name: "orders"}
+	want := `database: drop already in progress for database "orders"`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestKeyspaceReclaimError_Message(t *testing.T) {
+	err := &KeyspaceReclaimError{Name: "orders", TenantID: "acme", Err: io.ErrUnexpectedEOF}
+	want := `database: failed to reclaim the shared-store keyspace of database "orders" (tenant: "acme"): unexpected EOF`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestUnsupportedBarrierStrategyError_Message(t *testing.T) {
+	err := &UnsupportedBarrierStrategyError{Mode: "kmip"}
+	want := `database: unsupported barrier strategy: "kmip"`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestInvalidDataDirError_Message(t *testing.T) {
+	err := &InvalidDataDirError{Name: "orders", DataDir: "/var/lib/qrdb/orders", Err: io.ErrUnexpectedEOF}
+	want := `database: invalid data directory for database "orders" ("/var/lib/qrdb/orders"): unexpected EOF`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestInvalidDataDirError_Unwrap: the cause must survive errors.Is, or a
+// caller cannot distinguish a permission problem from a missing path without
+// string matching.
+func TestInvalidDataDirError_Unwrap(t *testing.T) {
+	cause := io.ErrUnexpectedEOF
+	err := &InvalidDataDirError{Name: "orders", DataDir: "/var/lib/qrdb/orders", Err: cause}
+	if unwrapped := err.Unwrap(); unwrapped != cause {
+		t.Errorf("Unwrap() = %v, want %v", unwrapped, cause)
+	}
+	if !errors.Is(err, cause) {
+		t.Error("errors.Is must reach the cause through Unwrap")
+	}
+}
+
+func TestDataDirReservedPathError_Message(t *testing.T) {
+	err := &DataDirReservedPathError{Name: "orders", DataDir: "/var/lib/qrdb/raft/orders", Reserved: "/var/lib/qrdb/raft"}
+	want := `database: data directory for database "orders" overlaps a reserved path "/var/lib/qrdb/raft": "/var/lib/qrdb/raft/orders"`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestDataDirConflictError_Message(t *testing.T) {
+	err := &DataDirConflictError{Name: "orders", DataDir: "/var/lib/qrdb/shared", With: "invoices"}
+	want := `database: data directory for database "orders" conflicts with database "invoices": "/var/lib/qrdb/shared"`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestBarrierMigrationNotSupportedError_Message covers both directions: the
+// Direction field is interpolated verbatim into the sentence, so a value that
+// does not read as a verb produces a malformed message, and the test is where
+// that shows up.
+func TestBarrierMigrationNotSupportedError_Message(t *testing.T) {
+	for _, tc := range []struct{ direction, want string }{
+		{"enable", `database: cannot enable the encryption barrier for database "orders" after creation: no re-encryption migration is available; create the database with the desired barrier configuration instead`},
+		{"disable", `database: cannot disable the encryption barrier for database "orders" after creation: no re-encryption migration is available; create the database with the desired barrier configuration instead`},
+	} {
+		t.Run(tc.direction, func(t *testing.T) {
+			err := &BarrierMigrationNotSupportedError{Name: "orders", Direction: tc.direction}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Error() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBarrierEncryptorUnavailableError_Message(t *testing.T) {
+	err := &BarrierEncryptorUnavailableError{Name: "orders"}
+	want := `database: barrier encryptor unavailable for database "orders" immediately after registration`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
