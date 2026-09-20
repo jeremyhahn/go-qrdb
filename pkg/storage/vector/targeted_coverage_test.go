@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,8 +27,7 @@ import (
 
 // TestCleanupTombstones_ActualCleanup tests the full cleanup path with old tombstones
 func TestCleanupTombstones_ActualCleanup(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_actual_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -82,8 +79,7 @@ func TestCleanupTombstones_ActualCleanup(t *testing.T) {
 
 // TestCleanupTombstones_NoCleanupNeeded tests when no tombstones need cleanup
 func TestCleanupTombstones_NoCleanupNeeded(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_none_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -111,8 +107,7 @@ func TestCleanupTombstones_NoCleanupNeeded(t *testing.T) {
 
 // TestCleanupTombstones_MultipleNamespaces tests cleanup across multiple namespaces
 func TestCleanupTombstones_MultipleNamespaces(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_multi_ns_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -150,8 +145,7 @@ func TestCleanupTombstones_MultipleNamespaces(t *testing.T) {
 
 // TestUpsertVector_VersionUpdate tests updating a vector with version > 1
 func TestUpsertVector_VersionUpdate(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "upsert_version_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -207,8 +201,7 @@ func TestUpsertVector_VersionUpdate(t *testing.T) {
 
 // TestUpsertVector_CanceledContext tests context cancellation during upsert with different test name
 func TestUpsertVector_CanceledContext(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "upsert_canceled_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentWrites = 1 // Limit to 1 concurrent write
@@ -252,8 +245,7 @@ func TestUpsertVector_CanceledContext(t *testing.T) {
 
 // TestBatchDeleteVector_ErrorInReverseIter tests error handling in reverse iterator
 func TestBatchDeleteVector_ErrorInReverseIter(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_reverse_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -291,8 +283,7 @@ func TestBatchDeleteVector_ErrorInReverseIter(t *testing.T) {
 
 // TestGetVector_IteratorError tests GetVector when iterator fails
 func TestGetVector_IteratorError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "get_vector_iter_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -323,8 +314,7 @@ func TestGetVector_IteratorError(t *testing.T) {
 
 // TestDeleteVector_WithMetadata tests deletion of vector with multiple metadata fields
 func TestDeleteVector_WithMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "delete_with_metadata_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -372,8 +362,7 @@ func TestDeleteVector_WithMetadata(t *testing.T) {
 
 // TestBatchUpsertVectors_ErrorPath tests batch upsert error handling
 func TestBatchUpsertVectors_ErrorPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_upsert_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -411,8 +400,7 @@ func TestBatchUpsertVectors_ErrorPath(t *testing.T) {
 
 // TestCreateNamespace_SyncWrites tests namespace creation with sync writes
 func TestCreateNamespace_SyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "create_ns_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -442,8 +430,7 @@ func TestCreateNamespace_SyncWrites(t *testing.T) {
 
 // TestGetStats_WithVectors tests stats for namespace with vectors
 func TestGetStats_WithVectors(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "stats_with_vectors_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -485,8 +472,7 @@ func TestGetStats_WithVectors(t *testing.T) {
 
 // TestNewPebbleVectorStorage_LoadNamespacesWithData tests loading namespaces with vectors
 func TestNewPebbleVectorStorage_LoadNamespacesWithData(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "load_ns_data_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}

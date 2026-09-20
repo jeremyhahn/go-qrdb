@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -259,8 +257,7 @@ func TestCompact_BoostCoverage(t *testing.T) {
 
 // TestBatch_UpsertVectorErrorPaths tests batch upsert error paths
 func TestBatch_UpsertVectorErrorPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "test_batch_upsert_errors")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -297,8 +294,7 @@ func TestBatch_UpsertVectorErrorPaths(t *testing.T) {
 
 // TestBatch_DeleteVectorErrorPaths tests batch delete error paths
 func TestBatch_DeleteVectorErrorPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "test_batch_delete_errors")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)

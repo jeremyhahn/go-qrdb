@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,8 +27,7 @@ import (
 
 // TestBatch_UpsertVector_MetadataIndexing tests metadata index creation
 func TestBatch_UpsertVector_MetadataIndexing(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_metadata_index_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -82,8 +79,7 @@ func TestBatch_UpsertVector_MetadataIndexing(t *testing.T) {
 
 // TestBatch_DeleteVector_ReverseIndexCleanup tests reverse index cleanup during deletion
 func TestBatch_DeleteVector_ReverseIndexCleanup(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_reverse_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -138,8 +134,7 @@ func TestBatch_DeleteVector_ReverseIndexCleanup(t *testing.T) {
 
 // TestAdapter_CleanupTombstones_WithSyncWrites tests cleanup with sync writes enabled
 func TestAdapter_CleanupTombstones_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "tombstone_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true // Enable sync writes
@@ -186,8 +181,7 @@ func TestAdapter_CleanupTombstones_WithSyncWrites(t *testing.T) {
 
 // TestAdapter_Compact_WithSyncWrites tests compaction with sync writes
 func TestAdapter_Compact_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "compact_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -250,8 +244,7 @@ func TestAdapter_CleanupTombstones_NoTombstones(t *testing.T) {
 
 // TestBatch_DeleteVector_NoMetadata tests deletion of vector without metadata
 func TestBatch_DeleteVector_NoMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_no_metadata_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)

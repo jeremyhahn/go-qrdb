@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,8 +27,7 @@ import (
 
 // TestNewPebbleVectorStorage_ErrorPaths tests error handling in constructor
 func TestNewPebbleVectorStorage_ErrorPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "new_storage_errors")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	t.Run("NilConfig", func(t *testing.T) {
 		_, err := NewPebbleVectorStorage(nil, &testLogger{})
@@ -52,8 +49,7 @@ func TestNewPebbleVectorStorage_ErrorPaths(t *testing.T) {
 
 // TestBatch_DeleteVector_ReverseIndexPaths tests reverse index iteration paths
 func TestBatch_DeleteVector_ReverseIndexPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_reverse_idx")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -93,8 +89,7 @@ func TestBatch_DeleteVector_ReverseIndexPaths(t *testing.T) {
 
 // TestIterator_NextWithError tests Next() error handling path
 func TestIterator_NextWithError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_next_error")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -117,8 +112,7 @@ func TestIterator_NextWithError(t *testing.T) {
 
 // TestMetadataIterator_DecodeValueError tests metadata iterator value decode error
 func TestMetadataIterator_DecodeValueError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "meta_iter_value_error")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -148,8 +142,7 @@ func TestMetadataIterator_DecodeValueError(t *testing.T) {
 
 // TestAdapter_BatchDeleteVectors_SyncWrites2 tests batch delete with sync writes
 func TestAdapter_BatchDeleteVectors_SyncWrites2(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_sync2")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true

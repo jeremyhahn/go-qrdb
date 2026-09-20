@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -30,9 +28,7 @@ import (
 // (nil barrier) produces a valid StorageOption and that NewPebbleVectorStorage
 // accepts and exercises that option without error.
 func TestWithEncryptor_NilBarrier(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	enc := atrest.New(nil)
 	opt := WithEncryptor(enc)
@@ -58,9 +54,7 @@ func TestWithEncryptor_NilBarrier(t *testing.T) {
 // TestWithBarrier_NilBarrier verifies that WithBarrier with a nil StorageBarrier
 // delegates to WithEncryptor with a no-op encryptor, allowing plaintext operation.
 func TestWithBarrier_NilBarrier(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	opt := WithBarrier(nil)
 	require.NotNil(t, opt)
@@ -92,9 +86,7 @@ func TestWithBarrier_NilBarrier(t *testing.T) {
 // TestWithEncryptor_MultipleOptions verifies that multiple StorageOptions are all
 // applied when passed to NewPebbleVectorStorage (exercises the opts loop).
 func TestWithEncryptor_MultipleOptions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	enc1 := atrest.New(nil)
 	enc2 := atrest.New(nil)

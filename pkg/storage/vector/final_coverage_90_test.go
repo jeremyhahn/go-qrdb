@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,8 +27,7 @@ import (
 
 // TestBatch_UpsertVector_WithLargeMetadata tests batch operations with large metadata sets
 func TestBatch_UpsertVector_WithLargeMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_large_meta")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -63,8 +60,7 @@ func TestBatch_UpsertVector_WithLargeMetadata(t *testing.T) {
 
 // TestBatch_DeleteVector_WithMultipleVersions tests delete with multiple versions
 func TestBatch_DeleteVector_WithMultipleVersions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_multi_version")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -102,8 +98,7 @@ func TestBatch_DeleteVector_WithMultipleVersions(t *testing.T) {
 
 // TestBatch_DeleteVector_WithCorruptedKeys tests delete with corrupted keys
 func TestBatch_DeleteVector_WithCorruptedKeys(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_corrupt_keys")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -148,8 +143,7 @@ func TestBatch_DeleteVector_WithCorruptedKeys(t *testing.T) {
 // TestIterator_ErrorCreation tests iterator creation with errors
 func TestIterator_ErrorCreation(t *testing.T) {
 	t.Run("VectorIterator_WithEmptyDB", func(t *testing.T) {
-		tmpDir := filepath.Join(os.TempDir(), "iter_empty")
-		defer func() { _ = os.RemoveAll(tmpDir) }()
+		tmpDir := t.TempDir()
 
 		db, err := pebble.Open(tmpDir, &pebble.Options{})
 		require.NoError(t, err)
@@ -166,8 +160,7 @@ func TestIterator_ErrorCreation(t *testing.T) {
 	})
 
 	t.Run("MetadataIterator_WithEmptyDB", func(t *testing.T) {
-		tmpDir := filepath.Join(os.TempDir(), "meta_iter_empty")
-		defer func() { _ = os.RemoveAll(tmpDir) }()
+		tmpDir := t.TempDir()
 
 		db, err := pebble.Open(tmpDir, &pebble.Options{})
 		require.NoError(t, err)
@@ -187,8 +180,7 @@ func TestIterator_ErrorCreation(t *testing.T) {
 // TestIterator_NextPathCoverage tests different paths in Next()
 func TestIterator_NextPathCoverage(t *testing.T) {
 	t.Run("VectorIterator_SingleItem", func(t *testing.T) {
-		tmpDir := filepath.Join(os.TempDir(), "iter_single")
-		defer func() { _ = os.RemoveAll(tmpDir) }()
+		tmpDir := t.TempDir()
 
 		db, err := pebble.Open(tmpDir, &pebble.Options{})
 		require.NoError(t, err)
@@ -224,8 +216,7 @@ func TestIterator_NextPathCoverage(t *testing.T) {
 	})
 
 	t.Run("MetadataIterator_SingleItem", func(t *testing.T) {
-		tmpDir := filepath.Join(os.TempDir(), "meta_iter_single")
-		defer func() { _ = os.RemoveAll(tmpDir) }()
+		tmpDir := t.TempDir()
 
 		db, err := pebble.Open(tmpDir, &pebble.Options{})
 		require.NoError(t, err)
@@ -355,8 +346,7 @@ func TestCleanupTombstones_AdditionalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("WithSyncWrites", func(t *testing.T) {
-		tmpDir := filepath.Join(os.TempDir(), "tombstone_sync")
-		defer func() { _ = os.RemoveAll(tmpDir) }()
+		tmpDir := t.TempDir()
 
 		config := DefaultConfig(tmpDir)
 		config.SyncWrites = true // Enable sync writes

@@ -15,7 +15,6 @@ package vector
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -26,7 +25,7 @@ import (
 )
 
 func setupTestDB(t *testing.T) (*pebble.DB, func()) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_test")
+	tmpDir := t.TempDir()
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
 
@@ -379,8 +378,7 @@ func TestMetadataIterator_MultipleFields(t *testing.T) {
 }
 
 func BenchmarkVectorIterator(b *testing.B) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_bench")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := b.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(b, err)
@@ -417,8 +415,7 @@ func BenchmarkVectorIterator(b *testing.B) {
 }
 
 func BenchmarkMetadataIterator(b *testing.B) {
-	tmpDir := filepath.Join(os.TempDir(), "metadata_iter_bench")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := b.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(b, err)

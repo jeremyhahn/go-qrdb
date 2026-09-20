@@ -17,7 +17,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,7 +28,7 @@ import (
 
 // TestCleanupTombstones_CommitPath tests the commit success path in cleanup
 func TestCleanupTombstones_CommitPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 

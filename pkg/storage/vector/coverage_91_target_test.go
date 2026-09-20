@@ -17,8 +17,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,9 +30,7 @@ import (
 // TestUpsertVector_WriteSemaphoreTimeout verifies that UpsertVector returns
 // ErrContextCanceled when the write semaphore is full and the context expires.
 func TestUpsertVector_WriteSemaphoreTimeout(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentWrites = 1
@@ -67,9 +63,7 @@ func TestUpsertVector_WriteSemaphoreTimeout(t *testing.T) {
 // TestGetVector_ReadSemaphoreTimeout verifies that GetVector returns
 // ErrContextCanceled when the read semaphore is full and the context expires.
 func TestGetVector_ReadSemaphoreTimeout(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentReads = 1
@@ -92,9 +86,7 @@ func TestGetVector_ReadSemaphoreTimeout(t *testing.T) {
 // TestDeleteVector_WriteSemaphoreTimeout verifies that DeleteVector returns
 // ErrContextCanceled when the write semaphore is full and the context expires.
 func TestDeleteVector_WriteSemaphoreTimeout(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentWrites = 1
@@ -116,9 +108,7 @@ func TestDeleteVector_WriteSemaphoreTimeout(t *testing.T) {
 // TestBatchUpsertVectors_WriteSemaphoreTimeout verifies that BatchUpsertVectors
 // returns ErrContextCanceled when the write semaphore is full and the context expires.
 func TestBatchUpsertVectors_WriteSemaphoreTimeout(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentWrites = 1
@@ -142,9 +132,7 @@ func TestBatchUpsertVectors_WriteSemaphoreTimeout(t *testing.T) {
 // TestBatchDeleteVectors_WriteSemaphoreTimeout verifies that BatchDeleteVectors
 // returns ErrContextCanceled when the write semaphore is full and the context expires.
 func TestBatchDeleteVectors_WriteSemaphoreTimeout(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.MaxConcurrentWrites = 1
@@ -166,9 +154,7 @@ func TestBatchDeleteVectors_WriteSemaphoreTimeout(t *testing.T) {
 // TestLoadNamespaces_CorruptNamespaceData verifies that loadNamespaces
 // gracefully skips corrupted namespace entries during startup.
 func TestLoadNamespaces_CorruptNamespaceData(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	// Phase 1: Create a valid storage with a namespace, then close it.
 	config := DefaultConfig(tmpDir)

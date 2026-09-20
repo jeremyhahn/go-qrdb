@@ -16,8 +16,6 @@ package vector
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -343,8 +341,7 @@ func TestGetStats_WithData(t *testing.T) {
 
 // TestCleanupTombstones_SyncWritePath tests cleanup with sync writes
 func TestCleanupTombstones_SyncWritePath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -381,8 +378,7 @@ func TestCleanupTombstones_SyncWritePath(t *testing.T) {
 
 // TestBatch_UpsertVector_EmptyNamespace tests upsert with empty namespace
 func TestBatch_UpsertVector_EmptyNamespace(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_empty_ns_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
