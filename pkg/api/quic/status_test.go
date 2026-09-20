@@ -16,7 +16,8 @@
 // (go-qrdb#437).
 //
 // No build constraint: these name only mapServiceError, moduleStatus,
-// wireStatusByGRPCCode and the service-layer error types, all unconstrained.
+// wireStatusByGRPCCode, pkg/api/grpc's ServiceErrorCode and the service-layer
+// error types, all unconstrained.
 
 package quic
 
@@ -29,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -190,18 +192,75 @@ func TestModuleStatus_ExplicitUnknownIsNotStatusError(t *testing.T) {
 // mapServiceError(err) == wireStatusByGRPCCode[grpcCode], so the wire status
 // is never written twice and can never be "corrected" on one side alone.
 //
-// GAP, stated rather than hidden: this table cannot CALL pkg/api/grpc's
-// mapServiceError, which is unexported and in another package, so it verifies
-// that quic agrees with a recorded gRPC answer rather than with the live one.
-// A change to the gRPC mapper that this table is not updated alongside would
-// go unnoticed here. Closing that needs the two mappers to share one
-// classifier, which is an architecture change and is not this change's to
-// make — see the pull request for go-qrdb#437.
+// The gap this comment used to state is closed (go-qrdb#462). It said the
+// table could not CALL pkg/api/grpc's mapServiceError because it was
+// unexported and in another package, so a change to the gRPC mapper that this
+// table was not updated alongside would go unnoticed. pkg/api/grpc now exports
+// ServiceErrorCode for exactly this purpose, and the row asserts against it
+// LIVE: grpcCode is no longer a recorded answer that can drift from the mapper
+// it claims to mirror, it is an assertion about what that mapper returns
+// today. pkg/api/grpc does not import pkg/api/quic, so there is no cycle, and
+// pkg/api/mcp already reaches the classifier the same way.
+//
+// Still open, and still an architecture change rather than this table's to
+// make: the two mappers remain two implementations that must agree, instead of
+// one shared classifier. What is different is that disagreement is now caught
+// here instead of by a consumer.
 type conditionRow struct {
 	name     string
 	err      error
 	want     uint16
 	grpcCode codes.Code
+}
+
+// transportLocalConditions names the rows whose error TYPE is declared in this
+// package and has no counterpart VALUE on the gRPC side: a malformed frame, a
+// payload that will not decode, a service this transport was not configured
+// with. gRPC answers the same CONDITION through its own types, so grpcCode
+// stays the parity claim and stays worth recording — but it cannot be checked
+// by running this error value through gRPC's classifiers, because that value
+// never reaches them.
+//
+// Keyed by row name, with the reason, rather than by a fifth struct field: the
+// rows are unkeyed composite literals, so a new field would have to be spelled
+// out on all fifty of them to mark five.
+//
+// This set is deliberately small and is not a waiver. An entry says "gRPC
+// cannot be asked about this VALUE", never "these two transports need not
+// agree". If a type here ever gains a gRPC counterpart, delete the entry.
+var transportLocalConditions = map[string]string{
+	"frame payload malformed":         "InvalidArgumentError is a framing fault; gRPC's codec rejects the equivalent before a handler runs",
+	"request payload will not decode": "UnmarshalError wraps this transport's own proto decode",
+	"service not configured":          "ServiceNotConfiguredError is this server's wiring check",
+	"ceremony CA not configured":      "CeremonyCANotConfiguredError is this server's wiring check",
+	"share claim needs a client cert": "ClientCertRequiredError is raised from the QUIC peer-certificate path",
+}
+
+// grpcAnswer reports the code the gRPC stack answers for err, resolved in the
+// ORDER the gRPC stack resolves it. Getting the order wrong is how this check
+// manufactures failures: pkg/api/grpc's ServiceErrorCode is the classifier for
+// SERVICE-layer conditions only, and its default branch is codes.Internal, so
+// feeding it an error from another family reports a divergence that does not
+// exist.
+//
+//   - A module answers in gRPC's own vocabulary — it implements its gRPC and
+//     QUIC surfaces over the same code and has never seen this envelope — so a
+//     carried status is taken first and verbatim. pkg/api/mcp's
+//     classifyToolError says the same thing for the same reason.
+//   - An auth-middleware failure is converted by authmw.GRPCError, through
+//     grpcCodeByClass. Rate limiting is the live example: pkg/api/grpc
+//     contains no RateLimited clause at all, and answers ResourceExhausted
+//     entirely through that table.
+//   - Everything else is a service-layer condition, which is what
+//     ServiceErrorCode exists to classify.
+func grpcAnswer(err error) codes.Code {
+	if st, ok := status.FromError(err); ok {
+		return st.Code()
+	}
+	if c := status.Code(authmw.GRPCError(err, codes.Internal)); c != codes.Internal {
+		return c
+	}
+	return grpcapi.ServiceErrorCode(err)
 }
 
 // conditions covers every wire status at least twice, and every condition the
@@ -390,10 +449,56 @@ func TestMapServiceError_EveryCondition(t *testing.T) {
 					"callers as two different conditions",
 					wire.StatusName(got), row.grpcCode, wire.StatusName(want))
 			}
+			// The parity claim, made against the live gRPC stack rather than
+			// against the code recorded beside the row. Without this, a change
+			// to pkg/api/grpc's mapper leaves this table asserting agreement
+			// with an answer that transport no longer gives.
+			if _, local := transportLocalConditions[row.name]; !local {
+				if live := grpcAnswer(row.err); live != row.grpcCode {
+					t.Errorf("the gRPC stack answers codes.%s for this condition, but the "+
+						"row records codes.%s. gRPC moved and this table did not: either "+
+						"the row is stale or the transports have genuinely diverged",
+						live, row.grpcCode)
+				}
+			}
 			if len(payload) == 0 {
 				t.Error("the payload must carry the server's reason")
 			}
 		})
+	}
+}
+
+// TestTransportLocalConditions_IsHonest keeps the exclusion list from becoming
+// a silent waiver, which is the failure mode of every hand-maintained skip set.
+//
+// Two claims, and the second is the one that matters. First, every name in the
+// set must match a row — a typo, or a row renamed without touching the set,
+// would otherwise exclude nothing while reading as though it excluded
+// something. Second, every excluded row must ACTUALLY be unclassifiable by the
+// gRPC stack: grpcAnswer must fall through to codes.Internal. That is what
+// makes the entry necessary rather than convenient, and it is self-repairing —
+// if one of these types ever gains a gRPC counterpart, this test fails and
+// tells you to delete the entry instead of leaving a row permanently unchecked.
+func TestTransportLocalConditions_IsHonest(t *testing.T) {
+	byName := make(map[string]conditionRow, len(conditions))
+	for _, row := range conditions {
+		byName[row.name] = row
+	}
+	for name, reason := range transportLocalConditions {
+		row, ok := byName[name]
+		if !ok {
+			t.Errorf("%q is excluded from the live parity check but matches no row: "+
+				"the set excludes nothing and reads as though it excludes something", name)
+			continue
+		}
+		if reason == "" {
+			t.Errorf("%q is excluded with no reason recorded", name)
+		}
+		if live := grpcAnswer(row.err); live != codes.Internal {
+			t.Errorf("%q is excluded from the live parity check, but the gRPC stack "+
+				"classifies it as codes.%s — it is no longer transport-local, so "+
+				"delete the entry and let the row be checked", name, live)
+		}
 	}
 }
 
