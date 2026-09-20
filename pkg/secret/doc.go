@@ -47,6 +47,35 @@
 //     WithFailClosed() makes Process return ErrUnresolvedSecretURI if any
 //     reference could not be resolved — the secure default for production boots.
 //
+// # Requiredness is a property of the target's TYPE
+//
+// Nothing in this package carries a "required" tag, because the choice of
+// target type already says it. The walk reads requiredness off the declaration:
+//
+//   - A value-typed SecretValue field is REQUIRED. A target that decoded to
+//     nothing — `password: null`, a bare `password:`, or an absent key — is
+//     refused with UnresolvableTargetError, and under WithFailClosed the boot
+//     fails with ErrUnresolvedSecretURI. yaml.v3 zeroes a null destination
+//     without consulting the unmarshaler, so UnmarshalYAML never sees those
+//     three cases and cannot reject them itself; the walk closes that gap, and
+//     a required secret cannot be deleted or nulled into a successful boot.
+//   - A *SecretValue field is OPTIONAL. An absent or null key leaves the
+//     pointer nil, and processValue passes over a nil pointer without
+//     descending into it.
+//   - A plain string field carries NO requiredness signal AT ALL, and this is
+//     the one boundary worth stating out loud. An empty string is skipped
+//     silently, in both processString and the map path, because an empty
+//     string is indistinguishable from a field that was never meant to hold a
+//     secret in the first place: the walk cannot tell "required secret that
+//     went missing" from "ordinary string that is legitimately blank", and
+//     guessing either way is worse than declining to guess. Requiredness for a
+//     plain string target is therefore the CONSUMER's obligation, enforced in
+//     its own Validate(), not something this package can or will detect.
+//
+// The practical consequence: a field that must hold a secret should be declared
+// SecretValue rather than string. That is the secure target regardless, and it
+// is the only one whose absence is caught here instead of at first use.
+//
 // # Scheme ownership across the stack
 //
 // This package defines the contract; each layer registers the resolvers for the
