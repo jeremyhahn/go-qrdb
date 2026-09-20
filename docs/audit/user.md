@@ -19,11 +19,12 @@ auth:
   audit_failure_policy: "fail-closed"   # the default; see "When the audit disk fills"
 ```
 
-> **Correction.** Earlier revisions of this guide described an `audit:` block
-> with `enabled`, `kv_backend`, `file_backend` and `file_path`, and a KV-backed
-> store queried by the CLI. **No such configuration or KV backend exists.**
-> References to `kv_backend` further down are stale for the same reason and are
-> being corrected document-by-document.
+> **Correction (now applied throughout).** Earlier revisions of this guide
+> described an `audit:` block with `enabled`, `kv_backend`, `file_backend` and
+> `file_path`, and a KV-backed store queried by the CLI. **No such
+> configuration or KV backend has ever existed.** `audit_failure_policy` above
+> is the only audit-related key. The stale `kv_backend` references further down
+> have been corrected rather than flagged.
 
 ## First run
 
@@ -98,10 +99,13 @@ tail -F /var/lib/qrdb/audit.log | your-shipper
 
 ## Troubleshooting
 
-**`audit query` returns nothing and you know things happened.** The KV backend
-is off — the default is file-only. Entries are being written to
-`audit.log`, not into the store, so there is nothing to query. Turn on
-`kv_backend`.
+**`audit query` returns nothing and you know things happened.** Querying needs
+no configuration and is never "off", so the cause is the filter rather than the
+storage. Check the time window first: `--from`/`--to` bound the scan, and a
+window that predates the active `audit-events.ndjson` finds nothing even though
+the events happened — the file rotates at its size bound, and `Query` scans the
+ACTIVE file, not the archives. Then check the other filters, remembering that
+`--actor`, `--resource` and `--action` must match the recorded values exactly.
 
 **`--outcome failure` returned nothing but there were failures.** Outcomes
 include a reason, like `failure:leader unavailable`. Prefix matching handles
@@ -110,15 +114,16 @@ this; check you are not passing the full string.
 **You expect more than 1000 results.** That is the server's hard cap per page.
 Follow `next_cursor`.
 
-**The audit log is enormous.** The **file** sink rotates at its size bound and
+**The audit log is enormous.** The file sink rotates at its size bound and
 deletes archives older than its retention window (90 days by default) when it
-opens — so the active directory is bounded, but nothing moves those archives
-off the node before they are deleted. The **KV** backend has no retention at
-all: nothing prunes `__sys:audit/`. Archiving off the node is your operational
-responsibility for both.
+opens, so the active directory is bounded — but nothing moves those archives
+off the node before they are deleted. **Archiving off the node is your
+operational responsibility**, and the retention window is a deletion deadline,
+not a backup.
 
-**Audit entries do not appear in `kv list`.** They live under `__sys:audit/`,
-inside the internal namespace, deliberately invisible to user enumeration.
+**Audit entries do not appear in `kv list`.** They are not in the key-value
+store at all. The trail is a file, `audit-events.ndjson` in the data directory,
+and the in-memory ring behind `audit query`.
 
 **One sink is broken and you are worried the others stopped too.** They did not.
 The fan-out attempts every sink: the first error is reported, and every other

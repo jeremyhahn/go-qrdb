@@ -66,19 +66,32 @@ administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`), and
 
 ## Server-side configuration
 
-Auditing is **on by default**, writing JSON to a file:
+**There is nothing to configure, and no `audit:` block.** Auditing is always
+on. The node composes the trail unconditionally — before the user and role
+stores, and regardless of `--auth-enabled` — because FIPS, FedRAMP, PCI-DSS and
+HIPAA all require a trail in environments where RBAC itself is switched off.
+
+The trail is written to `audit-events.ndjson` in the data directory: one JSON
+object per line, hash-chained, for a log shipper to collect. **There is no
+shipping built in.**
+
+The one audit-related key is the failure policy, which is not part of an
+`audit:` block:
 
 ```yaml
-audit:
-  enabled: true         # master switch
-  kv_backend: false     # also store entries in the KVStore
-  file_backend: true    # write JSON audit log to a file
-  file_path: ""         # default "audit.log", relative to the data dir
+auth:
+  audit_failure_policy: fail-closed   # or fail-open
 ```
 
-With `kv_backend: true` the entries become queryable through `audit query`. The
-file backend produces line-delimited JSON at mode 0600 for a log shipper to
-collect — **there is no shipping built in**.
+It decides what happens when an audit record **cannot be written**, not what is
+audited or where it goes. See [user.md](user.md).
+
+> An earlier version of this page documented an `audit:` block with `enabled`,
+> `kv_backend`, `file_backend` and `file_path`, and said that `kv_backend: true`
+> makes entries queryable. **None of those keys has ever existed**, and setting
+> them does nothing. The claim was also backwards in a way that mattered:
+> `audit query` works today, against the file and the in-memory ring, with no
+> KV backend anywhere.
 
 ## Parity
 
