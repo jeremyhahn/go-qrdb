@@ -322,3 +322,92 @@ func TestDatabase_ImplementsDDLInterfaces(t *testing.T) {
 	_, ok = d.(sqle.SchemaValidator)
 	assert.True(t, ok)
 }
+
+// TestDatabase_DropTable_ReclaimsSequenceCounters pins go-qrdb#444: the two
+// sequence counters keyed by the table's TableID must not outlive the table.
+//
+// The counters are the one part of a table's storage that reclaimTableData
+// never enumerated, because they live under "__seq:" rather than under the
+// table's own data or index prefixes. Left behind they were unreachable as
+// well as orphaned: both names are derived from the immutable TableID, and
+// dropping the catalog row destroys the only mapping from the table's name to
+// that id.
+func TestDatabase_DropTable_ReclaimsSequenceCounters(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	ctx := context.Background()
+
+	// A keyless table so BOTH counters exist: the AUTO_INCREMENT column
+	// allocates from one, and the synthetic hidden row id from the other.
+	mustExecQuery(t, prov, "shop",
+		"CREATE TABLE tickets (seq BIGINT UNSIGNED AUTO_INCREMENT UNIQUE KEY, label VARCHAR(64))")
+	def, err := h.tableSvc.GetTable(ctx, "shop", "tickets")
+	require.NoError(t, err)
+
+	autoinc := service.TableAutoIncrementSequenceName(def.TableID)
+	rowid := service.TableRowIDSequenceName(def.TableID)
+
+	// Allocate on both so the counters are genuinely present: Delete on a
+	// never-written counter proposes nothing, so a test that skipped this
+	// would pass whether or not the fix exists.
+	_, err = h.seqSvc.Allocate(ctx, "shop", autoinc, 5)
+	require.NoError(t, err)
+	_, err = h.seqSvc.Allocate(ctx, "shop", rowid, 3)
+	require.NoError(t, err)
+
+	for _, name := range []string{autoinc, rowid} {
+		v, err := h.kvSvc.Get(ctx, "__seq:shop:"+name)
+		require.NoError(t, err, "counter %s must exist before the drop, or this test proves nothing", name)
+		require.NotEmpty(t, v)
+	}
+
+	mustExecQuery(t, prov, "shop", "DROP TABLE tickets")
+
+	for _, name := range []string{autoinc, rowid} {
+		_, err := h.kvSvc.Get(ctx, "__seq:shop:"+name)
+		var notFound *service.KeyNotFoundError
+		require.ErrorAs(t, err, &notFound,
+			"DROP TABLE must reclaim the %s counter; it is unreachable once the catalog row is gone", name)
+	}
+}
+
+// TestDatabase_DropTable_ReclaimsSequenceCountersWhenNeverAllocated is the
+// other half: a table that allocated from neither counter still drops
+// cleanly. SequenceServicer.Delete is documented as idempotent and may not
+// report not-found, which is what lets the teardown delete both counters
+// unconditionally instead of inspecting the column definitions to guess which
+// exist.
+func TestDatabase_DropTable_ReclaimsSequenceCountersWhenNeverAllocated(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+
+	mustExecQuery(t, prov, "shop", "CREATE TABLE plain (id BIGINT UNSIGNED PRIMARY KEY)")
+	mustExecQuery(t, prov, "shop", "DROP TABLE plain")
+
+	_, err := h.tableSvc.GetTable(context.Background(), "shop", "plain")
+	var notFound *service.TableNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
+// TestDatabase_DropTable_SequenceServiceResolutionError: a registry that
+// cannot hand out a SequenceServicer fails the drop rather than completing it
+// and silently leaving the counters behind, matching how the KV and batch
+// resolutions already behave.
+func TestDatabase_DropTable_SequenceServiceResolutionError(t *testing.T) {
+	h := newDDLHarness()
+	db := h.newDDLDatabase("shop")
+
+	_, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop", Name: "users", Columns: []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}},
+	})
+	require.NoError(t, err)
+
+	reg := h.registry.(*fakeRelationalRegistry)
+	reg.seqErr = assert.AnError
+	require.ErrorIs(t, db.DropTable(newTestContext(), "users"), assert.AnError)
+
+	// The catalog row survives, so the drop is retryable once the registry
+	// recovers -- which is the whole reason this runs before DropTable.
+	_, err = h.tableSvc.GetTable(context.Background(), "shop", "users")
+	require.NoError(t, err)
+}

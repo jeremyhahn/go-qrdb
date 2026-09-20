@@ -151,6 +151,14 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 		return err
 	}
 
+	seqSvc, err := d.registry.SequenceService(tenantID, d.name)
+	if err != nil {
+		return err
+	}
+	if err := reclaimTableSequences(ctx, seqSvc, d.name, def); err != nil {
+		return err
+	}
+
 	return tableSvc.DropTable(ctx, &service.DropTableRequest{Database: d.name, Name: name})
 }
 
@@ -357,6 +365,40 @@ func reclaimTableData(ctx context.Context, kvSvc service.KVServicer, batchSvc se
 	}
 	for _, prefix := range prefixes {
 		if err := deleteByPrefix(ctx, kvSvc, batchSvc, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reclaimTableSequences deletes the two sequence counters keyed by def's
+// TableID: the AUTO_INCREMENT counter and the hidden row-id counter.
+//
+// Both are deleted unconditionally, without first asking whether the table
+// declared an AUTO_INCREMENT column or lacked a PRIMARY KEY. SequenceServicer
+// documents Delete as idempotent and forbids an implementation from returning
+// a not-found error, precisely so a teardown can be re-issued; an absent
+// counter is already the replicated state and proposes nothing. Reading the
+// column definitions to decide would add a branch that can be wrong -- a table
+// altered to drop its AUTO_INCREMENT column still has the counter -- in
+// exchange for nothing.
+//
+// It runs BEFORE the catalog entry is deleted, for the same reason
+// reclaimTableData does: both counter names are derived from the immutable
+// TableID, and after the catalog row is gone there is nothing left that maps
+// this table's name to that id. A failure here therefore leaves a droppable
+// table rather than an unreachable pair of counters, and DROP TABLE is
+// retryable.
+//
+// This is DROP's teardown, not TRUNCATE's. TRUNCATE reuses reclaimTableData
+// but must not reuse this: MySQL resets a truncated table's AUTO_INCREMENT
+// rather than removing it, and this package does neither today (go-qrdb#547).
+func reclaimTableSequences(ctx context.Context, seqSvc service.SequenceServicer, database string, def *service.TableDef) error {
+	for _, name := range []string{
+		service.TableAutoIncrementSequenceName(def.TableID),
+		service.TableRowIDSequenceName(def.TableID),
+	} {
+		if err := seqSvc.Delete(ctx, database, name); err != nil {
 			return err
 		}
 	}

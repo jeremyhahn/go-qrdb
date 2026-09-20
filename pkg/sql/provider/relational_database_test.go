@@ -134,6 +134,7 @@ type fakeRelationalRegistry struct {
 	batchErr   error
 	txnSvc     service.TransactionServicer
 	seqSvc     service.SequenceServicer
+	seqErr     error
 
 	collectionSvc service.CollectionServicer
 	collectionErr error
@@ -198,6 +199,9 @@ func (r *fakeRelationalRegistry) TableService(tenantID, db string) (service.Tabl
 }
 
 func (r *fakeRelationalRegistry) SequenceService(string, string) (service.SequenceServicer, error) {
+	if r.seqErr != nil {
+		return nil, r.seqErr
+	}
 	return r.seqSvc, nil
 }
 
