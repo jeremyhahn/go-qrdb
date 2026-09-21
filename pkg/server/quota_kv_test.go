@@ -609,3 +609,87 @@ func atomicWriteRefusal(t *testing.T) error {
 type nonAtomicTestBackend struct {
 	database.Backend
 }
+
+// TestQuotaKVService_CompareAndDeleteReleasesOnlyOnSuccess covers the guarded
+// delete, which had no test.
+//
+// The accounting rule is the whole point: quota is released only when the
+// delete ACTUALLY happened. A refused guarded delete changes nothing on disk,
+// so releasing there would credit a tenant for bytes it still occupies —
+// repeat it and the accountant drifts arbitrarily far below true usage, which
+// is the direction that lets a tenant exceed its limit rather than merely
+// annoying it.
+//
+// Both arms are asserted against acct.Usage, not against the returned boolean:
+// the boolean is what the inner store said, and the bug being guarded here is
+// in what the wrapper does AFTERWARDS.
+func TestQuotaKVService_CompareAndDeleteReleasesOnlyOnSuccess(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a successful delete releases the value's bytes", func(t *testing.T) {
+		inner := newMockKVService()
+		acct, _ := newTestAccountant(t, nil)
+		kv := newQuotaKVService(inner, acct, "t1", 1000)
+
+		value := make([]byte, 60)
+		if err := kv.Put(ctx, "a", value); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if got := acct.Usage("t1"); got != 60 {
+			t.Fatalf("usage after put = %d, want 60", got)
+		}
+
+		ok, err := kv.CompareAndDelete(ctx, "a", value)
+		if err != nil {
+			t.Fatalf("CompareAndDelete: %v", err)
+		}
+		if !ok {
+			t.Fatal("CompareAndDelete declined a matching value")
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage after a successful guarded delete = %d, want 0", got)
+		}
+	})
+
+	t.Run("a refused delete releases nothing", func(t *testing.T) {
+		inner := newMockKVService()
+		acct, _ := newTestAccountant(t, nil)
+		kv := newQuotaKVService(inner, acct, "t1", 1000)
+
+		if err := kv.Put(ctx, "a", make([]byte, 60)); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		ok, err := kv.CompareAndDelete(ctx, "a", []byte("a stale value"))
+		if err != nil {
+			t.Fatalf("CompareAndDelete: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndDelete reported a delete on a stale expected value")
+		}
+		if got := acct.Usage("t1"); got != 60 {
+			t.Errorf("usage after a REFUSED guarded delete = %d, want 60: "+
+				"releasing here credits a tenant for bytes it still occupies", got)
+		}
+	})
+
+	t.Run("an absent key releases nothing", func(t *testing.T) {
+		inner := newMockKVService()
+		acct, _ := newTestAccountant(t, nil)
+		kv := newQuotaKVService(inner, acct, "t1", 1000)
+
+		if err := kv.Put(ctx, "a", make([]byte, 60)); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		ok, err := kv.CompareAndDelete(ctx, "missing", []byte("v"))
+		if err != nil {
+			t.Fatalf("CompareAndDelete: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndDelete reported a delete of an absent key")
+		}
+		if got := acct.Usage("t1"); got != 60 {
+			t.Errorf("usage after deleting an absent key = %d, want 60", got)
+		}
+	})
+}

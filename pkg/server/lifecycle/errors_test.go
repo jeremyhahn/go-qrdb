@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
@@ -287,5 +288,77 @@ func TestEmptyVectorDataDirError_ErrorsAs(t *testing.T) {
 	var target *lifecycle.EmptyVectorDataDirError
 	if !errors.As(err, &target) {
 		t.Error("errors.As failed")
+	}
+}
+
+// The four typed errors below had no test at all. They assert the WHOLE
+// message rather than a substring: these carry an interpolated field (a
+// backend name, a wrapped cause), and a substring check on the static prefix
+// keeps passing when the interpolation is dropped, which is the regression
+// worth catching.
+
+func TestUserAuthFactorServiceError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("factor store unavailable")
+	err := &lifecycle.UserAuthFactorServiceError{Err: inner}
+	want := "lifecycle: user auth-factor service initialization failed: factor store unavailable"
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, inner) {
+		t.Error("errors.Is must reach the cause through Unwrap")
+	}
+}
+
+// TestLocalStorageError_ErrorAndUnwrap covers each backend the message can
+// name. The backend is interpolated, so a single case would not notice the
+// field being dropped from the format.
+func TestLocalStorageError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("permission denied")
+	for _, backend := range []database.BackendType{
+		database.BackendMemory, database.BackendFile, database.BackendPebble,
+	} {
+		t.Run(string(backend), func(t *testing.T) {
+			err := &lifecycle.LocalStorageError{Backend: backend, Err: inner}
+			want := "lifecycle: local " + string(backend) + " storage: permission denied"
+			if got := err.Error(); got != want {
+				t.Errorf("Error() = %q, want %q", got, want)
+			}
+			if !errors.Is(err, inner) {
+				t.Error("errors.Is must reach the cause through Unwrap")
+			}
+		})
+	}
+}
+
+// TestUnsupportedLocalBackendError_Error: the backend name is QUOTED, which is
+// what makes an empty or whitespace value legible in an operator's log instead
+// of vanishing into the sentence.
+func TestUnsupportedLocalBackendError_Error(t *testing.T) {
+	for _, tc := range []struct {
+		backend database.BackendType
+		want    string
+	}{
+		{database.BackendRaft, `lifecycle: unsupported local storage backend "raft"`},
+		{"", `lifecycle: unsupported local storage backend ""`},
+		{"not a backend", `lifecycle: unsupported local storage backend "not a backend"`},
+	} {
+		t.Run(string(tc.backend), func(t *testing.T) {
+			err := &lifecycle.UnsupportedLocalBackendError{Backend: tc.backend}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Error() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLocalEngineError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("engine refused to open")
+	err := &lifecycle.LocalEngineError{Err: inner}
+	want := "lifecycle: local engine: engine refused to open"
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, inner) {
+		t.Error("errors.Is must reach the cause through Unwrap")
 	}
 }
