@@ -17,6 +17,7 @@ package seal
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,4 +257,265 @@ func TestTenantSharedKVStore_ValuesAreCiphertextInTheSharedStore(t *testing.T) {
 	if string(got) != string(plaintext) {
 		t.Errorf("round-trip = %q; want %q", got, plaintext)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The read/enumerate verbs, and the guarded writes
+//
+// Two properties run through all of them and neither is visible from a return
+// value alone:
+//
+//   - the NAMESPACE is applied on the way down and stripped on the way back,
+//     so a tenant addresses its own keyspace by logical name and never sees
+//     another tenant's records;
+//   - values cross the boundary as CIPHERTEXT, encrypted under this tenant's
+//     DEK, so the shared replicated store beneath holds nothing readable.
+//
+// A wrapper that forgot the prefix would pass any test that only round-trips
+// through itself -- it would write and read back its own unprefixed keys
+// perfectly happily, while colliding with every other tenant in the shared
+// store. These therefore seed a SECOND tenant's record directly and assert it
+// is neither returned nor disturbed.
+// ---------------------------------------------------------------------------
+
+// seedForeignRecord writes a record belonging to a different tenant directly
+// into the shared store, at the physical key that tenant's wrapper would use.
+func seedForeignRecord(t *testing.T, shared kvstore.KVStore, key string) string {
+	t.Helper()
+	physical := tenantIAMSharedPrefix + "other-tenant/" + key
+	if err := shared.Put(context.Background(), physical, []byte("not yours")); err != nil {
+		t.Fatalf("seed foreign record: %v", err)
+	}
+	return physical
+}
+
+func TestTenantSharedKVStore_ListAndScanAreScopedAndDecrypted(t *testing.T) {
+	ctx := context.Background()
+	shared := kvstore.NewMemoryKVStore()
+	s := newTenantSharedStore(t, shared)
+	foreign := seedForeignRecord(t, shared, "users/1")
+
+	for k, v := range map[string]string{"users/1": "alice", "users/2": "bob"} {
+		if err := s.Put(ctx, k, []byte(v)); err != nil {
+			t.Fatalf("Put %q: %v", k, err)
+		}
+	}
+
+	keys, err := s.List(ctx, "users/")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("List returned %d keys (%v), want 2: another tenant's records "+
+			"must not be enumerable", len(keys), keys)
+	}
+	for _, k := range keys {
+		if strings.HasPrefix(k, tenantIAMSharedPrefix) {
+			t.Errorf("List returned a PHYSICAL key %q: the namespace must be stripped", k)
+		}
+	}
+
+	seen := map[string]string{}
+	if err := s.Scan(ctx, "users/", func(k string, v []byte) error {
+		seen[k] = string(v)
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(seen) != 2 || seen["users/1"] != "alice" || seen["users/2"] != "bob" {
+		t.Errorf("Scan = %v, want the two decrypted records keyed by logical name", seen)
+	}
+
+	// The foreign record is untouched and was never decrypted.
+	got, err := shared.Get(ctx, foreign)
+	if err != nil || string(got) != "not yours" {
+		t.Errorf("the other tenant's record changed: (%q, %v)", got, err)
+	}
+}
+
+func TestTenantSharedKVStore_ExistsAndDeleteAreNamespaced(t *testing.T) {
+	ctx := context.Background()
+	shared := kvstore.NewMemoryKVStore()
+	s := newTenantSharedStore(t, shared)
+	foreign := seedForeignRecord(t, shared, "token")
+
+	if err := s.Put(ctx, "token", []byte("mine")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	ok, err := s.Exists(ctx, "token")
+	if err != nil || !ok {
+		t.Fatalf("Exists = (%v, %v), want (true, nil)", ok, err)
+	}
+	if ok, err := s.Exists(ctx, "absent"); err != nil || ok {
+		t.Errorf("Exists(absent) = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	if err := s.Delete(ctx, "token"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if ok, _ := s.Exists(ctx, "token"); ok {
+		t.Error("the key survived Delete")
+	}
+
+	// Deleting this tenant's "token" must not have touched the other's.
+	if got, err := shared.Get(ctx, foreign); err != nil || string(got) != "not yours" {
+		t.Errorf("Delete crossed the namespace boundary: (%q, %v)", got, err)
+	}
+}
+
+// TestTenantSharedKVStore_GuardedWritesCompareDecryptedAndGuardOnCiphertext
+// covers the two guarded verbs on the atomic wrapper.
+//
+// Same split as StorageBarrier: the caller's expectation is compared as
+// plaintext, while the guard handed to the shared store is the ciphertext just
+// read. A success therefore proves both halves -- an implementation that
+// re-encrypted `expected` to build the guard would decline every time, because
+// the AEAD is nonce-randomised.
+func TestTenantSharedKVStore_GuardedWritesCompareDecryptedAndGuardOnCiphertext(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CompareAndSwap on a match", func(t *testing.T) {
+		shared := kvstore.NewMemoryKVStore()
+		s := newTenantSharedStoreIface(t, shared)
+		atomic, ok := s.(kvstore.AtomicKVStore)
+		if !ok {
+			t.Fatal("a memory-backed shared store must yield an AtomicKVStore")
+		}
+		if err := s.Put(ctx, "k", []byte("old")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		swapped, err := atomic.CompareAndSwap(ctx, "k", []byte("old"), []byte("new"))
+		if err != nil || !swapped {
+			t.Fatalf("CompareAndSwap = (%v, %v), want (true, nil)", swapped, err)
+		}
+		got, gerr := s.Get(ctx, "k")
+		if gerr != nil || string(got) != "new" {
+			t.Errorf("value = (%q, %v), want %q", got, gerr, "new")
+		}
+	})
+
+	t.Run("CompareAndDelete on a match", func(t *testing.T) {
+		shared := kvstore.NewMemoryKVStore()
+		s := newTenantSharedStoreIface(t, shared)
+		atomic := s.(kvstore.AtomicKVStore)
+		if err := s.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		deleted, err := atomic.CompareAndDelete(ctx, "k", []byte("v"))
+		if err != nil || !deleted {
+			t.Fatalf("CompareAndDelete = (%v, %v), want (true, nil)", deleted, err)
+		}
+		if ok, _ := s.Exists(ctx, "k"); ok {
+			t.Error("the key survived a successful guarded delete")
+		}
+	})
+
+	t.Run("both decline on a stale plaintext and change nothing", func(t *testing.T) {
+		shared := kvstore.NewMemoryKVStore()
+		s := newTenantSharedStoreIface(t, shared)
+		atomic := s.(kvstore.AtomicKVStore)
+		if err := s.Put(ctx, "k", []byte("actual")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		if swapped, err := atomic.CompareAndSwap(ctx, "k", []byte("stale"), []byte("new")); err != nil || swapped {
+			t.Errorf("CompareAndSwap = (%v, %v), want (false, nil)", swapped, err)
+		}
+		if deleted, err := atomic.CompareAndDelete(ctx, "k", []byte("stale")); err != nil || deleted {
+			t.Errorf("CompareAndDelete = (%v, %v), want (false, nil)", deleted, err)
+		}
+		got, _ := s.Get(ctx, "k")
+		if string(got) != "actual" {
+			t.Errorf("a declined guarded write changed the value to %q", got)
+		}
+	})
+
+	t.Run("absent is unchanged, and a swap does not create", func(t *testing.T) {
+		shared := kvstore.NewMemoryKVStore()
+		s := newTenantSharedStoreIface(t, shared)
+		atomic := s.(kvstore.AtomicKVStore)
+
+		if swapped, err := atomic.CompareAndSwap(ctx, "missing", []byte("v"), []byte("next")); err != nil || swapped {
+			t.Errorf("CompareAndSwap = (%v, %v), want (false, nil)", swapped, err)
+		}
+		if ok, _ := s.Exists(ctx, "missing"); ok {
+			t.Error("CompareAndSwap created an absent key")
+		}
+		if deleted, err := atomic.CompareAndDelete(ctx, "missing", []byte("v")); err != nil || deleted {
+			t.Errorf("CompareAndDelete = (%v, %v), want (false, nil)", deleted, err)
+		}
+	})
+}
+
+// TestTenantSharedKVStore_GuardedWritesAreNamespaced: the guarded verbs must
+// carry the prefix like every other verb. Without it, one tenant's
+// compare-and-swap would evaluate against -- and overwrite -- another
+// tenant's identically-named key whenever the plaintexts happened to match.
+func TestTenantSharedKVStore_GuardedWritesAreNamespaced(t *testing.T) {
+	ctx := context.Background()
+	shared := kvstore.NewMemoryKVStore()
+	s := newTenantSharedStoreIface(t, shared)
+	atomic := s.(kvstore.AtomicKVStore)
+	foreign := seedForeignRecord(t, shared, "k")
+
+	if err := s.Put(ctx, "k", []byte("mine")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if swapped, err := atomic.CompareAndSwap(ctx, "k", []byte("mine"), []byte("updated")); err != nil || !swapped {
+		t.Fatalf("CompareAndSwap = (%v, %v), want (true, nil)", swapped, err)
+	}
+
+	got, err := shared.Get(ctx, foreign)
+	if err != nil || string(got) != "not yours" {
+		t.Errorf("the other tenant's record was disturbed: (%q, %v)", got, err)
+	}
+}
+
+// failingSharedKVStore fails every Get, standing in for a shared store that is
+// unreachable rather than merely empty.
+type failingSharedKVStore struct {
+	kvstore.KVStore
+	err error
+}
+
+func (s *failingSharedKVStore) Get(context.Context, string) ([]byte, error) { return nil, s.err }
+
+// TestTenantSharedKVStore_GetDistinguishesAbsentFromBroken pins the contract
+// the doc comment states: Get returns (nil, nil) for a key that does not
+// exist, and propagates anything else.
+//
+// Collapsing the two would be a security-relevant mistake rather than a
+// cosmetic one. This store backs tenant IAM: a caller that reads a role
+// binding or a token and is told "absent" when the shared store is actually
+// unreachable would proceed as though the tenant genuinely has no such
+// grant -- turning an outage into a silent authorization answer.
+func TestTenantSharedKVStore_GetDistinguishesAbsentFromBroken(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("absent is (nil, nil)", func(t *testing.T) {
+		s := newTenantSharedStore(t, kvstore.NewMemoryKVStore())
+		got, err := s.Get(ctx, "never-written")
+		if err != nil {
+			t.Fatalf("Get on an absent key = %v, want no error", err)
+		}
+		if got != nil {
+			t.Errorf("Get on an absent key = %q, want nil", got)
+		}
+	})
+
+	t.Run("a broken store propagates", func(t *testing.T) {
+		boom := errors.New("shared store unreachable")
+		s := newTenantSharedStore(t, &failingSharedKVStore{
+			KVStore: kvstore.NewMemoryKVStore(), err: boom,
+		})
+		got, err := s.Get(ctx, "k")
+		if !errors.Is(err, boom) {
+			t.Errorf("Get = (%q, %v), want the store's error -- reporting this as "+
+				"absent would turn an outage into a silent authorization answer", got, err)
+		}
+		if got != nil {
+			t.Errorf("Get returned %q alongside an error", got)
+		}
+	})
 }
