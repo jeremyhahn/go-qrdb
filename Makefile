@@ -1091,7 +1091,7 @@ perf-docs: _kvcompare-build
 # check-coverage: extract percentage from coverage profile and fail if below threshold
 # Usage: $(call check-coverage,profile.out,package-name)
 define check-coverage
-	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep total | awk '{print $$3}' | sed 's/%//'); \
+	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
 	echo "$(2) coverage: $${COVERAGE}%"; \
 	if [ $$(echo "$${COVERAGE} < $(COVER_MIN)" | bc -l) -eq 1 ]; then \
 		echo "FAIL: $(2) coverage $${COVERAGE}% is below minimum $(COVER_MIN)%"; \
