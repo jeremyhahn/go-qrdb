@@ -157,6 +157,8 @@ func writeBaseline(cfg *config, measured map[string]Stats, w io.Writer) error {
 	if len(kept) < cfg.discoveryFloor {
 		return &DiscoveryFloorError{Found: len(kept), Floor: cfg.discoveryFloor}
 	}
+	// #nosec G304,G703 -- the -baseline flag is a developer-supplied path on a
+	// build tool (make coverage-baseline), never a request value.
 	f, err := os.Create(cfg.baseline)
 	if err != nil {
 		return &BaselineError{Path: cfg.baseline, Reason: "cannot create", Err: err}
