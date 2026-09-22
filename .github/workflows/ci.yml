@@ -288,6 +288,17 @@ jobs:
       - name: The nightly signal watches every job nightly.yml declares
         run: make test-nightly-signal
 
+      # The coverage gate's own tests (#500). The Test job runs the gate; this
+      # runs every way the gate could misread a profile -- a truncated profile,
+      # conflicting duplicate blocks, a missing baseline, a package that stops
+      # being measured -- each with a negative control. It is here and not in
+      # Test so a broken gate is reported in minutes, before the full race
+      # suite, and so it cannot be mistaken for a coverage regression.
+      #
+      # No network, no Go build beyond this one package.
+      - name: The coverage gate's own tests
+        run: make test-coverratchet
+
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
       # sees one diff, and a violation can be contributed by neither side of a
@@ -488,8 +499,19 @@ jobs:
       # program (#367). The Lint job runs them too, and sooner; they are in the
       # unit target as well so that the entrypoint a developer actually runs
       # reports the same defects CI would.
-      - name: Unit tests (race)
-        run: make test
+      # `make coverage` runs the SAME race suite as `make test` over the same
+      # packages, plus a coverage profile, and then the coverage gate (#500).
+      # It replaces `make test` rather than running beside it, so the gate
+      # costs instrumentation overhead and not a second full test run. Nothing
+      # `make test` covered is lost: the only differences are
+      # ./test/buildgates/... (run in full by the Lint job's
+      # check-action-pins) and pkg/api/grpc/proto/qrdbv1 (generated code with
+      # no test files, so no tests to run).
+      #
+      # A failure here names every package that regressed, is new and under
+      # the floor, or stopped being measured -- all of them, in one pass.
+      - name: Unit tests (race) + coverage gate
+        run: make coverage
 
   test-sdk:
     name: Test (sdk/go module)

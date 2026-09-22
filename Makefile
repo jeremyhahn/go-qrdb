@@ -1116,10 +1116,66 @@ define check-coverage
 	fi
 endef
 
+# ----------------------------------------------------------------------------
+# The coverage GATE (#500, owner-ruled 2026-09-22): a repo-wide floor plus a
+# per-package ratchet, enforced by test/tools/coverratchet.
+#
+# AGENTS.md requires every package to reach COVER_MIN, and until this gate
+# nothing enforced it. Enforcing it outright would have failed 14 packages on
+# the day it arrived, so the ruling is the standard way to arm a gate on a
+# codebase that does not meet it yet: the repo-wide total must meet the floor,
+# no package may fall below the coverage it had when the baseline was taken,
+# and a package NOT in the baseline -- new code -- must meet the floor on its
+# own. The unit is each Go package on its own, not a coverage-* target: those
+# may combine a package with its subpackages and let a well-tested child
+# carry a weak parent (pkg/seal is 90.3% alone, 91.0% as ./pkg/seal/...).
+#
+# COVER_TOLERANCE IS MEASURED, not chosen. Two identical `make coverage` runs on
+# one tree (2026-09-22, main at ac0f91b) left 116 of 120 packages identical;
+# four moved: pkg/invite 0.70pp, pkg/kvstore 0.53pp, pkg/watch 0.14pp,
+# pkg/mvcc 0.06pp -- timing and retry paths their tests do not pin. A
+# zero-tolerance ratchet would fail pushes at random on those four. 1.0pp sits
+# above the observed maximum with margin, because two runs understate the true
+# range. The bound it buys is worth stating: a package can lose at most 1.0pp
+# against its baseline IN TOTAL -- the baseline never moves down on its own, so
+# the allowance does not compound per push. Fixing the jitter at its source
+# would let this tighten.
+#
+# COVER_EXCLUDE_PKGS are test helpers, which AGENTS.md excludes from coverage
+# reports. An explicit list, not a naming rule: "ends in test" would also exempt
+# a real package called `latest`, and a hole in a gate is invisible. The tool
+# prints every exclusion on every run.
+# Deliberately NOT under a directory named `coverage`: .gitignore's unanchored
+# `coverage/` rule ignores every such directory anywhere in the tree (it exists
+# for COVER_DIR and for JS coverage output), and an ignored baseline would leave
+# the gate with nothing to check against.
+COVER_BASELINE     := test/coverage-baseline.txt
+COVER_TOLERANCE    := 1.0
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest
+COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)"
+
+# The package set is the SAME one the baseline is generated from. If CI
+# measured a different set, a package present in one and not the other would
+# read as "missing" or "new". /proto/ is generated code with no tests.
 .PHONY: coverage
 coverage: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
-	$(call check-coverage,$(COVER_DIR)/total.out,total)
+	$(COVER_RATCHET) -min $(COVER_MIN) -tolerance $(COVER_TOLERANCE)
+
+# Regenerate the baseline from a fresh `make coverage` profile. Run it after
+# RAISING a package's coverage, to lock the gain in. The file says, in its own
+# header, that a LOWERED number is the one thing a reviewer should question.
+.PHONY: coverage-baseline
+coverage-baseline: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
+	$(COVER_RATCHET) -write
+
+# The gate's own tests. It fails CI when it misreads a profile, so it has to be
+# tested more carefully than what it measures -- every failure path has a
+# negative control. No network, no Go build beyond this package.
+.PHONY: test-coverratchet
+test-coverratchet:
+	$(GOTEST) ./test/tools/coverratchet/...
 
 .PHONY: coverage-config
 coverage-config: | _cover-dir
