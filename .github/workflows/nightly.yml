@@ -309,14 +309,22 @@ jobs:
       # runner with transient HTTP errors (curl exit 22), which failed the
       # whole job on a fetch that succeeds seconds later. Backoff keeps one
       # network blip from reading as a security-gate failure.
-      - name: Install Trivy CLI
+      # PINNED to the Makefile's TRIVY_VERSION, matching ci.yml's blocking trivy
+      # job (#479). This used to fetch install.sh from trivy's `main` branch
+      # with no version argument, so it ran whatever trivy was newest that
+      # night: a moving ref in a repository that SHA-pins every action because
+      # refs move (#367), and a nightly verdict that could change with no change
+      # to this tree.
+      - name: Install Trivy CLI (pinned)
         run: |
+          v=$(make -s print-trivy-version)
           for i in 1 2 3 4 5; do
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && exit 0
+            curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${v}/contrib/install.sh" \
+              | sh -s -- -b /usr/local/bin "${v}" && exit 0
             echo "trivy install attempt $i failed; retrying in $((i*10))s"
             sleep $((i*10))
           done
-          echo "trivy install failed after 5 attempts" >&2
+          echo "trivy ${v} install failed after 5 attempts" >&2
           exit 1
 
       # ONE gate, on both hosts, through the Makefile (devops.md §4, #451).

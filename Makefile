@@ -2028,6 +2028,14 @@ vet-tags:
 print-tag-sets:
 	@printf '%s\n' $(SUPPORTED_TAG_SETS)
 
+# print-trivy-version prints TRIVY_VERSION for the same reason: ci.yml's
+# blocking trivy job installs the scanner PINNED to it, and a workflow that
+# restated "v0.74.0" would be a second copy of the pin that drifts the first
+# time someone bumps this one (#479). The workflow reads; this declares.
+.PHONY: print-trivy-version
+print-trivy-version:
+	@printf '%s\n' $(TRIVY_VERSION)
+
 # The guard's own regression suite. Same reasoning as test-require-tool: a
 # healthy sweep only exercises the accepting path, so every rejecting branch --
 # the entire reason the script exists -- would otherwise ship untested.
@@ -2464,6 +2472,28 @@ gosec-sarif:
 # the other: govulncheck judges a call graph against a curated Go database,
 # trivy judges package versions against the GHSA stream. A clean govulncheck
 # is not evidence about anything trivy would report.
+#
+# A FRESHNESS FLOOR WAS RULED OUT (#480, 2026-09-22), and it was very nearly
+# built. The case for it sounded identical to the trivy guard's -- "a green
+# scan says a scan ran and nothing about what it knew" -- and it is not
+# identical. trivy's guard exists because trivy holds a CACHED artifact that it
+# never re-downloads while the artifact claims not to be expired. govulncheck
+# holds nothing: measured 2026-09-22, no vuln database anywhere under ~/.cache
+# or the module cache, GOVULNDB unset, `govulncheck -json` reporting
+# db=https://vuln.go.dev. There is no local copy to go stale.
+#
+# What a copied guard WOULD have done is fail for the wrong reason. The same
+# run reported db_last_modified=2026-09-16T18:00:43Z -- six days old, because
+# the Go vulnerability team had simply not published anything that week. A
+# 24-hour floor on that field would have been red with nothing a developer
+# could do about it: there is no "refresh" for a database you do not hold. A
+# guard that fires on a quiet upstream week and cannot be cleared by any change
+# to this tree is as useless as one that cannot fire.
+#
+# The real exposure is the coverage gap above, and it is closed by running
+# trivy BLOCKING on every push (ci.yml's `trivy` job, #479) rather than only
+# overnight. Revisit only if GOVULNDB is ever pointed at a local or mirrored
+# database, which is the one configuration where staleness becomes real.
 .PHONY: vuln
 vuln:
 	$(call require-scanner,$(GOVULNCHECK),$(GOVULNCHECK_INSTALL))
