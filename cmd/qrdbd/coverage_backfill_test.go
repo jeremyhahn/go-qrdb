@@ -972,75 +972,9 @@ func TestLoadTLSFromFilesWithExtra_AdditionalCASymlinkLoopError(t *testing.T) {
 // bootstrap.go: startBootstrapServers — WriteFile failure on key path (line 349-351)
 // ---------------------------------------------------------------------------
 
-// TestStartBootstrapServers_WriteKeyFileFails verifies that a failure to write
-// the Noise static key file (because keyPath is a directory) returns a
-// BootstrapServerError (covers bootstrap.go:349-351).
-func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Create a directory at the noise-key.hex path so os.WriteFile fails.
-	keyFilePath := filepath.Join(dir, noiseKeyFile)
-	require.NoError(t, os.MkdirAll(keyFilePath, 0o700))
-
-	f := &startFlags{
-		dataDir: dir,
-		host:    testBindHost,
-	}
-	// The key write fails before the listener opens; reserved anyway, for the
-	// reason given in TestStartBootstrapServers_InvalidExistingKey
-	// (go-qrdb#313).
-	reserveNoisePort(t, f)
-
-	if !noiseServed() {
-		// No key is generated, so the blocking directory is never opened.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr),
-		"expected BootstrapServerError, got %T: %v", err, err)
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
-
 // ---------------------------------------------------------------------------
 // bootstrap.go: startBootstrapServers — srv.Start() failure (line 376-378)
 // ---------------------------------------------------------------------------
-
-// TestStartBootstrapServers_StartFails verifies that when the Noise server
-// cannot bind to the requested port (one that is already taken),
-// startBootstrapServers returns a BootstrapServerError wrapping the bind error
-// (covers bootstrap.go:376-378).
-func TestStartBootstrapServers_StartFails(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: occupiedTCPPort(t),
-		host:               testBindHost,
-	}
-
-	if !noiseServed() {
-		// No listener is opened, so there is no address to collide with.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr),
-		"expected BootstrapServerError for bind failure, got %T: %v", err, err)
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
 
 // ---------------------------------------------------------------------------
 // Helpers shared by tests in this file

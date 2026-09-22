@@ -24,6 +24,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -671,6 +672,88 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 	}
 	if _, ok := err.(*ServerError); !ok {
 		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+}
+
+// TestStartAdvertiser_DataDirUnusableIsAServerError covers the generate path's
+// MkdirAll failure, which no test in this package reached.
+//
+// It used to be exercised only indirectly, by cmd/qrdbd's tests of the thin
+// startBootstrapServers wrapper around this function. Those never counted
+// toward this package's coverage -- `go test -coverprofile` without -coverpkg
+// credits a test binary only with its own package -- so when the dead wrapper
+// was deleted (go-qrdb#509) the branch would have silently stopped being tested
+// anywhere, with no number moving to say so. Moved here, to the package that
+// owns the behaviour.
+//
+// The branch matters beyond the error type: it destroys the freshly generated
+// key before returning, so a failed start does not leave key material behind.
+// A regular file where the data directory should be makes fileExists report
+// the key absent, takes the generate path, and fails at MkdirAll.
+func TestStartAdvertiser_DataDirUnusableIsAServerError(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, blocked)
+		return
+	}
+
+	_, err = StartAdvertiser(mat, opts, blocked, discardLogger())
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError for an unusable data directory, got %T: %v", err, err)
+	}
+	if serverErr.Protocol != "noise" {
+		t.Errorf("ServerError.Protocol = %q, want %q", serverErr.Protocol, "noise")
+	}
+}
+
+// TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise: when the enrollment
+// port is taken, the start fails with a typed error that NAMES the listener,
+// which is what lets an operator tell a Noise bind failure from any other
+// startup fault. Moved from cmd/qrdbd for the same reason as the test above.
+//
+// The port is occupied on testBindHost itself, the exact address the
+// advertiser binds, so the collision is deterministic rather than depending on
+// how the platform resolves a wildcard listener against a specific one.
+func TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	occupier, err := net.Listen("tcp", net.JoinHostPort(testBindHost, "0"))
+	if err != nil {
+		t.Fatalf("reserving a port to occupy: %v", err)
+	}
+	t.Cleanup(func() { _ = occupier.Close() })
+	port := occupier.Addr().(*net.TCPAddr).Port
+
+	opts := AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}
+	dir := t.TempDir()
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
+	adv, err := StartAdvertiser(mat, opts, dir, discardLogger())
+	if err == nil {
+		adv.Stop()
+		t.Fatal("StartAdvertiser bound a port that was already in use")
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError for a bind failure, got %T: %v", err, err)
+	}
+	if serverErr.Protocol != "noise" {
+		t.Errorf("ServerError.Protocol = %q, want %q: the error must name the listener that failed", serverErr.Protocol, "noise")
 	}
 }
 

@@ -17,8 +17,6 @@ package main
 import (
 	"errors"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,108 +35,6 @@ import (
 // method. In FIPS 140-3 mode it does not, and the daemon's enrollment surface
 // is the approved methods alone -- see pkg/clusterenroll's fips.go.
 func noiseServed() bool { return clusterenroll.NoiseAvailable() }
-
-// assertAdvertisesWithoutNoise asserts the enrollment contract a first node
-// must satisfy when the Noise method is unavailable: it still gets an
-// advertiser -- which is what makes cmd/qrdbd register /v1/ca/bootstrap for it
-// -- that advertiser serves no Noise, and no Noise static key is written into
-// the data directory.
-//
-// A caller reaching this has not skipped its own assertion; it has asserted the
-// contract that REPLACES its own in this runtime. Where the caller's fixture is
-// a fault in the Noise key file or its listen port, "the fixture is never
-// reached" is the whole of what can truthfully be said, and asserting it catches
-// a regression that started reading the key file in FIPS mode again.
-func assertAdvertisesWithoutNoise(t *testing.T, bundle *TLSBundle, f *startFlags) {
-	t.Helper()
-	before := snapshotNoiseKey(t, f.dataDir)
-	servers, err := startBootstrapServers(bundle, f, testLogger())
-	if err != nil {
-		t.Fatalf("startBootstrapServers must succeed when the Noise method is unavailable: %v", err)
-	}
-	if servers == nil {
-		t.Fatal("a first node must still get an advertiser; nil is what stops /v1/ca/bootstrap being registered")
-	}
-	t.Cleanup(servers.Stop)
-	if servers.NoiseEnabled() {
-		t.Fatal("NoiseEnabled() = true, want false when the method is unavailable")
-	}
-	if got := servers.Addr(); got != "" {
-		t.Errorf("Addr() = %q, want empty", got)
-	}
-	if got := servers.NoisePublicKey(); len(got) != 0 {
-		t.Errorf("NoisePublicKey() = %x, want empty", got)
-	}
-	// The key file is compared against a snapshot taken BEFORE the call rather
-	// than asserted absent: several callers PLANT a malformed noise-key.hex as
-	// their fault fixture, and "absent" would fail on the fixture instead of on
-	// the code. What has to hold is that the call neither created the file nor
-	// touched one that was there.
-	if after := snapshotNoiseKey(t, f.dataDir); after != before {
-		t.Errorf("%s changed from %q to %q; the Noise key path must not be touched when the method is unavailable",
-			noiseKeyFile, before, after)
-	}
-}
-
-// snapshotNoiseKey describes the state of the data directory's Noise key path
-// in a form two calls can be compared by.
-//
-// It reports rather than fails on every shape the callers plant there -- a
-// directory, a regular file holding garbage, a path under a blocked parent,
-// nothing at all -- because it is the fixtures themselves that make those
-// shapes, and a helper that treated one of them as an error would fail on the
-// fault the test deliberately injected instead of on the code.
-func snapshotNoiseKey(t *testing.T, dataDir string) string {
-	t.Helper()
-	path := filepath.Join(dataDir, noiseKeyFile)
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "absent"
-	}
-	if !info.Mode().IsRegular() {
-		return "non-regular:" + info.Mode().String()
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "unreadable"
-	}
-	return "regular:" + string(data)
-}
-
-// TestStartBootstrapServers_TracksTheRuntimesNoiseRuling is the daemon-side
-// statement of the ruling, asserted in whichever runtime the suite is executing:
-// under fips140=only in the nightly FIPS job, under fips140=off in the ordinary
-// one. Both branches assert, and between the two jobs both run on every commit.
-func TestStartBootstrapServers_TracksTheRuntimesNoiseRuling(t *testing.T) {
-	dir := t.TempDir()
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-	f := &startFlags{dataDir: dir, host: testBindHost, adminPort: 9443}
-	// Zero is the fixed default 63006, not an OS-assigned port (go-qrdb#313).
-	reserveNoisePort(t, f)
-
-	if !noiseServed() {
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	servers, err := startBootstrapServers(bundle, f, testLogger())
-	if err != nil {
-		t.Fatalf("startBootstrapServers: %v", err)
-	}
-	t.Cleanup(servers.Stop)
-	if !servers.NoiseEnabled() {
-		t.Fatal("NoiseEnabled() = false, want true when the method is available")
-	}
-	if len(servers.NoisePublicKey()) == 0 {
-		t.Fatal("expected a Noise public key")
-	}
-	if _, err := os.Stat(filepath.Join(dir, noiseKeyFile)); err != nil {
-		t.Errorf("expected %s to be persisted: %v", noiseKeyFile, err)
-	}
-}
 
 // TestBootstrapTLS_NoiseOnlyJoinIsRefusedByNameUnderFIPS is the join-side
 // statement for the daemon. It runs the assertion that fits the runtime: a

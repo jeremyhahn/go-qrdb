@@ -352,37 +352,6 @@ func TestCanonicalizePath_ExistingFile(t *testing.T) {
 // bootstrap.go: startBootstrapServers — invalid Noise key file triggers error
 // ---------------------------------------------------------------------------
 
-func TestStartBootstrapServers_InvalidNoiseKeyFile(t *testing.T) {
-	dir := t.TempDir()
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Write garbage to the noise key file so DecodeStaticKey fails.
-	keyPath := filepath.Join(dir, "noise-key.hex")
-	require.NoError(t, os.WriteFile(keyPath, []byte("this-is-not-a-valid-hex-noise-key"), 0o600))
-
-	f := &startFlags{
-		dataDir: dir,
-		host:    testBindHost,
-	}
-	// DecodeStaticKey refuses the garbage key before the listener opens;
-	// reserved anyway, for the reason given in
-	// TestStartBootstrapServers_InvalidExistingKey (go-qrdb#313).
-	reserveNoisePort(t, f)
-
-	if !noiseServed() {
-		// The garbage key is never read, so DecodeStaticKey is never called.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr))
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
-
 // ---------------------------------------------------------------------------
 // start.go: init — invoke pebble factory closure body (line 194)
 // ---------------------------------------------------------------------------

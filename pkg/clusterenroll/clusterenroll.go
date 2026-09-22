@@ -660,9 +660,16 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 // persisted to {dataDir}/noise-key.hex for reuse across restarts; if the key
 // file already exists it is loaded instead of generating a new one.
 //
-// This is the path 5 server-start implementation; it is also exported so that
-// cmd/qrdbd can provide a thin startBootstrapServers wrapper that accepts the
-// qrdbd-specific TLSBundle type.
+// This is the path 5 server-start implementation, reached in production through
+// Resolve. It is exported for callers that already hold CA material and need
+// only the advertiser.
+//
+// It used to also back cmd/qrdbd's startBootstrapServers, a thin wrapper that
+// no production path called and that was deleted as dead code (go-qrdb#509).
+// That wrapper's tests had been the only coverage of two failure branches here
+// -- an unusable data directory and an occupied port -- without ever counting
+// toward this package's coverage, since a test binary is credited only with
+// its own package. They now live in this package's tests.
 func StartAdvertiser(mat *clustertls.Material, opts AdvertiseOptions, dataDir string, logger *slog.Logger) (*Advertiser, error) {
 	provider := &clusterBundleProvider{
 		caCertPEM: mat.CACertPEM,

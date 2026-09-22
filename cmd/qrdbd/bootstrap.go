@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -180,71 +179,4 @@ func resolveNoiseHost(f *startFlags) string {
 		return f.bootstrapNoiseHost
 	}
 	return f.host
-}
-
-// startBootstrapServers starts the Noise NK bootstrap server so that
-// joining nodes can securely fetch the cluster CA bundle. The server's
-// static key is persisted to {data-dir}/noise-key.hex for reuse across
-// restarts. If the key file already exists, it is loaded instead of
-// generating a new key.
-//
-// It is a thin wrapper around clusterenroll.StartAdvertiser that accepts
-// the qrdbd-specific TLSBundle type.
-func startBootstrapServers(bundle *TLSBundle, f *startFlags, logger *slog.Logger) (*bootstrapServers, error) {
-	mat := &clustertls.Material{
-		CACertPEM: bundle.CACertPEM,
-		CAKeyPEM:  bundle.CAKeyPEM,
-		CertPEM:   bundle.CertPEM,
-		KeyPEM:    bundle.KeyPEM,
-	}
-	return clusterenroll.StartAdvertiser(mat, clusterenroll.AdvertiseOptions{
-		NoisePort: f.bootstrapNoisePort,
-		NoiseHost: resolveNoiseHost(f),
-		AdminPort: f.adminPort,
-	}, f.dataDir, logger)
-}
-
-// logBootstrapInfo logs the information that operators need to configure
-// joining nodes. This includes the Noise public key (hex-encoded) and
-// the bootstrap server address.
-//
-// In FIPS 140-3 mode this node advertises no Noise listener (see
-// pkg/clusterenroll.Advertiser), and that is said out loud here rather than
-// passed over: the operator is being handed a smaller set of enrollment methods
-// than the documentation describes, and the alternative to saying so is that
-// they find out from a peer's join failing on a different machine.
-func logBootstrapInfo(bundle *TLSBundle, servers *bootstrapServers, f *startFlags) {
-	if servers == nil {
-		return
-	}
-
-	// No Noise public key is the FIPS 140-3 case, and it is the only one: the
-	// advertiser carries a key whenever it carries a listener.
-	if len(servers.NoisePublicKey()) == 0 {
-		slog.Warn("FIPS 140-3 mode: the Noise NK enrollment method is unavailable because its "+
-			"X25519 handshake is not FIPS 140-3 approved; this node advertises enrollment on "+
-			"/v1/ca/bootstrap only. Point joining nodes at --bootstrap-spki-pin, "+
-			"--bootstrap-dane-dns or --bootstrap-direct-url rather than --bootstrap-noise-key",
-			"admin_port", f.adminPort,
-		)
-		return
-	}
-
-	pubKeyHex := hex.EncodeToString(servers.NoisePublicKey())
-
-	// Reported as configured; a substituted literal would tell operators to
-	// point joining nodes at a port this node does not serve (go-qrdb#167).
-	if f.adminPort == 0 {
-		slog.Warn("bootstrap enrollment: admin port is unconfigured; joining nodes cannot be told which port to use",
-			"noise_public_key", pubKeyHex,
-			"noise_addr", servers.Addr(),
-		)
-		return
-	}
-
-	slog.Info("bootstrap enrollment information for joining nodes",
-		"noise_public_key", pubKeyHex,
-		"noise_addr", servers.Addr(),
-		"admin_port", f.adminPort,
-	)
 }
