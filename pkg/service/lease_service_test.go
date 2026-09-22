@@ -439,6 +439,34 @@ func TestLeaseService_TimeToLive_ReadError(t *testing.T) {
 	}
 }
 
+// TestLeaseService_TimeToLive_LeaseNotFoundUnwraps pins go-qrdb#387 at the
+// service boundary: when the underlying Lookup (engine.MVCCEngine, in
+// production) reports a missing lease as *service.LeaseNotFoundError, the
+// service layer's ReadError wrapper must still let errors.As find it, since
+// every transport's error mapping (REST, gRPC, QUIC, MCP) keys off exactly
+// that type rather than ReadError itself.
+func TestLeaseService_TimeToLive_LeaseNotFoundUnwraps(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, &LeaseNotFoundError{LeaseID: 7}
+		},
+	}
+
+	svc := NewLeaseService(host, 1)
+	_, err := svc.TimeToLive(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var lnf *LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *LeaseNotFoundError to unwrap from %T: %v", err, err)
+	}
+	if lnf.LeaseID != 7 {
+		t.Errorf("LeaseID = %d, want 7", lnf.LeaseID)
+	}
+}
+
 func TestLeaseService_TimeToLive_NotLeaderError(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
@@ -651,5 +679,30 @@ func TestLeaseService_translateReadError_GenericError(t *testing.T) {
 	}
 	if !errors.Is(re.Unwrap(), sentinel) {
 		t.Fatalf("expected underlying sentinel, got %v", re.Unwrap())
+	}
+}
+
+// TestLeaseService_translateReadError_LeaseNotFound pins that a missing
+// lease is returned unwrapped, the same way MVCCKVService.translateReadError
+// returns KeyNotFoundError unwrapped rather than folding it into ReadError.
+// Every transport's classifier already had a *LeaseNotFoundError arm; before
+// this, translateReadError buried it in *ReadError instead, and gRPC, Unix,
+// QUIC and MCP all reported a missing lease as an internal server error
+// (go-qrdb#387).
+func TestLeaseService_translateReadError_LeaseNotFound(t *testing.T) {
+	svc := &LeaseService{host: &mockHost{}, shardID: 1}
+
+	err := svc.translateReadError(&LeaseNotFoundError{LeaseID: 42})
+
+	var lnf *LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if lnf.LeaseID != 42 {
+		t.Fatalf("expected LeaseID 42, got %d", lnf.LeaseID)
+	}
+	var re *ReadError
+	if errors.As(err, &re) {
+		t.Fatalf("expected a bare *LeaseNotFoundError, not one wrapped in *ReadError: %v", err)
 	}
 }

@@ -561,6 +561,11 @@ func TestMVCCLease_Lookup_LeasesQuery_Empty(t *testing.T) {
 // Lookup: lease not found
 // ---------------------------------------------------------------------------
 
+// TestMVCCLease_Lookup_LeaseNotFound pins go-qrdb#387: MVCCStateMachine.Lookup
+// delegates to engine.MVCCEngine.Lookup, which must answer a missing lease
+// with *service.LeaseNotFoundError -- the typed error every transport's
+// error mapping recognizes -- rather than the generic *engine.InvalidQueryError
+// this used to pin.
 func TestMVCCLease_Lookup_LeaseNotFound(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
@@ -569,9 +574,12 @@ func TestMVCCLease_Lookup_LeaseNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent lease")
 	}
 
-	var iqe2 *engine.InvalidQueryError
-	if !errors.As(err, &iqe2) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	var lnf *service.LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *service.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if lnf.LeaseID != 999999 {
+		t.Errorf("LeaseID = %d, want 999999", lnf.LeaseID)
 	}
 }
 

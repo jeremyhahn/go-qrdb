@@ -282,6 +282,17 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusNotFound, msg
 	}
 
+	// Must precede ReadError: LeaseService.TimeToLive's translateReadError no
+	// longer wraps this cause (it is returned unwrapped, the same way
+	// KeyNotFoundError above is), but this arm stays ahead of ReadError
+	// anyway, matching gRPC, so a future caller that reintroduces the wrap
+	// does not silently regress this transport back to StatusError
+	// (go-qrdb#387).
+	var lnf *service.LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return wire.StatusNotFound, msg
+	}
+
 	// The identity not-found family (go-qrdb#289). pkg/user.UserNotFoundError
 	// is an ALIAS of transport.UserNotFoundError, so the type the service
 	// returns and the type the SDK promises are one type; all this clause has
@@ -405,12 +416,8 @@ func mapServiceError(err error) (uint16, []byte) {
 	// NotFound, matching gRPC exactly: neither protocol has an expired-specific
 	// sibling of NotFound and REST's 404 does not either. The SDK's
 	// mapLeaseAbsent tells the two apart at the call site, where the subject is
-	// already known to be a lease.
-	var lnf *service.LeaseNotFoundError
-	if errors.As(err, &lnf) {
-		return wire.StatusNotFound, msg
-	}
-
+	// already known to be a lease. LeaseNotFoundError itself is classified
+	// above, ahead of ReadError (go-qrdb#387).
 	var lee *service.LeaseExpiredError
 	if errors.As(err, &lee) {
 		return wire.StatusNotFound, msg

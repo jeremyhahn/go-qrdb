@@ -327,9 +327,18 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if e.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
 		}
-		l := e.lessor.Lookup(q.ID)
-		if l == nil {
-			return nil, &InvalidQueryError{Reason: "lease not found"}
+		// A lease absent from the Lessor's table is indistinguishable from
+		// one that expired and was swept: the expiry sweeper
+		// (pkg/lease/expiry.go) deletes an expired lease's entry outright
+		// rather than tombstoning it, so by the time LookupOrNotFound
+		// observes a miss the two cases carry no distinguishing state to
+		// report separately (go-qrdb#387). pkg/store's PebbleStateMachine
+		// answers the same query type against the same Lessor type for the
+		// "pebble" raft.sm_type, and translates the identical
+		// *lease.NotFoundError the identical way -- see its Lookup.
+		l, err := e.lessor.LookupOrNotFound(q.ID)
+		if err != nil {
+			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
 		}
 		return l, nil
 

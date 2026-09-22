@@ -286,6 +286,12 @@ var conditions = []conditionRow{
 	{"lease expired", &service.LeaseExpiredError{LeaseID: 42}, wire.StatusNotFound, codes.NotFound},
 	{"lease exists", &service.LeaseExistsError{LeaseID: 42}, wire.StatusAlreadyExists, codes.AlreadyExists},
 
+	// --- go-qrdb#387: the shape a pre-fix LeaseService.TimeToLive actually
+	// produced -- LeaseNotFoundError wrapped in ReadError, not the bare
+	// sentinel above. The ReadError arm must not win this race, matching
+	// the closed-store pair's own reasoning two rows down.
+	{"lease missing under a read", &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}}, wire.StatusNotFound, codes.NotFound},
+
 	// --- go-qrdb#371 / PR #435: the closed store -----------------------
 	{"store closed", storage.ErrStorageClosed, wire.StatusUnavailable, codes.Unavailable},
 	{"store closed under a propose", &service.ProposeError{Err: storage.ErrStorageClosed}, wire.StatusUnavailable, codes.Unavailable},

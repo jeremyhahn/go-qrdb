@@ -2591,6 +2591,10 @@ func TestMapHTTPError_AllTypes(t *testing.T) {
 		{"TransactionConflict", &service.TransactionConflictError{Key: "k"}, http.StatusConflict},
 		{"WatchCanceled", &service.WatchCanceledError{Reason: "compact"}, http.StatusInternalServerError},
 		{"LeaseNotFound", &service.LeaseNotFoundError{LeaseID: 1}, http.StatusNotFound},
+		// The shape a pre-fix LeaseService.TimeToLive actually produced --
+		// LeaseNotFoundError wrapped in ReadError -- not the bare sentinel
+		// above (go-qrdb#387).
+		{"LeaseNotFound under a read", &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 1}}, http.StatusNotFound},
 		{"LeaseExpired", &service.LeaseExpiredError{LeaseID: 1}, http.StatusNotFound},
 		{"LeaseExists", &service.LeaseExistsError{LeaseID: 1}, http.StatusConflict},
 		{"BatchError", &service.BatchError{Index: 0, Err: errors.New("fail")}, http.StatusInternalServerError},

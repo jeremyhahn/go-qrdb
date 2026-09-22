@@ -15,6 +15,7 @@
 package lease
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -381,6 +382,54 @@ func TestLookupAfterRevoke(t *testing.T) {
 	found := lr.Lookup(info.ID)
 	if found != nil {
 		t.Errorf("Lookup after Revoke returned non-nil: %v", found)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LookupOrNotFound
+// ---------------------------------------------------------------------------
+
+func TestLookupOrNotFoundReturnsLeaseInfo(t *testing.T) {
+	lr := NewLessor()
+	info, _ := lr.Grant(30)
+
+	found, err := lr.LookupOrNotFound(info.ID)
+	if err != nil {
+		t.Fatalf("LookupOrNotFound: unexpected error: %v", err)
+	}
+	if found.ID != info.ID {
+		t.Errorf("LookupOrNotFound ID = %d, want %d", found.ID, info.ID)
+	}
+}
+
+func TestLookupOrNotFoundUnknownIDReturnsNotFoundError(t *testing.T) {
+	lr := NewLessor()
+
+	found, err := lr.LookupOrNotFound(999)
+	if found != nil {
+		t.Errorf("LookupOrNotFound(999) result = %v, want nil", found)
+	}
+	var nfe *NotFoundError
+	if !errors.As(err, &nfe) {
+		t.Fatalf("expected *NotFoundError, got %T: %v", err, err)
+	}
+	if nfe.ID != 999 {
+		t.Errorf("NotFoundError.ID = %d, want 999", nfe.ID)
+	}
+}
+
+func TestLookupOrNotFoundAfterRevoke(t *testing.T) {
+	lr := NewLessor()
+	info, _ := lr.Grant(60)
+	_, _ = lr.Revoke(info.ID)
+
+	found, err := lr.LookupOrNotFound(info.ID)
+	if found != nil {
+		t.Errorf("LookupOrNotFound after Revoke returned non-nil: %v", found)
+	}
+	var nfe *NotFoundError
+	if !errors.As(err, &nfe) {
+		t.Fatalf("expected *NotFoundError, got %T: %v", err, err)
 	}
 }
 

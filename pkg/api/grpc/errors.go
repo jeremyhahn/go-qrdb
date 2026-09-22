@@ -121,6 +121,18 @@ func mapServiceError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	}
 
+	// Must precede ReadError: LeaseService.TimeToLive's translateReadError no
+	// longer wraps this cause (it is returned unwrapped, the same way
+	// KeyNotFoundError above is), but this arm stays ahead of ReadError
+	// anyway — the same defense the identity-error ladders in this package
+	// already take for their own wrapped causes — so a future caller that
+	// reintroduces the wrap does not silently regress every transport back
+	// to Internal (go-qrdb#387).
+	var lnf *service.LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+
 	var nle *service.NotLeaderError
 	if errors.As(err, &nle) {
 		return status.Error(codes.Unavailable, err.Error())
@@ -193,10 +205,7 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Canceled, err.Error())
 	}
 
-	var lnf *service.LeaseNotFoundError
-	if errors.As(err, &lnf) {
-		return status.Error(codes.NotFound, err.Error())
-	}
+	// LeaseNotFoundError is classified above, ahead of ReadError.
 
 	var lee *service.LeaseExpiredError
 	if errors.As(err, &lee) {

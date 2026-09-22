@@ -36,6 +36,7 @@ import (
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -396,9 +397,16 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		if s.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
 		}
-		l := s.lessor.Lookup(q.ID)
-		if l == nil {
-			return nil, &ReadError{Key: "lease", Err: &InvalidQueryError{Reason: "lease not found"}}
+		// See pkg/engine's MVCCEngine.Lookup (the "mvcc" raft.sm_type's
+		// answer to this same query type, against the same Lessor type) for
+		// why a miss here is reported as *service.LeaseNotFoundError rather
+		// than the generic query error this used to return (go-qrdb#387):
+		// no transport's error mapping recognized the latter as a
+		// lease-not-found condition, so it never reached a caller as
+		// anything but an internal fault.
+		l, err := s.lessor.LookupOrNotFound(q.ID)
+		if err != nil {
+			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
 		}
 		return l, nil
 

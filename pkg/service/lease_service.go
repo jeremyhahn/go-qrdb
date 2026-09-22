@@ -162,5 +162,17 @@ func (s *LeaseService) translateReadError(err error) error {
 			LeaderAddress: nle.LeaderAddress,
 		}
 	}
+
+	// A missing lease is a typed, actionable condition -- returned as-is,
+	// the same way MVCCKVService.translateReadError returns KeyNotFoundError
+	// unwrapped rather than folding it into the generic ReadError. Every
+	// transport's classifier already has a *LeaseNotFoundError arm; wrapping
+	// it in ReadError here would bury it behind that family's catch-all,
+	// which is exactly the ordering bug those classifiers guard against for
+	// every other typed cause.
+	var lnf *LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return lnf
+	}
 	return &ReadError{Err: err}
 }

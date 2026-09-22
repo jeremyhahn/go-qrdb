@@ -169,6 +169,14 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			want: wire.CodeAlreadyExists,
 		},
 		{
+			name: "missing lease, wrapped as LeaseService.TimeToLive actually produces it",
+			err:  &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}},
+			want: wire.CodeNotFound,
+			why: "go-qrdb#387: the pre-fix production shape. This transport has no " +
+				"classifier of its own -- it renders whatever grpcapi.ServiceErrorCode " +
+				"says -- so this case pins that the delegate does not regress",
+		},
+		{
 			name: "cert thumbprint bound to another user",
 			err:  &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
 			want: wire.CodeAlreadyExists,

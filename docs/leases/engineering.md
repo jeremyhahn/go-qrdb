@@ -1,6 +1,6 @@
 # Leases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-22
 
 ## Exported surface
 
@@ -99,6 +99,25 @@ the transport boundary, never by string.
 The refusal on attaching to an unknown lease is the important one: accepting the
 write and dropping the association would produce a key that outlives its owner
 with no way to notice.
+
+**The typed error has to originate where the lease table actually lives, and
+there are two of those.** `raft.sm_type` selects between two clustered state
+machine backends that each hold their own `*lease.Lessor` and each answer
+`LeaseTimeToLiveQuery` independently: `pkg/engine`'s `MVCCEngine` (`sm_type:
+mvcc`) and `pkg/store`'s `PebbleStateMachine` (`sm_type: pebble`, the
+default). Every transport already matched on `service.LeaseNotFoundError`,
+but both `Lookup` implementations answered a missing lease with a generic
+query error instead of the typed one, so the match at every transport
+boundary never fired for a real deployment -- only for tests that called the
+service layer directly with a hand-built typed error. The "lease is absent"
+decision now lives in one place, `Lessor.LookupOrNotFound`, which both
+`Lookup` implementations call and translate into `*service.LeaseNotFoundError`
+at their own layer, so the two backends cannot drift apart on what "not
+found" means. `Lessor.Lookup` still does not distinguish an expired lease
+from an absent one -- the expiry sweeper deletes an expired lease's entry
+outright rather than tombstoning it -- so the two conditions remain
+indistinguishable from the read path up, exactly as this document already
+required.
 
 `sdk/go/transport.LeaseNotFoundError` / `LeaseExpiredError` cross `embedded`,
 `grpc`, `unix`, `quic` and `mcp` as the same two types. All four remote

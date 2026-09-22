@@ -1505,6 +1505,10 @@ func TestMVCCLookup_LeaseTimeToLiveNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent lease")
 	}
+	var lnf *service.LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *service.LeaseNotFoundError, got %T: %v", err, err)
+	}
 }
 
 func TestMVCCLookup_LeaseTimeToLiveNoLessor(t *testing.T) {

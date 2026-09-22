@@ -1141,6 +1141,24 @@ func TestMapServiceError_LeaseNotFoundError(t *testing.T) {
 	}
 }
 
+// TestMapServiceError_ReadErrorWrappedLeaseNotFound pins the exact shape a
+// pre-fix LeaseService.TimeToLive produced: *service.ReadError wrapping
+// *service.LeaseNotFoundError. mapServiceError's ReadError arm must not win
+// this race — the LeaseNotFoundError arm has to be checked first — or every
+// caller of gRPC (and Unix, which shares this classifier) sees Internal
+// instead of NotFound for a missing lease (go-qrdb#387).
+func TestMapServiceError_ReadErrorWrappedLeaseNotFound(t *testing.T) {
+	wrapped := &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}}
+	err := mapServiceError(wrapped)
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatal("expected gRPC status error")
+	}
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound for a ReadError-wrapped LeaseNotFoundError, got %s", st.Code())
+	}
+}
+
 func TestMapServiceError_LeaseExpiredError(t *testing.T) {
 	err := mapServiceError(&service.LeaseExpiredError{LeaseID: 42})
 	st, ok := status.FromError(err)

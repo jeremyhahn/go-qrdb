@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -661,12 +662,24 @@ func TestPebbleStateMachine_Lookup_LeaseTimeToLive(t *testing.T) {
 	}
 }
 
+// TestPebbleStateMachine_Lookup_LeaseTimeToLive_NotFound pins go-qrdb#387 on
+// the "pebble" raft.sm_type (the default): a missing lease must answer
+// *service.LeaseNotFoundError, the typed error every transport's error
+// mapping recognizes, not a generic query error.
 func TestPebbleStateMachine_Lookup_LeaseTimeToLive_NotFound(t *testing.T) {
 	s, _ := openStoreWithLessor(t)
 
 	_, err := s.Lookup(context.Background(), lease.LeaseTimeToLiveQuery{ID: 999})
 	if err == nil {
 		t.Fatal("expected error for nonexistent lease")
+	}
+
+	var lnf *service.LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *service.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if lnf.LeaseID != 999 {
+		t.Errorf("LeaseID = %d, want 999", lnf.LeaseID)
 	}
 }
 
