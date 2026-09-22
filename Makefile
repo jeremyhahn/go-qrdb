@@ -2000,7 +2000,9 @@ SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TA
 # is what `make vet` alone already said.
 .PHONY: vet-tags
 vet-tags:
-	@GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
 
 # print-tag-sets prints the declared combinations, one per line, so that
 # anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the
@@ -2412,6 +2414,8 @@ gosec:
 .PHONY: gosec-sdk
 gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
 	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
@@ -2447,8 +2451,9 @@ gosec-sarif:
 .PHONY: vuln
 vuln:
 	$(call require-scanner,$(GOVULNCHECK),$(GOVULNCHECK_INSTALL))
-	$(GOVULNCHECK) ./...
-	cd sdk/go && $(GOVULNCHECK) ./...
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	$(GOVULNCHECK) ./... && cd sdk/go && $(GOVULNCHECK) ./...
 
 # No `require-scanner` guard: this one runs the Go toolchain, not a separately
 # installed scanner. Every other target in this file needs `go` too, so its
