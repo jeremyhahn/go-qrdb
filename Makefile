@@ -1903,12 +1903,16 @@ vet:
 # are outside `minimal` entirely. Those nine are covered by the `default` rungs
 # and by nothing narrower, and that is the honest extent of the claim.
 #
-# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS EITHER. qrdb_fts, gpu, qrdbd_webui
-# and desktop are WITH_*=0, so they appear in NEITHER rung and nothing in this
+# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS BY DEFAULT. gpu, qrdbd_webui and
+# desktop are WITH_*=0, so they appear in NO rung and nothing in this
 # repository compiles them -- not `make test`, not `make lint`, not `make vet`.
-# That remains true, and it is the argument FOR declaring a qrdb_fts rung
-# eventually. gpu needs CUDA and desktop needs webkit2, so neither belongs in a
-# target every developer is told to run before pushing.
+# gpu needs CUDA and desktop needs webkit2, so neither belongs in a target every
+# developer is told to run before pushing.
+#
+# qrdb_fts WAS in that set and is now a declared rung (#300, owner-ruled
+# 2026-09-22). It is the one of the four with no exotic host requirement, so
+# the argument that kept it out -- cost, not capability -- was the only one,
+# and it is priced below.
 #
 # qrdb_fts WAS ALSO BROKEN. IT IS NOT ANY MORE -- corrected here because #279
 # is what made the sentence false. Measured 2026-09-03 while choosing these
@@ -1925,10 +1929,12 @@ vet:
 # ignore this target, which is how the blind spot got here -- no longer applies
 # to qrdb_fts on the evidence above.
 #
-# The rung is still NOT declared here. Adding one is a policy change carrying
-# the runtime price this block describes below, and #279 was a test-compile fix;
-# it corrected the stale measurement and left the declaration to the owner
-# rather than taking it on a lane's own judgment.
+# The rung IS declared now, and the 2026-09-03 figures above were re-measured
+# on main at 63f80a6 before declaring it rather than trusted: `go vet` under
+# both codec_json,raft,qrdb_fts and <LINT_TAGS>,qrdb_fts still exits 0 after
+# three weeks of tree movement. A rung declared on a stale measurement arrives
+# RED, which is the failure that teaches people to ignore this target -- and a
+# stale measurement is precisely what #279 had to correct here.
 #
 # UNTAGGED IS DELIBERATELY NOT A RUNG. Whole packages legitimately fail to
 # typecheck with no tags -- pkg/api/mcp's test mocks sit behind
@@ -1939,9 +1945,10 @@ vet:
 # ADDING OR REMOVING A RUNG IS A POLICY CHANGE WITH A RUNTIME PRICE, and both
 # belong in the commit that makes it.
 #
-# The structural half of the price is exact and load-independent: this change
-# took the tagged modules from 2 combinations to 4, and the whole-tree sweep
-# from 6 `go vet` invocations to 10.
+# The structural half of the price is exact and load-independent: the original
+# change took the tagged modules from 2 combinations to 4, and the whole-tree
+# sweep from 6 `go vet` invocations to 10. Declaring the qrdb_fts rung (#300)
+# took the sweep from 13 invocations to 15.
 #
 # THE WALL-CLOCK HALF IS DELIBERATELY NOT RECORDED HERE. Every window available
 # while this landed had four or five concurrent `-race` suites on the host
@@ -1952,6 +1959,15 @@ vet:
 # The one figure worth knowing is the shape of the measurement: run BOTH sweeps
 # back to back on the same cache in the same quiet window, and read the ratio,
 # never an absolute second count copied out of a comment.
+#
+# Measured that way for #300, on main at 63f80a6, both sweeps WARM and back to
+# back on one cache: 4 rungs 20.4s at load 6.94, 5 rungs 25.6s at load 5.73 --
+# a ratio of 1.25x. Read the RATIO. The seconds are this host on that evening
+# and will not reproduce elsewhere; they are recorded only so the ratio can be
+# checked against them. The figure is conservative in the one direction that
+# matters: the FIVE-rung run had the lower load, so contention did not inflate
+# it. Both sides are warm deliberately -- the first run of a new combination
+# pays a one-time cache population that a repeating gate does not.
 #
 # The alternative that was priced and rejected: a per-feature ladder, `minimal`
 # plus each optional tag on its own, which is what would make the in-between
@@ -1964,7 +1980,7 @@ vet:
 # finding -- so a union of runs hides exactly what the extra rungs were added
 # to expose. The sweep prints the tag set beside every invocation and beside
 # every failure for that reason; keep it that way.
-SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
