@@ -133,6 +133,18 @@ type LookupFunc func(ctx context.Context, query interface{}) (interface{}, error
 // and DAO operations. Implementations route through the Raft consensus
 // layer for strong consistency, or read from local replicas for
 // eventual consistency.
+//
+// Implementations SHOULD be comparable, so a value can serve as its own
+// identity — routing layers cache one per-tenant service per resolved store,
+// keyed by the store itself. This is a CONTRACT, not an enforced property:
+// KVStore is an interface, Go has no way to require that every type
+// satisfying it is also comparable, and a named slice or map type with value
+// receivers satisfies KVStore perfectly well while panicking with "hash of
+// unhashable type" the first time it is used as a map key. A caller that
+// caches per-store state MUST NOT assume comparability; use
+// UsableAsMapKey to ask before keying a cache on a KVStore value, and treat
+// "no" as "skip the cache," not as an error (go-qrdb#66, carried forward from
+// go-qrdb#47 scope item 3).
 type KVStore interface {
 	// Put stores a key-value pair. The context controls timeout and
 	// cancellation for Raft proposals.

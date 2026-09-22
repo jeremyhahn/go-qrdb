@@ -259,6 +259,30 @@ load-bearing again without that test going red.
 eager adapter reporting a failed read as "the key is not there" — is the same
 lie in the other direction, and is asserted separately.
 
+### `kvstore.KVStore` comparability is a contract, not an enforced property
+
+Routing layers that resolve a tenant-scoped store cache one per-tenant service
+per *resolved* `kvstore.KVStore`, keyed by the store value itself, because
+store identity is the only thing that distinguishes one tenant's backing from
+another's. That caching pattern only works if the store's dynamic type is
+comparable, and `KVStore` is an interface: nothing in Go requires every type
+that satisfies it to also be comparable. A named slice or map type with value
+receivers implements `KVStore` perfectly well and panics with `"hash of
+unhashable type"` the first time it is used as a map key — before any tenant
+work runs.
+
+**This is documented as a contract on `KVStore` and deliberately not
+enforced.** Go cannot add a compile-time comparability constraint to an
+existing interface without breaking every implementation, and doing so would
+also foreclose an implementation that has a legitimate reason to be
+non-comparable. Instead, `kvstore.UsableAsMapKey(s KVStore) bool` is the
+predicate every caller that caches per-store state must consult before using a
+`KVStore` value as a cache key; a `false` result means "skip the cache," not
+"refuse the store." Multiple routing layers have needed this judgement, and it
+was missing from more than one of them until review caught it — a caller who
+writes the next per-store cache has no way to learn the rule except by finding
+one of those.
+
 ### The single-key guarded verbs — available on every state machine but `fast`
 
 `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are one primitive:
