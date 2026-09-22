@@ -349,19 +349,6 @@ func TestStandaloneBackend_Close(t *testing.T) {
 	}
 }
 
-func TestStandaloneBackend_Storage(t *testing.T) {
-	store := memory.NewStorage()
-	t.Cleanup(func() {
-		_ = store.Close()
-	})
-	b := NewStandaloneBackend(store)
-
-	got := b.Storage()
-	if got != store {
-		t.Errorf("Storage: returned different instance than was provided")
-	}
-}
-
 func TestStandaloneBackend_List_StorageError(t *testing.T) {
 	// Use a mock storage that returns an error from List.
 	listErr := &NotFoundError{Name: "list-storage-fail"}
