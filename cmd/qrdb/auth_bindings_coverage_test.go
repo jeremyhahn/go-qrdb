@@ -51,21 +51,21 @@ func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRe
 	if m.createFn != nil {
 		return m.createFn(ctx, req)
 	}
-	return &user.User{ID: 1001, Username: req.Username, TenantID: req.TenantID, Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+	return &user.User{ID: 1001, Username: req.Username, TenantID: req.TenantID, Lifecycle: user.LifecycleActive, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
 func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, id)
 	}
-	return &user.User{ID: id, Username: "testuser", TenantID: "system", Enabled: true}, nil
+	return &user.User{ID: id, Username: "testuser", TenantID: "system", Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	if m.getByName != nil {
 		return m.getByName(ctx, tenantID, username)
 	}
-	return &user.User{ID: 1001, Username: username, TenantID: tenantID, Enabled: true}, nil
+	return &user.User{ID: 1001, Username: username, TenantID: tenantID, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
@@ -73,14 +73,14 @@ func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email st
 	if m.getByEmail != nil {
 		return m.getByEmail(ctx, tenantID, normalized)
 	}
-	return &user.User{ID: 1001, Username: normalized, Email: normalized, TenantID: tenantID, Enabled: true}, nil
+	return &user.User{ID: 1001, Username: normalized, Email: normalized, TenantID: tenantID, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 	if m.updateFn != nil {
 		return m.updateFn(ctx, req)
 	}
-	return &user.User{ID: req.ID, Username: "updated", TenantID: "system", Enabled: true, UpdatedAt: time.Now()}, nil
+	return &user.User{ID: req.ID, Username: "updated", TenantID: "system", Lifecycle: user.LifecycleActive, UpdatedAt: time.Now()}, nil
 }
 
 func (m *mockUserService) DeleteUser(ctx context.Context, id uint64) error {
@@ -96,7 +96,7 @@ func (m *mockUserService) ListUsers(ctx context.Context, req *user.ListUsersRequ
 	}
 	return &user.ListUsersResponse{
 		Users: []*user.User{
-			{ID: 1001, Username: "alice", TenantID: "system", Enabled: true},
+			{ID: 1001, Username: "alice", TenantID: "system", Lifecycle: user.LifecycleActive},
 		},
 		Total:   1,
 		HasMore: false,

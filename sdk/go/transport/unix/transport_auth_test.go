@@ -39,7 +39,7 @@ func TestUnixProtoToUser_Valid(t *testing.T) {
 		TenantId:  "tenant-a",
 		Username:  "alice",
 		RoleIds:   []string{"role1", "role2"},
-		Enabled:   true,
+		Lifecycle: "active",
 		System:    false,
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-02-01T00:00:00Z",
@@ -54,8 +54,8 @@ func TestUnixProtoToUser_Valid(t *testing.T) {
 	if len(out.RoleIDs) != 2 || out.RoleIDs[0] != "role1" || out.RoleIDs[1] != "role2" {
 		t.Errorf("role mismatch: %v", out.RoleIDs)
 	}
-	if !out.Enabled || out.System {
-		t.Errorf("flag mismatch: enabled=%v system=%v", out.Enabled, out.System)
+	if out.Lifecycle != "active" || out.System {
+		t.Errorf("flag mismatch: lifecycle=%q system=%v", out.Lifecycle, out.System)
 	}
 	if out.CreatedAt != "2026-01-01T00:00:00Z" || out.UpdatedAt != "2026-02-01T00:00:00Z" {
 		t.Errorf("timestamps mismatch: %+v", out)

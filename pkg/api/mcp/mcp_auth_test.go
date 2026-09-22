@@ -58,7 +58,7 @@ func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRe
 		Username:  req.Username,
 		TenantID:  req.TenantID,
 		RoleIDs:   req.RoleIDs,
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, nil
@@ -73,7 +73,7 @@ func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, e
 		Username:  "alice",
 		TenantID:  "system",
 		RoleIDs:   []string{"r-001"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, nil
@@ -84,10 +84,10 @@ func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, usern
 		return m.getUserByUsernameFn(ctx, tenantID, username)
 	}
 	return &user.User{
-		ID:       1001,
-		Username: username,
-		TenantID: tenantID,
-		Enabled:  true,
+		ID:        1001,
+		Username:  username,
+		TenantID:  tenantID,
+		Lifecycle: user.LifecycleActive,
 	}, nil
 }
 
@@ -97,11 +97,11 @@ func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email st
 	}
 	normalized := user.NormalizeEmail(email)
 	return &user.User{
-		ID:       1001,
-		Username: normalized,
-		Email:    normalized,
-		TenantID: tenantID,
-		Enabled:  true,
+		ID:        1001,
+		Username:  normalized,
+		Email:     normalized,
+		TenantID:  tenantID,
+		Lifecycle: user.LifecycleActive,
 	}, nil
 }
 
@@ -114,7 +114,7 @@ func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRe
 		Username:  req.Username,
 		TenantID:  "system",
 		RoleIDs:   req.RoleIDs,
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
@@ -137,8 +137,8 @@ func (m *mockUserService) ListUsers(ctx context.Context, req *user.ListUsersRequ
 	}
 	return &user.ListUsersResponse{
 		Users: []*user.User{
-			{ID: 1001, Username: "alice", TenantID: "system", Enabled: true},
-			{ID: 1002, Username: "bob", TenantID: "system", Enabled: true},
+			{ID: 1001, Username: "alice", TenantID: "system", Lifecycle: user.LifecycleActive},
+			{ID: 1002, Username: "bob", TenantID: "system", Lifecycle: user.LifecycleActive},
 		},
 		Total:   2,
 		HasMore: false,
@@ -391,8 +391,17 @@ func TestUserCreateTool_Success(t *testing.T) {
 	if u.ID != 1001 {
 		t.Errorf("expected ID 1001, got %d", u.ID)
 	}
-	if !u.Enabled {
-		t.Error("expected user to be enabled")
+	if u.Lifecycle != user.LifecycleActive {
+		t.Errorf("expected lifecycle active, got %q", u.Lifecycle)
+	}
+	// Lifecycle is the only account state: the removed "enabled" projection
+	// must not reappear in the tool output.
+	var raw map[string]json.RawMessage
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		t.Fatalf("unmarshal raw: %v", jsonErr)
+	}
+	if _, ok := raw["enabled"]; ok {
+		t.Errorf("tool output carries the removed \"enabled\" key: %s", text)
 	}
 }
 
@@ -402,11 +411,11 @@ func TestUserCreateTool_WithTenantID(t *testing.T) {
 		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 			captured = req
 			return &user.User{
-				ID:       1002,
-				Username: req.Username,
-				TenantID: req.TenantID,
-				RoleIDs:  req.RoleIDs,
-				Enabled:  true,
+				ID:        1002,
+				Username:  req.Username,
+				TenantID:  req.TenantID,
+				RoleIDs:   req.RoleIDs,
+				Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 	}
@@ -502,7 +511,7 @@ func TestUserGetTool_Uint64IDRoundTrip(t *testing.T) {
 	svc := &mockUserService{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	handler := handleUserGet(svc)
@@ -2379,7 +2388,7 @@ func TestUserCreateTool_CarriesEmailAndName(t *testing.T) {
 			got = req
 			return &user.User{
 				ID: 1, Username: req.Username, Email: req.Email, Name: req.Name,
-				TenantID: req.TenantID, Enabled: true,
+				TenantID: req.TenantID, Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 	}
@@ -2407,7 +2416,7 @@ func TestUserUpdateTool_CarriesEmailAndName(t *testing.T) {
 	svc := &mockUserService{
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 			got = req
-			return &user.User{ID: req.ID, Email: req.Email, Name: req.Name, Enabled: true}, nil
+			return &user.User{ID: req.ID, Email: req.Email, Name: req.Name, Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 

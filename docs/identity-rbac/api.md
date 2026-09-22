@@ -177,7 +177,7 @@ tenant; naming another returns the cross-tenant refusal.
 ```json
 { "id": "…", "username": "alice", "email": "alice@acme.example",
   "tenantID": "acme", "roleIDs": ["…"], "groupIDs": ["platform"],
-  "lifecycle": "active", "enabled": true, "system": false,
+  "lifecycle": "active", "system": false,
   "authMethods": ["webauthn", "piv"], "lastAuth": "…",
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
   "attributes": { "department": "eng" },
@@ -200,14 +200,15 @@ passed straight to the withdrawal verb. It is part of the record, so reading
 it needs what reading the record needs: `users:read` on a single user,
 `users:list` on a listing.
 
-`lifecycle` is the **canonical account state**: `pending` · `active` ·
-`suspended` · `locked` · `disabled` · `deleting`. `enabled` is a **derived
-projection** of it — exactly `lifecycle == "active"` — kept because it is the
-field existing clients read. It never lies, but it collapses every non-active
-state into one `false`, so a client that needs to tell an operator hold from an
-automated lockout reads `lifecycle`. There is no request field that writes
-`enabled`: a second writable source of truth is how a record ends up claiming to
-be locked and active at once.
+`lifecycle` is the **canonical and only account state**: `pending` · `active` ·
+`suspended` · `locked` · `disabled` · `deleting`. Only `active` authenticates;
+an absent or unrecognized state fails closed.
+
+> **Breaking change.** The `enabled` boolean has been removed from the `User`
+> schema on every transport (REST, gRPC, QUIC, MCP, Unix socket and the
+> embedded SDK). It was a derived projection of `lifecycle`
+> (`lifecycle == "active"`); read `lifecycle` instead. In the gRPC
+> `UserResponse`, field number 5 and the name `enabled` are reserved.
 
 Transitions are checked against a fixed table. `pending → active` is the only
 activation; `disabled` and `deleting` are reachable from every non-terminal
@@ -325,7 +326,9 @@ of its own, and the listing never contains one.
 ## Versioning
 
 Identity REST paths are unversioned (`/users/...`, `/roles/...`,
-`/permissions/...`). Nothing here is deprecated.
+`/permissions/...`). Nothing here is deprecated; removed fields are removed
+outright rather than deprecated (see the breaking-change notes under
+[Schemas](#schemas)).
 
 ## The email login key
 

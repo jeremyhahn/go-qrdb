@@ -41,6 +41,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -772,12 +773,13 @@ type AdminUserLookup interface {
 // validatePendingAdmin guards every user record deferred mode would hand
 // back as an invitation target. It fails closed unless the record is TRULY
 // the pending admin an invitation may attach to: a persisted id, the exact
-// tenant and username requested, the tenant-scoped Admin role, still
-// disabled, and no bound credential (no cert bindings, no enrolled
+// tenant and username requested, the tenant-scoped Admin role, a lifecycle
+// of exactly pending, and no bound credential (no cert bindings, no enrolled
 // factors). Anything else — an unrelated squatter under the admin username,
-// an admin already activated, an admin disabled for incident response with
-// live credentials, or an adapter that ignored CreateUserRequest.Pending —
-// is refused rather than converted into an invitation target.
+// an admin already activated, suspended, locked, disabled or being deleted,
+// a record with an absent or unrecognized lifecycle, or an adapter that
+// ignored CreateUserRequest.Pending — is refused rather than converted into
+// an invitation target.
 func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) error {
 	var reason string
 	switch {
@@ -789,8 +791,8 @@ func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) 
 		reason = "record names a different user"
 	case !slices.Contains(u.RoleIDs, adminRoleID):
 		reason = "record does not hold the tenant-scoped admin role"
-	case u.Enabled:
-		reason = "admin is already activated"
+	case u.Lifecycle != user.LifecyclePending:
+		reason = "admin lifecycle is " + strconv.Quote(string(u.Lifecycle)) + ", not pending"
 	case len(u.CertBindings) > 0:
 		reason = "admin already holds a bound certificate"
 	case len(u.Factors) > 0:

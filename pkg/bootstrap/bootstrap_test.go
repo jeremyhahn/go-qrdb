@@ -203,7 +203,17 @@ func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (
 		return nil, f.createErr
 	}
 	f.nextID++
-	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+	// Resolve the initial state the way the real store does, so a record the
+	// double returns carries the lifecycle a real create would have written.
+	lc := req.Lifecycle
+	switch {
+	case lc != "":
+	case req.Pending:
+		lc = user.LifecyclePending
+	default:
+		lc = user.LifecycleActive
+	}
+	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: lc}, nil
 }
 
 type fakeRoles struct {
@@ -816,8 +826,8 @@ func TestProvisionTenant_DeferredModeRejectedForSystemTenant(t *testing.T) {
 }
 
 // TestProvisionTenant_DeferredReRunRecoversAdminID asserts an idempotent
-// deferred re-run resolves a TRULY PENDING preexisting admin (disabled, no
-// credential bound) so the consumer still receives the user id an
+// deferred re-run resolves a TRULY PENDING preexisting admin (lifecycle
+// pending, no credential bound) so the consumer still receives the user id an
 // invitation attaches to.
 func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
@@ -825,7 +835,7 @@ func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 		fakeUsers: fakeUsers{exists: true},
 		lookupUser: &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecyclePending,
 		},
 	}
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
@@ -849,9 +859,11 @@ func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 
 // TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin asserts a
 // deferred re-run refuses to convert any non-pending preexisting admin into
-// an invitation target: activated admins, and disabled admins that still
-// hold a bound certificate or enrolled factors (e.g. disabled for incident
-// response), all fail with PendingAdminUnresolvableError.
+// an invitation target: activated admins, disabled admins that still hold a
+// bound certificate or enrolled factors (e.g. disabled for incident
+// response), and credentialless admins in any lifecycle other than pending —
+// absent and unrecognized included — all fail with
+// PendingAdminUnresolvableError.
 func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T) {
 	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
 	for _, tc := range []struct {
@@ -860,17 +872,44 @@ func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T)
 	}{
 		{"already activated", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: true,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleActive,
 		}},
 		{"disabled with bound certificate", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
 			CertBindings: []user.CertBinding{{Thumbprint: "aa"}},
 		}},
 		{"disabled with enrolled factors", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
 			Factors: []user.FactorEnrollment{{FactorName: "webauthn"}},
+		}},
+		// Credentialless records that are NOT pending: only an explicit
+		// pending lifecycle is an invitation target. An absent or unknown
+		// state fails closed like every other non-pending one.
+		{"absent lifecycle", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID},
+		}},
+		{"unrecognized lifecycle", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: "quarantined",
+		}},
+		{"disabled without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
+		}},
+		{"suspended without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleSuspended,
+		}},
+		{"locked without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleLocked,
+		}},
+		{"deleting without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDeleting,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -978,7 +1017,7 @@ func TestProvisionTenant_DeferredCreateFailsClosedOnNonPendingRecord(t *testing.
 	}{
 		{"enabled record (Pending ignored)", &user.User{
 			ID: 7, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: true,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleActive,
 		}},
 		{"zero user id", &user.User{
 			Username: "admin", TenantID: "acme", RoleIDs: []string{wantRoleID},

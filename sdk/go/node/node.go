@@ -2365,7 +2365,7 @@ func (n *Node) buildLoginOpts(svcNode *lifecycle.Node) ([]embedded.Option, error
 			Username: u.Username,
 			TenantID: u.TenantID,
 			Roles:    principalRoles(u),
-			Active:   u.Enabled,
+			Active:   u.CanAuthenticate(),
 		}, nil
 	})
 

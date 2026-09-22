@@ -2591,7 +2591,7 @@ func TestCovHandleUserGetByCertThumbprint_ServiceError(t *testing.T) {
 func TestCovHandleUserGetByCertThumbprint_Success(t *testing.T) {
 	mock := &mockUserService{
 		getUserByCertThumbprintFn: func(_ context.Context, _ string) (*user.User, error) {
-			return &user.User{ID: 1, Username: "alice", Enabled: true}, nil
+			return &user.User{ID: 1, Username: "alice", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	handler := handleUserGetByCertThumbprint(mock)

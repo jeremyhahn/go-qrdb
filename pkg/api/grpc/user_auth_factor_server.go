@@ -134,7 +134,7 @@ func (s *userAuthFactorServer) Login(ctx context.Context, req *pb.UserAuthFactor
 			resp.Username = u.Username
 			resp.TenantId = u.TenantID
 			resp.Roles = u.RoleIDs
-			resp.Active = u.Enabled
+			resp.Active = u.CanAuthenticate()
 		}
 	}
 	return resp, nil

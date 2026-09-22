@@ -2524,11 +2524,15 @@ message DisableUserRequest {
 
 // UserResponse is the response payload for user operations.
 message UserResponse {
+    // enabled was a derived projection of lifecycle; lifecycle is now the only
+    // account-state field.
+    reserved 5;
+    reserved "enabled";
+
     uint64 id = 1;
     string tenant_id = 2;
     string username = 3;
     repeated string role_ids = 4;
-    bool enabled = 5;
     bool system = 6;
     string created_at = 7;
     string updated_at = 8;
@@ -2536,11 +2540,8 @@ message UserResponse {
     string email = 9;
     // name is the display name. Presentation only; never a lookup key.
     string name = 10;
-    // lifecycle is the canonical account state: pending, active, suspended,
-    // locked, disabled or deleting. `enabled` is a derived projection of it
-    // (exactly lifecycle == "active") and cannot distinguish a suspended
-    // account from a locked or pending one, so a client that needs the
-    // distinction reads this.
+    // lifecycle is the canonical and only account state: pending, active,
+    // suspended, locked, disabled or deleting. Only active can authenticate.
     string lifecycle = 11;
     // group_ids are opaque group-membership identifiers.
     repeated string group_ids = 12;

@@ -51,7 +51,7 @@ test.describe("mTLS authentication", () => {
 
       // Wire contract (pkg/api/rest/handlers_users.go): snake_case keys.
       const body = (await resp.json()) as {
-        users: { username: string; tenant_id: string; enabled: boolean }[];
+        users: { username: string; tenant_id: string; lifecycle: string }[];
         total: number;
       };
       // The mTLS identity (CN=admin) is authorized to list users, and the
@@ -59,7 +59,7 @@ test.describe("mTLS authentication", () => {
       const admin = body.users.find((u) => u.username === "admin");
       expect(admin).toBeDefined();
       expect(admin?.tenant_id).toBe("system");
-      expect(admin?.enabled).toBe(true);
+      expect(admin?.lifecycle).toBe("active");
     } finally {
       await ctx.dispose();
     }

@@ -114,7 +114,7 @@ func TestUserToProto_Valid(t *testing.T) {
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-1", "role-2"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: testTime,
 		UpdatedAt: testTime,
@@ -132,8 +132,8 @@ func TestUserToProto_Valid(t *testing.T) {
 	if len(result.GetRoleIds()) != 2 {
 		t.Fatalf("expected 2 role IDs, got %d", len(result.GetRoleIds()))
 	}
-	if !result.GetEnabled() {
-		t.Fatal("expected enabled=true")
+	if result.GetLifecycle() != string(user.LifecycleActive) {
+		t.Fatalf("expected lifecycle active, got %q", result.GetLifecycle())
 	}
 	if result.GetSystem() {
 		t.Fatal("expected system=false")
@@ -474,7 +474,7 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		createResult: &user.User{
 			ID: 1, Username: "alice", TenantID: "t1",
-			RoleIDs: []string{"r1"}, Enabled: true,
+			RoleIDs: []string{"r1"}, Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -533,7 +533,7 @@ func TestGRPC_CreateUser_NilService(t *testing.T) {
 func TestGRPC_GetUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID: 1, Username: "bob", Enabled: true,
+			ID: 1, Username: "bob", Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -557,7 +557,7 @@ func TestGRPC_GetUser_Uint64IDRoundTrip(t *testing.T) {
 	const wantID uint64 = 1<<63 + 1234567890
 
 	userSvc := &mockUserService{}
-	userSvc.getResult = &user.User{ID: wantID, Username: "snowflake", Enabled: true, CreatedAt: testTime, UpdatedAt: testTime}
+	userSvc.getResult = &user.User{ID: wantID, Username: "snowflake", Lifecycle: user.LifecycleActive, CreatedAt: testTime, UpdatedAt: testTime}
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
@@ -607,7 +607,7 @@ func TestGRPC_GetUser_NilService(t *testing.T) {
 func TestGRPC_UpdateUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
 		updateResult: &user.User{
-			ID: 1, Username: "alice-updated", Enabled: true,
+			ID: 1, Username: "alice-updated", Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
@@ -1746,10 +1746,8 @@ func TestWithCertProvider_Nil(t *testing.T) {
 	}
 }
 
-// The gRPC UserResponse carries the canonical lifecycle state beside the
-// derived `enabled` boolean. Without it a gRPC client cannot tell a suspended
-// account from a locked or pending one — every non-active state arrives as the
-// same false.
+// The gRPC UserResponse carries the canonical lifecycle state verbatim; it is
+// the only account-state field on the message.
 func TestUserToProto_CarriesLifecycle(t *testing.T) {
 	for _, l := range []user.Lifecycle{
 		user.LifecyclePending,
@@ -1764,7 +1762,6 @@ func TestUserToProto_CarriesLifecycle(t *testing.T) {
 			Username:  "bob",
 			TenantID:  "tenant-2",
 			Lifecycle: l,
-			Enabled:   l == user.LifecycleActive,
 			CreatedAt: testTime,
 			UpdatedAt: testTime,
 		}
@@ -1772,9 +1769,24 @@ func TestUserToProto_CarriesLifecycle(t *testing.T) {
 		if result.GetLifecycle() != string(l) {
 			t.Errorf("lifecycle: got %q, want %q", result.GetLifecycle(), l)
 		}
-		if result.GetEnabled() != (l == user.LifecycleActive) {
-			t.Errorf("enabled for %q: got %v", l, result.GetEnabled())
-		}
+	}
+}
+
+// The removed `enabled` field stays removed: its name and number are reserved,
+// so neither can be reintroduced with a different meaning.
+func TestUserResponseProto_EnabledIsReserved(t *testing.T) {
+	md := (&pb.UserResponse{}).ProtoReflect().Descriptor()
+	if md.Fields().ByName("enabled") != nil {
+		t.Error("UserResponse still declares an \"enabled\" field")
+	}
+	if md.Fields().ByNumber(5) != nil {
+		t.Error("UserResponse field 5 is in use; it belonged to the removed \"enabled\"")
+	}
+	if !md.ReservedNames().Has("enabled") {
+		t.Error("\"enabled\" is not a reserved name on UserResponse")
+	}
+	if !md.ReservedRanges().Has(5) {
+		t.Error("field number 5 is not reserved on UserResponse")
 	}
 }
 
@@ -1805,7 +1817,6 @@ func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
 		Username:    "carol",
 		TenantID:    "tenant-3",
 		Lifecycle:   user.LifecycleActive,
-		Enabled:     true,
 		GroupIDs:    []string{"platform", "sre"},
 		AuthMethods: []string{"webauthn", "piv"},
 		LastAuth:    &at,

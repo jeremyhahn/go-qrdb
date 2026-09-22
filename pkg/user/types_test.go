@@ -27,7 +27,7 @@ func TestUser_JSONRoundTrip(t *testing.T) {
 		Username:  "alice",
 		TenantID:  "acme",
 		RoleIDs:   []string{"admin", "viewer"},
-		Enabled:   true,
+		Lifecycle: LifecycleActive,
 		System:    false,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -58,11 +58,30 @@ func TestUser_JSONRoundTrip(t *testing.T) {
 	if decoded.RoleIDs[0] != "admin" || decoded.RoleIDs[1] != "viewer" {
 		t.Errorf("RoleIDs: got %v, want [admin viewer]", decoded.RoleIDs)
 	}
-	if decoded.Enabled != original.Enabled {
-		t.Errorf("Enabled: got %v, want %v", decoded.Enabled, original.Enabled)
+	if decoded.Lifecycle != original.Lifecycle {
+		t.Errorf("Lifecycle: got %q, want %q", decoded.Lifecycle, original.Lifecycle)
 	}
 	if decoded.System != original.System {
 		t.Errorf("System: got %v, want %v", decoded.System, original.System)
+	}
+}
+
+// Lifecycle is the only account-state field: the removed "enabled" projection
+// must not reappear on the wire.
+func TestUser_JSONHasNoEnabledKey(t *testing.T) {
+	data, err := json.Marshal(&User{ID: 1, Username: "alice", Lifecycle: LifecycleActive})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := raw["enabled"]; ok {
+		t.Errorf("marshalled user carries an \"enabled\" key: %s", data)
+	}
+	if got := string(raw["lifecycle"]); got != `"active"` {
+		t.Errorf("lifecycle: got %s, want \"active\"", got)
 	}
 }
 
@@ -72,7 +91,6 @@ func TestUser_JSONEmptyRoleIDs(t *testing.T) {
 		Username: "bob",
 		TenantID: "system",
 		RoleIDs:  []string{},
-		Enabled:  true,
 	}
 
 	data, err := json.Marshal(original)

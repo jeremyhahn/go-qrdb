@@ -151,7 +151,7 @@ func newMockUserClient() mockUserClient {
 			Username:  "alice",
 			TenantID:  "tenant-1",
 			RoleIDs:   []string{"role-admin"},
-			Enabled:   true,
+			Lifecycle: "active",
 			System:    false,
 			CreatedAt: "2026-01-01T00:00:00Z",
 			UpdatedAt: "2026-01-01T00:00:00Z",
@@ -161,7 +161,7 @@ func newMockUserClient() mockUserClient {
 			Username:  "bob",
 			TenantID:  "tenant-1",
 			RoleIDs:   []string{"role-reader"},
-			Enabled:   true,
+			Lifecycle: "active",
 			System:    false,
 			CreatedAt: "2026-01-02T00:00:00Z",
 			UpdatedAt: "2026-01-02T00:00:00Z",
@@ -186,7 +186,7 @@ func (m *mockUserClient) CreateUser(_ context.Context, req *transport.CreateUser
 		Name:      req.Name,
 		TenantID:  req.TenantID,
 		RoleIDs:   req.RoleIDs,
-		Enabled:   true,
+		Lifecycle: "active",
 		System:    false,
 		CreatedAt: "2026-02-26T00:00:00Z",
 		UpdatedAt: "2026-02-26T00:00:00Z",
@@ -249,7 +249,7 @@ func (m *mockUserClient) EnableUser(_ context.Context, id uint64) error {
 	if !ok {
 		return &transport.UserNotFoundError{ID: id}
 	}
-	u.Enabled = true
+	u.Lifecycle = "active"
 	delete(m.disabled, id)
 	return nil
 }
@@ -259,7 +259,7 @@ func (m *mockUserClient) DisableUser(_ context.Context, id uint64) error {
 	if !ok {
 		return &transport.UserNotFoundError{ID: id}
 	}
-	u.Enabled = false
+	u.Lifecycle = "disabled"
 	m.disabled[id] = true
 	return nil
 }

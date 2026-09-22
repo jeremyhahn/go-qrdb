@@ -38,7 +38,7 @@ a second, unrelated credential bound instead.
 - **System-level enrolment is certificate-based; there are no system-level
   invite tokens.** The initial tenant admin may instead be provisioned via
   `ProvisionTenant`'s `AdminEnrollDeferred` mode: the admin user is created
-  pending (`Enabled=false`, no credential bound) and the result carries
+  pending (lifecycle `pending`, no credential bound) and the result carries
   `AdminUserID` + `AdminRoleID` so the composing host attaches a single-use
   invitation (`pkg/invite`) whose redemption binds the first auth factor and
   activates the account. Supplying `AdminCSRPEM` alongside deferred mode is
@@ -50,7 +50,8 @@ a second, unrelated credential bound instead.
   `user.UserServicer`). EVERY record deferred mode returns — freshly created
   included, since `Users` is an adapter seam that may ignore `Pending` —
   must be truly pending: persisted id, exact tenant and username, the
-  tenant-scoped Admin role, still disabled, no bound certificate, no
+  tenant-scoped Admin role, a lifecycle of exactly `pending` (an absent,
+  unrecognized or any other state is refused), no bound certificate, no
   enrolled factors on the record, and no ACTIVE factor in the canonical
   auth-factor store (the required `Dependencies.AdminFactors` seam — the
   FAIL-CLOSED `service.ActiveFactorChecker` query, implemented by the

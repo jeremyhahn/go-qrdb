@@ -53,21 +53,21 @@ func (m *mockUserSvc) CreateUser(ctx context.Context, req *user.CreateUserReques
 	if m.createFn != nil {
 		return m.createFn(ctx, req)
 	}
-	return &user.User{ID: 1, Username: req.Username, TenantID: req.TenantID, Enabled: true}, nil
+	return &user.User{ID: 1, Username: req.Username, TenantID: req.TenantID, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserSvc) GetUser(ctx context.Context, id uint64) (*user.User, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, id)
 	}
-	return &user.User{ID: id, Username: "stub", Enabled: true}, nil
+	return &user.User{ID: id, Username: "stub", Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserSvc) GetUserByUsername(ctx context.Context, tenant, username string) (*user.User, error) {
 	if m.getByUserNameFn != nil {
 		return m.getByUserNameFn(ctx, tenant, username)
 	}
-	return &user.User{ID: 1, Username: username, TenantID: tenant, Enabled: true}, nil
+	return &user.User{ID: 1, Username: username, TenantID: tenant, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserSvc) GetUserByEmail(ctx context.Context, tenant, email string) (*user.User, error) {
@@ -75,14 +75,14 @@ func (m *mockUserSvc) GetUserByEmail(ctx context.Context, tenant, email string) 
 	if m.getByEmailFn != nil {
 		return m.getByEmailFn(ctx, tenant, normalized)
 	}
-	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenant, Enabled: true}, nil
+	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenant, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserSvc) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 	if m.updateFn != nil {
 		return m.updateFn(ctx, req)
 	}
-	return &user.User{ID: req.ID, Username: req.Username, RoleIDs: req.RoleIDs, Enabled: true}, nil
+	return &user.User{ID: req.ID, Username: req.Username, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (m *mockUserSvc) DeleteUser(ctx context.Context, id uint64) error {
@@ -322,7 +322,7 @@ func TestUnixRT_GetUser_Uint64IDRoundTrip(t *testing.T) {
 	usvc := &mockUserSvc{
 		getFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
@@ -679,12 +679,12 @@ func TestUnixRT_NewIdentityFieldsRoundTrip(t *testing.T) {
 			gotCreate = req
 			return &user.User{
 				ID: 1, Username: req.Username, Email: req.Email, Name: req.Name,
-				TenantID: req.TenantID, Enabled: true,
+				TenantID: req.TenantID, Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 		getByEmailFn: func(_ context.Context, _, email string) (*user.User, error) {
 			gotEmailLookup = email
-			return &user.User{ID: 7, Email: email, Enabled: true}, nil
+			return &user.User{ID: 7, Email: email, Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))

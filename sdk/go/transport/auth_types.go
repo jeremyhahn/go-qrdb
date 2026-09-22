@@ -38,12 +38,9 @@ type User struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenant_id"`
 	RoleIDs  []string `json:"role_ids"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state: pending, active, suspended,
-	// locked, disabled or deleting. Enabled is a derived projection of it
-	// (exactly lifecycle == "active") and collapses every non-active state into
-	// one false, so read this when the distinction matters.
+	// Lifecycle is the canonical and only account state: pending, active,
+	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle string `json:"lifecycle,omitempty"`
 	// GroupIDs are opaque group-membership identifiers. qrdb stores the
 	// membership edge and owns no Group entity.

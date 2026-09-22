@@ -192,7 +192,7 @@ func testUser(id uint64, username, tenantID string) *user.User {
 		Username:  username,
 		TenantID:  tenantID,
 		RoleIDs:   []string{"role-1"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: now,
 		UpdatedAt: now,

@@ -688,7 +688,7 @@ func TestGRPC_GetUserByUsername_Success(t *testing.T) {
 			ID:        1,
 			Username:  "alice",
 			TenantID:  "t1",
-			Enabled:   true,
+			Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime,
 			UpdatedAt: testTime,
 		},

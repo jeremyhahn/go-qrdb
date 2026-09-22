@@ -479,7 +479,6 @@ func userToTransport(u *user.User) *transport.User {
 		Name:         u.Name,
 		TenantID:     u.TenantID,
 		RoleIDs:      roleIDs,
-		Enabled:      u.Enabled,
 		System:       u.System,
 		Lifecycle:    string(u.Lifecycle),
 		GroupIDs:     u.GroupIDs,

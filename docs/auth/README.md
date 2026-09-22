@@ -128,7 +128,7 @@ Request
   -> Extract TLS State (peer certificates)
   -> Authenticator Chain (mTLS -> next -> ...)
   -> User Lookup (UserStore.GetByUsername)
-  -> Enabled Check (reject disabled users)
+  -> Lifecycle Check (reject any account not in lifecycle active)
   -> RBAC Authorization (Authorizer.Authorize)
   -> Handler
 ```

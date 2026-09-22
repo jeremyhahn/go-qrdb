@@ -34,11 +34,11 @@ func TestMCPUserAuthFactorLogin_Enriches(t *testing.T) {
 	userSvc := &mockUserService{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			return &user.User{
-				ID:       id,
-				Username: "alice",
-				TenantID: "acme",
-				RoleIDs:  []string{"admin"},
-				Enabled:  true,
+				ID:        id,
+				Username:  "alice",
+				TenantID:  "acme",
+				RoleIDs:   []string{"admin"},
+				Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 	}

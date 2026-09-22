@@ -123,8 +123,8 @@ func TestCreateUser_StoresGroupsAuthMethodsAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if created.Lifecycle != LifecycleActive || !created.Enabled {
-		t.Fatalf("lifecycle=%q enabled=%v, want active/true", created.Lifecycle, created.Enabled)
+	if created.Lifecycle != LifecycleActive || !created.CanAuthenticate() {
+		t.Fatalf("lifecycle=%q enabled=%v, want active/true", created.Lifecycle, created.CanAuthenticate())
 	}
 	if !reflect.DeepEqual(created.GroupIDs, []string{"platform", "sre"}) {
 		t.Errorf("GroupIDs: got %v", created.GroupIDs)
@@ -160,7 +160,7 @@ func TestCreateUser_PendingProducesPendingLifecycle(t *testing.T) {
 	if created.Lifecycle != LifecyclePending {
 		t.Errorf("Lifecycle: got %q, want %q", created.Lifecycle, LifecyclePending)
 	}
-	if created.Enabled {
+	if created.CanAuthenticate() {
 		t.Error("an invited account came back enabled")
 	}
 	if created.CanAuthenticate() {
@@ -178,8 +178,8 @@ func TestCreateUser_ExplicitDisabledLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if created.Lifecycle != LifecycleDisabled || created.Enabled {
-		t.Errorf("lifecycle=%q enabled=%v", created.Lifecycle, created.Enabled)
+	if created.Lifecycle != LifecycleDisabled || created.CanAuthenticate() {
+		t.Errorf("lifecycle=%q enabled=%v", created.Lifecycle, created.CanAuthenticate())
 	}
 }
 
@@ -292,8 +292,8 @@ func TestUpdateUser_LifecycleTransitionsAndRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
-	if suspended.Lifecycle != LifecycleSuspended || suspended.Enabled {
-		t.Fatalf("lifecycle=%q enabled=%v", suspended.Lifecycle, suspended.Enabled)
+	if suspended.Lifecycle != LifecycleSuspended || suspended.CanAuthenticate() {
+		t.Fatalf("lifecycle=%q enabled=%v", suspended.Lifecycle, suspended.CanAuthenticate())
 	}
 
 	// suspended -> pending is not a route in the table: an account that has
@@ -364,8 +364,8 @@ func TestUpdateUser_DeletingMarkerIsTerminalAndClosesTheAuthWindow(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if read.Lifecycle != LifecycleDeleting || read.Enabled {
-		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.Enabled)
+	if read.Lifecycle != LifecycleDeleting || read.CanAuthenticate() {
+		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.CanAuthenticate())
 	}
 }
 
@@ -431,8 +431,8 @@ func TestEnableDisableUser_AreLifecycleTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if read.Lifecycle != LifecycleDisabled || read.Enabled {
-		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.Enabled)
+	if read.Lifecycle != LifecycleDisabled || read.CanAuthenticate() {
+		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.CanAuthenticate())
 	}
 
 	if err := svc.EnableUser(ctx, u.ID); err != nil {
@@ -442,8 +442,8 @@ func TestEnableDisableUser_AreLifecycleTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if read.Lifecycle != LifecycleActive || !read.Enabled {
-		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.Enabled)
+	if read.Lifecycle != LifecycleActive || !read.CanAuthenticate() {
+		t.Fatalf("lifecycle=%q enabled=%v", read.Lifecycle, read.CanAuthenticate())
 	}
 
 	// Repeating either verb is a no-op, not an error: callers retry.
@@ -498,13 +498,14 @@ func TestEnableUser_ReinstatesASuspendedAccount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Migration: records written before the lifecycle field existed
+// Records that carry no lifecycle state fail closed
 // ---------------------------------------------------------------------------
 
-// A record stored by an older build carries no lifecycle at all. It must read
-// back with a derived state rather than an empty one, because an empty state
-// fails CanAuthenticate and would lock every pre-upgrade account out.
-func TestGetUser_DerivesLifecycleForARecordWrittenWithoutOne(t *testing.T) {
+// A record with no lifecycle state — including one written with the removed
+// "enabled" key — reads back with NO state, cannot authenticate, and cannot be
+// transitioned. There is no decode-time fallback: Lifecycle is the only
+// account-state field, and its absence is refused, never guessed.
+func TestGetUser_RecordWithoutLifecycleFailsClosed(t *testing.T) {
 	kv := newMemKVStore()
 	svc, err := NewStore(kv, newTestIDGen(t))
 	if err != nil {
@@ -512,17 +513,15 @@ func TestGetUser_DerivesLifecycleForARecordWrittenWithoutOne(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	legacy := map[string]any{
+	data, merr := json.Marshal(map[string]any{
 		"id":        uint64(4242),
-		"username":  "legacy",
+		"username":  "stateless",
 		"tenantID":  tenant.SystemTenantID,
 		"roleIDs":   []string{"viewer"},
 		"enabled":   true,
-		"system":    false,
 		"createdAt": time.Now().UTC(),
 		"updatedAt": time.Now().UTC(),
-	}
-	data, merr := json.Marshal(legacy)
+	})
 	if merr != nil {
 		t.Fatalf("marshal: %v", merr)
 	}
@@ -534,59 +533,26 @@ func TestGetUser_DerivesLifecycleForARecordWrittenWithoutOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if read.Lifecycle != LifecycleActive {
-		t.Fatalf("Lifecycle: got %q, want %q derived from enabled=true", read.Lifecycle, LifecycleActive)
+	if read.Lifecycle != "" {
+		t.Fatalf("Lifecycle: got %q, want empty (no state is derived)", read.Lifecycle)
 	}
-	if !read.CanAuthenticate() {
-		t.Fatal("a pre-upgrade enabled account cannot authenticate after the upgrade")
+	if read.CanAuthenticate() {
+		t.Fatal("a record with no lifecycle state may authenticate")
 	}
 
-	// And the derived state is what a subsequent write persists, so the record
-	// picks up the explicit field without a migration pass.
-	if err := svc.DisableUser(ctx, 4242); err != nil {
-		t.Fatalf("DisableUser: %v", err)
+	// Nor can it be talked into a state: the transition table has no row for
+	// an absent state, so EnableUser is refused and the record is unchanged.
+	err = svc.EnableUser(ctx, 4242)
+	var te *LifecycleTransitionError
+	if !errors.As(err, &te) {
+		t.Fatalf("EnableUser: expected *LifecycleTransitionError, got %T: %v", err, err)
 	}
 	raw, gerr := kv.Get(ctx, primaryKey(4242))
 	if gerr != nil {
 		t.Fatalf("Get: %v", gerr)
 	}
-	var stored User
-	if uerr := json.Unmarshal(raw, &stored); uerr != nil {
-		t.Fatalf("unmarshal: %v", uerr)
-	}
-	if stored.Lifecycle != LifecycleDisabled {
-		t.Fatalf("persisted Lifecycle: got %q, want %q", stored.Lifecycle, LifecycleDisabled)
-	}
-}
-
-// A legacy DISABLED record must not come back able to authenticate.
-func TestGetUser_LegacyDisabledRecordStaysUnauthenticable(t *testing.T) {
-	kv := newMemKVStore()
-	svc, err := NewStore(kv, newTestIDGen(t))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	ctx := context.Background()
-
-	data, merr := json.Marshal(map[string]any{
-		"id":       uint64(99),
-		"username": "legacy-off",
-		"tenantID": tenant.SystemTenantID,
-		"enabled":  false,
-	})
-	if merr != nil {
-		t.Fatalf("marshal: %v", merr)
-	}
-	if perr := kv.Put(ctx, primaryKey(99), data); perr != nil {
-		t.Fatalf("Put: %v", perr)
-	}
-
-	read, err := svc.GetUser(ctx, 99)
-	if err != nil {
-		t.Fatalf("GetUser: %v", err)
-	}
-	if read.Lifecycle != LifecycleDisabled || read.CanAuthenticate() {
-		t.Fatalf("lifecycle=%q canAuth=%v", read.Lifecycle, read.CanAuthenticate())
+	if string(raw) != string(data) {
+		t.Fatalf("a refused transition rewrote the record: %s", raw)
 	}
 }
 
@@ -841,7 +807,6 @@ func TestDeleteUser_MarksDeletingBeforeTheCascade(t *testing.T) {
 			t.Errorf("snapshot unmarshal: %v", uerr)
 			return
 		}
-		snap.normalize()
 		atFirstRemoval = &snap
 	}
 

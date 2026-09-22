@@ -265,7 +265,7 @@ func testUser() *user.User {
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-admin"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: testTime,
 		UpdatedAt: testTime.Add(time.Hour),
@@ -344,8 +344,8 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	if resp.TenantID != "tenant-1" {
 		t.Fatalf("tenantID = %q, want %q", resp.TenantID, "tenant-1")
 	}
-	if !resp.Enabled {
-		t.Fatal("enabled should be true")
+	if resp.Lifecycle != string(user.LifecycleActive) {
+		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleActive)
 	}
 }
 
@@ -609,7 +609,7 @@ func TestHandleGetUser_Uint64IDRoundTrip(t *testing.T) {
 	svc := &mockUserService{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
@@ -2791,7 +2791,7 @@ func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
 	if got := string(wire["id"]); got != `"58370771029856256"` {
 		t.Fatalf("id on the wire = %s, want string \"58370771029856256\"", got)
 	}
-	for _, key := range []string{"username", "tenant_id", "role_ids", "enabled", "system", "created_at", "updated_at"} {
+	for _, key := range []string{"username", "tenant_id", "role_ids", "lifecycle", "system", "created_at", "updated_at"} {
 		if _, ok := wire[key]; !ok {
 			t.Fatalf("wire key %q missing; got keys %v", key, wireKeys(wire))
 		}
@@ -2800,6 +2800,9 @@ func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
 		if _, ok := wire[stale]; ok {
 			t.Fatalf("stale camelCase wire key %q present", stale)
 		}
+	}
+	if _, ok := wire["enabled"]; ok {
+		t.Fatal("removed wire key \"enabled\" present; lifecycle is the only account state")
 	}
 }
 
@@ -2996,20 +2999,26 @@ func TestHandleGetUserByEmail_PathFormIsGone(t *testing.T) {
 	}
 }
 
-// `enabled` collapses pending, suspended, locked, disabled and deleting into a
-// single false, so the canonical state travels beside it. A REST client that
-// needs to tell an operator hold from an automated lockout reads `lifecycle`.
+// Lifecycle is the only account state a REST client reads: it travels
+// verbatim, and the removed `enabled` projection does not reappear beside it.
 func TestUserToResponse_CarriesLifecycle(t *testing.T) {
 	u := testUser()
 	u.Lifecycle = user.LifecycleSuspended
-	u.Enabled = false
 
 	resp := userToResponse(u)
 	if resp.Lifecycle != string(user.LifecycleSuspended) {
 		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleSuspended)
 	}
-	if resp.Enabled {
-		t.Fatal("enabled should project false for a suspended account")
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["enabled"]; ok {
+		t.Fatalf("response carries the removed \"enabled\" key: %s", data)
 	}
 }
 

@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`User.Enabled` is removed; `Lifecycle` is the only account-state field.**
+  The derived `enabled` boolean is gone from the domain type and from every
+  transport — REST, gRPC (`UserResponse` field 5 and the name `enabled` are now
+  reserved), QUIC, MCP, the Unix socket and the embedded SDK — and from the
+  `qrdb users` output, which shows `Lifecycle` / `LIFECYCLE` in its place. Read
+  `lifecycle` instead. A record with no lifecycle state now FAILS CLOSED: it
+  cannot authenticate and cannot be transitioned. The decode-time fallback that
+  derived a state from `enabled` is removed with no migration; a record written
+  before the lifecycle field existed must be recreated.
+
 ## [0.19.0-alpha] - 2026-09-17
 
 MINOR, not PATCH. The release adds a scope to the permission vocabulary and

@@ -69,9 +69,9 @@
       filterType: "text",
     },
     {
-      id: "enabled",
-      header: "Enabled",
-      accessor: (row: User) => (row.enabled ? "Yes" : "No"),
+      id: "lifecycle",
+      header: "Lifecycle",
+      accessor: "lifecycle",
       sortable: true,
     },
     {

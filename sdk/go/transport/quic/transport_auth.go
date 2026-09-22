@@ -135,10 +135,9 @@ type userWireResponse struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenantID"`
 	RoleIDs  []string `json:"roleIDs"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state (pending, active, suspended,
-	// locked, disabled, deleting). Enabled is a derived projection of it.
+	// Lifecycle is the canonical and only account state (pending, active,
+	// suspended, locked, disabled, deleting).
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
@@ -1028,7 +1027,6 @@ func wireToUser(w *userWireResponse) *transport.User {
 		Name:         w.Name,
 		TenantID:     w.TenantID,
 		RoleIDs:      w.RoleIDs,
-		Enabled:      w.Enabled,
 		System:       w.System,
 		Lifecycle:    w.Lifecycle,
 		GroupIDs:     w.GroupIDs,

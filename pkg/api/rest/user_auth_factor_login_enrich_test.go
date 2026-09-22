@@ -36,11 +36,11 @@ func TestResolveUserAuthFactorLogin_Enriches(t *testing.T) {
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			gotID = id
 			return &user.User{
-				ID:       42,
-				Username: "alice",
-				TenantID: "acme",
-				RoleIDs:  []string{"admin", "editor"},
-				Enabled:  true,
+				ID:        42,
+				Username:  "alice",
+				TenantID:  "acme",
+				RoleIDs:   []string{"admin", "editor"},
+				Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 	}

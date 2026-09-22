@@ -192,7 +192,7 @@ func testUser() *user.User {
 		Username:  "alice",
 		TenantID:  "tenant-a",
 		RoleIDs:   []string{"role-admin"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: testTime(),
 		UpdatedAt: testTime(),
@@ -270,8 +270,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if u.Username != "alice" {
 		t.Errorf("expected username 'alice', got %q", u.Username)
 	}
-	if !u.Enabled {
-		t.Error("expected enabled to be true")
+	if u.Lifecycle != "active" {
+		t.Errorf("expected lifecycle active, got %q", u.Lifecycle)
 	}
 }
 
@@ -313,7 +313,7 @@ func TestGetUser_Uint64IDRoundTrip(t *testing.T) {
 	mock := &mockUserServicer{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
@@ -1795,8 +1795,8 @@ func TestUserToTransport_FullConversion(t *testing.T) {
 	if len(result.RoleIDs) != len(u.RoleIDs) {
 		t.Errorf("expected %d roleIDs, got %d", len(u.RoleIDs), len(result.RoleIDs))
 	}
-	if result.Enabled != u.Enabled {
-		t.Errorf("expected Enabled %v, got %v", u.Enabled, result.Enabled)
+	if result.Lifecycle != string(u.Lifecycle) {
+		t.Errorf("expected Lifecycle %q, got %q", u.Lifecycle, result.Lifecycle)
 	}
 	if result.System != u.System {
 		t.Errorf("expected System %v, got %v", u.System, result.System)

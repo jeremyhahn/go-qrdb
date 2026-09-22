@@ -53,11 +53,11 @@ func TestQUICUserAuthFactorLogin_Enriches(t *testing.T) {
 				t.Fatalf("GetUser id = %d, want 42", id)
 			}
 			return &user.User{
-				ID:       42,
-				Username: "alice",
-				TenantID: "acme",
-				RoleIDs:  []string{"admin"},
-				Enabled:  true,
+				ID:        42,
+				Username:  "alice",
+				TenantID:  "acme",
+				RoleIDs:   []string{"admin"},
+				Lifecycle: user.LifecycleActive,
 			}, nil
 		},
 	}

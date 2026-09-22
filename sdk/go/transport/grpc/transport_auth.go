@@ -558,7 +558,6 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		Email:        resp.GetEmail(),
 		Name:         resp.GetName(),
 		RoleIDs:      resp.GetRoleIds(),
-		Enabled:      resp.GetEnabled(),
 		System:       resp.GetSystem(),
 		Lifecycle:    resp.GetLifecycle(),
 		GroupIDs:     resp.GetGroupIds(),

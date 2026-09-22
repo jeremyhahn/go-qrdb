@@ -687,7 +687,6 @@ func userToProto(u *user.User) *pb.UserResponse {
 		Email:       u.Email,
 		Name:        u.Name,
 		RoleIds:     u.RoleIDs,
-		Enabled:     u.Enabled,
 		System:      u.System,
 		Lifecycle:   string(u.Lifecycle),
 		GroupIds:    u.GroupIDs,

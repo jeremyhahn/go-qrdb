@@ -43,7 +43,7 @@ type userCLIJSON struct {
 	Username  string   `json:"username"`
 	TenantID  string   `json:"tenant_id"`
 	RoleIDs   []string `json:"role_ids"`
-	Enabled   bool     `json:"enabled"`
+	Lifecycle string   `json:"lifecycle"`
 	System    bool     `json:"system"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
@@ -103,9 +103,9 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil {
 		t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
-	if created.ID == 0 || created.Username != username || !created.Enabled ||
+	if created.ID == 0 || created.Username != username || created.Lifecycle != "active" ||
 		!stringSliceEqualUnordered(created.RoleIDs, []string{role.ID}) {
-		t.Fatalf("[%s] users create result = %+v, want username=%q enabled=true role_ids=[%s]", proto.name, created, username, role.ID)
+		t.Fatalf("[%s] users create result = %+v, want username=%q lifecycle=active role_ids=[%s]", proto.name, created, username, role.ID)
 	}
 	userID := fmt.Sprintf("%d", created.ID)
 
@@ -152,7 +152,7 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] users update result = %+v, want username=%q", proto.name, updated, renamed)
 	}
 
-	// --- disable: toggles auth (Enabled flips false) -----------------------
+	// --- disable: toggles auth (lifecycle moves to disabled) --------------
 	out, err = runCLIProto(t, node, proto, "users", "disable", userID)
 	if err != nil {
 		t.Fatalf("[%s] users disable: %v\noutput: %s", proto.name, err, out)
@@ -168,11 +168,11 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if jerr := json.Unmarshal([]byte(out), &afterDisable); jerr != nil {
 		t.Fatalf("[%s] decode users get JSON (post-disable): %v\noutput: %s", proto.name, jerr, out)
 	}
-	if afterDisable.Enabled {
-		t.Fatalf("[%s] user %s Enabled = true after disable, want false", proto.name, userID)
+	if afterDisable.Lifecycle != "disabled" {
+		t.Fatalf("[%s] user %s lifecycle = %q after disable, want disabled", proto.name, userID, afterDisable.Lifecycle)
 	}
 
-	// --- enable: toggles auth back (Enabled flips true) ---------------------
+	// --- enable: toggles auth back (lifecycle moves to active) -------------
 	out, err = runCLIProto(t, node, proto, "users", "enable", userID)
 	if err != nil {
 		t.Fatalf("[%s] users enable: %v\noutput: %s", proto.name, err, out)
@@ -188,8 +188,8 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	if jerr := json.Unmarshal([]byte(out), &afterEnable); jerr != nil {
 		t.Fatalf("[%s] decode users get JSON (post-enable): %v\noutput: %s", proto.name, jerr, out)
 	}
-	if !afterEnable.Enabled {
-		t.Fatalf("[%s] user %s Enabled = false after enable, want true", proto.name, userID)
+	if afterEnable.Lifecycle != "active" {
+		t.Fatalf("[%s] user %s lifecycle = %q after enable, want active", proto.name, userID, afterEnable.Lifecycle)
 	}
 
 	// --- delete ----------------------------------------------------------

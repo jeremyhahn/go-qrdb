@@ -58,10 +58,9 @@ type serverUser struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenantID"`
 	RoleIDs  []string `json:"roleIDs"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state (pending, active, suspended,
-	// locked, disabled, deleting). Enabled is a derived projection of it.
+	// Lifecycle is the canonical and only account state (pending, active,
+	// suspended, locked, disabled, deleting).
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
@@ -186,7 +185,6 @@ func serverUserToTransport(u *serverUser) *transport.User {
 		Name:         u.Name,
 		TenantID:     u.TenantID,
 		RoleIDs:      u.RoleIDs,
-		Enabled:      u.Enabled,
 		System:       u.System,
 		Lifecycle:    u.Lifecycle,
 		GroupIDs:     u.GroupIDs,

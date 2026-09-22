@@ -27,7 +27,7 @@ interface UserResponse {
   username: string;
   tenant_id: string;
   role_ids: string[];
-  enabled: boolean;
+  lifecycle: string;
   system: boolean;
   created_at: string;
   updated_at: string;

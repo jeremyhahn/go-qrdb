@@ -64,25 +64,14 @@ type User struct {
 	RoleIDs []string `json:"roleIDs"`
 
 	// Lifecycle is the CANONICAL account state — pending, active, suspended,
-	// locked, disabled or deleting. It is the single source of truth for
-	// whether this account may authenticate; see CanAuthenticate.
+	// locked, disabled or deleting. It is the ONLY account-state field and the
+	// single source of truth for whether this account may authenticate; see
+	// CanAuthenticate.
 	//
-	// It is never empty on a record the store returns: a record written before
-	// this field existed has its state derived from Enabled on decode (see
-	// lifecycleFromEnabled) and carries the derived value from then on.
+	// The store sets it on every create, so a persisted record always carries
+	// one. A record without it — or with a value this build does not recognize —
+	// cannot authenticate.
 	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
-
-	// Enabled reports whether the user can authenticate.
-	//
-	// It is a DERIVED PROJECTION of Lifecycle — exactly Lifecycle == active —
-	// maintained by the store on every write. It is retained because it is the
-	// field consumers already read, and it never lies; it is simply coarser
-	// than the state it projects, collapsing pending, suspended, locked,
-	// disabled and deleting into a single false. Read Lifecycle when the
-	// distinction matters, and never write Enabled directly: there is no
-	// request field that sets it, because a second writable source of truth is
-	// how a record ends up claiming to be locked and active at once.
-	Enabled bool `json:"enabled"`
 
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
@@ -141,51 +130,15 @@ type User struct {
 // authentication. It is the check a login or credential-registration ceremony
 // performs against the record it resolved.
 //
-// It applies the same two rules normalize does, so a record answers the same
-// question the same way whether or not it has been through a decode:
-//
-//   - An ABSENT state falls back to Enabled. A value built before this field
-//     existed — a record from an older node, or one a caller assembled by hand
-//     for a fallback or a test double — carries no state, and reading that as
-//     "cannot authenticate" would lock out every such account. Enabled IS the
-//     state for a value that has no other.
-//   - An UNRECOGNIZED state fails closed. A state written by a newer node
-//     during a rolling upgrade must not be waved through because this build had
-//     no case for it, and unlike an absent state there is no honest fallback:
-//     the newer node meant something specific by it.
+// It FAILS CLOSED on anything but an explicit active state. An absent state is
+// refused exactly like an unrecognized one: there is no older encoding to fall
+// back to, and a state written by a newer node during a rolling upgrade must
+// not be waved through because this build had no case for it.
 func (u *User) CanAuthenticate() bool {
 	if u == nil {
 		return false
 	}
-	if u.Lifecycle == "" {
-		return lifecycleFromEnabled(u.Enabled).CanAuthenticate()
-	}
 	return u.Lifecycle.CanAuthenticate()
-}
-
-// normalize brings a decoded record to the canonical representation: it fills
-// in a lifecycle state for records written before the field existed, and
-// re-derives Enabled from it.
-//
-// It runs after EVERY decode rather than on a migration pass, because a
-// migration pass would have to rewrite every user record to be correct and a
-// derivation does not have to rewrite anything: the value is reconstructed
-// identically on every read, and the record picks up the explicit field the
-// next time it is written for some other reason.
-func (u *User) normalize() {
-	if u == nil {
-		return
-	}
-	// ONLY an absent state is filled in. A state that is present but
-	// unrecognized is left exactly as written — it came from a node running a
-	// newer build, and overwriting it would destroy that node's record on the
-	// next write while telling this one a story it made up. CanAuthenticate
-	// already fails closed on it, so leaving it costs nothing but a coarser
-	// Enabled.
-	if u.Lifecycle == "" {
-		u.Lifecycle = lifecycleFromEnabled(u.Enabled)
-	}
-	u.Enabled = u.Lifecycle.CanAuthenticate()
 }
 
 // CreateUserRequest holds parameters for creating a user.

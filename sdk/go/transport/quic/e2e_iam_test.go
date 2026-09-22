@@ -36,7 +36,7 @@ func TestE2E_CreateUser_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("user.Create", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, userJSON(&userWireResponse{
-			ID: 1, Username: "alice", TenantID: "t1", Enabled: true,
+			ID: 1, Username: "alice", TenantID: "t1", Lifecycle: "active",
 		})
 	})
 	resp, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "t1"})
@@ -344,7 +344,7 @@ func TestE2E_GetUserByEmail_WireContract(t *testing.T) {
 
 	srv.SetResponder("user.GetByEmail", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, userJSON(&userWireResponse{
-			ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Enabled: true,
+			ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Lifecycle: "active",
 		})
 	})
 

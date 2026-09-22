@@ -36,8 +36,9 @@ type (
 
 	// Lifecycle is the canonical account state — pending, active, suspended,
 	// locked, disabled or deleting. It is the SINGLE source of truth for
-	// whether an account may authenticate; User.Enabled is a derived projection
-	// of it. Consumers must not carry a parallel state field of their own.
+	// whether an account may authenticate and the only account-state field a
+	// User carries. Consumers must not carry a parallel state field of their
+	// own.
 	Lifecycle = user.Lifecycle
 )
 

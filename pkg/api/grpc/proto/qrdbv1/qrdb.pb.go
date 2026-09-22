@@ -10419,7 +10419,6 @@ type UserResponse struct {
 	TenantId  string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Username  string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
 	RoleIds   []string               `protobuf:"bytes,4,rep,name=role_ids,json=roleIds,proto3" json:"role_ids,omitempty"`
-	Enabled   bool                   `protobuf:"varint,5,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	System    bool                   `protobuf:"varint,6,opt,name=system,proto3" json:"system,omitempty"`
 	CreatedAt string                 `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt string                 `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
@@ -10427,11 +10426,8 @@ type UserResponse struct {
 	Email string `protobuf:"bytes,9,opt,name=email,proto3" json:"email,omitempty"`
 	// name is the display name. Presentation only; never a lookup key.
 	Name string `protobuf:"bytes,10,opt,name=name,proto3" json:"name,omitempty"`
-	// lifecycle is the canonical account state: pending, active, suspended,
-	// locked, disabled or deleting. `enabled` is a derived projection of it
-	// (exactly lifecycle == "active") and cannot distinguish a suspended
-	// account from a locked or pending one, so a client that needs the
-	// distinction reads this.
+	// lifecycle is the canonical and only account state: pending, active,
+	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle string `protobuf:"bytes,11,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
 	// group_ids are opaque group-membership identifiers.
 	GroupIds []string `protobuf:"bytes,12,rep,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
@@ -10506,13 +10502,6 @@ func (x *UserResponse) GetRoleIds() []string {
 		return x.RoleIds
 	}
 	return nil
-}
-
-func (x *UserResponse) GetEnabled() bool {
-	if x != nil {
-		return x.Enabled
-	}
-	return false
 }
 
 func (x *UserResponse) GetSystem() bool {
@@ -25722,13 +25711,12 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x11EnableUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\"$\n" +
 	"\x12DisableUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"\xcb\x03\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\"\xc0\x03\n" +
 	"\fUserResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1a\n" +
 	"\busername\x18\x03 \x01(\tR\busername\x12\x19\n" +
-	"\brole_ids\x18\x04 \x03(\tR\aroleIds\x12\x18\n" +
-	"\aenabled\x18\x05 \x01(\bR\aenabled\x12\x16\n" +
+	"\brole_ids\x18\x04 \x03(\tR\aroleIds\x12\x16\n" +
 	"\x06system\x18\x06 \x01(\bR\x06system\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
@@ -25741,7 +25729,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tgroup_ids\x18\f \x03(\tR\bgroupIds\x12!\n" +
 	"\fauth_methods\x18\r \x03(\tR\vauthMethods\x12$\n" +
 	"\x0elast_auth_unix\x18\x0e \x01(\x03R\flastAuthUnix\x129\n" +
-	"\rcert_bindings\x18\x0f \x03(\v2\x14.qrdb.v1.CertBindingR\fcertBindings\"g\n" +
+	"\rcert_bindings\x18\x0f \x03(\v2\x14.qrdb.v1.CertBindingR\fcertBindingsJ\x04\b\x05\x10\x06R\aenabled\"g\n" +
 	"\vCertBinding\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x01 \x01(\tR\n" +

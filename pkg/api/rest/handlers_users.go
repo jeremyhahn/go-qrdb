@@ -83,12 +83,9 @@ type userResponse struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenant_id"`
 	RoleIDs  []string `json:"role_ids"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state: pending, active, suspended,
-	// locked, disabled or deleting. Enabled is a derived projection of it
-	// (exactly lifecycle == "active"), so a client that needs to tell a
-	// suspended account from a locked or pending one reads this.
+	// Lifecycle is the canonical and only account state: pending, active,
+	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	GroupIDs    []string `json:"group_ids,omitempty"`
 	AuthMethods []string `json:"auth_methods,omitempty"`
@@ -596,7 +593,6 @@ func userToResponse(u *user.User) *userResponse {
 		Name:         u.Name,
 		TenantID:     u.TenantID,
 		RoleIDs:      roleIDs,
-		Enabled:      u.Enabled,
 		System:       u.System,
 		Lifecycle:    string(u.Lifecycle),
 		GroupIDs:     u.GroupIDs,

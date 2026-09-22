@@ -62,7 +62,6 @@ type User struct {
 	TenantID     string             `json:"tenantID"`     // maps to cert OU
 	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role identifiers
 	Lifecycle    Lifecycle          `json:"lifecycle"`    // CANONICAL account state
-	Enabled      bool               `json:"enabled"`      // DERIVED: Lifecycle == active
 	System       bool               `json:"system"`       // built-in, cannot be deleted
 	GroupIDs     []string           `json:"groupIDs"`     // opaque membership ids; qrdb owns no Group entity
 	AuthMethods  []string           `json:"authMethods"`  // permitted methods (policy), lowercased
@@ -77,7 +76,8 @@ type User struct {
 ```
 
 `User.CanAuthenticate()` is the check a login or credential-registration
-ceremony makes. It is `Lifecycle == active` and nothing else.
+ceremony makes. It is `Lifecycle == active` and nothing else: an absent
+state fails closed exactly like an unrecognized one.
 
 ### Lifecycle — `pkg/user/lifecycle.go`
 
@@ -417,16 +417,15 @@ wrong fails a test rather than passing a typed-in column.
   extended at runtime by a caller.
 - **`FactorEnrollment.Data` is opaque.** qrdb stores it and never interprets it;
   verification is the registered `authfactors.Factor`'s job.
-- **`Lifecycle` is the single writable source of truth for account state.**
-  `Enabled` is re-derived from it on every write and every decode, and no
-  request field sets `Enabled` directly — two writable sources are how a record
-  ends up claiming to be locked and active at once.
-- **`normalize()` runs after every decode.** A record written before the field
-  existed has its state derived from `Enabled` (`true → active`,
-  `false → disabled`), so no migration pass is needed and no pre-upgrade account
-  is locked out by an empty state. A state that is present but UNRECOGNIZED is
-  left exactly as written — it came from a newer node, and `CanAuthenticate`
-  already fails closed on it.
+- **`Lifecycle` is the only account-state field.** The former `Enabled`
+  boolean — a derived projection of it — has been removed from the domain type
+  and from every transport; a second field describing the same state is how a
+  record ends up claiming to be locked and active at once.
+- **An absent state fails closed.** The store writes `Lifecycle` on every
+  create, so a persisted record always carries one. A record without it, or with
+  a state this build does not recognize, cannot authenticate and cannot be
+  transitioned. There is no decode-time fallback and no migration: a record
+  written before the field existed must be recreated.
 - **`deleting` is terminal and closes the registration-during-deletion window.**
   A deletion writes it before its first mutation; from that instant
   `CanAuthenticate` is false and neither `EnableUser`, `DisableUser` nor

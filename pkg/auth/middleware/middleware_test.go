@@ -331,11 +331,11 @@ func TestAuthenticate_UserEnrichment(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			ID:       1,
-			Username: "charlie",
-			TenantID: "t1",
-			RoleIDs:  []string{"admin", "operator"},
-			Enabled:  true,
+			ID:        1,
+			Username:  "charlie",
+			TenantID:  "t1",
+			RoleIDs:   []string{"admin", "operator"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -365,9 +365,9 @@ func TestAuthenticate_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled-user",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled-user",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 
@@ -774,9 +774,9 @@ func TestUnaryInterceptor_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled-user",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled-user",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 
@@ -1161,9 +1161,9 @@ func TestRESTMiddleware_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled-user",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled-user",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 
@@ -1572,13 +1572,13 @@ func TestWriteJSONError(t *testing.T) {
 	}
 }
 
-// The authentication gate asks the CANONICAL question, not the derived boolean.
-// A record whose lifecycle says suspended, locked, pending or deleting must be
-// refused even when a stale Enabled=true rides along — that stale field is
-// exactly what a hand-built or fallback record can carry, and this is the one
-// place where believing it lets someone in.
+// The authentication gate asks the lifecycle state, the only account-state
+// field. A record whose lifecycle says suspended, locked, pending, disabled or
+// deleting is refused — and so is one that carries NO state at all: an absent
+// lifecycle fails closed.
 func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
 	refused := []user.Lifecycle{
+		"",
 		user.LifecyclePending,
 		user.LifecycleSuspended,
 		user.LifecycleLocked,
@@ -1594,7 +1594,6 @@ func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
 					Username:  "dana",
 					TenantID:  "t1",
 					Lifecycle: l,
-					Enabled:   true, // deliberately stale
 				},
 			}
 			m := New(&mockAuthorizer{},
@@ -1617,7 +1616,7 @@ func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
 		users := &mockUserServicer{
 			user: &user.User{
 				ID: 2, Username: "dana", TenantID: "t1",
-				Lifecycle: user.LifecycleActive, Enabled: true,
+				Lifecycle: user.LifecycleActive,
 			},
 		}
 		m := New(&mockAuthorizer{},
@@ -1657,7 +1656,6 @@ func TestAuthenticate_AuthMethodPolicyIsEnforced(t *testing.T) {
 				user: &user.User{
 					ID: 3, Username: "erin", TenantID: "t1",
 					Lifecycle:   user.LifecycleActive,
-					Enabled:     true,
 					AuthMethods: tc.authMethods,
 					RoleIDs:     []string{"viewer"},
 				},
@@ -1727,7 +1725,6 @@ func TestAuthenticate_BlankAuthenticatorNameCannotBypassThePolicy(t *testing.T) 
 		user: &user.User{
 			ID: 3, Username: "erin", TenantID: "t1",
 			Lifecycle:   user.LifecycleActive,
-			Enabled:     true,
 			AuthMethods: []string{"mtls"},
 		},
 	}

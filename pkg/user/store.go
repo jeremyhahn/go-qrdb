@@ -266,9 +266,9 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		Name:     req.Name,
 		TenantID: tenantID,
 		RoleIDs:  req.RoleIDs,
-		// Lifecycle is the canonical state; Enabled is derived from it by
-		// normalize below rather than set here, so there is exactly one place in
-		// this function that decides whether the account can authenticate.
+		// Lifecycle is the canonical and only account-state field, so this
+		// is the one place in this function that decides whether the account
+		// can authenticate.
 		//
 		// Pending arrived on main in the deferred tenant-admin enrollment seam
 		// (#193) while this branch was rewriting the surrounding create path to
@@ -283,7 +283,6 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	user.normalize()
 	if user.RoleIDs == nil {
 		user.RoleIDs = []string{}
 	}
@@ -344,10 +343,6 @@ func (s *kvUserStore) GetUser(ctx context.Context, id uint64) (*User, error) {
 	if err := json.Unmarshal(data, &user); err != nil {
 		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 	return &user, nil
 }
 
@@ -538,7 +533,6 @@ func (s *kvUserStore) mutateCertBindings(ctx context.Context, op string, userID 
 		if uerr := json.Unmarshal(base, existing); uerr != nil {
 			return nil, &StoreError{Op: op, Detail: "unmarshal", Err: uerr}
 		}
-		existing.normalize()
 
 		// A record whose deletion has BEGUN accepts no binding write in either
 		// direction. Enrolment is the obvious one — a certificate bound after
@@ -784,10 +778,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	existing.normalize()
 
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
@@ -1292,10 +1282,6 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return &StoreError{Op: "delete", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	existing.normalize()
 	if existing.System {
 		return &SystemUserImmutableError{ID: id}
 	}
@@ -1582,7 +1568,7 @@ func (s *kvUserStore) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 	}, nil
 }
 
-// EnableUser activates a user account by setting Enabled to true.
+// EnableUser activates a user account: the lifecycle transition to active.
 func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &ValidationError{Field: "id", Reason: "must not be zero"}
@@ -1603,15 +1589,11 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "enable", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 
 	// EnableUser is the lifecycle transition to active, not a boolean set. That
 	// matters for the one case a boolean cannot express: an account already
 	// marked deleting must not be re-enabled by a request that raced the
-	// deletion, and a plain `Enabled = true` would do exactly that.
+	// deletion, and a plain boolean set would do exactly that.
 	if err := applyLifecycle(user, LifecycleActive); err != nil {
 		return err
 	}
@@ -1659,7 +1641,7 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
-// DisableUser deactivates a user account by setting Enabled to false.
+// DisableUser deactivates a user account: the lifecycle transition to disabled.
 func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &ValidationError{Field: "id", Reason: "must not be zero"}
@@ -1680,10 +1662,6 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "disable", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 
 	// The transition to disabled, for the same reason EnableUser transitions:
 	// the state, not the boolean, is what the record is. Disabling an account
@@ -1879,7 +1857,6 @@ func (s *kvUserStore) mergeLastAuth(ctx context.Context, id uint64, at time.Time
 		if uerr := json.Unmarshal(base, existing); uerr != nil {
 			return nil, &StoreError{Op: "record_auth", Detail: "unmarshal", Err: uerr}
 		}
-		existing.normalize()
 
 		// The terminal guard applies HERE TOO. This path runs before
 		// UpdateUser's own check — that is the point of it being a fast path —

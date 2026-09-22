@@ -70,14 +70,14 @@ func newMockUserSvc() *mockUserSvc {
 			Username:  "alice",
 			TenantID:  "t1",
 			RoleIDs:   []string{"r1"},
-			Enabled:   true,
+			Lifecycle: user.LifecycleActive,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
 		listResp: &user.ListUsersResponse{
 			Users: []*user.User{
-				{ID: 1, Username: "alice", TenantID: "t1", Enabled: true, CreatedAt: now, UpdatedAt: now},
-				{ID: 2, Username: "bob", TenantID: "t1", Enabled: true, CreatedAt: now, UpdatedAt: now},
+				{ID: 1, Username: "alice", TenantID: "t1", Lifecycle: user.LifecycleActive, CreatedAt: now, UpdatedAt: now},
+				{ID: 2, Username: "bob", TenantID: "t1", Lifecycle: user.LifecycleActive, CreatedAt: now, UpdatedAt: now},
 			},
 			Total:   2,
 			HasMore: false,
@@ -98,7 +98,7 @@ func (m *mockUserSvc) CreateUser(_ context.Context, req *user.CreateUserRequest)
 		Username:  req.Username,
 		TenantID:  req.TenantID,
 		RoleIDs:   req.RoleIDs,
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
@@ -1102,7 +1102,7 @@ func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 // (Codex, PR #191).
 func TestTransport_GetUserByEmail_ReachesTheService(t *testing.T) {
 	svc := &mockUserSvc{getResp: &user.User{
-		ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Enabled: true,
+		ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Lifecycle: user.LifecycleActive,
 	}}
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
 	defer cleanup()

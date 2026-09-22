@@ -322,14 +322,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			}
 		} else {
 			// User found; check that its lifecycle state permits a login.
-			//
-			// CanAuthenticate rather than the derived Enabled boolean: this is
-			// the authentication gate, and it must ask the canonical question.
-			// The two agree for any record the store decoded — normalize keeps
-			// Enabled in step — but a record reaching here by another route
-			// (a fallback store, a hand-built value) could carry a stale true
-			// beside a suspended, locked or deleting state, and this is the one
-			// place where believing the stale copy lets someone in.
+			// CanAuthenticate fails closed on an absent or unrecognized state.
 			if !u.CanAuthenticate() {
 				return ctx, nil, &UserDisabledError{
 					Username:  u.Username,

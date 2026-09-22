@@ -1402,8 +1402,11 @@ export interface User {
     readonly tenantId: string;
     /** Role IDs assigned to this user. */
     readonly roleIds: readonly string[];
-    /** Whether the user account is active. */
-    readonly enabled: boolean;
+    /**
+     * Canonical account state: pending, active, suspended, locked, disabled
+     * or deleting. Only active can authenticate.
+     */
+    readonly lifecycle: string;
     /** Whether this is a built-in system user. */
     readonly system: boolean;
     /** ISO 8601 creation timestamp. */

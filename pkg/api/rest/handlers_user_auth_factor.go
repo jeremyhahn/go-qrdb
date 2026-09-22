@@ -194,7 +194,7 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 	}
 	// Enrich the response from the user service, when wired. The factor login
 	// yields only the user ID; the wire contract also carries the username,
-	// tenant, role set, and enabled state. Resolve the user record by ID
+	// tenant, role set, and whether the account can authenticate. Resolve the user record by ID
 	// (pkg/user keys users by the same uint64 as AuthFactor.UserID) and
 	// populate those fields. Enrichment is best-effort: a lookup failure
 	// leaves the base identifiers intact rather than failing an otherwise
@@ -204,7 +204,7 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 			resp.Username = u.Username
 			resp.TenantID = u.TenantID
 			resp.Roles = u.RoleIDs
-			resp.Active = u.Enabled
+			resp.Active = u.CanAuthenticate()
 		}
 	}
 	return resp, nil

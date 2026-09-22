@@ -56,10 +56,14 @@ may want back.
 respectively — not writes to a boolean. Repeating either is a no-op, and both
 are **refused on an account whose deletion has begun** (`lifecycle: deleting`),
 because that state is terminal: nothing moves a record out of it. `get` shows
-the state, which distinguishes an account awaiting activation (`pending`), an
-administrative hold (`suspended`), an automated lockout (`locked`) and a
-deactivated record (`disabled`) — all of which the `enabled` field reports
-identically as `false`.
+the state (`Lifecycle:`; the `LIFECYCLE` column in `list`), which distinguishes
+an account awaiting activation (`pending`), an administrative hold
+(`suspended`), an automated lockout (`locked`) and a deactivated record
+(`disabled`).
+
+> **Breaking change.** `users get` and `users list` no longer print an
+> `Enabled` line or `ENABLED` column, and `--output json|yaml` no longer carries
+> an `enabled` key: `lifecycle` is the only account-state field.
 
 ### `qrdb users list`
 

@@ -235,11 +235,11 @@ handle, so a global index would forbid that while buying nothing.
   It is a distinct grant from enrolment because it is the direction that can
   widen an account, and it is distinct from `certs:revoke` because a binding
   outlives the certificates issued for its key.
-- **`Lifecycle` is the single source of truth for whether an account may
-  authenticate** — `pending` · `active` · `suspended` · `locked` · `disabled` ·
-  `deleting`, with `Enabled` a derived projection (`Lifecycle == active`)
-  maintained by the store. `User.CanAuthenticate()` is the check, and it fails
-  closed on a state this build does not recognize.
+- **`Lifecycle` is the only account-state field and the single source of truth
+  for whether an account may authenticate** — `pending` · `active` ·
+  `suspended` · `locked` · `disabled` · `deleting`. `User.CanAuthenticate()` is
+  the check, and it fails closed on an absent state and on a state this build
+  does not recognize.
 - **`deleting` is terminal.** A deletion writes it before its first mutation,
   and from that instant no concurrent enable, and no credential ceremony
   finishing late, can make the account authenticable again. `DeleteUser` marks

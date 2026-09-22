@@ -15,8 +15,8 @@
 package user
 
 // Lifecycle is the canonical account state of a user. It is the SINGLE source
-// of truth for whether an account may authenticate; User.Enabled is a derived
-// projection of it, maintained by the store.
+// of truth for whether an account may authenticate, and the only account-state
+// field a User carries.
 //
 // It replaces the three-field encoding consumers were previously forced to
 // carry above qrdb (a state enum plus separate `suspended` and `locked`
@@ -48,8 +48,7 @@ const (
 	LifecycleLocked Lifecycle = "locked"
 
 	// LifecycleDisabled is an administratively deactivated account. It is the
-	// state DisableUser puts an account in, and the state a legacy record with
-	// Enabled=false decodes to.
+	// state DisableUser puts an account in.
 	LifecycleDisabled Lifecycle = "disabled"
 
 	// LifecycleDeleting marks an account whose deletion has begun. It is
@@ -179,21 +178,6 @@ func (l Lifecycle) CanTransitionTo(next Lifecycle) bool {
 // String returns the wire form of the lifecycle state.
 func (l Lifecycle) String() string { return string(l) }
 
-// lifecycleFromEnabled derives a lifecycle state from the boolean encoding that
-// preceded it, for records written before this field existed.
-//
-// The mapping is deliberately lossy in one direction: an account created
-// Pending was stored as Enabled=false, indistinguishable on disk from one that
-// was disabled, so it decodes as disabled. That is the honest reading — the old
-// encoding genuinely could not tell them apart — and it preserves the only
-// property that mattered about such a record: it could not authenticate.
-func lifecycleFromEnabled(enabled bool) Lifecycle {
-	if enabled {
-		return LifecycleActive
-	}
-	return LifecycleDisabled
-}
-
 // initialLifecycle resolves the state a CreateUserRequest asks for, reconciling
 // the explicit Lifecycle field with the older Pending shorthand.
 //
@@ -247,7 +231,6 @@ func applyLifecycle(u *User, to Lifecycle) error {
 		return &LifecycleTransitionError{ID: u.ID, From: u.Lifecycle, To: to}
 	}
 	u.Lifecycle = to
-	u.Enabled = to.CanAuthenticate()
 	return nil
 }
 
