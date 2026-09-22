@@ -569,6 +569,12 @@ jobs:
       # Read from the shell rather than through a ${{ }} expression: that
       # context has resolved empty before and would hand compose a bare
       # "qrdb-int-" shared by every job, which is the collision this avoids.
+      # test/integration/auth, run by no workflow until #228. It is in-memory
+      # and needs no compose stack, so it runs FIRST: about two seconds, and
+      # the cheapest integration failure this job can report.
+      - name: Integration tests (auth, in-memory)
+        run: make integration-test-auth
+
       - name: Integration tests (standalone stack)
         run: |
           export INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}"

@@ -951,8 +951,25 @@ integration-image:
 # and never contend for host CPU. Each stage builds, runs, and tears down its
 # own stack. Fail-fast: a failing standalone stage stops before cluster.
 .PHONY: integration-test
-integration-test: integration-test-standalone integration-test-cluster
-	@echo "==> All integration stages passed (standalone + cluster)."
+integration-test: integration-test-auth integration-test-standalone integration-test-cluster
+	@echo "==> All integration stages passed (auth + standalone + cluster)."
+
+# test/integration/auth was named by no target and run by no workflow (#228),
+# so its two tests -- the M14 auth-factor lifecycle and revoked-factor lookup --
+# ran only when someone typed the package path by hand.
+#
+# Unlike the two stages below it needs no compose stack: it is in-memory and
+# self-contained, so it runs as a plain `go test` in about two seconds. That is
+# why it runs FIRST in the aggregate and first in the CI integration job: it is
+# the cheapest integration failure to report.
+#
+# $(MIN_TAGS),integration is a DECLARED rung in SUPPORTED_TAG_SETS, so the
+# combination this compiles under is one vet-tags already sweeps -- not a new,
+# unverified tag set introduced by a test target.
+.PHONY: integration-test-auth
+integration-test-auth:
+	@echo "==> Running AUTH integration tests (in-memory, no compose stack)..."
+	$(GO) test -tags "$(MIN_TAGS),integration" -count=1 ./test/integration/auth/...
 
 # Standalone stage: the multi-protocol CLI suites in ./test/integration/api
 # exercised against the single-node software + Shamir docker servers.

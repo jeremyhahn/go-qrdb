@@ -24,10 +24,17 @@ import (
 )
 
 const (
-	testRepo   = "jeremyhahn/go-qrdb"
-	fipsName   = "FIPS 140-3"
-	trivyName  = "Trivy"
-	testBranch = "main"
+	testRepo  = "jeremyhahn/go-qrdb"
+	fipsName  = "FIPS 140-3"
+	trivyName = "Trivy"
+	// integrationClusterName is the third nightly job (#228). Fixtures that
+	// pass a COMPLETE -job list must include it, because the tool refuses a
+	// list that does not cover every job nightly.yml declares -- which is the
+	// point of the tool, and why every such fixture changed when the job was
+	// added. Tests about fips/trivy behaviour pass it as success so it
+	// neither opens nor closes anything they are measuring.
+	integrationClusterName = "Integration (cluster)"
+	testBranch             = "main"
 )
 
 // harness wires run() to a fakeGitea and to the repository's real nightly.yml.
@@ -66,6 +73,7 @@ func (h *harness) nightly(runID int64, ref, fipsResult, trivyResult string) erro
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=" + fipsResult,
 		"-job", "trivy=" + trivyName + "=" + trivyResult,
+		"-job", "integration-cluster=" + integrationClusterName + "=" + resultSuccess,
 	}, &h.out)
 }
 
@@ -344,6 +352,7 @@ func TestReportModeWritesNothing(t *testing.T) {
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=" + resultFailure,
 		"-job", "trivy=" + trivyName + "=" + resultFailure,
+		"-job", "integration-cluster=" + integrationClusterName + "=" + resultSuccess,
 	}, &out)
 	if err != nil {
 		t.Fatalf("report mode: %v", err)
@@ -510,6 +519,7 @@ func TestAFailedWriteFailsTheSignalJob(t *testing.T) {
 			"-self", "signal",
 			"-job", "fips=" + fipsName + "=" + resultFailure,
 			"-job", "trivy=" + trivyName + "=" + resultFailure,
+			"-job", "integration-cluster=" + integrationClusterName + "=" + resultSuccess,
 		}, io.Discard)
 		if err != nil {
 			t.Fatalf("a forge that accepts a token should still work: %v", err)

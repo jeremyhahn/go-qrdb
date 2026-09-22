@@ -412,9 +412,39 @@ jobs:
   # answer was "both jobs are on fire". It exits non-zero only when it could not
   # do its job -- which is the only way a silent notifier can be told apart from
   # a quiet night.
+  # The CLUSTER integration suite (go-qrdb#228, owner-ruled 2026-09-22).
+  # `make integration-test-cluster` existed and was run by no workflow, so the
+  # self-spawned single-node and 3-node cluster tests under test/integration/
+  # were exercised only when someone ran them by hand.
+  #
+  # Nightly rather than per push: it spawns real clusters, and #418 already
+  # records raft-backed tests timing out under CI load. A per-push leg that
+  # times out on load is a red gate nobody can clear in their own push, which
+  # is exactly what #48 removed. Here it still reaches somebody -- it is wired
+  # into the Signal below like fips and trivy.
+  integration-cluster:
+    name: Integration (cluster)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Integration tests (cluster)
+        run: |
+          export INT_PROJECT="qrdb-int-cluster-${GITHUB_RUN_ID:-local}"
+          echo "compose project: $INT_PROJECT"
+          make integration-test-cluster INT_PROJECT="$INT_PROJECT"
+      - name: Tear down the stack
+        if: always()
+        run: |
+          cd test/integration/api
+          docker compose -p "qrdb-int-cluster-${GITHUB_RUN_ID:-local}" down -v || true
+
   signal:
     name: Signal
-    needs: [fips, trivy]
+    needs: [fips, trivy, integration-cluster]
     # `always()` IS LOAD-BEARING. Without it this job is skipped on exactly the
     # runs it exists for, and the workflow would look complete while signalling
     # nothing.
@@ -453,6 +483,7 @@ jobs:
           NIGHTLY_SIGNAL_TOKEN: ${{ secrets.AGENT_TOKEN }}
           RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
+          RESULT_INTEGRATION_CLUSTER: ${{ needs.integration-cluster.result }}
         run: |
           set -euo pipefail
 
@@ -471,4 +502,5 @@ jobs:
             -mode apply \
             -self signal \
             -job "fips=FIPS 140-3=${RESULT_FIPS}" \
-            -job "trivy=Trivy=${RESULT_TRIVY}"
+            -job "trivy=Trivy=${RESULT_TRIVY}" \
+            -job "integration-cluster=Integration (cluster)=${RESULT_INTEGRATION_CLUSTER}"
