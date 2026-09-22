@@ -739,16 +739,12 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 		Username:    "dave",
 		TenantID:    "tenant-4",
 		Lifecycle:   user.LifecycleActive,
-		GroupIDs:    []string{"platform"},
 		AuthMethods: []string{"piv"},
 		LastAuth:    &at,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	got := userToWireResponse(u)
-	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
-		t.Errorf("groupIDs: got %v", got.GroupIDs)
-	}
 	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "piv" {
 		t.Errorf("authMethods: got %v", got.AuthMethods)
 	}

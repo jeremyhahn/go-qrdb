@@ -62,7 +62,6 @@ type serverUser struct {
 	// Lifecycle is the canonical and only account state (pending, active,
 	// suspended, locked, disabled, deleting).
 	Lifecycle   string   `json:"lifecycle,omitempty"`
-	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
 	// CertBindings decode the DOMAIN record's bindings: this transport
@@ -187,7 +186,6 @@ func serverUserToTransport(u *serverUser) *transport.User {
 		RoleIDs:      u.RoleIDs,
 		System:       u.System,
 		Lifecycle:    u.Lifecycle,
-		GroupIDs:     u.GroupIDs,
 		AuthMethods:  u.AuthMethods,
 		LastAuth:     u.LastAuth,
 		CertBindings: serverCertBindingsToTransport(u.CertBindings),
@@ -263,14 +261,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	// The identity fields travel here too — the argument-map shape is exactly
 	// why the comment above says this transport keeps getting missed.
 	//
-	// JSON, not CSV. A group id is an OPAQUE minted token, so joining on commas
-	// is lossy for the values it carries: an id containing a comma arrives as
-	// two memberships and a blank element is dropped where the store refuses
-	// it, writing a different authorization graph than the caller asked for
-	// while reporting success (Codex peer review, PR #198).
-	if err := putJSONList(args, "group_ids", req.GroupIDs); err != nil {
-		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
-	}
+	// JSON, not CSV: joining opaque values on commas is lossy — a value
+	// containing a comma arrives as two and a blank element is dropped where
+	// the store refuses it, writing something different from what the caller
+	// asked for while reporting success (Codex peer review, PR #198).
 	if err := putJSONList(args, "auth_methods", req.AuthMethods); err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
 	}
@@ -464,14 +458,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	// have to disambiguate.
 	//
 	// The non-empty case travels as JSON for the reason given in CreateUser:
-	// these are opaque identifiers and CSV is lossy for them.
-	if req.GroupIDs != nil {
-		if len(req.GroupIDs) == 0 {
-			args["clear_group_ids"] = true
-		} else if err := putJSONList(args, "group_ids", req.GroupIDs); err != nil {
-			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
-		}
-	}
+	// CSV is lossy for opaque values.
 	if req.AuthMethods != nil {
 		if len(req.AuthMethods) == 0 {
 			args["clear_auth_methods"] = true

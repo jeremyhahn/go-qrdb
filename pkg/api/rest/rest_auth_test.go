@@ -2804,6 +2804,9 @@ func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
 	if _, ok := wire["enabled"]; ok {
 		t.Fatal("removed wire key \"enabled\" present; lifecycle is the only account state")
 	}
+	if _, ok := wire["group_ids"]; ok {
+		t.Fatal("removed wire key \"group_ids\" present")
+	}
 }
 
 // TestListUsersResponse_WireFormat_HasMore locks the paginated list
@@ -3029,14 +3032,10 @@ func TestUserToResponse_CarriesEveryIdentityField(t *testing.T) {
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	u := testUser()
 	u.Lifecycle = user.LifecycleActive
-	u.GroupIDs = []string{"platform", "sre"}
 	u.AuthMethods = []string{"webauthn", "piv"}
 	u.LastAuth = &at
 
 	resp := userToResponse(u)
-	if len(resp.GroupIDs) != 2 || resp.GroupIDs[0] != "platform" {
-		t.Errorf("group_ids: got %v", resp.GroupIDs)
-	}
 	if len(resp.AuthMethods) != 2 || resp.AuthMethods[1] != "piv" {
 		t.Errorf("auth_methods: got %v", resp.AuthMethods)
 	}
@@ -3085,10 +3084,9 @@ func TestFormatLastAuth_NeverAuthenticatedIsAbsentNotEpoch(t *testing.T) {
 // The three-way distinction the domain request depends on must survive the
 // wire: an ABSENT key leaves the set alone, an EMPTY array clears it. JSON
 // carries that for free — absent and `null` both decode to nil, `[]` decodes to
-// a non-nil empty slice — and getting it wrong makes a revocation silently do
-// nothing, which is the worst possible failure mode for removing an access
-// grant.
-func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
+// a non-nil empty slice — and getting it wrong makes a clear silently do
+// nothing.
+func TestHandleUpdateUser_AuthMethodsAbsentVersusEmptyVersusSet(t *testing.T) {
 	cases := []struct {
 		name        string
 		body        string
@@ -3097,9 +3095,9 @@ func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
 		wantSet     []string
 	}{
 		{name: "absent leaves alone", body: `{"username":"bob"}`, wantNil: true},
-		{name: "null leaves alone", body: `{"group_ids":null}`, wantNil: true},
-		{name: "empty array clears", body: `{"group_ids":[]}`, wantCleared: true},
-		{name: "set replaces", body: `{"group_ids":["platform","sre"]}`, wantSet: []string{"platform", "sre"}},
+		{name: "null leaves alone", body: `{"auth_methods":null}`, wantNil: true},
+		{name: "empty array clears", body: `{"auth_methods":[]}`, wantCleared: true},
+		{name: "set replaces", body: `{"auth_methods":["webauthn","piv"]}`, wantSet: []string{"webauthn", "piv"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3119,16 +3117,16 @@ func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
 			}
 			switch {
 			case tc.wantNil:
-				if got.GroupIDs != nil {
-					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got.GroupIDs)
+				if got.AuthMethods != nil {
+					t.Fatalf("AuthMethods = %#v, want nil (leave alone)", got.AuthMethods)
 				}
 			case tc.wantCleared:
-				if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
-					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+				if got.AuthMethods == nil || len(got.AuthMethods) != 0 {
+					t.Fatalf("AuthMethods = %#v, want a non-nil empty slice (clear)", got.AuthMethods)
 				}
 			default:
-				if len(got.GroupIDs) != len(tc.wantSet) {
-					t.Fatalf("GroupIDs = %#v, want %v", got.GroupIDs, tc.wantSet)
+				if len(got.AuthMethods) != len(tc.wantSet) {
+					t.Fatalf("AuthMethods = %#v, want %v", got.AuthMethods, tc.wantSet)
 				}
 			}
 		})
@@ -3168,16 +3166,13 @@ func TestHandleCreateUser_CarriesIdentityFields(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"bob","email":"bob@example.com","group_ids":["platform"],` +
+	body := `{"username":"bob","email":"bob@example.com",` +
 		`"auth_methods":["webauthn"],"lifecycle":"pending"}`
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	srv.dispatch(httptest.NewRecorder(), r)
 
 	if got == nil {
 		t.Fatal("the service was never called")
-	}
-	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
-		t.Errorf("GroupIDs = %v", got.GroupIDs)
 	}
 	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "webauthn" {
 		t.Errorf("AuthMethods = %v", got.AuthMethods)

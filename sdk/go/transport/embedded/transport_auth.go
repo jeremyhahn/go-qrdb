@@ -49,7 +49,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
-		GroupIDs:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            user.Lifecycle(req.Lifecycle),
 		Pending:              req.Pending,
@@ -147,7 +146,6 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		Email:       req.Email,
 		Name:        req.Name,
 		RoleIDs:     req.RoleIDs,
-		GroupIDs:    req.GroupIDs,
 		AuthMethods: req.AuthMethods,
 		Lifecycle:   user.Lifecycle(req.Lifecycle),
 	}
@@ -481,7 +479,6 @@ func userToTransport(u *user.User) *transport.User {
 		RoleIDs:      roleIDs,
 		System:       u.System,
 		Lifecycle:    string(u.Lifecycle),
-		GroupIDs:     u.GroupIDs,
 		AuthMethods:  u.AuthMethods,
 		LastAuth:     formatLastAuth(u.LastAuth),
 		CertBindings: user.WireCertBindings(u.CertBindings),

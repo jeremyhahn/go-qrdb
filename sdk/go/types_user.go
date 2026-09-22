@@ -71,18 +71,11 @@ type (
 	LifecycleTransitionError = user.LifecycleTransitionError
 )
 
-// NormalizeGroupIDs is THE canonical normalization for a group-membership set:
-// trimmed, de-duplicated, first-seen order preserved, case PRESERVED because a
-// group identifier is an opaque minted token. A consumer that de-duplicates its
-// own copy differently will disagree with the store about what the user belongs
-// to.
-var NormalizeGroupIDs = user.NormalizeGroupIDs
-
 // NormalizeAuthMethods is THE canonical normalization for a permitted-method
 // set: trimmed, LOWERCASED, de-duplicated, first-seen order preserved. Case is
-// folded here (unlike a group id) because these are protocol names from a
-// closed vocabulary, and a list holding both "WebAuthn" and "webauthn" is a
-// policy that will eventually deny what it meant to allow.
+// folded because these are protocol names from a closed vocabulary, and a list
+// holding both "WebAuthn" and "webauthn" is a policy that will eventually deny
+// what it meant to allow.
 var NormalizeAuthMethods = user.NormalizeAuthMethods
 
 const (

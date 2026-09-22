@@ -2404,6 +2404,11 @@ message VectorCompactionProgress {
 
 // CreateUserRequest creates a new passwordless user.
 message CreateUserRequest {
+    // group_ids was an opaque group-membership list that no qrdb authorization
+    // path read; group membership belongs to the layer that owns groups.
+    reserved 7;
+    reserved "group_ids";
+
     string tenant_id = 1;
     string username = 2;
     repeated string role_ids = 3;
@@ -2415,9 +2420,6 @@ message CreateUserRequest {
     // cannot be resolved by GetUserByEmail — a certificate-only or bootstrap
     // identity. It exists so the omission is declared rather than defaulted.
     bool without_email_login_key = 6;
-    // group_ids are opaque group-membership identifiers. qrdb stores the
-    // membership edge and owns no Group entity.
-    repeated string group_ids = 7;
     // auth_methods are the permitted authentication methods ("webauthn",
     // "piv"). Empty states no restriction.
     repeated string auth_methods = 8;
@@ -2466,6 +2468,11 @@ message AddCertBindingRequest {
 // UpdateUserProtoRequest applies partial updates to an existing user.
 // Named with "Proto" suffix to avoid collision with the Go domain type.
 message UpdateUserProtoRequest {
+    // group_ids / has_group_ids were an opaque group-membership list that no
+    // qrdb authorization path read.
+    reserved 6, 7;
+    reserved "group_ids", "has_group_ids";
+
     uint64 id = 1;
     string username = 2;
     repeated string role_ids = 3;
@@ -2473,15 +2480,11 @@ message UpdateUserProtoRequest {
     string email = 4;
     // name replaces the display name when non-empty.
     string name = 5;
-    // group_ids replaces the group memberships when present. Because proto3
+    // auth_methods replaces the permitted methods when present. Because proto3
     // cannot distinguish an absent repeated field from an empty one, the
-    // has_group_ids flag carries the nil-vs-empty distinction the domain
+    // has_auth_methods flag carries the nil-vs-empty distinction the domain
     // request needs: absent means "leave alone", present-and-empty means
     // "clear".
-    repeated string group_ids = 6;
-    bool has_group_ids = 7;
-    // auth_methods replaces the permitted methods when present; has_auth_methods
-    // carries nil-vs-empty for the same reason as group_ids.
     repeated string auth_methods = 8;
     bool has_auth_methods = 9;
     // lifecycle transitions the account when non-empty. Checked against the
@@ -2525,9 +2528,10 @@ message DisableUserRequest {
 // UserResponse is the response payload for user operations.
 message UserResponse {
     // enabled was a derived projection of lifecycle; lifecycle is now the only
-    // account-state field.
-    reserved 5;
-    reserved "enabled";
+    // account-state field. group_ids was an opaque group-membership list that
+    // no qrdb authorization path read.
+    reserved 5, 12;
+    reserved "enabled", "group_ids";
 
     uint64 id = 1;
     string tenant_id = 2;
@@ -2543,8 +2547,6 @@ message UserResponse {
     // lifecycle is the canonical and only account state: pending, active,
     // suspended, locked, disabled or deleting. Only active can authenticate.
     string lifecycle = 11;
-    // group_ids are opaque group-membership identifiers.
-    repeated string group_ids = 12;
     // auth_methods are the permitted authentication methods.
     repeated string auth_methods = 13;
     // last_auth_unix is the last successful authentication, seconds since the

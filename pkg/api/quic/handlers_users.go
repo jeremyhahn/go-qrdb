@@ -34,9 +34,7 @@ type createUserWireRequest struct {
 	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
 	TenantID             string   `json:"tenantID"`
 	RoleIDs              []string `json:"roleIDs"`
-	// GroupIDs are opaque group-membership identifiers; qrdb owns no Group
-	// entity. AuthMethods are the permitted authentication methods.
-	GroupIDs    []string `json:"groupIDs,omitempty"`
+	// AuthMethods are the permitted authentication methods.
 	AuthMethods []string `json:"authMethods,omitempty"`
 	// Lifecycle is the state to create in — pending, active or disabled only.
 	// Empty defaults to active, or pending when Pending is set.
@@ -90,11 +88,10 @@ type updateUserWireRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
-	// GroupIDs and AuthMethods replace their sets when PRESENT in the payload.
-	// Absent leaves them alone; `[]` clears them. JSON carries that distinction
-	// for free — an absent key leaves the slice nil — which is exactly the
-	// domain request's nil-vs-empty contract, so a membership can be revoked.
-	GroupIDs    []string `json:"groupIDs,omitempty"`
+	// AuthMethods replaces the set when PRESENT in the payload. Absent leaves
+	// it alone; `[]` clears it. JSON carries that distinction for free — an
+	// absent key leaves the slice nil — which is exactly the domain request's
+	// nil-vs-empty contract, so a restriction can be lifted.
 	AuthMethods []string `json:"authMethods,omitempty"`
 	// Lifecycle transitions the account when non-empty.
 	Lifecycle string `json:"lifecycle,omitempty"`
@@ -137,7 +134,6 @@ type userWireResponse struct {
 	// Lifecycle is the canonical and only account state: pending, active,
 	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle   string   `json:"lifecycle,omitempty"`
-	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	// LastAuth is RFC 3339, omitted entirely when the account has never
 	// authenticated — a zero timestamp would read as 1970 rather than "never".
@@ -194,7 +190,6 @@ func (s *Server) handleCreateUser(ctx context.Context, payload []byte) ([]byte, 
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
-		GroupIDs:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            user.Lifecycle(req.Lifecycle),
 		Pending:              req.Pending,
@@ -377,7 +372,6 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 		Email:       req.Email,
 		Name:        req.Name,
 		RoleIDs:     req.RoleIDs,
-		GroupIDs:    req.GroupIDs,
 		AuthMethods: req.AuthMethods,
 		Lifecycle:   user.Lifecycle(req.Lifecycle),
 	}
@@ -535,7 +529,6 @@ func userToWireResponse(u *user.User) *userWireResponse {
 		RoleIDs:      roleIDs,
 		System:       u.System,
 		Lifecycle:    string(u.Lifecycle),
-		GroupIDs:     u.GroupIDs,
 		AuthMethods:  u.AuthMethods,
 		LastAuth:     formatLastAuth(u.LastAuth),
 		CertBindings: certBindingsToWire(u.CertBindings),

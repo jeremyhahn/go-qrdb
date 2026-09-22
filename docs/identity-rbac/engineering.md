@@ -63,7 +63,6 @@ type User struct {
 	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role identifiers
 	Lifecycle    Lifecycle          `json:"lifecycle"`    // CANONICAL account state
 	System       bool               `json:"system"`       // built-in, cannot be deleted
-	GroupIDs     []string           `json:"groupIDs"`     // opaque membership ids; qrdb owns no Group entity
 	AuthMethods  []string           `json:"authMethods"`  // permitted methods (policy), lowercased
 	LastAuth     *time.Time         `json:"lastAuth"`     // high-water mark; never moves backwards
 	RoleBindings []RoleBinding      `json:"roleBindings"` // {RoleID, TenantID} — tenant-scoped RBAC
@@ -460,11 +459,12 @@ wrong fails a test rather than passing a typed-in column.
   chain. An observed method whose name does not normalize fails closed.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
-- **`GroupIDs` are opaque and case-PRESERVING**; `AuthMethods` are opaque and
-  case-FOLDED. Both are trimmed and de-duplicated by `NormalizeGroupIDs` /
-  `NormalizeAuthMethods`, and a blank entry is refused rather than dropped.
-  On an update, `nil` means "leave alone" and an empty non-nil slice means
-  "clear".
+- **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and
+  de-duplicated by `NormalizeAuthMethods`, and a blank entry is refused rather
+  than dropped. On an update, `nil` means "leave alone" and an empty non-nil
+  slice means "clear".
+- **There is no group-membership field.** The former `GroupIDs` (and the SDK's
+  `NormalizeGroupIDs`) is removed: no qrdb authorization path read it.
 - **`LastAuth` only moves forward.** A value at or before the stored one is
   ignored, so overlapping logins written out of order cannot roll an account's
   last-seen time backwards. It is stored in UTC.
@@ -512,7 +512,7 @@ wrong fails a test rather than passing a typed-in column.
 | Lifecycle state unrecognized by this build | authentication fails | **yes** |
 | Transition the table does not connect (incl. out of `deleting`) | `LifecycleTransitionError` | **yes** |
 | Undefined or not-creatable lifecycle state | `InvalidLifecycleError` naming the allowed set | **yes** |
-| Blank `groupIDs` / `authMethods` entry | `ValidationError`, nothing written | **yes** |
+| Blank `authMethods` entry | `ValidationError`, nothing written | **yes** |
 | Unregistered permission string | `Parse` error | **yes** |
 | Missing permission for the operation | permission denied | **yes** |
 | Deleting a `System: true` user or a built-in role | refused | **yes** |

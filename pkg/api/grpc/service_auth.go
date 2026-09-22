@@ -50,7 +50,6 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 		WithoutEmailLoginKey: req.GetWithoutEmailLoginKey(),
 		TenantID:             req.GetTenantId(),
 		RoleIDs:              req.GetRoleIds(),
-		GroupIDs:             req.GetGroupIds(),
 		AuthMethods:          req.GetAuthMethods(),
 		Lifecycle:            user.Lifecycle(req.GetLifecycle()),
 		Pending:              req.GetPending(),
@@ -167,14 +166,8 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 	// nil means "leave alone" and an empty non-nil slice means "clear", and
 	// proto3 cannot tell an absent repeated field from an empty one — so the
 	// explicit has_* flag is what carries the distinction. Without it a caller
-	// could never REVOKE a membership over gRPC: an empty list would read as
-	// "no change" and the revocation would silently do nothing.
-	if req.GetHasGroupIds() {
-		updateReq.GroupIDs = req.GetGroupIds()
-		if updateReq.GroupIDs == nil {
-			updateReq.GroupIDs = []string{}
-		}
-	}
+	// could never LIFT the restriction over gRPC: an empty list would read as
+	// "no change" and the clear would silently do nothing.
 	if req.GetHasAuthMethods() {
 		updateReq.AuthMethods = req.GetAuthMethods()
 		if updateReq.AuthMethods == nil {
@@ -689,7 +682,6 @@ func userToProto(u *user.User) *pb.UserResponse {
 		RoleIds:     u.RoleIDs,
 		System:      u.System,
 		Lifecycle:   string(u.Lifecycle),
-		GroupIds:    u.GroupIDs,
 		AuthMethods: u.AuthMethods,
 		// Seconds rather than RFC 3339 because this is a point in time a client
 		// compares and orders, not one it displays; zero says "never

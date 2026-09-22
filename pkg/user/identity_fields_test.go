@@ -33,55 +33,6 @@ import (
 // Identity-set normalization
 // ---------------------------------------------------------------------------
 
-func TestNormalizeGroupIDs_TrimsDedupesAndPreservesCase(t *testing.T) {
-	got, err := NormalizeGroupIDs([]string{" Ops ", "ops", "Ops", "platform", "platform"})
-	if err != nil {
-		t.Fatalf("NormalizeGroupIDs: %v", err)
-	}
-	// "Ops" and "ops" are DIFFERENT groups: a group id is an opaque minted
-	// token, and folding case would silently merge two memberships into one.
-	want := []string{"Ops", "ops", "platform"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestNormalizeGroupIDs_RejectsBlankEntry(t *testing.T) {
-	for _, in := range [][]string{{""}, {"ops", "   "}, {"\t"}} {
-		_, err := NormalizeGroupIDs(in)
-		var v *ValidationError
-		if !errors.As(err, &v) {
-			t.Fatalf("NormalizeGroupIDs(%q): expected *ValidationError, got %T: %v", in, err, err)
-		}
-		if v.Field != "groupIDs" {
-			t.Errorf("Field: got %q, want %q", v.Field, "groupIDs")
-		}
-	}
-}
-
-func TestNormalizeGroupIDs_NilStaysNil(t *testing.T) {
-	got, err := NormalizeGroupIDs(nil)
-	if err != nil {
-		t.Fatalf("NormalizeGroupIDs(nil): %v", err)
-	}
-	// nil and empty mean different things on an update request: nil is "leave
-	// it alone", empty is "clear it". Collapsing them here would make the
-	// distinction unreachable.
-	if got != nil {
-		t.Fatalf("got %v, want nil", got)
-	}
-}
-
-func TestNormalizeGroupIDs_EmptySliceStaysEmptyNotNil(t *testing.T) {
-	got, err := NormalizeGroupIDs([]string{})
-	if err != nil {
-		t.Fatalf("NormalizeGroupIDs([]): %v", err)
-	}
-	if got == nil || len(got) != 0 {
-		t.Fatalf("got %#v, want a non-nil empty slice", got)
-	}
-}
-
 func TestNormalizeAuthMethods_FoldsCaseAndDedupes(t *testing.T) {
 	got, err := NormalizeAuthMethods([]string{"WebAuthn", " webauthn ", "PIV"})
 	if err != nil {
@@ -110,24 +61,20 @@ func TestNormalizeAuthMethods_RejectsBlankEntry(t *testing.T) {
 // CreateUser
 // ---------------------------------------------------------------------------
 
-func TestCreateUser_StoresGroupsAuthMethodsAndLifecycle(t *testing.T) {
+func TestCreateUser_StoresAuthMethodsAndLifecycle(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:    "operator",
 		Email:       "operator@example.com",
-		GroupIDs:    []string{"platform", "platform", " sre "},
 		AuthMethods: []string{"WebAuthn", "piv"},
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	if created.Lifecycle != LifecycleActive || !created.CanAuthenticate() {
-		t.Fatalf("lifecycle=%q enabled=%v, want active/true", created.Lifecycle, created.CanAuthenticate())
-	}
-	if !reflect.DeepEqual(created.GroupIDs, []string{"platform", "sre"}) {
-		t.Errorf("GroupIDs: got %v", created.GroupIDs)
+		t.Fatalf("lifecycle=%q canAuthenticate=%v, want active/true", created.Lifecycle, created.CanAuthenticate())
 	}
 	if !reflect.DeepEqual(created.AuthMethods, []string{"webauthn", "piv"}) {
 		t.Errorf("AuthMethods: got %v", created.AuthMethods)
@@ -140,8 +87,7 @@ func TestCreateUser_StoresGroupsAuthMethodsAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if !reflect.DeepEqual(read.GroupIDs, created.GroupIDs) ||
-		!reflect.DeepEqual(read.AuthMethods, created.AuthMethods) ||
+	if !reflect.DeepEqual(read.AuthMethods, created.AuthMethods) ||
 		read.Lifecycle != created.Lifecycle {
 		t.Fatalf("persisted record differs: %+v", read)
 	}
@@ -159,9 +105,6 @@ func TestCreateUser_PendingProducesPendingLifecycle(t *testing.T) {
 	}
 	if created.Lifecycle != LifecyclePending {
 		t.Errorf("Lifecycle: got %q, want %q", created.Lifecycle, LifecyclePending)
-	}
-	if created.CanAuthenticate() {
-		t.Error("an invited account came back enabled")
 	}
 	if created.CanAuthenticate() {
 		t.Error("a pending account reported able to authenticate")
@@ -201,7 +144,6 @@ func TestCreateUser_RejectedRequestWritesNothing(t *testing.T) {
 	}{
 		{"non-creatable lifecycle", &CreateUserRequest{Username: "u", Email: "u@example.com", Lifecycle: LifecycleLocked}},
 		{"pending conflict", &CreateUserRequest{Username: "u", Email: "u@example.com", Pending: true, Lifecycle: LifecycleActive}},
-		{"blank group id", &CreateUserRequest{Username: "u", Email: "u@example.com", GroupIDs: []string{""}}},
 		{"blank auth method", &CreateUserRequest{Username: "u", Email: "u@example.com", AuthMethods: []string{" "}}},
 	}
 	for _, tc := range bad {
@@ -228,36 +170,38 @@ func TestCreateUser_RejectedRequestWritesNothing(t *testing.T) {
 // UpdateUser
 // ---------------------------------------------------------------------------
 
-func TestUpdateUser_ReplacesGroupsAndAuthMethods(t *testing.T) {
+func TestUpdateUser_ReplacesAndClearsAuthMethods(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 	u := createTestUser(t, svc, "alice", "")
 
 	updated, err := svc.UpdateUser(ctx, &UpdateUserRequest{
 		ID:          u.ID,
-		GroupIDs:    []string{"sre", "SRE"},
 		AuthMethods: []string{"PIV"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
-	if !reflect.DeepEqual(updated.GroupIDs, []string{"sre", "SRE"}) {
-		t.Errorf("GroupIDs: got %v", updated.GroupIDs)
-	}
 	if !reflect.DeepEqual(updated.AuthMethods, []string{"piv"}) {
 		t.Errorf("AuthMethods: got %v", updated.AuthMethods)
 	}
 
-	// An empty non-nil slice CLEARS, which is how a membership is revoked.
-	cleared, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: u.ID, GroupIDs: []string{}})
+	// A nil AuthMethods leaves the field alone.
+	kept, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: u.ID, Name: "Alice"})
+	if err != nil {
+		t.Fatalf("UpdateUser(name): %v", err)
+	}
+	if !reflect.DeepEqual(kept.AuthMethods, []string{"piv"}) {
+		t.Errorf("a nil AuthMethods must leave the field alone, got %v", kept.AuthMethods)
+	}
+
+	// An empty non-nil slice CLEARS, which is how a restriction is lifted.
+	cleared, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: u.ID, AuthMethods: []string{}})
 	if err != nil {
 		t.Fatalf("UpdateUser(clear): %v", err)
 	}
-	if len(cleared.GroupIDs) != 0 {
-		t.Errorf("GroupIDs after clear: got %v", cleared.GroupIDs)
-	}
-	if !reflect.DeepEqual(cleared.AuthMethods, []string{"piv"}) {
-		t.Errorf("a nil AuthMethods must leave the field alone, got %v", cleared.AuthMethods)
+	if len(cleared.AuthMethods) != 0 {
+		t.Errorf("AuthMethods after clear: got %v", cleared.AuthMethods)
 	}
 }
 
@@ -267,7 +211,7 @@ func TestUpdateUser_RejectsBlankIdentitySetEntries(t *testing.T) {
 	u := createTestUser(t, svc, "bob", "")
 
 	for _, req := range []*UpdateUserRequest{
-		{ID: u.ID, GroupIDs: []string{"ok", ""}},
+		{ID: u.ID, AuthMethods: []string{"ok", ""}},
 		{ID: u.ID, AuthMethods: []string{""}},
 	} {
 		if _, err := svc.UpdateUser(ctx, req); err == nil {
@@ -278,7 +222,7 @@ func TestUpdateUser_RejectsBlankIdentitySetEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if len(read.GroupIDs) != 0 || len(read.AuthMethods) != 0 {
+	if len(read.AuthMethods) != 0 {
 		t.Fatalf("a refused update mutated the record: %+v", read)
 	}
 }
@@ -574,7 +518,6 @@ func TestUpdateUser_RefusedRequestNeverTouchesTheIndex(t *testing.T) {
 	}
 
 	bad := []*UpdateUserRequest{
-		{ID: u.ID, Username: "heidi-renamed", GroupIDs: []string{""}},
 		{ID: u.ID, Username: "heidi-renamed", AuthMethods: []string{" "}},
 		{ID: u.ID, Username: "heidi-renamed", Email: "renamed@example.com", Lifecycle: "quarantined"},
 	}
@@ -755,7 +698,6 @@ func TestLastAuthOnly_AnyOtherFieldDisqualifies(t *testing.T) {
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
 		"Factors":      func(r *UpdateUserRequest) { r.Factors = []FactorEnrollment{} },
-		"GroupIDs":     func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
 	}
 	for name, set := range disqualifying {
@@ -865,7 +807,6 @@ func TestUpdateUser_TerminalRecordRefusesEveryEdit(t *testing.T) {
 		"email":        {ID: u.ID, Email: "renamed@example.com"},
 		"name":         {ID: u.ID, Name: "Renamed"},
 		"roleIDs":      {ID: u.ID, RoleIDs: []string{"admin"}},
-		"groupIDs":     {ID: u.ID, GroupIDs: []string{"platform"}},
 		"authMethods":  {ID: u.ID, AuthMethods: []string{"piv"}},
 		"attributes":   {ID: u.ID, Attributes: map[string]string{"a": "b"}},
 		"certBindings": {ID: u.ID, CertBindings: []CertBinding{}},
@@ -950,7 +891,6 @@ func TestOnlyReassertsLifecycle_AnyOtherFieldDisqualifies(t *testing.T) {
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
 		"Factors":      func(r *UpdateUserRequest) { r.Factors = []FactorEnrollment{} },
-		"GroupIDs":     func(r *UpdateUserRequest) { r.GroupIDs = []string{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
 	}
 	for name, set := range disqualifying {

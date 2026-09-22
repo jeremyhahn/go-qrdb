@@ -40,9 +40,7 @@ type createUserRequest struct {
 	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
 	TenantID             string   `json:"tenant_id"`
 	RoleIDs              []string `json:"role_ids"`
-	// GroupIDs are opaque group-membership identifiers; qrdb owns no Group
-	// entity. AuthMethods are the permitted authentication methods.
-	GroupIDs    []string `json:"group_ids,omitempty"`
+	// AuthMethods are the permitted authentication methods.
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// Lifecycle is the state to create in — pending, active or disabled only.
 	// Empty defaults to active, or pending when Pending is set.
@@ -56,12 +54,11 @@ type updateUserRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"role_ids"`
-	// GroupIDs and AuthMethods replace their sets when PRESENT in the body.
-	// Absent leaves them alone; `[]` clears them. JSON gives that distinction
-	// for free — an absent key leaves the slice nil, an empty array makes it
-	// non-nil and empty — which is exactly the domain request's nil-vs-empty
-	// contract, so a membership can actually be revoked.
-	GroupIDs    []string `json:"group_ids,omitempty"`
+	// AuthMethods replaces the set when PRESENT in the body. Absent leaves it
+	// alone; `[]` clears it. JSON gives that distinction for free — an absent
+	// key leaves the slice nil, an empty array makes it non-nil and empty —
+	// which is exactly the domain request's nil-vs-empty contract, so a
+	// restriction can actually be lifted.
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// Lifecycle transitions the account when non-empty.
 	Lifecycle string `json:"lifecycle,omitempty"`
@@ -87,7 +84,6 @@ type userResponse struct {
 	// Lifecycle is the canonical and only account state: pending, active,
 	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle   string   `json:"lifecycle,omitempty"`
-	GroupIDs    []string `json:"group_ids,omitempty"`
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// LastAuth is RFC 3339, omitted entirely when the account has never
 	// authenticated — a zero timestamp would read as 1970 rather than "never".
@@ -134,7 +130,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
-		GroupIDs:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            user.Lifecycle(req.Lifecycle),
 		Pending:              req.Pending,
@@ -509,7 +504,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 		Email:       req.Email,
 		Name:        req.Name,
 		RoleIDs:     req.RoleIDs,
-		GroupIDs:    req.GroupIDs,
 		AuthMethods: req.AuthMethods,
 		Lifecycle:   user.Lifecycle(req.Lifecycle),
 	}
@@ -595,7 +589,6 @@ func userToResponse(u *user.User) *userResponse {
 		RoleIDs:      roleIDs,
 		System:       u.System,
 		Lifecycle:    string(u.Lifecycle),
-		GroupIDs:     u.GroupIDs,
 		AuthMethods:  u.AuthMethods,
 		LastAuth:     formatLastAuth(u.LastAuth),
 		CertBindings: user.WireCertBindings(u.CertBindings),

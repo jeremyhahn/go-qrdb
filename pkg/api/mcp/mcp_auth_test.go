@@ -2474,7 +2474,6 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 	if _, err := handler(context.Background(), makeReq(map[string]any{
 		"username":     "alice",
 		"email":        "alice@example.com",
-		"group_ids":    `["platform","sre"]`,
 		"auth_methods": `["webauthn","piv"]`,
 		"lifecycle":    "pending",
 	})); err != nil {
@@ -2482,9 +2481,6 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("the service was never called")
-	}
-	if len(got.GroupIDs) != 2 || got.GroupIDs[1] != "sre" {
-		t.Errorf("GroupIDs = %v", got.GroupIDs)
 	}
 	if len(got.AuthMethods) != 2 || got.AuthMethods[1] != "piv" {
 		t.Errorf("AuthMethods = %v", got.AuthMethods)
@@ -2495,10 +2491,10 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 }
 
 // A flat tool argument cannot carry nil-vs-empty the way JSON null-vs-[] does,
-// so clearing is its own flag. Without it, revoking every membership would be
-// unexpressible over MCP: an empty string reads as "leave alone" and the
-// revocation would report success while doing nothing.
-func TestUserUpdateTool_ClearFlagsExpressRevocation(t *testing.T) {
+// so clearing is its own flag. Without it, lifting a method restriction would be
+// unexpressible over MCP: an empty string reads as "leave alone" and the clear
+// would report success while doing nothing.
+func TestUserUpdateTool_ClearFlagExpressesClear(t *testing.T) {
 	cases := []struct {
 		name        string
 		args        map[string]any
@@ -2508,29 +2504,29 @@ func TestUserUpdateTool_ClearFlagsExpressRevocation(t *testing.T) {
 	}{
 		{name: "absent leaves alone", args: map[string]any{"id": "1001"}, wantNil: true},
 		{
-			name:        "clear flag revokes",
-			args:        map[string]any{"id": "1001", "clear_group_ids": true},
+			name:        "clear flag clears",
+			args:        map[string]any{"id": "1001", "clear_auth_methods": true},
 			wantCleared: true,
 		},
 		{
 			name:    "values replace",
-			args:    map[string]any{"id": "1001", "group_ids": `["platform","sre"]`},
+			args:    map[string]any{"id": "1001", "auth_methods": `["platform","sre"]`},
 			wantSet: []string{"platform", "sre"},
 		},
 		{
 			// Values win over the flag: a caller that sends both means to set,
 			// not to clear.
 			name:    "values win over the flag",
-			args:    map[string]any{"id": "1001", "group_ids": `["platform"]`, "clear_group_ids": true},
+			args:    map[string]any{"id": "1001", "auth_methods": `["platform"]`, "clear_auth_methods": true},
 			wantSet: []string{"platform"},
 		},
 		{
-			// THE REASON THIS IS JSON. A group id is an opaque minted token, so
-			// a comma inside one is a legitimate character. A CSV encoding split
-			// it into two memberships — granting access to a group the caller
-			// never named, and reporting success (Codex peer review, PR #198).
-			name:    "an id containing a comma stays one id",
-			args:    map[string]any{"id": "1001", "group_ids": `["team,with,commas"]`},
+			// THE REASON THIS IS JSON. The list carries opaque values, so a
+			// comma inside one is a legitimate character. A CSV encoding split
+			// it into two — writing a value the caller never named, and
+			// reporting success (Codex peer review, PR #198).
+			name:    "a value containing a comma stays one value",
+			args:    map[string]any{"id": "1001", "auth_methods": `["team,with,commas"]`},
 			wantSet: []string{"team,with,commas"},
 		},
 	}
@@ -2551,16 +2547,16 @@ func TestUserUpdateTool_ClearFlagsExpressRevocation(t *testing.T) {
 			}
 			switch {
 			case tc.wantNil:
-				if got.GroupIDs != nil {
-					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got.GroupIDs)
+				if got.AuthMethods != nil {
+					t.Fatalf("AuthMethods = %#v, want nil (leave alone)", got.AuthMethods)
 				}
 			case tc.wantCleared:
-				if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
-					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+				if got.AuthMethods == nil || len(got.AuthMethods) != 0 {
+					t.Fatalf("AuthMethods = %#v, want a non-nil empty slice (clear)", got.AuthMethods)
 				}
 			default:
-				if len(got.GroupIDs) != len(tc.wantSet) || got.GroupIDs[0] != tc.wantSet[0] {
-					t.Fatalf("GroupIDs = %#v, want %v", got.GroupIDs, tc.wantSet)
+				if len(got.AuthMethods) != len(tc.wantSet) || got.AuthMethods[0] != tc.wantSet[0] {
+					t.Fatalf("AuthMethods = %#v, want %v", got.AuthMethods, tc.wantSet)
 				}
 			}
 		})
@@ -2593,7 +2589,7 @@ func TestUserUpdateTool_MalformedLastAuthIsAnErrorResult(t *testing.T) {
 }
 
 // A malformed identifier list must be REPORTED, not silently read as "leave
-// alone". Quietly leaving an authorization list unchanged when the caller asked
+// alone". Quietly leaving a policy list unchanged when the caller asked
 // to change it is the same class of defect as changing it wrongly: a success
 // that did something other than what was requested.
 func TestUserUpdateTool_MalformedIdentifierListIsAnErrorResult(t *testing.T) {
@@ -2606,8 +2602,8 @@ func TestUserUpdateTool_MalformedIdentifierListIsAnErrorResult(t *testing.T) {
 			},
 		}
 		result, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
-			"id":        "1001",
-			"group_ids": bad,
+			"id":           "1001",
+			"auth_methods": bad,
 		}))
 		if err != nil {
 			t.Fatalf("%q: unexpected error: %v", bad, err)
@@ -2632,16 +2628,16 @@ func TestUserUpdateTool_BlankIdentifierElementReachesTheStore(t *testing.T) {
 		},
 	}
 	if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
-		"id":        "1001",
-		"group_ids": `["ok",""]`,
+		"id":           "1001",
+		"auth_methods": `["ok",""]`,
 	})); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got == nil {
 		t.Fatal("the service was never called")
 	}
-	if len(got.GroupIDs) != 2 || got.GroupIDs[1] != "" {
-		t.Fatalf("GroupIDs = %#v; the blank element was dropped instead of forwarded for the store to refuse", got.GroupIDs)
+	if len(got.AuthMethods) != 2 || got.AuthMethods[1] != "" {
+		t.Fatalf("AuthMethods = %#v; the blank element was dropped instead of forwarded for the store to refuse", got.AuthMethods)
 	}
 }
 
@@ -2660,41 +2656,41 @@ func TestParseOpaqueStringList_ShapesAreNeverMistakenForAbsence(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "absent is nil", args: map[string]any{}, wantNil: true},
-		{name: "explicit null is nil", args: map[string]any{"group_ids": nil}, wantNil: true},
-		{name: "JSON null is nil", args: map[string]any{"group_ids": "null"}, wantNil: true},
-		{name: "JSON string array", args: map[string]any{"group_ids": `["a","b"]`}, want: []string{"a", "b"}},
-		{name: "JSON empty array clears", args: map[string]any{"group_ids": `[]`}, want: []string{}},
+		{name: "explicit null is nil", args: map[string]any{"auth_methods": nil}, wantNil: true},
+		{name: "JSON null is nil", args: map[string]any{"auth_methods": "null"}, wantNil: true},
+		{name: "JSON string array", args: map[string]any{"auth_methods": `["a","b"]`}, want: []string{"a", "b"}},
+		{name: "JSON empty array clears", args: map[string]any{"auth_methods": `[]`}, want: []string{}},
 		{
 			// A raw MCP client answering the schema with a real array is a
 			// legitimate caller, not a malformed one.
-			name: "native array", args: map[string]any{"group_ids": []any{"a", "b"}},
+			name: "native array", args: map[string]any{"auth_methods": []any{"a", "b"}},
 			want: []string{"a", "b"},
 		},
-		{name: "native empty array clears", args: map[string]any{"group_ids": []any{}}, want: []string{}},
+		{name: "native empty array clears", args: map[string]any{"auth_methods": []any{}}, want: []string{}},
 		{
 			// An in-process caller can hand the tool a []string directly (JSON
 			// only ever produces []any). Cloning it with append([]string(nil),
 			// v...) turned an empty one back into nil — "leave alone" — so a
 			// revocation reported success and revoked nothing.
-			name: "native []string", args: map[string]any{"group_ids": []string{"a", "b"}},
+			name: "native []string", args: map[string]any{"auth_methods": []string{"a", "b"}},
 			want: []string{"a", "b"},
 		},
 		{
 			name: "native empty []string clears",
-			args: map[string]any{"group_ids": []string{}}, want: []string{},
+			args: map[string]any{"auth_methods": []string{}}, want: []string{},
 		},
 		{
 			// The values that used to vanish.
-			name: "empty string is an error", args: map[string]any{"group_ids": ""}, wantErr: true,
+			name: "empty string is an error", args: map[string]any{"auth_methods": ""}, wantErr: true,
 		},
-		{name: "number is an error", args: map[string]any{"group_ids": 7}, wantErr: true},
-		{name: "object is an error", args: map[string]any{"group_ids": map[string]any{"a": 1}}, wantErr: true},
-		{name: "non-string element is an error", args: map[string]any{"group_ids": []any{"a", 7}}, wantErr: true},
-		{name: "not JSON is an error", args: map[string]any{"group_ids": "a,b"}, wantErr: true},
+		{name: "number is an error", args: map[string]any{"auth_methods": 7}, wantErr: true},
+		{name: "object is an error", args: map[string]any{"auth_methods": map[string]any{"a": 1}}, wantErr: true},
+		{name: "non-string element is an error", args: map[string]any{"auth_methods": []any{"a", 7}}, wantErr: true},
+		{name: "not JSON is an error", args: map[string]any{"auth_methods": "a,b"}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseOpaqueStringList(makeReq(tc.args), "group_ids")
+			got, err := parseOpaqueStringList(makeReq(tc.args), "auth_methods")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %#v", got)
@@ -2747,16 +2743,16 @@ func TestUserUpdateTool_EmptyListClearsThroughEveryEncoding(t *testing.T) {
 				},
 			}
 			if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
-				"id":        "1001",
-				"group_ids": value,
+				"id":           "1001",
+				"auth_methods": value,
 			})); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got == nil {
 				t.Fatal("the service was never called")
 			}
-			if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
-				t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+			if got.AuthMethods == nil || len(got.AuthMethods) != 0 {
+				t.Fatalf("AuthMethods = %#v, want a non-nil empty slice (clear)", got.AuthMethods)
 			}
 		})
 	}

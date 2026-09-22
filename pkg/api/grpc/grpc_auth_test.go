@@ -25,6 +25,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -1790,6 +1791,42 @@ func TestUserResponseProto_EnabledIsReserved(t *testing.T) {
 	}
 }
 
+// group_ids is removed from every user message and its names and numbers are
+// reserved: qrdb resolves authorization through role bindings, and a membership
+// list no authorization path read must not come back with a new meaning.
+func TestUserProtoMessages_GroupIDsAreReserved(t *testing.T) {
+	cases := []struct {
+		name   string
+		msg    protoreflect.MessageDescriptor
+		fields map[protoreflect.Name]protoreflect.FieldNumber
+	}{
+		{"UserResponse", (&pb.UserResponse{}).ProtoReflect().Descriptor(),
+			map[protoreflect.Name]protoreflect.FieldNumber{"group_ids": 12}},
+		{"CreateUserRequest", (&pb.CreateUserRequest{}).ProtoReflect().Descriptor(),
+			map[protoreflect.Name]protoreflect.FieldNumber{"group_ids": 7}},
+		{"UpdateUserProtoRequest", (&pb.UpdateUserProtoRequest{}).ProtoReflect().Descriptor(),
+			map[protoreflect.Name]protoreflect.FieldNumber{"group_ids": 6, "has_group_ids": 7}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, num := range tc.fields {
+				if tc.msg.Fields().ByName(name) != nil {
+					t.Errorf("%s still declares %q", tc.name, name)
+				}
+				if tc.msg.Fields().ByNumber(num) != nil {
+					t.Errorf("%s field %d is in use; it belonged to the removed %q", tc.name, num, name)
+				}
+				if !tc.msg.ReservedNames().Has(name) {
+					t.Errorf("%q is not a reserved name on %s", name, tc.name)
+				}
+				if !tc.msg.ReservedRanges().Has(num) {
+					t.Errorf("field number %d is not reserved on %s", num, tc.name)
+				}
+			}
+		})
+	}
+}
+
 // A lifecycle refusal is a deliberate server decision, so it must not reach the
 // client as Internal. The two errors carry different meanings and get different
 // codes: an undefined state is the caller's mistake, a disconnected transition
@@ -1817,16 +1854,12 @@ func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
 		Username:    "carol",
 		TenantID:    "tenant-3",
 		Lifecycle:   user.LifecycleActive,
-		GroupIDs:    []string{"platform", "sre"},
 		AuthMethods: []string{"webauthn", "piv"},
 		LastAuth:    &at,
 		CreatedAt:   testTime,
 		UpdatedAt:   testTime,
 	}
 	got := userToProto(u)
-	if len(got.GetGroupIds()) != 2 || got.GetGroupIds()[0] != "platform" {
-		t.Errorf("group_ids: got %v", got.GetGroupIds())
-	}
 	if len(got.GetAuthMethods()) != 2 || got.GetAuthMethods()[1] != "piv" {
 		t.Errorf("auth_methods: got %v", got.GetAuthMethods())
 	}
@@ -1876,9 +1909,9 @@ func TestLastAuthUnix(t *testing.T) {
 }
 
 // proto3 cannot tell an absent repeated field from an empty one, so the has_*
-// flags are what carry "leave alone" versus "clear". Without them a gRPC caller
-// could never REVOKE a membership: an empty list would read as "no change" and
-// the revocation would silently succeed while doing nothing.
+// flag is what carries "leave alone" versus "clear". Without it a gRPC caller
+// could never LIFT a method restriction: an empty list would read as "no
+// change" and the clear would silently succeed while doing nothing.
 func TestUpdateUser_ProtoHasFlagsCarryClearVersusLeaveAlone(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1896,18 +1929,18 @@ func TestUpdateUser_ProtoHasFlagsCarryClearVersusLeaveAlone(t *testing.T) {
 			// The trap: values present but the flag not set. Honouring them
 			// would make the flag decorative.
 			name:    "values without the flag are ignored",
-			req:     &pb.UpdateUserProtoRequest{Id: 1, GroupIds: []string{"platform"}},
+			req:     &pb.UpdateUserProtoRequest{Id: 1, AuthMethods: []string{"piv"}},
 			wantNil: true,
 		},
 		{
 			name:        "flag with no values clears",
-			req:         &pb.UpdateUserProtoRequest{Id: 1, HasGroupIds: true},
+			req:         &pb.UpdateUserProtoRequest{Id: 1, HasAuthMethods: true},
 			wantCleared: true,
 		},
 		{
 			name:    "flag with values replaces",
-			req:     &pb.UpdateUserProtoRequest{Id: 1, HasGroupIds: true, GroupIds: []string{"platform", "sre"}},
-			wantSet: []string{"platform", "sre"},
+			req:     &pb.UpdateUserProtoRequest{Id: 1, HasAuthMethods: true, AuthMethods: []string{"webauthn", "piv"}},
+			wantSet: []string{"webauthn", "piv"},
 		},
 	}
 	for _, tc := range cases {
@@ -1917,19 +1950,19 @@ func TestUpdateUser_ProtoHasFlagsCarryClearVersusLeaveAlone(t *testing.T) {
 			if _, err := s.UpdateUser(context.Background(), tc.req); err != nil {
 				t.Fatalf("UpdateUser: %v", err)
 			}
-			got := svc.lastUpdateReq.GroupIDs
+			got := svc.lastUpdateReq.AuthMethods
 			switch {
 			case tc.wantNil:
 				if got != nil {
-					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got)
+					t.Fatalf("AuthMethods = %#v, want nil (leave alone)", got)
 				}
 			case tc.wantCleared:
 				if got == nil || len(got) != 0 {
-					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got)
+					t.Fatalf("AuthMethods = %#v, want a non-nil empty slice (clear)", got)
 				}
 			default:
 				if len(got) != len(tc.wantSet) || got[0] != tc.wantSet[0] {
-					t.Fatalf("GroupIDs = %#v, want %v", got, tc.wantSet)
+					t.Fatalf("AuthMethods = %#v, want %v", got, tc.wantSet)
 				}
 			}
 		})
@@ -1946,14 +1979,13 @@ func TestCreateAndUpdateUser_ProtoCarriesIdentityFields(t *testing.T) {
 	if _, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{
 		Username:    "bob",
 		Email:       "bob@example.com",
-		GroupIds:    []string{"platform"},
 		AuthMethods: []string{"webauthn"},
 		Lifecycle:   string(user.LifecyclePending),
 	}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	if got := svc.lastCreateReq; got.Lifecycle != user.LifecyclePending ||
-		len(got.GroupIDs) != 1 || len(got.AuthMethods) != 1 {
+		len(got.AuthMethods) != 1 {
 		t.Fatalf("create request dropped fields: %+v", got)
 	}
 

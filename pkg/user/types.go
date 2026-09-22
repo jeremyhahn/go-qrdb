@@ -76,16 +76,6 @@ type User struct {
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
 
-	// GroupIDs lists the group memberships this user holds.
-	//
-	// qrdb stores the MEMBERSHIP EDGE and does not own a Group entity: the
-	// values are opaque identifiers, exactly as RoleIDs holds role identifiers
-	// without the user record owning the roles. A group's name, description and
-	// the roles it confers belong to whichever layer performs the authorization
-	// that consumes them — the same division qrdb already applies to Attributes,
-	// which it stores while the ABAC policy that evaluates them lives above.
-	GroupIDs []string `json:"groupIDs,omitempty"`
-
 	// AuthMethods lists the authentication methods this user is permitted to
 	// use ("webauthn", "piv", ...). It is a POLICY statement about what the
 	// account may present, distinct from Factors, which records what it has
@@ -195,10 +185,6 @@ type CreateUserRequest struct {
 	// active is describing two different accounts and should be told so.
 	Lifecycle Lifecycle
 
-	// GroupIDs are the initial group memberships. Opaque identifiers; qrdb does
-	// not own a Group entity (see User.GroupIDs).
-	GroupIDs []string
-
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
 	AuthMethods []string
@@ -248,10 +234,6 @@ type UpdateUserRequest struct {
 	// once it reads deleting, CanAuthenticate is false and no concurrent
 	// request can make it true again.
 	Lifecycle Lifecycle
-
-	// GroupIDs replaces the group memberships when non-nil. An empty non-nil
-	// slice clears them.
-	GroupIDs []string
 
 	// AuthMethods replaces the permitted authentication methods when non-nil.
 	// An empty non-nil slice clears the restriction.

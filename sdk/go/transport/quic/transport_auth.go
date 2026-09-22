@@ -40,7 +40,6 @@ type createUserWireRequest struct {
 	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
 	TenantID             string   `json:"tenantID"`
 	RoleIDs              []string `json:"roleIDs"`
-	GroupIDs             []string `json:"groupIDs,omitempty"`
 	AuthMethods          []string `json:"authMethods,omitempty"`
 	Lifecycle            string   `json:"lifecycle,omitempty"`
 	Pending              bool     `json:"pending,omitempty"`
@@ -92,11 +91,10 @@ type updateUserWireRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
-	// NO `omitempty` on GroupIDs/AuthMethods: it would drop an empty slice from
-	// the payload, making "clear" indistinguishable from "leave alone" and a
-	// revocation silently do nothing. Nil encodes as `null` and decodes back to
-	// nil, so absent / null / [] all survive the wire.
-	GroupIDs    []string `json:"groupIDs"`
+	// NO `omitempty` on AuthMethods: it would drop an empty slice from the
+	// payload, making "clear" indistinguishable from "leave alone" and a clear
+	// silently do nothing. Nil encodes as `null` and decodes back to nil, so
+	// absent / null / [] all survive the wire.
 	AuthMethods []string `json:"authMethods"`
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
@@ -139,7 +137,6 @@ type userWireResponse struct {
 	// Lifecycle is the canonical and only account state (pending, active,
 	// suspended, locked, disabled, deleting).
 	Lifecycle   string   `json:"lifecycle,omitempty"`
-	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
 	// CertBindings are the account's enrolled mTLS keys, expired ones
@@ -319,7 +316,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
-		GroupIDs:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
@@ -541,7 +537,6 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		Email:       req.Email,
 		Name:        req.Name,
 		RoleIDs:     req.RoleIDs,
-		GroupIDs:    req.GroupIDs,
 		AuthMethods: req.AuthMethods,
 		Lifecycle:   req.Lifecycle,
 		LastAuth:    req.LastAuth,
@@ -1029,7 +1024,6 @@ func wireToUser(w *userWireResponse) *transport.User {
 		RoleIDs:      w.RoleIDs,
 		System:       w.System,
 		Lifecycle:    w.Lifecycle,
-		GroupIDs:     w.GroupIDs,
 		AuthMethods:  w.AuthMethods,
 		LastAuth:     w.LastAuth,
 		CertBindings: wireToCertBindings(w.CertBindings),

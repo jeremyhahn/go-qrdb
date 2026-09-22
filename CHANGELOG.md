@@ -22,6 +22,15 @@ are not reconstructed here — their history is in the git log.
   cannot authenticate and cannot be transitioned. The decode-time fallback that
   derived a state from `enabled` is removed with no migration; a record written
   before the lifecycle field existed must be recreated.
+- **`User.GroupIDs` is removed from qrdb entirely.** It is gone from the
+  domain type, `CreateUserRequest` and `UpdateUserRequest`, every transport
+  (REST/QUIC `group_ids`/`groupIDs`; gRPC `group_ids` on `CreateUserRequest`,
+  `UpdateUserProtoRequest` and `UserResponse` plus `has_group_ids`, all now
+  reserved; MCP `group_ids` and `clear_group_ids`), the Go SDK
+  (`transport.User`, the request types, and `NormalizeGroupIDs`) and the store's
+  audit details. qrdb authorization resolves user → role bindings → roles →
+  permissions and no path read the field; a layer that needs group membership
+  stores it itself.
 
 ## [0.19.0-alpha] - 2026-09-17
 

@@ -83,7 +83,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		Name:                 req.Name,
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		RoleIds:              req.RoleIDs,
-		GroupIds:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
@@ -213,13 +212,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		Lifecycle: req.Lifecycle,
 	}
 	// proto3 cannot tell an absent repeated field from an empty one, so the
-	// has_* flags carry the nil-vs-empty distinction that decides between
-	// "leave alone" and "clear". Without them a membership could never be
-	// revoked over gRPC.
-	if req.GroupIDs != nil {
-		pbReq.GroupIds = req.GroupIDs
-		pbReq.HasGroupIds = true
-	}
+	// has_* flag carries the nil-vs-empty distinction that decides between
+	// "leave alone" and "clear". Without it a method restriction could never
+	// be lifted over gRPC.
 	if req.AuthMethods != nil {
 		pbReq.AuthMethods = req.AuthMethods
 		pbReq.HasAuthMethods = true
@@ -560,7 +555,6 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		RoleIDs:      resp.GetRoleIds(),
 		System:       resp.GetSystem(),
 		Lifecycle:    resp.GetLifecycle(),
-		GroupIDs:     resp.GetGroupIds(),
 		AuthMethods:  resp.GetAuthMethods(),
 		LastAuth:     unixToRFC3339(resp.GetLastAuthUnix()),
 		CertBindings: protoToCertBindings(resp.GetCertBindings()),

@@ -38,7 +38,6 @@ func TestSDK_UserCarriesEveryIdentityField(t *testing.T) {
 		Name:        "Ops Operator",
 		TenantID:    "tenant-1",
 		RoleIDs:     []string{"viewer"},
-		GroupIDs:    []string{"platform"},
 		AuthMethods: []string{"webauthn"},
 		Lifecycle:   sdk.LifecycleActive,
 		Attributes:  map[string]string{"team": "platform"},
@@ -103,17 +102,9 @@ func TestSDK_LifecycleErrorsAreMatchable(t *testing.T) {
 }
 
 func TestSDK_IdentitySetNormalizersAreTheCanonicalOnes(t *testing.T) {
-	// Case is PRESERVED for group ids (opaque minted tokens) and FOLDED for
-	// auth methods (a closed protocol vocabulary). A consumer that normalizes
-	// its own copy differently disagrees with the store about what the user is.
-	groups, err := sdk.NormalizeGroupIDs([]string{" Ops ", "ops", "Ops"})
-	if err != nil {
-		t.Fatalf("NormalizeGroupIDs: %v", err)
-	}
-	if len(groups) != 2 || groups[0] != "Ops" || groups[1] != "ops" {
-		t.Fatalf("NormalizeGroupIDs: got %v, want [Ops ops]", groups)
-	}
-
+	// Case is FOLDED for auth methods (a closed protocol vocabulary). A
+	// consumer that normalizes its own copy differently disagrees with the
+	// store about what the user is.
 	methods, err := sdk.NormalizeAuthMethods([]string{"WebAuthn", "webauthn", " PIV "})
 	if err != nil {
 		t.Fatalf("NormalizeAuthMethods: %v", err)
@@ -122,20 +113,18 @@ func TestSDK_IdentitySetNormalizersAreTheCanonicalOnes(t *testing.T) {
 		t.Fatalf("NormalizeAuthMethods: got %v, want [webauthn piv]", methods)
 	}
 
-	if _, err := sdk.NormalizeGroupIDs([]string{""}); err == nil {
-		t.Fatal("a blank group id was accepted")
+	if _, err := sdk.NormalizeAuthMethods([]string{""}); err == nil {
+		t.Fatal("a blank auth method was accepted")
 	}
 }
 
 func TestSDK_RequestsCarryTheNewFields(t *testing.T) {
 	// Compile-time proof that a consumer can create and update every field
-	// through the SDK alone — this is the surface that lets go-quicbaas delete
-	// its BrokerProfile side-record.
+	// through the SDK alone.
 	create := sdk.CreateUserRequest{
 		Username:    "invitee",
 		Email:       "invitee@example.com",
 		Lifecycle:   sdk.LifecyclePending,
-		GroupIDs:    []string{"platform"},
 		AuthMethods: []string{"webauthn"},
 	}
 	if create.Lifecycle != sdk.LifecyclePending {
@@ -145,16 +134,16 @@ func TestSDK_RequestsCarryTheNewFields(t *testing.T) {
 	update := sdk.UpdateUserRequest{
 		ID:          42,
 		Lifecycle:   sdk.LifecycleDeleting,
-		GroupIDs:    []string{},
-		AuthMethods: []string{"piv"},
+		AuthMethods: []string{},
 	}
 	if update.Lifecycle != sdk.LifecycleDeleting || update.LastAuth != nil {
 		t.Fatal("UpdateUserRequest did not round-trip")
 	}
 	// The empty non-nil slice is the CLEAR signal, distinct from nil. A
-	// consumer revoking every membership depends on the two staying different.
-	if update.GroupIDs == nil {
-		t.Fatal("an empty GroupIDs must stay non-nil; clearing is not the same as leaving alone")
+	// consumer lifting a method restriction depends on the two staying
+	// different.
+	if update.AuthMethods == nil {
+		t.Fatal("an empty AuthMethods must stay non-nil; clearing is not the same as leaving alone")
 	}
 }
 
@@ -168,7 +157,6 @@ func TestSDK_TransportUserCarriesEveryIdentityField(t *testing.T) {
 		Email:       "operator@example.com",
 		TenantID:    "tenant-1",
 		Lifecycle:   string(sdk.LifecycleActive),
-		GroupIDs:    []string{"platform"},
 		AuthMethods: []string{"webauthn"},
 		LastAuth:    "2026-09-01T12:00:00Z",
 	}
@@ -183,30 +171,41 @@ func TestSDK_TransportUserCarriesEveryIdentityField(t *testing.T) {
 	if uerr := json.Unmarshal(data, &back); uerr != nil {
 		t.Fatalf("unmarshal: %v", uerr)
 	}
-	if back.Lifecycle != u.Lifecycle || len(back.GroupIDs) != 1 ||
+	if back.Lifecycle != u.Lifecycle ||
 		len(back.AuthMethods) != 1 || back.LastAuth != u.LastAuth {
 		t.Fatalf("round trip lost fields: %+v", back)
+	}
+	// Lifecycle is the only account state and group membership is not a qrdb
+	// field: neither removed key may reappear on the wire.
+	var raw map[string]json.RawMessage
+	if rerr := json.Unmarshal(data, &raw); rerr != nil {
+		t.Fatalf("unmarshal raw: %v", rerr)
+	}
+	for _, removed := range []string{"enabled", "group_ids"} {
+		if _, ok := raw[removed]; ok {
+			t.Errorf("transport.User carries the removed %q key: %s", removed, data)
+		}
 	}
 }
 
 // An update request must encode the three-way distinction: nil leaves a set
 // alone, an empty non-nil slice clears it. `omitempty` would drop the empty
-// slice from the body and make a revocation silently do nothing, so its absence
-// on these two fields is load-bearing and pinned here.
+// slice from the body and make a clear silently do nothing, so its absence on
+// this field is load-bearing and pinned here.
 func TestSDK_TransportUpdateRequestEncodesClearVersusLeaveAlone(t *testing.T) {
-	clear, err := json.Marshal(transport.UpdateUserRequest{ID: 1, GroupIDs: []string{}})
+	clear, err := json.Marshal(transport.UpdateUserRequest{ID: 1, AuthMethods: []string{}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !bytes.Contains(clear, []byte(`"group_ids":[]`)) {
-		t.Fatalf("a cleared GroupIDs must encode as []; got %s", clear)
+	if !bytes.Contains(clear, []byte(`"auth_methods":[]`)) {
+		t.Fatalf("a cleared AuthMethods must encode as []; got %s", clear)
 	}
 
 	leave, err := json.Marshal(transport.UpdateUserRequest{ID: 1})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !bytes.Contains(leave, []byte(`"group_ids":null`)) {
-		t.Fatalf("an untouched GroupIDs must encode as null; got %s", leave)
+	if !bytes.Contains(leave, []byte(`"auth_methods":null`)) {
+		t.Fatalf("an untouched AuthMethods must encode as null; got %s", leave)
 	}
 }

@@ -176,7 +176,7 @@ tenant; naming another returns the cross-tenant refusal.
 
 ```json
 { "id": "…", "username": "alice", "email": "alice@acme.example",
-  "tenantID": "acme", "roleIDs": ["…"], "groupIDs": ["platform"],
+  "tenantID": "acme", "roleIDs": ["…"],
   "lifecycle": "active", "system": false,
   "authMethods": ["webauthn", "piv"], "lastAuth": "…",
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
@@ -222,10 +222,16 @@ allowed. Only `pending`, `active` and `disabled` may be created directly.
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
 they are refused on an account already marked `deleting`.
 
-`groupIDs` are **opaque membership identifiers** — qrdb stores the membership
-edge and does not own a Group entity, exactly as `roleIDs` holds identifiers
-without the user record owning the roles. Trimmed and de-duplicated,
-**case-preserving**, because a group id is a minted token.
+> **Breaking change.** `groupIDs` (`group_ids` on REST, gRPC and MCP) has been
+> removed from the `User` schema and from the create and update requests on
+> every transport, together with gRPC's `has_group_ids` flag and MCP's
+> `clear_group_ids` argument. No qrdb authorization path read it: access
+> resolves user → role bindings → roles → permissions. A layer that needs group
+> membership stores it itself. In gRPC the removed field numbers and names are
+> reserved (`CreateUserRequest` 7; `UpdateUserProtoRequest` 6 and 7;
+> `UserResponse` 12). On REST and QUIC an unknown key in a request body is
+> ignored, so a client still sending `group_ids` is not refused — the value is
+> simply not stored.
 
 `authMethods` is a **policy** statement of what the account may present
 (`webauthn`, `piv`, …), distinct from `factors`, which records what it has
@@ -250,27 +256,26 @@ again.
 
 ### Setting the identity fields
 
-`groupIDs` and `authMethods` distinguish three states on an update, and every
-transport carries the distinction in its own idiom:
+`authMethods` distinguishes three states on an update, and every transport
+carries the distinction in its own idiom:
 
 | Intent | REST / QUIC / MCP-response JSON | gRPC | MCP tool arguments |
 |---|---|---|---|
-| Leave alone | key absent, or `null` | `has_group_ids` unset | argument absent |
-| Clear | `[]` | `has_group_ids: true` with no values | `clear_group_ids: true` |
-| Replace | `["a","b"]` | `has_group_ids: true` + values | `group_ids: "[\"a\",\"b\"]"` |
+| Leave alone | key absent, or `null` | `has_auth_methods` unset | argument absent |
+| Clear | `[]` | `has_auth_methods: true` with no values | `clear_auth_methods: true` |
+| Replace | `["a","b"]` | `has_auth_methods: true` + values | `auth_methods: "[\"a\",\"b\"]"` |
 
-The flags and the clear-argument exist because proto3 cannot distinguish an
+The flag and the clear-argument exist because proto3 cannot distinguish an
 absent repeated field from an empty one, and a flat tool argument cannot either.
-Without them a membership could be granted but never **revoked** — an empty list
-would read as "no change" and the revocation would report success while doing
+Without them a restriction could be set but never **lifted** — an empty list
+would read as "no change" and the clear would report success while doing
 nothing.
 
-The MCP list arguments are **JSON arrays**, never comma-separated. A group id is
-an opaque minted token, so a comma is a character it may legitimately contain: a
-CSV encoding splits such an id into two memberships and drops blank elements the
-store would have refused, writing a different authorization graph than the
-caller asked for while reporting success. A malformed list is an error, not a
-silent "leave alone".
+The MCP list argument is a **JSON array**, never comma-separated: a CSV
+encoding splits a value containing a comma in two and drops blank elements the
+store would have refused, writing something other than what the caller asked
+for while reporting success. A malformed list is an error, not a silent "leave
+alone".
 
 `lastAuth` is RFC 3339 on the JSON transports and MCP, and
 `last_auth_unix` (seconds since the epoch, UTC) on gRPC, where `0` means the

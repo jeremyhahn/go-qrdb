@@ -133,17 +133,13 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		return nil, &ValidationError{Field: "username", Reason: "must not be empty"}
 	}
 
-	// The account's initial state, its memberships and its permitted methods are
-	// all resolved BEFORE any id is generated or any key claimed: they are pure
-	// validation of the request, and a request that cannot produce a valid
-	// record must leave the store completely untouched.
+	// The account's initial state and its permitted methods are both resolved
+	// BEFORE any id is generated or any key claimed: they are pure validation of
+	// the request, and a request that cannot produce a valid record must leave
+	// the store completely untouched.
 	initial, lerr := initialLifecycle(req)
 	if lerr != nil {
 		return nil, lerr
-	}
-	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
-	if gerr != nil {
-		return nil, gerr
 	}
 	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
 	if aerr != nil {
@@ -278,7 +274,6 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
 		Lifecycle:   initial,
 		System:      false,
-		GroupIDs:    groupIDs,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -319,7 +314,6 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		"tenantID":  tenantID,
 		"role_ids":  user.RoleIDs,
 		"lifecycle": string(user.Lifecycle),
-		"group_ids": user.GroupIDs,
 	})
 
 	return user, nil
@@ -765,10 +759,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// construction (it is itself a write that can fail, and reports
 	// IndexCompensationError when it does). Trading a guaranteed no-op for a
 	// probable undo is a bad trade when the check costs nothing.
-	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
-	if gerr != nil {
-		return nil, gerr
-	}
 	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
 	if aerr != nil {
 		return nil, aerr
@@ -1057,9 +1047,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if req.Factors != nil {
 		existing.Factors = req.Factors
 	}
-	if req.GroupIDs != nil {
-		existing.GroupIDs = groupIDs
-	}
 	if req.AuthMethods != nil {
 		existing.AuthMethods = authMethods
 	}
@@ -1253,7 +1240,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		"role_ids":          existing.RoleIDs,
 		"lifecycle":         string(existing.Lifecycle),
 		"lifecycle_changed": lifecycleChanged,
-		"groups_changed":    req.GroupIDs != nil,
 	})
 
 	return existing, nil
@@ -1734,7 +1720,6 @@ func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
 		req.Factors == nil &&
-		req.GroupIDs == nil &&
 		req.AuthMethods == nil
 }
 
@@ -1813,7 +1798,6 @@ func lastAuthOnly(req *UpdateUserRequest) bool {
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
 		req.Factors == nil &&
-		req.GroupIDs == nil &&
 		req.AuthMethods == nil
 }
 
@@ -2235,31 +2219,13 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// NormalizeGroupIDs canonicalises a group-membership set: surrounding space is
-// trimmed and duplicates are dropped, preserving first-seen order so a caller's
-// list reads back the way it was written.
-//
-// Case is deliberately PRESERVED, unlike an email. A group identifier is an
-// opaque token minted by whatever layer owns the group catalog — frequently a
-// UUID or a base64 handle where case is significant — so lowercasing it would
-// silently merge two distinct groups into one membership, quietly widening or
-// narrowing what the holder can reach.
-//
-// An entry that is empty after trimming is refused rather than dropped: a blank
-// membership is a caller bug, and silently discarding it hides a list that was
-// built wrong.
-func NormalizeGroupIDs(ids []string) ([]string, error) {
-	return dedupeTokens(ids, "groupIDs", false)
-}
-
 // NormalizeAuthMethods canonicalises a permitted-method set: trimmed,
 // lowercased, de-duplicated, first-seen order preserved.
 //
-// Case IS folded here, in contrast to a group id, because these are protocol
-// names from a small closed vocabulary ("webauthn", "piv") rather than minted
-// identifiers — and a policy list in which "WebAuthn" and "webauthn" are two
-// different permissions is a list that will eventually deny a method it meant
-// to allow.
+// Case IS folded because these are protocol names from a small closed
+// vocabulary ("webauthn", "piv") rather than minted identifiers — and a policy
+// list in which "WebAuthn" and "webauthn" are two different permissions is a
+// list that will eventually deny a method it meant to allow.
 func NormalizeAuthMethods(methods []string) ([]string, error) {
 	return dedupeTokens(methods, "authMethods", true)
 }

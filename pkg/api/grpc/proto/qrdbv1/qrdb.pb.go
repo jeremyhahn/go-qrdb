@@ -9637,9 +9637,6 @@ type CreateUserRequest struct {
 	// cannot be resolved by GetUserByEmail — a certificate-only or bootstrap
 	// identity. It exists so the omission is declared rather than defaulted.
 	WithoutEmailLoginKey bool `protobuf:"varint,6,opt,name=without_email_login_key,json=withoutEmailLoginKey,proto3" json:"without_email_login_key,omitempty"`
-	// group_ids are opaque group-membership identifiers. qrdb stores the
-	// membership edge and owns no Group entity.
-	GroupIds []string `protobuf:"bytes,7,rep,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
 	// auth_methods are the permitted authentication methods ("webauthn",
 	// "piv"). Empty states no restriction.
 	AuthMethods []string `protobuf:"bytes,8,rep,name=auth_methods,json=authMethods,proto3" json:"auth_methods,omitempty"`
@@ -9724,13 +9721,6 @@ func (x *CreateUserRequest) GetWithoutEmailLoginKey() bool {
 		return x.WithoutEmailLoginKey
 	}
 	return false
-}
-
-func (x *CreateUserRequest) GetGroupIds() []string {
-	if x != nil {
-		return x.GroupIds
-	}
-	return nil
 }
 
 func (x *CreateUserRequest) GetAuthMethods() []string {
@@ -10026,15 +10016,11 @@ type UpdateUserProtoRequest struct {
 	Email string `protobuf:"bytes,4,opt,name=email,proto3" json:"email,omitempty"`
 	// name replaces the display name when non-empty.
 	Name string `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
-	// group_ids replaces the group memberships when present. Because proto3
+	// auth_methods replaces the permitted methods when present. Because proto3
 	// cannot distinguish an absent repeated field from an empty one, the
-	// has_group_ids flag carries the nil-vs-empty distinction the domain
+	// has_auth_methods flag carries the nil-vs-empty distinction the domain
 	// request needs: absent means "leave alone", present-and-empty means
 	// "clear".
-	GroupIds    []string `protobuf:"bytes,6,rep,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
-	HasGroupIds bool     `protobuf:"varint,7,opt,name=has_group_ids,json=hasGroupIds,proto3" json:"has_group_ids,omitempty"`
-	// auth_methods replaces the permitted methods when present; has_auth_methods
-	// carries nil-vs-empty for the same reason as group_ids.
 	AuthMethods    []string `protobuf:"bytes,8,rep,name=auth_methods,json=authMethods,proto3" json:"auth_methods,omitempty"`
 	HasAuthMethods bool     `protobuf:"varint,9,opt,name=has_auth_methods,json=hasAuthMethods,proto3" json:"has_auth_methods,omitempty"`
 	// lifecycle transitions the account when non-empty. Checked against the
@@ -10111,20 +10097,6 @@ func (x *UpdateUserProtoRequest) GetName() string {
 		return x.Name
 	}
 	return ""
-}
-
-func (x *UpdateUserProtoRequest) GetGroupIds() []string {
-	if x != nil {
-		return x.GroupIds
-	}
-	return nil
-}
-
-func (x *UpdateUserProtoRequest) GetHasGroupIds() bool {
-	if x != nil {
-		return x.HasGroupIds
-	}
-	return false
 }
 
 func (x *UpdateUserProtoRequest) GetAuthMethods() []string {
@@ -10429,8 +10401,6 @@ type UserResponse struct {
 	// lifecycle is the canonical and only account state: pending, active,
 	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle string `protobuf:"bytes,11,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
-	// group_ids are opaque group-membership identifiers.
-	GroupIds []string `protobuf:"bytes,12,rep,name=group_ids,json=groupIds,proto3" json:"group_ids,omitempty"`
 	// auth_methods are the permitted authentication methods.
 	AuthMethods []string `protobuf:"bytes,13,rep,name=auth_methods,json=authMethods,proto3" json:"auth_methods,omitempty"`
 	// last_auth_unix is the last successful authentication, seconds since the
@@ -10544,13 +10514,6 @@ func (x *UserResponse) GetLifecycle() string {
 		return x.Lifecycle
 	}
 	return ""
-}
-
-func (x *UserResponse) GetGroupIds() []string {
-	if x != nil {
-		return x.GroupIds
-	}
-	return nil
 }
 
 func (x *UserResponse) GetAuthMethods() []string {
@@ -25654,19 +25617,18 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"started_at\x18\x04 \x01(\x03R\tstartedAt\x12\x1f\n" +
 	"\vfinished_at\x18\x05 \x01(\x03R\n" +
 	"finishedAt\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\xc0\x02\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\xb4\x02\n" +
 	"\x11CreateUserRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x19\n" +
 	"\brole_ids\x18\x03 \x03(\tR\aroleIds\x12\x14\n" +
 	"\x05email\x18\x04 \x01(\tR\x05email\x12\x12\n" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x125\n" +
-	"\x17without_email_login_key\x18\x06 \x01(\bR\x14withoutEmailLoginKey\x12\x1b\n" +
-	"\tgroup_ids\x18\a \x03(\tR\bgroupIds\x12!\n" +
+	"\x17without_email_login_key\x18\x06 \x01(\bR\x14withoutEmailLoginKey\x12!\n" +
 	"\fauth_methods\x18\b \x03(\tR\vauthMethods\x12\x1c\n" +
 	"\tlifecycle\x18\t \x01(\tR\tlifecycle\x12\x18\n" +
 	"\apending\x18\n" +
-	" \x01(\bR\apending\" \n" +
+	" \x01(\bR\apendingJ\x04\b\a\x10\bR\tgroup_ids\" \n" +
 	"\x0eGetUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\"S\n" +
 	"\x18GetUserByUsernameRequest\x12\x1b\n" +
@@ -25684,20 +25646,18 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"thumbprint\x18\x02 \x01(\tR\n" +
 	"thumbprint\x12$\n" +
-	"\x0enot_after_unix\x18\x03 \x01(\x03R\fnotAfterUnix\"\xdb\x02\n" +
+	"\x0enot_after_unix\x18\x03 \x01(\x03R\fnotAfterUnix\"\xc0\x02\n" +
 	"\x16UpdateUserProtoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x19\n" +
 	"\brole_ids\x18\x03 \x03(\tR\aroleIds\x12\x14\n" +
 	"\x05email\x18\x04 \x01(\tR\x05email\x12\x12\n" +
-	"\x04name\x18\x05 \x01(\tR\x04name\x12\x1b\n" +
-	"\tgroup_ids\x18\x06 \x03(\tR\bgroupIds\x12\"\n" +
-	"\rhas_group_ids\x18\a \x01(\bR\vhasGroupIds\x12!\n" +
+	"\x04name\x18\x05 \x01(\tR\x04name\x12!\n" +
 	"\fauth_methods\x18\b \x03(\tR\vauthMethods\x12(\n" +
 	"\x10has_auth_methods\x18\t \x01(\bR\x0ehasAuthMethods\x12\x1c\n" +
 	"\tlifecycle\x18\n" +
 	" \x01(\tR\tlifecycle\x12$\n" +
-	"\x0elast_auth_unix\x18\v \x01(\x03R\flastAuthUnix\"#\n" +
+	"\x0elast_auth_unix\x18\v \x01(\x03R\flastAuthUnixJ\x04\b\x06\x10\aJ\x04\b\a\x10\bR\tgroup_idsR\rhas_group_ids\"#\n" +
 	"\x11DeleteUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\"`\n" +
 	"\x10ListUsersRequest\x12\x1b\n" +
@@ -25711,7 +25671,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x11EnableUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\"$\n" +
 	"\x12DisableUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"\xc0\x03\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\"\xb4\x03\n" +
 	"\fUserResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1a\n" +
@@ -25725,11 +25685,10 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x05email\x18\t \x01(\tR\x05email\x12\x12\n" +
 	"\x04name\x18\n" +
 	" \x01(\tR\x04name\x12\x1c\n" +
-	"\tlifecycle\x18\v \x01(\tR\tlifecycle\x12\x1b\n" +
-	"\tgroup_ids\x18\f \x03(\tR\bgroupIds\x12!\n" +
+	"\tlifecycle\x18\v \x01(\tR\tlifecycle\x12!\n" +
 	"\fauth_methods\x18\r \x03(\tR\vauthMethods\x12$\n" +
 	"\x0elast_auth_unix\x18\x0e \x01(\x03R\flastAuthUnix\x129\n" +
-	"\rcert_bindings\x18\x0f \x03(\v2\x14.qrdb.v1.CertBindingR\fcertBindingsJ\x04\b\x05\x10\x06R\aenabled\"g\n" +
+	"\rcert_bindings\x18\x0f \x03(\v2\x14.qrdb.v1.CertBindingR\fcertBindingsJ\x04\b\x05\x10\x06J\x04\b\f\x10\rR\aenabledR\tgroup_ids\"g\n" +
 	"\vCertBinding\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x01 \x01(\tR\n" +

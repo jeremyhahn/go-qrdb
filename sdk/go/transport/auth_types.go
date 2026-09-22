@@ -42,9 +42,6 @@ type User struct {
 	// Lifecycle is the canonical and only account state: pending, active,
 	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle string `json:"lifecycle,omitempty"`
-	// GroupIDs are opaque group-membership identifiers. qrdb stores the
-	// membership edge and owns no Group entity.
-	GroupIDs []string `json:"group_ids,omitempty"`
 	// AuthMethods are the permitted authentication methods ("webauthn",
 	// "piv"). A policy statement, distinct from enrolled factors.
 	AuthMethods []string `json:"auth_methods,omitempty"`
@@ -131,8 +128,6 @@ type CreateUserRequest struct {
 	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
 	TenantID             string   `json:"tenant_id,omitempty"`
 	RoleIDs              []string `json:"role_ids,omitempty"`
-	// GroupIDs are the initial opaque group memberships.
-	GroupIDs []string `json:"group_ids,omitempty"`
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
 	AuthMethods []string `json:"auth_methods,omitempty"`
@@ -154,16 +149,14 @@ type UpdateUserRequest struct {
 	// Name replaces the display name when non-empty.
 	Name    string   `json:"name,omitempty"`
 	RoleIDs []string `json:"role_ids,omitempty"`
-	// GroupIDs and AuthMethods replace their sets when NON-NIL. Nil leaves them
-	// alone; an empty non-nil slice clears them, which is how a membership or a
-	// method restriction is revoked.
+	// AuthMethods replaces the set when NON-NIL. Nil leaves it alone; an empty
+	// non-nil slice clears it, which is how a method restriction is lifted.
 	//
-	// NO `omitempty` on these two, deliberately. omitempty drops an empty slice
-	// from the encoded body, which would make "clear" indistinguishable from
-	// "leave alone" on every JSON transport — a revocation that silently did
-	// nothing. Nil encodes as `null` and decodes back to nil, so the
-	// three-way distinction (absent / null / []) survives the wire intact.
-	GroupIDs    []string `json:"group_ids"`
+	// NO `omitempty`, deliberately. omitempty drops an empty slice from the
+	// encoded body, which would make "clear" indistinguishable from "leave
+	// alone" on every JSON transport — a clear that silently did nothing. Nil
+	// encodes as `null` and decodes back to nil, so the three-way distinction
+	// (absent / null / []) survives the wire intact.
 	AuthMethods []string `json:"auth_methods"`
 	// Lifecycle transitions the account when non-empty. Checked against the
 	// transition table; nothing moves out of "deleting".
