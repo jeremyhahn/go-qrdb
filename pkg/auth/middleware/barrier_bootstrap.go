@@ -16,9 +16,7 @@ package middleware
 
 import (
 	"context"
-	"errors"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -90,12 +88,12 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// either way, and *audit.GateError carries "retry", which the RBAC denial it
 	// would otherwise be flattened into does not.
 	//
-	// NARROWLY *audit.GateError, not the whole AuthFailureUnavailable class. The
-	// other member of that class here is *StoreUnavailableError wrapping
-	// tenant.ErrTenantSealed, and that one is exactly the signal these
-	// fallbacks EXIST to act on -- a tenant whose IAM is encrypted behind the
-	// barrier it is trying to unseal. Short-circuiting the class would close
-	// the sealed window on the case it was written for.
+	// NARROWLY the AuthFailureAuditUnavailable class, not AuthFailureUnavailable.
+	// The sealed-tenant signal (*StoreUnavailableError wrapping
+	// tenant.ErrTenantSealed) is exactly what these fallbacks EXIST to act on
+	// -- a tenant whose IAM is encrypted behind the barrier it is trying to
+	// unseal -- and go-qrdb#460 split it into its own class precisely so this
+	// check cannot drift back onto the wide one that used to contain both.
 	if isAuditFailure(rbacErr) {
 		return rbacErr
 	}
@@ -142,8 +140,9 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 
 	// Not an RBAC verdict, so not a reason to open the sealed window — see
 	// AuthorizeTenantBarrierInit for why this precedes every other check, and
-	// why it is *audit.GateError specifically rather than the Unavailable class
-	// (the class also contains the sealed-tenant signal this fallback acts on).
+	// why it is AuthFailureAuditUnavailable specifically rather than
+	// AuthFailureUnavailable (which carries the sealed-tenant signal this
+	// fallback acts on).
 	if isAuditFailure(rbacErr) {
 		return rbacErr
 	}
@@ -168,14 +167,20 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 //
 // The distinction matters wherever a non-nil error is read as "RBAC said no".
 // Both bootstrap fallbacks did exactly that, and an *audit.GateError sent them
-// down a path meant for a genuine denial.
+// down a path meant for a genuine denial. so_middleware.go's SO-PIN gate has
+// the identical hazard and uses this same predicate for the same reason.
 //
-// THE CONCRETE TYPE, never the AuthFailureUnavailable class it belongs to.
-// The other member of that class on this surface is *StoreUnavailableError
-// wrapping tenant.ErrTenantSealed -- the exact signal these fallbacks exist to
-// act on. Guarding on the class would close the sealed window on the case it
-// was written for (go-qrdb#460 tracks that conflation).
+// THE NARROW AuthFailureAuditUnavailable CLASS, never the wider
+// AuthFailureUnavailable it used to be part of. The sealed-tenant signal
+// (*StoreUnavailableError wrapping tenant.ErrTenantSealed) is
+// AuthFailureUnavailable, not this class, and it is the exact signal these
+// fallbacks exist to act on. Before go-qrdb#460 split the class, this function
+// was the only thing standing between a future caller and testing the wide
+// class directly -- a single, easy, silent regression. Now the type itself
+// enforces the distinction: ClassifyAuthError cannot return
+// AuthFailureAuditUnavailable for a *StoreUnavailableError, so this function
+// (or any other code that tests the class directly) is correct by
+// construction rather than by vigilance.
 func isAuditFailure(err error) bool {
-	var gateErr *audit.GateError
-	return errors.As(err, &gateErr)
+	return ClassifyAuthError(err) == AuthFailureAuditUnavailable
 }

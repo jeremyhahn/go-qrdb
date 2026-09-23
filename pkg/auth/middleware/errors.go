@@ -101,8 +101,9 @@ func (e *StoreUnavailableError) Unwrap() error {
 //
 // *audit.GateError's Component field says WHICH gate refused ("authorize",
 // "so-auth", "so-dual-factor"); ClassifyAuthError maps every one of them to
-// AuthFailureUnavailable, so REST answers 503 and gRPC codes.Unavailable
-// whichever gate produced it.
+// AuthFailureAuditUnavailable, so REST answers 503 and gRPC codes.Unavailable
+// whichever gate produced it -- the same statuses AuthFailureUnavailable
+// carries, though the two are no longer one class (go-qrdb#460).
 
 // InvalidPublicGRPCMethodError is returned by RegisterPublicGRPCMethods when
 // a declared method name does not have the full gRPC method name shape

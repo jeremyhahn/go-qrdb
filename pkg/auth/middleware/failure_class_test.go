@@ -48,7 +48,7 @@ var classCases = []struct {
 	{
 		name:  "AuditError -- the node could not RECORD the decision",
 		err:   &audit.GateError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}},
-		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+		class: AuthFailureAuditUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{
 		name:  "StoreUnavailableError",
@@ -135,11 +135,12 @@ func TestAuthFailureClass_Retryable(t *testing.T) {
 
 func TestAuthFailureClass_String(t *testing.T) {
 	want := map[AuthFailureClass]string{
-		AuthFailureUnknown:         "unknown",
-		AuthFailureUnauthenticated: "unauthenticated",
-		AuthFailureUnauthorized:    "unauthorized",
-		AuthFailureUnavailable:     "unavailable",
-		AuthFailureRateLimited:     "rate-limited",
+		AuthFailureUnknown:          "unknown",
+		AuthFailureUnauthenticated:  "unauthenticated",
+		AuthFailureUnauthorized:     "unauthorized",
+		AuthFailureUnavailable:      "unavailable",
+		AuthFailureRateLimited:      "rate-limited",
+		AuthFailureAuditUnavailable: "audit-unavailable",
 	}
 	for class, name := range want {
 		if got := class.String(); got != name {
@@ -255,5 +256,96 @@ func TestAuthErrorWithUnknownCodeFallsThrough(t *testing.T) {
 	}
 	if got := HTTPStatus(err, http.StatusForbidden); got != http.StatusForbidden {
 		t.Errorf("HTTPStatus = %d, want the caller's fallback 403", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#460 -- AuthFailureUnavailable and AuthFailureAuditUnavailable are
+// two distinct classes that answer the wire identically.
+// ---------------------------------------------------------------------------
+
+// TestAuthFailureAuditUnavailable_IsDistinctFromUnavailable is the structural
+// half of the fix. Before this class existed, "could not record the
+// decision" (*audit.GateError) and "the tenant barrier is sealed"
+// (*StoreUnavailableError wrapping tenant.ErrTenantSealed) were the SAME
+// class, and the only thing keeping a control-flow branch from conflating
+// them was a comment and isAuditFailure's concrete-type check
+// (barrier_bootstrap.go). The classes must never compare equal, and each
+// error must classify into exactly the one it means -- never the other.
+func TestAuthFailureAuditUnavailable_IsDistinctFromUnavailable(t *testing.T) {
+	if AuthFailureAuditUnavailable == AuthFailureUnavailable {
+		t.Fatal("AuthFailureAuditUnavailable must not equal AuthFailureUnavailable")
+	}
+
+	gateErr := &audit.GateError{Err: errors.New("disk full")}
+	if got := ClassifyAuthError(gateErr); got != AuthFailureAuditUnavailable {
+		t.Errorf("*audit.GateError classified as %v, want AuthFailureAuditUnavailable", got)
+	}
+	if got := ClassifyAuthError(gateErr); got == AuthFailureUnavailable {
+		t.Error("*audit.GateError must NOT classify as the wide AuthFailureUnavailable")
+	}
+
+	sealed := &StoreUnavailableError{Err: errors.New("tenant sealed")}
+	if got := ClassifyAuthError(sealed); got != AuthFailureUnavailable {
+		t.Errorf("*StoreUnavailableError classified as %v, want AuthFailureUnavailable", got)
+	}
+	if got := ClassifyAuthError(sealed); got == AuthFailureAuditUnavailable {
+		t.Error("*StoreUnavailableError must NOT classify as AuthFailureAuditUnavailable -- it is the sealed-window signal, not an audit failure")
+	}
+}
+
+// TestAuthFailureAuditUnavailable_MapsIdenticallyToUnavailable is the
+// transport half: splitting the class must change no wire answer. Every
+// transport is meant to treat the two classes exactly alike -- 503 /
+// Unavailable, retryable -- so a caller deciding HOW TO ANSWER THE WIRE never
+// needs to know the split happened.
+func TestAuthFailureAuditUnavailable_MapsIdenticallyToUnavailable(t *testing.T) {
+	if httpStatusByClass[AuthFailureAuditUnavailable] != httpStatusByClass[AuthFailureUnavailable] {
+		t.Errorf("HTTP status diverged: audit-unavailable=%d unavailable=%d",
+			httpStatusByClass[AuthFailureAuditUnavailable], httpStatusByClass[AuthFailureUnavailable])
+	}
+	if grpcCodeByClass[AuthFailureAuditUnavailable] != grpcCodeByClass[AuthFailureUnavailable] {
+		t.Errorf("gRPC code diverged: audit-unavailable=%v unavailable=%v",
+			grpcCodeByClass[AuthFailureAuditUnavailable], grpcCodeByClass[AuthFailureUnavailable])
+	}
+	if AuthFailureAuditUnavailable.Retryable() != AuthFailureUnavailable.Retryable() {
+		t.Error("Retryable() diverged between the two classes")
+	}
+}
+
+// TestAuthFailureAuditUnavailable_OuterGateErrorWinsOverInnerCause is the
+// regression for a classifier-order bug: errors.As walks err's ENTIRE unwrap
+// chain, not just its outermost layer, and *audit.GateError.Err is the audit
+// SINK's own failure -- a value this package does not control, because the
+// sink is pluggable. Checking auth.AuthError or StoreUnavailableError before
+// audit.GateError would let a sink whose write error happens to be, or wrap,
+// one of those types win the coincidental INNER match and misclassify a
+// could-not-record failure as a credential or store problem -- exactly the
+// case isAuditFailure and the SO-PIN gate must never see. audit.GateError
+// must always win when it is the error actually returned, regardless of what
+// its Err field holds.
+func TestAuthFailureAuditUnavailable_OuterGateErrorWinsOverInnerCause(t *testing.T) {
+	wrappingAuthError := &audit.GateError{
+		Component: "authorize",
+		Err:       &auth.AuthError{Code: "unauthorized", Message: "sink returned an AuthError"},
+	}
+	if got := ClassifyAuthError(wrappingAuthError); got != AuthFailureAuditUnavailable {
+		t.Errorf("*audit.GateError wrapping *auth.AuthError classified as %v, want AuthFailureAuditUnavailable", got)
+	}
+
+	wrappingStoreUnavailable := &audit.GateError{
+		Component: "authorize",
+		Err:       &StoreUnavailableError{Err: errors.New("sink returned a StoreUnavailableError")},
+	}
+	if got := ClassifyAuthError(wrappingStoreUnavailable); got != AuthFailureAuditUnavailable {
+		t.Errorf("*audit.GateError wrapping *StoreUnavailableError classified as %v, want AuthFailureAuditUnavailable", got)
+	}
+
+	// The control-flow guard itself must agree, not just the class.
+	if !isAuditFailure(wrappingAuthError) {
+		t.Error("isAuditFailure must recognise a GateError even when it wraps an AuthError")
+	}
+	if !isAuditFailure(wrappingStoreUnavailable) {
+		t.Error("isAuditFailure must recognise a GateError even when it wraps a StoreUnavailableError")
 	}
 }

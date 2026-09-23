@@ -284,12 +284,30 @@ the split this design exists to remove.
 ### The SO path specifically
 
 `SOMiddleware` distinguishes *a bad PIN* from *an unrecordable verification* by
-the **concrete type** `*audit.GateError`, not by the
-`AuthFailureUnavailable` class it belongs to. Guarding on the class would sweep
-in `*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`, which is the
-signal the sealed-window fallbacks exist to act on. A wrong PIN on a healthy
-node is still `401 SO PIN verification failed`; the same wrong PIN on a node
-that cannot write its trail is `503`.
+the `AuthFailureAuditUnavailable` class, not by the wider
+`AuthFailureUnavailable` it used to be part of. Guarding on
+`AuthFailureUnavailable` would sweep in `*StoreUnavailableError` wrapping
+`tenant.ErrTenantSealed`, which is the signal the sealed-window fallbacks exist
+to act on. A wrong PIN on a healthy node is still `401 SO PIN verification
+failed`; the same wrong PIN on a node that cannot write its trail is `503`.
+
+**Why two classes, both mapped to 503.** `AuthFailureUnavailable` and
+`AuthFailureAuditUnavailable` answer the wire identically -- 503 / gRPC
+`Unavailable`, retryable, in every transport -- so this split changes no
+response any caller sees. It exists for the CONTROL-FLOW code inside this
+package, which reads one of these errors to decide what to do next rather than
+what status to answer: the tenant-barrier bootstrap fallbacks
+(`barrier_bootstrap.go`) and this SO-PIN gate must refuse outright on "could
+not record the decision" (`AuthFailureAuditUnavailable`, from `*audit.GateError`),
+while "the tenant's barrier is sealed" (`AuthFailureUnavailable`, from
+`*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`) is exactly the
+signal those same fallbacks exist to admit. Before the split both conditions
+were one class, and the only thing keeping a control-flow branch from
+conflating opposite instructions was a comment and a test at each call site
+(`isAuditFailure`) -- narrower than the class, but not enforced by it. Now the
+type itself carries the distinction, so a future fallback written anywhere in
+this package inherits it by construction rather than by re-deriving the
+concrete-type check from scratch.
 
 **`SetSOPIN` and `RotateSOPIN` keep `EmitBestEffort` for their own mutation
 records, deliberately.** Their success record is written *after* `store.Put`

@@ -125,7 +125,7 @@ the `Registry`.
 | REST | `mapHTTPAuthError` returns **429** for `*RateLimitedError`; `RESTMiddleware` sets the `Retry-After` header (RFC 9110 §10.2.3, delay-seconds, rounded up to at least 1) before writing the response |
 | gRPC / unix | `mapGRPCAuthError` returns `codes.ResourceExhausted`. The unix-socket listener registers the same `UnaryInterceptor`, so a caller over its unix-transport quota sees the identical code a TCP gRPC caller would. |
 | QUIC | The `AuthorizationError` wrapping carries `RateLimitedError.Error()` verbatim; QUIC has no separate status-code plane for authorization outcomes today. |
-| MCP | The tool-authorization middleware returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the same error text it always returned. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so the four auth-failure classes keep four distinct codes instead of collapsing into "retryable or not". |
+| MCP | The tool-authorization middleware returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the same error text it always returned. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so the auth-failure classes keep their own codes instead of collapsing into "retryable or not" -- rate-limited is never confused with, say, a credential problem. (Two of the classes, `AuthFailureUnavailable` and `AuthFailureAuditUnavailable`, deliberately share `Unavailable` regardless: that pair exists for control flow inside `pkg/auth/middleware`, not for the wire, so every transport answers both alike.) |
 
 ## Test strategy
 
