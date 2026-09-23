@@ -543,7 +543,17 @@ wrong fails a test rather than passing a typed-in column.
   request. `lastAuthOnly` is an exhaustive field list: a field added to
   `UpdateUserRequest` without being named there would be silently dropped by the
   fast path, and a test asserts the list covers every field.
-- **`System: true` records are undeletable.**
+- **`System: true` records are undeletable**, and exactly one is ever produced:
+  the cluster-wide bootstrap admin `pkg/firstboot.Initialize` creates in the
+  system tenant. `DeleteUser` refuses it with `SystemUserImmutableError`
+  before the delete cascade touches anything. `CreateUserRequest.System` is
+  the only way to request one, and it is set from a single call site inside
+  `pkg/firstboot` — no wire request type on any transport declares a `system`
+  input, so no transport handler can forward one through, regardless of the
+  caller's permissions. A per-tenant admin minted by
+  `pkg/bootstrap.ProvisionTenant` deliberately leaves this false: those
+  accounts must stay deletable when their tenant is deprovisioned, or
+  deprovisioning could never fully remove a tenant's users.
 - **At most one System user exists, recorded by a uniqueness sentinel.** The
   sentinel names the System record and is written in the same write as the
   flag: on the atomic create path it is one more guard and write in the
@@ -557,6 +567,23 @@ wrong fails a test rather than passing a typed-in column.
   capability is refused (`ErrStoreNotAtomic`) instead of being promoted in two
   steps, and a lost response is `CommitOutcomeUnknownError`: the retry answers
   from what committed.
+- **MFA state is derived from `Factors`, never stored.** `User.HasMFA`,
+  `MFAMethods` and `MFAEnrolledAt` are pure functions of the enrolled-factor
+  slice — true iff at least one factor is enrolled, the distinct factor names
+  in first-enrollment order, and the earliest enrollment time respectively.
+  There is no `MFAEnabled` field on the domain type to fall out of sync with
+  `Factors`; `user.WireMFA` computes all three at the point a response is
+  projected, on every transport. An enrolled factor is a fact about what the
+  account HAS, not a policy statement that MFA is REQUIRED for it.
+- **`Factors` is metadata-only on every wire, in both directions.**
+  `user.WireFactors` projects `ID`, `FactorName` and `CreatedAt` and drops
+  `Data` unconditionally; no transport's create or update request declares a
+  `factors` input, so enrollment stays its own factor-specific verb, never
+  `CreateUser`/`UpdateUser`. Before this, the MCP transport `json.Marshal`ed
+  the domain `*User` directly and leaked `Data` (`json.RawMessage` survives an
+  ordinary marshal untouched) — it now builds the same metadata-only
+  projection REST, gRPC and QUIC do. See **Known limitations** below: no
+  production enrollment path currently writes `User.Factors` at all.
 - **The system-tenant rule reads `identity.TenantID`, so that field must
   arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
@@ -577,6 +604,47 @@ wrong fails a test rather than passing a typed-in column.
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
+
+## Known limitations
+
+Three gaps a security review of the RoleBindings/Attributes/Factors wire work
+surfaced. None is a defect the wiring itself introduced — all three predate
+it — but the wiring makes each one reachable and visible where it previously
+was not, so they are recorded here rather than left implicit.
+
+- **`RoleBindings` and `Attributes` are authorized identically to `RoleIDs`:
+  `users:update` alone, with no role-existence or tenant-scope validation.**
+  This is the SAME permission model `RoleIDs` (system-scoped role grants) has
+  always used on `UpdateUser` — extending `RoleBindings`/`Attributes` to match
+  it, rather than inventing a narrower one just for the two new fields, was
+  the explicit scope of this change. Whether `users:update` should keep this
+  breadth at all — a dedicated `roles:assign`-style gate, and validation that
+  a bound role id actually exists in the target tenant — is an authorization
+  model decision for the two fields together with `RoleIDs`, not something to
+  decide unilaterally for two of the three.
+- **Neither `RoleBindings` nor `Attributes` has any authorization effect yet.**
+  `pkg/auth/middleware`'s identity-building path copies only `User.RoleIDs`
+  onto `auth.Identity.Roles`; `pkg/auth/rbac.effectiveRoles` resolves
+  permissions from `identity.Roles` alone. A tenant-scoped role binding or an
+  ABAC attribute is stored and now visible on every transport, but grants or
+  constrains nothing during authorization — "tenant-admin for one customer
+  without being an admin of the whole system" (see
+  [architecture.md](architecture.md#three-authorization-inputs-on-one-user))
+  describes the intended shape, not the current behavior. Wiring either field
+  into the authorizer is a change to the authentication/authorization path
+  itself and needs its own design, not a follow-on to a wire-exposure change.
+- **No production path writes `User.Factors`.** The working auth-factor
+  enrollment system in this codebase is `pkg/auth.AuthFactor` (via
+  `AuthFactorService` / `/v1/users/factors`), which persists its own records
+  and never touches `User.Factors`. `User.Factors`, `HasMFA`, `MFAMethods` and
+  `MFAEnrolledAt` are all correctly implemented against
+  **whatever populates `User.Factors`** — today that is nothing, the same
+  unreachable-field shape `User.System` itself was in before something was
+  made to populate it: the mechanism is real, wired, and tested, and nothing
+  in this codebase calls it with real data. Deciding what should populate it
+  (the existing
+  `AuthFactorService` records, a `pkg/authfactors`-driven enrollment path, or
+  something else) is an owner decision, not one this change makes.
 
 ## Error semantics
 

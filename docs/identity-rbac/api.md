@@ -1,6 +1,6 @@
 # Identity and RBAC — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -249,9 +249,43 @@ tenant; naming another returns the cross-tenant refusal.
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
   "attributes": { "department": "eng" },
   "certBindings": [ { "thumbprint": "…", "kind": "spki_thumbprint", "notAfter": "…" } ],
-  "factors": [ { "…": "opaque" } ],
+  "factors": [ { "id": "…", "factorName": "fido2", "createdAt": "…" } ],
+  "mfaEnabled": true, "mfaMethods": ["fido2"], "mfaEnrolledAt": "…",
   "createdAt": "…", "updatedAt": "…" }
 ```
+
+(Field names above are REST/QUIC/MCP camelCase; gRPC and the SDK spell the
+same fields snake_case — `tenant_id`, `role_ids`, `auth_methods`,
+`last_auth`/`last_auth_unix`, `role_bindings`, `cert_bindings`, `factor_name`,
+`created_at`, `mfa_enabled`, `mfa_methods`, `mfa_enrolled_at`.)
+
+`system` marks the **single, cluster-wide bootstrap admin** created by
+first-boot — the one account a cluster can never be locked out of by an
+accidental delete. `DeleteUser` refuses it with `SystemUserImmutableError`
+(403 / `PERMISSION_DENIED`). **No request on any transport can set this
+field**: `CreateUserRequest` and `UpdateUserProtoRequest`/the REST and QUIC
+wire requests carry no `system` input at all, on either create or update —
+only the internal first-boot orchestration produces one, in-process, never
+over a transport. A per-tenant admin created by tenant provisioning does
+**not** carry this flag and remains deletable when its tenant is
+deprovisioned.
+
+`factors` lists the account's enrolled auth-factor **metadata only** — `id`,
+`factorName` and `createdAt`. The opaque `data` blob a registered
+`pkg/authfactors.Factor` interprets during verification **never crosses any
+transport, on read or write**; enrollment and rotation stay their own
+factor-specific verbs (`POST /v1/users/factors`, `AuthFactorService`, …),
+never `CreateUser` or `UpdateUser`. `factors` is **read-only**: no create or
+update request on any transport can set it.
+
+`mfaEnabled` / `mfaMethods` / `mfaEnrolledAt` are **DERIVED from `factors`,
+never stored**: `mfaEnabled` is true iff the account has at least one
+enrolled factor, `mfaMethods` lists the distinct factor names in
+first-enrollment order, and `mfaEnrolledAt` is the earliest enrollment among
+them. An enrolled factor is a fact about what the account **has**, not a
+policy statement that MFA is **required** for it — a requirement bit, if one
+is ever needed, belongs in policy, not on this record. These three fields are
+also read-only.
 
 `certBindings` lists the account's enrolled mTLS keys on **every transport**
 (`cert_bindings` in the REST/SDK spelling), in enrolment order and **in full —
@@ -259,6 +293,21 @@ an expired binding is listed with its `notAfter`** rather than hidden. It is
 listed because it still holds the account in the enforcing posture: an account
 with any binding admits only a matching certificate, so a reader who could not
 see the expired one could not explain why the account refuses a certificate.
+
+> **Breaking change (MCP only).** MCP previously `json.Marshal`ed the domain
+> `*user.User` record directly, so `certBindings[].kind` arrived as
+> pkg/user's internal ordinal (`0`/`1`/`2`) and a non-expiring binding's
+> `notAfter` was the zero `time.Time` (`0001-01-01T00:00:00Z`) rather than
+> omitted. That was the same defect a prior fix had already corrected on
+> every other transport; MCP now builds the identical string-labeled, omit-when-absent
+> projection REST, gRPC, QUIC, unix and embedded already use. An MCP client
+> written against the old, leaked shape — decoding `kind` as a number — will
+> fail to decode a user with certificate bindings against this server version,
+> and the reverse during a rolling upgrade. There is no compatibility shim: the
+> old shape was an accident of how the handler was written, not a documented
+> contract, and this repository ships no wire-compatibility guarantee
+> pre-release.
+
 `kind` is `spki_thumbprint` (canonical), `full_cert_fingerprint` or
 `piv_attested`; `notAfter` is absent for a binding that does not expire on its
 own. The thumbprint is a hash of public material — listing it discloses
@@ -350,11 +399,44 @@ account has never authenticated. On the JSON transports "never" is the **absent
 key**, never a zero timestamp — `1970` is not a login.
 
 `certBindings[].kind`: `0` SPKI thumbprint (**canonical default**) ·
-`1` full-certificate fingerprint (exact pinning) · `2` PIV-attested.
+`1` full-certificate fingerprint (exact pinning) · `2` PIV-attested (gRPC
+carries the ordinal; every other transport carries the string label shown in
+the schema above).
+
+`roleBindings` and `attributes` follow the identical leave-alone / clear /
+replace contract `authMethods` does, on `UpdateUser` only — neither is
+settable on `CreateUser`, matching the domain request shape:
+
+| Intent | REST / QUIC JSON | gRPC | MCP tool arguments |
+|---|---|---|---|
+| Leave alone | key absent, or `null` | `has_role_bindings`/`has_attributes` unset | argument absent |
+| Clear | `[]` / `{}` | flag `true` with no entries | `clear_role_bindings`/`clear_attributes: true` |
+| Replace | `[{...}]` / `{"k":"v"}` | flag `true` + entries | `role_bindings`/`attributes: "<json>"` |
 
 `roleBindings` are **additive** to `roleIDs`; effective permissions are the
-union. `attributes` are the ABAC inputs. `factors` are **opaque** — qrdb stores
-the data and never interprets it.
+union. `attributes` are the ABAC inputs.
+
+> **Known limitation.** Storing and reading `roleBindings`/`attributes` is
+> fully wired on every transport; the authorizer is not yet updated to act on
+> them. `pkg/auth/middleware` currently copies only `roleIDs` onto the
+> authenticated identity, so a tenant-scoped role binding grants nothing
+> during an actual request today, and an ABAC attribute constrains nothing.
+> See [engineering.md](engineering.md#known-limitations).
+
+Writing `roleBindings`/`attributes` requires only `users:update`, the same
+permission `roleIDs` has always required on `UpdateUser` — this is a
+deliberate continuation of that existing model, not a narrower one invented
+for these two fields; see
+[engineering.md](engineering.md#known-limitations) for the authorization
+question this leaves open.
+
+`factors` is **read-only on every transport, on both `CreateUser` and
+`UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
+`transport.CreateUserRequest`/`UpdateUserRequest` — declares a `factors`
+input. Enrolling or rotating a factor is its own verb (the `AuthFactorService`
+/ `/v1/users/factors` surface), never a field on the user record's own
+create/update request. The `data` blob is never readable either; only `id`,
+`factorName` and `createdAt` are ever returned.
 
 Role creation takes a name, a tenant and a permission list of `resource:action`
 strings, each validated against the registry.

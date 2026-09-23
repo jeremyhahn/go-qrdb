@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.
@@ -257,6 +257,14 @@ module, not to the subject.
 Tenant-scoped bindings are the reason a control-plane user can be tenant-admin
 for tenant X without being an admin of the system tenant.
 
+> **Known limitation.** This describes the intended shape of the model, not
+> its current enforcement: the authorization path
+> (`pkg/auth/middleware` → `pkg/auth/rbac`) resolves permissions from
+> `RoleIDs` only. `RoleBindings` and `Attributes` are persisted and readable
+> on every transport (`docs/identity-rbac/api.md`), but neither currently
+> influences an authorization decision. See
+> [engineering.md](engineering.md#known-limitations).
+
 ### Alternatives rejected
 
 - **Passwords.** Rejected outright — the user model is passwordless. There is no
@@ -391,7 +399,11 @@ handle, so a global index would forbid that while buying nothing.
   user → role bindings → roles → permissions, and nothing in it reads a group.
   A layer that needs group membership stores it itself; the former `GroupIDs`
   field, which influenced no decision, has been removed.
-- **`System: true` users and the built-in roles cannot be deleted.**
+- **`System: true` marks exactly one user — the cluster-wide bootstrap admin —
+  and it, like the built-in roles, cannot be deleted.** No request on any
+  transport can set the flag; it is populated once, in-process, by first-boot.
+  A per-tenant admin created by tenant provisioning is an ordinary, deletable
+  user.
 - **Factor data is opaque.** qrdb never parses it, so a factor implementation
   cannot smuggle a decision past the PDP through its blob.
 

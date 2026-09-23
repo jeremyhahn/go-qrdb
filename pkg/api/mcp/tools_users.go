@@ -28,6 +28,156 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
+// userRecord is the JSON wire representation of a user entity returned by
+// every qrdb_user_* tool. It exists so this transport projects the SAME
+// fields REST, gRPC and QUIC do — in particular, so FactorEnrollment.Data
+// never crosses this transport either. Marshaling the domain *user.User
+// directly (this transport's historical behavior) leaked it, since Data is
+// json.RawMessage and survives an ordinary json.Marshal untouched
+// (go-qrdb#192/#197).
+//
+// Nested types use LOCAL camelCase wire structs (mcpCertBinding,
+// mcpRoleBinding, mcpFactorMetadata) rather than the SDK's snake_case
+// transport.CertBinding/RoleBinding/FactorMetadata directly, so every field
+// in the payload this tool returns shares one casing convention, matching
+// this transport's pre-existing top-level fields (certBindings, roleIDs,
+// tenantID, ...).
+type userRecord struct {
+	ID       uint64   `json:"id"`
+	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenantID"`
+	RoleIDs  []string `json:"roleIDs"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical and only account state.
+	Lifecycle    string              `json:"lifecycle,omitempty"`
+	AuthMethods  []string            `json:"authMethods,omitempty"`
+	LastAuth     string              `json:"lastAuth,omitempty"`
+	CertBindings []mcpCertBinding    `json:"certBindings,omitempty"`
+	RoleBindings []mcpRoleBinding    `json:"roleBindings,omitempty"`
+	Attributes   map[string]string   `json:"attributes,omitempty"`
+	Factors      []mcpFactorMetadata `json:"factors,omitempty"`
+	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
+	// stored.
+	MFAEnabled    bool     `json:"mfaEnabled"`
+	MFAMethods    []string `json:"mfaMethods,omitempty"`
+	MFAEnrolledAt string   `json:"mfaEnrolledAt,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
+}
+
+// mcpCertBinding is this transport's camelCase wire form of one enrolled
+// mTLS key.
+type mcpCertBinding struct {
+	Thumbprint string `json:"thumbprint"`
+	Kind       string `json:"kind"`
+	NotAfter   string `json:"notAfter,omitempty"`
+}
+
+// mcpRoleBinding is this transport's camelCase wire form of one tenant-scoped
+// role binding.
+type mcpRoleBinding struct {
+	RoleID   string `json:"roleID"`
+	TenantID string `json:"tenantID"`
+}
+
+// mcpFactorMetadata is this transport's camelCase wire form of one enrolled
+// auth factor, Data omitted.
+type mcpFactorMetadata struct {
+	ID         string `json:"id"`
+	FactorName string `json:"factorName"`
+	CreatedAt  string `json:"createdAt,omitempty"`
+}
+
+// certBindingsToRecord renders the account's bindings through the shared
+// projection, so this transport lists exactly what REST, gRPC and QUIC list.
+func certBindingsToRecord(bindings []user.CertBinding) []mcpCertBinding {
+	wire := user.WireCertBindings(bindings)
+	if wire == nil {
+		return nil
+	}
+	out := make([]mcpCertBinding, len(wire))
+	for i, b := range wire {
+		out[i] = mcpCertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
+}
+
+// roleBindingsToRecord renders the account's tenant-scoped role bindings
+// through the shared projection.
+func roleBindingsToRecord(bindings []user.RoleBinding) []mcpRoleBinding {
+	wire := user.WireRoleBindings(bindings)
+	if wire == nil {
+		return nil
+	}
+	out := make([]mcpRoleBinding, len(wire))
+	for i, b := range wire {
+		out[i] = mcpRoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// factorsToRecord renders the account's enrolled auth-factor METADATA ONLY,
+// through the shared projection; the opaque data blob never crosses this
+// transport (go-qrdb#192/#197).
+func factorsToRecord(factors []user.FactorEnrollment) []mcpFactorMetadata {
+	wire := user.WireFactors(factors)
+	if wire == nil {
+		return nil
+	}
+	out := make([]mcpFactorMetadata, len(wire))
+	for i, f := range wire {
+		out[i] = mcpFactorMetadata{ID: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
+	}
+	return out
+}
+
+// listUsersRecord is the JSON wire payload for qrdb_user_list, mirroring
+// user.ListUsersResponse with each entry projected through userToRecord.
+type listUsersRecord struct {
+	Users   []*userRecord `json:"users"`
+	Total   int           `json:"total"`
+	HasMore bool          `json:"hasMore"`
+}
+
+// userToRecord converts a user.User to its MCP wire representation.
+func userToRecord(u *user.User) *userRecord {
+	if u == nil {
+		return nil
+	}
+	roleIDs := u.RoleIDs
+	if roleIDs == nil {
+		roleIDs = []string{}
+	}
+	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
+	var lastAuth string
+	if u.LastAuth != nil {
+		lastAuth = u.LastAuth.UTC().Format(time.RFC3339)
+	}
+	return &userRecord{
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       roleIDs,
+		System:        u.System,
+		Lifecycle:     string(u.Lifecycle),
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      lastAuth,
+		CertBindings:  certBindingsToRecord(u.CertBindings),
+		RoleBindings:  roleBindingsToRecord(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       factorsToRecord(u.Factors),
+		MFAEnabled:    mfaEnabled,
+		MFAMethods:    mfaMethods,
+		MFAEnrolledAt: mfaEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
 // userTools returns the MCP tool registrations for user management operations.
 func userTools(svc user.UserServicer) []serverTool {
 	return []serverTool{
@@ -167,7 +317,7 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_create", Err: jsonErr}
 		}
@@ -204,7 +354,7 @@ func handleUserGet(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get", Err: jsonErr}
 		}
@@ -242,7 +392,7 @@ func handleUserGetByUsername(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: jsonErr}
 		}
@@ -280,7 +430,7 @@ func handleUserGetByEmail(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: jsonErr}
 		}
@@ -315,7 +465,7 @@ func handleUserGetByCertThumbprint(svc user.UserServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: jsonErr}
 		}
@@ -368,7 +518,7 @@ func handleUserAddCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: jsonErr}
 		}
@@ -417,7 +567,7 @@ func handleUserRemoveCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFun
 			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: jsonErr}
 		}
@@ -457,6 +607,18 @@ func toolUserUpdate() mcp.Tool {
 		),
 		mcp.WithString("last_auth",
 			mcp.Description("Raise the last-authentication high-water mark, RFC 3339. A value at or before the stored one writes nothing."),
+		),
+		mcp.WithString("role_bindings",
+			mcp.Description(`JSON array of tenant-scoped role bindings to replace the current set, e.g. [{"role_id":"...","tenant_id":"..."}]. Left unchanged when absent; use clear_role_bindings to remove all of them.`),
+		),
+		mcp.WithBoolean("clear_role_bindings",
+			mcp.Description("Remove every tenant-scoped role binding."),
+		),
+		mcp.WithString("attributes",
+			mcp.Description(`JSON object of ABAC key/value pairs to replace the current set, e.g. {"department":"eng"}. Left unchanged when absent; use clear_attributes to remove all of them.`),
+		),
+		mcp.WithBoolean("clear_attributes",
+			mcp.Description("Remove every ABAC attribute."),
 		),
 	)
 }
@@ -510,12 +672,34 @@ func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			updateReq.LastAuth = &utc
 		}
 
+		roleBindings, rerr := parseRoleBindingsArg(req, "role_bindings")
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
+		switch {
+		case roleBindings != nil:
+			updateReq.RoleBindings = roleBindings
+		case mcp.ParseBoolean(req, "clear_role_bindings", false):
+			updateReq.RoleBindings = []user.RoleBinding{}
+		}
+
+		attributes, atterr := parseAttributesArg(req, "attributes")
+		if atterr != nil {
+			return mcp.NewToolResultError(atterr.Error()), nil
+		}
+		switch {
+		case attributes != nil:
+			updateReq.Attributes = attributes
+		case mcp.ParseBoolean(req, "clear_attributes", false):
+			updateReq.Attributes = map[string]string{}
+		}
+
 		u, err := svc.UpdateUser(ctx, updateReq)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_update", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(u)
+		data, jsonErr := json.Marshal(userToRecord(u))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_update", Err: jsonErr}
 		}
@@ -583,7 +767,15 @@ func handleUserList(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_list", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		records := make([]*userRecord, len(resp.Users))
+		for i, u := range resp.Users {
+			records[i] = userToRecord(u)
+		}
+		data, jsonErr := json.Marshal(listUsersRecord{
+			Users:   records,
+			Total:   resp.Total,
+			HasMore: resp.HasMore,
+		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_list", Err: jsonErr}
 		}
@@ -744,5 +936,99 @@ func parseOpaqueStringList(req mcp.CallToolRequest, key string) ([]string, error
 		return out, nil
 	default:
 		return nil, malformed("must be a JSON array of strings")
+	}
+}
+
+// mcpRoleBindingArg is the JSON shape one element of the "role_bindings" tool
+// argument takes.
+type mcpRoleBindingArg struct {
+	RoleID   string `json:"role_id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// parseRoleBindingsArg reads the "role_bindings" argument, returning nil ONLY
+// when it is genuinely absent — which the update path reads as "leave alone"
+// (see clear_role_bindings for the explicit clear). Follows
+// parseOpaqueStringList's convention: both a JSON-encoded string and a native
+// array are accepted, since both the SDK MCP transport and a raw MCP client
+// are legitimate callers.
+func parseRoleBindingsArg(req mcp.CallToolRequest, key string) ([]user.RoleBinding, error) {
+	value, present := req.GetArguments()[key]
+	if !present || value == nil {
+		return nil, nil
+	}
+
+	malformed := func(reason string) error {
+		return &ToolArgumentError{Argument: key, Reason: reason}
+	}
+
+	var raw []mcpRoleBindingArg
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil, malformed(`must be a JSON array of {"role_id","tenant_id"} objects, not an empty string`)
+		}
+		if err := json.Unmarshal([]byte(v), &raw); err != nil {
+			return nil, malformed(`must be a JSON array of {"role_id","tenant_id"} objects: ` + err.Error())
+		}
+	case []any:
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return nil, malformed(`must be a JSON array of {"role_id","tenant_id"} objects`)
+		}
+		if err := json.Unmarshal(encoded, &raw); err != nil {
+			return nil, malformed(`must be a JSON array of {"role_id","tenant_id"} objects: ` + err.Error())
+		}
+	default:
+		return nil, malformed(`must be a JSON array of {"role_id","tenant_id"} objects`)
+	}
+
+	out := make([]user.RoleBinding, len(raw))
+	for i, r := range raw {
+		out[i] = user.RoleBinding{RoleID: r.RoleID, TenantID: r.TenantID}
+	}
+	return out, nil
+}
+
+// parseAttributesArg reads the "attributes" argument, returning nil ONLY when
+// it is genuinely absent — which the update path reads as "leave alone" (see
+// clear_attributes for the explicit clear). Both a JSON-encoded string and a
+// native object are accepted, matching parseRoleBindingsArg.
+func parseAttributesArg(req mcp.CallToolRequest, key string) (map[string]string, error) {
+	value, present := req.GetArguments()[key]
+	if !present || value == nil {
+		return nil, nil
+	}
+
+	malformed := func(reason string) error {
+		return &ToolArgumentError{Argument: key, Reason: reason}
+	}
+
+	toStringMap := func(raw map[string]any) (map[string]string, error) {
+		out := make(map[string]string, len(raw))
+		for k, v := range raw {
+			s, ok := v.(string)
+			if !ok {
+				return nil, malformed("value for key " + k + " must be a string")
+			}
+			out[k] = s
+		}
+		return out, nil
+	}
+
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil, malformed("must be a JSON object of string key/value pairs, not an empty string")
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(v), &raw); err != nil {
+			return nil, malformed("must be a JSON object of string key/value pairs: " + err.Error())
+		}
+		return toStringMap(raw)
+	case map[string]any:
+		return toStringMap(v)
+	default:
+		return nil, malformed("must be a JSON object of string key/value pairs")
 	}
 }

@@ -171,10 +171,14 @@ func newUsersGetCmd() *cobra.Command {
 // newUsersUpdateCmd creates the "users update" subcommand.
 func newUsersUpdateCmd() *cobra.Command {
 	var (
-		username string
-		roles    string
-		email    string
-		name     string
+		username          string
+		roles             string
+		email             string
+		name              string
+		roleBindings      []string
+		clearRoleBindings bool
+		attributes        []string
+		clearAttributes   bool
 	)
 
 	cmd := &cobra.Command{
@@ -197,6 +201,28 @@ func newUsersUpdateCmd() *cobra.Command {
 				req.RoleIDs = splitAndTrim(roles)
 			}
 
+			switch {
+			case len(roleBindings) > 0:
+				parsed, perr := parseRoleBindings(roleBindings)
+				if perr != nil {
+					return perr
+				}
+				req.RoleBindings = parsed
+			case clearRoleBindings:
+				req.RoleBindings = []transport.RoleBinding{}
+			}
+
+			switch {
+			case len(attributes) > 0:
+				parsed, perr := parseAttributes(attributes)
+				if perr != nil {
+					return perr
+				}
+				req.Attributes = parsed
+			case clearAttributes:
+				req.Attributes = map[string]string{}
+			}
+
 			user, updateErr := client.Users().UpdateUser(cmd.Context(), req)
 			if updateErr != nil {
 				return updateErr
@@ -210,8 +236,42 @@ func newUsersUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&email, "email", "", "New canonical login key; uniqueness is re-validated within the tenant. Left unchanged when empty")
 	cmd.Flags().StringVar(&name, "name", "", "New display name. Left unchanged when empty")
 	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs to assign")
+	cmd.Flags().StringArrayVar(&roleBindings, "role-binding", nil,
+		"Tenant-scoped role binding to add, as role_id:tenant_id. Repeatable. Replaces the current set. Left unchanged when absent")
+	cmd.Flags().BoolVar(&clearRoleBindings, "clear-role-bindings", false, "Remove every tenant-scoped role binding")
+	cmd.Flags().StringArrayVar(&attributes, "attribute", nil,
+		"ABAC attribute to set, as key=value. Repeatable. Replaces the current set. Left unchanged when absent")
+	cmd.Flags().BoolVar(&clearAttributes, "clear-attributes", false, "Remove every ABAC attribute")
 
 	return cmd
+}
+
+// parseRoleBindings parses a list of "role_id:tenant_id" flag values into
+// transport.RoleBinding values.
+func parseRoleBindings(values []string) ([]transport.RoleBinding, error) {
+	out := make([]transport.RoleBinding, 0, len(values))
+	for _, v := range values {
+		parts := strings.SplitN(v, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, &InvalidFlagValueError{Flag: "role-binding", Value: v, Want: "role_id:tenant_id"}
+		}
+		out = append(out, transport.RoleBinding{RoleID: parts[0], TenantID: parts[1]})
+	}
+	return out, nil
+}
+
+// parseAttributes parses a list of "key=value" flag values into an
+// attributes map.
+func parseAttributes(values []string) (map[string]string, error) {
+	out := make(map[string]string, len(values))
+	for _, v := range values {
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, &InvalidFlagValueError{Flag: "attribute", Value: v, Want: "key=value"}
+		}
+		out[parts[0]] = parts[1]
+	}
+	return out, nil
 }
 
 // newUsersDeleteCmd creates the "users delete" subcommand.
@@ -308,6 +368,23 @@ func printUser(u *transport.User) error {
 				line += ", expires " + b.NotAfter
 			}
 			_, _ = fmt.Fprintf(outputWriter, "CertBinding: %s)\n", line)
+		}
+		for _, rb := range u.RoleBindings {
+			_, _ = fmt.Fprintf(outputWriter, "RoleBinding: %s@%s\n", rb.RoleID, rb.TenantID)
+		}
+		for k, v := range u.Attributes {
+			_, _ = fmt.Fprintf(outputWriter, "Attribute: %s=%s\n", k, v)
+		}
+		// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from the account's
+		// enrolled factors, never stored — see pkg/user.WireMFA.
+		_, _ = fmt.Fprintf(outputWriter, "MFAEnabled: %s\n", strconv.FormatBool(u.MFAEnabled))
+		if len(u.MFAMethods) > 0 {
+			_, _ = fmt.Fprintf(outputWriter, "MFAMethods: %s\n", strings.Join(u.MFAMethods, ", "))
+		}
+		for _, f := range u.Factors {
+			// Data is never exposed on any transport (go-qrdb#192/#197); only
+			// metadata is ever available here to print.
+			_, _ = fmt.Fprintf(outputWriter, "Factor: %s (%s)\n", f.ID, f.FactorName)
 		}
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt: %s\n", u.CreatedAt)
 		_, _ = fmt.Fprintf(outputWriter, "UpdatedAt: %s\n", u.UpdatedAt)

@@ -51,6 +51,10 @@ are not reconstructed here — their history is in the git log.
   request's `so_pin` field on QUIC. The PIN is copied, never logged, and
   wiped by `release`; per-request copies are wiped once written. A QUIC
   request whose own `SOPin` differs is refused with `sdk.SOPINConflictError`.
+- Every transport's user response carries `roleBindings`, `attributes`, the metadata of the
+  account's enrolled auth `factors` (never their credential data), and `mfaEnabled`,
+  `mfaMethods` and `mfaEnrolledAt` derived from those factors. `UpdateUser` sets or clears
+  `roleBindings` and `attributes` on every transport.
 
 ### Changed — BREAKING
 

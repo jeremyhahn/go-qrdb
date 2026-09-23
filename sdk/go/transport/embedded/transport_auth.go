@@ -141,13 +141,15 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
 	}
 	updateReq := &user.UpdateUserRequest{
-		ID:          req.ID,
-		Username:    req.Username,
-		Email:       req.Email,
-		Name:        req.Name,
-		RoleIDs:     req.RoleIDs,
-		AuthMethods: req.AuthMethods,
-		Lifecycle:   user.Lifecycle(req.Lifecycle),
+		ID:           req.ID,
+		Username:     req.Username,
+		Email:        req.Email,
+		Name:         req.Name,
+		RoleIDs:      req.RoleIDs,
+		AuthMethods:  req.AuthMethods,
+		Lifecycle:    user.Lifecycle(req.Lifecycle),
+		RoleBindings: user.RoleBindingsFromWire(req.RoleBindings),
+		Attributes:   req.Attributes,
 	}
 	if req.LastAuth != "" {
 		at, perr := time.Parse(time.RFC3339, req.LastAuth)
@@ -470,20 +472,27 @@ func userToTransport(u *user.User) *transport.User {
 	if roleIDs == nil {
 		roleIDs = []string{}
 	}
+	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
 	return &transport.User{
-		ID:           u.ID,
-		Username:     u.Username,
-		Email:        u.Email,
-		Name:         u.Name,
-		TenantID:     u.TenantID,
-		RoleIDs:      roleIDs,
-		System:       u.System,
-		Lifecycle:    string(u.Lifecycle),
-		AuthMethods:  u.AuthMethods,
-		LastAuth:     formatLastAuth(u.LastAuth),
-		CertBindings: user.WireCertBindings(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       roleIDs,
+		System:        u.System,
+		Lifecycle:     string(u.Lifecycle),
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      formatLastAuth(u.LastAuth),
+		CertBindings:  user.WireCertBindings(u.CertBindings),
+		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       user.WireFactors(u.Factors),
+		MFAEnabled:    mfaEnabled,
+		MFAMethods:    mfaMethods,
+		MFAEnrolledAt: mfaEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

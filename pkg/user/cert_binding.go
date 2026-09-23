@@ -163,3 +163,33 @@ func WireCertBindings(bindings []CertBinding) []transport.CertBinding {
 	}
 	return out
 }
+
+// WireRoleBindings projects the account's tenant-scoped role bindings onto
+// the SDK wire type. Every transport's response projection calls this so a
+// binding's shape never drifts between them (go-qrdb#197).
+func WireRoleBindings(bindings []RoleBinding) []transport.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]transport.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = transport.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// RoleBindingsFromWire is the inverse of WireRoleBindings, used by every
+// transport's UpdateUser handler to translate a wire request back into the
+// domain shape before calling UpdateUser. A nil input round-trips to nil, so
+// the domain's "nil leaves it alone, non-nil-empty clears it" contract
+// survives the wire.
+func RoleBindingsFromWire(bindings []transport.RoleBinding) []RoleBinding {
+	if bindings == nil {
+		return nil
+	}
+	out := make([]RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}

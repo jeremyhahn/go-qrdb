@@ -98,6 +98,12 @@ type updateUserWireRequest struct {
 	// LastAuth raises the last-authentication high-water mark when non-empty.
 	// RFC 3339, matching the timestamps this transport already emits.
 	LastAuth string `json:"lastAuth,omitempty"`
+	// RoleBindings replaces the tenant-scoped role bindings when PRESENT in
+	// the payload. Absent leaves it alone; `[]` clears it.
+	RoleBindings []roleBindingWire `json:"roleBindings,omitempty"`
+	// Attributes replaces the ABAC attributes when PRESENT in the payload.
+	// Absent leaves it alone; `{}` clears it.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
@@ -141,8 +147,22 @@ type userWireResponse struct {
 	// CertBindings are the account's enrolled mTLS keys, in full — expired
 	// ones included (go-qrdb#535). Each is {thumbprint, kind, notAfter}.
 	CertBindings []certBindingWire `json:"certBindings,omitempty"`
-	CreatedAt    string            `json:"createdAt"`
-	UpdatedAt    string            `json:"updatedAt"`
+	// RoleBindings grants roles within a tenant scope, additive alongside
+	// RoleIDs.
+	RoleBindings []roleBindingWire `json:"roleBindings,omitempty"`
+	// Attributes carries ABAC key/value pairs evaluated by policy.
+	Attributes map[string]string `json:"attributes,omitempty"`
+	// Factors lists enrolled auth-factor METADATA ONLY; the opaque data blob
+	// a factor interprets during verification never crosses this transport
+	// (go-qrdb#192/#197).
+	Factors []factorMetadataWire `json:"factors,omitempty"`
+	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
+	// stored.
+	MFAEnabled    bool     `json:"mfaEnabled"`
+	MFAMethods    []string `json:"mfaMethods,omitempty"`
+	MFAEnrolledAt string   `json:"mfaEnrolledAt,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
 }
 
 // certBindingWire is the JSON wire form of one enrolled mTLS key, matching
@@ -152,6 +172,20 @@ type certBindingWire struct {
 	Thumbprint string `json:"thumbprint"`
 	Kind       string `json:"kind"`
 	NotAfter   string `json:"notAfter,omitempty"`
+}
+
+// roleBindingWire is the JSON wire form of one tenant-scoped role binding.
+type roleBindingWire struct {
+	RoleID   string `json:"roleID"`
+	TenantID string `json:"tenantID"`
+}
+
+// factorMetadataWire is the JSON wire form of one enrolled auth factor, Data
+// omitted.
+type factorMetadataWire struct {
+	ID         string `json:"id"`
+	FactorName string `json:"factorName"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -367,13 +401,15 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 	}
 
 	updateReq := &user.UpdateUserRequest{
-		ID:          req.ID,
-		Username:    req.Username,
-		Email:       req.Email,
-		Name:        req.Name,
-		RoleIDs:     req.RoleIDs,
-		AuthMethods: req.AuthMethods,
-		Lifecycle:   user.Lifecycle(req.Lifecycle),
+		ID:           req.ID,
+		Username:     req.Username,
+		Email:        req.Email,
+		Name:         req.Name,
+		RoleIDs:      req.RoleIDs,
+		AuthMethods:  req.AuthMethods,
+		Lifecycle:    user.Lifecycle(req.Lifecycle),
+		RoleBindings: roleBindingsFromWire(req.RoleBindings),
+		Attributes:   req.Attributes,
 	}
 	if req.LastAuth != "" {
 		at, perr := time.Parse(time.RFC3339, req.LastAuth)
@@ -520,20 +556,28 @@ func userToWireResponse(u *user.User) *userWireResponse {
 		roleIDs = []string{}
 	}
 
+	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
+
 	return &userWireResponse{
-		ID:           u.ID,
-		Username:     u.Username,
-		Email:        u.Email,
-		Name:         u.Name,
-		TenantID:     u.TenantID,
-		RoleIDs:      roleIDs,
-		System:       u.System,
-		Lifecycle:    string(u.Lifecycle),
-		AuthMethods:  u.AuthMethods,
-		LastAuth:     formatLastAuth(u.LastAuth),
-		CertBindings: certBindingsToWire(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       roleIDs,
+		System:        u.System,
+		Lifecycle:     string(u.Lifecycle),
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      formatLastAuth(u.LastAuth),
+		CertBindings:  certBindingsToWire(u.CertBindings),
+		RoleBindings:  roleBindingsToWire(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       factorsToWire(u.Factors),
+		MFAEnabled:    mfaEnabled,
+		MFAMethods:    mfaMethods,
+		MFAEnrolledAt: mfaEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -547,6 +591,49 @@ func certBindingsToWire(bindings []user.CertBinding) []certBindingWire {
 	out := make([]certBindingWire, len(wire))
 	for i, b := range wire {
 		out[i] = certBindingWire{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
+}
+
+// roleBindingsToWire renders the account's tenant-scoped role bindings
+// through the shared projection.
+func roleBindingsToWire(bindings []user.RoleBinding) []roleBindingWire {
+	wire := user.WireRoleBindings(bindings)
+	if wire == nil {
+		return nil
+	}
+	out := make([]roleBindingWire, len(wire))
+	for i, b := range wire {
+		out[i] = roleBindingWire{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// roleBindingsFromWire is the inverse of roleBindingsToWire, used by
+// handleUpdateUser to translate a wire request back into the domain shape. A
+// nil input round-trips to nil, preserving the leave-alone/clear distinction.
+func roleBindingsFromWire(bindings []roleBindingWire) []user.RoleBinding {
+	if bindings == nil {
+		return nil
+	}
+	out := make([]user.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = user.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// factorsToWire renders the account's enrolled auth-factor METADATA ONLY,
+// through the shared projection; the opaque data blob never crosses this
+// transport (go-qrdb#192/#197).
+func factorsToWire(factors []user.FactorEnrollment) []factorMetadataWire {
+	wire := user.WireFactors(factors)
+	if wire == nil {
+		return nil
+	}
+	out := make([]factorMetadataWire, len(wire))
+	for i, f := range wire {
+		out[i] = factorMetadataWire{ID: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
 	}
 	return out
 }

@@ -64,6 +64,13 @@ type updateUserRequest struct {
 	// RFC 3339, matching the timestamps this API already emits. A value at or
 	// before the stored one writes nothing.
 	LastAuth string `json:"last_auth,omitempty"`
+	// RoleBindings replaces the tenant-scoped role bindings when PRESENT in
+	// the body. Absent leaves it alone; `[]` clears it — the same nil-vs-empty
+	// contract AuthMethods already has.
+	RoleBindings []transport.RoleBinding `json:"role_bindings,omitempty"`
+	// Attributes replaces the ABAC attributes when PRESENT in the body.
+	// Absent leaves it alone; `{}` clears it.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // userResponse is the JSON representation of a user entity.
@@ -90,8 +97,23 @@ type userResponse struct {
 	// ones included (go-qrdb#535). The wire type is the SDK's own, so the
 	// REST client decodes this field without a mirror.
 	CertBindings []transport.CertBinding `json:"cert_bindings,omitempty"`
-	CreatedAt    string                  `json:"created_at"`
-	UpdatedAt    string                  `json:"updated_at"`
+	// RoleBindings grants roles within a tenant scope, additive alongside
+	// RoleIDs.
+	RoleBindings []transport.RoleBinding `json:"role_bindings,omitempty"`
+	// Attributes carries ABAC key/value pairs evaluated by policy.
+	Attributes map[string]string `json:"attributes,omitempty"`
+	// Factors lists enrolled auth-factor METADATA only; the opaque Data blob
+	// a factor interprets during verification never crosses this transport
+	// (go-qrdb#192/#197).
+	Factors []transport.FactorMetadata `json:"factors,omitempty"`
+	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
+	// stored: an enrolled factor is not a policy statement that MFA is
+	// required for this account.
+	MFAEnabled    bool     `json:"mfa_enabled"`
+	MFAMethods    []string `json:"mfa_methods,omitempty"`
+	MFAEnrolledAt string   `json:"mfa_enrolled_at,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 // listUsersResponse is the JSON payload returned by GET /users/list.
@@ -497,13 +519,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 	defer cancel()
 
 	updateReq := &user.UpdateUserRequest{
-		ID:          id,
-		Username:    req.Username,
-		Email:       req.Email,
-		Name:        req.Name,
-		RoleIDs:     req.RoleIDs,
-		AuthMethods: req.AuthMethods,
-		Lifecycle:   user.Lifecycle(req.Lifecycle),
+		ID:           id,
+		Username:     req.Username,
+		Email:        req.Email,
+		Name:         req.Name,
+		RoleIDs:      req.RoleIDs,
+		AuthMethods:  req.AuthMethods,
+		Lifecycle:    user.Lifecycle(req.Lifecycle),
+		RoleBindings: user.RoleBindingsFromWire(req.RoleBindings),
+		Attributes:   req.Attributes,
 	}
 	if req.LastAuth != "" {
 		at, perr := time.Parse(time.RFC3339, req.LastAuth)
@@ -578,20 +602,28 @@ func userToResponse(u *user.User) *userResponse {
 		roleIDs = []string{}
 	}
 
+	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
+
 	return &userResponse{
-		ID:           u.ID,
-		Username:     u.Username,
-		Email:        u.Email,
-		Name:         u.Name,
-		TenantID:     u.TenantID,
-		RoleIDs:      roleIDs,
-		System:       u.System,
-		Lifecycle:    string(u.Lifecycle),
-		AuthMethods:  u.AuthMethods,
-		LastAuth:     formatLastAuth(u.LastAuth),
-		CertBindings: user.WireCertBindings(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       roleIDs,
+		System:        u.System,
+		Lifecycle:     string(u.Lifecycle),
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      formatLastAuth(u.LastAuth),
+		CertBindings:  user.WireCertBindings(u.CertBindings),
+		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       user.WireFactors(u.Factors),
+		MFAEnabled:    mfaEnabled,
+		MFAMethods:    mfaMethods,
+		MFAEnrolledAt: mfaEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 

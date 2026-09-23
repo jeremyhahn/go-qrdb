@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.
@@ -129,7 +129,35 @@ everything is already current and changes nothing.
 - **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant.
 
 They add up. This is how somebody can be tenant-admin for one customer without
-being an admin of the whole system.
+being an admin of the whole system — **once the authorizer consults tenant
+bindings, which it does not yet do; see the note below.**
+
+```bash
+qrdb users update "$USER" --role-binding "$ROLE:acme"
+qrdb users update "$USER" --attribute department=eng --attribute region=us-east
+```
+
+Both flags **replace** the whole set each time you use them; there is no "add
+one" verb. `qrdb users update "$USER" --clear-role-bindings` removes every
+tenant-scoped binding, and `--clear-attributes` does the same for ABAC
+attributes.
+
+**Known limitation.** A tenant-scoped role binding is stored and shows up in
+`qrdb users get`, but does not currently grant anything: request
+authorization only consults `roleIDs`. Setting one records intent for a
+future release, not a working grant today. The same holds for `--attribute`:
+the value is stored and visible, but no policy currently reads it.
+
+## Seeing whether someone has a second factor
+
+`qrdb users get "$USER"` prints `MFAEnabled`, and `MFAMethods` when it is
+true — computed from the account's enrolled factors, never something you set
+directly. **Known limitation:** nothing in this release's enrollment paths
+currently populates the record these fields read, so on a real deployment
+today `MFAEnabled` reads `false` for every account regardless of what it has
+enrolled through [../auth-factors/user.md](../auth-factors/user.md). A
+`Factor:` line, when one is present, shows the factor's id and type — never
+its credential material, which never leaves the server on any interface.
 
 ## Moving a fleet to required certificate enrolment
 
@@ -287,10 +315,13 @@ to change a built-in role's permissions; `roles update` refuses.
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists
 what exists.
 
-**You cannot delete a user or a role.** Built-in users and the six built-in
+**You cannot delete a user or a role.** The bootstrap admin — the one built-in
+user, created the first time the cluster ever comes up — and the six built-in
 roles are undeletable, and a built-in role cannot be re-permissioned either.
 Disable the user instead; for a built-in role's permissions, use
-`qrdb roles reconcile`, which is the only writer the guard admits.
+`qrdb roles reconcile`, which is the only writer the guard admits. Every other
+user, including an additional tenant's own admin account, is an ordinary
+account and can be deleted like any other.
 
 **You are looking for the password field.** There isn't one. The user model is
 passwordless throughout; the credential is the certificate. For a second factor

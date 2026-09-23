@@ -175,6 +175,15 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 		at := time.Unix(sec, 0).UTC()
 		updateReq.LastAuth = &at
 	}
+	if req.GetHasRoleBindings() {
+		updateReq.RoleBindings = protoToRoleBindings(req.GetRoleBindings())
+	}
+	if req.GetHasAttributes() {
+		updateReq.Attributes = req.GetAttributes()
+		if updateReq.Attributes == nil {
+			updateReq.Attributes = map[string]string{}
+		}
+	}
 
 	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
@@ -670,6 +679,7 @@ func userToProto(u *user.User) *pb.UserResponse {
 	if u == nil {
 		return nil
 	}
+	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
 	return &pb.UserResponse{
 		Id:          u.ID,
 		TenantId:    u.TenantID,
@@ -683,10 +693,16 @@ func userToProto(u *user.User) *pb.UserResponse {
 		// Seconds rather than RFC 3339 because this is a point in time a client
 		// compares and orders, not one it displays; zero says "never
 		// authenticated" without a second presence field.
-		LastAuthUnix: lastAuthUnix(u.LastAuth),
-		CertBindings: certBindingsToProto(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
+		LastAuthUnix:  lastAuthUnix(u.LastAuth),
+		CertBindings:  certBindingsToProto(u.CertBindings),
+		RoleBindings:  roleBindingsToProto(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       factorsToProto(u.Factors),
+		MfaEnabled:    mfaEnabled,
+		MfaMethods:    mfaMethods,
+		MfaEnrolledAt: mfaEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -704,6 +720,43 @@ func certBindingsToProto(bindings []user.CertBinding) []*pb.CertBinding {
 		if !b.NotAfter.IsZero() {
 			out[i].NotAfterUnix = b.NotAfter.UTC().Unix()
 		}
+	}
+	return out
+}
+
+// roleBindingsToProto renders the account's tenant-scoped role bindings.
+func roleBindingsToProto(bindings []user.RoleBinding) []*pb.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]*pb.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = &pb.RoleBinding{RoleId: b.RoleID, TenantId: b.TenantID}
+	}
+	return out
+}
+
+// protoToRoleBindings is the inverse of roleBindingsToProto, used by
+// UpdateUser to translate a wire request back into the domain shape.
+func protoToRoleBindings(bindings []*pb.RoleBinding) []user.RoleBinding {
+	out := make([]user.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = user.RoleBinding{RoleID: b.GetRoleId(), TenantID: b.GetTenantId()}
+	}
+	return out
+}
+
+// factorsToProto renders the account's enrolled auth-factor METADATA only;
+// the opaque Data blob a factor interprets during verification never crosses
+// this or any other transport (go-qrdb#192/#197).
+func factorsToProto(factors []user.FactorEnrollment) []*pb.FactorMetadata {
+	wire := user.WireFactors(factors)
+	if len(wire) == 0 {
+		return nil
+	}
+	out := make([]*pb.FactorMetadata, len(wire))
+	for i, f := range wire {
+		out[i] = &pb.FactorMetadata{Id: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
 	}
 	return out
 }

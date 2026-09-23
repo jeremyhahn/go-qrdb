@@ -326,3 +326,16 @@ type EmbeddedTransportUnavailableError struct{}
 func (e *EmbeddedTransportUnavailableError) Error() string {
 	return "qrdb: --transport=embedded is only available in the desktop/GUI build (which links the server side in-process); use --transport=unix for a local connection over the default Unix socket"
 }
+
+// InvalidFlagValueError is returned when a repeatable flag value does not
+// match the shape it declares (e.g. "role_id:tenant_id" or "key=value").
+type InvalidFlagValueError struct {
+	Flag  string
+	Value string
+	Want  string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidFlagValueError) Error() string {
+	return "qrdb: invalid --" + e.Flag + " value " + strconv.Quote(e.Value) + ": want " + e.Want
+}

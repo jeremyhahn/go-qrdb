@@ -58,8 +58,47 @@ type User struct {
 	// read here is byte-identical to the one enrolled and can be passed
 	// straight to RemoveCertBinding. Empty when none are enrolled.
 	CertBindings []CertBinding `json:"cert_bindings,omitempty"`
-	CreatedAt    string        `json:"created_at"`
-	UpdatedAt    string        `json:"updated_at"`
+	// RoleBindings grants roles within a tenant scope (tenant-scoped RBAC),
+	// additive alongside RoleIDs (system-scoped roles).
+	RoleBindings []RoleBinding `json:"role_bindings,omitempty"`
+	// Attributes carries attribute-based access-control (ABAC) key/value pairs
+	// evaluated by policy.
+	Attributes map[string]string `json:"attributes,omitempty"`
+	// Factors lists the account's enrolled auth-factor metadata. The Data
+	// blob a factor interprets during verification NEVER crosses this or any
+	// other wire, on read or write (go-qrdb#192/#197) — only the registered
+	// pkg/authfactors.Factor may see it.
+	Factors []FactorMetadata `json:"factors,omitempty"`
+	// MFAEnabled is DERIVED, never stored: true iff the account has at least
+	// one enrolled factor. An enrolled factor is a fact about the account's
+	// credentials, not a policy statement that MFA is REQUIRED for it — that
+	// bit, if ever needed, belongs in policy.
+	MFAEnabled bool `json:"mfa_enabled"`
+	// MFAMethods lists the distinct pkg/authfactors names of the account's
+	// currently enrolled factors, in enrollment order. Empty when MFAEnabled
+	// is false.
+	MFAMethods []string `json:"mfa_methods,omitempty"`
+	// MFAEnrolledAt is when the account's FIRST currently-enrolled factor was
+	// added, RFC 3339. Empty when MFAEnabled is false.
+	MFAEnrolledAt string `json:"mfa_enrolled_at,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// RoleBinding grants a role within a tenant scope — the tenant-scoped RBAC
+// wire projection of pkg/user.RoleBinding.
+type RoleBinding struct {
+	RoleID   string `json:"role_id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// FactorMetadata is the wire projection of a pkg/user.FactorEnrollment with
+// its opaque Data blob omitted. qrdb never exposes Data over any transport;
+// only the registered pkg/authfactors.Factor interprets it, in-process.
+type FactorMetadata struct {
+	ID         string `json:"id"`
+	FactorName string `json:"factor_name"`
+	CreatedAt  string `json:"created_at,omitempty"`
 }
 
 // CertBinding is one mTLS key enrolled on a user: the hash the presented
@@ -164,6 +203,13 @@ type UpdateUserRequest struct {
 	// LastAuth raises the last-authentication high-water mark when non-empty.
 	// RFC 3339. A value at or before the stored one writes nothing.
 	LastAuth string `json:"last_auth,omitempty"`
+	// RoleBindings replaces the tenant-scoped role bindings when NON-NIL. No
+	// `omitempty`, for the same nil-vs-empty reason as AuthMethods: absent
+	// leaves the set alone, `[]` clears it.
+	RoleBindings []RoleBinding `json:"role_bindings"`
+	// Attributes replaces the ABAC attributes when NON-NIL. No `omitempty`,
+	// same reason: absent leaves it alone, `{}` clears it.
+	Attributes map[string]string `json:"attributes"`
 }
 
 // ListUsersRequest holds parameters for listing users.

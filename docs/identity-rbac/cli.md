@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 Two command groups: `qrdb users` and `qrdb roles`. Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
@@ -65,6 +65,16 @@ an account awaiting activation (`pending`), an administrative hold
 > `Enabled` line or `ENABLED` column, and `--output json|yaml` no longer carries
 > an `enabled` key: `lifecycle` is the only account-state field.
 
+The default (table) output of `users get` also prints, when present: a
+`RoleBinding: <role_id>@<tenant_id>` line per tenant-scoped role binding, an
+`Attribute: <key>=<value>` line per ABAC attribute, `MFAEnabled: true|false`
+(derived from enrolled factors, never stored), `MFAMethods: <comma-separated>`
+when at least one factor is enrolled, and a `Factor: <id> (<factor_name>)`
+line per enrolled factor — the factor's opaque `data` is never printed,
+because it never reaches the client on any transport. `--output json|yaml`
+carry the same information under `roleBindings`, `attributes`, `mfaEnabled`,
+`mfaMethods`, `mfaEnrolledAt` and `factors`.
+
 ### `qrdb users list`
 
 `--output json` carries each account's `cert_bindings`. Under
@@ -90,10 +100,29 @@ qrdb users list --tenant-id acme --page-size 50 --output json
 | `--email` | string | new canonical login key; uniqueness is re-validated within the tenant. Left unchanged when empty |
 | `--name` | string | new display name. Left unchanged when empty |
 | `--roles` | string | comma-separated role IDs to assign |
+| `--role-binding` | string, repeatable | tenant-scoped role binding to set, as `role_id:tenant_id`. Replaces the current set. Left unchanged when absent |
+| `--clear-role-bindings` | bool | remove every tenant-scoped role binding |
+| `--attribute` | string, repeatable | ABAC attribute to set, as `key=value`. Replaces the current set. Left unchanged when absent |
+| `--clear-attributes` | bool | remove every ABAC attribute |
 
 Changing the email moves the login index atomically: the new key is claimed
 before the old one is released, so a failed update never leaves the account
 reachable by neither.
+
+`--role-binding` and `--attribute` REPLACE the whole set when given; there is
+no way to add or remove a single entry from the command line — read the
+current set with `qrdb users get <id> --output json` first if only one entry
+needs to change. `--role-binding` and `--clear-role-bindings` are mutually
+exclusive, as are `--attribute` and `--clear-attributes`; passing the clear
+flag alongside the corresponding set flag is a no-op for the clear (the set
+flag takes precedence).
+
+`system`, `factors[].data`, `mfaEnabled`, `mfaMethods` and `mfaEnrolledAt`
+have **no update flag**. `system` is set exactly once, by first-boot, for the
+single cluster-wide bootstrap admin, and no CLI command can create a second
+one. The MFA fields and the auth-factor metadata are derived read-only
+projections; enrolling a factor is a separate verb this command group does not
+cover.
 
 ## Roles
 

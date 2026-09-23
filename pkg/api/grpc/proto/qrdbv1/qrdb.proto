@@ -2520,6 +2520,17 @@ message UpdateUserProtoRequest {
     // when > 0. Seconds since the epoch, UTC. A value at or before the stored
     // one writes nothing.
     int64 last_auth_unix = 11;
+    // role_bindings replaces the tenant-scoped role bindings when
+    // has_role_bindings is true. proto3 cannot distinguish an absent repeated
+    // field from an empty one, so has_role_bindings carries the nil-vs-empty
+    // distinction the domain request needs, exactly as has_auth_methods does.
+    repeated RoleBinding role_bindings = 12;
+    bool has_role_bindings = 13;
+    // attributes replaces the ABAC attributes when has_attributes is true.
+    // Same nil-vs-empty reasoning as role_bindings: proto3 maps have no way
+    // to represent "absent".
+    map<string, string> attributes = 14;
+    bool has_attributes = 15;
 }
 
 // DeleteUserRequest removes a user by ID.
@@ -2584,6 +2595,21 @@ message UserResponse {
     // authenticates as an account with any binding). A thumbprint read here
     // can be passed straight to RemoveCertBinding.
     repeated CertBinding cert_bindings = 15;
+    // role_bindings grants roles within a tenant scope (tenant-scoped RBAC),
+    // additive alongside role_ids (system-scoped roles).
+    repeated RoleBinding role_bindings = 16;
+    // attributes carries ABAC key/value pairs evaluated by policy.
+    map<string, string> attributes = 17;
+    // factors lists enrolled auth-factor METADATA ONLY; the opaque data blob
+    // a factor interprets during verification never crosses this or any
+    // other transport (go-qrdb#192/#197).
+    repeated FactorMetadata factors = 18;
+    // mfa_enabled/mfa_methods/mfa_enrolled_at are DERIVED from factors, never
+    // stored: an enrolled factor is not a policy statement that MFA is
+    // required for this account.
+    bool mfa_enabled = 19;
+    repeated string mfa_methods = 20;
+    string mfa_enrolled_at = 21;
 }
 
 // CertBinding is one mTLS key enrolled on a user.
@@ -2596,6 +2622,20 @@ message CertBinding {
     // not_after_unix is when the binding stops authenticating, seconds since
     // the epoch UTC. Zero when the binding does not expire on its own.
     int64 not_after_unix = 3;
+}
+
+// RoleBinding grants a role within a tenant scope.
+message RoleBinding {
+    string role_id = 1;
+    string tenant_id = 2;
+}
+
+// FactorMetadata is the wire projection of a user's enrolled auth factor with
+// its opaque data blob omitted.
+message FactorMetadata {
+    string id = 1;
+    string factor_name = 2;
+    string created_at = 3;
 }
 
 // ===========================================================================
