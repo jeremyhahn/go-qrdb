@@ -31,7 +31,7 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
                                registered into a qrdb StrategyRegistry at composition time
 ```
 
-- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection. It also owns the baseline software-shape strategies: `SoftwareStrategy` (passphrase-based) and `NoneStrategy` (no encryption).
+- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and go-enclave locked-memory protection. It also owns the baseline software-shape strategies: `SoftwareStrategy` (passphrase-based) and `NoneStrategy` (no encryption).
 - **go-qrdb** wraps go-quicraft's barrier in `StorageBarrier`, adding all database-layer features. The `pkg/dek/` package provides cluster and tenant DEK management using `seal.EncryptionBarrier` for key wrapping.
 - **go-xkms** ships hardware `SealingStrategy` implementations and registers them into a qrdb `StrategyRegistry` so qrdb can resolve `--barrier-strategy <name>` at init time without importing any HSM SDK.
 
@@ -203,7 +203,15 @@ type ShareTransport interface {
 The CA private key is one of the things the barrier protects, and its lifecycle
 is the clearest illustration of what sealing means:
 
-The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-256 CA private key using the encryption barrier for at-rest protection and `memguard.LockedBuffer` for in-memory protection.
+The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA
+P-256 CA private key using the encryption barrier for at-rest protection.
+**The live DER-encoded key is an ordinary `[]byte` field (`p.caKey`), not an
+mlocked enclave** — `pkg/cert` does not currently hold it in a `secure.Buffer`
+or `secure.Secret`. It is wiped with `secure.Wipe` on every construction
+failure path and on `Seal`, which bounds how long the plaintext survives on
+the Go heap, but does not lock it out of swap or exclude it from a core dump
+while it is live. Moving it into a `secure.Buffer` is tracked as a gap, not
+implemented here; do not describe this as enclave-protected until it is.
 
 ### Bootstrap
 
@@ -211,20 +219,21 @@ The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-25
 2. Encrypt private key via `EncryptionBarrier.Encrypt()`
 3. Store wrapped blob in KVStore at `__sys:cert_ca/{tenantID}/wrapped_key`
 4. Store CA cert PEM in KVStore at `__sys:cert_ca/{tenantID}/cert_pem`
-5. Zero plaintext key (`secure.Wipe`)
+5. Zero the DER-encoding scratch slice (`secure.Wipe`) on every error path;
+   on success, the DER bytes are retained as `p.caKey` (see above) for signing
 
 ### Unseal to Operational
 
 1. Load wrapped blob from KVStore
 2. Decrypt via `EncryptionBarrier.Decrypt()`
-3. Store plaintext key in `memguard.NewLockedBuffer()` (secure enclave)
-4. Parse ECDSA private key from LockedBuffer bytes
-5. Cache parsed signer (`crypto.Signer`) for signing operations
+3. Cache the decrypted DER bytes as `p.caKey`
+4. Parse the ECDSA private key from `p.caKey` on each `GenerateClientCert` call
+5. Wipe and replace `p.caKey` when `loadCA` re-caches it
 
 ### Seal
 
-1. `LockedBuffer.Destroy()` (securely zeroes and destroys memory)
-2. Nil the cached signer
+1. `secure.Wipe(p.caKey)`, then `p.caKey = nil`
+2. Nil the cached CA certificate
 3. All `GenerateClientCert()` calls return `CAKeyNotAvailableError`
 
 
@@ -238,8 +247,13 @@ The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-25
   fixtures, and deployments where the device already provides authenticated
   full-disk encryption. The go-xkms `--require-encryption` compliance gate
   refuses to come up against a `none`-mode barrier.
-- **Key material is memory-protected** — `memguard.LockedBuffer` in process,
-  wiped on seal.
+- **Key material is memory-protected where the holder uses `pkg/secure`** —
+  `secure.Buffer` / `secure.Secret` (go-enclave-backed), mlocked
+  and wiped on seal. The system barrier's own root key and tenant DEKs
+  (`pkg/dek`, `pkg/seal`'s tenant key manager) go through `pkg/secure`. The
+  CA private key in `pkg/cert.DefaultCertProvider` is the current exception —
+  see its own lifecycle section above — and is wiped (`secure.Wipe`) but not
+  mlocked while live.
 - **PINs follow dual control**: supplying `--so-pin` requires `--user-pin` and
   vice versa, so the resulting pair satisfies FIPS 140-3 and PCI-DSS v4 dual
   control. PINs are rejected outright with `--barrier-strategy=none`.

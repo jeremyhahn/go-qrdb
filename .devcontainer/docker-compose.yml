@@ -110,8 +110,17 @@ services:
     # baked cache -- Docker seeds an empty volume from the image once, but a
     # volume that already exists is never re-seeded, so a stale one would send
     # `go build` to the network without the credentials to get there.
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
     cap_add:
       - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
 
   client-build:
     build:
@@ -159,6 +168,13 @@ services:
       - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@${GITEA_HOST:-git.example.internal}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_test-e2e"]
+    # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
 
   devcontainer-gpu:
     build:
@@ -174,8 +190,17 @@ services:
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
     working_dir: /workspace/go-qrdb
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
     cap_add:
       - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -206,8 +231,17 @@ services:
     # Same reason as devcontainer's identical block above: `toolchain` bakes
     # no module cache, so `_bench-qrdb-kv-fair`'s `go test` resolves
     # github.com/jeremyhahn/* at runtime and needs these.
+    # qrdbd mlocks its protected memory (go-qrdb#114). IPC_LOCK lifts the
+    # RLIMIT_MEMLOCK ceiling and the unlimited memlock ulimit removes it, so an
+    # unconfigured node gets the full 64 MiB secure-memory budget instead of
+    # one derived from Docker's small default limit. See docs/deployment/.
     cap_add:
       - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
 
 # The BuildKit secret that carries the internal Gitea module credentials into
 # `go mod download`. Every service above that builds .devcontainer/Dockerfile

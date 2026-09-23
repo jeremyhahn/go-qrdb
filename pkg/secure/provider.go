@@ -141,16 +141,50 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 	}
 	defer scratch.Destroy()
 
-	// A bare Bytes() borrow rather than WithBytes: the loop below blocks on
-	// a read, and WithBytes would hold purgeMu shared for that whole time,
-	// stalling the emergency Purge path behind an operator's typing. The
-	// borrow is short-lived in code even when it is long-lived in wall time,
-	// and no allocation of protected memory happens inside it.
-	line := scratch.Bytes()
-	if line == nil {
-		return nil, &ProviderError{Source: "stdin", Err: &NilBufferError{}}
+	// Ownership is single and sequential: scratch belongs to this function for
+	// its whole life, the returned Buffer is allocated only after the read has
+	// finished, and no protected allocation happens while any borrow is held.
+	//
+	// The read runs inside scratch's own WithBytes, held for the WHOLE loop,
+	// because scratch is on go-enclave's shutdown ledger the moment NewBuffer
+	// returns: a concurrent WipeAll needs no reference to it to unmap it, and
+	// a bare Bytes() alias could fault mid-read (go-qrdb#114 review, round 4).
+	// Holding it costs shutdown nothing — WipeAll's sweep uses TryLock, so it
+	// skips a held enclave rather than waiting on an operator still typing.
+	var n int
+	var opened bool
+	if err := scratch.WithBytes(func(line []byte) error {
+		opened = true
+		var rerr error
+		n, rerr = readStdinLine(r, line)
+		return rerr
+	}); err != nil {
+		if !opened {
+			return nil, &ProviderError{Source: "stdin", Err: &NilBufferError{}}
+		}
+		return nil, err
 	}
 
+	result, err := NewBuffer(n)
+	if err != nil {
+		return nil, &ProviderError{Source: "stdin", Err: err}
+	}
+	if err := copyPrefix(result, scratch, n); err != nil {
+		result.Destroy()
+		return nil, &ProviderError{Source: "stdin", Err: err}
+	}
+	// scratch's pages, the only other copy, are wiped by the deferred Destroy.
+	return result, nil
+}
+
+// readStdinLine reads one byte at a time from r into line until a newline,
+// EOF, or line is full, and returns the passphrase length. It never reads past
+// the newline, so the rest of r is left for its next consumer.
+//
+// A CR is stripped only as the first half of a CRLF. A passphrase that
+// genuinely ends in CR and was terminated by EOF keeps it: truncating there
+// would silently accept a different credential than was supplied.
+func readStdinLine(r io.Reader, line []byte) (int, error) {
 	n := 0
 	sawNewline := false
 	for n < len(line) {
@@ -158,7 +192,7 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
 				break
 			}
-			return nil, &ProviderError{Source: "stdin", Err: rerr}
+			return 0, &ProviderError{Source: "stdin", Err: rerr}
 		}
 		if line[n] == '\n' {
 			sawNewline = true
@@ -167,20 +201,31 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 		n++
 	}
 	if n == len(line) {
-		return nil, &ProviderError{Source: "stdin", Err: errPassphraseTooLong}
+		return 0, &ProviderError{Source: "stdin", Err: errPassphraseTooLong}
 	}
-	// A CR is stripped only as the first half of a CRLF. A passphrase that
-	// genuinely ends in CR and was terminated by EOF keeps it: truncating
-	// there would silently accept a different credential than was supplied.
 	if sawNewline && n > 0 && line[n-1] == '\r' {
 		n--
 	}
 	if n == 0 {
-		return nil, &ProviderError{Source: "stdin", Err: errEmptyPassphrase}
+		return 0, &ProviderError{Source: "stdin", Err: errEmptyPassphrase}
 	}
-	// NewBufferFromBytes copies into a fresh enclave and wipes what it read;
-	// the scratch's remaining pages are zeroed by the deferred Destroy.
-	return NewBufferFromBytes(line[:n])
+	return n, nil
+}
+
+// copyPrefix copies the first n bytes of src into dst, with dst's borrow and
+// src's go-enclave borrow both held for the whole copy so a concurrent
+// WipeAll can destroy neither mid-copy. It allocates nothing. The inner borrow
+// is taken on src's enclave directly rather than through src.WithBytes: dst
+// and src are different enclaves with independent locks, so holding both
+// cannot deadlock, and going through the enclave keeps the borrow guard's
+// one-secure-borrow-at-a-time rule meaningful for callers.
+func copyPrefix(dst, src *Buffer, n int) error {
+	return dst.WithBytes(func(d []byte) error {
+		return nilBufferIfGone(src.enc.WithBytes(func(s []byte) error {
+			copy(d, s[:n])
+			return nil
+		}))
+	})
 }
 
 // CallbackProvider wraps a user-supplied function that returns the

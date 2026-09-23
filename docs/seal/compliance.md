@@ -16,7 +16,7 @@ go-qrdb implements the core compliance posture for FIPS 140-3 Level 2:
 - **Separation of Duties** (AS10.03): Six-role model with SO governance-only constraint
 - **Split Knowledge** (AS10.05): Shamir M-of-N unseal with quorum threshold
 - **Dual Authorization** (AS10.06): mTLS + SO PIN for SO operations; challenge-response for Custodians
-- **Key Zeroization** (AS10.09): Memguard buffers with secure wipe on barrier operations
+- **Key Zeroization** (AS10.09): go-enclave locked-memory buffers with secure wipe on barrier operations
 - **Audit Logging** (AS10.10): Append-only hash-chained audit trail with tamper-evidence
 - **Cryptographic Integrity** (AS10.11): SHA-256 hash-chain validation on audit entries
 
@@ -29,7 +29,7 @@ go-qrdb satisfies baseline access control, audit, and key lifecycle requirements
 - **AC-6**: Least Privilege — Role-based access with explicit deny-lists
 - **AU-2**: Audit Events — All barrier, ceremony, RBAC, key operations logged
 - **AU-12**: Audit Generation — Structured audit events with actor, resource, action, outcome
-- **SI-12**: Information Handling — Key zeroization in memguard; recovery keys offline
+- **SI-12**: Information Handling — Key zeroization via go-enclave; recovery keys offline
 - **CA-6**: Security Planning — Architecture documentation (this document)
 
 FedRAMP High adds continuous monitoring, incident response, and SIEM integration (addressed via audit API export).

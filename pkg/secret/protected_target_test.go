@@ -52,7 +52,7 @@ func (r *vaultResolver) Resolve(_ context.Context, raw string) (*secret.SecretVa
 	if r.err != nil {
 		return nil, r.err
 	}
-	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential), nil
+	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential)
 }
 
 // newVaultRegistry returns a registry holding a single healthy vaultResolver.
@@ -661,7 +661,7 @@ func TestSecretValue_JSONNullIsRejected(t *testing.T) {
 	var cfg struct {
 		Password secret.SecretValue `json:"password"`
 	}
-	cfg.Password = *secret.NewSecretValue(vaultScheme+"old", []byte(vaultPlaintext), secret.StrategyCredential)
+	cfg.Password = *mustSecretValue(t, vaultScheme+"old", []byte(vaultPlaintext), secret.StrategyCredential)
 
 	err := json.Unmarshal([]byte(`{"password":null}`), &cfg)
 	var decodeErr *secret.SecretValueDecodeError
@@ -751,7 +751,7 @@ func TestSecretValue_YAMLNullPointerFieldIsAbsent(t *testing.T) {
 }
 
 func TestSecretValue_DecodeDiscardsPreviousResolution(t *testing.T) {
-	sv := secret.NewSecretValue(vaultScheme+"old", []byte(vaultPlaintext), secret.StrategyCredential)
+	sv := mustSecretValue(t, vaultScheme+"old", []byte(vaultPlaintext), secret.StrategyCredential)
 	sv.ExpiresAt = sv.ExpiresAt.AddDate(1, 0, 0)
 
 	if err := yaml.Unmarshal([]byte("vault://new\n"), sv); err != nil {
@@ -812,11 +812,70 @@ func TestSecretValue_Redacted_NilReceiver(t *testing.T) {
 }
 
 func TestSecretValue_Redacted_NeverRevealsPlaintext(t *testing.T) {
-	sv := secret.NewSecretValue("literal://"+vaultPlaintext, []byte(vaultPlaintext), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "literal://"+vaultPlaintext, []byte(vaultPlaintext), secret.StrategyLiteral)
 	if strings.Contains(sv.Redacted(), vaultPlaintext) {
 		t.Errorf("Redacted() = %q, must not reveal a literal's plaintext", sv.Redacted())
 	}
 }
+
+// ---------- SealFailedError ----------
+
+// TestSealFailedError_Error_NeverRevealsPlaintext is the go-qrdb#114 round 2
+// regression, tightened in round 3: NewSecretValue only reaches
+// secure.NewSecret AFTER resolving the value, so for a literal reference the
+// raw reference IS the plaintext secret, not a pointer to one. Redaction now
+// happens once, at construction, and only the already-redacted result is
+// ever stored on the error's exported Ref field -- Ref is built here via
+// SecretValue.Redacted(), the same exported, independently-tested provenance
+// rule NewSecretValue's sealing-failure path applies internally, so this
+// pins the CONTRACT ("Ref is whatever Redacted would say") without
+// reimplementing that rule's internals in the test.
+func TestSealFailedError_Error_NeverRevealsPlaintext(t *testing.T) {
+	sealErrCause := errors.New("sealer wiped")
+	cases := map[string]struct {
+		raw         string
+		strategy    secret.ResolvedStrategy
+		wantRef     string
+		mustNotHave string
+	}{
+		"literal scheme": {
+			raw: "literal://" + vaultPlaintext, strategy: secret.StrategyLiteral,
+			wantRef: "[redacted]", mustNotHave: vaultPlaintext,
+		},
+		"bare literal fallback": {
+			raw: vaultPlaintext, strategy: secret.StrategyLiteral,
+			wantRef: "[redacted]", mustNotHave: vaultPlaintext,
+		},
+		"resolved credential reference": {
+			raw: "credential://ca-key", strategy: secret.StrategyCredential,
+			wantRef: "credential://ca-key", mustNotHave: vaultPlaintext,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ref := (&secret.SecretValue{Raw: tc.raw, Strategy: tc.strategy}).Redacted()
+			err := &secret.SealFailedError{Ref: ref, Err: sealErrCause}
+			got := err.Error()
+			if tc.mustNotHave != "" && strings.Contains(got, tc.mustNotHave) {
+				t.Fatalf("Error() = %q, must not contain %q", got, tc.mustNotHave)
+			}
+			if !strings.Contains(got, tc.wantRef) {
+				t.Errorf("Error() = %q, want it to contain %q", got, tc.wantRef)
+			}
+		})
+	}
+}
+
+// The reflection / %#v / json.Marshal check that used to live here, against
+// a hand-constructed *SealFailedError{Ref: ...}, is REMOVED rather than kept
+// alongside the real one (go-qrdb#114 review, round 4): a hand-built value
+// only ever proves the type CAN be rendered safely once redacted, never that
+// NewSecretValue's actual failure path redacts before construction — a
+// regression that reintroduced a Raw field and populated it with the
+// plaintext would leave a synthetic-only check like that green. The
+// authoritative version runs against the REAL error NewSecretValue's own
+// sealing-failure path returns, in
+// pkg/secret/seal_failure_test.go's runSealFailureChild.
 
 // ---------- default display paths are redacted ----------
 
@@ -886,7 +945,7 @@ func TestSecretValue_StructuredLoggingNeverRevealsPlaintext(t *testing.T) {
 func TestSecretValue_FormattingRedactsLiterals(t *testing.T) {
 	// A literal's Raw IS the secret, so the display paths must show the marker
 	// rather than the reference.
-	sv := secret.NewSecretValue("literal://"+vaultPlaintext, []byte(vaultPlaintext), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "literal://"+vaultPlaintext, []byte(vaultPlaintext), secret.StrategyLiteral)
 	for name, out := range map[string]string{
 		"%v":       fmt.Sprintf("%v", sv),
 		"%q":       fmt.Sprintf("%q", sv),
@@ -902,7 +961,7 @@ func TestSecretValue_StringStillReturnsPlaintext(t *testing.T) {
 	// The deliberate accessor is unchanged: redacting it is a run-time behaviour
 	// break reserved for the stack's coordinated release, and this pins the
 	// current contract so the change cannot happen by accident.
-	sv := secret.NewSecretValue(vaultScheme+"db-key", []byte(vaultPlaintext), secret.StrategyCredential)
+	sv := mustSecretValue(t, vaultScheme+"db-key", []byte(vaultPlaintext), secret.StrategyCredential)
 	if got := sv.String(); got != vaultPlaintext { //nolint:staticcheck // pinning the deprecated accessor's contract
 		t.Errorf("String() = %q, want %q", got, vaultPlaintext)
 	}
@@ -1001,7 +1060,7 @@ func (r *flakyResolver) Resolve(_ context.Context, raw string) (*secret.SecretVa
 	if r.failing {
 		return nil, errRefreshFailed
 	}
-	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential), nil
+	return secret.NewSecretValue(raw, []byte(vaultPlaintext), secret.StrategyCredential)
 }
 
 var errRefreshFailed = errors.New("backend unavailable")

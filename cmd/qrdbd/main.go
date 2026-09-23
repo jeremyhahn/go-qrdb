@@ -21,8 +21,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // version, gitCommit, and buildDate are set at build time via ldflags:
@@ -35,8 +33,9 @@ var (
 )
 
 // main is the entry point for the qrdbd daemon. It holds nothing but the
-// os.Exit call so that every deferred cleanup in run — above all the mlocked
-// memory wipe — actually runs before the process leaves.
+// os.Exit call so that every deferred cleanup along the way — including
+// runStart's mlocked-memory wipe on the `start` path — actually runs before
+// the process leaves.
 func main() {
 	os.Exit(run())
 }
@@ -45,23 +44,15 @@ func main() {
 // excluded from unit test coverage: integration tests exercise the full command
 // surface via cobra subcommands instead.
 //
-// The first call is secure.EnablePurge() — it arms the secure subsystem
-// so the deferred Purge below can run, WITHOUT installing memguard's
-// process signal handler. qrdbd owns its own signal handling: runStart
-// uses signal.NotifyContext(SIGINT, SIGTERM) to drive a graceful
-// shutdown and then returns nil, so cobra returns nil and run returns 0 —
-// the behavior systemd/docker/k8s expect on SIGTERM. (memguard's
-// CatchSignal would instead race that path and hard os.Exit(1).) The
-// matching deferred secure.Purge() synchronously wipes mlocked memory on
-// every orderly exit path.
+// The process-wide locked-memory budget (secure.SetAllocator) and its
+// matching secure.WipeAll on the way out belong to `start` alone (see
+// runStart) — that is the one subcommand that allocates protected memory at
+// all. `status`, `peers` and `version` are read-only client queries against a
+// running node with no secret material of their own; requiring them to
+// satisfy an mlock budget, or to hold RLIMIT_MEMLOCK headroom they never use,
+// would refuse a plain `qrdbd version` on a host sized only for what `start`
+// needs (go-qrdb#114 review).
 func run() int {
-	secure.EnablePurge()
-	defer func() {
-		if err := secure.Purge(); err != nil {
-			fmt.Fprintf(os.Stderr, "qrdbd: secure.Purge: %v\n", err)
-		}
-	}()
-
 	rootCmd := &cobra.Command{
 		Use:   "qrdbd",
 		Short: "QuicRaft DB -- distributed key-value store daemon",

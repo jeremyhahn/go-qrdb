@@ -34,14 +34,6 @@ func TestAnalyzer_Good(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), Analyzer, "good")
 }
 
-// TestAnalyzer_AllowedMemguard verifies that packages whose import path
-// contains the go-qrdb/pkg/secure substring are exempt from the memguard ban
-// (covers the inPkgSecure = true branch in run).
-func TestAnalyzer_AllowedMemguard(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), Analyzer,
-		"github.com/jeremyhahn/go-qrdb/pkg/secure/allowed_memguard")
-}
-
 // TestAnalyzer_BadSSHAlias verifies that an aliased ssh import is also
 // flagged (covers the imp.Name != nil branch in run).
 func TestAnalyzer_BadSSHAlias(t *testing.T) {

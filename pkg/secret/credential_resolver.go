@@ -100,9 +100,13 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 		return nil, &ResolutionFailedError{Scheme: credentialScheme, Raw: raw, Err: err}
 	}
 	// NewSecretValue copies b into the enclave; wipe the heap copy the retrieve
-	// function handed us so the plaintext does not linger in GC memory.
-	sv := NewSecretValue(raw, b, StrategyCredential)
+	// function handed us so the plaintext does not linger in GC memory,
+	// regardless of whether sealing succeeded.
+	sv, sealErr := NewSecretValue(raw, b, StrategyCredential)
 	secure.Wipe(b)
+	if sealErr != nil {
+		return nil, &ResolutionFailedError{Scheme: credentialScheme, Raw: raw, Err: sealErr}
+	}
 	return sv, nil
 }
 

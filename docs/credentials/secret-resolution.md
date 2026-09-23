@@ -33,11 +33,15 @@ place. A value with no recognized scheme is left untouched.
 - **`SecretValue`** — a resolved secret plus its `ResolvedStrategy` tag, and the
   processor's protected resolution target.
 
-## Secrets live in a memguard enclave
+## Secrets live in a sealed enclave
 
-A resolved `SecretValue` seals its plaintext in a memguard enclave (`secure.Secret`),
-not in a garbage-collected byte slice. The plaintext sits in mlocked, guard-paged
-memory and is decrypted only for the moment an accessor needs it.
+A resolved `SecretValue` seals its plaintext in a go-enclave sealed enclave
+(`secure.Secret`), not in a garbage-collected byte slice. AT REST the value is
+AES-256-GCM ciphertext plus a wrapped data key — ordinary (unlocked) heap
+bytes by design, since there is no plaintext there to protect with a page
+lock. Only the moment an accessor calls `Open` or `WithBytes` does the
+plaintext exist at all, and only then is it mlocked, guard-paged memory; it is
+wiped and unmapped the instant that call returns.
 
 Read a secret through `WithBytes` (or `Open`), which keeps the plaintext in
 mlocked memory and wipes the working copy when the callback returns:
@@ -149,6 +153,16 @@ which is the normal Go contract, must not be told a config is ready when a
 secret it declared protected is missing or unverified. The deprecated `string`
 path keeps its old contract: there, a failure is a diagnostic you opt into with
 `WithFailClosed()`.
+
+**A plain `string` field whose value resolved but cannot be read back fails
+closed too.** The resolver's result is sealed on the way in; if it cannot be
+opened again to write into the field — the process Sealer was wiped, the kernel
+refused to lock the transient buffer — the field keeps its reference, the path
+lands in `Unresolved`, and a `ResolvedReadError` wrapping the cause is recorded
+in `Errors`. The field is never overwritten with `""` and never counted in
+`Resolved`, so an unreadable secret cannot pass for one that is legitimately
+empty. Whether that fails the call follows the plain-string contract: with
+`WithFailClosed()` it does.
 
 **A failed re-resolution never leaves the previous secret usable.** `Process`
 destroys a target's existing enclave before refilling it, so a second walk over

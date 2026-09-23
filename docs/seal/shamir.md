@@ -8,9 +8,11 @@ Licensed under the Apache License, Version 2.0
 The StorageBarrier supports M-of-N Shamir secret sharing for root key custody.
 Share custody follows the **Security Officer (SO) distribution model**: shares
 are never returned from initialization or rekey responses. Instead, each share
-is sealed into a server-side memguard enclave bound to an enrolled Security
-Officer, who retrieves it exactly once through an mTLS-authenticated claim
-flow. See [so-share-distribution-design.md](so-share-distribution-design.md)
+is sealed into a server-side `secure.Secret` (go-enclave `SealedEnclave`)
+bound to an enrolled Security Officer — AES-256-GCM ciphertext on the
+ordinary heap at rest, mlocked only for the instant a claim opens it — who
+retrieves it exactly once through an mTLS-authenticated claim flow. See
+[so-share-distribution-design.md](so-share-distribution-design.md)
 for the full design contract and invariants.
 
 ## Security Officer Lifecycle
@@ -26,8 +28,8 @@ for the full design contract and invariants.
    registration requires the full initialization ceremony to establish a CA
    first.
 2. **Initialize** — `InitializeShamir` splits the secret and seals one share
-   per enrolled officer into a memguard enclave via the wired
-   `CeremonyDistributor`.
+   per enrolled officer into a `secure.Secret` (heap ciphertext at rest, per
+   the custody note above) via the wired `CeremonyDistributor`.
 3. **Claim** — each officer authenticates with their own mTLS certificate and
    performs the two-step claim:
    `POST /v1/barrier/officers/{username}/claim/begin` returns a nonce
@@ -98,8 +100,8 @@ progress, _ = barrier.UnsealWithShare(ctx, shareC)
 
 Duplicate shares are rejected (`ErrShamirDuplicateShare`). The accumulator resets after TTL expiry (`ErrShamirQuorumExpired`).
 
-**Share custody:** submitted shares are held only inside **memguard secure
-enclaves** (never as raw, garbage-collected strings) — deduplication is done
+**Share custody:** submitted shares are held only inside **go-enclave
+locked-memory enclaves** (never as raw, garbage-collected strings) — deduplication is done
 against a SHA-256 digest so the raw share is never retained as a map key, and
 plaintext is materialized only transiently during reconstruction. The instant
 the quorum reconstructs the secret, every accumulated share enclave is

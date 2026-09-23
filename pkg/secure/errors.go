@@ -34,8 +34,8 @@ func (e *NilBufferError) Error() string {
 	return "secure: buffer is nil or destroyed"
 }
 
-// OpenError is returned when the underlying memguard enclave fails to
-// unseal. It wraps the original error for diagnostic inspection.
+// OpenError is returned when the underlying go-enclave sealed enclave fails
+// to unseal. It wraps the original error for diagnostic inspection.
 type OpenError struct {
 	Err error
 }
@@ -45,7 +45,7 @@ func (e *OpenError) Error() string {
 	return "secure: failed to open secret: " + e.Err.Error()
 }
 
-// Unwrap returns the underlying memguard error.
+// Unwrap returns the underlying go-enclave error.
 func (e *OpenError) Unwrap() error {
 	return e.Err
 }
@@ -78,18 +78,9 @@ func (e *ProviderError) Unwrap() error {
 	return e.Err
 }
 
-// NotInitializedError is returned by Purge when it is called before
-// CatchInterrupt has been invoked by the owning binary.
-type NotInitializedError struct{}
-
-// Error implements the error interface.
-func (e *NotInitializedError) Error() string {
-	return "secure: process lifecycle not initialized; call CatchInterrupt first"
-}
-
 // NestedBorrowError is what the borrow guard reports: the calling goroutine
-// entered Op while it already held a borrow of protected memory, which is the
-// self-deadlock purgeMu's documentation forbids.
+// entered Op while it already held a borrow of protected memory, which risks
+// the self-deadlock the guard exists to catch (see borrowguard.go).
 //
 // It is a diagnostic, not a control-flow error — the operation it names never
 // completes, because a handler that returns is panicked past. BorrowStack is
@@ -104,8 +95,8 @@ type NestedBorrowError struct {
 // Error implements the error interface.
 func (e *NestedBorrowError) Error() string {
 	return "secure: " + e.Op + " attempted while this goroutine holds a borrow" +
-		" of protected memory; purgeMu is not reentrant and this would deadlock." +
-		" The borrow was taken at:\n" + e.BorrowStack
+		" of protected memory; nested calls into this package from inside a" +
+		" borrow are forbidden and risk deadlock. The borrow was taken at:\n" + e.BorrowStack
 }
 
 // EmptyBorrowError is returned by CopyOut when the borrow yields no bytes.

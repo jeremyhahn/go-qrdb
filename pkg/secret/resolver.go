@@ -67,10 +67,13 @@ func literalValue(raw string) string {
 }
 
 // SecretValue holds a resolved secret value together with resolution metadata.
-// The plaintext is sealed in a memguard enclave (secure.Secret), not in a
-// garbage-collected slice: it lives in mlocked, guard-paged memory and is
-// materialized only transiently when an accessor is called. Callers should
-// call Clear once they are done so the enclave is destroyed promptly.
+// The plaintext is sealed in a go-enclave sealed enclave (secure.Secret), not
+// in a garbage-collected slice. At rest that is AES-256-GCM ciphertext plus a
+// wrapped data key on the ordinary (unlocked) heap, by design — there is no
+// plaintext there to protect with a page lock; only the moment an accessor
+// materializes it is it mlocked, guard-paged memory, wiped and unmapped the
+// instant the call returns. Callers should call Clear once they are done so
+// the enclave is destroyed promptly.
 //
 // SecretValue is single-owner for its working life; concurrent Clear with
 // any accessor is undefined.
@@ -90,30 +93,38 @@ type SecretValue struct {
 	// A zero value means the secret does not expire.
 	ExpiresAt time.Time
 
-	// secret seals the plaintext inside a memguard enclave. It is nil for an
-	// empty value and after Clear.
+	// secret seals the plaintext inside a go-enclave sealed enclave. It is nil
+	// for an empty value and after Clear.
 	secret *secure.Secret
 }
 
-// NewSecretValue seals value into a memguard enclave and returns a SecretValue.
-// The value is copied into the enclave, so the caller retains ownership of its
-// own slice; callers holding sensitive source bytes should wipe them (e.g. via
-// secure.Wipe) once NewSecretValue returns. An empty value yields a SecretValue
-// whose accessors report empty.
-func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) *SecretValue {
+// NewSecretValue seals value into a go-enclave sealed enclave and returns a
+// SecretValue. The value is copied into the enclave, so the caller retains
+// ownership of its own slice; callers holding sensitive source bytes should
+// wipe them (e.g. via secure.Wipe) once NewSecretValue returns. An empty
+// value yields a SecretValue whose accessors report empty.
+//
+// Returns (nil, *SealFailedError) if sealing fails — a resolved secret that
+// cannot be protected must fail the resolution rather than silently produce
+// a SecretValue whose accessors report empty, which a caller cannot tell
+// apart from a reference that legitimately resolves to nothing (go-qrdb#114
+// review).
+func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) (*SecretValue, error) {
 	sv := &SecretValue{Raw: raw, Strategy: strategy}
 	if len(value) == 0 {
-		return sv
+		return sv, nil
 	}
 	// secure.NewSecret wipes the slice it seals, so hand it a private copy and
 	// leave the caller's slice intact. NewSecret only errors on empty input,
-	// which is guarded above.
+	// which is guarded above, or on a sealing failure, handled below.
 	cp := make([]byte, len(value))
 	copy(cp, value)
-	if s, err := secure.NewSecret(cp); err == nil {
-		sv.secret = s
+	s, err := secure.NewSecret(cp)
+	if err != nil {
+		return nil, &SealFailedError{Ref: redactRaw(raw, strategy), Err: err}
 	}
-	return sv
+	sv.secret = s
+	return sv, nil
 }
 
 // WithBytes opens the enclave into a transient mlocked buffer, invokes fn with
@@ -122,20 +133,24 @@ func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) *Secret
 // receives a nil slice for an empty value. This is the preferred,
 // enclave-respecting accessor: the plaintext never enters the Go heap.
 //
-// # Why the inner read is Bytes and not a held borrow
+// # The borrow is held for fn's entire call
 //
-// UNBORROWED, and this is the one site in the migration where that is a
-// decision about a CONTRACT rather than about a traced callee. fn is supplied
-// by the caller, this method is re-exported through sdk/go, and consumers
-// outside this repository pass their own callbacks to it. Holding
-// secure.Buffer's borrow across fn would silently make "fn must not allocate
-// protected memory" a condition of an already-published API — and a consumer
-// that breaks it does not get an error, it gets a daemon that stops at boot in
-// a repository whose callbacks cannot be traced from here.
+// The transient Buffer's own WithBytes, not Bytes, reads the plaintext: Bytes
+// aliases the enclave's locked pages and returns with NOTHING holding them —
+// exactly its own documented warning — so a concurrent enclave.WipeAll (or any
+// other Destroy racing this call) can unmap the pages while fn is still
+// reading them, faulting the process (go-qrdb#114 review, round 3). Buffer's
+// own WithBytes holds go-enclave's per-object read lock for the whole call,
+// which blocks a racing Destroy until fn returns instead.
 //
-// Tightening it is a cross-repository contract change and belongs with the
-// go-enclave adoption that removes the restriction entirely, not with the
-// conversions whose callees are local and traceable (go-qrdb#74, #145).
+// This is safe for a caller-supplied fn precisely because the buffer here is
+// TRANSIENT and never escapes to fn: fn receives only the []byte view, never
+// the *secure.Buffer itself, so it has no handle to reenter THIS buffer's own
+// lock and cannot deadlock against it. fn allocating or reading an unrelated
+// Buffer or Secret from inside the callback is unaffected — go-enclave gives
+// every enclave its own independent lock, which is what removed the
+// process-wide contention the earlier, memguard-era version of this method
+// was written to avoid (go-qrdb#74, #145): that concern does not apply here.
 func (v *SecretValue) WithBytes(fn func([]byte) error) error {
 	if v.secret == nil {
 		return fn(nil)
@@ -145,7 +160,7 @@ func (v *SecretValue) WithBytes(fn func([]byte) error) error {
 		return err
 	}
 	defer buf.Destroy()
-	return fn(buf.Bytes())
+	return buf.WithBytes(fn)
 }
 
 // Open decrypts the secret into a new mlocked Buffer that the CALLER must
@@ -177,12 +192,14 @@ func (v *SecretValue) Bytes() []byte {
 		return nil
 	}
 	defer buf.Destroy()
-	// The copy runs inside a COORDINATED borrow (go-qrdb#74). Sizing from
-	// buf.Size() and then reading buf.Bytes() takes the purge lock twice, and
-	// a process-wide memguard purge landing in the gap yields a correctly
-	// sized run of zeros — which this method would return as the secret. nil
-	// is the documented answer for "no value", and it is the honest one for a
-	// value that can no longer be read.
+	// The copy runs inside a COORDINATED borrow (go-qrdb#74): secure.CopyOut
+	// sizes and reads buf in one held borrow, rather than calling buf.Size()
+	// and buf.Bytes() as two separate operations. That two-call shape was the
+	// hazard under memguard's process-wide purge, where a purge landing in the
+	// gap between them could yield a correctly sized run of zeros that this
+	// method would return as the secret. go-enclave's per-object lock removed
+	// the process-wide purge that made the gap dangerous, but CopyOut's single
+	// borrow is also simply the right shape regardless, so it stays.
 	//
 	// Traced callees: secure.CopyOut's callback is make + copy and reaches
 	// nothing in pkg/secure.
@@ -208,30 +225,42 @@ func (v *SecretValue) Bytes() []byte {
 // displayed. String remains for callers bound to an API that takes a raw
 // string, and is retained until the stack's coordinated breaking release.
 func (v *SecretValue) String() string {
+	// The error is discarded here, and only here: String's contract predates
+	// it and returns "" for an unreadable value. Anything that WRITES the
+	// result somewhere — the config walker above all — calls readString and
+	// fails closed instead, so an unreadable secret is never recorded as a
+	// resolved empty one.
+	s, _ := v.readString()
+	return s
+}
+
+// readString is String with the failure kept. It returns ("", nil) only for
+// a genuinely empty value, and an error — never "" — when the sealed value
+// exists but cannot be opened or read: a wiped process Sealer, a refused lock,
+// or a buffer destroyed out from under the copy.
+//
+// The conversion runs inside a COORDINATED borrow (go-qrdb#74), via
+// secure.CopyOut, rather than string(buf.Bytes()): Bytes releases its borrow
+// the instant it returns, so a concurrent Destroy of buf could unmap the pages
+// mid-conversion. CopyOut holds the borrow for the whole copy and refuses an
+// empty source, which is what lets this tell "unmapped mid-read" from "an
+// empty secret". The intermediate slice is wiped; the string it produces can
+// never be, which is the exposure String is deprecated for.
+func (v *SecretValue) readString() (string, error) {
 	if v.secret == nil {
-		return ""
+		return "", nil
 	}
 	buf, err := v.secret.Open()
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer buf.Destroy()
-	// The conversion runs inside a COORDINATED borrow (go-qrdb#74). string()
-	// over buf.Bytes() copied out of pages nothing was holding, so a
-	// process-wide memguard purge could unmap them mid-conversion; and a purge
-	// that had already taken them produced "" indistinguishable from an empty
-	// secret. secure.CopyOut holds the borrow and refuses an empty source.
-	//
-	// The intermediate slice is wiped, which the string it produces can never
-	// be. That is the exposure this method is deprecated FOR, not one this
-	// change adds: it is unchanged in kind and one wipeable copy smaller in
-	// residue than the version that returned string(buf.Bytes()) directly.
 	out, err := secure.CopyOut(buf)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer secure.Wipe(out)
-	return string(out)
+	return string(out), nil
 }
 
 // Redacted returns a printable description of the secret that never contains
@@ -251,17 +280,29 @@ func (v *SecretValue) Redacted() string {
 	if v == nil {
 		return redactedMarker
 	}
-	// StrategyLiteral means Raw carries the secret rather than pointing at it,
+	return redactRaw(v.Raw, v.Strategy)
+}
+
+// redactRaw applies the same provenance-based rule as SecretValue.Redacted to
+// a raw reference string and the strategy that would produce (or attempted to
+// produce) a value from it. It exists as its own function, rather than being
+// inlined into Redacted, because NewSecretValue's sealing-failure path needs
+// the identical rule to compute SealFailedError.Ref: NewSecretValue can fail
+// AFTER resolving a literal value, at which point raw IS the plaintext secret
+// rather than a pointer to one, and SealFailedError must never retain that
+// plaintext under any field, printed or not.
+func redactRaw(raw string, strategy ResolvedStrategy) string {
+	// StrategyLiteral means raw carries the secret rather than pointing at it,
 	// whether it arrived through the "literal://" scheme or the registry's
 	// fallback for an unclaimed value.
-	if v.Strategy == "" || v.Strategy == StrategyLiteral {
+	if strategy == "" || strategy == StrategyLiteral {
 		return redactedMarker
 	}
-	if strings.HasPrefix(v.Raw, literalPrefix) {
+	if strings.HasPrefix(raw, literalPrefix) {
 		return redactedMarker
 	}
-	if i := strings.Index(v.Raw, schemeSeparator); i > 0 {
-		return v.Raw
+	if i := strings.Index(raw, schemeSeparator); i > 0 {
+		return raw
 	}
 	return redactedMarker
 }
@@ -428,7 +469,7 @@ func (r *ResolverRegistry) Resolve(ctx context.Context, raw string) (*SecretValu
 	// scheme (owned by qrdb) is stripped so an operator can force-quote a value
 	// that would otherwise look like a secret reference; a bare value is used
 	// verbatim. Either way the result is tagged StrategyLiteral.
-	return NewSecretValue(raw, []byte(literalValue(raw)), StrategyLiteral), nil
+	return NewSecretValue(raw, []byte(literalValue(raw)), StrategyLiteral)
 }
 
 // IsSecretURI reports whether raw is a resolvable reference: either a

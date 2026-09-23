@@ -45,7 +45,7 @@ func (r *fakeResolver) Resolve(ctx context.Context, raw string) (*secret.SecretV
 	if r.err != nil {
 		return nil, r.err
 	}
-	return secret.NewSecretValue(raw, r.value, secret.StrategyLiteral), nil
+	return secret.NewSecretValue(raw, r.value, secret.StrategyLiteral)
 }
 
 func TestResolverRegistry_DispatchOrder(t *testing.T) {

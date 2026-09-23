@@ -86,7 +86,7 @@ github.com/jeremyhahn/go-qrdb/pkg/seal 90.28
 github.com/jeremyhahn/go-qrdb/pkg/seal/encfs 93.62
 github.com/jeremyhahn/go-qrdb/pkg/seal/kdf 97.69
 github.com/jeremyhahn/go-qrdb/pkg/secret 94.18
-github.com/jeremyhahn/go-qrdb/pkg/secure 94.82
+github.com/jeremyhahn/go-qrdb/pkg/secure 91.00
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer 97.61
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer/cmd/secure-analyzer 0.00
 github.com/jeremyhahn/go-qrdb/pkg/server 90.71

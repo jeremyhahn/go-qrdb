@@ -29,6 +29,6 @@
 			}
 		}
 	},
-	"capAdd": ["NET_ADMIN"],
+	"capAdd": ["NET_ADMIN", "IPC_LOCK"],
 	"remoteUser": "root"
 }

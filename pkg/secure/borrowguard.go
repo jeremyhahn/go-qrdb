@@ -21,26 +21,35 @@ import (
 	"sync/atomic"
 )
 
-// The borrow guard turns the ONE failure mode this package cannot report into
-// one a test can catch.
+// The borrow guard turns a failure mode this package cannot always report
+// into one a test can catch.
 //
-// purgeMu is an RWMutex and Go's RWMutex is not reentrant. A goroutine holding
-// a borrow (shared) that reaches a purge-class operation (exclusive) blocks on
-// itself, forever, with no error, no panic and no stack — the daemon simply
-// stops. The only symptom is a CI job that hangs until its wall-clock limit
-// and reports a timeout naming whichever test happened to be running.
+// Before go-qrdb#114/#553, this package serialized every allocation and every
+// Destroy against every borrow on ONE process-wide purgeMu, because
+// memguard's failure path purged the whole process. purgeMu was an RWMutex,
+// Go's RWMutex is not reentrant, and a goroutine holding a borrow (shared)
+// that reached a purge-class operation (exclusive) blocked on itself,
+// forever, with no error, no panic and no stack — the daemon simply stopped.
 //
-// That symptom is useless for the thing it is a symptom of, and the hazard is
-// not hypothetical: it is why converting a Buffer.Bytes() reader to WithBytes
-// cannot be mechanical (go-qrdb#74). Whether a callback is safe is a question
-// about everything the callback can reach, transitively, through interfaces
-// the caller does not own.
+// go-enclave removed that global lock: each enclave.MemoryEnclave and
+// enclave.SealedEnclave carries its own lock, so allocating or destroying one
+// object no longer excludes a borrow of a DIFFERENT one, and the wide
+// process-wide deadlock purgeMu made possible is gone with it. What remains
+// is the narrower hazard any RWMutex has — reentering the SAME object's lock
+// from inside its own borrow still deadlocks — plus the standing style rule
+// that a WithBytes callback must not call back into this package at all,
+// which this guard keeps enforcing so the wider hazard cannot be
+// reintroduced by some future change to how protected memory is locked.
+// Whether a callback is safe is a question about everything it can reach,
+// transitively, through interfaces the caller does not own (go-qrdb#74), so
+// the guard remains the check rather than something read off the code.
 //
-// So the guard makes the violation LOUD instead of silent. While it is armed,
-// every purge-class and borrow-class entry point asks whether THIS goroutine
-// already holds a borrow, and reports a *NestedBorrowError before taking the
-// lock that would wedge. A bad conversion then fails one test with both stacks
-// attached, rather than hanging the suite.
+// So the guard makes a violation LOUD instead of silent. While it is armed,
+// every constructor/Destroy-shaped and borrow-shaped entry point asks
+// whether THIS goroutine already holds a borrow, and reports a
+// *NestedBorrowError rather than proceeding into a call that risks wedging.
+// A bad conversion then fails one test with both stacks attached, rather
+// than hanging the suite.
 //
 // # Why goroutine identity, and what it costs
 //
@@ -64,6 +73,45 @@ import (
 // borrowGuardArmed reports whether the guard is on. Read on every instrumented
 // operation, so it is an atomic rather than anything requiring a lock.
 var borrowGuardArmed atomic.Bool
+
+// checkNoBorrow, enterBorrow and exitBorrow are the ONLY places this package
+// touches the borrow-guard bookkeeping. They exist so the guard hook has
+// exactly one home per call shape, the way lockPurge/rLockBorrow did when
+// this package serialized against memguard's process-wide purge (go-qrdb#71).
+//
+// go-enclave (go-qrdb#114, go-qrdb#553) removed that global lock: each
+// enclave.MemoryEnclave and enclave.SealedEnclave carries its own read/write
+// lock, so a purge-class operation on one Buffer or Secret no longer excludes
+// a borrow of a DIFFERENT one. What survives is the narrower, per-object
+// hazard every RWMutex has — reentering the SAME object's lock from inside
+// its own borrow deadlocks — plus the discipline of never calling back into
+// this package from inside a WithBytes callback at all, which the guard keeps
+// enforcing so that hazard cannot be reintroduced by a future change to how
+// enclave locking works. checkNoBorrow marks a constructor/Destroy-shaped
+// call; enterBorrow/exitBorrow bracket a Bytes/Size/WithBytes-shaped one.
+
+// checkNoBorrow reports (if the guard is armed) a violation when the calling
+// goroutine already holds a borrow and is entering a constructor or Destroy.
+func checkNoBorrow(op string) {
+	if borrowGuardArmed.Load() {
+		guardAssertNoBorrow(op)
+	}
+}
+
+// enterBorrow records (if the guard is armed) that the calling goroutine has
+// taken a borrow, reporting a violation first if it already held one.
+func enterBorrow(op string) {
+	if borrowGuardArmed.Load() {
+		guardEnterBorrow(op)
+	}
+}
+
+// exitBorrow undoes what enterBorrow recorded, if the guard is armed.
+func exitBorrow() {
+	if borrowGuardArmed.Load() {
+		guardExitBorrow()
+	}
+}
 
 // borrowViolation holds the installed handler. atomic.Pointer to a func value
 // rather than atomic.Value, for the same lock-free type-safe swap Secret uses.
@@ -105,11 +153,11 @@ type BorrowViolationFunc func(*NestedBorrowError)
 // function that restores the previous state.
 //
 // While armed, a goroutine that already holds a borrow and then enters any
-// purge-class operation (NewBuffer, NewBufferFromBytes, NewSecret,
-// NewSecretFromBuffer, Secret.Open, either Destroy, Purge) or any further
-// borrow-class operation (Buffer.Bytes, Buffer.Size, Buffer.WithBytes) is
-// reported to onViolation with a *NestedBorrowError, BEFORE the lock that
-// would wedge is taken.
+// constructor/Destroy-shaped operation (NewBuffer, NewBufferFromBytes,
+// NewSecret, NewSecretFromBuffer, Secret.Open, either Destroy) or any further
+// borrow-shaped operation (Buffer.Bytes, Buffer.Size, Buffer.WithBytes) is
+// reported to onViolation with a *NestedBorrowError, before the call is
+// allowed to proceed.
 //
 // A nil onViolation panics with the error, which is the right default: the
 // alternative is to return and hang.

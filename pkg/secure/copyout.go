@@ -39,11 +39,11 @@ type Borrower interface {
 // four lines, and both were found in review rather than designed in:
 //
 // The destination is allocated INSIDE the callback from len(src), never from a
-// Size call beforehand. Size takes and releases the purge lock, so sizing first
-// leaves a gap before the borrow reacquires it; a process-wide purge landing in
-// that gap yields a correctly sized destination and an empty source, the copy
-// becomes a no-op, and the caller receives a run of zeros it has no way to tell
-// from the real material.
+// Size call beforehand. Size takes and releases its own borrow, so sizing first
+// leaves a gap before the copy's borrow is taken; a concurrent destroy (a
+// shutdown enclave.WipeAll) landing in that gap yields a correctly sized
+// destination and an empty source, the copy becomes a no-op, and the caller
+// receives a run of zeros it has no way to tell from the real material.
 //
 // An empty source is therefore REFUSED (*EmptyBorrowError) rather than copied.
 // A caller that acts on the result — spending a one-time recovery share,
@@ -51,8 +51,9 @@ type Borrower interface {
 //
 // fn-free by construction: the callback allocates ordinary heap memory and
 // calls copy, and reaches nothing in this package. That matters, because a
-// callback that reached a purge-class operation would deadlock against the
-// borrow this function is holding.
+// callback that destroyed the borrowed buffer would deadlock against the
+// borrow this function is holding, and any other call back into this package
+// breaks the rule the borrow guard enforces (see borrowguard.go).
 func CopyOut(b Borrower) ([]byte, error) {
 	if b == nil {
 		return nil, &NilBufferError{}

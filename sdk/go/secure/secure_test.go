@@ -254,3 +254,88 @@ func TestBorrower_IsSatisfiedByTheSDKBuffer(t *testing.T) {
 		t.Errorf("CopyOut(Borrower) = %q, want %q", out, "borrowable")
 	}
 }
+
+// TestErrorReExports_AreDistinctAndPopulated pins the SDK's go-enclave error
+// re-exports as a consumer sees them: every sentinel is populated, and no two
+// names alias the same value — a copy-paste slip that re-exported one
+// go-enclave sentinel under two SDK names would leave a caller's errors.Is
+// matching a condition it did not ask about.
+func TestErrorReExports_AreDistinctAndPopulated(t *testing.T) {
+	sentinels := map[string]error{
+		"ErrAllocatorInstalled":      securesdk.ErrAllocatorInstalled,
+		"ErrBudgetExhausted":         securesdk.ErrBudgetExhausted,
+		"ErrLockedMemoryUnavailable": securesdk.ErrLockedMemoryUnavailable,
+		"ErrReleasedWithoutWipe":     securesdk.ErrReleasedWithoutWipe,
+		"ErrSealerWiped":             securesdk.ErrSealerWiped,
+		"ErrSealFailed":              securesdk.ErrSealFailed,
+		"ErrMaterialTooLarge":        securesdk.ErrMaterialTooLarge,
+		"ErrSealedAuthentication":    securesdk.ErrSealedAuthentication,
+		"ErrPlaintextEscaped":        securesdk.ErrPlaintextEscaped,
+		"ErrInvalidBudget":           securesdk.ErrInvalidBudget,
+		"ErrNilAllocator":            securesdk.ErrNilAllocator,
+		"ErrBudgetExceedsRLimit":     securesdk.ErrBudgetExceedsRLimit,
+		"ErrLimitDiscoveryFailed":    securesdk.ErrLimitDiscoveryFailed,
+	}
+	seen := make(map[error]string, len(sentinels))
+	for name, err := range sentinels {
+		if err == nil {
+			t.Errorf("%s is nil", name)
+			continue
+		}
+		if other, dup := seen[err]; dup {
+			t.Errorf("%s and %s re-export the same sentinel %q", name, other, err)
+		}
+		seen[err] = name
+	}
+}
+
+// TestErrorReExports_MatchWhatTheSDKReturns drives the SDK calls that fail
+// deterministically without touching process state and matches their errors
+// against the SDK's own re-exports, the only names an SDK-only consumer has.
+func TestErrorReExports_MatchWhatTheSDKReturns(t *testing.T) {
+	tests := []struct {
+		name string
+		call func() error
+		want error
+	}{
+		{
+			name: "NewAllocatorWithinRLimit refuses a non-positive budget",
+			call: func() error {
+				_, err := securesdk.NewAllocatorWithinRLimit(0)
+				return err
+			},
+			want: securesdk.ErrInvalidBudget,
+		},
+		{
+			// A nil allocator is refused before the one-shot install check, so
+			// this leaves the process allocator exactly as it found it.
+			name: "SetAllocator refuses a nil allocator",
+			call: func() error { return securesdk.SetAllocator(nil) },
+			want: securesdk.ErrNilAllocator,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want errors.Is(err, %v)", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestDiscoverLockedMemoryLimit_ReportsASource pins the re-export a binary
+// derives its budget from: discovery succeeds on this host and always names
+// where its figure came from, and a Bounded limit carries a positive figure.
+func TestDiscoverLockedMemoryLimit_ReportsASource(t *testing.T) {
+	limit, err := securesdk.DiscoverLockedMemoryLimit()
+	if err != nil {
+		t.Fatalf("DiscoverLockedMemoryLimit: %v", err)
+	}
+	if limit.Source == securesdk.LimitUnknown {
+		t.Errorf("successful discovery reported source %v", limit.Source)
+	}
+	if limit.Bounded && (limit.Bytes <= 0 || limit.Source != securesdk.LimitRLimit) {
+		t.Errorf("bounded limit = %+v, want a positive RLIMIT_MEMLOCK figure", limit)
+	}
+}

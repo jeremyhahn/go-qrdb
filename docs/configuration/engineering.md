@@ -13,6 +13,7 @@ func (c *Config) EffectiveCapabilities() ...     // sealed into pkg/capabilities
 func (c *SealConfig) CanonicalStrategy() string  // canonicalizes the "software" alias
 
 const DefaultServerHost = "0.0.0.0"              // the defaults-layer bind host
+const DefaultSecureMemoryBudgetMiB int64 = 64    // ceiling of the derived secure-memory budget
 
 type LoadError struct{ /* implements error and Unwrap() */ }
 type ValidationError struct{ /* field path + reason */ }
@@ -59,6 +60,13 @@ flags alone.
   literal is the defaults-layer value that path overrides — `DefaultServerHost`,
   read by both `DefaultConfig()` and the `--host` flag default, so there is one
   value and one place to change it.
+- **`server.secure_memory_budget_mib` defaults to `0`, meaning "derive".**
+  `DefaultConfig()` and the `--secure-memory-budget-mib` flag default both
+  leave it at zero so a configured value is always distinguishable from the
+  default; `qrdbd start` derives the budget from `RLIMIT_MEMLOCK`, capped at
+  `DefaultSecureMemoryBudgetMiB`. `Validate()` refuses a negative value or one
+  that overflows converting to bytes. See [cli.md](cli.md#secure-memory-budget)
+  and [../deployment/engineering.md](../deployment/engineering.md).
 - **A resolved value must reach its consumer.** `server.host` is carried into
   the `*Config` the daemon hands `server.New`, and every listener joins that
   field with its port; a field that is defined, validated and then replaced

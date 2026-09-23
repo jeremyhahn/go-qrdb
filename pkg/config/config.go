@@ -20,6 +20,7 @@ package config
 
 import (
 	"crypto/tls"
+	"math"
 	"strings"
 	"time"
 
@@ -255,7 +256,35 @@ type ServerConfig struct {
 	// where the API and Raft planes are reached over different addresses (NAT,
 	// split networking) must set it explicitly.
 	AdvertiseHost string `yaml:"advertise_host"`
+
+	// SecureMemoryBudgetMiB bounds the process-wide locked-memory (mlock)
+	// budget every secure.Buffer allocation and Secret.Open this node makes —
+	// cluster DEKs, credentials, PINs — admits against
+	// (enclave.NewAllocatorWithinRLimit + enclave.SetAllocator, installed by
+	// `qrdbd start` before anything allocates, go-qrdb#114).
+	//
+	// Zero, the default, means "not configured": `qrdbd start` derives the
+	// budget from the host's RLIMIT_MEMLOCK as the smaller of
+	// DefaultSecureMemoryBudgetMiB and the limit less a fixed headroom for
+	// locked memory outside the budget, and logs the figure and its source.
+	// A positive value is used as given, and one that exceeds the host's
+	// discovered RLIMIT_MEMLOCK ceiling is refused at startup, naming the
+	// limit and how to raise it, rather than failing an allocation later under
+	// load. Sourced from --secure-memory-budget-mib,
+	// QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB or server.secure_memory_budget_mib.
+	SecureMemoryBudgetMiB int64 `yaml:"secure_memory_budget_mib"`
 }
+
+// DefaultSecureMemoryBudgetMiB is the locked-memory budget an unconfigured
+// node gets when the host's RLIMIT_MEMLOCK leaves room for it, and the ceiling
+// of the budget derived from a smaller limit: generous enough for cluster
+// DEKs, credentials and PINs (all KB-scale) with headroom for concurrent
+// unseal/rotation traffic, while still bounding what an authenticated caller
+// can drive this process to mlock. Like DefaultServerHost, this is the ONLY
+// place the literal appears. DefaultConfig leaves SecureMemoryBudgetMiB at
+// zero ("derive from the host"), so a configured value is always
+// distinguishable from this default.
+const DefaultSecureMemoryBudgetMiB int64 = 64
 
 // DefaultServerHost is the defaults-layer bind host for every API listener.
 // The wildcard preserves the historical out-of-the-box behaviour (a node
@@ -1083,12 +1112,13 @@ var validCredentialStrategies = map[string]struct{}{
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			AdminPort: 63002,
-			GRPCPort:  63003,
-			QUICPort:  63004,
-			MySQLPort: 3306,
-			PgSQLPort: 5432,
-			Host:      DefaultServerHost,
+			AdminPort:             63002,
+			GRPCPort:              63003,
+			QUICPort:              63004,
+			MySQLPort:             3306,
+			PgSQLPort:             5432,
+			Host:                  DefaultServerHost,
+			SecureMemoryBudgetMiB: 0, // derive from RLIMIT_MEMLOCK at start
 		},
 		Protocols: ProtocolsConfig{
 			REST: true,
@@ -1504,6 +1534,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.Host == "" {
 		return &ValidationError{Field: "server.host", Reason: "must not be empty"}
+	}
+	if c.Server.SecureMemoryBudgetMiB < 0 {
+		// Zero means "unconfigured, derive from RLIMIT_MEMLOCK" (cmd/qrdbd
+		// resolveSecureMemoryBudget); a negative value is a
+		// configuration mistake with no meaning of its own and must fail
+		// closed here, at config load, rather than reach runStart and either
+		// silently default or, worse, be shifted into bytes (go-qrdb#114
+		// review, round 2).
+		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "must not be negative"}
+	}
+	if c.Server.SecureMemoryBudgetMiB > math.MaxInt64>>20 {
+		// cmd/qrdbd converts this value to bytes via a left shift by 20; a
+		// value this large would overflow int64 and silently install a much
+		// SMALLER effective budget than configured instead of failing
+		// (go-qrdb#114 review, round 2).
+		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "too large: converting to bytes would overflow"}
 	}
 
 	if c.Raft.DataDir == "" {

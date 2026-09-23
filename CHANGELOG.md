@@ -11,6 +11,94 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`sdk/go/secret.SealFailedError`** re-exports `pkg/secret.SealFailedError`
+  (go-qrdb#114 review), so an SDK-only consumer can `errors.As` against a
+  `NewSecretValue` sealing failure without importing the internal `pkg/secret`
+  path.
+- **`sdk/go/secure.ErrBudgetExhausted`, `ErrLockedMemoryUnavailable`,
+  `ErrReleasedWithoutWipe`, `ErrSealerWiped`, `ErrSealFailed`,
+  `ErrMaterialTooLarge`, `ErrSealedAuthentication`, `ErrPlaintextEscaped`,
+  `ErrInvalidBudget`, `ErrNilAllocator`, `ErrBudgetExceedsRLimit`,
+  `ErrLimitDiscoveryFailed`**, and the **`RLimitError`/`LimitDiscoveryError`**
+  types, re-export the go-enclave errors this package's own public API can
+  actually return (go-qrdb#114 review), so an SDK-only consumer can
+  `errors.Is`/`errors.As` against them without importing raw `go-enclave`.
+
+### Changed — BREAKING
+
+- **`pkg/secure`/`sdk/go/secure` no longer wrap memguard; they wrap
+  `github.com/jeremyhahn/go-enclave` v0.6.0-alpha (go-qrdb#114, go-qrdb#553).**
+  `Buffer` and `Secret`'s own public API (`NewBuffer`, `NewBufferFromBytes`,
+  `Bytes`, `WithBytes`, `Size`, `Destroy`, `Wipe`, `NewSecret`,
+  `NewSecretFromBuffer`, `Open`) is UNCHANGED — a failed allocation now
+  returns a typed, recoverable error (`errors.Is` against
+  `enclave.ErrBudgetExhausted` / `enclave.ErrLockedMemoryUnavailable`, or
+  `*InvalidSizeError`) instead of memguard's process-wide purge-then-panic.
+  `Buffer` gains `DestroyErr() error`, the checked form of `Destroy()` that
+  surfaces `enclave.ErrReleasedWithoutWipe` (a denied mprotect during
+  release) instead of discarding it — `Destroy()` itself is unchanged and
+  still discards it, for the many existing `defer buf.Destroy()` call sites.
+  What IS removed, with no replacement in `pkg/secure`:
+  - `secure.CatchInterrupt()`, `secure.EnablePurge()`, `secure.Purge() error`,
+    `secure.PurgeOrPanic()`, `secure.NotInitializedError` — these belonged to
+    memguard's process-signal-driven purge lifecycle, which go-enclave does
+    not have. **Migration:** a binary that owned this lifecycle now installs
+    a process-wide locked-memory budget once at startup with
+    `sdk/go/secure.SetAllocator` (built via
+    `sdk/go/secure.NewAllocatorWithinRLimit`) and sweeps it on orderly
+    shutdown with `sdk/go/secure.WipeAll() (int, error)` — see
+    `cmd/qrdbd/start.go`'s `runStart` for the reference wiring, including
+    treating `sdk/go/secure.ErrAllocatorInstalled` as non-fatal and checking
+    `WipeAll`'s remaining-enclave count. Neither call installs a signal
+    handler; the owning binary keeps driving its own graceful shutdown.
+  - `pkg/secure/analyzer`'s rule 1 (no raw `memguard` import) no longer
+    exempts `pkg/secure` itself — the import is banned everywhere in this
+    repository now, with no carve-out, since `pkg/secure` no longer needs it.
+- **`SecretValue.WithBytes` (`pkg/secret`, re-exported by `sdk/go/secret`)
+  now holds the transient buffer's borrow for the callback's entire call
+  (go-qrdb#114 review).** Previously the callback received an alias whose
+  borrow had already been released, so a concurrent `WipeAll` could unmap the
+  pages while it was reading them. Now a `WipeAll` during the callback skips
+  that buffer and counts it in its remaining total, and, with the borrow guard
+  armed (`GuardBorrows` / `EnableBorrowGuard`), a callback that calls back into
+  `pkg/secure` / `sdk/go/secure` is reported as a nested borrow. **Migration:**
+  a callback must not retain the slice (unchanged), should not call back into
+  the secure-memory package, and should not block longer than a shutdown
+  sweep can wait for it.
+- **`ConfigProcessor.Process` fails closed when a resolved plain-string value
+  cannot be read back (go-qrdb#114 review).** It used to write `""` into the
+  field and count it resolved; the field now keeps its reference, the path is
+  reported `Unresolved`, and the new `secret.ResolvedReadError` (re-exported by
+  `sdk/go/secret`) is recorded in `Errors`.
+- **An unconfigured `server.secure_memory_budget_mib` is derived from the
+  host (go-qrdb#114 review; owner ruling 2026-09-25).** The default is now `0`,
+  meaning `qrdbd start` installs the smaller of 64 MiB and `RLIMIT_MEMLOCK`
+  less 2 MiB of headroom, and logs the figure and its source. A stock 8 MiB
+  container limit therefore starts with a 6 MiB budget instead of failing. A
+  limit that leaves less than 1 MiB fails `start` with
+  `SecureMemoryLimitTooSmallError`. An explicit budget above the limit still
+  fails `start`, and the error now says how to raise the limit. The compose
+  files, the devcontainer and the runtime image now ship or document
+  `IPC_LOCK` and an unlimited memlock ulimit; see `docs/deployment/`.
+  `sdk/go/secure` re-exports `DiscoverLockedMemoryLimit`,
+  `LockedMemoryLimit` and `LimitSource`.
+- **`secure.NewSecretFromBuffer` seals straight from the input buffer's
+  pages** — no intermediate plaintext copy, and no admitted allocation, so an
+  exhausted budget no longer makes it fail. The input is consumed on every
+  path past the nil/destroyed checks, including a sealing failure.
+- **`pkg/secret.NewSecretValue` returns `(*SecretValue, error)`, not
+  `*SecretValue` (go-qrdb#114 review).** It used to swallow a
+  `secure.NewSecret` sealing failure and return a `SecretValue` whose
+  accessors silently reported empty — indistinguishable from a reference that
+  legitimately resolves to nothing, so a credential could vanish from
+  configuration with no error anywhere. A sealing failure is now
+  `*secret.SealFailedError`. `sdk/go/secret.NewSecretValue` is a function-value
+  alias and inherits the new signature automatically; every caller — in this
+  repository and downstream (go-xkms's `NewLiteralSecretValue` wraps this
+  function) — must be updated to check the error.
+
 ## [0.20.6-alpha] - 2026-09-25
 
 ### Fixed

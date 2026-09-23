@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 // errNoCertsInPEM is returned when a PEM file contains no valid certificate
@@ -603,3 +605,150 @@ type SystemMigrationSealDisabledError struct{}
 func (e *SystemMigrationSealDisabledError) Error() string {
 	return "qrdbd: cannot enable encryption: seal.enabled is false for this node"
 }
+
+// errSecureMemoryBudgetNegative is wrapped by SecureMemoryBudgetError when
+// the configured budget is negative. Only exactly zero means "unconfigured,
+// use the default" (runStart's own convention for --discovery-cluster-size,
+// --cluster-min-peers, --max-in-mem-log-size); a negative value is a
+// configuration mistake and must fail closed rather than silently fall back
+// to the default budget the operator did not ask for (go-qrdb#114 review,
+// round 2).
+var errSecureMemoryBudgetNegative = errors.New("secure memory budget must not be negative")
+
+// errSecureMemoryBudgetOverflow is wrapped by SecureMemoryBudgetError when
+// converting the configured MiB value to bytes (a left shift by 20) would
+// overflow int64. Left unchecked, an operator-supplied value near
+// math.MaxInt64 wraps around to a small or even negative byte count, silently
+// installing a MUCH smaller effective budget than configured rather than
+// failing (go-qrdb#114 review, round 2).
+var errSecureMemoryBudgetOverflow = errors.New("secure memory budget in MiB overflows converting to bytes")
+
+// secureMemoryLimitRemedy is appended to a SecureMemoryBudgetError whose cause
+// is the host's locked-memory ceiling, so the operator reads what to change in
+// the same line that says what failed.
+const secureMemoryLimitRemedy = "raise the host's locked-memory limit " +
+	"(`ulimit -l`, LimitMEMLOCK= in the systemd unit, or --ulimit memlock=-1:-1 " +
+	"and --cap-add IPC_LOCK for a container) or set --secure-memory-budget-mib " +
+	"to a value that fits within it"
+
+// SecureMemoryBudgetError is returned when the process-wide locked-memory
+// budget (--secure-memory-budget-mib / QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB /
+// server.secure_memory_budget_mib) cannot be resolved or installed —
+// typically because it exceeds the host's discovered RLIMIT_MEMLOCK ceiling.
+// BudgetMiB is the configured figure, named explicitly so the operator does
+// not have to cross-reference the flag default against the error to find out
+// what value was rejected; it is 0 when nothing was configured and the budget
+// could not be derived from the host.
+type SecureMemoryBudgetError struct {
+	BudgetMiB int64
+	Err       error
+}
+
+// Error returns a human-readable description naming the rejected budget, and
+// how to raise the host limit when that limit is the cause.
+func (e *SecureMemoryBudgetError) Error() string {
+	var msg string
+	if e.BudgetMiB == 0 {
+		msg = "qrdbd: cannot derive a secure memory budget from the host's locked-memory limit: " + e.Err.Error()
+	} else {
+		msg = "qrdbd: secure memory budget " + strconv.FormatInt(e.BudgetMiB, 10) +
+			" MiB rejected (see --secure-memory-budget-mib): " + e.Err.Error()
+	}
+	var tooSmall *SecureMemoryLimitTooSmallError
+	if errors.Is(e.Err, secure.ErrBudgetExceedsRLimit) || errors.As(e.Err, &tooSmall) {
+		msg += "; " + secureMemoryLimitRemedy
+	}
+	return msg
+}
+
+// Unwrap returns the underlying go-enclave error.
+func (e *SecureMemoryBudgetError) Unwrap() error { return e.Err }
+
+// SecureMemoryLimitTooSmallError is wrapped by SecureMemoryBudgetError when
+// no budget was configured and the host's binding RLIMIT_MEMLOCK, less the
+// headroom reserved for locked allocations outside the budget, leaves less
+// than the minimum budget qrdbd will run with. All three figures are in bytes.
+type SecureMemoryLimitTooSmallError struct {
+	// LimitBytes is the discovered RLIMIT_MEMLOCK soft limit.
+	LimitBytes int64
+
+	// HeadroomBytes is the part of the limit reserved for unbudgeted locked
+	// allocations.
+	HeadroomBytes int64
+
+	// MinimumBytes is the smallest budget qrdbd will derive.
+	MinimumBytes int64
+}
+
+// Error names the limit, the headroom and the minimum.
+func (e *SecureMemoryLimitTooSmallError) Error() string {
+	return "RLIMIT_MEMLOCK is " + strconv.FormatInt(e.LimitBytes, 10) + " bytes; after the " +
+		strconv.FormatInt(e.HeadroomBytes, 10) + "-byte headroom for locked memory outside the budget, " +
+		"less than the " + strconv.FormatInt(e.MinimumBytes, 10) + "-byte minimum secure memory budget remains"
+}
+
+// SecureMemoryBudgetMismatchError is wrapped by SecureMemoryBudgetError when
+// setSecureAllocator reports enclave.ErrAllocatorInstalled and the ALREADY
+// installed allocator's own limit does not equal the byte value
+// --secure-memory-budget-mib configured.
+//
+// ErrAllocatorInstalled alone is not fatal (see runStart's own documentation
+// on this point) because a process allocator already existing, installed
+// earlier in this same process or by a library's lazy default, is not by
+// itself a reason to refuse to start. But treating it as UNCONDITIONALLY
+// benign was itself the defect (go-qrdb#114 review, round 3): a library that
+// allocated protected memory before runStart reached this line installs the
+// lazy default sized to the discovered RLIMIT_MEMLOCK ceiling, not the
+// operator's configured figure, and every protected allocation for the rest
+// of the process then silently runs against a budget nobody chose. Only an
+// installed allocator whose limit MATCHES what was configured is truly
+// benign; anything else must fail closed and name both figures so the
+// operator is not left debugging a budget that "worked" at a size they never
+// asked for.
+type SecureMemoryBudgetMismatchError struct {
+	// ConfiguredBytes is --secure-memory-budget-mib converted to bytes.
+	ConfiguredBytes int64
+
+	// InstalledBytes is the already-installed allocator's own Limit().
+	InstalledBytes int64
+}
+
+// Error names both the configured and the already-installed figures, in
+// bytes, so the mismatch is legible without cross-referencing MiB by hand.
+func (e *SecureMemoryBudgetMismatchError) Error() string {
+	return "qrdbd: a locked-memory allocator already installed in this process (" +
+		strconv.FormatInt(e.InstalledBytes, 10) + " bytes) does not match the configured budget (" +
+		strconv.FormatInt(e.ConfiguredBytes, 10) + " bytes); see --secure-memory-budget-mib"
+}
+
+// SecureMemoryWipeError is returned when shutdown's sweep of mlocked memory
+// (secure.WipeAll) did not fully complete: either enclaves were still held
+// when the sweep finished (Remaining > 0, a shutdown-ordering condition — see
+// enclave.WipeAll's documentation) or the sweep detected corrupted memory
+// (Err set). Either one means qrdbd cannot promise every locked-memory
+// enclave — every outstanding Buffer and every transiently-opened Secret
+// plaintext — was wiped before the process exits, which is why runStart
+// turns it into a nonzero exit rather than a log line an operator could miss.
+// It says nothing about a Secret's own ciphertext, which lives on the
+// ordinary heap by design and is unaffected by this sweep either way; see
+// enclave.WipeAll's documentation for that distinction.
+type SecureMemoryWipeError struct {
+	Remaining int
+	Err       error
+}
+
+// Error returns a human-readable description of what the sweep could not
+// account for.
+func (e *SecureMemoryWipeError) Error() string {
+	msg := "qrdbd: secure memory wipe incomplete at shutdown"
+	if e.Remaining > 0 {
+		msg += ": " + strconv.Itoa(e.Remaining) + " enclave(s) still held locked memory"
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the corruption error WipeAll detected, if any.
+func (e *SecureMemoryWipeError) Unwrap() error { return e.Err }

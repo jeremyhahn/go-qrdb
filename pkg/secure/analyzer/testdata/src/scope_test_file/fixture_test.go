@@ -1,7 +1,7 @@
 package scope_test_file
 
 import (
-	"github.com/awnumar/memguard" // want `import of "github.com/awnumar/memguard" is forbidden outside pkg/secure; use github.com/jeremyhahn/go-qrdb/pkg/secure instead`
+	"github.com/awnumar/memguard" // want `import of "github.com/awnumar/memguard" is forbidden; use github.com/jeremyhahn/go-qrdb/pkg/secure or github.com/jeremyhahn/go-enclave instead`
 	"golang.org/x/crypto/ssh"
 )
 

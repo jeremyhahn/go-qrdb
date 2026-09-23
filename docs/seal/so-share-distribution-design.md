@@ -64,9 +64,12 @@ code paths (`initializeShamirDirect`, `Rekey`, `GenerateRecoveryKeys`,
 ## 3. Model Choice: Server-Side Claim vs. Sealed Envelope
 
 The ceremony package supports two models:
-- **Claim model** (system barrier): `sealedShareStore` holds share in a memguard enclave;
-  SO authenticates (mTLS thumbprint challenge), claim call returns share once and destroys the
-  enclave.
+- **Claim model** (system barrier): `sealedShareStore` holds each share in a `secure.Secret`
+  (go-enclave `SealedEnclave`) — AES-256-GCM ciphertext and a wrapped data key on the ordinary
+  (unlocked) heap at rest, by design; only the moment a claim opens it does the plaintext exist
+  at all, and only then is it mlocked, guard-paged memory, wiped and unmapped the instant the
+  call returns. SO authenticates (mTLS thumbprint challenge), claim call returns share once and
+  destroys the enclave.
 - **Sealed-envelope model** (external officer): share sealed to SO's public key with
   RSA-OAEP / ECIES / X25519; ciphertext returned to the enrolling admin; SO decrypts with
   their private key offline.
@@ -393,7 +396,7 @@ authenticated mTLS session, exactly once.
 
 Unchanged. SOs call `BarrierUnsealShare` (or `TenantBarrierUnsealShare`),
 submitting their claimed share value. The `shamirShareAccumulator` holds submitted shares
-in memguard enclaves, deduplicates via SHA-256, reconstructs when threshold met, unseals the
+in go-enclave locked-memory enclaves, deduplicates via SHA-256, reconstructs when threshold met, unseals the
 barrier, and wipes all share material. This flow is already correct per the existing
 implementation.
 
@@ -939,7 +942,7 @@ Every invariant must be enforced by a failing test if violated.
 use `reflect.TypeOf(...).NumField()` and `reflect.TypeOf(...).FieldByName("Shares")` to assert
 the field does not exist.
 
-### INV-2: Share exists only in memguard enclave between split and claim
+### INV-2: Share exists only in a go-enclave locked-memory enclave between split and claim
 `sealedShareStore.Store` is the only path that accepts share bytes after `ShamirShareSplitter.Split`.
 The share bytes slice passed to `Store` is wiped before the call returns (existing behavior verified).
 **Test:** `TestSealAndDistribute_ShareWipedAfterStore` — inject a spy enclave factory, verify

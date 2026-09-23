@@ -202,8 +202,12 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - **Per-node key independence**: each node holds its own system barrier KEK; a
   tenant root key is re-wrapped under the *receiving* node's system barrier. A
   compromised node key does not expose tenant keys elsewhere.
-- **Key material lives in `memguard.LockedBuffer`** and is destroyed on seal.
-  After sealing, `GenerateClientCert()` returns `CAKeyNotAvailableError`.
+- **The CA key is a plain `[]byte` (DER-encoded), not a `secure.Buffer`.**
+  `DefaultCertProvider.caKey` is decrypted from its wrapped form on demand and
+  held only until the next `Seal()`, which zero-fills it with `secure.Wipe`
+  (a plain overwrite, not a go-enclave locked-memory enclave) and drops the
+  reference. After sealing, `GenerateClientCert()` returns
+  `CAKeyNotAvailableError`.
 - **Reads of protected key material hold the borrow across the read**, not just
   across the accessor. A tenant DEK served from cache and the recovery
   strategy's root key are both copied inside one coordinated borrow
@@ -211,11 +215,14 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   rather than handing back zeros of the right length.
 - **A read whose material crosses into an injected interface is the exception,
   and is marked as one.** `EncryptionBarrier.Encrypt`, `SealingStrategy` unseal
-  and the ceremony's barrier unseal are supplied by consumers; any conforming
-  implementation may allocate protected memory, and a borrow held across one
-  would deadlock at boot. Those sites read without a borrow deliberately, each
-  with a comment saying so, and are covered by a regression test that fails if
-  a borrow is reintroduced.
+  and the ceremony's barrier unseal are supplied by consumers, and any
+  conforming implementation may allocate protected memory of its own. Under
+  go-enclave that allocation no longer deadlocks a borrow held across the call
+  (the go-enclave migration removed the process-wide lock that made it), but converting
+  these sites to a held borrow is a separate, not-yet-landed change.
+  Those sites read without a borrow deliberately, each with a
+  comment saying so, and are covered by a regression test that fails if a
+  borrow is reintroduced.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
@@ -356,7 +363,7 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 
 | # | Rule | Scope |
 |---|---|---|
-| 1 | No raw `memguard` import outside `pkg/secure` / `sdk/go/secure` | Every file, tests included |
+| 1 | No raw `memguard` import anywhere (go-enclave is the protected-memory library; `pkg/secure` is its facade) | Every file, tests included |
 | 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
 | 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
 

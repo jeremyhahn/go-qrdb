@@ -403,18 +403,17 @@ func TestClusterDEKEncapsulation(t *testing.T) {
 	})
 }
 
-// withCurrentDEK holds the purge coordination for the WHOLE callback, not just
-// the slice-header read.
+// withCurrentDEK holds the DEK buffer's own borrow for the WHOLE callback, not
+// just the slice-header read.
 //
 // That is the entire point of go-qrdb#74. Before it, Bytes() returned a slice
 // the caller used after the call returned with no lock held, so a memguard
-// failure anywhere in the process could unmap those pages while WrapKey was
-// still reading them. The borrow is observable from inside fn: a purge-class
-// operation cannot take purgeMu while the callback runs.
-//
-// Asserted with TryLock rather than by attempting a real allocation, because a
-// real one would not fail — it would HANG, and a hung test reports no name and
-// no diagnosis.
+// failure anywhere in the process (today: a concurrent Destroy of this SAME
+// buffer, since go-enclave gives every buffer its own independent lock rather
+// than a process-wide one) could unmap those pages while WrapKey was still
+// reading them. See TestClusterDEKManager_WithCurrentDEK_HoldsTheBorrowAcrossTheCallback,
+// below, for how that is asserted and exactly what changed with the go-enclave
+// adoption (go-qrdb#114/#553).
 func TestClusterDEKManager_WithCurrentDEK_HoldsTheBorrowAcrossTheCallback(t *testing.T) {
 	ctx := context.Background()
 	mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
@@ -431,39 +430,47 @@ func TestClusterDEKManager_WithCurrentDEK_HoldsTheBorrowAcrossTheCallback(t *tes
 	require.NoError(t, err)
 	assert.Equal(t, []byte("tenant-key-material"), unwrapped)
 
-	// And the borrow really is held: a purge-class allocation started while the
-	// callback runs must not complete until the callback has returned.
+	// And the borrow really is held: a Destroy of the SAME live buffer started
+	// while the callback runs must not complete until the callback has
+	// returned.
+	//
+	// THE PROBE CHANGED WITH go-qrdb#114/#553, because the guarantee did.
+	// Until the go-enclave adoption this asserted that an UNRELATED protected
+	// allocation could not complete during the borrow — true then, because
+	// memguard's failure path purged the whole process and a package-wide
+	// lock serialized every allocation against every borrow to survive it.
+	//
+	// go-enclave gives every Buffer and Secret its own independent lock, so
+	// that lock is deliberately gone: an allocation of an UNRELATED object is
+	// now supposed to proceed while this borrow is held, and asserting the old
+	// exclusion would be asserting something false. What survives is the
+	// guarantee that actually matters here: only THIS enclave's own Destroy
+	// can release its pages, and Destroy takes the write lock, so it waits out
+	// every in-flight reader — the shape any sync.RWMutex gives for free.
 	//
 	// Asserted by ORDER, not by a timeout. The first version of this test
 	// waited 150ms and concluded "still blocked, therefore coordinated", which
-	// reports a false pass on any machine slow enough that the allocation had
+	// reports a false pass on any machine slow enough that the operation had
 	// not finished yet regardless (found in review of go-qrdb#74).
-	//
-	// The probe deliberately does NOT allocate protected memory to detect the
-	// parked writer: doing that from inside the borrow is itself the
-	// self-deadlock this whole package exists to prevent, which is what the
-	// first attempt at this helper did. Ordering alone is enough, and the
-	// mutation check proves it: with the coordination removed, the allocation
-	// completes first and this fails.
 	var order atomic.Int32
-	var borrowExit, allocExit int32
-	allocDone := make(chan struct{})
+	var borrowExit, destroyExit int32
+	destroyDone := make(chan struct{})
 	started := make(chan struct{})
+
+	live := livePlaintext(mgr)
+	require.NotNil(t, live)
 
 	require.NoError(t, mgr.withCurrentDEK("test", func(dek []byte) error {
 		require.Len(t, dek, 32)
 		go func() {
-			defer close(allocDone)
+			defer close(destroyDone)
 			close(started)
-			// A purge-class operation from an unrelated component: this is the
-			// real hazard, since memguard's failure path purges process-wide.
-			if b, berr := secure.NewBuffer(16); berr == nil {
-				b.Destroy()
-			}
-			allocExit = order.Add(1)
+			// The one operation that can still unmap these exact pages.
+			live.Destroy()
+			destroyExit = order.Add(1)
 		}()
 		<-started
-		// Give the allocator every chance to run to completion if nothing is
+		// Give the destroyer every chance to run to completion if nothing is
 		// stopping it. Yielding rather than sleeping keeps this a scheduling
 		// concession, not a duration the assertion depends on.
 		for i := 0; i < 1000; i++ {
@@ -473,9 +480,9 @@ func TestClusterDEKManager_WithCurrentDEK_HoldsTheBorrowAcrossTheCallback(t *tes
 		return nil
 	}))
 
-	<-allocDone
+	<-destroyDone
 	assert.Equal(t, int32(1), borrowExit, "the borrow must finish first")
-	assert.Equal(t, int32(2), allocExit, "the allocation must complete only after the borrow released")
+	assert.Equal(t, int32(2), destroyExit, "Destroy must complete only after the borrow released")
 }
 
 // A destroyed DEK still reports NotInitializedError, not the borrow's own
@@ -602,10 +609,15 @@ type protectedAllocBarrier struct{ calls atomic.Int32 }
 
 func (b *protectedAllocBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	b.calls.Add(1)
-	// The offending act: purge-class work inside the callee. If the caller
-	// held a protected-memory borrow across this, purgeMu would be taken
-	// exclusively on a goroutine already holding it shared, and this would
-	// never return.
+	// The offending act: protected allocation inside the callee. Under
+	// memguard this deadlocked a caller holding a borrow across the call —
+	// its process-wide purgeMu would be taken exclusively on a goroutine
+	// already holding it shared. go-enclave gives every enclave its own
+	// independent lock, so this specific allocation can no longer deadlock
+	// against an unrelated borrow the caller might hold; what this call
+	// still tests is that NewClusterDEKManager tolerates an injected
+	// implementation doing this at all, per the interface-boundary
+	// discussion below.
 	scratch, err := secure.NewBuffer(16)
 	if err != nil {
 		return nil, err

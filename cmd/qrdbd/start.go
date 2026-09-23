@@ -92,6 +92,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdkgo "github.com/jeremyhahn/go-qrdb/sdk/go"
+	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -129,33 +130,40 @@ type startFlags struct {
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
 	// QRDB_SERVER_HOST or server.host under the documented precedence; its
 	// flag default is qrdbconfig.DefaultServerHost, the defaults layer.
-	host                 string
-	adminPort            int
-	grpcPort             int
-	maxInMemLogSize      uint64
-	maxTotalInMemLogSize uint64
-	snapshotEntries      uint64
-	compactionOverhead   uint64
-	join                 bool
-	logFormat            string
-	logLevel             string
-	debugRaft            bool
-	enableREST           bool
-	enableGRPC           bool
-	enableQUIC           bool
-	quicPort             int
-	enableUnix           bool
-	unixSocketPath       string
-	enableMCP            bool
-	mcpPort              int
-	mcpEndpoint          string
-	enableMySQL          bool
-	mysqlPort            int
-	enablePgSQL          bool
-	pgsqlPort            int
-	authEnabled          bool
-	separationOfDuties   bool
-	spiffeTrustDomain    string
+	host      string
+	adminPort int
+	grpcPort  int
+	// secureMemoryBudgetMiB bounds the process-wide locked-memory budget every
+	// secure.Buffer/Secret this node allocates admits against (installed in
+	// runStart via secure.NewAllocatorWithinRLimit + secure.SetAllocator,
+	// go-qrdb#114). Sourced from --secure-memory-budget-mib,
+	// QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB or server.secure_memory_budget_mib;
+	// 0, the default, means "derive from the host" (resolveSecureMemoryBudget).
+	secureMemoryBudgetMiB int64
+	maxInMemLogSize       uint64
+	maxTotalInMemLogSize  uint64
+	snapshotEntries       uint64
+	compactionOverhead    uint64
+	join                  bool
+	logFormat             string
+	logLevel              string
+	debugRaft             bool
+	enableREST            bool
+	enableGRPC            bool
+	enableQUIC            bool
+	quicPort              int
+	enableUnix            bool
+	unixSocketPath        string
+	enableMCP             bool
+	mcpPort               int
+	mcpEndpoint           string
+	enableMySQL           bool
+	mysqlPort             int
+	enablePgSQL           bool
+	pgsqlPort             int
+	authEnabled           bool
+	separationOfDuties    bool
+	spiffeTrustDomain     string
 	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
 	// Empty means the default. See qrdbconfig.AuthConfig.RevocationCacheTTL —
 	// it is the window during which a revoked certificate still authenticates.
@@ -502,6 +510,11 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.advertiseHost, "advertise-host", "", "Host or IP peers/clients use to reach this node's APIs (default: host portion of --raft-address)")
 	cmd.Flags().IntVar(&f.adminPort, "admin-port", 63002, "Admin HTTP server port")
 	cmd.Flags().IntVar(&f.grpcPort, "grpc-port", 63003, "gRPC server port")
+	cmd.Flags().Int64Var(&f.secureMemoryBudgetMiB, "secure-memory-budget-mib", qrdbconfig.DefaultConfig().Server.SecureMemoryBudgetMiB,
+		"Process-wide locked-memory (mlock) budget in MiB for cluster DEKs, credentials and PINs "+
+			"(0 = derive from RLIMIT_MEMLOCK: the smaller of "+strconv.FormatInt(qrdbconfig.DefaultSecureMemoryBudgetMiB, 10)+
+			" MiB and the limit less "+strconv.FormatInt(secureMemoryHeadroomBytes>>20, 10)+" MiB headroom); "+
+			"an explicit value above the host's RLIMIT_MEMLOCK is refused at startup; maps to server.secure_memory_budget_mib / QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB")
 	cmd.Flags().Uint64Var(&f.maxInMemLogSize, "max-in-mem-log-size", 0,
 		"Per-shard in-memory log size limit in bytes before rate limiting (0=disabled)")
 	cmd.Flags().Uint64Var(&f.maxTotalInMemLogSize, "max-total-in-mem-log-size", 0,
@@ -650,6 +663,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("grpc-port") {
 		f.grpcPort = cfg.Server.GRPCPort
+	}
+	if !cmd.Flags().Changed("secure-memory-budget-mib") {
+		f.secureMemoryBudgetMiB = cfg.Server.SecureMemoryBudgetMiB
 	}
 	if !cmd.Flags().Changed("max-in-mem-log-size") {
 		f.maxInMemLogSize = cfg.Raft.MaxInMemLogSize
@@ -948,11 +964,129 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 	}
 }
 
+// newSecureAllocator, setSecureAllocator, processSecureAllocator and
+// wipeSecureMemory indirect the process-wide, one-shot go-enclave lifecycle
+// calls runStart makes, purely for testability.
+//
+// SetAllocator can be satisfied only once per process, and WipeAll destroys
+// the process Sealer's keys PERMANENTLY (enclave.WipeAll's documentation) —
+// neither is something a test can undo. This package's own test suite calls
+// runStart directly, many times, in one shared test binary (TestRunStart_*,
+// the *_FullStartup tests, and every test driving newStartCmdWithFlags's
+// RunE through cmd.Execute()), which is many more times than the real
+// go-enclave lifecycle can be exercised before the SECOND call fails closed
+// on SetAllocator and the FIRST WipeAll poisons sealing for every later test
+// in the binary — measured, not theorized: that is exactly what happened
+// when these were wired to secure.NewAllocatorWithinRLimit / secure.SetAllocator
+// / secure.WipeAll directly. TestMain (signal_guard_test.go) installs
+// no-op-safe doubles over newSecureAllocator, setSecureAllocator and
+// wipeSecureMemory for the whole test binary (and over
+// discoverLockedMemoryLimit, so no test depends on the host's RLIMIT_MEMLOCK);
+// production main()/RunE never touches them and gets the real go-enclave
+// calls.
+//
+// processSecureAllocator is NOT read-only in general: when no process
+// allocator exists yet, ProcessAllocator installs go-enclave's lazy default.
+// runStart calls it only after setSecureAllocator has reported
+// ErrAllocatorInstalled — when an allocator already exists — so on that one
+// path it reads and installs nothing, which is why TestMain leaves it real.
+// It is indirected for the test double the ErrAllocatorInstalled mismatch
+// check needs (go-qrdb#114 review, round 3).
+var (
+	newSecureAllocator     = secure.NewAllocatorWithinRLimit
+	setSecureAllocator     = secure.SetAllocator
+	processSecureAllocator = secure.ProcessAllocator
+	wipeSecureMemory       = secure.WipeAll
+)
+
+// recordSecureMemoryWipe sweeps mlocked memory via wipeSecureMemory and
+// reports what it found. Split out of runStart, rather than inlined in its
+// defer, so it is unit-testable against a synthetic *error without driving
+// runStart to a real clean return — which needs a fully started node and
+// belongs to the *_FullStartup tests, not to a test of this function alone.
+//
+// A non-nil *err (an earlier failure already in flight) is never overwritten:
+// a wipe problem discovered on the way out of an already-failing runStart is
+// still logged, but the ORIGINAL failure is what the caller needs to see and
+// act on. Only a clean run (err == nil) is turned into the wipe failure, so a
+// caller checking runStart's return value cannot mistake an incomplete wipe
+// for success.
+func recordSecureMemoryWipe(err *error) {
+	remaining, werr := wipeSecureMemory()
+	if remaining == 0 && werr == nil {
+		return
+	}
+	wipeErr := &SecureMemoryWipeError{Remaining: remaining, Err: werr}
+	slog.Error("secure memory wipe incomplete at shutdown", "error", wipeErr)
+	if *err == nil {
+		*err = wipeErr
+	}
+}
+
 // runStart executes the start command logic: load or generate TLS, build
 // config, create the host, start the shard, build service layer, create
 // the multi-protocol server, and block until a termination signal is
 // received.
-func runStart(f *startFlags) error {
+//
+// It is the ONE subcommand that installs the process-wide locked-memory
+// budget (setSecureAllocator) and sweeps it on the way out (wipeSecureMemory):
+// `start` is the only qrdbd invocation that allocates protected memory —
+// cluster DEKs, credentials, PINs — so `status`/`peers`/
+// `version` are not made to satisfy an mlock budget they never use
+// (go-qrdb#114 review). Both run first/last respectively: the budget install
+// is the first statement in this function, before anything else can
+// allocate, and its defer is registered first so it is the LAST to run,
+// after every other cleanup in this function has released whatever
+// protected memory it held. The budget itself comes from
+// resolveSecureMemoryBudget: the configured figure when one is set, and
+// otherwise one derived from the host's RLIMIT_MEMLOCK; the chosen figure and
+// its source are logged once it is installed.
+//
+// ErrAllocatorInstalled from setSecureAllocator is NOT unconditionally
+// treated as a failure: it means a budget already exists — installed by an
+// earlier call in this same process, or by a library's lazy default — and
+// refusing to start over that would make qrdbd unable to run a second time in
+// a process that already has one for an unrelated, entirely benign reason.
+// But it is only benign when the ALREADY-installed allocator's own limit
+// equals what --secure-memory-budget-mib configured; otherwise the operator's
+// configured figure was silently discarded in favor of whatever installed it
+// first (typically the RLIMIT-sized lazy default), which is exactly the
+// silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
+// is fatal precisely because a MATCH is what makes the non-fatal case safe.
+func runStart(f *startFlags) (err error) {
+	budgetMiB := f.secureMemoryBudgetMiB
+	resolved, rerr := resolveSecureMemoryBudget(budgetMiB)
+	if rerr != nil {
+		return rerr
+	}
+	budgetBytes := resolved.bytes
+	budget, berr := newSecureAllocator(budgetBytes)
+	if berr != nil {
+		return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: berr}
+	}
+	if serr := setSecureAllocator(budget); serr != nil {
+		if !errors.Is(serr, secure.ErrAllocatorInstalled) {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: serr}
+		}
+		installed, paerr := processSecureAllocator()
+		if paerr != nil {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: paerr}
+		}
+		if installedBytes := installed.Limit(); installedBytes != budgetBytes {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: &SecureMemoryBudgetMismatchError{
+				ConfiguredBytes: budgetBytes,
+				InstalledBytes:  installedBytes,
+			}}
+		}
+	}
+	slog.Info("secure memory budget installed",
+		"budget_bytes", budgetBytes,
+		"source", string(resolved.source),
+		"rlimit_memlock_source", resolved.limit.Source.String(),
+		"rlimit_memlock_bytes", resolved.limit.Bytes,
+	)
+	defer recordSecureMemoryWipe(&err)
+
 	// Resolve TLS: explicit files -> cached certs -> generate/bootstrap.
 	bundle, bootServers, err := resolveTLS(f, slog.Default())
 	if err != nil {

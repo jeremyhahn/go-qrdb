@@ -131,6 +131,23 @@ func TestNewSecretFromBuffer_Destroyed(t *testing.T) {
 	}
 }
 
+// TestNewSecretFromBuffer_ZeroValue drives the size==0 guard with a Buffer
+// that never went through a constructor at all — the zero value the package
+// documentation calls unusable. Unlike a nil *Buffer (NilBufferError from the
+// top check) or a Destroyed one (NilBufferError from the destroyed check),
+// this exercises the third guard: a live-looking Buffer whose enclave was
+// never allocated, where enc.Size() must report 0 rather than panic.
+func TestNewSecretFromBuffer_ZeroValue(t *testing.T) {
+	sec, err := NewSecretFromBuffer(&Buffer{})
+	if err == nil || sec != nil {
+		t.Fatalf("expected error for a zero-value buffer, got sec=%v err=%v", sec, err)
+	}
+	var nb *NilBufferError
+	if !errors.As(err, &nb) {
+		t.Fatalf("expected *NilBufferError, got %T", err)
+	}
+}
+
 func TestSecret_OpenAfterDestroy(t *testing.T) {
 	sec, err := NewSecret([]byte("short-lived"))
 	if err != nil {
@@ -208,11 +225,11 @@ func TestSecret_ZeroValueUnusable(t *testing.T) {
 
 // TestSecret_Open_DecryptionFailure exercises the *OpenError branch of
 // Secret.Open by corrupting the sealed ciphertext inside the underlying
-// memguard.Enclave via reflect+unsafe. This is deliberately limited to test
-// code — no production code is modified. The technique accesses the
-// unexported ciphertext []byte field of the internal core.Enclave struct so
-// that decryption fails with ErrDecryptionFailed, causing Open to return a
-// *OpenError wrapping the underlying memguard error.
+// enclave.SealedEnclave via reflect+unsafe. This is deliberately limited to
+// test code — no production code is modified. The technique accesses the
+// unexported "sealed" []byte field so that decryption fails
+// authentication, causing Open to return an *OpenError wrapping the
+// underlying go-enclave error.
 func TestSecret_Open_DecryptionFailure(t *testing.T) {
 	src := []byte("material-for-corruption-test")
 	sec, err := NewSecret(src)
@@ -221,26 +238,34 @@ func TestSecret_Open_DecryptionFailure(t *testing.T) {
 	}
 	defer sec.Destroy()
 
-	// Load the enclave pointer and reach into its unexported ciphertext field
+	// Load the enclave pointer and reach into its unexported "sealed" field
 	// to corrupt it so decryption fails deterministically.
-	enc := sec.enclave.Load()
-	if enc == nil {
+	sealed := sec.enclave.Load()
+	if sealed == nil {
 		t.Fatal("enclave pointer is nil before corruption")
 	}
-	// enc is *memguard.Enclave which embeds *core.Enclave as field Enclave.
-	// Reflect into the core.Enclave to find its ciphertext.
-	coreEncVal := reflect.ValueOf(enc.Enclave).Elem()
-	ctField := coreEncVal.FieldByName("ciphertext")
+	sealedVal := reflect.ValueOf(sealed).Elem()
+	ctField := sealedVal.FieldByName("sealed")
 	if !ctField.IsValid() {
-		t.Skip("ciphertext field not found via reflection; memguard internals may have changed")
+		// go-enclave's internal field layout changed under this test. That is
+		// a real failure of this test's technique, not a reason to skip: a
+		// skipped test reports green while verifying nothing, which is worse
+		// than reporting the break (AGENTS.md: no skip guards).
+		t.Fatalf("SealedEnclave has no \"sealed\" field; go-enclave's internal " +
+			"layout changed and this test's reflection technique needs updating")
 	}
 	// Use unsafe to obtain a writable reference to the unexported slice.
 	ctPtr := (*[]byte)(unsafe.Pointer(ctField.UnsafeAddr()))
 	ct := *ctPtr
 	if len(ct) == 0 {
-		t.Skip("ciphertext is empty; cannot corrupt")
+		// A non-empty NewSecret input always produces non-empty ciphertext
+		// (plaintext length plus nonce and authentication tag), so this is
+		// the same class of failure as above: the test's assumption about
+		// go-enclave's internals broke, and it must fail loudly rather than
+		// report a skip that looks like a pass in CI.
+		t.Fatal("sealed ciphertext is empty; cannot corrupt a value that isn't there")
 	}
-	// Flip all bytes — the secretbox MAC will fail on decryption.
+	// Flip all bytes — the AEAD's authentication tag will fail on decryption.
 	for i := range ct {
 		ct[i] ^= 0xFF
 	}
@@ -254,6 +279,6 @@ func TestSecret_Open_DecryptionFailure(t *testing.T) {
 		t.Fatalf("expected *OpenError, got %T: %v", err, err)
 	}
 	if oe.Unwrap() == nil {
-		t.Fatalf("OpenError.Unwrap() must return the underlying memguard error")
+		t.Fatalf("OpenError.Unwrap() must return the underlying go-enclave error")
 	}
 }

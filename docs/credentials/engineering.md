@@ -42,7 +42,7 @@ implementation and a thin pass-through to `credentials.CredentialService`.
 
 | Strategy | Storage | Read semantics |
 |---|---|---|
-| `manual` | memguard secure enclave (`secure.Secret`) | **blocks until an operator submits the value**; plaintext materialized transiently (`Open → copy → Destroy`) |
+| `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; plaintext materialized transiently (`Open → copy → Destroy`) |
 | `barrier` | encrypt-then-store through `seal.StorageBarrier` | the production default; unreadable while sealed |
 
 `CredentialStrategy()` reports which is active. A future HSM-only strategy will
@@ -61,13 +61,43 @@ the interface.
   delete and on rotation.
 - **A read copies under a held borrow, and refuses an unreadable enclave.**
   The copy out of protected memory runs inside a single coordinated borrow
-  (`secure.CopyOut`) rather than sizing the destination and then reading it,
-  which are two separate acquisitions of the process-wide purge lock with a gap
-  between them. An enclave whose pages a purge has already taken yields
-  nothing, and the read **fails closed** rather than returning a correctly
-  sized run of zeros that a caller cannot tell from the real credential. The
-  same applies to a resolved `SecretValue`: `Bytes()` answers `nil` and
-  `String()` answers `""` when the material can no longer be read.
+  (`secure.CopyOut`) rather than sizing the destination and then reading it as
+  two separate calls, which would leave a gap between them in which a
+  concurrent destroy of that same enclave (`enclave.WipeAll`, or any other
+  caller with a handle to it) could land. An enclave whose pages are already
+  gone by the time the read happens yields nothing, and the read **fails
+  closed** rather than returning a correctly sized run of zeros that a caller
+  cannot tell from the real credential. The same applies to a resolved
+  `SecretValue`: `Bytes()` answers `nil` and `String()` answers `""` when the
+  material can no longer be read, and `WithBytes` holds the SAME enclave's
+  borrow for its callback's entire duration rather than releasing it before
+  the callback runs — a concurrent destroy blocks against that borrow instead
+  of racing it.
+- **A sealing failure is `*secret.SealFailedError`, and it fails closed rather
+  than returning an empty `SecretValue`.** `NewSecretValue` seals a resolved
+  value into a `secure.Secret` before returning it; if that seal fails (most
+  concretely a process Sealer wiped by `enclave.WipeAll`, or the kernel
+  refusing to lock the seal's key pages), a `SecretValue` whose accessors silently reported empty would be
+  indistinguishable from a reference that legitimately resolves to nothing —
+  a credential could vanish from configuration with no error anywhere.
+  `SealFailedError` unwraps to the underlying `secure.NewSecret` failure
+  (`errors.Is` against `enclave.ErrSealerWiped`, `enclave.ErrSealFailed`,
+  `enclave.ErrMaterialTooLarge` or `enclave.ErrLockedMemoryUnavailable` works
+  through it; never `ErrBudgetExhausted`, because sealing is not admitted
+  against the process locked-memory budget), and its `Ref` field never carries the resolved
+  plaintext: for a literal reference (`literal://...` or an unclaimed bare
+  value) the raw reference itself IS the secret rather than a pointer to one,
+  and `Ref` is redacted to `"[redacted]"` in that case — computed once at
+  construction and the only form of the reference this error retains, so
+  neither `Error()`, `%#v`, reflection, nor JSON encoding can recover the
+  plaintext through it. For every other strategy `Ref` is the raw reference
+  verbatim, since it only ever pointed at the secret rather than being it.
+- **An unreadable resolved value is `*secret.ResolvedReadError`, never `""`.**
+  When `ConfigProcessor.Process` resolves a plain `string` field but cannot
+  read the sealed result back (`SecretValue` open or copy failure), it leaves
+  the reference in the field, records the path as `Unresolved`, records a
+  `ResolvedReadError` wrapping the cause, and does not count it `Resolved`.
+  See [secret-resolution.md](secret-resolution.md).
 - **Rotation takes a grace period.** The previous version stays retrievable for
   that long; `0` wipes it immediately.
 - **`retrieve-version 0` means the current version.**
@@ -89,6 +119,7 @@ the interface.
 | Barrier sealed with the `barrier` strategy | refused | **yes** |
 | Protected config field with no secret reference | resolution fails | **yes** |
 | Unresolvable `credential://` reference at boot | boot fails | **yes** |
+| Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
 | `ListCredentials` on a future HSM-only strategy | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
 

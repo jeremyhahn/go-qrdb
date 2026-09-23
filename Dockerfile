@@ -99,5 +99,19 @@ COPY --from=builder /build/configs/qrdb.yaml /etc/qrdb/qrdb.yaml
 # Raft transport, REST admin, gRPC, QUIC
 EXPOSE 63001 63002 63003 63004
 
+# Locked memory. qrdbd keeps cluster keys, credentials and PINs in mlock'd
+# pages, admitted against a process-wide secure-memory budget. An image cannot
+# grant itself the capability or the ulimit that needs; they are RUN-time
+# settings, so run this image with both:
+#
+#   docker run --cap-add IPC_LOCK --ulimit memlock=-1:-1 ...
+#
+# (compose: `cap_add: [IPC_LOCK]` and `ulimits: {memlock: {soft: -1, hard: -1}}`).
+# Without them an unconfigured node derives a smaller budget from Docker's
+# default RLIMIT_MEMLOCK and logs it at startup, and an explicitly configured
+# budget above that limit refuses to start. See docs/deployment/.
+LABEL io.qrdb.requires.cap-add="IPC_LOCK" \
+      io.qrdb.requires.ulimit="memlock=-1:-1"
+
 ENTRYPOINT ["/app/qrdbd"]
 CMD ["start", "--config", "/etc/qrdb/qrdb.yaml"]

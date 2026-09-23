@@ -18,7 +18,7 @@ garbage-collected string.
 ## Shape chosen
 
 **Shares are never returned from initialization or rekey.** Each share is
-sealed into a server-side memguard enclave bound to an enrolled Security
+sealed into a server-side `secure.Secret` (go-enclave sealed enclave) bound to an enrolled Security
 Officer, who retrieves it **exactly once** through an mTLS-authenticated
 challenge/response claim. The full design contract is
 [seal/so-share-distribution-design.md](../seal/so-share-distribution-design.md).
@@ -37,7 +37,7 @@ challenge/response claim. The full design contract is
    registration requires the full initialization ceremony to establish a CA
    first.
 2. **Initialize** — `InitializeShamir` splits the secret and seals one share
-   per enrolled officer into a memguard enclave via the wired
+   per enrolled officer into a `secure.Secret` via the wired
    `CeremonyDistributor`.
 3. **Claim** — each officer authenticates with their own mTLS certificate and
    performs the two-step claim:
@@ -159,10 +159,16 @@ primitive.**
 
 - **No single custodian holds the complete root key.** Unseal requires M of N
   present, each proving possession of its share by challenge-response.
-- **Shares live only in memguard enclaves**, never as raw garbage-collected
-  strings. Deduplication is done against a SHA-256 digest so the raw share is
-  never retained as a map key; plaintext is materialized only transiently
-  during reconstruction and wiped immediately after.
+- **Shares never rest as raw garbage-collected strings.** A share awaiting
+  delivery is held as a `secure.Secret` — go-enclave sealed ciphertext on the
+  ordinary heap, opened into locked memory only for the instant a claim reads
+  it. A share submitted toward an unseal quorum is held in a go-enclave
+  locked-memory enclave (go-quicraft's `ProtectedShare`), which is not yet
+  charged to the process locked-memory budget — see
+  [../configuration/cli.md](../configuration/cli.md#locked-memory-outside-the-budget).
+  Deduplication is done against a SHA-256 digest so the raw share is never
+  retained as a map key; plaintext is materialized only transiently during
+  reconstruction and wiped immediately after.
 - **A share is delivered exactly once.** The server-side enclave is destroyed
   on successful claim.
 - **The claim nonce has a 5-minute TTL** and must be signed with the officer's

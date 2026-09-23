@@ -58,7 +58,8 @@ Two keys with completely different jobs:
   while the barrier is open.
 - **Data encryption key (DEK)** — a symmetric AES key that encrypts/decrypts
   **every** block, file, WAL record, and snapshot byte via AES-GCM. While
-  unsealed it lives in the **memguard enclave**, and the derived `cipher.AEAD`
+  unsealed it lives in a **go-enclave locked-memory enclave** (formerly
+  memguard), and the derived `cipher.AEAD`
   (AES key schedule) is **cached** so the hot path is pure AES-NI.
 
 ```
@@ -247,9 +248,9 @@ system recycle (keys are per-node), rolling.
   by that node's DEK, sealed by that node's strategy — useless without that
   node's unlock path. No single key compromises the cluster.
 - **Key lifetime:** root keys/credentials are transient at unseal; DEKs live in
-  the memguard enclave while unsealed (encrypted-in-memory, mlock'd) with only
-  the cached AEAD on the hot path. `U` (shamir) and passphrases are wiped after
-  unseal.
+  a go-enclave locked-memory enclave (formerly memguard) while unsealed
+  (mlock'd, guard-paged) with only the cached AEAD on the hot path. `U`
+  (shamir) and passphrases are wiped after unseal.
 - **Hardware non-export preserved:** per-node keys never leave their node; the
   §2 invariant prevents per-op HSM exposure.
 - **Separation of duties preserved:** shamir Option 3 keeps M-of-N quorum unseal.

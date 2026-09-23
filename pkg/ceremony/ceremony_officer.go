@@ -285,9 +285,9 @@ func sealSharesToOfficers(
 	if err != nil {
 		return 0, &ShamirSplitError{Err: err}
 	}
-	// Each share is one mlock'd allocation against RLIMIT_MEMLOCK, whose
-	// exhaustion memguard answers by terminating the process. Destroy the set
-	// on every path out, including the error returns inside the loop below.
+	// Each share is one mlock'd allocation against RLIMIT_MEMLOCK. Destroy the
+	// set on every path out, including the error returns inside the loop
+	// below.
 	defer func() {
 		for _, share := range shares {
 			share.Destroy()

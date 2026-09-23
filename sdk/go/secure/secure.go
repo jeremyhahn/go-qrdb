@@ -14,8 +14,12 @@
 
 // Package secure re-exports go-qrdb's secure-memory types so SDK
 // consumers never need to import the internal pkg/secure path or raw
-// memguard. All public types and constructors are aliases — there is no
-// logic in this file.
+// go-enclave. All public types and constructors are aliases — there is no
+// logic in this file, EXCEPT the process-lifecycle re-exports
+// (SetAllocator, ProcessAllocator, WipeAll), which are pure aliases over
+// go-enclave itself: they belong to the binary that owns the process, not to
+// pkg/secure, so this is their only home in the SDK (go-qrdb#114,
+// go-qrdb#553).
 //
 // See github.com/jeremyhahn/go-qrdb/pkg/secure for the canonical
 // documentation.
@@ -24,6 +28,7 @@ package secure
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -54,15 +59,147 @@ type BorrowViolationFunc = secure.BorrowViolationFunc
 
 // Error type re-exports.
 type (
-	NilSecretError      = secure.NilSecretError
-	NilBufferError      = secure.NilBufferError
-	OpenError           = secure.OpenError
-	InvalidSizeError    = secure.InvalidSizeError
-	ProviderError       = secure.ProviderError
-	NotInitializedError = secure.NotInitializedError
-	NestedBorrowError   = secure.NestedBorrowError
-	EmptyBorrowError    = secure.EmptyBorrowError
+	NilSecretError    = secure.NilSecretError
+	NilBufferError    = secure.NilBufferError
+	OpenError         = secure.OpenError
+	InvalidSizeError  = secure.InvalidSizeError
+	ProviderError     = secure.ProviderError
+	NestedBorrowError = secure.NestedBorrowError
+	EmptyBorrowError  = secure.EmptyBorrowError
 )
+
+// ErrAllocatorInstalled is the SDK re-export of the same sentinel
+// enclave.SetAllocator returns: the process-wide locked-memory budget was
+// already installed, by an earlier SetAllocator call or by a library's first
+// ProcessAllocator call installing the default. It is the same underlying
+// error value, so errors.Is against it works through either import path.
+var ErrAllocatorInstalled = enclave.ErrAllocatorInstalled
+
+// Operational sentinels a caller can see, unwrapped, from this package's own
+// public API — re-exported so an SDK-only consumer can errors.Is against them
+// without importing raw go-enclave, which is exactly the boundary this
+// package exists to hold (go-qrdb#114 review, rounds 3 and 4: round 3's pass
+// covered NewBuffer/NewBufferFromBytes/DestroyErr/sealing but missed
+// NewAllocatorWithinRLimit's and SetAllocator's own error surface, closed
+// here). Every one of these actually reaches a caller RAW: every OTHER
+// go-enclave error this package's internals touch (ErrInvalidSize,
+// ErrEnclaveDestroyed, ErrEmptyEnclave, …) is translated into one of this
+// package's own typed errors (InvalidSizeError, NilBufferError) before it is
+// ever returned, so re-exporting those would name a sentinel a caller could
+// never actually match against here.
+var (
+	// ErrBudgetExhausted is returned (wrapped) by NewBuffer and
+	// NewBufferFromBytes when the process-wide locked-memory budget has no
+	// room left for the requested allocation.
+	ErrBudgetExhausted = enclave.ErrBudgetExhausted
+
+	// ErrLockedMemoryUnavailable is returned (wrapped) by NewBuffer and
+	// NewBufferFromBytes when the kernel itself refuses to lock the requested
+	// pages, independent of the configured budget.
+	ErrLockedMemoryUnavailable = enclave.ErrLockedMemoryUnavailable
+
+	// ErrReleasedWithoutWipe is returned by Buffer.DestroyErr when the
+	// environment denied the mprotect needed to make a frozen region writable
+	// again before wiping it: the pages were unmapped without this package's
+	// in-process zeroing, though nothing leaked to another process either way.
+	ErrReleasedWithoutWipe = enclave.ErrReleasedWithoutWipe
+
+	// ErrSealerWiped is returned (wrapped) by NewSecret, NewSecretFromBuffer
+	// and Secret.Open once a shutdown WipeAll has destroyed the process
+	// Sealer's keys: sealed values become permanently unopenable from that
+	// point on.
+	ErrSealerWiped = enclave.ErrSealerWiped
+
+	// ErrSealFailed is returned (wrapped) by NewSecret and
+	// NewSecretFromBuffer when the underlying AEAD sealing step itself fails
+	// — a cause other than the process Sealer being wiped or the material
+	// exceeding the per-message ceiling, both of which have their own,
+	// narrower sentinels below.
+	ErrSealFailed = enclave.ErrSealFailed
+
+	// ErrMaterialTooLarge is returned (wrapped) by NewSecret and
+	// NewSecretFromBuffer when the value being sealed exceeds go-enclave's
+	// per-message AEAD ceiling.
+	ErrMaterialTooLarge = enclave.ErrMaterialTooLarge
+
+	// ErrSealedAuthentication is returned (wrapped in an *OpenError) by
+	// Secret.Open when the sealed material fails AEAD authentication. It is
+	// deliberately silent about which part failed.
+	ErrSealedAuthentication = enclave.ErrSealedAuthentication
+
+	// ErrPlaintextEscaped is returned (wrapped in an *OpenError) by
+	// Secret.Open if the AEAD wrote recovered plaintext anywhere other than
+	// the locked destination. go-enclave fails rather than copying the stray
+	// plaintext in.
+	ErrPlaintextEscaped = enclave.ErrPlaintextEscaped
+
+	// ErrInvalidBudget is returned by NewAllocatorWithinRLimit when the
+	// requested budget is not positive — a caller mistake checked before any
+	// syscall, on every platform.
+	ErrInvalidBudget = enclave.ErrInvalidBudget
+
+	// ErrNilAllocator is returned by SetAllocator when called with a nil
+	// Allocator.
+	ErrNilAllocator = enclave.ErrNilAllocator
+
+	// ErrBudgetExceedsRLimit is returned (wrapped in a *RLimitError) by
+	// NewAllocatorWithinRLimit when the requested budget exceeds the
+	// process's discovered RLIMIT_MEMLOCK ceiling.
+	ErrBudgetExceedsRLimit = enclave.ErrBudgetExceedsRLimit
+
+	// ErrLimitDiscoveryFailed is returned (wrapped in a *LimitDiscoveryError)
+	// by NewAllocatorWithinRLimit when the process's locked-memory ceiling
+	// itself could not be read.
+	ErrLimitDiscoveryFailed = enclave.ErrLimitDiscoveryFailed
+)
+
+// Error type re-exports for the errors above that carry structured detail
+// beyond their sentinel — errors.As, not just errors.Is, needs the concrete
+// type. Both are returned exclusively by NewAllocatorWithinRLimit.
+type (
+	RLimitError         = enclave.RLimitError
+	LimitDiscoveryError = enclave.LimitDiscoveryError
+)
+
+// LockedMemoryLimit is the SDK re-export of enclave.LockedMemoryLimit: a
+// snapshot of the process's locked-memory ceiling, as DiscoverLockedMemoryLimit
+// read it. Bytes is a ceiling to rely on only when Bounded is true.
+type LockedMemoryLimit = enclave.LockedMemoryLimit
+
+// LimitSource is the SDK re-export of enclave.LimitSource: where a discovered
+// locked-memory ceiling came from, or why there is none.
+type LimitSource = enclave.LimitSource
+
+// The LimitSource values DiscoverLockedMemoryLimit reports, re-exported so a
+// binary deriving its budget from the host can record the derivation without
+// importing raw go-enclave.
+const (
+	LimitUnknown     = enclave.LimitUnknown
+	LimitRLimit      = enclave.LimitRLimit
+	LimitUnlimited   = enclave.LimitUnlimited
+	LimitNotEnforced = enclave.LimitNotEnforced
+	LimitUnsupported = enclave.LimitUnsupported
+)
+
+// DiscoverLockedMemoryLimit is the SDK re-export of
+// enclave.DiscoverLockedMemoryLimit. It reads the process's current
+// locked-memory ceiling so a binary can DERIVE its budget from the host
+// rather than guess one; see cmd/qrdbd's resolveSecureMemoryBudget for the
+// reference derivation. A failure to read the ceiling is
+// ErrLimitDiscoveryFailed (as a *LimitDiscoveryError); an unbounded ceiling
+// is not an error and reports Bounded false.
+func DiscoverLockedMemoryLimit() (LockedMemoryLimit, error) {
+	return enclave.DiscoverLockedMemoryLimit()
+}
+
+// Allocator is the SDK re-export of enclave.Allocator: the process-wide
+// locked-memory budget every Buffer allocation and every Secret.Open admits
+// against. Sealing (NewSecret, NewSecretFromBuffer's internal seal) is NOT
+// admitted against it — go-enclave has no budgeted seal path as of
+// v0.6.0-alpha, so that allocation is unbounded. It is a one-time cost per
+// value rather than a per-request one, unlike Open, which is why go-enclave
+// scoped the gap that way; see pkg/secure.Secret's documentation.
+type Allocator = enclave.Allocator
 
 // CopyOut is the SDK re-export of secure.CopyOut. It copies protected bytes
 // into a fresh caller-owned slice with the borrow held across the whole copy,
@@ -134,19 +271,52 @@ func NewCallbackProvider(fn func(ctx context.Context, prompt string) ([]byte, er
 	return secure.NewCallbackProvider(fn)
 }
 
-// CatchInterrupt is the SDK re-export of secure.CatchInterrupt.
-func CatchInterrupt() { secure.CatchInterrupt() }
+// NewAllocatorWithinRLimit is the SDK re-export of
+// enclave.NewAllocatorWithinRLimit. It builds a locked-memory budget of
+// maxBytes, refusing one that exceeds the process's discovered
+// RLIMIT_MEMLOCK ceiling at construction rather than at the first allocation
+// under load. This is the usual way to build the budget SetAllocator
+// installs.
+func NewAllocatorWithinRLimit(maxBytes int64) (*Allocator, error) {
+	return enclave.NewAllocatorWithinRLimit(maxBytes)
+}
 
-// EnablePurge is the SDK re-export of secure.EnablePurge. It arms the secure
-// subsystem so Purge works WITHOUT installing memguard's process signal
-// handler. Daemons that own their own signal handling and drive a graceful
-// shutdown must use this instead of CatchInterrupt, whose handler hard
-// os.Exit(1)s from inside the signal handler and races ahead of the graceful
-// shutdown path (skipping store Close, and so dropping unflushed writes).
-func EnablePurge() { secure.EnablePurge() }
+// SetAllocator installs a as the process-wide locked-memory budget every
+// Buffer allocation and every Secret.Open in the process admits against.
+// Sealing a Secret is not admitted against it — see Allocator's documentation
+// for the gap and why it is scoped that way.
+//
+// It belongs to the BINARY, called once at startup — before anything in the
+// process constructs a Buffer or Secret — as cmd/qrdbd/start.go's runStart
+// does. It is one-shot and fails closed with ErrAllocatorInstalled if a process
+// allocator already exists, including the default that a library's first
+// ProcessAllocator call installs lazily. Library code in this repository
+// never calls it; see pkg/secure's package documentation.
+func SetAllocator(a *Allocator) error { return enclave.SetAllocator(a) }
 
-// Purge is the SDK re-export of secure.Purge.
-func Purge() error { return secure.Purge() }
+// ProcessAllocator returns the process-wide locked-memory budget SetAllocator
+// installed, or a default sized to the discovered RLIMIT_MEMLOCK ceiling if
+// nothing was installed. This is what pkg/secure's own constructors call;
+// it is re-exported so a caller that wants to allocate go-enclave memory
+// directly, outside a Buffer or Secret, admits against the same budget.
+func ProcessAllocator() (*Allocator, error) { return enclave.ProcessAllocator() }
 
-// PurgeOrPanic is the SDK re-export of secure.PurgeOrPanic.
-func PurgeOrPanic() { secure.PurgeOrPanic() }
+// WipeAll destroys every live locked-memory enclave the process has
+// allocated through go-enclave — every outstanding Buffer, every plaintext a
+// Secret.Open call has transiently produced, and any SDK consumer's own
+// enclave — wiping and unmapping their pages.
+//
+// A Secret's SEALED form is not one of those pages: a SealedEnclave's
+// ciphertext and wrapped-key blob live on the ordinary (unlocked) heap by
+// design, so this call does not zero them directly. What it does instead is
+// destroy the process Sealer's own key material — itself a locked-memory
+// enclave on the same registry — so every live Secret becomes permanently
+// unopenable (Secret.Open subsequently fails with enclave.ErrSealerWiped)
+// from the moment this returns, without its ciphertext bytes being wiped.
+// Zeroing those is Secret.Destroy's job; call it explicitly rather than
+// relying on this as a substitute.
+//
+// It belongs to the BINARY, called on orderly shutdown (deferred at startup,
+// as cmd/qrdbd/start.go's runStart does) so the process's mlocked memory is
+// swept on every exit path. Library code in this repository never calls it.
+func WipeAll() (int, error) { return enclave.WipeAll() }

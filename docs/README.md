@@ -73,6 +73,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
+| [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
 
 ### Security and identity

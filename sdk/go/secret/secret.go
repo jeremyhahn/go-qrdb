@@ -44,10 +44,10 @@ const (
 // Core types
 // ---------------------------------------------------------------------------
 
-// SecretValue holds a resolved secret sealed in a memguard enclave together
-// with resolution metadata. Prefer WithBytes/Open (which keep the plaintext in
-// mlocked memory) over the deprecated Bytes/String (which copy it into the GC
-// heap). Every default display path is already redacted — fmt verbs go through
+// SecretValue holds a resolved secret sealed in a go-enclave sealed enclave
+// together with resolution metadata. Prefer WithBytes/Open (which keep the
+// plaintext in mlocked memory) over the deprecated Bytes/String (which copy it
+// into the GC heap). Every default display path is already redacted — fmt verbs go through
 // fmt.Formatter and structured logging through slog.LogValuer, both of which
 // render Redacted() — so only an explicit String/Bytes call materializes the
 // plaintext. Call Clear when done to destroy the enclave.
@@ -57,6 +57,16 @@ const (
 // plaintext is sealed into the field's own enclave rather than written back as
 // a plain Go string. It decodes from, and re-encodes to, the plain reference
 // string in YAML and JSON, so config documents are unchanged.
+//
+// WithBytes holds the transient buffer's borrow for fn's entire call — a
+// behaviour change in go-qrdb#114. Previously fn received an alias whose
+// borrow had already been released. Now a concurrent WipeAll skips the buffer
+// (counting it in WipeAll's remaining total) instead of unmapping it under fn,
+// and, with the borrow guard armed (secure.GuardBorrows /
+// secure.EnableBorrowGuard), a callback that calls back into sdk/go/secure is
+// reported as a nested borrow. fn must still not retain the slice, and must
+// not block for longer than the caller is willing to delay a shutdown sweep of
+// that buffer.
 type SecretValue = secret.SecretValue
 
 // SecretResolver resolves raw secret reference URIs to their plaintext values.
@@ -73,8 +83,12 @@ type CredentialRetriever = secret.CredentialRetriever
 // Constructors
 // ---------------------------------------------------------------------------
 
-// NewSecretValue constructs a SecretValue from a raw reference, byte value, and
-// strategy. The value bytes are sealed into a memguard enclave.
+// NewSecretValue constructs a SecretValue from a raw reference, byte value,
+// and strategy. The value bytes are sealed into a go-enclave sealed enclave.
+// Returns (nil, *secret.SealFailedError) if sealing fails — BREAKING as of
+// go-qrdb#114: this used to swallow a sealing failure and return a
+// SecretValue whose accessors silently reported empty. Every caller must be
+// updated to check the error.
 var NewSecretValue = secret.NewSecretValue
 
 // NewResolverRegistry creates an empty ResolverRegistry.
@@ -174,3 +188,17 @@ type UnwritableTargetError = secret.UnwritableTargetError
 // protected SecretValue target holds nothing it can resolve — an empty value,
 // an inline "literal://" secret, a bare value, or an unclaimed scheme.
 type UnresolvableTargetError = secret.UnresolvableTargetError
+
+// SealFailedError is returned by NewSecretValue when sealing the resolved
+// plaintext into protected memory fails. Its Ref field is already redacted —
+// see the canonical documentation — so it never carries the plaintext under
+// any field, printed or not (go-qrdb#114 review, round 3). Re-exported so an
+// SDK-only consumer can errors.As against it without importing the internal
+// pkg/secret path.
+type SealFailedError = secret.SealFailedError
+
+// ResolvedReadError is recorded by ConfigProcessor.Process when a plain string
+// field's reference resolved but the resolved value could not be read back out
+// of protected memory. The field keeps its reference, is reported Unresolved,
+// and is never overwritten with "" or counted as resolved.
+type ResolvedReadError = secret.ResolvedReadError

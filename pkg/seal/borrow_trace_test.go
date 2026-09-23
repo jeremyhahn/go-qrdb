@@ -19,6 +19,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -104,47 +105,46 @@ func TestRecoveryStrategyUnsealRootKey_TakesNoNestedBorrow(t *testing.T) {
 	}
 }
 
-// copyEnclaveToBuffer is DELIBERATELY not converted, and this pins why.
+// copyEnclaveToBuffer now nests BOTH enclaves' borrows for the whole copy —
+// dst's via its own WithBytes, not dst.Bytes() — and this pins why that is
+// both correct and required (go-qrdb#114 review, round 4).
 //
-// It writes into a freshly allocated secure.Buffer from inside a go-quicraft
-// MemoryEnclave borrow. Holding the destination's borrow across that would
-// nest a second protected-memory borrow inside the first, which go-quicraft's
-// own WithBytes documentation forbids in terms — "Reading a DIFFERENT enclave
-// from inside fn is ALSO forbidden" — because the two packages hold separate
-// process-wide purge locks and Go's RWMutex admits no new reader once a writer
-// is queued.
+// Under go-quicraft pre-v0.11.0-alpha, before it consumed
+// github.com/jeremyhahn/go-enclave directly, nesting a second borrow this way
+// was forbidden in terms by that package's own WithBytes documentation,
+// because the two packages held SEPARATE process-wide purge locks and Go's
+// RWMutex admits no new reader once a writer is queued elsewhere — a
+// deadlock, not a data race. go-enclave has no such package-wide lock: every
+// enclave, in pkg/secure and in go-quicraft's pkg/crypto/shamir alike, carries
+// its own independent per-instance lock, so nesting the two borrows here
+// cannot deadlock either against the other.
 //
-// So the assertion here is the narrow one that is actually true today: the
-// function takes no nested borrow of THIS package's protected memory. The
-// allocation happens before the source is borrowed and nothing purge-class runs
-// under it. Converting the remaining Bytes() read is blocked on go-qrdb#145 and
-// the go-enclave adoption wave, not on this test.
+// Not nesting them was worse than merely legal-but-unnecessary, though: dst is
+// freshly allocated and registered on go-enclave's shutdown ledger the moment
+// secure.NewBuffer returns, so a concurrent enclave.WipeAll needs no external
+// reference to dst to destroy it — reading it via the unguarded dst.Bytes()
+// this test used to exercise could fault against pages WipeAll had already
+// unmapped mid-copy, the identical class of bug SecretValue.WithBytes's own
+// round-3 fix closed. This test exercises the real function directly, rather
+// than a hand-rolled stand-in for its old shape, and TestCopyEnclaveToBuffer_
+// SurvivesConcurrentWipeAll below proves the race is actually closed.
 func TestCopyEnclaveToBuffer_AllocatesOutsideEveryBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	src, err := secure.NewBufferFromBytes(bytes.Repeat([]byte{0x11}, 32))
+	want := bytes.Repeat([]byte{0x11}, 32)
+	enc, err := enclave.NewMemoryEnclaveCopy(want)
 	if err != nil {
-		t.Fatalf("NewBufferFromBytes: %v", err)
+		t.Fatalf("enclave.NewMemoryEnclaveCopy: %v", err)
 	}
-	defer src.Destroy()
+	defer enc.Destroy()
 
-	// A stand-in for the reconstructed-secret enclave: the shape under test is
-	// "allocate the destination, then borrow the source", and that is what is
-	// being asserted about, not go-quicraft's type.
-	dst, err := secure.NewBuffer(32)
+	dst, err := copyEnclaveToBuffer(enc)
 	if err != nil {
-		t.Fatalf("NewBuffer: %v", err)
+		t.Fatalf("copyEnclaveToBuffer: %v", err)
 	}
 	defer dst.Destroy()
 
-	view := dst.Bytes()
-	if err := src.WithBytes(func(b []byte) error {
-		copy(view, b)
-		return nil
-	}); err != nil {
-		t.Fatalf("WithBytes: %v", err)
-	}
-	if !bytes.Equal(dst.Bytes(), bytes.Repeat([]byte{0x11}, 32)) {
+	if !bytes.Equal(dst.Bytes(), want) {
 		t.Error("the copy did not land in the destination")
 	}
 }

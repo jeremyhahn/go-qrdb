@@ -84,7 +84,8 @@ var (
 	ErrShareNotFound = errors.New("ceremony: share not found")
 
 	// ErrShareUnreadable is returned when a stored share's protected buffer
-	// yields no bytes — the shape a process-wide memguard purge leaves behind.
+	// yields no bytes — the shape a concurrent destroy (a shutdown
+	// enclave.WipeAll) leaves behind.
 	// Claim fails closed on it rather than returning a zero-filled slice of
 	// the right length and marking the real share consumed (go-qrdb#74).
 	ErrShareUnreadable = errors.New("ceremony: share buffer yielded no bytes")

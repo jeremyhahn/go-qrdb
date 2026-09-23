@@ -235,15 +235,15 @@ func (m *ClusterDEKManager) Initialize(ctx context.Context, algorithm string, ke
 //
 // The borrow is the point (go-qrdb#74). buf.Bytes() covered only the
 // slice-header read: it returned a slice into mlocked pages with no lock held,
-// and a process-wide memguard purge landing while io.ReadFull wrote into them
+// and a shutdown enclave.WipeAll landing while io.ReadFull wrote into them
 // unmaps the pages under the write. That is a fault, not an error return.
 //
 // # Why the borrow is safe here, and not two lines further down
 //
-// The callback must not reach any allocation of protected memory, because
-// WithBytes holds the purge lock shared and every allocation takes it
-// exclusively on the same goroutine, which cannot return. The trace here is
-// short and it ends outside this repository:
+// The callback must not reach any allocation of protected memory — pkg/secure
+// rule 6, enforced under the borrow guard (see pkg/secure/borrowguard.go for
+// why the rule outlived the process-wide lock that first made it a deadlock).
+// The trace here is short and it ends outside this repository:
 //
 //	io.ReadFull -> crypto/rand.Reader.Read -> the platform entropy syscall
 //
@@ -460,8 +460,9 @@ func (m *ClusterDEKManager) withCurrentDEK(op string, fn func(dek []byte) error)
 	defer m.mu.RUnlock()
 
 	// The borrow spans fn, which is the point: Bytes() covered only the
-	// slice-header read, so a memguard failure elsewhere in the process could
-	// unmap these pages while fn was still reading them (go-qrdb#74).
+	// slice-header read, so a concurrent destroy — a shutdown enclave.WipeAll
+	// sweeping this buffer — could unmap these pages while fn was still
+	// reading them (go-qrdb#74).
 	//
 	// Safe to hold across fn because both callers are in this file and neither
 	// allocates protected memory — WrapKey and UnwrapKey run AES-GCM over

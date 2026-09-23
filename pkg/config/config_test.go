@@ -17,6 +17,7 @@ package config
 import (
 	"crypto/tls"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -598,6 +599,19 @@ func TestValidate_InvalidFields(t *testing.T) {
 			mutate: func(c *Config) { c.Server.Host = "" },
 			field:  "server.host",
 			reason: "must not be empty",
+		},
+		// server.secure_memory_budget_mib
+		{
+			name:   "secure_memory_budget_mib_negative",
+			mutate: func(c *Config) { c.Server.SecureMemoryBudgetMiB = -1 },
+			field:  "server.secure_memory_budget_mib",
+			reason: "must not be negative",
+		},
+		{
+			name:   "secure_memory_budget_mib_overflow",
+			mutate: func(c *Config) { c.Server.SecureMemoryBudgetMiB = math.MaxInt64>>20 + 1 },
+			field:  "server.secure_memory_budget_mib",
+			reason: "overflow",
 		},
 		// raft.data_dir
 		{

@@ -556,9 +556,8 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 	if err != nil {
 		return &ShamirSplitError{Err: err}
 	}
-	// Every share is one mlock'd allocation against RLIMIT_MEMLOCK, and
-	// memguard answers a failed lock by terminating the process — so a share
-	// that outlives its use is not merely untidy, it is budget another
+	// Every share is one mlock'd allocation against RLIMIT_MEMLOCK — so a
+	// share that outlives its use is not merely untidy, it is budget another
 	// ceremony may need. Destroy the set however this function unwinds.
 	defer func() {
 		for _, share := range shares {

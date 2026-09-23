@@ -1241,11 +1241,14 @@ func (n *Node) retractDataPlaneServices() {
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
 //
 // All barriers (system and per-tenant) are sealed before their references
-// are dropped so unsealed DEKs and root keys held in memguard enclaves are
-// wiped deterministically rather than waiting on GC finalizers. Embedded
-// composers that want mlocked memory purged synchronously at process exit
-// must additionally arm secure.EnablePurge at startup and invoke
-// secure.Purge on shutdown, mirroring cmd/qrdbd/main.go.
+// are dropped so unsealed DEKs and root keys held in go-enclave enclaves are
+// wiped deterministically rather than waiting on GC finalizers. Close does
+// not sweep the process: an embedded composer that wants every remaining
+// mlocked enclave swept at exit calls secure.WipeAll itself on shutdown, after
+// Close, and one that wants its protected memory bounded installs a budget
+// with secure.SetAllocator at startup, before anything allocates. Both belong
+// to the binary that owns the process; cmd/qrdbd/start.go's runStart is the
+// reference wiring.
 func (n *Node) Close() error {
 	var firstErr error
 
@@ -2744,8 +2747,8 @@ func buildNodeServerConfig(cfg *qrdbconfig.Config) *qrdbconfig.Config {
 // state store, and clears all seal-layer references. Called on error paths
 // before the node is returned to the caller. Sealing first matters on the
 // post-auto-unseal failure paths: the barrier may hold live key material in
-// memguard enclaves, and Seal wipes it deterministically (idempotent when
-// the barrier never unsealed).
+// go-enclave locked-memory enclaves, and Seal wipes it deterministically
+// (idempotent when the barrier never unsealed).
 func (n *Node) closeSeal() {
 	barrierRegistry := n.barrierRegistry.Swap(nil)
 	barrier := n.barrier.Swap(nil)

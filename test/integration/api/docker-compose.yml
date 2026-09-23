@@ -52,6 +52,13 @@ services:
       - "63005"      # MCP
     # Required for QUIC UDP buffer settings
     privileged: true
+    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
+    # locked-memory requirement is explicit rather than a side effect (see
+    # docs/deployment/).
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
@@ -177,6 +184,13 @@ services:
       - "64005"      # MCP
     # Required for QUIC UDP buffer settings
     privileged: true
+    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
+    # locked-memory requirement is explicit rather than a side effect (see
+    # docs/deployment/).
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
       - qrdb-shamir-data:/data
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
@@ -358,6 +372,13 @@ services:
         - gomodauth
     image: go-qrdb-dev:latest
     privileged: true
+    # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
+    # locked-memory requirement is explicit rather than a side effect (see
+    # docs/deployment/).
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     user: root
     depends_on:
       qrdbd:

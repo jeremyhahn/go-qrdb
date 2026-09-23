@@ -91,8 +91,9 @@ func WithNoPlaintextStrings() ProcessorOption {
 //
 //   - a SecretValue (or *SecretValue) field, the protected target: the
 //     reference is taken from its Raw field and the resolved plaintext is
-//     sealed into the value's own memguard enclave, so it never rests in a Go
-//     string. Raw is left untouched — it records where the secret came from.
+//     sealed into the value's own go-enclave sealed enclave (secure.Secret),
+//     so it never rests in a Go string. Raw is left untouched — it records
+//     where the secret came from.
 //     A protected target must reference a secret held elsewhere; one holding
 //     nothing, an inline "literal://" secret, a bare value or an unclaimed
 //     scheme is reported rather than skipped. An optional secret is spelled as
@@ -327,13 +328,16 @@ func (p *ConfigProcessor) processMap(ctx context.Context, v reflect.Value, path 
 				result.Unresolved = append(result.Unresolved, keyPath)
 				continue
 			}
+			plain, ok := p.readResolved(sv, keyPath, result)
+			if !ok {
+				continue
+			}
 			// Build a value of the map's element type so a named string type
 			// (e.g. map[string]Password) is assignable; a bare string is not
 			// assignable to a defined string type and would panic SetMapIndex.
 			nv := reflect.New(val.Type()).Elem()
-			nv.SetString(sv.String())
+			nv.SetString(plain)
 			v.SetMapIndex(key, nv)
-			sv.Clear()
 			result.Resolved++
 		case reflect.Struct:
 			// Map struct values are not addressable; work on an addressable copy
@@ -439,7 +443,28 @@ func (p *ConfigProcessor) processString(ctx context.Context, v reflect.Value, pa
 		result.Unresolved = append(result.Unresolved, path)
 		return
 	}
-	v.SetString(sv.String())
-	sv.Clear()
+	plain, ok := p.readResolved(sv, path, result)
+	if !ok {
+		return
+	}
+	v.SetString(plain)
 	result.Resolved++
+}
+
+// readResolved reads a resolved plain-string value out of its sealed form and
+// destroys the SecretValue either way. A value that exists but cannot be read
+// fails CLOSED: it is recorded as a *ResolvedReadError and the path as
+// Unresolved, and ok is false so the caller leaves the field holding its
+// reference. Writing "" there instead would erase the reference and count an
+// empty credential as resolved, indistinguishable from a secret that is
+// legitimately empty.
+func (p *ConfigProcessor) readResolved(sv *SecretValue, path string, result *ProcessResult) (string, bool) {
+	defer sv.Clear()
+	plain, err := sv.readString()
+	if err != nil {
+		result.Errors = append(result.Errors, &ResolvedReadError{Path: path, Err: err})
+		result.Unresolved = append(result.Unresolved, path)
+		return "", false
+	}
+	return plain, true
 }

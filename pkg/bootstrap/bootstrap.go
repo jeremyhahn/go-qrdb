@@ -675,9 +675,9 @@ func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer)
 	// WIPES its source, and it runs OUTSIDE the borrow because it allocates
 	// locked memory of its own (pkg/secure rule 6: no allocation under a
 	// borrow). So the material crosses pageable memory for the width of one
-	// statement, under the purge lock going in and wiped coming out, rather
-	// than living there as a []byte for the rest of the bootstrap as it did
-	// when go-quicraft's Credentials.Secret was a plain slice.
+	// statement, under the passphrase's own borrow going in and wiped coming
+	// out, rather than living there as a []byte for the rest of the bootstrap
+	// as it did when go-quicraft's Credentials.Secret was a plain slice.
 	var plain []byte
 	if err := passphrase.WithBytes(func(b []byte) error {
 		plain = append([]byte(nil), b...)

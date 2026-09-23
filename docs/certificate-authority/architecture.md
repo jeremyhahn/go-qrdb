@@ -32,9 +32,10 @@ type CertProvider interface {
 ```
 
 `DefaultCertProvider` issues ECDSA P-256 client certificates with the Go
-standard library, keeps the CA private key barrier-encrypted at rest and in
-`memguard` while unsealed, and enforces revocation from replicated state on
-every authenticated request.
+standard library, keeps the CA private key barrier-encrypted at rest and
+wiped (`secure.Wipe`) as soon as it is no longer needed in plaintext while
+unsealed, and enforces revocation from replicated state on every
+authenticated request.
 
 **go-xkms provides the production alternative** — full CRL generation, OCSP,
 HSM-backed CA keys (TPM2, PKCS#11, cloud KMS), extended certificate profiles,

@@ -67,19 +67,19 @@ func (t *tenantKeyManager) GetTenantDEK(ctx context.Context, tenantID string) ([
 			return nil, &DEKDerivationError{TenantID: tenantID, Err: err}
 		}
 		// The copy runs inside a COORDINATED borrow (go-qrdb#74). Sizing from
-		// buf.Size() and then reading buf.Bytes() takes the purge lock twice;
-		// a process-wide memguard purge landing in the gap returns a
-		// correctly sized run of zeros as this tenant's DEK, which every
-		// subsequent encrypt and decrypt would then use. secure.CopyOut holds
-		// one borrow across the copy and refuses an empty source.
+		// buf.Size() and then reading buf.Bytes() takes two separate borrows;
+		// a concurrent destroy (a shutdown enclave.WipeAll) landing in the gap
+		// returns a correctly sized run of zeros as this tenant's DEK, which
+		// every subsequent encrypt and decrypt would then use. secure.CopyOut
+		// holds one borrow across the copy and refuses an empty source.
 		//
 		// Traced callees: CopyOut's callback is make + copy. cacheDEK — the
 		// path that calls secure.NewSecret and is the reason this issue could
 		// not be a mechanical conversion — is on the MISS path below, outside
 		// every borrow, and stays there.
 		//
-		// Destroy is purge-class and stays outside the borrow on both the
-		// success and the failure path.
+		// Destroy takes this buffer's own lock exclusively and stays outside
+		// the borrow on both the success and the failure path.
 		out, err := secure.CopyOut(buf)
 		buf.Destroy()
 		if err != nil {

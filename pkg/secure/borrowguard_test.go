@@ -46,15 +46,19 @@ func recordViolation(dst **NestedBorrowError, done *sync.WaitGroup) BorrowViolat
 	}
 }
 
-// A purge-class operation attempted from inside a borrow must be REPORTED,
-// not entered.
+// A protected-memory allocation attempted from inside a borrow must be
+// REPORTED, not entered.
 //
-// This is the failure the guard exists for: purgeMu is an RWMutex, Go's
-// RWMutex is not reentrant, and NewSecret takes exclusively what WithBytes is
-// holding shared. Without the guard the process stops here with no error, no
-// panic and no stack — see TestBorrowGuard_TheUnguardedShapeReallyHangs, which
-// demonstrates exactly that in a subprocess because it cannot be demonstrated
-// in this one.
+// This is the failure the guard exists for. NewSecret here allocates a
+// DIFFERENT enclave than the one buf.WithBytes is borrowing, so under
+// go-enclave's per-object locking this specific call would not actually
+// deadlock — but the guard reports it anyway, by design: it enforces the
+// blanket discipline of never calling back into this package from inside a
+// WithBytes callback at all (see borrowguard.go), so that the real,
+// still-current hazard — reentering the SAME object's lock, which
+// TestBorrowGuard_TheUnguardedShapeReallyHangs demonstrates hangs the process
+// with no error, no panic and no stack — cannot be reintroduced by a future
+// change to how enclave locking works.
 func TestBorrowGuard_ReportsAPurgeClassOperationInsideABorrow(t *testing.T) {
 	buf, err := NewBuffer(32)
 	if err != nil {
@@ -255,11 +259,12 @@ func TestBorrowGuard_DoesNotFireAcrossGoroutines(t *testing.T) {
 	// purge-class operations are exclusive. Each waits for the other to be
 	// inside its callback, so the overlap is guaranteed rather than hoped for.
 	//
-	// It is deliberately not "one borrows while the other allocates": the
-	// allocation would block on purgeMu until the borrow ended, which is the
-	// coordination working, and a rendezvous across it deadlocks the test
-	// itself. That mistake was made writing this file, and the stack it
-	// produced is the same one an unguarded conversion produces in production.
+	// It is deliberately not "one borrows while the other allocates": an
+	// exclusive operation on the SAME buffer would block on its per-object
+	// lock until the shared borrow ended, which is the coordination working,
+	// and a rendezvous across it deadlocks the test itself. That mistake was
+	// made writing this file, and the stack it produced is the same one an
+	// unguarded conversion produces in production.
 	const borrowers = 2
 	inside := make(chan struct{}, borrowers)
 	proceed := make(chan struct{})
@@ -475,9 +480,11 @@ func TestGuardExitBorrow_UnbalancedIsIgnored(t *testing.T) {
 }
 
 // The mutation proof: WITHOUT the guard this shape hangs forever, and it
-// cannot be shown in this process because a wedged goroutine holds purgeMu
-// shared for the life of the binary and every later test in the package would
-// block behind it. So it runs in a subprocess, twice.
+// cannot be shown in this process because a wedged goroutine holds this
+// buffer's own per-object lock shared for the life of the binary — reentering
+// it exclusively from Destroy, called from inside the buffer's own WithBytes,
+// self-deadlocks under any RWMutex — and every later test in the package
+// would block behind it. So it runs in a subprocess, twice.
 //
 // unguarded: killed at the deadline, having produced nothing.
 // guarded:   exits promptly reporting *NestedBorrowError.
@@ -502,16 +509,14 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 		{"guarded", false, "attempted while this goroutine holds a borrow"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0],
-				"-test.run=^"+deadlockTestName+"$",
-				"-test.timeout="+deadline.String())
+			cmd := exec.Command(os.Args[0], subprocessTestArgs(deadlockTestName, deadline)...)
 			cmd.Env = append(os.Environ(), childEnv+"="+tc.mode)
 			out, err := cmd.CombinedOutput()
 
 			switch {
 			case tc.wantHang && err == nil:
 				t.Fatalf("the unguarded shape returned; the deadlock this guard exists for is gone,\n"+
-					"so either purgeMu stopped being exclusive or the child stopped exercising it.\nchild output:\n%s", out)
+					"so either the buffer's own lock stopped being exclusive or the child stopped exercising it.\nchild output:\n%s", out)
 			case !tc.wantHang && err == nil:
 				t.Fatalf("the guarded shape exited 0; it must report a violation.\nchild output:\n%s", out)
 			}
@@ -528,6 +533,16 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 // runDeadlockChild performs the offending act in the subprocess. Guarded it
 // panics with *NestedBorrowError; unguarded it never returns and the parent
 // kills it at the test timeout.
+//
+// The offending act is THIS buffer's own Destroy, called from inside its own
+// WithBytes callback — not an allocation of a DIFFERENT object. go-enclave
+// (go-qrdb#114) gave every Buffer and Secret its own independent lock, so an
+// allocation of an unrelated object no longer shares anything with this
+// borrow and no longer deadlocks; the hazard that survives is the one any
+// sync.RWMutex has: WithBytes holds buf's lock for reading, Destroy needs it
+// for writing, and a write request blocks behind a read only THIS goroutine
+// holds and only THIS goroutine could release — which it never does, because
+// it is the one waiting.
 func runDeadlockChild(guarded bool) {
 	if guarded {
 		defer EnableBorrowGuard(nil)()
@@ -536,12 +551,8 @@ func runDeadlockChild(guarded bool) {
 	if err != nil {
 		return
 	}
-	defer buf.Destroy()
 	_ = buf.WithBytes(func([]byte) error {
-		sec, secErr := NewSecret([]byte("purge-class inside a borrow"))
-		if secErr == nil {
-			sec.Destroy()
-		}
+		buf.Destroy()
 		return nil
 	})
 }

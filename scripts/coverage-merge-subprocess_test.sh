@@ -75,17 +75,21 @@ cd "$SCRIPT_DIR/.."
 # stopped matching real code, which is exactly the silent-omission failure
 # the previous, hand-written list had.
 #
-# This list names only the subprocess sites that exist as of THIS commit
-# (round 4 review: an earlier version named pkg/secret and pkg/ceremony too,
-# which this commit's own tree does not have yet -- those sites are added by
-# the security commit that follows, which is where their assertions belong.
-# A coverage-mechanism commit whose own test depends on a LATER commit's
+# This list names the subprocess sites this commit's own tree has (round 4
+# review: an earlier version of the coverage-merge commit named pkg/secret and
+# pkg/ceremony too, which that commit's own tree did not have yet -- a
+# coverage-mechanism commit whose own test depends on a LATER commit's
 # fixtures is not independently green, which defeats the point of landing it
-# first).
+# first). This commit adds pkg/secret's, pkg/ceremony's and pkg/seal's own new
+# subprocess sites to the four the coverage-merge commit could already see
+# (cmd/qrdbd, pkg/secure, pkg/logger, pkg/seal/encfs).
 got=$("$SCRIPT" --list)
 for want_pkg in \
 	"github.com/jeremyhahn/go-qrdb/cmd/qrdbd" \
 	"github.com/jeremyhahn/go-qrdb/pkg/secure" \
+	"github.com/jeremyhahn/go-qrdb/pkg/secret" \
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony" \
+	"github.com/jeremyhahn/go-qrdb/pkg/seal" \
 	"github.com/jeremyhahn/go-qrdb/pkg/logger" \
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"; do
 	if printf '%s\n' "$got" | grep -qx "$want_pkg"; then
