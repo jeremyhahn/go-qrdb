@@ -55,6 +55,40 @@ type AuditPage struct {
 	Total  int          `json:"total"`
 }
 
+// AuditVerifyResult is the outcome of verifying the audit log's
+// tamper-evidence hash chain (go-qrdb#453). Verified is the field a caller
+// checks first: false is a TAMPER VERDICT reported through this result, not
+// an error -- VerifyChain returns a non-nil error only when the
+// verification could not be PERFORMED at all (unsupported backend, missing
+// file, or a rotation race).
+type AuditVerifyResult struct {
+	// Verified is true only when every linked file's chain checked out.
+	Verified bool `json:"verified"`
+
+	// Reason is a human-readable description of the break. Empty when
+	// Verified is true.
+	Reason string `json:"reason,omitempty"`
+
+	// Files is the number of rotation-set files that carry records and
+	// were linked.
+	Files int `json:"files"`
+
+	// Records is the number of audit records verified, anchors excluded.
+	// int64: a trail's record count is unbounded over its retention window.
+	Records int64 `json:"records"`
+
+	// Order lists the linked files in chain order, head first.
+	Order []string `json:"order,omitempty"`
+
+	// Genesis reports whether the walk reached the chain's origin.
+	Genesis bool `json:"genesis"`
+
+	// Seed is the hex digest the head claims to continue from, empty at
+	// genesis. Handoff is the hex digest the tail ends on.
+	Seed    string `json:"seed,omitempty"`
+	Handoff string `json:"handoff,omitempty"`
+}
+
 // AuditClient is the interface for audit event emission and retrieval over
 // any transport.
 // Authorization: EmitAudit requires "audit:emit"; QueryAudit requires
@@ -70,4 +104,11 @@ type AuditClient interface {
 
 	// QueryAudit returns a paginated page of audit events matching the filter.
 	QueryAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)
+
+	// VerifyChain verifies the audit log's tamper-evidence hash chain across
+	// the active file and every rotation archive, and reports what the walk
+	// covered. A non-nil error means the verification could not be
+	// PERFORMED (unsupported backend, missing file, or a rotation race);
+	// AuditVerifyResult.Verified == false is a TAMPER VERDICT, not an error.
+	VerifyChain(ctx context.Context) (*AuditVerifyResult, error)
 }

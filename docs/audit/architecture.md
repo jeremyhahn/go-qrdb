@@ -223,11 +223,15 @@ security control that fails quietly when its recorder is down is the worst
 case.
 
 The hash chain makes a back-filled record detectable **across the whole trail**,
-archives included — but it is worth stating the limit exactly: **nothing in the
-daemon or the CLI verifies the chain.** `VerifyChain` exists on the sink and has
-no non-test caller, so detection is available to an auditor with their own
-tooling and is not a control the system runs. What it detects is described under
-*The chain across a rotation* below.
+archives included, and that is a control the system runs rather
+than only a property an auditor's own tooling could check: `pkg/audit.Verify`
+is the single canonical entry point (type-asserting the configured
+`AuditLogger` to the `Verifier` interface `*ChainFileLogger` implements, so an
+`aggregateLogger` delegates to whichever child holds the chain), and every
+transport handler and the CLI's `qrdb audit verify` call through it — see
+[api.md](api.md) for the transport matrix and [cli.md](cli.md) for the
+command. What it detects is described under *The chain across a rotation*
+below.
 
 ## The chain across a rotation
 
@@ -374,10 +378,12 @@ when `audit query` in fact works with no configuration at all.
 These bound what the *tamper-evidence* claim above is worth today. None is
 introduced by the fail-closed work.
 
-- **Nothing verifies the chain.** `ChainFileLogger.VerifyChain` has no
-  non-test caller anywhere — no CLI verb, no startup check, no periodic scan,
-  and no SDK route. The chain is written and checkable; running the check is an
-  auditor's own job.
+- **Verification is on-demand, not continuous.** `qrdb audit verify` and its
+  Tier-1 equivalents on every transport run the check when
+  something calls them; there is still no startup check, no periodic scan,
+  and no metric that fires on a break without a human or a scheduled job
+  invoking the verb. A tampered trail sits undetected between runs of
+  whatever calls it.
 - **Removing a contiguous prefix of the archives is indistinguishable from
   retention.** Retention pruning deletes the oldest archives by age, so a
   healthy trail's walk routinely starts mid-chain, and no hash walk can tell
@@ -393,9 +399,18 @@ introduced by the fail-closed work.
 - **A record that will not parse is skipped, not folded.** A torn line is not a
   record, and the writer's restore path and the verifier agree on that, so a
   crash mid-write leaves a trail that still verifies.
+- **At most one full-trail scan runs per logger at a time.** A rotation set
+  only grows, so concurrent callers gain nothing from each walking it
+  independently; a second call arriving mid-scan is refused immediately with
+  `*VerificationBusyError` rather than starting its own scan or being queued
+  behind the first. The caller's context is honored throughout the walk —
+  checked per record within a file and per file within the set — so a
+  canceled or expired context stops the scan promptly and reports
+  `*VerificationCanceledError`, not a tamper verdict.
 
-Until the first is closed, treat `PrevHash` as **evidence an auditor can
-check**, not as a control the system enforces.
+Treat a clean `qrdb audit verify` as **evidence as of the moment it ran**, not
+as a standing guarantee between runs — the remaining gap above is what a
+startup check or a scheduled scan would close, and neither exists yet.
 
 ## What this feature deliberately does not do
 

@@ -556,7 +556,8 @@ func TestAll_TotalCount(t *testing.T) {
 	//   events, so a permission claiming to grant it may not exist = 375.
 	// + 1 admin:node_compaction, the platform's node-keyspace compaction
 	//   policy = 376.
-	const expectedTotal = 376
+	// + 1 Tier-1 audit-verification perm (audit:verify) = 377 total.
+	const expectedTotal = 377
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

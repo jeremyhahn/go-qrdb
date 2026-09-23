@@ -279,6 +279,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_rag_list_documents":                    permission.RAGListDocuments,
 	"qrdb_rag_delete_document":                   permission.RAGDeleteDocument,
 	"qrdb_audit_query":                           permission.AuditQuery,
+	"qrdb_audit_verify":                          permission.AuditVerify,
 	"qrdb_authfactor_enroll":                     permission.AuthFactorEnroll,
 	"qrdb_authfactor_challenge":                  permission.AuthFactorChallenge,
 	"qrdb_authfactor_verify":                     permission.AuthFactorVerify,

@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -47,6 +48,8 @@ var classifierFixtures = []struct {
 	{"identity: thumbprint bound to another user", &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9}, codes.AlreadyExists},
 	{"identity: lost concurrent update", &user.ConcurrentUpdateError{}, codes.Aborted},
 	{"identity: missing role", &role.RoleNotFoundError{ID: "admin"}, codes.NotFound},
+	{"audit verify: unsupported backend", &audit.VerificationUnsupportedError{}, codes.Unimplemented},
+	{"audit verify: concurrent rotation", &audit.ConcurrentRotationError{}, codes.Unavailable},
 	{"nothing typed it", errors.New("a bare error"), codes.Internal},
 }
 

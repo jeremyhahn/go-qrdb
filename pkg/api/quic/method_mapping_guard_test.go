@@ -197,6 +197,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"admin.GetNodeCompaction":          permission.AdminNodeCompaction,
 	"admin.SetNodeCompaction":          permission.AdminNodeCompaction,
 	"audit.Query":                      permission.AuditQuery,
+	"audit.VerifyChain":                permission.AuditVerify,
 	"authfactor.Enroll":                permission.AuthFactorEnroll,
 	"authfactor.Challenge":             permission.AuthFactorChallenge,
 	"authfactor.Verify":                permission.AuthFactorVerify,

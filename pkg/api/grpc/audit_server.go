@@ -117,6 +117,34 @@ func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb
 	return resp, nil
 }
 
+// VerifyChain handles the AuditService.VerifyChain RPC.
+//
+// A non-nil gRPC error means verification could not be PERFORMED (backend
+// does not support it, or the trail file is missing/racing a rotation); a
+// successful response with Verified=false is a TAMPER VERDICT, not a
+// failure -- see pkg/audit.Verify.
+func (s *auditServer) VerifyChain(ctx context.Context, _ *pb.AuditVerifyChainRequest) (*pb.AuditVerifyChainResponse, error) {
+	if s.auditLogger == nil {
+		return nil, status.Error(codes.Unimplemented, "audit service not configured")
+	}
+
+	report, err := audit.Verify(ctx, s.auditLogger)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.AuditVerifyChainResponse{
+		Verified: report.Verified,
+		Reason:   report.Reason,
+		Files:    int32(report.Files), //nolint:gosec // rotation-set file count is bounded
+		Records:  report.Records,      // int64 in both the report and the proto; no truncation
+		Order:    report.Order,
+		Genesis:  report.Genesis,
+		Seed:     report.Seed,
+		Handoff:  report.Handoff,
+	}, nil
+}
+
 // auditAttrString converts an audit attribute value to a string for the
 // protobuf map<string,string>. Strings are returned verbatim; other types
 // are JSON-encoded.

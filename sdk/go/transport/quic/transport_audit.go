@@ -26,6 +26,7 @@ package quic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -80,4 +81,37 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &UnmarshalError{Err: err}}
 	}
 	return auditconv.PageToTransport(&page), nil
+}
+
+// VerifyChain verifies the audit log's tamper-evidence hash chain via the
+// QUIC "audit.VerifyChain" wire method. A non-nil error means verification
+// could not be PERFORMED; a successful response with Verified=false is a
+// TAMPER VERDICT, not an error -- see pkg/audit.Verify.
+// Authorization: requires "audit:verify" permission.
+func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	data, err := t.call(ctx, "audit.VerifyChain", nil)
+	if err != nil {
+		// Normalize to the same transport.NotImplementedError REST and gRPC
+		// report for this condition (their 501 / codes.Unimplemented special
+		// cases in transport_audit.go), rather than the generic
+		// CapabilityUnsupportedError typedWireErrors reconstitutes for every
+		// other StatusUnimplemented verb. The Tier-1 client contract for
+		// "this node cannot verify its audit chain" must not depend on which
+		// transport reached it.
+		var unsupported *transport.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, &transport.NotImplementedError{Method: "VerifyChain"}
+		}
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: err}
+	}
+
+	var result transport.AuditVerifyResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: &UnmarshalError{Err: err}}
+	}
+	return &result, nil
 }

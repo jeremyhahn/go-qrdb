@@ -23,6 +23,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -103,4 +104,37 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 	return auditconv.PageToTransport(&page), nil
+}
+
+// VerifyChain verifies the audit log's tamper-evidence hash chain via the
+// "qrdb_audit_verify" MCP tool. A non-nil error means verification could
+// not be PERFORMED; a successful response with Verified=false is a TAMPER
+// VERDICT, not an error -- see pkg/audit.Verify.
+// Authorization: requires "audit:verify" permission.
+func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_audit_verify", map[string]any{})
+	if err != nil {
+		// Normalize to the same transport.NotImplementedError REST and gRPC
+		// report for this condition (their 501 / codes.Unimplemented special
+		// cases in transport_audit.go), rather than the generic
+		// CapabilityUnsupportedError typedToolErrors reconstitutes for every
+		// other CodeUnimplemented verb. The Tier-1 client contract for "this
+		// node cannot verify its audit chain" must not depend on which
+		// transport reached it.
+		var unsupported *transport.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, &transport.NotImplementedError{Method: "VerifyChain"}
+		}
+		return nil, err
+	}
+
+	var result transport.AuditVerifyResult
+	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &result, nil
 }

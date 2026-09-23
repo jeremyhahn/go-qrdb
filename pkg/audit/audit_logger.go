@@ -129,6 +129,53 @@ func (a *aggregateLogger) Query(ctx context.Context, f Filter) (*Page, error) {
 	return &Page{Total: -1}, nil
 }
 
+// VerifyChainSet delegates to the first child logger that actually HAS a
+// verifying sink -- in production that is the *ChainFileLogger a compliance
+// aggregate always fans out to first (cmd/qrdbd wires chainFile before the
+// ring buffer and slog sink). Returns *VerificationUnsupportedError when no
+// child has one, so aggregateLogger itself always satisfies the Verifier
+// interface and Verify's type assertion sees the real answer rather than
+// treating an all-non-chain aggregate as unsupported at that layer.
+//
+// "Implements Verifier" is not "has a verifying sink": aggregateLogger itself
+// implements Verifier unconditionally, once the method exists on the type, so
+// a NESTED aggregate with no chain-backed child among ITS OWN children still
+// satisfies the interface check. Delegating to it on that basis alone stops
+// the walk there and reports VerificationUnsupportedError even when a sibling
+// at THIS level -- or a cousin nested somewhere else -- does have one.
+// hasVerifyingSink resolves that recursively before a child is chosen, so the
+// child actually delegated to is guaranteed to find a real sink when its own
+// VerifyChainSet runs.
+func (a *aggregateLogger) VerifyChainSet(ctx context.Context) (*ChainVerification, error) {
+	for _, l := range a.loggers {
+		if v, ok := l.(Verifier); ok && hasVerifyingSink(l) {
+			return v.VerifyChainSet(ctx)
+		}
+	}
+	return nil, &VerificationUnsupportedError{}
+}
+
+// hasVerifyingSink reports whether l resolves, recursively through any
+// nesting of aggregateLogger, to at least one backend that implements
+// Verifier. It is the recursive counterpart to the interface check alone,
+// which aggregateLogger always passes regardless of what its children are.
+func hasVerifyingSink(l AuditLogger) bool {
+	agg, ok := l.(*aggregateLogger)
+	if !ok {
+		_, ok := l.(Verifier)
+		return ok
+	}
+	for _, child := range agg.loggers {
+		if hasVerifyingSink(child) {
+			return true
+		}
+	}
+	return false
+}
+
+// Compile-time interface check.
+var _ Verifier = (*aggregateLogger)(nil)
+
 // Close closes all child loggers. The first error encountered is returned;
 // remaining children are still closed.
 func (a *aggregateLogger) Close() error {

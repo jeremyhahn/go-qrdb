@@ -102,12 +102,12 @@ func TestVerifyChainSetAt_AMovingGenerationIsARace(t *testing.T) {
 	var gen uint64
 	moving := func() uint64 { gen += 2; return gen }
 	var raced *ConcurrentRotationError
-	if _, err := verifyChainSetAt(path, moving); !errors.As(err, &raced) {
+	if _, err := verifyChainSetAt(context.Background(), path, moving); !errors.As(err, &raced) {
 		t.Fatalf("verifyChainSetAt with a moving generation = %v, want *ConcurrentRotationError", err)
 	}
 
 	still := func() uint64 { return 4 }
-	if _, err := verifyChainSetAt(path, still); err != nil {
+	if _, err := verifyChainSetAt(context.Background(), path, still); err != nil {
 		t.Fatalf("verifyChainSetAt with a still, even generation = %v, want a clean verification", err)
 	}
 }

@@ -19,6 +19,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -63,6 +64,21 @@ func (m *mockAuditLogger) Query(ctx context.Context, f audit.Filter) (*audit.Pag
 func (m *mockAuditLogger) Close() error { return nil }
 
 var _ audit.AuditLogger = (*mockAuditLogger)(nil)
+
+// mockVerifyingAuditLogger extends mockAuditLogger with VerifyChainSet, so
+// it satisfies audit.Verifier for VerifyChain RPC tests. mockAuditLogger
+// itself deliberately does NOT implement Verifier, so it doubles for a
+// backend with no hash chain (RingBuffer, NoopLogger, SlogSink).
+type mockVerifyingAuditLogger struct {
+	mockAuditLogger
+	verifyFn func(ctx context.Context) (*audit.ChainVerification, error)
+}
+
+func (m *mockVerifyingAuditLogger) VerifyChainSet(ctx context.Context) (*audit.ChainVerification, error) {
+	return m.verifyFn(ctx)
+}
+
+var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
 
 // ---------------------------------------------------------------------------
 // startAuditTestServer starts a bare grpc.Server with RegisterAuditService.
@@ -296,5 +312,219 @@ func TestAuditAttrString_NonString(t *testing.T) {
 	got := auditAttrString(42)
 	if got != "42" {
 		t.Errorf("expected '42', got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// auditServer.VerifyChain
+// ---------------------------------------------------------------------------
+
+func TestAuditVerifyChain_NilLogger(t *testing.T) {
+	srv := &auditServer{auditLogger: nil}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for nil auditLogger")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_UnsupportedBackend(t *testing.T) {
+	// mockAuditLogger does not implement audit.Verifier.
+	srv := &auditServer{auditLogger: &mockAuditLogger{}}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for a backend with no hash chain")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_Verified(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{
+				Files: 3, Records: 42, Genesis: true,
+				Order: []string{"a.ndjson", "b.ndjson"}, Handoff: "deadbeef",
+			}, nil
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	resp, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetVerified() {
+		t.Error("expected Verified=true")
+	}
+	if resp.GetFiles() != 3 || resp.GetRecords() != 42 || !resp.GetGenesis() {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+	if resp.GetHandoff() != "deadbeef" {
+		t.Errorf("expected handoff 'deadbeef', got %q", resp.GetHandoff())
+	}
+}
+
+// TestAuditVerifyChain_ChainBroken asserts a tamper verdict is reported as
+// a successful RPC response with Verified=false, NOT a gRPC error.
+func TestAuditVerifyChain_ChainBroken(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 5},
+				&audit.ChainBrokenError{Path: "audit-events.ndjson", Index: 3, Expected: "aa", Got: "bb"}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	resp, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err != nil {
+		t.Fatalf("expected a successful RPC carrying the verdict, got error: %v", err)
+	}
+	if resp.GetVerified() {
+		t.Error("expected Verified=false for a broken chain")
+	}
+	if resp.GetReason() == "" {
+		t.Error("expected a non-empty Reason describing the break")
+	}
+}
+
+func TestAuditVerifyChain_ConcurrentRotation(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.ConcurrentRotationError{Path: "audit-events.ndjson", Attempts: 5}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for a concurrent-rotation race")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_FileError(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.FileError{Path: "audit-events.ndjson", Err: errors.New("permission denied")}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for a file failure")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_Canceled(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.VerificationCanceledError{Path: "audit-events.ndjson", Err: context.Canceled}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for a canceled verification")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Canceled {
+		t.Fatalf("expected Canceled, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_DeadlineExceeded(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.VerificationCanceledError{Path: "audit-events.ndjson", Err: context.DeadlineExceeded}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error for a verification that exceeded its deadline")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded, got %s", st.Code())
+	}
+}
+
+func TestAuditVerifyChain_Busy(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.VerificationBusyError{}
+		},
+	}
+	srv := &auditServer{auditLogger: logger}
+	_, err := srv.VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err == nil {
+		t.Fatal("expected error while a verification is already in progress")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %s", st.Code())
+	}
+}
+
+func TestRegisterAuditService_VerifyChain_RoundTrip(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 1, Genesis: true}, nil
+		},
+	}
+	conn, cleanup := startAuditTestServer(t, logger)
+	defer cleanup()
+
+	resp, err := pb.NewAuditServiceClient(conn).VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err != nil {
+		t.Fatalf("invoke error: %v", err)
+	}
+	if !resp.GetVerified() {
+		t.Error("expected Verified=true")
+	}
+}
+
+// TestRegisterAuditService_VerifyChain_RoundTrip_RecordsAboveInt32Max is the
+// wire-width regression this field exists to prevent: Records is int64 on
+// both pkg/audit.VerificationReport and the proto, precisely because a
+// trail's record count is unbounded over its retention window. A value like
+// 5_000_000_042 (chosen to sit well above math.MaxInt32 = 2_147_483_647 and
+// to not be representable by truncating to int32 as some smaller,
+// plausible-looking number) proves the actual wire round trip -- marshal,
+// send, unmarshal -- carries it intact. Reintroducing an int32 field plus a
+// cast would silently wrap this value; every other test in this file uses
+// values like 10 or 42 that an int32 carries just as well, so none of them
+// would catch that regression.
+func TestRegisterAuditService_VerifyChain_RoundTrip_RecordsAboveInt32Max(t *testing.T) {
+	wantRecords := int64(5_000_000_042)
+	if wantRecords <= math.MaxInt32 {
+		t.Fatalf("test bug: wantRecords = %d must exceed math.MaxInt32 = %d", wantRecords, math.MaxInt32)
+	}
+
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: wantRecords, Genesis: true}, nil
+		},
+	}
+	conn, cleanup := startAuditTestServer(t, logger)
+	defer cleanup()
+
+	resp, err := pb.NewAuditServiceClient(conn).VerifyChain(context.Background(), &pb.AuditVerifyChainRequest{})
+	if err != nil {
+		t.Fatalf("invoke error: %v", err)
+	}
+	if got := resp.GetRecords(); got != wantRecords {
+		t.Fatalf("Records = %d after the wire round trip, want %d (wrapped to int32 this would read %d)",
+			got, wantRecords, int32(wantRecords))
 	}
 }

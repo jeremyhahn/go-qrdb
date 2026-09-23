@@ -140,6 +140,13 @@ func crossScopePermissions() []Permission {
 		TenantsListDeleted,
 		TenantsReconcileDeleted,
 		TenantsApprove,
+		// AuditVerify is declared in constants.go (it predates this file and
+		// carries its own audit:verify wire name, unlike the *Cross-suffixed
+		// permissions above), but registered HERE rather than in
+		// self_scope.go: the hash chain it verifies is the whole node's audit
+		// trail, not a tenant-filtered slice of it, so there is no tenant-
+		// scoped meaning for it to carry. Reserved for the system tenant.
+		AuditVerify,
 		CertsRevokeCross,
 		VolumePoolCreate,
 		VolumePoolList,

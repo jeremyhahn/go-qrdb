@@ -56,6 +56,21 @@ var _ audit.AuditLogger = (*mockAuditLogger)(nil)
 
 func newMockAuditLogger() *mockAuditLogger { return &mockAuditLogger{} }
 
+// mockVerifyingAuditLogger extends mockAuditLogger with VerifyChainSet, so
+// it satisfies audit.Verifier for handleAuditVerify tests. mockAuditLogger
+// itself deliberately does NOT implement Verifier, so it doubles for a
+// backend with no hash chain (RingBuffer, NoopLogger, SlogSink).
+type mockVerifyingAuditLogger struct {
+	mockAuditLogger
+	verifyFn func(ctx context.Context) (*audit.ChainVerification, error)
+}
+
+func (m *mockVerifyingAuditLogger) VerifyChainSet(ctx context.Context) (*audit.ChainVerification, error) {
+	return m.verifyFn(ctx)
+}
+
+var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
+
 // ---------------------------------------------------------------------------
 // handleAuditQuery – success
 // ---------------------------------------------------------------------------
@@ -291,5 +306,113 @@ func TestWithAuditLogger_ToolsRegistered(t *testing.T) {
 	tools := s.MCPServer().ListTools()
 	if _, ok := tools["qrdb_audit_query"]; !ok {
 		t.Error("tool qrdb_audit_query not registered")
+	}
+	if _, ok := tools["qrdb_audit_verify"]; !ok {
+		t.Error("tool qrdb_audit_verify not registered")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAuditVerify
+// ---------------------------------------------------------------------------
+
+func TestHandleAuditVerify_UnsupportedBackend(t *testing.T) {
+	// mockAuditLogger does not implement audit.Verifier.
+	handler := handleAuditVerify(newMockAuditLogger())
+
+	req := buildCallToolRequest(t, "qrdb_audit_verify", map[string]any{})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for a backend with no hash chain")
+	}
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *ToolError, got %T", err)
+	}
+	var unsupported *audit.VerificationUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected wrapped *audit.VerificationUnsupportedError, got %v", err)
+	}
+}
+
+func TestHandleAuditVerify_Verified(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 2, Records: 10, Genesis: true}, nil
+		},
+	}
+	handler := handleAuditVerify(logger)
+
+	req := buildCallToolRequest(t, "qrdb_audit_verify", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+
+	text := resultText(t, result)
+	var report audit.VerificationReport
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !report.Verified {
+		t.Error("expected Verified=true")
+	}
+	if report.Files != 2 || report.Records != 10 {
+		t.Errorf("unexpected report: %+v", report)
+	}
+}
+
+// TestHandleAuditVerify_ChainBroken asserts a tamper verdict is reported as
+// a successful tool result with Verified=false, NOT a tool error.
+func TestHandleAuditVerify_ChainBroken(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 3},
+				&audit.ChainBrokenError{Path: "audit-events.ndjson", Index: 1, Expected: "aa", Got: "bb"}
+		},
+	}
+	handler := handleAuditVerify(logger)
+
+	req := buildCallToolRequest(t, "qrdb_audit_verify", map[string]any{})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected a successful result carrying the verdict, got error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError for a tamper verdict: %v", result.Content)
+	}
+
+	text := resultText(t, result)
+	var report audit.VerificationReport
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report.Verified {
+		t.Error("expected Verified=false for a broken chain")
+	}
+	if report.Reason == "" {
+		t.Error("expected a non-empty Reason")
+	}
+}
+
+func TestHandleAuditVerify_ConcurrentRotation(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.ConcurrentRotationError{Path: "audit-events.ndjson", Attempts: 5}
+		},
+	}
+	handler := handleAuditVerify(logger)
+
+	req := buildCallToolRequest(t, "qrdb_audit_verify", map[string]any{})
+	_, err := handler(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected ToolError for a concurrent-rotation race")
+	}
+	var crErr *audit.ConcurrentRotationError
+	if !errors.As(err, &crErr) {
+		t.Fatalf("expected wrapped *audit.ConcurrentRotationError, got %v", err)
 	}
 }

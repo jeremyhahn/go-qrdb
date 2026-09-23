@@ -87,6 +87,39 @@ func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (
 	return auditconv.PageToTransport(page), nil
 }
 
+// auditVerificationReportToTransport converts an internal
+// *audit.VerificationReport to the SDK's *transport.AuditVerifyResult.
+func auditVerificationReportToTransport(r *audit.VerificationReport) *transport.AuditVerifyResult {
+	return &transport.AuditVerifyResult{
+		Verified: r.Verified,
+		Reason:   r.Reason,
+		Files:    r.Files,
+		Records:  r.Records,
+		Order:    r.Order,
+		Genesis:  r.Genesis,
+		Seed:     r.Seed,
+		Handoff:  r.Handoff,
+	}
+}
+
+// VerifyChain verifies the wrapped AuditLogger's tamper-evidence hash chain.
+// A non-nil error means verification could not be PERFORMED (unsupported
+// backend, missing file, or a rotation race); a successful result with
+// Verified=false is a TAMPER VERDICT, not an error -- see pkg/audit.Verify.
+func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if c.transport.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if c.transport.auditLogger == nil {
+		return nil, &MissingAuditLoggerError{}
+	}
+	report, err := audit.Verify(ctx, c.transport.auditLogger)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return auditVerificationReportToTransport(report), nil
+}
+
 // AuditClient returns the embedded audit client projection. Implements
 // transport.AuditProvider. Returns nil when no AuditLogger has been injected
 // so the SDK accessor degrades to nil rather than surfacing a logger-less

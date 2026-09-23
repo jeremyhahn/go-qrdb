@@ -17,6 +17,7 @@ package audit
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -105,7 +106,8 @@ type ChainVerification struct {
 	Files int
 
 	// Records is the number of audit records verified, anchors excluded.
-	Records int
+	// int64: a trail's record count is unbounded over its retention window.
+	Records int64
 
 	// Order lists the linked files in chain order, head first. It is derived
 	// from the digests, not from the file names, so a renamed archive does not
@@ -140,7 +142,7 @@ type chainSegment struct {
 
 	// records counts folded records excluding anchors. A file with none holds
 	// no audit records and is not a link in the chain.
-	records int
+	records int64
 }
 
 // expectedPrevHash returns the PrevHash a record must carry for a chain
@@ -201,7 +203,7 @@ func decodeDigest(prevHash string) ([sha256.Size]byte, bool) {
 // A line that will not unmarshal is SKIPPED, not folded, matching
 // initPrevDigest: a torn line is not a record, and both readers must agree on
 // that or they diverge on the one file a crash leaves behind.
-func verifyChainSegment(path string) (*chainSegment, error) {
+func verifyChainSegment(ctx context.Context, path string) (*chainSegment, error) {
 	file, err := os.Open(path) // #nosec G304 -- path is the audit sink's own configured file or an archive of it.
 	if err != nil {
 		return nil, &FileError{Path: path, Err: err}
@@ -220,6 +222,9 @@ func verifyChainSegment(path string) (*chainSegment, error) {
 	// the directory, and pre-allocating the ceiling per file cost ~1 MiB each.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScanLine)
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, &VerificationCanceledError{Path: path, Err: err}
+		}
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
@@ -288,8 +293,8 @@ func verifyChainSegment(path string) (*chainSegment, error) {
 //
 // It says nothing about where the file sits in the set -- that is
 // verifyChainSet's question.
-func verifyChainFile(path string) error {
-	_, err := verifyChainSegment(path)
+func verifyChainFile(ctx context.Context, path string) error {
+	_, err := verifyChainSegment(ctx, path)
 	return err
 }
 
@@ -399,8 +404,8 @@ const (
 // or the empty file a rotation has just opened -- are verified and then left
 // out of the linking. They hand off nothing, so treating them as links would
 // fork the walk on honest data.
-func verifyChainSet(path string) (*ChainVerification, error) {
-	return verifyChainSetAt(path, nil)
+func verifyChainSet(ctx context.Context, path string) (*ChainVerification, error) {
+	return verifyChainSetAt(ctx, path, nil)
 }
 
 // verifyChainSetAt is verifyChainSet with the writer's rotation sequence
@@ -416,12 +421,19 @@ func verifyChainSet(path string) (*ChainVerification, error) {
 // while it looked. Any other attempt is a race, never an absence. A nil
 // generation -- a set whose writer is not in this process -- leaves the
 // listings as the only evidence.
-func verifyChainSetAt(path string, generation func() uint64) (*ChainVerification, error) {
+func verifyChainSetAt(ctx context.Context, path string, generation func() uint64) (*ChainVerification, error) {
 	backoff := verifyScanBackoff
 	stableAbsences := 0
 	for attempt := 0; attempt < verifyScanAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, &VerificationCanceledError{Path: path, Err: err}
+		}
 		if attempt > 0 {
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return nil, &VerificationCanceledError{Path: path, Err: ctx.Err()}
+			case <-time.After(backoff):
+			}
 			backoff *= 2
 		}
 
@@ -433,7 +445,7 @@ func verifyChainSetAt(path string, generation func() uint64) (*ChainVerification
 		if err != nil {
 			return nil, err
 		}
-		v, walkErr := linkChainSet(before)
+		v, walkErr := linkChainSet(ctx, before)
 		after, _, err := rotationSetFiles(path)
 		if err != nil {
 			return nil, err
@@ -466,10 +478,13 @@ func verifyChainSetAt(path string, generation func() uint64) (*ChainVerification
 // linkChainSet verifies each file and links them into one chain. It is
 // verifyChainSet's body, separated so the caller can repeat it against a
 // fresh listing.
-func linkChainSet(paths []string) (*ChainVerification, error) {
+func linkChainSet(ctx context.Context, paths []string) (*ChainVerification, error) {
 	segs := make([]*chainSegment, 0, len(paths))
 	for _, p := range paths {
-		seg, err := verifyChainSegment(p)
+		if err := ctx.Err(); err != nil {
+			return nil, &VerificationCanceledError{Path: p, Err: err}
+		}
+		seg, err := verifyChainSegment(ctx, p)
 		if err != nil {
 			return nil, err
 		}

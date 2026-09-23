@@ -24882,6 +24882,157 @@ func (x *AuditEvent) GetPrevHash() string {
 	return ""
 }
 
+// AuditVerifyChainRequest carries no parameters today; the verified target
+// is always the server's own configured audit trail. The message exists so
+// the RPC can grow parameters (e.g. a specific archive) without breaking
+// wire compatibility.
+type AuditVerifyChainRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditVerifyChainRequest) Reset() {
+	*x = AuditVerifyChainRequest{}
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditVerifyChainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditVerifyChainRequest) ProtoMessage() {}
+
+func (x *AuditVerifyChainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditVerifyChainRequest.ProtoReflect.Descriptor instead.
+func (*AuditVerifyChainRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{376}
+}
+
+// AuditVerifyChainResponse reports the outcome of a hash-chain verification.
+type AuditVerifyChainResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// verified is true only when every linked file's chain checked out.
+	Verified bool `protobuf:"varint,1,opt,name=verified,proto3" json:"verified,omitempty"`
+	// reason is a human-readable description of the break; empty when verified.
+	Reason string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// files is the number of rotation-set files that carry records and were linked.
+	Files int32 `protobuf:"varint,3,opt,name=files,proto3" json:"files,omitempty"`
+	// records is the number of audit records verified, anchors excluded.
+	// int64: an audit trail's record count is unbounded over its retention
+	// window, and int32 would wrap on a long-lived, high-volume trail.
+	Records int64 `protobuf:"varint,4,opt,name=records,proto3" json:"records,omitempty"`
+	// order lists the linked files in chain order, head first.
+	Order []string `protobuf:"bytes,5,rep,name=order,proto3" json:"order,omitempty"`
+	// genesis reports whether the walk reached the chain's origin.
+	Genesis bool `protobuf:"varint,6,opt,name=genesis,proto3" json:"genesis,omitempty"`
+	// seed is the hex digest the head claims to continue from, empty at genesis.
+	Seed string `protobuf:"bytes,7,opt,name=seed,proto3" json:"seed,omitempty"`
+	// handoff is the hex digest the tail ends on.
+	Handoff       string `protobuf:"bytes,8,opt,name=handoff,proto3" json:"handoff,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditVerifyChainResponse) Reset() {
+	*x = AuditVerifyChainResponse{}
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditVerifyChainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditVerifyChainResponse) ProtoMessage() {}
+
+func (x *AuditVerifyChainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditVerifyChainResponse.ProtoReflect.Descriptor instead.
+func (*AuditVerifyChainResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{377}
+}
+
+func (x *AuditVerifyChainResponse) GetVerified() bool {
+	if x != nil {
+		return x.Verified
+	}
+	return false
+}
+
+func (x *AuditVerifyChainResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AuditVerifyChainResponse) GetFiles() int32 {
+	if x != nil {
+		return x.Files
+	}
+	return 0
+}
+
+func (x *AuditVerifyChainResponse) GetRecords() int64 {
+	if x != nil {
+		return x.Records
+	}
+	return 0
+}
+
+func (x *AuditVerifyChainResponse) GetOrder() []string {
+	if x != nil {
+		return x.Order
+	}
+	return nil
+}
+
+func (x *AuditVerifyChainResponse) GetGenesis() bool {
+	if x != nil {
+		return x.Genesis
+	}
+	return false
+}
+
+func (x *AuditVerifyChainResponse) GetSeed() string {
+	if x != nil {
+		return x.Seed
+	}
+	return ""
+}
+
+func (x *AuditVerifyChainResponse) GetHandoff() string {
+	if x != nil {
+		return x.Handoff
+	}
+	return ""
+}
+
 // EnrollFactorRequest carries the enrollment parameters.
 type EnrollFactorRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -24895,7 +25046,7 @@ type EnrollFactorRequest struct {
 
 func (x *EnrollFactorRequest) Reset() {
 	*x = EnrollFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24907,7 +25058,7 @@ func (x *EnrollFactorRequest) String() string {
 func (*EnrollFactorRequest) ProtoMessage() {}
 
 func (x *EnrollFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24920,7 +25071,7 @@ func (x *EnrollFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollFactorRequest.ProtoReflect.Descriptor instead.
 func (*EnrollFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{376}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{378}
 }
 
 func (x *EnrollFactorRequest) GetFactorName() string {
@@ -24967,7 +25118,7 @@ type EnrollFactorResponse struct {
 
 func (x *EnrollFactorResponse) Reset() {
 	*x = EnrollFactorResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24979,7 +25130,7 @@ func (x *EnrollFactorResponse) String() string {
 func (*EnrollFactorResponse) ProtoMessage() {}
 
 func (x *EnrollFactorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24992,7 +25143,7 @@ func (x *EnrollFactorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollFactorResponse.ProtoReflect.Descriptor instead.
 func (*EnrollFactorResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{377}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{379}
 }
 
 func (x *EnrollFactorResponse) GetEnrollmentId() string {
@@ -25047,7 +25198,7 @@ type ChallengeFactorRequest struct {
 
 func (x *ChallengeFactorRequest) Reset() {
 	*x = ChallengeFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25059,7 +25210,7 @@ func (x *ChallengeFactorRequest) String() string {
 func (*ChallengeFactorRequest) ProtoMessage() {}
 
 func (x *ChallengeFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25072,7 +25223,7 @@ func (x *ChallengeFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeFactorRequest.ProtoReflect.Descriptor instead.
 func (*ChallengeFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{378}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{380}
 }
 
 func (x *ChallengeFactorRequest) GetEnrollmentId() string {
@@ -25098,7 +25249,7 @@ type ChallengeFactorResponse struct {
 
 func (x *ChallengeFactorResponse) Reset() {
 	*x = ChallengeFactorResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25110,7 +25261,7 @@ func (x *ChallengeFactorResponse) String() string {
 func (*ChallengeFactorResponse) ProtoMessage() {}
 
 func (x *ChallengeFactorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25123,7 +25274,7 @@ func (x *ChallengeFactorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeFactorResponse.ProtoReflect.Descriptor instead.
 func (*ChallengeFactorResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{379}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{381}
 }
 
 func (x *ChallengeFactorResponse) GetChallengeId() string {
@@ -25174,7 +25325,7 @@ type VerifyFactorRequest struct {
 
 func (x *VerifyFactorRequest) Reset() {
 	*x = VerifyFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[382]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25186,7 +25337,7 @@ func (x *VerifyFactorRequest) String() string {
 func (*VerifyFactorRequest) ProtoMessage() {}
 
 func (x *VerifyFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[382]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25199,7 +25350,7 @@ func (x *VerifyFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyFactorRequest.ProtoReflect.Descriptor instead.
 func (*VerifyFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{380}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{382}
 }
 
 func (x *VerifyFactorRequest) GetFactorName() string {
@@ -25240,7 +25391,7 @@ type ListFactorsRequest struct {
 
 func (x *ListFactorsRequest) Reset() {
 	*x = ListFactorsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[383]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25252,7 +25403,7 @@ func (x *ListFactorsRequest) String() string {
 func (*ListFactorsRequest) ProtoMessage() {}
 
 func (x *ListFactorsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[383]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25265,7 +25416,7 @@ func (x *ListFactorsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFactorsRequest.ProtoReflect.Descriptor instead.
 func (*ListFactorsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{381}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{383}
 }
 
 func (x *ListFactorsRequest) GetSubject() string {
@@ -25292,7 +25443,7 @@ type EnrollmentEntry struct {
 
 func (x *EnrollmentEntry) Reset() {
 	*x = EnrollmentEntry{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[382]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[384]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25304,7 +25455,7 @@ func (x *EnrollmentEntry) String() string {
 func (*EnrollmentEntry) ProtoMessage() {}
 
 func (x *EnrollmentEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[382]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[384]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25317,7 +25468,7 @@ func (x *EnrollmentEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollmentEntry.ProtoReflect.Descriptor instead.
 func (*EnrollmentEntry) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{382}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{384}
 }
 
 func (x *EnrollmentEntry) GetEnrollmentId() string {
@@ -25380,7 +25531,7 @@ type ListFactorsResponse struct {
 
 func (x *ListFactorsResponse) Reset() {
 	*x = ListFactorsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[383]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[385]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25392,7 +25543,7 @@ func (x *ListFactorsResponse) String() string {
 func (*ListFactorsResponse) ProtoMessage() {}
 
 func (x *ListFactorsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[383]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[385]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25405,7 +25556,7 @@ func (x *ListFactorsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFactorsResponse.ProtoReflect.Descriptor instead.
 func (*ListFactorsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{383}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{385}
 }
 
 func (x *ListFactorsResponse) GetEnrollments() []*EnrollmentEntry {
@@ -25432,7 +25583,7 @@ type RevokeFactorRequest struct {
 
 func (x *RevokeFactorRequest) Reset() {
 	*x = RevokeFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[384]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[386]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25444,7 +25595,7 @@ func (x *RevokeFactorRequest) String() string {
 func (*RevokeFactorRequest) ProtoMessage() {}
 
 func (x *RevokeFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[384]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[386]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25457,7 +25608,7 @@ func (x *RevokeFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeFactorRequest.ProtoReflect.Descriptor instead.
 func (*RevokeFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{384}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{386}
 }
 
 func (x *RevokeFactorRequest) GetEnrollmentId() string {
@@ -25491,7 +25642,7 @@ type UserAuthFactorRecord struct {
 
 func (x *UserAuthFactorRecord) Reset() {
 	*x = UserAuthFactorRecord{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[385]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[387]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25503,7 +25654,7 @@ func (x *UserAuthFactorRecord) String() string {
 func (*UserAuthFactorRecord) ProtoMessage() {}
 
 func (x *UserAuthFactorRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[385]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[387]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25516,7 +25667,7 @@ func (x *UserAuthFactorRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRecord.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRecord) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{385}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{387}
 }
 
 func (x *UserAuthFactorRecord) GetId() string {
@@ -25613,7 +25764,7 @@ type UserAuthFactorAddRequest struct {
 
 func (x *UserAuthFactorAddRequest) Reset() {
 	*x = UserAuthFactorAddRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[386]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[388]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25625,7 +25776,7 @@ func (x *UserAuthFactorAddRequest) String() string {
 func (*UserAuthFactorAddRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[386]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[388]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25638,7 +25789,7 @@ func (x *UserAuthFactorAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorAddRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorAddRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{386}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{388}
 }
 
 func (x *UserAuthFactorAddRequest) GetUserId() uint64 {
@@ -25700,7 +25851,7 @@ type UserAuthFactorAddResponse struct {
 
 func (x *UserAuthFactorAddResponse) Reset() {
 	*x = UserAuthFactorAddResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[387]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[389]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25712,7 +25863,7 @@ func (x *UserAuthFactorAddResponse) String() string {
 func (*UserAuthFactorAddResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorAddResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[387]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[389]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25725,7 +25876,7 @@ func (x *UserAuthFactorAddResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorAddResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorAddResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{387}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{389}
 }
 
 func (x *UserAuthFactorAddResponse) GetFactor() *UserAuthFactorRecord {
@@ -25745,7 +25896,7 @@ type UserAuthFactorListRequest struct {
 
 func (x *UserAuthFactorListRequest) Reset() {
 	*x = UserAuthFactorListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[388]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[390]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25757,7 +25908,7 @@ func (x *UserAuthFactorListRequest) String() string {
 func (*UserAuthFactorListRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[388]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[390]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25770,7 +25921,7 @@ func (x *UserAuthFactorListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorListRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{388}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{390}
 }
 
 func (x *UserAuthFactorListRequest) GetUserId() uint64 {
@@ -25791,7 +25942,7 @@ type UserAuthFactorListResponse struct {
 
 func (x *UserAuthFactorListResponse) Reset() {
 	*x = UserAuthFactorListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[389]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[391]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25803,7 +25954,7 @@ func (x *UserAuthFactorListResponse) String() string {
 func (*UserAuthFactorListResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[389]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[391]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25816,7 +25967,7 @@ func (x *UserAuthFactorListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorListResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{389}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{391}
 }
 
 func (x *UserAuthFactorListResponse) GetFactors() []*UserAuthFactorRecord {
@@ -25843,7 +25994,7 @@ type UserAuthFactorGetRequest struct {
 
 func (x *UserAuthFactorGetRequest) Reset() {
 	*x = UserAuthFactorGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[390]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[392]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25855,7 +26006,7 @@ func (x *UserAuthFactorGetRequest) String() string {
 func (*UserAuthFactorGetRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[390]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[392]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25868,7 +26019,7 @@ func (x *UserAuthFactorGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorGetRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{390}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{392}
 }
 
 func (x *UserAuthFactorGetRequest) GetFactorId() string {
@@ -25888,7 +26039,7 @@ type UserAuthFactorGetResponse struct {
 
 func (x *UserAuthFactorGetResponse) Reset() {
 	*x = UserAuthFactorGetResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[391]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[393]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25900,7 +26051,7 @@ func (x *UserAuthFactorGetResponse) String() string {
 func (*UserAuthFactorGetResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[391]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[393]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25913,7 +26064,7 @@ func (x *UserAuthFactorGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorGetResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorGetResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{391}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{393}
 }
 
 func (x *UserAuthFactorGetResponse) GetFactor() *UserAuthFactorRecord {
@@ -25934,7 +26085,7 @@ type UserAuthFactorRemoveRequest struct {
 
 func (x *UserAuthFactorRemoveRequest) Reset() {
 	*x = UserAuthFactorRemoveRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[392]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[394]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25946,7 +26097,7 @@ func (x *UserAuthFactorRemoveRequest) String() string {
 func (*UserAuthFactorRemoveRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[392]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[394]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25959,7 +26110,7 @@ func (x *UserAuthFactorRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRemoveRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{392}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{394}
 }
 
 func (x *UserAuthFactorRemoveRequest) GetFactorId() string {
@@ -25986,7 +26137,7 @@ type UserAuthFactorRemoveResponse struct {
 
 func (x *UserAuthFactorRemoveResponse) Reset() {
 	*x = UserAuthFactorRemoveResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[393]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[395]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25998,7 +26149,7 @@ func (x *UserAuthFactorRemoveResponse) String() string {
 func (*UserAuthFactorRemoveResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRemoveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[393]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[395]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26011,7 +26162,7 @@ func (x *UserAuthFactorRemoveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRemoveResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRemoveResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{393}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{395}
 }
 
 func (x *UserAuthFactorRemoveResponse) GetStatus() string {
@@ -26038,7 +26189,7 @@ type UserAuthFactorNewFactor struct {
 
 func (x *UserAuthFactorNewFactor) Reset() {
 	*x = UserAuthFactorNewFactor{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[394]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[396]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26050,7 +26201,7 @@ func (x *UserAuthFactorNewFactor) String() string {
 func (*UserAuthFactorNewFactor) ProtoMessage() {}
 
 func (x *UserAuthFactorNewFactor) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[394]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[396]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26063,7 +26214,7 @@ func (x *UserAuthFactorNewFactor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorNewFactor.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorNewFactor) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{394}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{396}
 }
 
 func (x *UserAuthFactorNewFactor) GetUserId() uint64 {
@@ -26126,7 +26277,7 @@ type UserAuthFactorRotateRequest struct {
 
 func (x *UserAuthFactorRotateRequest) Reset() {
 	*x = UserAuthFactorRotateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[395]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[397]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26138,7 +26289,7 @@ func (x *UserAuthFactorRotateRequest) String() string {
 func (*UserAuthFactorRotateRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRotateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[395]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[397]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26151,7 +26302,7 @@ func (x *UserAuthFactorRotateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRotateRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRotateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{395}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{397}
 }
 
 func (x *UserAuthFactorRotateRequest) GetOldFactorId() string {
@@ -26178,7 +26329,7 @@ type UserAuthFactorRotateResponse struct {
 
 func (x *UserAuthFactorRotateResponse) Reset() {
 	*x = UserAuthFactorRotateResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[396]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[398]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26190,7 +26341,7 @@ func (x *UserAuthFactorRotateResponse) String() string {
 func (*UserAuthFactorRotateResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRotateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[396]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[398]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26203,7 +26354,7 @@ func (x *UserAuthFactorRotateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRotateResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRotateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{396}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{398}
 }
 
 func (x *UserAuthFactorRotateResponse) GetNewFactor() *UserAuthFactorRecord {
@@ -26224,7 +26375,7 @@ type UserAuthFactorRelabelRequest struct {
 
 func (x *UserAuthFactorRelabelRequest) Reset() {
 	*x = UserAuthFactorRelabelRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[397]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[399]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26236,7 +26387,7 @@ func (x *UserAuthFactorRelabelRequest) String() string {
 func (*UserAuthFactorRelabelRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRelabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[397]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[399]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26249,7 +26400,7 @@ func (x *UserAuthFactorRelabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRelabelRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRelabelRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{397}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{399}
 }
 
 func (x *UserAuthFactorRelabelRequest) GetFactorId() string {
@@ -26276,7 +26427,7 @@ type UserAuthFactorRelabelResponse struct {
 
 func (x *UserAuthFactorRelabelResponse) Reset() {
 	*x = UserAuthFactorRelabelResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[398]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[400]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26288,7 +26439,7 @@ func (x *UserAuthFactorRelabelResponse) String() string {
 func (*UserAuthFactorRelabelResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRelabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[398]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[400]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26301,7 +26452,7 @@ func (x *UserAuthFactorRelabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRelabelResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRelabelResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{398}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{400}
 }
 
 func (x *UserAuthFactorRelabelResponse) GetFactor() *UserAuthFactorRecord {
@@ -26322,7 +26473,7 @@ type UserAuthFactorLoginRequest struct {
 
 func (x *UserAuthFactorLoginRequest) Reset() {
 	*x = UserAuthFactorLoginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[399]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[401]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26334,7 +26485,7 @@ func (x *UserAuthFactorLoginRequest) String() string {
 func (*UserAuthFactorLoginRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorLoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[399]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[401]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26347,7 +26498,7 @@ func (x *UserAuthFactorLoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorLoginRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorLoginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{399}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{401}
 }
 
 func (x *UserAuthFactorLoginRequest) GetType() string {
@@ -26380,7 +26531,7 @@ type UserAuthFactorLoginResponse struct {
 
 func (x *UserAuthFactorLoginResponse) Reset() {
 	*x = UserAuthFactorLoginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[400]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[402]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26392,7 +26543,7 @@ func (x *UserAuthFactorLoginResponse) String() string {
 func (*UserAuthFactorLoginResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorLoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[400]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[402]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26405,7 +26556,7 @@ func (x *UserAuthFactorLoginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorLoginResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorLoginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{400}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{402}
 }
 
 func (x *UserAuthFactorLoginResponse) GetUserId() uint64 {
@@ -26470,7 +26621,7 @@ type RemoveCertBindingRequest struct {
 
 func (x *RemoveCertBindingRequest) Reset() {
 	*x = RemoveCertBindingRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[401]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[403]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26482,7 +26633,7 @@ func (x *RemoveCertBindingRequest) String() string {
 func (*RemoveCertBindingRequest) ProtoMessage() {}
 
 func (x *RemoveCertBindingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[401]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[403]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26495,7 +26646,7 @@ func (x *RemoveCertBindingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveCertBindingRequest.ProtoReflect.Descriptor instead.
 func (*RemoveCertBindingRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{401}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{403}
 }
 
 func (x *RemoveCertBindingRequest) GetUserId() uint64 {
@@ -28412,7 +28563,17 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tprev_hash\x18\v \x01(\tR\bprevHash\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x19\n" +
+	"\x17AuditVerifyChainRequest\"\xdc\x01\n" +
+	"\x18AuditVerifyChainResponse\x12\x1a\n" +
+	"\bverified\x18\x01 \x01(\bR\bverified\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x14\n" +
+	"\x05files\x18\x03 \x01(\x05R\x05files\x12\x18\n" +
+	"\arecords\x18\x04 \x01(\x03R\arecords\x12\x14\n" +
+	"\x05order\x18\x05 \x03(\tR\x05order\x12\x18\n" +
+	"\agenesis\x18\x06 \x01(\bR\agenesis\x12\x12\n" +
+	"\x04seed\x18\a \x01(\tR\x04seed\x12\x18\n" +
+	"\ahandoff\x18\b \x01(\tR\ahandoff\"\x83\x02\n" +
 	"\x13EnrollFactorRequest\x12\x1f\n" +
 	"\vfactor_name\x18\x01 \x01(\tR\n" +
 	"factorName\x12\x18\n" +
@@ -28888,9 +29049,10 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"RekeyStart\x12'.qrdb.v1.TenantBarrierRekeyStartRequest\x1a\x1b.qrdb.v1.BarrierQuorumRound\"\x18\xc2\xf3\x18\x14tenant_barrier:rekey\x12{\n" +
 	"\rOfficerRevoke\x12*.qrdb.v1.TenantBarrierOfficerRevokeRequest\x1a\x1b.qrdb.v1.BarrierQuorumRound\"!\xc2\xf3\x18\x1dtenant_barrier:officer_revoke\x12\x82\x01\n" +
 	"\x0fShareClaimBegin\x12,.qrdb.v1.TenantBarrierShareClaimBeginRequest\x1a-.qrdb.v1.TenantBarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x8b\x01\n" +
-	"\x12ShareClaimComplete\x12/.qrdb.v1.TenantBarrierShareClaimCompleteRequest\x1a0.qrdb.v1.TenantBarrierShareClaimCompleteResponse\"\x12\xc2\xf3\x18\x0eidentity:gated2a\n" +
+	"\x12ShareClaimComplete\x12/.qrdb.v1.TenantBarrierShareClaimCompleteRequest\x1a0.qrdb.v1.TenantBarrierShareClaimCompleteResponse\"\x12\xc2\xf3\x18\x0eidentity:gated2\xc7\x01\n" +
 	"\fAuditService\x12Q\n" +
-	"\x05Query\x12\x1a.qrdb.v1.AuditQueryRequest\x1a\x1b.qrdb.v1.AuditQueryResponse\"\x0f\xc2\xf3\x18\vaudit:query2\x80\x04\n" +
+	"\x05Query\x12\x1a.qrdb.v1.AuditQueryRequest\x1a\x1b.qrdb.v1.AuditQueryResponse\"\x0f\xc2\xf3\x18\vaudit:query\x12d\n" +
+	"\vVerifyChain\x12 .qrdb.v1.AuditVerifyChainRequest\x1a!.qrdb.v1.AuditVerifyChainResponse\"\x10\xc2\xf3\x18\faudit:verify2\x80\x04\n" +
 	"\x11AuthFactorService\x12b\n" +
 	"\fEnrollFactor\x12\x1c.qrdb.v1.EnrollFactorRequest\x1a\x1d.qrdb.v1.EnrollFactorResponse\"\x15\xc2\xf3\x18\x11authfactor:enroll\x12n\n" +
 	"\x0fChallengeFactor\x12\x1f.qrdb.v1.ChallengeFactorRequest\x1a .qrdb.v1.ChallengeFactorResponse\"\x18\xc2\xf3\x18\x14authfactor:challenge\x12[\n" +
@@ -28919,7 +29081,7 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes = make([]protoimpl.MessageInfo, 427)
+var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes = make([]protoimpl.MessageInfo, 429)
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_goTypes = []any{
 	(SortOrder)(0),                                  // 0: qrdb.v1.SortOrder
 	(SortTarget)(0),                                 // 1: qrdb.v1.SortTarget
@@ -29309,58 +29471,60 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_goTypes = []any{
 	(*AuditQueryRequest)(nil),                       // 385: qrdb.v1.AuditQueryRequest
 	(*AuditQueryResponse)(nil),                      // 386: qrdb.v1.AuditQueryResponse
 	(*AuditEvent)(nil),                              // 387: qrdb.v1.AuditEvent
-	(*EnrollFactorRequest)(nil),                     // 388: qrdb.v1.EnrollFactorRequest
-	(*EnrollFactorResponse)(nil),                    // 389: qrdb.v1.EnrollFactorResponse
-	(*ChallengeFactorRequest)(nil),                  // 390: qrdb.v1.ChallengeFactorRequest
-	(*ChallengeFactorResponse)(nil),                 // 391: qrdb.v1.ChallengeFactorResponse
-	(*VerifyFactorRequest)(nil),                     // 392: qrdb.v1.VerifyFactorRequest
-	(*ListFactorsRequest)(nil),                      // 393: qrdb.v1.ListFactorsRequest
-	(*EnrollmentEntry)(nil),                         // 394: qrdb.v1.EnrollmentEntry
-	(*ListFactorsResponse)(nil),                     // 395: qrdb.v1.ListFactorsResponse
-	(*RevokeFactorRequest)(nil),                     // 396: qrdb.v1.RevokeFactorRequest
-	(*UserAuthFactorRecord)(nil),                    // 397: qrdb.v1.UserAuthFactorRecord
-	(*UserAuthFactorAddRequest)(nil),                // 398: qrdb.v1.UserAuthFactorAddRequest
-	(*UserAuthFactorAddResponse)(nil),               // 399: qrdb.v1.UserAuthFactorAddResponse
-	(*UserAuthFactorListRequest)(nil),               // 400: qrdb.v1.UserAuthFactorListRequest
-	(*UserAuthFactorListResponse)(nil),              // 401: qrdb.v1.UserAuthFactorListResponse
-	(*UserAuthFactorGetRequest)(nil),                // 402: qrdb.v1.UserAuthFactorGetRequest
-	(*UserAuthFactorGetResponse)(nil),               // 403: qrdb.v1.UserAuthFactorGetResponse
-	(*UserAuthFactorRemoveRequest)(nil),             // 404: qrdb.v1.UserAuthFactorRemoveRequest
-	(*UserAuthFactorRemoveResponse)(nil),            // 405: qrdb.v1.UserAuthFactorRemoveResponse
-	(*UserAuthFactorNewFactor)(nil),                 // 406: qrdb.v1.UserAuthFactorNewFactor
-	(*UserAuthFactorRotateRequest)(nil),             // 407: qrdb.v1.UserAuthFactorRotateRequest
-	(*UserAuthFactorRotateResponse)(nil),            // 408: qrdb.v1.UserAuthFactorRotateResponse
-	(*UserAuthFactorRelabelRequest)(nil),            // 409: qrdb.v1.UserAuthFactorRelabelRequest
-	(*UserAuthFactorRelabelResponse)(nil),           // 410: qrdb.v1.UserAuthFactorRelabelResponse
-	(*UserAuthFactorLoginRequest)(nil),              // 411: qrdb.v1.UserAuthFactorLoginRequest
-	(*UserAuthFactorLoginResponse)(nil),             // 412: qrdb.v1.UserAuthFactorLoginResponse
-	(*RemoveCertBindingRequest)(nil),                // 413: qrdb.v1.RemoveCertBindingRequest
-	nil,                                             // 414: qrdb.v1.ScanResponse.PairsEntry
-	nil,                                             // 415: qrdb.v1.StartShardRequest.MembersEntry
-	nil,                                             // 416: qrdb.v1.ShardInfoProto.NodesEntry
-	nil,                                             // 417: qrdb.v1.UpdateUserProtoRequest.AttributesEntry
-	nil,                                             // 418: qrdb.v1.UserResponse.AttributesEntry
-	nil,                                             // 419: qrdb.v1.CollectionInfoResponse.SchemaEntry
-	nil,                                             // 420: qrdb.v1.BarrierQuorumChallenge.MethodDataEntry
-	nil,                                             // 421: qrdb.v1.BarrierQuorumSubmitRequest.ResponseMetadataEntry
-	nil,                                             // 422: qrdb.v1.BackupCreateRequest.MetadataEntry
-	nil,                                             // 423: qrdb.v1.BackupInfo.MetadataEntry
-	nil,                                             // 424: qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
-	nil,                                             // 425: qrdb.v1.RAGQueryRequest.FilterEntry
-	nil,                                             // 426: qrdb.v1.RAGQueryResult.MetadataEntry
-	nil,                                             // 427: qrdb.v1.RAGDocumentInfo.MetadataEntry
-	nil,                                             // 428: qrdb.v1.SQLRow.ValuesEntry
-	nil,                                             // 429: qrdb.v1.TenantBarrierQuorumSubmitRequest.ResponseMetadataEntry
-	nil,                                             // 430: qrdb.v1.AuditEvent.AttributesEntry
-	nil,                                             // 431: qrdb.v1.EnrollFactorRequest.MethodParamsEntry
-	nil,                                             // 432: qrdb.v1.EnrollFactorResponse.MetadataEntry
-	nil,                                             // 433: qrdb.v1.ChallengeFactorResponse.MethodDataEntry
-	nil,                                             // 434: qrdb.v1.VerifyFactorRequest.MetadataEntry
-	nil,                                             // 435: qrdb.v1.EnrollmentEntry.MetadataEntry
-	nil,                                             // 436: qrdb.v1.UserAuthFactorRecord.MetadataEntry
-	nil,                                             // 437: qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
-	nil,                                             // 438: qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
-	(*emptypb.Empty)(nil),                           // 439: google.protobuf.Empty
+	(*AuditVerifyChainRequest)(nil),                 // 388: qrdb.v1.AuditVerifyChainRequest
+	(*AuditVerifyChainResponse)(nil),                // 389: qrdb.v1.AuditVerifyChainResponse
+	(*EnrollFactorRequest)(nil),                     // 390: qrdb.v1.EnrollFactorRequest
+	(*EnrollFactorResponse)(nil),                    // 391: qrdb.v1.EnrollFactorResponse
+	(*ChallengeFactorRequest)(nil),                  // 392: qrdb.v1.ChallengeFactorRequest
+	(*ChallengeFactorResponse)(nil),                 // 393: qrdb.v1.ChallengeFactorResponse
+	(*VerifyFactorRequest)(nil),                     // 394: qrdb.v1.VerifyFactorRequest
+	(*ListFactorsRequest)(nil),                      // 395: qrdb.v1.ListFactorsRequest
+	(*EnrollmentEntry)(nil),                         // 396: qrdb.v1.EnrollmentEntry
+	(*ListFactorsResponse)(nil),                     // 397: qrdb.v1.ListFactorsResponse
+	(*RevokeFactorRequest)(nil),                     // 398: qrdb.v1.RevokeFactorRequest
+	(*UserAuthFactorRecord)(nil),                    // 399: qrdb.v1.UserAuthFactorRecord
+	(*UserAuthFactorAddRequest)(nil),                // 400: qrdb.v1.UserAuthFactorAddRequest
+	(*UserAuthFactorAddResponse)(nil),               // 401: qrdb.v1.UserAuthFactorAddResponse
+	(*UserAuthFactorListRequest)(nil),               // 402: qrdb.v1.UserAuthFactorListRequest
+	(*UserAuthFactorListResponse)(nil),              // 403: qrdb.v1.UserAuthFactorListResponse
+	(*UserAuthFactorGetRequest)(nil),                // 404: qrdb.v1.UserAuthFactorGetRequest
+	(*UserAuthFactorGetResponse)(nil),               // 405: qrdb.v1.UserAuthFactorGetResponse
+	(*UserAuthFactorRemoveRequest)(nil),             // 406: qrdb.v1.UserAuthFactorRemoveRequest
+	(*UserAuthFactorRemoveResponse)(nil),            // 407: qrdb.v1.UserAuthFactorRemoveResponse
+	(*UserAuthFactorNewFactor)(nil),                 // 408: qrdb.v1.UserAuthFactorNewFactor
+	(*UserAuthFactorRotateRequest)(nil),             // 409: qrdb.v1.UserAuthFactorRotateRequest
+	(*UserAuthFactorRotateResponse)(nil),            // 410: qrdb.v1.UserAuthFactorRotateResponse
+	(*UserAuthFactorRelabelRequest)(nil),            // 411: qrdb.v1.UserAuthFactorRelabelRequest
+	(*UserAuthFactorRelabelResponse)(nil),           // 412: qrdb.v1.UserAuthFactorRelabelResponse
+	(*UserAuthFactorLoginRequest)(nil),              // 413: qrdb.v1.UserAuthFactorLoginRequest
+	(*UserAuthFactorLoginResponse)(nil),             // 414: qrdb.v1.UserAuthFactorLoginResponse
+	(*RemoveCertBindingRequest)(nil),                // 415: qrdb.v1.RemoveCertBindingRequest
+	nil,                                             // 416: qrdb.v1.ScanResponse.PairsEntry
+	nil,                                             // 417: qrdb.v1.StartShardRequest.MembersEntry
+	nil,                                             // 418: qrdb.v1.ShardInfoProto.NodesEntry
+	nil,                                             // 419: qrdb.v1.UpdateUserProtoRequest.AttributesEntry
+	nil,                                             // 420: qrdb.v1.UserResponse.AttributesEntry
+	nil,                                             // 421: qrdb.v1.CollectionInfoResponse.SchemaEntry
+	nil,                                             // 422: qrdb.v1.BarrierQuorumChallenge.MethodDataEntry
+	nil,                                             // 423: qrdb.v1.BarrierQuorumSubmitRequest.ResponseMetadataEntry
+	nil,                                             // 424: qrdb.v1.BackupCreateRequest.MetadataEntry
+	nil,                                             // 425: qrdb.v1.BackupInfo.MetadataEntry
+	nil,                                             // 426: qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
+	nil,                                             // 427: qrdb.v1.RAGQueryRequest.FilterEntry
+	nil,                                             // 428: qrdb.v1.RAGQueryResult.MetadataEntry
+	nil,                                             // 429: qrdb.v1.RAGDocumentInfo.MetadataEntry
+	nil,                                             // 430: qrdb.v1.SQLRow.ValuesEntry
+	nil,                                             // 431: qrdb.v1.TenantBarrierQuorumSubmitRequest.ResponseMetadataEntry
+	nil,                                             // 432: qrdb.v1.AuditEvent.AttributesEntry
+	nil,                                             // 433: qrdb.v1.EnrollFactorRequest.MethodParamsEntry
+	nil,                                             // 434: qrdb.v1.EnrollFactorResponse.MetadataEntry
+	nil,                                             // 435: qrdb.v1.ChallengeFactorResponse.MethodDataEntry
+	nil,                                             // 436: qrdb.v1.VerifyFactorRequest.MetadataEntry
+	nil,                                             // 437: qrdb.v1.EnrollmentEntry.MetadataEntry
+	nil,                                             // 438: qrdb.v1.UserAuthFactorRecord.MetadataEntry
+	nil,                                             // 439: qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
+	nil,                                             // 440: qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
+	(*emptypb.Empty)(nil),                           // 441: google.protobuf.Empty
 }
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	3,   // 0: qrdb.v1.PutRequest.write_mode:type_name -> qrdb.v1.WriteMode
@@ -29368,7 +29532,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	3,   // 2: qrdb.v1.DeleteRequest.write_mode:type_name -> qrdb.v1.WriteMode
 	2,   // 3: qrdb.v1.ListRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
 	2,   // 4: qrdb.v1.ScanRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	414, // 5: qrdb.v1.ScanResponse.pairs:type_name -> qrdb.v1.ScanResponse.PairsEntry
+	416, // 5: qrdb.v1.ScanResponse.pairs:type_name -> qrdb.v1.ScanResponse.PairsEntry
 	3,   // 6: qrdb.v1.PutWithLeaseRequest.write_mode:type_name -> qrdb.v1.WriteMode
 	28,  // 7: qrdb.v1.PutWithLeaseResponse.kv:type_name -> qrdb.v1.KeyValue
 	2,   // 8: qrdb.v1.GetRevisionRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
@@ -29430,9 +29594,9 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	2,   // 64: qrdb.v1.TSListMetricsRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
 	105, // 65: qrdb.v1.PeersResponse.shards:type_name -> qrdb.v1.ShardPeers
 	106, // 66: qrdb.v1.ShardPeers.peers:type_name -> qrdb.v1.PeerInfo
-	415, // 67: qrdb.v1.StartShardRequest.members:type_name -> qrdb.v1.StartShardRequest.MembersEntry
+	417, // 67: qrdb.v1.StartShardRequest.members:type_name -> qrdb.v1.StartShardRequest.MembersEntry
 	117, // 68: qrdb.v1.TopologyResponse.shards:type_name -> qrdb.v1.ShardInfoProto
-	416, // 69: qrdb.v1.ShardInfoProto.nodes:type_name -> qrdb.v1.ShardInfoProto.NodesEntry
+	418, // 69: qrdb.v1.ShardInfoProto.nodes:type_name -> qrdb.v1.ShardInfoProto.NodesEntry
 	10,  // 70: qrdb.v1.VectorCreateNamespaceRequest.distance_metric:type_name -> qrdb.v1.DistanceMetric
 	11,  // 71: qrdb.v1.VectorCreateNamespaceRequest.index_type:type_name -> qrdb.v1.VectorIndexType
 	10,  // 72: qrdb.v1.VectorNamespaceInfo.distance_metric:type_name -> qrdb.v1.DistanceMetric
@@ -29452,18 +29616,18 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	10,  // 86: qrdb.v1.VectorIndexStats.distance_metric:type_name -> qrdb.v1.DistanceMetric
 	11,  // 87: qrdb.v1.VectorIndexStats.index_type:type_name -> qrdb.v1.VectorIndexType
 	170, // 88: qrdb.v1.UpdateUserProtoRequest.role_bindings:type_name -> qrdb.v1.RoleBinding
-	417, // 89: qrdb.v1.UpdateUserProtoRequest.attributes:type_name -> qrdb.v1.UpdateUserProtoRequest.AttributesEntry
+	419, // 89: qrdb.v1.UpdateUserProtoRequest.attributes:type_name -> qrdb.v1.UpdateUserProtoRequest.AttributesEntry
 	168, // 90: qrdb.v1.ListUsersResponse.users:type_name -> qrdb.v1.UserResponse
 	169, // 91: qrdb.v1.UserResponse.cert_bindings:type_name -> qrdb.v1.CertBinding
 	170, // 92: qrdb.v1.UserResponse.role_bindings:type_name -> qrdb.v1.RoleBinding
-	418, // 93: qrdb.v1.UserResponse.attributes:type_name -> qrdb.v1.UserResponse.AttributesEntry
+	420, // 93: qrdb.v1.UserResponse.attributes:type_name -> qrdb.v1.UserResponse.AttributesEntry
 	171, // 94: qrdb.v1.UserResponse.factors:type_name -> qrdb.v1.FactorMetadata
 	178, // 95: qrdb.v1.ReconcileBuiltInRolesResponse.roles:type_name -> qrdb.v1.RoleReconcileResult
 	186, // 96: qrdb.v1.ListRolesResponse.roles:type_name -> qrdb.v1.RoleResponse
 	187, // 97: qrdb.v1.ListPermissionsResponse.categories:type_name -> qrdb.v1.PermissionCategory
 	196, // 98: qrdb.v1.ListCertsResponse.certs:type_name -> qrdb.v1.CertRecord
 	198, // 99: qrdb.v1.CreateCollectionRequest.indexes:type_name -> qrdb.v1.CollectionIndexDefinition
-	419, // 100: qrdb.v1.CollectionInfoResponse.schema:type_name -> qrdb.v1.CollectionInfoResponse.SchemaEntry
+	421, // 100: qrdb.v1.CollectionInfoResponse.schema:type_name -> qrdb.v1.CollectionInfoResponse.SchemaEntry
 	198, // 101: qrdb.v1.CollectionInfoResponse.indexes:type_name -> qrdb.v1.CollectionIndexDefinition
 	203, // 102: qrdb.v1.ListCollectionsResponse.collections:type_name -> qrdb.v1.CollectionInfoResponse
 	208, // 103: qrdb.v1.ListDocumentsResponse.documents:type_name -> qrdb.v1.DocumentResponse
@@ -29496,8 +29660,8 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	223, // 130: qrdb.v1.DatabaseUpdateCompactionRequest.compaction:type_name -> qrdb.v1.DatabaseCompactionConfig
 	256, // 131: qrdb.v1.BarrierOfficerRegisterRequest.factors:type_name -> qrdb.v1.HolderFactorEnrolment
 	259, // 132: qrdb.v1.BarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	420, // 133: qrdb.v1.BarrierQuorumChallenge.method_data:type_name -> qrdb.v1.BarrierQuorumChallenge.MethodDataEntry
-	421, // 134: qrdb.v1.BarrierQuorumSubmitRequest.response_metadata:type_name -> qrdb.v1.BarrierQuorumSubmitRequest.ResponseMetadataEntry
+	422, // 133: qrdb.v1.BarrierQuorumChallenge.method_data:type_name -> qrdb.v1.BarrierQuorumChallenge.MethodDataEntry
+	423, // 134: qrdb.v1.BarrierQuorumSubmitRequest.response_metadata:type_name -> qrdb.v1.BarrierQuorumSubmitRequest.ResponseMetadataEntry
 	272, // 135: qrdb.v1.CeremonyInitializeRequest.officers:type_name -> qrdb.v1.CeremonyOfficer
 	273, // 136: qrdb.v1.CeremonyInitializeResponse.holders:type_name -> qrdb.v1.CeremonyHolderCert
 	279, // 137: qrdb.v1.TenantResponse.quotas:type_name -> qrdb.v1.TenantQuotas
@@ -29511,8 +29675,8 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	280, // 145: qrdb.v1.TenantUpdateEntitlementsRequest.entitlements:type_name -> qrdb.v1.TenantEntitlements
 	297, // 146: qrdb.v1.TenantDEKStatusResponse.versions:type_name -> qrdb.v1.TenantDEKVersion
 	318, // 147: qrdb.v1.CredentialListVersionsResponse.versions:type_name -> qrdb.v1.CredentialVersionInfo
-	422, // 148: qrdb.v1.BackupCreateRequest.metadata:type_name -> qrdb.v1.BackupCreateRequest.MetadataEntry
-	423, // 149: qrdb.v1.BackupInfo.metadata:type_name -> qrdb.v1.BackupInfo.MetadataEntry
+	424, // 148: qrdb.v1.BackupCreateRequest.metadata:type_name -> qrdb.v1.BackupCreateRequest.MetadataEntry
+	425, // 149: qrdb.v1.BackupInfo.metadata:type_name -> qrdb.v1.BackupInfo.MetadataEntry
 	323, // 150: qrdb.v1.BackupListResponse.backups:type_name -> qrdb.v1.BackupInfo
 	328, // 151: qrdb.v1.BackupRestoreResponse.errors:type_name -> qrdb.v1.ShardError
 	335, // 152: qrdb.v1.RebalancePlan.moves:type_name -> qrdb.v1.RebalanceMove
@@ -29523,35 +29687,35 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	341, // 157: qrdb.v1.BatchEmbedResponse.total_usage:type_name -> qrdb.v1.EmbeddingUsage
 	342, // 158: qrdb.v1.ListEmbeddingModelsResponse.models:type_name -> qrdb.v1.EmbeddingModelInfo
 	349, // 159: qrdb.v1.RAGIngestDocumentRequest.chunk_config:type_name -> qrdb.v1.ChunkConfig
-	424, // 160: qrdb.v1.RAGIngestDocumentRequest.metadata:type_name -> qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
-	425, // 161: qrdb.v1.RAGQueryRequest.filter:type_name -> qrdb.v1.RAGQueryRequest.FilterEntry
-	426, // 162: qrdb.v1.RAGQueryResult.metadata:type_name -> qrdb.v1.RAGQueryResult.MetadataEntry
+	426, // 160: qrdb.v1.RAGIngestDocumentRequest.metadata:type_name -> qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
+	427, // 161: qrdb.v1.RAGQueryRequest.filter:type_name -> qrdb.v1.RAGQueryRequest.FilterEntry
+	428, // 162: qrdb.v1.RAGQueryResult.metadata:type_name -> qrdb.v1.RAGQueryResult.MetadataEntry
 	353, // 163: qrdb.v1.RAGQueryResponse.results:type_name -> qrdb.v1.RAGQueryResult
-	427, // 164: qrdb.v1.RAGDocumentInfo.metadata:type_name -> qrdb.v1.RAGDocumentInfo.MetadataEntry
+	429, // 164: qrdb.v1.RAGDocumentInfo.metadata:type_name -> qrdb.v1.RAGDocumentInfo.MetadataEntry
 	358, // 165: qrdb.v1.RAGListDocumentsResponse.documents:type_name -> qrdb.v1.RAGDocumentInfo
-	428, // 166: qrdb.v1.SQLRow.values:type_name -> qrdb.v1.SQLRow.ValuesEntry
+	430, // 166: qrdb.v1.SQLRow.values:type_name -> qrdb.v1.SQLRow.ValuesEntry
 	365, // 167: qrdb.v1.SQLQueryResponse.rows:type_name -> qrdb.v1.SQLRow
 	256, // 168: qrdb.v1.TenantBarrierOfficerRegisterRequest.factors:type_name -> qrdb.v1.HolderFactorEnrolment
 	259, // 169: qrdb.v1.TenantBarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	429, // 170: qrdb.v1.TenantBarrierQuorumSubmitRequest.response_metadata:type_name -> qrdb.v1.TenantBarrierQuorumSubmitRequest.ResponseMetadataEntry
+	431, // 170: qrdb.v1.TenantBarrierQuorumSubmitRequest.response_metadata:type_name -> qrdb.v1.TenantBarrierQuorumSubmitRequest.ResponseMetadataEntry
 	387, // 171: qrdb.v1.AuditQueryResponse.events:type_name -> qrdb.v1.AuditEvent
-	430, // 172: qrdb.v1.AuditEvent.attributes:type_name -> qrdb.v1.AuditEvent.AttributesEntry
-	431, // 173: qrdb.v1.EnrollFactorRequest.method_params:type_name -> qrdb.v1.EnrollFactorRequest.MethodParamsEntry
-	432, // 174: qrdb.v1.EnrollFactorResponse.metadata:type_name -> qrdb.v1.EnrollFactorResponse.MetadataEntry
-	433, // 175: qrdb.v1.ChallengeFactorResponse.method_data:type_name -> qrdb.v1.ChallengeFactorResponse.MethodDataEntry
-	434, // 176: qrdb.v1.VerifyFactorRequest.metadata:type_name -> qrdb.v1.VerifyFactorRequest.MetadataEntry
-	435, // 177: qrdb.v1.EnrollmentEntry.metadata:type_name -> qrdb.v1.EnrollmentEntry.MetadataEntry
-	394, // 178: qrdb.v1.ListFactorsResponse.enrollments:type_name -> qrdb.v1.EnrollmentEntry
-	436, // 179: qrdb.v1.UserAuthFactorRecord.metadata:type_name -> qrdb.v1.UserAuthFactorRecord.MetadataEntry
-	437, // 180: qrdb.v1.UserAuthFactorAddRequest.metadata:type_name -> qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
-	397, // 181: qrdb.v1.UserAuthFactorAddResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	397, // 182: qrdb.v1.UserAuthFactorListResponse.factors:type_name -> qrdb.v1.UserAuthFactorRecord
-	397, // 183: qrdb.v1.UserAuthFactorGetResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	438, // 184: qrdb.v1.UserAuthFactorNewFactor.metadata:type_name -> qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
-	406, // 185: qrdb.v1.UserAuthFactorRotateRequest.new_factor:type_name -> qrdb.v1.UserAuthFactorNewFactor
-	397, // 186: qrdb.v1.UserAuthFactorRotateResponse.new_factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	397, // 187: qrdb.v1.UserAuthFactorRelabelResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	397, // 188: qrdb.v1.UserAuthFactorLoginResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	432, // 172: qrdb.v1.AuditEvent.attributes:type_name -> qrdb.v1.AuditEvent.AttributesEntry
+	433, // 173: qrdb.v1.EnrollFactorRequest.method_params:type_name -> qrdb.v1.EnrollFactorRequest.MethodParamsEntry
+	434, // 174: qrdb.v1.EnrollFactorResponse.metadata:type_name -> qrdb.v1.EnrollFactorResponse.MetadataEntry
+	435, // 175: qrdb.v1.ChallengeFactorResponse.method_data:type_name -> qrdb.v1.ChallengeFactorResponse.MethodDataEntry
+	436, // 176: qrdb.v1.VerifyFactorRequest.metadata:type_name -> qrdb.v1.VerifyFactorRequest.MetadataEntry
+	437, // 177: qrdb.v1.EnrollmentEntry.metadata:type_name -> qrdb.v1.EnrollmentEntry.MetadataEntry
+	396, // 178: qrdb.v1.ListFactorsResponse.enrollments:type_name -> qrdb.v1.EnrollmentEntry
+	438, // 179: qrdb.v1.UserAuthFactorRecord.metadata:type_name -> qrdb.v1.UserAuthFactorRecord.MetadataEntry
+	439, // 180: qrdb.v1.UserAuthFactorAddRequest.metadata:type_name -> qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
+	399, // 181: qrdb.v1.UserAuthFactorAddResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	399, // 182: qrdb.v1.UserAuthFactorListResponse.factors:type_name -> qrdb.v1.UserAuthFactorRecord
+	399, // 183: qrdb.v1.UserAuthFactorGetResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	440, // 184: qrdb.v1.UserAuthFactorNewFactor.metadata:type_name -> qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
+	408, // 185: qrdb.v1.UserAuthFactorRotateRequest.new_factor:type_name -> qrdb.v1.UserAuthFactorNewFactor
+	399, // 186: qrdb.v1.UserAuthFactorRotateResponse.new_factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	399, // 187: qrdb.v1.UserAuthFactorRelabelResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	399, // 188: qrdb.v1.UserAuthFactorLoginResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
 	12,  // 189: qrdb.v1.QRDBService.Put:input_type -> qrdb.v1.PutRequest
 	14,  // 190: qrdb.v1.QRDBService.Get:input_type -> qrdb.v1.GetRequest
 	16,  // 191: qrdb.v1.QRDBService.Delete:input_type -> qrdb.v1.DeleteRequest
@@ -29565,7 +29729,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	33,  // 199: qrdb.v1.QRDBService.GetAtRevision:input_type -> qrdb.v1.GetAtRevisionRequest
 	35,  // 200: qrdb.v1.QRDBService.Range:input_type -> qrdb.v1.RangeRequest
 	37,  // 201: qrdb.v1.QRDBService.Compact:input_type -> qrdb.v1.CompactRequest
-	439, // 202: qrdb.v1.QRDBService.CurrentRevision:input_type -> google.protobuf.Empty
+	441, // 202: qrdb.v1.QRDBService.CurrentRevision:input_type -> google.protobuf.Empty
 	39,  // 203: qrdb.v1.QRDBService.RestoreToRevision:input_type -> qrdb.v1.RestoreRevisionRequest
 	45,  // 204: qrdb.v1.QRDBService.Transaction:input_type -> qrdb.v1.TransactionRequest
 	47,  // 205: qrdb.v1.QRDBService.Batch:input_type -> qrdb.v1.BatchRequest
@@ -29575,7 +29739,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	58,  // 209: qrdb.v1.QRDBService.LeaseRevoke:input_type -> qrdb.v1.LeaseRevokeRequest
 	59,  // 210: qrdb.v1.QRDBService.LeaseKeepAlive:input_type -> qrdb.v1.LeaseKeepAliveRequest
 	61,  // 211: qrdb.v1.QRDBService.LeaseTimeToLive:input_type -> qrdb.v1.LeaseTimeToLiveRequest
-	439, // 212: qrdb.v1.QRDBService.LeaseList:input_type -> google.protobuf.Empty
+	441, // 212: qrdb.v1.QRDBService.LeaseList:input_type -> google.protobuf.Empty
 	65,  // 213: qrdb.v1.QRDBService.LockAcquire:input_type -> qrdb.v1.LockAcquireRequest
 	67,  // 214: qrdb.v1.QRDBService.LockTryLock:input_type -> qrdb.v1.LockTryLockRequest
 	69,  // 215: qrdb.v1.QRDBService.LockRelease:input_type -> qrdb.v1.LockReleaseRequest
@@ -29586,7 +29750,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	77,  // 220: qrdb.v1.QRDBService.IndexDrop:input_type -> qrdb.v1.IndexDropRequest
 	78,  // 221: qrdb.v1.QRDBService.IndexQuery:input_type -> qrdb.v1.IndexQueryRequest
 	80,  // 222: qrdb.v1.QRDBService.IndexScan:input_type -> qrdb.v1.IndexScanRequest
-	439, // 223: qrdb.v1.QRDBService.IndexList:input_type -> google.protobuf.Empty
+	441, // 223: qrdb.v1.QRDBService.IndexList:input_type -> google.protobuf.Empty
 	86,  // 224: qrdb.v1.QRDBService.TSWrite:input_type -> qrdb.v1.TSWriteRequest
 	87,  // 225: qrdb.v1.QRDBService.TSWriteBatch:input_type -> qrdb.v1.TSWriteBatchRequest
 	88,  // 226: qrdb.v1.QRDBService.TSQuery:input_type -> qrdb.v1.TSQueryRequest
@@ -29617,19 +29781,19 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	150, // 251: qrdb.v1.QRDBService.VectorGetIndexStats:input_type -> qrdb.v1.VectorGetIndexStatsRequest
 	152, // 252: qrdb.v1.QRDBService.VectorCompactNamespace:input_type -> qrdb.v1.VectorCompactNamespaceRequest
 	154, // 253: qrdb.v1.QRDBService.VectorGetCompactionProgress:input_type -> qrdb.v1.VectorGetCompactionProgressRequest
-	439, // 254: qrdb.v1.QRDBService.Health:input_type -> google.protobuf.Empty
-	439, // 255: qrdb.v1.QRDBService.Status:input_type -> google.protobuf.Empty
-	439, // 256: qrdb.v1.QRDBService.Peers:input_type -> google.protobuf.Empty
+	441, // 254: qrdb.v1.QRDBService.Health:input_type -> google.protobuf.Empty
+	441, // 255: qrdb.v1.QRDBService.Status:input_type -> google.protobuf.Empty
+	441, // 256: qrdb.v1.QRDBService.Peers:input_type -> google.protobuf.Empty
 	107, // 257: qrdb.v1.QRDBService.AddMember:input_type -> qrdb.v1.AddMemberRequest
 	108, // 258: qrdb.v1.QRDBService.RemoveMember:input_type -> qrdb.v1.RemoveMemberRequest
 	109, // 259: qrdb.v1.QRDBService.RequestSnapshot:input_type -> qrdb.v1.RequestSnapshotMessage
-	439, // 260: qrdb.v1.QRDBService.Drain:input_type -> google.protobuf.Empty
+	441, // 260: qrdb.v1.QRDBService.Drain:input_type -> google.protobuf.Empty
 	110, // 261: qrdb.v1.QRDBService.Capabilities:input_type -> qrdb.v1.CapabilitiesRequest
 	112, // 262: qrdb.v1.QRDBService.StartShard:input_type -> qrdb.v1.StartShardRequest
 	113, // 263: qrdb.v1.QRDBService.StopShard:input_type -> qrdb.v1.StopShardRequest
 	114, // 264: qrdb.v1.QRDBService.GetShardState:input_type -> qrdb.v1.GetShardStateRequest
-	439, // 265: qrdb.v1.QRDBService.GetTopology:input_type -> google.protobuf.Empty
-	439, // 266: qrdb.v1.QRDBService.GetNodeCompaction:input_type -> google.protobuf.Empty
+	441, // 265: qrdb.v1.QRDBService.GetTopology:input_type -> google.protobuf.Empty
+	441, // 266: qrdb.v1.QRDBService.GetNodeCompaction:input_type -> google.protobuf.Empty
 	224, // 267: qrdb.v1.QRDBService.SetNodeCompaction:input_type -> qrdb.v1.SetNodeCompactionRequest
 	156, // 268: qrdb.v1.QRDBService.CreateUser:input_type -> qrdb.v1.CreateUserRequest
 	157, // 269: qrdb.v1.QRDBService.GetUser:input_type -> qrdb.v1.GetUserRequest
@@ -29637,7 +29801,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	159, // 271: qrdb.v1.QRDBService.GetUserByEmail:input_type -> qrdb.v1.GetUserByEmailRequest
 	160, // 272: qrdb.v1.QRDBService.GetUserByCertThumbprint:input_type -> qrdb.v1.GetUserByCertThumbprintRequest
 	161, // 273: qrdb.v1.QRDBService.AddCertBinding:input_type -> qrdb.v1.AddCertBindingRequest
-	413, // 274: qrdb.v1.QRDBService.RemoveCertBinding:input_type -> qrdb.v1.RemoveCertBindingRequest
+	415, // 274: qrdb.v1.QRDBService.RemoveCertBinding:input_type -> qrdb.v1.RemoveCertBindingRequest
 	162, // 275: qrdb.v1.QRDBService.UpdateUser:input_type -> qrdb.v1.UpdateUserProtoRequest
 	163, // 276: qrdb.v1.QRDBService.DeleteUser:input_type -> qrdb.v1.DeleteUserRequest
 	164, // 277: qrdb.v1.QRDBService.ListUsers:input_type -> qrdb.v1.ListUsersRequest
@@ -29651,7 +29815,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	182, // 285: qrdb.v1.QRDBService.ListRoles:input_type -> qrdb.v1.ListRolesRequest
 	184, // 286: qrdb.v1.QRDBService.AssignRole:input_type -> qrdb.v1.AssignRoleRequest
 	185, // 287: qrdb.v1.QRDBService.UnassignRole:input_type -> qrdb.v1.UnassignRoleRequest
-	439, // 288: qrdb.v1.QRDBService.ListPermissions:input_type -> google.protobuf.Empty
+	441, // 288: qrdb.v1.QRDBService.ListPermissions:input_type -> google.protobuf.Empty
 	175, // 289: qrdb.v1.QRDBService.ResolveRolePermissions:input_type -> qrdb.v1.ResolveRolePermissionsRequest
 	177, // 290: qrdb.v1.QRDBService.ReconcileBuiltInRoles:input_type -> qrdb.v1.ReconcileBuiltInRolesRequest
 	189, // 291: qrdb.v1.QRDBService.GenerateCert:input_type -> qrdb.v1.GenerateCertRequest
@@ -29669,7 +29833,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	211, // 303: qrdb.v1.QRDBService.ListDocuments:input_type -> qrdb.v1.ListDocumentsRequest
 	213, // 304: qrdb.v1.QRDBService.DatabaseCreate:input_type -> qrdb.v1.DatabaseCreateRequest
 	214, // 305: qrdb.v1.QRDBService.DatabaseGet:input_type -> qrdb.v1.DatabaseGetRequest
-	439, // 306: qrdb.v1.QRDBService.DatabaseList:input_type -> google.protobuf.Empty
+	441, // 306: qrdb.v1.QRDBService.DatabaseList:input_type -> google.protobuf.Empty
 	215, // 307: qrdb.v1.QRDBService.DatabaseDrop:input_type -> qrdb.v1.DatabaseDropRequest
 	236, // 308: qrdb.v1.QRDBService.DatabaseUpdateProtocol:input_type -> qrdb.v1.DatabaseUpdateProtocolRequest
 	237, // 309: qrdb.v1.QRDBService.DatabaseUpdateEtcd:input_type -> qrdb.v1.DatabaseUpdateEtcdRequest
@@ -29682,11 +29846,11 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	244, // 316: qrdb.v1.QRDBService.BarrierInitialize:input_type -> qrdb.v1.BarrierInitializeRequest
 	245, // 317: qrdb.v1.QRDBService.BarrierUnseal:input_type -> qrdb.v1.BarrierUnsealRequest
 	252, // 318: qrdb.v1.QRDBService.BarrierSeal:input_type -> qrdb.v1.BarrierSealRequest
-	439, // 319: qrdb.v1.QRDBService.BarrierStatus:input_type -> google.protobuf.Empty
+	441, // 319: qrdb.v1.QRDBService.BarrierStatus:input_type -> google.protobuf.Empty
 	249, // 320: qrdb.v1.QRDBService.BarrierShamirInitialize:input_type -> qrdb.v1.BarrierShamirInitializeRequest
 	247, // 321: qrdb.v1.QRDBService.BarrierEnableEncryption:input_type -> qrdb.v1.BarrierEnableEncryptionRequest
 	255, // 322: qrdb.v1.QRDBService.BarrierOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
-	439, // 323: qrdb.v1.QRDBService.BarrierOfficerList:input_type -> google.protobuf.Empty
+	441, // 323: qrdb.v1.QRDBService.BarrierOfficerList:input_type -> google.protobuf.Empty
 	260, // 324: qrdb.v1.QRDBService.BarrierShareClaimBegin:input_type -> qrdb.v1.BarrierShareClaimBeginRequest
 	262, // 325: qrdb.v1.QRDBService.BarrierShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
 	255, // 326: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
@@ -29694,25 +29858,25 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	262, // 328: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
 	251, // 329: qrdb.v1.QRDBService.BarrierRecoveryGenerate:input_type -> qrdb.v1.BarrierRecoveryGenerateRequest
 	253, // 330: qrdb.v1.QRDBService.BarrierRecoveryDelete:input_type -> qrdb.v1.BarrierRecoveryDeleteRequest
-	439, // 331: qrdb.v1.QRDBService.BarrierRecoveryStatus:input_type -> google.protobuf.Empty
+	441, // 331: qrdb.v1.QRDBService.BarrierRecoveryStatus:input_type -> google.protobuf.Empty
 	264, // 332: qrdb.v1.QRDBService.BarrierQuorumBegin:input_type -> qrdb.v1.BarrierQuorumBeginRequest
 	266, // 333: qrdb.v1.QRDBService.BarrierQuorumSubmit:input_type -> qrdb.v1.BarrierQuorumSubmitRequest
 	268, // 334: qrdb.v1.QRDBService.BarrierRekeyStart:input_type -> qrdb.v1.BarrierRekeyStartRequest
 	269, // 335: qrdb.v1.QRDBService.BarrierOfficerRevoke:input_type -> qrdb.v1.BarrierOfficerRevokeRequest
 	274, // 336: qrdb.v1.QRDBService.CeremonyInitialize:input_type -> qrdb.v1.CeremonyInitializeRequest
-	439, // 337: qrdb.v1.QRDBService.CeremonyStatus:input_type -> google.protobuf.Empty
+	441, // 337: qrdb.v1.QRDBService.CeremonyStatus:input_type -> google.protobuf.Empty
 	277, // 338: qrdb.v1.QRDBService.CeremonySignCSR:input_type -> qrdb.v1.CeremonySignCSRRequest
 	282, // 339: qrdb.v1.QRDBService.TenantCreate:input_type -> qrdb.v1.TenantCreateRequest
 	283, // 340: qrdb.v1.QRDBService.TenantGet:input_type -> qrdb.v1.TenantGetRequest
-	439, // 341: qrdb.v1.QRDBService.TenantList:input_type -> google.protobuf.Empty
+	441, // 341: qrdb.v1.QRDBService.TenantList:input_type -> google.protobuf.Empty
 	291, // 342: qrdb.v1.QRDBService.TenantUpdate:input_type -> qrdb.v1.TenantUpdateRequest
 	292, // 343: qrdb.v1.QRDBService.TenantDelete:input_type -> qrdb.v1.TenantDeleteRequest
 	293, // 344: qrdb.v1.QRDBService.TenantUpdateQuotas:input_type -> qrdb.v1.TenantUpdateQuotasRequest
 	294, // 345: qrdb.v1.QRDBService.TenantUpdateEntitlements:input_type -> qrdb.v1.TenantUpdateEntitlementsRequest
 	285, // 346: qrdb.v1.QRDBService.TenantListDeleted:input_type -> qrdb.v1.TenantListDeletedRequest
-	439, // 347: qrdb.v1.QRDBService.TenantReconcileDeleted:input_type -> google.protobuf.Empty
+	441, // 347: qrdb.v1.QRDBService.TenantReconcileDeleted:input_type -> google.protobuf.Empty
 	305, // 348: qrdb.v1.QRDBService.CredentialSubmit:input_type -> qrdb.v1.CredentialSubmitRequest
-	439, // 349: qrdb.v1.QRDBService.CredentialStrategy:input_type -> google.protobuf.Empty
+	441, // 349: qrdb.v1.QRDBService.CredentialStrategy:input_type -> google.protobuf.Empty
 	310, // 350: qrdb.v1.QRDBService.CredentialDelete:input_type -> qrdb.v1.CredentialDeleteRequest
 	311, // 351: qrdb.v1.QRDBService.CredentialList:input_type -> qrdb.v1.CredentialListRequest
 	313, // 352: qrdb.v1.QRDBService.CredentialRotate:input_type -> qrdb.v1.CredentialRotateRequest
@@ -29728,7 +29892,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	301, // 362: qrdb.v1.QRDBService.TenantDEKDecrypt:input_type -> qrdb.v1.TenantDEKDecryptRequest
 	303, // 363: qrdb.v1.QRDBService.TenantDEKRewrap:input_type -> qrdb.v1.TenantDEKRewrapRequest
 	322, // 364: qrdb.v1.QRDBService.BackupCreate:input_type -> qrdb.v1.BackupCreateRequest
-	439, // 365: qrdb.v1.QRDBService.BackupList:input_type -> google.protobuf.Empty
+	441, // 365: qrdb.v1.QRDBService.BackupList:input_type -> google.protobuf.Empty
 	325, // 366: qrdb.v1.QRDBService.BackupGet:input_type -> qrdb.v1.BackupGetRequest
 	326, // 367: qrdb.v1.QRDBService.BackupDelete:input_type -> qrdb.v1.BackupDeleteRequest
 	327, // 368: qrdb.v1.QRDBService.BackupRestore:input_type -> qrdb.v1.BackupRestoreRequest
@@ -29736,7 +29900,7 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	332, // 370: qrdb.v1.QRDBService.RebalanceGetShardStats:input_type -> qrdb.v1.RebalanceShardStatsRequest
 	334, // 371: qrdb.v1.QRDBService.RebalanceCreatePlan:input_type -> qrdb.v1.RebalancePlanRequest
 	336, // 372: qrdb.v1.QRDBService.RebalanceExecute:input_type -> qrdb.v1.RebalancePlan
-	439, // 373: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:input_type -> google.protobuf.Empty
+	441, // 373: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:input_type -> google.protobuf.Empty
 	343, // 374: qrdb.v1.QRDBService.Embed:input_type -> qrdb.v1.EmbedRequest
 	345, // 375: qrdb.v1.QRDBService.BatchEmbed:input_type -> qrdb.v1.BatchEmbedRequest
 	347, // 376: qrdb.v1.QRDBService.ListEmbeddingModels:input_type -> qrdb.v1.ListEmbeddingModelsRequest
@@ -29761,241 +29925,243 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	377, // 395: qrdb.v1.TenantBarrierService.ShareClaimBegin:input_type -> qrdb.v1.TenantBarrierShareClaimBeginRequest
 	379, // 396: qrdb.v1.TenantBarrierService.ShareClaimComplete:input_type -> qrdb.v1.TenantBarrierShareClaimCompleteRequest
 	385, // 397: qrdb.v1.AuditService.Query:input_type -> qrdb.v1.AuditQueryRequest
-	388, // 398: qrdb.v1.AuthFactorService.EnrollFactor:input_type -> qrdb.v1.EnrollFactorRequest
-	390, // 399: qrdb.v1.AuthFactorService.ChallengeFactor:input_type -> qrdb.v1.ChallengeFactorRequest
-	392, // 400: qrdb.v1.AuthFactorService.VerifyFactor:input_type -> qrdb.v1.VerifyFactorRequest
-	393, // 401: qrdb.v1.AuthFactorService.ListFactors:input_type -> qrdb.v1.ListFactorsRequest
-	396, // 402: qrdb.v1.AuthFactorService.RevokeFactor:input_type -> qrdb.v1.RevokeFactorRequest
-	398, // 403: qrdb.v1.UserAuthFactorService.Add:input_type -> qrdb.v1.UserAuthFactorAddRequest
-	400, // 404: qrdb.v1.UserAuthFactorService.List:input_type -> qrdb.v1.UserAuthFactorListRequest
-	402, // 405: qrdb.v1.UserAuthFactorService.Get:input_type -> qrdb.v1.UserAuthFactorGetRequest
-	404, // 406: qrdb.v1.UserAuthFactorService.Remove:input_type -> qrdb.v1.UserAuthFactorRemoveRequest
-	407, // 407: qrdb.v1.UserAuthFactorService.Rotate:input_type -> qrdb.v1.UserAuthFactorRotateRequest
-	409, // 408: qrdb.v1.UserAuthFactorService.Relabel:input_type -> qrdb.v1.UserAuthFactorRelabelRequest
-	411, // 409: qrdb.v1.UserAuthFactorService.Login:input_type -> qrdb.v1.UserAuthFactorLoginRequest
-	13,  // 410: qrdb.v1.QRDBService.Put:output_type -> qrdb.v1.PutResponse
-	15,  // 411: qrdb.v1.QRDBService.Get:output_type -> qrdb.v1.GetResponse
-	17,  // 412: qrdb.v1.QRDBService.Delete:output_type -> qrdb.v1.DeleteResponse
-	19,  // 413: qrdb.v1.QRDBService.PutIfAbsent:output_type -> qrdb.v1.PutIfAbsentResponse
-	21,  // 414: qrdb.v1.QRDBService.CompareAndDelete:output_type -> qrdb.v1.CompareAndDeleteResponse
-	23,  // 415: qrdb.v1.QRDBService.CompareAndSwap:output_type -> qrdb.v1.CompareAndSwapResponse
-	25,  // 416: qrdb.v1.QRDBService.List:output_type -> qrdb.v1.ListResponse
-	27,  // 417: qrdb.v1.QRDBService.Scan:output_type -> qrdb.v1.ScanResponse
-	30,  // 418: qrdb.v1.QRDBService.PutWithLease:output_type -> qrdb.v1.PutWithLeaseResponse
-	32,  // 419: qrdb.v1.QRDBService.GetRevision:output_type -> qrdb.v1.GetRevisionResponse
-	34,  // 420: qrdb.v1.QRDBService.GetAtRevision:output_type -> qrdb.v1.GetAtRevisionResponse
-	36,  // 421: qrdb.v1.QRDBService.Range:output_type -> qrdb.v1.RangeResponse
-	439, // 422: qrdb.v1.QRDBService.Compact:output_type -> google.protobuf.Empty
-	38,  // 423: qrdb.v1.QRDBService.CurrentRevision:output_type -> qrdb.v1.CurrentRevisionResponse
-	41,  // 424: qrdb.v1.QRDBService.RestoreToRevision:output_type -> qrdb.v1.RestoreRevisionResponse
-	46,  // 425: qrdb.v1.QRDBService.Transaction:output_type -> qrdb.v1.TransactionResponse
-	48,  // 426: qrdb.v1.QRDBService.Batch:output_type -> qrdb.v1.BatchResponse
-	51,  // 427: qrdb.v1.QRDBService.BatchImport:output_type -> qrdb.v1.BatchImportResponse
-	54,  // 428: qrdb.v1.QRDBService.Watch:output_type -> qrdb.v1.WatchResponse
-	57,  // 429: qrdb.v1.QRDBService.LeaseGrant:output_type -> qrdb.v1.LeaseGrantResponse
-	439, // 430: qrdb.v1.QRDBService.LeaseRevoke:output_type -> google.protobuf.Empty
-	60,  // 431: qrdb.v1.QRDBService.LeaseKeepAlive:output_type -> qrdb.v1.LeaseKeepAliveResponse
-	62,  // 432: qrdb.v1.QRDBService.LeaseTimeToLive:output_type -> qrdb.v1.LeaseTimeToLiveResponse
-	63,  // 433: qrdb.v1.QRDBService.LeaseList:output_type -> qrdb.v1.LeaseListResponse
-	66,  // 434: qrdb.v1.QRDBService.LockAcquire:output_type -> qrdb.v1.LockAcquireResponse
-	68,  // 435: qrdb.v1.QRDBService.LockTryLock:output_type -> qrdb.v1.LockTryLockResponse
-	439, // 436: qrdb.v1.QRDBService.LockRelease:output_type -> google.protobuf.Empty
-	71,  // 437: qrdb.v1.QRDBService.LockExtend:output_type -> qrdb.v1.LockExtendResponse
-	73,  // 438: qrdb.v1.QRDBService.LockStatus:output_type -> qrdb.v1.LockStatusResponse
-	75,  // 439: qrdb.v1.QRDBService.LockList:output_type -> qrdb.v1.LockListResponse
-	439, // 440: qrdb.v1.QRDBService.IndexCreate:output_type -> google.protobuf.Empty
-	439, // 441: qrdb.v1.QRDBService.IndexDrop:output_type -> google.protobuf.Empty
-	79,  // 442: qrdb.v1.QRDBService.IndexQuery:output_type -> qrdb.v1.IndexQueryResponse
-	82,  // 443: qrdb.v1.QRDBService.IndexScan:output_type -> qrdb.v1.IndexScanResponse
-	83,  // 444: qrdb.v1.QRDBService.IndexList:output_type -> qrdb.v1.IndexListResponse
-	439, // 445: qrdb.v1.QRDBService.TSWrite:output_type -> google.protobuf.Empty
-	439, // 446: qrdb.v1.QRDBService.TSWriteBatch:output_type -> google.protobuf.Empty
-	89,  // 447: qrdb.v1.QRDBService.TSQuery:output_type -> qrdb.v1.TSQueryResponse
-	92,  // 448: qrdb.v1.QRDBService.TSAggregate:output_type -> qrdb.v1.TSAggregateResponse
-	439, // 449: qrdb.v1.QRDBService.TSWritePoint:output_type -> google.protobuf.Empty
-	94,  // 450: qrdb.v1.QRDBService.TSRichQuery:output_type -> qrdb.v1.TSRichQueryResponse
-	439, // 451: qrdb.v1.QRDBService.TSDeleteSeries:output_type -> google.protobuf.Empty
-	98,  // 452: qrdb.v1.QRDBService.TSGetRetention:output_type -> qrdb.v1.TSRetentionPolicyResponse
-	439, // 453: qrdb.v1.QRDBService.TSSetRetention:output_type -> google.protobuf.Empty
-	101, // 454: qrdb.v1.QRDBService.TSListMetrics:output_type -> qrdb.v1.TSListMetricsResponse
-	119, // 455: qrdb.v1.QRDBService.VectorCreateNamespace:output_type -> qrdb.v1.VectorCreateNamespaceResponse
-	439, // 456: qrdb.v1.QRDBService.VectorDeleteNamespace:output_type -> google.protobuf.Empty
-	122, // 457: qrdb.v1.QRDBService.VectorListNamespaces:output_type -> qrdb.v1.VectorListNamespacesResponse
-	124, // 458: qrdb.v1.QRDBService.VectorGetNamespaceInfo:output_type -> qrdb.v1.VectorNamespaceInfo
-	127, // 459: qrdb.v1.QRDBService.VectorUpsert:output_type -> qrdb.v1.VectorUpsertResponse
-	125, // 460: qrdb.v1.QRDBService.VectorGet:output_type -> qrdb.v1.VectorDataProto
-	439, // 461: qrdb.v1.QRDBService.VectorDelete:output_type -> google.protobuf.Empty
-	132, // 462: qrdb.v1.QRDBService.VectorBatchUpsert:output_type -> qrdb.v1.VectorBatchUpsertResponse
-	134, // 463: qrdb.v1.QRDBService.VectorBatchDelete:output_type -> qrdb.v1.VectorBatchDeleteResponse
-	136, // 464: qrdb.v1.QRDBService.VectorList:output_type -> qrdb.v1.VectorListResponse
-	439, // 465: qrdb.v1.QRDBService.VectorUpdateMetadata:output_type -> google.protobuf.Empty
-	140, // 466: qrdb.v1.QRDBService.VectorSearchSimilar:output_type -> qrdb.v1.VectorSearchSimilarResponse
-	142, // 467: qrdb.v1.QRDBService.VectorSearchByMetadata:output_type -> qrdb.v1.VectorSearchByMetadataResponse
-	144, // 468: qrdb.v1.QRDBService.VectorHybridSearch:output_type -> qrdb.v1.VectorHybridSearchResponse
-	140, // 469: qrdb.v1.QRDBService.VectorSearchByID:output_type -> qrdb.v1.VectorSearchSimilarResponse
-	147, // 470: qrdb.v1.QRDBService.VectorRebuildIndex:output_type -> qrdb.v1.VectorRebuildIndexResponse
-	149, // 471: qrdb.v1.QRDBService.VectorGetRebuildProgress:output_type -> qrdb.v1.VectorRebuildProgress
-	151, // 472: qrdb.v1.QRDBService.VectorGetIndexStats:output_type -> qrdb.v1.VectorIndexStats
-	153, // 473: qrdb.v1.QRDBService.VectorCompactNamespace:output_type -> qrdb.v1.VectorCompactNamespaceResponse
-	155, // 474: qrdb.v1.QRDBService.VectorGetCompactionProgress:output_type -> qrdb.v1.VectorCompactionProgress
-	102, // 475: qrdb.v1.QRDBService.Health:output_type -> qrdb.v1.HealthResponse
-	103, // 476: qrdb.v1.QRDBService.Status:output_type -> qrdb.v1.StatusResponse
-	104, // 477: qrdb.v1.QRDBService.Peers:output_type -> qrdb.v1.PeersResponse
-	439, // 478: qrdb.v1.QRDBService.AddMember:output_type -> google.protobuf.Empty
-	439, // 479: qrdb.v1.QRDBService.RemoveMember:output_type -> google.protobuf.Empty
-	439, // 480: qrdb.v1.QRDBService.RequestSnapshot:output_type -> google.protobuf.Empty
-	439, // 481: qrdb.v1.QRDBService.Drain:output_type -> google.protobuf.Empty
-	111, // 482: qrdb.v1.QRDBService.Capabilities:output_type -> qrdb.v1.CapabilitiesResponse
-	439, // 483: qrdb.v1.QRDBService.StartShard:output_type -> google.protobuf.Empty
-	439, // 484: qrdb.v1.QRDBService.StopShard:output_type -> google.protobuf.Empty
-	115, // 485: qrdb.v1.QRDBService.GetShardState:output_type -> qrdb.v1.ShardStateResponse
-	116, // 486: qrdb.v1.QRDBService.GetTopology:output_type -> qrdb.v1.TopologyResponse
-	225, // 487: qrdb.v1.QRDBService.GetNodeCompaction:output_type -> qrdb.v1.NodeCompactionResponse
-	225, // 488: qrdb.v1.QRDBService.SetNodeCompaction:output_type -> qrdb.v1.NodeCompactionResponse
-	168, // 489: qrdb.v1.QRDBService.CreateUser:output_type -> qrdb.v1.UserResponse
-	168, // 490: qrdb.v1.QRDBService.GetUser:output_type -> qrdb.v1.UserResponse
-	168, // 491: qrdb.v1.QRDBService.GetUserByUsername:output_type -> qrdb.v1.UserResponse
-	168, // 492: qrdb.v1.QRDBService.GetUserByEmail:output_type -> qrdb.v1.UserResponse
-	168, // 493: qrdb.v1.QRDBService.GetUserByCertThumbprint:output_type -> qrdb.v1.UserResponse
-	168, // 494: qrdb.v1.QRDBService.AddCertBinding:output_type -> qrdb.v1.UserResponse
-	168, // 495: qrdb.v1.QRDBService.RemoveCertBinding:output_type -> qrdb.v1.UserResponse
-	168, // 496: qrdb.v1.QRDBService.UpdateUser:output_type -> qrdb.v1.UserResponse
-	439, // 497: qrdb.v1.QRDBService.DeleteUser:output_type -> google.protobuf.Empty
-	165, // 498: qrdb.v1.QRDBService.ListUsers:output_type -> qrdb.v1.ListUsersResponse
-	439, // 499: qrdb.v1.QRDBService.EnableUser:output_type -> google.protobuf.Empty
-	439, // 500: qrdb.v1.QRDBService.DisableUser:output_type -> google.protobuf.Empty
-	186, // 501: qrdb.v1.QRDBService.CreateRole:output_type -> qrdb.v1.RoleResponse
-	186, // 502: qrdb.v1.QRDBService.GetRole:output_type -> qrdb.v1.RoleResponse
-	186, // 503: qrdb.v1.QRDBService.GetRoleByName:output_type -> qrdb.v1.RoleResponse
-	186, // 504: qrdb.v1.QRDBService.UpdateRole:output_type -> qrdb.v1.RoleResponse
-	439, // 505: qrdb.v1.QRDBService.DeleteRole:output_type -> google.protobuf.Empty
-	183, // 506: qrdb.v1.QRDBService.ListRoles:output_type -> qrdb.v1.ListRolesResponse
-	439, // 507: qrdb.v1.QRDBService.AssignRole:output_type -> google.protobuf.Empty
-	439, // 508: qrdb.v1.QRDBService.UnassignRole:output_type -> google.protobuf.Empty
-	188, // 509: qrdb.v1.QRDBService.ListPermissions:output_type -> qrdb.v1.ListPermissionsResponse
-	176, // 510: qrdb.v1.QRDBService.ResolveRolePermissions:output_type -> qrdb.v1.ResolveRolePermissionsResponse
-	179, // 511: qrdb.v1.QRDBService.ReconcileBuiltInRoles:output_type -> qrdb.v1.ReconcileBuiltInRolesResponse
-	190, // 512: qrdb.v1.QRDBService.GenerateCert:output_type -> qrdb.v1.CertBundleResponse
-	192, // 513: qrdb.v1.QRDBService.ExportCert:output_type -> qrdb.v1.ExportCertResponse
-	194, // 514: qrdb.v1.QRDBService.RevokeCert:output_type -> qrdb.v1.RevokeCertResponse
-	197, // 515: qrdb.v1.QRDBService.ListCerts:output_type -> qrdb.v1.ListCertsResponse
-	203, // 516: qrdb.v1.QRDBService.CreateCollection:output_type -> qrdb.v1.CollectionInfoResponse
-	203, // 517: qrdb.v1.QRDBService.GetCollectionInfo:output_type -> qrdb.v1.CollectionInfoResponse
-	204, // 518: qrdb.v1.QRDBService.ListCollections:output_type -> qrdb.v1.ListCollectionsResponse
-	439, // 519: qrdb.v1.QRDBService.DropCollection:output_type -> google.protobuf.Empty
-	206, // 520: qrdb.v1.QRDBService.InsertDocument:output_type -> qrdb.v1.InsertDocumentResponse
-	208, // 521: qrdb.v1.QRDBService.GetDocument:output_type -> qrdb.v1.DocumentResponse
-	439, // 522: qrdb.v1.QRDBService.UpdateDocument:output_type -> google.protobuf.Empty
-	439, // 523: qrdb.v1.QRDBService.DeleteDocument:output_type -> google.protobuf.Empty
-	212, // 524: qrdb.v1.QRDBService.ListDocuments:output_type -> qrdb.v1.ListDocumentsResponse
-	217, // 525: qrdb.v1.QRDBService.DatabaseCreate:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 526: qrdb.v1.QRDBService.DatabaseGet:output_type -> qrdb.v1.DatabaseInfoResponse
-	216, // 527: qrdb.v1.QRDBService.DatabaseList:output_type -> qrdb.v1.DatabaseListResponse
-	439, // 528: qrdb.v1.QRDBService.DatabaseDrop:output_type -> google.protobuf.Empty
-	217, // 529: qrdb.v1.QRDBService.DatabaseUpdateProtocol:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 530: qrdb.v1.QRDBService.DatabaseUpdateEtcd:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 531: qrdb.v1.QRDBService.DatabaseUpdateRaft:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 532: qrdb.v1.QRDBService.DatabaseScale:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 533: qrdb.v1.QRDBService.DatabaseUpdateBarrier:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 534: qrdb.v1.QRDBService.DatabaseUpdateConnection:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 535: qrdb.v1.QRDBService.DatabaseUpdateSQL:output_type -> qrdb.v1.DatabaseInfoResponse
-	217, // 536: qrdb.v1.QRDBService.DatabaseUpdateCompaction:output_type -> qrdb.v1.DatabaseInfoResponse
-	439, // 537: qrdb.v1.QRDBService.BarrierInitialize:output_type -> google.protobuf.Empty
-	439, // 538: qrdb.v1.QRDBService.BarrierUnseal:output_type -> google.protobuf.Empty
-	439, // 539: qrdb.v1.QRDBService.BarrierSeal:output_type -> google.protobuf.Empty
-	246, // 540: qrdb.v1.QRDBService.BarrierStatus:output_type -> qrdb.v1.BarrierStatusResponse
-	250, // 541: qrdb.v1.QRDBService.BarrierShamirInitialize:output_type -> qrdb.v1.BarrierShamirOperationResponse
-	248, // 542: qrdb.v1.QRDBService.BarrierEnableEncryption:output_type -> qrdb.v1.BarrierEnableEncryptionResponse
-	257, // 543: qrdb.v1.QRDBService.BarrierOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
-	258, // 544: qrdb.v1.QRDBService.BarrierOfficerList:output_type -> qrdb.v1.BarrierOfficerListResponse
-	261, // 545: qrdb.v1.QRDBService.BarrierShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
-	263, // 546: qrdb.v1.QRDBService.BarrierShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
-	257, // 547: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
-	261, // 548: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
-	263, // 549: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
-	254, // 550: qrdb.v1.QRDBService.BarrierRecoveryGenerate:output_type -> qrdb.v1.BarrierRecoveryKeysResponse
-	439, // 551: qrdb.v1.QRDBService.BarrierRecoveryDelete:output_type -> google.protobuf.Empty
-	271, // 552: qrdb.v1.QRDBService.BarrierRecoveryStatus:output_type -> qrdb.v1.BarrierRecoveryStatusResponse
-	265, // 553: qrdb.v1.QRDBService.BarrierQuorumBegin:output_type -> qrdb.v1.BarrierQuorumChallenge
-	267, // 554: qrdb.v1.QRDBService.BarrierQuorumSubmit:output_type -> qrdb.v1.BarrierQuorumOutcome
-	270, // 555: qrdb.v1.QRDBService.BarrierRekeyStart:output_type -> qrdb.v1.BarrierQuorumRound
-	270, // 556: qrdb.v1.QRDBService.BarrierOfficerRevoke:output_type -> qrdb.v1.BarrierQuorumRound
-	275, // 557: qrdb.v1.QRDBService.CeremonyInitialize:output_type -> qrdb.v1.CeremonyInitializeResponse
-	276, // 558: qrdb.v1.QRDBService.CeremonyStatus:output_type -> qrdb.v1.CeremonyStatusResponse
-	278, // 559: qrdb.v1.QRDBService.CeremonySignCSR:output_type -> qrdb.v1.CeremonySignCSRResponse
-	281, // 560: qrdb.v1.QRDBService.TenantCreate:output_type -> qrdb.v1.TenantResponse
-	281, // 561: qrdb.v1.QRDBService.TenantGet:output_type -> qrdb.v1.TenantResponse
-	284, // 562: qrdb.v1.QRDBService.TenantList:output_type -> qrdb.v1.TenantListResponse
-	281, // 563: qrdb.v1.QRDBService.TenantUpdate:output_type -> qrdb.v1.TenantResponse
-	439, // 564: qrdb.v1.QRDBService.TenantDelete:output_type -> google.protobuf.Empty
-	281, // 565: qrdb.v1.QRDBService.TenantUpdateQuotas:output_type -> qrdb.v1.TenantResponse
-	281, // 566: qrdb.v1.QRDBService.TenantUpdateEntitlements:output_type -> qrdb.v1.TenantResponse
-	287, // 567: qrdb.v1.QRDBService.TenantListDeleted:output_type -> qrdb.v1.TenantListDeletedResponse
-	290, // 568: qrdb.v1.QRDBService.TenantReconcileDeleted:output_type -> qrdb.v1.TenantReconcileDeletedResponse
-	439, // 569: qrdb.v1.QRDBService.CredentialSubmit:output_type -> google.protobuf.Empty
-	309, // 570: qrdb.v1.QRDBService.CredentialStrategy:output_type -> qrdb.v1.CredentialStrategyResponse
-	439, // 571: qrdb.v1.QRDBService.CredentialDelete:output_type -> google.protobuf.Empty
-	312, // 572: qrdb.v1.QRDBService.CredentialList:output_type -> qrdb.v1.CredentialListResponse
-	314, // 573: qrdb.v1.QRDBService.CredentialRotate:output_type -> qrdb.v1.CredentialRotateResponse
-	316, // 574: qrdb.v1.QRDBService.CredentialRetrieveVersion:output_type -> qrdb.v1.CredentialRetrieveVersionResponse
-	319, // 575: qrdb.v1.QRDBService.CredentialListVersions:output_type -> qrdb.v1.CredentialListVersionsResponse
-	321, // 576: qrdb.v1.QRDBService.CredentialGCExpired:output_type -> qrdb.v1.CredentialGCResponse
-	439, // 577: qrdb.v1.QRDBService.CredentialStore:output_type -> google.protobuf.Empty
-	308, // 578: qrdb.v1.QRDBService.CredentialRetrieve:output_type -> qrdb.v1.CredentialRetrieveResponse
-	298, // 579: qrdb.v1.QRDBService.TenantDEKStatus:output_type -> qrdb.v1.TenantDEKStatusResponse
-	298, // 580: qrdb.v1.QRDBService.TenantDEKRotate:output_type -> qrdb.v1.TenantDEKStatusResponse
-	298, // 581: qrdb.v1.QRDBService.TenantDEKRetire:output_type -> qrdb.v1.TenantDEKStatusResponse
-	300, // 582: qrdb.v1.QRDBService.TenantDEKEncrypt:output_type -> qrdb.v1.TenantDEKEncryptResponse
-	302, // 583: qrdb.v1.QRDBService.TenantDEKDecrypt:output_type -> qrdb.v1.TenantDEKDecryptResponse
-	304, // 584: qrdb.v1.QRDBService.TenantDEKRewrap:output_type -> qrdb.v1.TenantDEKRewrapResponse
-	323, // 585: qrdb.v1.QRDBService.BackupCreate:output_type -> qrdb.v1.BackupInfo
-	324, // 586: qrdb.v1.QRDBService.BackupList:output_type -> qrdb.v1.BackupListResponse
-	323, // 587: qrdb.v1.QRDBService.BackupGet:output_type -> qrdb.v1.BackupInfo
-	439, // 588: qrdb.v1.QRDBService.BackupDelete:output_type -> google.protobuf.Empty
-	329, // 589: qrdb.v1.QRDBService.BackupRestore:output_type -> qrdb.v1.BackupRestoreResponse
-	331, // 590: qrdb.v1.QRDBService.BackupVerify:output_type -> qrdb.v1.BackupVerifyResponse
-	333, // 591: qrdb.v1.QRDBService.RebalanceGetShardStats:output_type -> qrdb.v1.ShardStats
-	336, // 592: qrdb.v1.QRDBService.RebalanceCreatePlan:output_type -> qrdb.v1.RebalancePlan
-	337, // 593: qrdb.v1.QRDBService.RebalanceExecute:output_type -> qrdb.v1.RebalanceExecutionResponse
-	339, // 594: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:output_type -> qrdb.v1.ImbalanceReport
-	344, // 595: qrdb.v1.QRDBService.Embed:output_type -> qrdb.v1.EmbedResponse
-	346, // 596: qrdb.v1.QRDBService.BatchEmbed:output_type -> qrdb.v1.BatchEmbedResponse
-	348, // 597: qrdb.v1.QRDBService.ListEmbeddingModels:output_type -> qrdb.v1.ListEmbeddingModelsResponse
-	351, // 598: qrdb.v1.QRDBService.RAGIngestDocument:output_type -> qrdb.v1.RAGIngestDocumentResponse
-	354, // 599: qrdb.v1.QRDBService.RAGQuery:output_type -> qrdb.v1.RAGQueryResponse
-	356, // 600: qrdb.v1.QRDBService.RAGDeleteDocument:output_type -> qrdb.v1.RAGDeleteDocumentResponse
-	359, // 601: qrdb.v1.QRDBService.RAGListDocuments:output_type -> qrdb.v1.RAGListDocumentsResponse
-	439, // 602: qrdb.v1.QRDBService.DatabaseSeal:output_type -> google.protobuf.Empty
-	439, // 603: qrdb.v1.QRDBService.DatabaseUnseal:output_type -> google.protobuf.Empty
-	363, // 604: qrdb.v1.QRDBService.DatabaseBarrierStatus:output_type -> qrdb.v1.DatabaseBarrierStatusResponse
-	366, // 605: qrdb.v1.QRDBService.SQLQuery:output_type -> qrdb.v1.SQLQueryResponse
-	368, // 606: qrdb.v1.TenantBarrierService.Init:output_type -> qrdb.v1.TenantBarrierInitResponse
-	439, // 607: qrdb.v1.TenantBarrierService.Unseal:output_type -> google.protobuf.Empty
-	439, // 608: qrdb.v1.TenantBarrierService.Seal:output_type -> google.protobuf.Empty
-	372, // 609: qrdb.v1.TenantBarrierService.Status:output_type -> qrdb.v1.TenantBarrierStatusResponse
-	374, // 610: qrdb.v1.TenantBarrierService.OfficerRegister:output_type -> qrdb.v1.TenantBarrierOfficerRegisterResponse
-	376, // 611: qrdb.v1.TenantBarrierService.OfficerList:output_type -> qrdb.v1.TenantBarrierOfficerListResponse
-	265, // 612: qrdb.v1.TenantBarrierService.QuorumBegin:output_type -> qrdb.v1.BarrierQuorumChallenge
-	267, // 613: qrdb.v1.TenantBarrierService.QuorumSubmit:output_type -> qrdb.v1.BarrierQuorumOutcome
-	270, // 614: qrdb.v1.TenantBarrierService.RekeyStart:output_type -> qrdb.v1.BarrierQuorumRound
-	270, // 615: qrdb.v1.TenantBarrierService.OfficerRevoke:output_type -> qrdb.v1.BarrierQuorumRound
-	378, // 616: qrdb.v1.TenantBarrierService.ShareClaimBegin:output_type -> qrdb.v1.TenantBarrierShareClaimBeginResponse
-	380, // 617: qrdb.v1.TenantBarrierService.ShareClaimComplete:output_type -> qrdb.v1.TenantBarrierShareClaimCompleteResponse
-	386, // 618: qrdb.v1.AuditService.Query:output_type -> qrdb.v1.AuditQueryResponse
-	389, // 619: qrdb.v1.AuthFactorService.EnrollFactor:output_type -> qrdb.v1.EnrollFactorResponse
-	391, // 620: qrdb.v1.AuthFactorService.ChallengeFactor:output_type -> qrdb.v1.ChallengeFactorResponse
-	439, // 621: qrdb.v1.AuthFactorService.VerifyFactor:output_type -> google.protobuf.Empty
-	395, // 622: qrdb.v1.AuthFactorService.ListFactors:output_type -> qrdb.v1.ListFactorsResponse
-	439, // 623: qrdb.v1.AuthFactorService.RevokeFactor:output_type -> google.protobuf.Empty
-	399, // 624: qrdb.v1.UserAuthFactorService.Add:output_type -> qrdb.v1.UserAuthFactorAddResponse
-	401, // 625: qrdb.v1.UserAuthFactorService.List:output_type -> qrdb.v1.UserAuthFactorListResponse
-	403, // 626: qrdb.v1.UserAuthFactorService.Get:output_type -> qrdb.v1.UserAuthFactorGetResponse
-	405, // 627: qrdb.v1.UserAuthFactorService.Remove:output_type -> qrdb.v1.UserAuthFactorRemoveResponse
-	408, // 628: qrdb.v1.UserAuthFactorService.Rotate:output_type -> qrdb.v1.UserAuthFactorRotateResponse
-	410, // 629: qrdb.v1.UserAuthFactorService.Relabel:output_type -> qrdb.v1.UserAuthFactorRelabelResponse
-	412, // 630: qrdb.v1.UserAuthFactorService.Login:output_type -> qrdb.v1.UserAuthFactorLoginResponse
-	410, // [410:631] is the sub-list for method output_type
-	189, // [189:410] is the sub-list for method input_type
+	388, // 398: qrdb.v1.AuditService.VerifyChain:input_type -> qrdb.v1.AuditVerifyChainRequest
+	390, // 399: qrdb.v1.AuthFactorService.EnrollFactor:input_type -> qrdb.v1.EnrollFactorRequest
+	392, // 400: qrdb.v1.AuthFactorService.ChallengeFactor:input_type -> qrdb.v1.ChallengeFactorRequest
+	394, // 401: qrdb.v1.AuthFactorService.VerifyFactor:input_type -> qrdb.v1.VerifyFactorRequest
+	395, // 402: qrdb.v1.AuthFactorService.ListFactors:input_type -> qrdb.v1.ListFactorsRequest
+	398, // 403: qrdb.v1.AuthFactorService.RevokeFactor:input_type -> qrdb.v1.RevokeFactorRequest
+	400, // 404: qrdb.v1.UserAuthFactorService.Add:input_type -> qrdb.v1.UserAuthFactorAddRequest
+	402, // 405: qrdb.v1.UserAuthFactorService.List:input_type -> qrdb.v1.UserAuthFactorListRequest
+	404, // 406: qrdb.v1.UserAuthFactorService.Get:input_type -> qrdb.v1.UserAuthFactorGetRequest
+	406, // 407: qrdb.v1.UserAuthFactorService.Remove:input_type -> qrdb.v1.UserAuthFactorRemoveRequest
+	409, // 408: qrdb.v1.UserAuthFactorService.Rotate:input_type -> qrdb.v1.UserAuthFactorRotateRequest
+	411, // 409: qrdb.v1.UserAuthFactorService.Relabel:input_type -> qrdb.v1.UserAuthFactorRelabelRequest
+	413, // 410: qrdb.v1.UserAuthFactorService.Login:input_type -> qrdb.v1.UserAuthFactorLoginRequest
+	13,  // 411: qrdb.v1.QRDBService.Put:output_type -> qrdb.v1.PutResponse
+	15,  // 412: qrdb.v1.QRDBService.Get:output_type -> qrdb.v1.GetResponse
+	17,  // 413: qrdb.v1.QRDBService.Delete:output_type -> qrdb.v1.DeleteResponse
+	19,  // 414: qrdb.v1.QRDBService.PutIfAbsent:output_type -> qrdb.v1.PutIfAbsentResponse
+	21,  // 415: qrdb.v1.QRDBService.CompareAndDelete:output_type -> qrdb.v1.CompareAndDeleteResponse
+	23,  // 416: qrdb.v1.QRDBService.CompareAndSwap:output_type -> qrdb.v1.CompareAndSwapResponse
+	25,  // 417: qrdb.v1.QRDBService.List:output_type -> qrdb.v1.ListResponse
+	27,  // 418: qrdb.v1.QRDBService.Scan:output_type -> qrdb.v1.ScanResponse
+	30,  // 419: qrdb.v1.QRDBService.PutWithLease:output_type -> qrdb.v1.PutWithLeaseResponse
+	32,  // 420: qrdb.v1.QRDBService.GetRevision:output_type -> qrdb.v1.GetRevisionResponse
+	34,  // 421: qrdb.v1.QRDBService.GetAtRevision:output_type -> qrdb.v1.GetAtRevisionResponse
+	36,  // 422: qrdb.v1.QRDBService.Range:output_type -> qrdb.v1.RangeResponse
+	441, // 423: qrdb.v1.QRDBService.Compact:output_type -> google.protobuf.Empty
+	38,  // 424: qrdb.v1.QRDBService.CurrentRevision:output_type -> qrdb.v1.CurrentRevisionResponse
+	41,  // 425: qrdb.v1.QRDBService.RestoreToRevision:output_type -> qrdb.v1.RestoreRevisionResponse
+	46,  // 426: qrdb.v1.QRDBService.Transaction:output_type -> qrdb.v1.TransactionResponse
+	48,  // 427: qrdb.v1.QRDBService.Batch:output_type -> qrdb.v1.BatchResponse
+	51,  // 428: qrdb.v1.QRDBService.BatchImport:output_type -> qrdb.v1.BatchImportResponse
+	54,  // 429: qrdb.v1.QRDBService.Watch:output_type -> qrdb.v1.WatchResponse
+	57,  // 430: qrdb.v1.QRDBService.LeaseGrant:output_type -> qrdb.v1.LeaseGrantResponse
+	441, // 431: qrdb.v1.QRDBService.LeaseRevoke:output_type -> google.protobuf.Empty
+	60,  // 432: qrdb.v1.QRDBService.LeaseKeepAlive:output_type -> qrdb.v1.LeaseKeepAliveResponse
+	62,  // 433: qrdb.v1.QRDBService.LeaseTimeToLive:output_type -> qrdb.v1.LeaseTimeToLiveResponse
+	63,  // 434: qrdb.v1.QRDBService.LeaseList:output_type -> qrdb.v1.LeaseListResponse
+	66,  // 435: qrdb.v1.QRDBService.LockAcquire:output_type -> qrdb.v1.LockAcquireResponse
+	68,  // 436: qrdb.v1.QRDBService.LockTryLock:output_type -> qrdb.v1.LockTryLockResponse
+	441, // 437: qrdb.v1.QRDBService.LockRelease:output_type -> google.protobuf.Empty
+	71,  // 438: qrdb.v1.QRDBService.LockExtend:output_type -> qrdb.v1.LockExtendResponse
+	73,  // 439: qrdb.v1.QRDBService.LockStatus:output_type -> qrdb.v1.LockStatusResponse
+	75,  // 440: qrdb.v1.QRDBService.LockList:output_type -> qrdb.v1.LockListResponse
+	441, // 441: qrdb.v1.QRDBService.IndexCreate:output_type -> google.protobuf.Empty
+	441, // 442: qrdb.v1.QRDBService.IndexDrop:output_type -> google.protobuf.Empty
+	79,  // 443: qrdb.v1.QRDBService.IndexQuery:output_type -> qrdb.v1.IndexQueryResponse
+	82,  // 444: qrdb.v1.QRDBService.IndexScan:output_type -> qrdb.v1.IndexScanResponse
+	83,  // 445: qrdb.v1.QRDBService.IndexList:output_type -> qrdb.v1.IndexListResponse
+	441, // 446: qrdb.v1.QRDBService.TSWrite:output_type -> google.protobuf.Empty
+	441, // 447: qrdb.v1.QRDBService.TSWriteBatch:output_type -> google.protobuf.Empty
+	89,  // 448: qrdb.v1.QRDBService.TSQuery:output_type -> qrdb.v1.TSQueryResponse
+	92,  // 449: qrdb.v1.QRDBService.TSAggregate:output_type -> qrdb.v1.TSAggregateResponse
+	441, // 450: qrdb.v1.QRDBService.TSWritePoint:output_type -> google.protobuf.Empty
+	94,  // 451: qrdb.v1.QRDBService.TSRichQuery:output_type -> qrdb.v1.TSRichQueryResponse
+	441, // 452: qrdb.v1.QRDBService.TSDeleteSeries:output_type -> google.protobuf.Empty
+	98,  // 453: qrdb.v1.QRDBService.TSGetRetention:output_type -> qrdb.v1.TSRetentionPolicyResponse
+	441, // 454: qrdb.v1.QRDBService.TSSetRetention:output_type -> google.protobuf.Empty
+	101, // 455: qrdb.v1.QRDBService.TSListMetrics:output_type -> qrdb.v1.TSListMetricsResponse
+	119, // 456: qrdb.v1.QRDBService.VectorCreateNamespace:output_type -> qrdb.v1.VectorCreateNamespaceResponse
+	441, // 457: qrdb.v1.QRDBService.VectorDeleteNamespace:output_type -> google.protobuf.Empty
+	122, // 458: qrdb.v1.QRDBService.VectorListNamespaces:output_type -> qrdb.v1.VectorListNamespacesResponse
+	124, // 459: qrdb.v1.QRDBService.VectorGetNamespaceInfo:output_type -> qrdb.v1.VectorNamespaceInfo
+	127, // 460: qrdb.v1.QRDBService.VectorUpsert:output_type -> qrdb.v1.VectorUpsertResponse
+	125, // 461: qrdb.v1.QRDBService.VectorGet:output_type -> qrdb.v1.VectorDataProto
+	441, // 462: qrdb.v1.QRDBService.VectorDelete:output_type -> google.protobuf.Empty
+	132, // 463: qrdb.v1.QRDBService.VectorBatchUpsert:output_type -> qrdb.v1.VectorBatchUpsertResponse
+	134, // 464: qrdb.v1.QRDBService.VectorBatchDelete:output_type -> qrdb.v1.VectorBatchDeleteResponse
+	136, // 465: qrdb.v1.QRDBService.VectorList:output_type -> qrdb.v1.VectorListResponse
+	441, // 466: qrdb.v1.QRDBService.VectorUpdateMetadata:output_type -> google.protobuf.Empty
+	140, // 467: qrdb.v1.QRDBService.VectorSearchSimilar:output_type -> qrdb.v1.VectorSearchSimilarResponse
+	142, // 468: qrdb.v1.QRDBService.VectorSearchByMetadata:output_type -> qrdb.v1.VectorSearchByMetadataResponse
+	144, // 469: qrdb.v1.QRDBService.VectorHybridSearch:output_type -> qrdb.v1.VectorHybridSearchResponse
+	140, // 470: qrdb.v1.QRDBService.VectorSearchByID:output_type -> qrdb.v1.VectorSearchSimilarResponse
+	147, // 471: qrdb.v1.QRDBService.VectorRebuildIndex:output_type -> qrdb.v1.VectorRebuildIndexResponse
+	149, // 472: qrdb.v1.QRDBService.VectorGetRebuildProgress:output_type -> qrdb.v1.VectorRebuildProgress
+	151, // 473: qrdb.v1.QRDBService.VectorGetIndexStats:output_type -> qrdb.v1.VectorIndexStats
+	153, // 474: qrdb.v1.QRDBService.VectorCompactNamespace:output_type -> qrdb.v1.VectorCompactNamespaceResponse
+	155, // 475: qrdb.v1.QRDBService.VectorGetCompactionProgress:output_type -> qrdb.v1.VectorCompactionProgress
+	102, // 476: qrdb.v1.QRDBService.Health:output_type -> qrdb.v1.HealthResponse
+	103, // 477: qrdb.v1.QRDBService.Status:output_type -> qrdb.v1.StatusResponse
+	104, // 478: qrdb.v1.QRDBService.Peers:output_type -> qrdb.v1.PeersResponse
+	441, // 479: qrdb.v1.QRDBService.AddMember:output_type -> google.protobuf.Empty
+	441, // 480: qrdb.v1.QRDBService.RemoveMember:output_type -> google.protobuf.Empty
+	441, // 481: qrdb.v1.QRDBService.RequestSnapshot:output_type -> google.protobuf.Empty
+	441, // 482: qrdb.v1.QRDBService.Drain:output_type -> google.protobuf.Empty
+	111, // 483: qrdb.v1.QRDBService.Capabilities:output_type -> qrdb.v1.CapabilitiesResponse
+	441, // 484: qrdb.v1.QRDBService.StartShard:output_type -> google.protobuf.Empty
+	441, // 485: qrdb.v1.QRDBService.StopShard:output_type -> google.protobuf.Empty
+	115, // 486: qrdb.v1.QRDBService.GetShardState:output_type -> qrdb.v1.ShardStateResponse
+	116, // 487: qrdb.v1.QRDBService.GetTopology:output_type -> qrdb.v1.TopologyResponse
+	225, // 488: qrdb.v1.QRDBService.GetNodeCompaction:output_type -> qrdb.v1.NodeCompactionResponse
+	225, // 489: qrdb.v1.QRDBService.SetNodeCompaction:output_type -> qrdb.v1.NodeCompactionResponse
+	168, // 490: qrdb.v1.QRDBService.CreateUser:output_type -> qrdb.v1.UserResponse
+	168, // 491: qrdb.v1.QRDBService.GetUser:output_type -> qrdb.v1.UserResponse
+	168, // 492: qrdb.v1.QRDBService.GetUserByUsername:output_type -> qrdb.v1.UserResponse
+	168, // 493: qrdb.v1.QRDBService.GetUserByEmail:output_type -> qrdb.v1.UserResponse
+	168, // 494: qrdb.v1.QRDBService.GetUserByCertThumbprint:output_type -> qrdb.v1.UserResponse
+	168, // 495: qrdb.v1.QRDBService.AddCertBinding:output_type -> qrdb.v1.UserResponse
+	168, // 496: qrdb.v1.QRDBService.RemoveCertBinding:output_type -> qrdb.v1.UserResponse
+	168, // 497: qrdb.v1.QRDBService.UpdateUser:output_type -> qrdb.v1.UserResponse
+	441, // 498: qrdb.v1.QRDBService.DeleteUser:output_type -> google.protobuf.Empty
+	165, // 499: qrdb.v1.QRDBService.ListUsers:output_type -> qrdb.v1.ListUsersResponse
+	441, // 500: qrdb.v1.QRDBService.EnableUser:output_type -> google.protobuf.Empty
+	441, // 501: qrdb.v1.QRDBService.DisableUser:output_type -> google.protobuf.Empty
+	186, // 502: qrdb.v1.QRDBService.CreateRole:output_type -> qrdb.v1.RoleResponse
+	186, // 503: qrdb.v1.QRDBService.GetRole:output_type -> qrdb.v1.RoleResponse
+	186, // 504: qrdb.v1.QRDBService.GetRoleByName:output_type -> qrdb.v1.RoleResponse
+	186, // 505: qrdb.v1.QRDBService.UpdateRole:output_type -> qrdb.v1.RoleResponse
+	441, // 506: qrdb.v1.QRDBService.DeleteRole:output_type -> google.protobuf.Empty
+	183, // 507: qrdb.v1.QRDBService.ListRoles:output_type -> qrdb.v1.ListRolesResponse
+	441, // 508: qrdb.v1.QRDBService.AssignRole:output_type -> google.protobuf.Empty
+	441, // 509: qrdb.v1.QRDBService.UnassignRole:output_type -> google.protobuf.Empty
+	188, // 510: qrdb.v1.QRDBService.ListPermissions:output_type -> qrdb.v1.ListPermissionsResponse
+	176, // 511: qrdb.v1.QRDBService.ResolveRolePermissions:output_type -> qrdb.v1.ResolveRolePermissionsResponse
+	179, // 512: qrdb.v1.QRDBService.ReconcileBuiltInRoles:output_type -> qrdb.v1.ReconcileBuiltInRolesResponse
+	190, // 513: qrdb.v1.QRDBService.GenerateCert:output_type -> qrdb.v1.CertBundleResponse
+	192, // 514: qrdb.v1.QRDBService.ExportCert:output_type -> qrdb.v1.ExportCertResponse
+	194, // 515: qrdb.v1.QRDBService.RevokeCert:output_type -> qrdb.v1.RevokeCertResponse
+	197, // 516: qrdb.v1.QRDBService.ListCerts:output_type -> qrdb.v1.ListCertsResponse
+	203, // 517: qrdb.v1.QRDBService.CreateCollection:output_type -> qrdb.v1.CollectionInfoResponse
+	203, // 518: qrdb.v1.QRDBService.GetCollectionInfo:output_type -> qrdb.v1.CollectionInfoResponse
+	204, // 519: qrdb.v1.QRDBService.ListCollections:output_type -> qrdb.v1.ListCollectionsResponse
+	441, // 520: qrdb.v1.QRDBService.DropCollection:output_type -> google.protobuf.Empty
+	206, // 521: qrdb.v1.QRDBService.InsertDocument:output_type -> qrdb.v1.InsertDocumentResponse
+	208, // 522: qrdb.v1.QRDBService.GetDocument:output_type -> qrdb.v1.DocumentResponse
+	441, // 523: qrdb.v1.QRDBService.UpdateDocument:output_type -> google.protobuf.Empty
+	441, // 524: qrdb.v1.QRDBService.DeleteDocument:output_type -> google.protobuf.Empty
+	212, // 525: qrdb.v1.QRDBService.ListDocuments:output_type -> qrdb.v1.ListDocumentsResponse
+	217, // 526: qrdb.v1.QRDBService.DatabaseCreate:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 527: qrdb.v1.QRDBService.DatabaseGet:output_type -> qrdb.v1.DatabaseInfoResponse
+	216, // 528: qrdb.v1.QRDBService.DatabaseList:output_type -> qrdb.v1.DatabaseListResponse
+	441, // 529: qrdb.v1.QRDBService.DatabaseDrop:output_type -> google.protobuf.Empty
+	217, // 530: qrdb.v1.QRDBService.DatabaseUpdateProtocol:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 531: qrdb.v1.QRDBService.DatabaseUpdateEtcd:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 532: qrdb.v1.QRDBService.DatabaseUpdateRaft:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 533: qrdb.v1.QRDBService.DatabaseScale:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 534: qrdb.v1.QRDBService.DatabaseUpdateBarrier:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 535: qrdb.v1.QRDBService.DatabaseUpdateConnection:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 536: qrdb.v1.QRDBService.DatabaseUpdateSQL:output_type -> qrdb.v1.DatabaseInfoResponse
+	217, // 537: qrdb.v1.QRDBService.DatabaseUpdateCompaction:output_type -> qrdb.v1.DatabaseInfoResponse
+	441, // 538: qrdb.v1.QRDBService.BarrierInitialize:output_type -> google.protobuf.Empty
+	441, // 539: qrdb.v1.QRDBService.BarrierUnseal:output_type -> google.protobuf.Empty
+	441, // 540: qrdb.v1.QRDBService.BarrierSeal:output_type -> google.protobuf.Empty
+	246, // 541: qrdb.v1.QRDBService.BarrierStatus:output_type -> qrdb.v1.BarrierStatusResponse
+	250, // 542: qrdb.v1.QRDBService.BarrierShamirInitialize:output_type -> qrdb.v1.BarrierShamirOperationResponse
+	248, // 543: qrdb.v1.QRDBService.BarrierEnableEncryption:output_type -> qrdb.v1.BarrierEnableEncryptionResponse
+	257, // 544: qrdb.v1.QRDBService.BarrierOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
+	258, // 545: qrdb.v1.QRDBService.BarrierOfficerList:output_type -> qrdb.v1.BarrierOfficerListResponse
+	261, // 546: qrdb.v1.QRDBService.BarrierShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
+	263, // 547: qrdb.v1.QRDBService.BarrierShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
+	257, // 548: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
+	261, // 549: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
+	263, // 550: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
+	254, // 551: qrdb.v1.QRDBService.BarrierRecoveryGenerate:output_type -> qrdb.v1.BarrierRecoveryKeysResponse
+	441, // 552: qrdb.v1.QRDBService.BarrierRecoveryDelete:output_type -> google.protobuf.Empty
+	271, // 553: qrdb.v1.QRDBService.BarrierRecoveryStatus:output_type -> qrdb.v1.BarrierRecoveryStatusResponse
+	265, // 554: qrdb.v1.QRDBService.BarrierQuorumBegin:output_type -> qrdb.v1.BarrierQuorumChallenge
+	267, // 555: qrdb.v1.QRDBService.BarrierQuorumSubmit:output_type -> qrdb.v1.BarrierQuorumOutcome
+	270, // 556: qrdb.v1.QRDBService.BarrierRekeyStart:output_type -> qrdb.v1.BarrierQuorumRound
+	270, // 557: qrdb.v1.QRDBService.BarrierOfficerRevoke:output_type -> qrdb.v1.BarrierQuorumRound
+	275, // 558: qrdb.v1.QRDBService.CeremonyInitialize:output_type -> qrdb.v1.CeremonyInitializeResponse
+	276, // 559: qrdb.v1.QRDBService.CeremonyStatus:output_type -> qrdb.v1.CeremonyStatusResponse
+	278, // 560: qrdb.v1.QRDBService.CeremonySignCSR:output_type -> qrdb.v1.CeremonySignCSRResponse
+	281, // 561: qrdb.v1.QRDBService.TenantCreate:output_type -> qrdb.v1.TenantResponse
+	281, // 562: qrdb.v1.QRDBService.TenantGet:output_type -> qrdb.v1.TenantResponse
+	284, // 563: qrdb.v1.QRDBService.TenantList:output_type -> qrdb.v1.TenantListResponse
+	281, // 564: qrdb.v1.QRDBService.TenantUpdate:output_type -> qrdb.v1.TenantResponse
+	441, // 565: qrdb.v1.QRDBService.TenantDelete:output_type -> google.protobuf.Empty
+	281, // 566: qrdb.v1.QRDBService.TenantUpdateQuotas:output_type -> qrdb.v1.TenantResponse
+	281, // 567: qrdb.v1.QRDBService.TenantUpdateEntitlements:output_type -> qrdb.v1.TenantResponse
+	287, // 568: qrdb.v1.QRDBService.TenantListDeleted:output_type -> qrdb.v1.TenantListDeletedResponse
+	290, // 569: qrdb.v1.QRDBService.TenantReconcileDeleted:output_type -> qrdb.v1.TenantReconcileDeletedResponse
+	441, // 570: qrdb.v1.QRDBService.CredentialSubmit:output_type -> google.protobuf.Empty
+	309, // 571: qrdb.v1.QRDBService.CredentialStrategy:output_type -> qrdb.v1.CredentialStrategyResponse
+	441, // 572: qrdb.v1.QRDBService.CredentialDelete:output_type -> google.protobuf.Empty
+	312, // 573: qrdb.v1.QRDBService.CredentialList:output_type -> qrdb.v1.CredentialListResponse
+	314, // 574: qrdb.v1.QRDBService.CredentialRotate:output_type -> qrdb.v1.CredentialRotateResponse
+	316, // 575: qrdb.v1.QRDBService.CredentialRetrieveVersion:output_type -> qrdb.v1.CredentialRetrieveVersionResponse
+	319, // 576: qrdb.v1.QRDBService.CredentialListVersions:output_type -> qrdb.v1.CredentialListVersionsResponse
+	321, // 577: qrdb.v1.QRDBService.CredentialGCExpired:output_type -> qrdb.v1.CredentialGCResponse
+	441, // 578: qrdb.v1.QRDBService.CredentialStore:output_type -> google.protobuf.Empty
+	308, // 579: qrdb.v1.QRDBService.CredentialRetrieve:output_type -> qrdb.v1.CredentialRetrieveResponse
+	298, // 580: qrdb.v1.QRDBService.TenantDEKStatus:output_type -> qrdb.v1.TenantDEKStatusResponse
+	298, // 581: qrdb.v1.QRDBService.TenantDEKRotate:output_type -> qrdb.v1.TenantDEKStatusResponse
+	298, // 582: qrdb.v1.QRDBService.TenantDEKRetire:output_type -> qrdb.v1.TenantDEKStatusResponse
+	300, // 583: qrdb.v1.QRDBService.TenantDEKEncrypt:output_type -> qrdb.v1.TenantDEKEncryptResponse
+	302, // 584: qrdb.v1.QRDBService.TenantDEKDecrypt:output_type -> qrdb.v1.TenantDEKDecryptResponse
+	304, // 585: qrdb.v1.QRDBService.TenantDEKRewrap:output_type -> qrdb.v1.TenantDEKRewrapResponse
+	323, // 586: qrdb.v1.QRDBService.BackupCreate:output_type -> qrdb.v1.BackupInfo
+	324, // 587: qrdb.v1.QRDBService.BackupList:output_type -> qrdb.v1.BackupListResponse
+	323, // 588: qrdb.v1.QRDBService.BackupGet:output_type -> qrdb.v1.BackupInfo
+	441, // 589: qrdb.v1.QRDBService.BackupDelete:output_type -> google.protobuf.Empty
+	329, // 590: qrdb.v1.QRDBService.BackupRestore:output_type -> qrdb.v1.BackupRestoreResponse
+	331, // 591: qrdb.v1.QRDBService.BackupVerify:output_type -> qrdb.v1.BackupVerifyResponse
+	333, // 592: qrdb.v1.QRDBService.RebalanceGetShardStats:output_type -> qrdb.v1.ShardStats
+	336, // 593: qrdb.v1.QRDBService.RebalanceCreatePlan:output_type -> qrdb.v1.RebalancePlan
+	337, // 594: qrdb.v1.QRDBService.RebalanceExecute:output_type -> qrdb.v1.RebalanceExecutionResponse
+	339, // 595: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:output_type -> qrdb.v1.ImbalanceReport
+	344, // 596: qrdb.v1.QRDBService.Embed:output_type -> qrdb.v1.EmbedResponse
+	346, // 597: qrdb.v1.QRDBService.BatchEmbed:output_type -> qrdb.v1.BatchEmbedResponse
+	348, // 598: qrdb.v1.QRDBService.ListEmbeddingModels:output_type -> qrdb.v1.ListEmbeddingModelsResponse
+	351, // 599: qrdb.v1.QRDBService.RAGIngestDocument:output_type -> qrdb.v1.RAGIngestDocumentResponse
+	354, // 600: qrdb.v1.QRDBService.RAGQuery:output_type -> qrdb.v1.RAGQueryResponse
+	356, // 601: qrdb.v1.QRDBService.RAGDeleteDocument:output_type -> qrdb.v1.RAGDeleteDocumentResponse
+	359, // 602: qrdb.v1.QRDBService.RAGListDocuments:output_type -> qrdb.v1.RAGListDocumentsResponse
+	441, // 603: qrdb.v1.QRDBService.DatabaseSeal:output_type -> google.protobuf.Empty
+	441, // 604: qrdb.v1.QRDBService.DatabaseUnseal:output_type -> google.protobuf.Empty
+	363, // 605: qrdb.v1.QRDBService.DatabaseBarrierStatus:output_type -> qrdb.v1.DatabaseBarrierStatusResponse
+	366, // 606: qrdb.v1.QRDBService.SQLQuery:output_type -> qrdb.v1.SQLQueryResponse
+	368, // 607: qrdb.v1.TenantBarrierService.Init:output_type -> qrdb.v1.TenantBarrierInitResponse
+	441, // 608: qrdb.v1.TenantBarrierService.Unseal:output_type -> google.protobuf.Empty
+	441, // 609: qrdb.v1.TenantBarrierService.Seal:output_type -> google.protobuf.Empty
+	372, // 610: qrdb.v1.TenantBarrierService.Status:output_type -> qrdb.v1.TenantBarrierStatusResponse
+	374, // 611: qrdb.v1.TenantBarrierService.OfficerRegister:output_type -> qrdb.v1.TenantBarrierOfficerRegisterResponse
+	376, // 612: qrdb.v1.TenantBarrierService.OfficerList:output_type -> qrdb.v1.TenantBarrierOfficerListResponse
+	265, // 613: qrdb.v1.TenantBarrierService.QuorumBegin:output_type -> qrdb.v1.BarrierQuorumChallenge
+	267, // 614: qrdb.v1.TenantBarrierService.QuorumSubmit:output_type -> qrdb.v1.BarrierQuorumOutcome
+	270, // 615: qrdb.v1.TenantBarrierService.RekeyStart:output_type -> qrdb.v1.BarrierQuorumRound
+	270, // 616: qrdb.v1.TenantBarrierService.OfficerRevoke:output_type -> qrdb.v1.BarrierQuorumRound
+	378, // 617: qrdb.v1.TenantBarrierService.ShareClaimBegin:output_type -> qrdb.v1.TenantBarrierShareClaimBeginResponse
+	380, // 618: qrdb.v1.TenantBarrierService.ShareClaimComplete:output_type -> qrdb.v1.TenantBarrierShareClaimCompleteResponse
+	386, // 619: qrdb.v1.AuditService.Query:output_type -> qrdb.v1.AuditQueryResponse
+	389, // 620: qrdb.v1.AuditService.VerifyChain:output_type -> qrdb.v1.AuditVerifyChainResponse
+	391, // 621: qrdb.v1.AuthFactorService.EnrollFactor:output_type -> qrdb.v1.EnrollFactorResponse
+	393, // 622: qrdb.v1.AuthFactorService.ChallengeFactor:output_type -> qrdb.v1.ChallengeFactorResponse
+	441, // 623: qrdb.v1.AuthFactorService.VerifyFactor:output_type -> google.protobuf.Empty
+	397, // 624: qrdb.v1.AuthFactorService.ListFactors:output_type -> qrdb.v1.ListFactorsResponse
+	441, // 625: qrdb.v1.AuthFactorService.RevokeFactor:output_type -> google.protobuf.Empty
+	401, // 626: qrdb.v1.UserAuthFactorService.Add:output_type -> qrdb.v1.UserAuthFactorAddResponse
+	403, // 627: qrdb.v1.UserAuthFactorService.List:output_type -> qrdb.v1.UserAuthFactorListResponse
+	405, // 628: qrdb.v1.UserAuthFactorService.Get:output_type -> qrdb.v1.UserAuthFactorGetResponse
+	407, // 629: qrdb.v1.UserAuthFactorService.Remove:output_type -> qrdb.v1.UserAuthFactorRemoveResponse
+	410, // 630: qrdb.v1.UserAuthFactorService.Rotate:output_type -> qrdb.v1.UserAuthFactorRotateResponse
+	412, // 631: qrdb.v1.UserAuthFactorService.Relabel:output_type -> qrdb.v1.UserAuthFactorRelabelResponse
+	414, // 632: qrdb.v1.UserAuthFactorService.Login:output_type -> qrdb.v1.UserAuthFactorLoginResponse
+	411, // [411:633] is the sub-list for method output_type
+	189, // [189:411] is the sub-list for method input_type
 	189, // [189:189] is the sub-list for extension type_name
 	189, // [189:189] is the sub-list for extension extendee
 	0,   // [0:189] is the sub-list for field type_name
@@ -30020,7 +30186,7 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc), len(file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   427,
+			NumMessages:   429,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

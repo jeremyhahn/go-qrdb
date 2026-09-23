@@ -122,3 +122,32 @@ func (s *Server) handleAuditQuery(w http.ResponseWriter, r *http.Request) {
 		slog.Default().Error("audit: encode response failed", "error", err)
 	}
 }
+
+// handleAuditVerify handles GET /v1/audit/verify.
+//
+// Verifies the audit log's tamper-evidence hash chain across the active
+// file and every rotation archive. A 200 response with "verified": false
+// is a TAMPER VERDICT, not a request failure -- exactly as
+// POST /v1/backups/{id}/verify reports a checksum mismatch as a result
+// field rather than an HTTP error. Only a genuine inability to PERFORM the
+// verification (unsupported backend, missing file, a rotation race) maps to
+// a non-2xx status; see pkg/audit.Verify.
+//
+// Authorization: requires "audit:verify" permission.
+func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
+	if s.auditLogger == nil {
+		http.Error(w, `{"error":"audit not configured"}`, http.StatusNotImplemented)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), auditQueryTimeout)
+	defer cancel()
+
+	report, err := audit.Verify(ctx, s.auditLogger)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, report)
+}

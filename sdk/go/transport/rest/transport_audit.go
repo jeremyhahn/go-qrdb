@@ -123,3 +123,42 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 	}
 	return auditconv.PageToTransport(&page), nil
 }
+
+// VerifyChain verifies the audit log's tamper-evidence hash chain via
+// GET /v1/audit/verify. A non-2xx status means verification could not be
+// PERFORMED; a 200 response with Verified=false is a TAMPER VERDICT, not an
+// error -- see pkg/audit.Verify.
+// Authorization: requires "audit:verify" permission.
+func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/audit/verify", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: err}
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotImplemented {
+		return nil, &transport.NotImplementedError{Method: "VerifyChain"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &transport.RequestError{
+			Method: "VerifyChain",
+			Err:    &transport.UnexpectedStatusError{StatusCode: resp.StatusCode, Body: string(body)},
+		}
+	}
+
+	var result transport.AuditVerifyResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &transport.RequestError{Method: "VerifyChain", Err: err}
+	}
+	return &result, nil
+}

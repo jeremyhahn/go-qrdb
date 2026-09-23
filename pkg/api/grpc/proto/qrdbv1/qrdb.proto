@@ -4626,6 +4626,16 @@ service AuditService {
     rpc Query(AuditQueryRequest) returns (AuditQueryResponse) {
         option (qrdb.v1.permission) = "audit:query";
     }
+
+    // VerifyChain verifies the audit log's tamper-evidence hash chain across
+    // the active file and every rotation archive, and reports what the walk
+    // covered. Verified=false with a Reason is a TAMPER VERDICT, not an RPC
+    // failure; a non-nil gRPC error means the verification could not be
+    // performed at all (unsupported backend, unreadable file, or a rotation
+    // race -- see pkg/audit.Verify).
+    rpc VerifyChain(AuditVerifyChainRequest) returns (AuditVerifyChainResponse) {
+        option (qrdb.v1.permission) = "audit:verify";
+    }
 }
 
 // AuditQueryRequest carries the filter criteria for an audit query.
@@ -4674,6 +4684,34 @@ message AuditEvent {
     string client_ip                    = 9;
     string request_id                   = 10;
     string prev_hash                    = 11;
+}
+
+// AuditVerifyChainRequest carries no parameters today; the verified target
+// is always the server's own configured audit trail. The message exists so
+// the RPC can grow parameters (e.g. a specific archive) without breaking
+// wire compatibility.
+message AuditVerifyChainRequest {}
+
+// AuditVerifyChainResponse reports the outcome of a hash-chain verification.
+message AuditVerifyChainResponse {
+    // verified is true only when every linked file's chain checked out.
+    bool verified = 1;
+    // reason is a human-readable description of the break; empty when verified.
+    string reason = 2;
+    // files is the number of rotation-set files that carry records and were linked.
+    int32 files = 3;
+    // records is the number of audit records verified, anchors excluded.
+    // int64: an audit trail's record count is unbounded over its retention
+    // window, and int32 would wrap on a long-lived, high-volume trail.
+    int64 records = 4;
+    // order lists the linked files in chain order, head first.
+    repeated string order = 5;
+    // genesis reports whether the walk reached the chain's origin.
+    bool genesis = 6;
+    // seed is the hex digest the head claims to continue from, empty at genesis.
+    string seed = 7;
+    // handoff is the hex digest the tail ends on.
+    string handoff = 8;
 }
 
 // ===========================================================================

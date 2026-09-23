@@ -138,6 +138,55 @@ func (e *ConcurrentRotationError) Error() string {
 		"Nothing is known to be wrong with it; re-run the verification."
 }
 
+// FileLockedError is returned when the audit file cannot be opened because
+// another process holds an exclusive lock.
+type FileLockedError struct {
+	Path string
+}
+
+// Error returns a human-readable description of the lock conflict.
+func (e *FileLockedError) Error() string {
+	return "audit: file locked: " + e.Path
+}
+
+// VerificationCanceledError is returned when a chain-set verification's
+// context was canceled or its deadline exceeded before the walk finished.
+//
+// IT IS NOT A TAMPER VERDICT, matching ConcurrentRotationError: the walk
+// stops as soon as ctx is checked -- per record inside a segment, per segment
+// inside a set, and before each retry attempt -- rather than running a
+// full-trail scan to completion regardless of the caller giving up on it.
+type VerificationCanceledError struct {
+	// Path is the file or rotation-set root the walk was checking when it
+	// observed cancellation.
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description of the canceled verification.
+func (e *VerificationCanceledError) Error() string {
+	return "audit: verification of " + e.Path + " canceled: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying context error (context.Canceled or
+// context.DeadlineExceeded), so errors.Is against those sentinels works
+// through this type.
+func (e *VerificationCanceledError) Unwrap() error { return e.Err }
+
+// VerificationBusyError is returned when a chain-set verification is
+// requested while one is already running against the same logger.
+//
+// Concurrent callers do not each start their own full-trail scan: the first
+// one runs, and every other caller is refused immediately rather than
+// piling up concurrent scans of a trail that can only grow. Retrying later,
+// once the in-flight verification has finished, is the remedy.
+type VerificationBusyError struct{}
+
+// Error returns a human-readable description of the busy state.
+func (e *VerificationBusyError) Error() string {
+	return "audit: a chain verification is already in progress"
+}
+
 // RetentionError is returned when the retention pruning scan fails.
 type RetentionError struct {
 	Err error

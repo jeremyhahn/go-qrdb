@@ -88,6 +88,10 @@ func selfScopedPermissions() []Permission {
 		AdminStatus,
 
 		// audit
+		//
+		// AuditVerify is NOT here: it is registered ScopeCross in
+		// cross_scope.go instead, because the hash chain it verifies covers
+		// the whole node's audit trail, not a tenant-filtered slice of it.
 		AuditQuery,
 		AuditRead,
 		AuditStream,

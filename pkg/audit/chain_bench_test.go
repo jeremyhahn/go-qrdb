@@ -134,7 +134,7 @@ func BenchmarkVerifyChainSet(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		v, err := verifyChainSet(path)
+		v, err := verifyChainSet(context.Background(), path)
 		if err != nil {
 			b.Fatalf("verifyChainSet: %v", err)
 		}

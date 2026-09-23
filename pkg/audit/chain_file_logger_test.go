@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -78,7 +79,7 @@ func TestChainFileLogger_HashChainIntegrity(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if err := verifyChainFile(path); err != nil {
+	if err := verifyChainFile(context.Background(), path); err != nil {
 		t.Fatalf("VerifyChain: unexpected error: %v", err)
 	}
 }
@@ -122,7 +123,7 @@ func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err = verifyChainFile(path)
+	err = verifyChainFile(context.Background(), path)
 	if err == nil {
 		t.Fatal("expected ChainBrokenError, got nil")
 	}
@@ -435,6 +436,254 @@ func TestChainFileLogger_VerifyChain_ViaMethod(t *testing.T) {
 	}
 }
 
+// TestChainFileLogger_VerifyChainSet_CanceledContextStopsTheWalk pins that a
+// verification whose context is ALREADY canceled before the walk starts
+// returns *VerificationCanceledError rather than running the full scan
+// regardless -- go-qrdb#453's review finding that remote verification ignored
+// cancellation entirely.
+func TestChainFileLogger_VerifyChainSet_CanceledContextStopsTheWalk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		l.Emit(ctx, testEvent("carol", "ceremony", "check"))
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = l.VerifyChainSet(canceled)
+	var ce *VerificationCanceledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *VerificationCanceledError, got %v (%T)", err, err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected errors.Is(err, context.Canceled), got %v", err)
+	}
+}
+
+// TestChainFileLogger_VerifyChainSet_CancellationIsCheckedAtTheCallBoundary
+// covers the boundary case: a context already canceled when the call is made
+// is caught immediately, matching TestChainFileLogger_VerifyChainSet_
+// CanceledContextStopsTheWalk above but at verifyChainSegment's own layer.
+// It does NOT prove the check runs more than once -- see
+// TestChainFileLogger_VerifyChainSet_CancellationIsCheckedPerRecord below for
+// that, which a canceled-before-the-call context cannot distinguish from a
+// check made exactly once at entry.
+func TestChainFileLogger_VerifyChainSet_CancellationIsCheckedAtTheCallBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 500; i++ {
+		l.Emit(ctx, testEvent("dave", "ceremony", "check"))
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = verifyChainSegment(canceled, path)
+	var ce *VerificationCanceledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *VerificationCanceledError, got %v (%T)", err, err)
+	}
+}
+
+// countedErrContext wraps a context.Context and returns a fixed error from
+// Err() once it has been called more than budget times, real cancellation
+// state otherwise. verifyChainSegment's loop calls ctx.Err() exactly once per
+// scanned line (see chain_verify.go), so budget is a position in the file:
+// budget calls succeed, then the (budget+1)th reports canceled.
+//
+// This is what distinguishes "checked per record" from "checked once at
+// entry" without depending on wall-clock timing at all: a check made only
+// once at entry calls Err() at most once per verifyChainSegment invocation,
+// so with budget > 1 it would never observe cancellation and the scan would
+// run to completion -- exactly the gap go-qrdb#559's review found in the
+// context-canceled-before-the-call version of this test above.
+type countedErrContext struct {
+	context.Context
+	calls  atomic.Int64
+	budget int64
+}
+
+func (c *countedErrContext) Err() error {
+	if c.calls.Add(1) > c.budget {
+		return context.Canceled
+	}
+	return c.Context.Err()
+}
+
+// TestChainFileLogger_VerifyChainSet_CancellationIsCheckedPerRecord proves
+// the walk stops mid-file, not only at the boundary between files or only
+// once at entry: cancellation that first becomes visible after budget
+// records have already scanned clean must still be caught before the file's
+// remaining 499-budget records fold.
+func TestChainFileLogger_VerifyChainSet_CancellationIsCheckedPerRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	ctx := context.Background()
+	const totalRecords = 500
+	for i := 0; i < totalRecords; i++ {
+		l.Emit(ctx, testEvent("dave", "ceremony", "check"))
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	const budget = 250 // fewer than totalRecords: cancellation fires mid-file
+	cc := &countedErrContext{Context: context.Background(), budget: budget}
+
+	_, err = verifyChainSegment(cc, path)
+	var ce *VerificationCanceledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *VerificationCanceledError after %d records, got %v (%T) after %d Err() calls -- "+
+			"a check made only once at entry would have run to completion instead",
+			budget, err, err, cc.calls.Load())
+	}
+	if got := cc.calls.Load(); got <= 1 {
+		t.Fatalf("ctx.Err() was called %d time(s), want more than once to prove a per-record check ran", got)
+	}
+}
+
+// TestChainFileLogger_VerifyChainSet_RefusesAConcurrentScan pins that a
+// second VerifyChainSet call arriving while one is already in flight is
+// refused immediately with *VerificationBusyError, rather than starting its
+// own concurrent full-trail scan -- go-qrdb#453's review finding that
+// repeated calls could pile up concurrent scans.
+//
+// The in-flight state is set directly rather than raced for: two goroutines
+// contending for the CompareAndSwap would make which one wins
+// non-deterministic, and the property under test is the REFUSAL, not which
+// caller happens to arrive first.
+func TestChainFileLogger_VerifyChainSet_RefusesAConcurrentScan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	l.verifying.Store(true) // simulate a scan already in flight
+
+	_, err = l.VerifyChainSet(context.Background())
+	var busy *VerificationBusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("expected *VerificationBusyError, got %v (%T)", err, err)
+	}
+}
+
+// TestChainFileLogger_VerifyChainSet_ReleasesTheSlotOnCompletion proves the
+// busy guard is released once a scan finishes, successfully or not, so a
+// caller is never permanently locked out by an earlier verification.
+func TestChainFileLogger_VerifyChainSet_ReleasesTheSlotOnCompletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		l.Emit(ctx, testEvent("erin", "ceremony", "check"))
+	}
+
+	if _, err := l.VerifyChainSet(ctx); err != nil {
+		t.Fatalf("first VerifyChainSet: unexpected error: %v", err)
+	}
+	if _, err := l.VerifyChainSet(ctx); err != nil {
+		t.Fatalf("second VerifyChainSet after the first released its slot: unexpected error: %v", err)
+	}
+}
+
+// TestChainFileLogger_VerifyChainSet_ConcurrentCallsShareOneWinner pins that
+// VerifyChainSet's guard admits EXACTLY one of many concurrent callers, through
+// the real method rather than the atomic.Bool underneath it.
+//
+// The winner is held inside the guarded section (via the logger's scan seam)
+// until every goroutine has either entered the scan or been refused as busy,
+// and only then released into the real verifyChainSet. That makes the count a
+// property of the guard and not of scheduling: a guard weakened to a racy
+// Load-then-Store lets a second caller in while the first is held, the second
+// is counted as an arrival like any other, and the "exactly one" assertion
+// fails every time instead of whenever the scheduler happens to cooperate. An
+// unheld burst could only ever say "at least one succeeded", which the broken
+// guard satisfies too (go-qrdb#559's review finding).
+func TestChainFileLogger_VerifyChainSet_ConcurrentCallsShareOneWinner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.ndjson")
+	l, err := NewFileLogger(path)
+	if err != nil {
+		t.Fatalf("NewFileLogger: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		l.Emit(ctx, testEvent("frank", "ceremony", "check"))
+	}
+
+	const n = 64
+	arrivals := make(chan struct{}, n)
+	release := make(chan struct{})
+	l.scan = func(ctx context.Context, path string) (*ChainVerification, error) {
+		arrivals <- struct{}{}
+		<-release
+		return verifyChainSet(ctx, path)
+	}
+
+	var wg sync.WaitGroup
+	var succeeded, busy atomic.Int64
+	start := make(chan struct{})
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			res, err := l.VerifyChainSet(ctx)
+			switch {
+			case err == nil:
+				if res.Records != 50 {
+					t.Errorf("winner's scan verified %d records, want 50", res.Records)
+				}
+				succeeded.Add(1)
+			case errors.As(err, new(*VerificationBusyError)):
+				busy.Add(1)
+				arrivals <- struct{}{}
+			default:
+				t.Errorf("unexpected error: %v", err)
+				arrivals <- struct{}{}
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < n; i++ {
+		<-arrivals
+	}
+	close(release)
+	wg.Wait()
+
+	if got := succeeded.Load(); got != 1 {
+		t.Fatalf("succeeded = %d, want exactly 1 (busy=%d)", got, busy.Load())
+	}
+	if got := busy.Load(); got != n-1 {
+		t.Fatalf("busy = %d, want %d", got, n-1)
+	}
+}
+
 func TestChainFileLogger_InitPrevDigest_Restores(t *testing.T) {
 	// Emitting events, closing, and re-opening should restore the chain.
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
@@ -462,7 +711,7 @@ func TestChainFileLogger_InitPrevDigest_Restores(t *testing.T) {
 		t.Fatalf("Close (l2): %v", err)
 	}
 
-	if err := verifyChainFile(path); err != nil {
+	if err := verifyChainFile(context.Background(), path); err != nil {
 		t.Fatalf("verifyChainFile after re-open: %v", err)
 	}
 }
@@ -660,7 +909,7 @@ func TestChainFileLogger_Emit_WithAttributes(t *testing.T) {
 }
 
 func TestVerifyChainFile_NonexistentFile(t *testing.T) {
-	err := verifyChainFile(filepath.Join(t.TempDir(), "missing.ndjson"))
+	err := verifyChainFile(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"))
 	if err == nil {
 		t.Fatal("expected error for nonexistent file, got nil")
 	}
@@ -742,7 +991,7 @@ func TestVerifyChainFile_SkipsInvalidJSON(t *testing.T) {
 	_ = f.Close()
 
 	// verifyChainFile should skip the invalid line and not return ChainBrokenError.
-	if err := verifyChainFile(path); err != nil {
+	if err := verifyChainFile(context.Background(), path); err != nil {
 		t.Fatalf("verifyChainFile: unexpected error on invalid JSON line: %v", err)
 	}
 }

@@ -17,6 +17,7 @@ package embedded
 import (
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -126,6 +127,16 @@ func translateError(err error) error {
 	var mbr *service.MVCCBackendRequiredError
 	if errors.As(err, &mbr) {
 		return &transport.CapabilityUnsupportedError{Message: mbr.Error()}
+	}
+	// audit.VerificationUnsupportedError is the same kind of capability
+	// refusal, for the AuditLogger backend rather than the KV backend
+	// (go-qrdb#453): the configured logger holds no hash chain to verify.
+	// Mapped to NotImplementedError so callers get the SAME typed error as
+	// the network transports (grpc/unix map codes.Unimplemented, REST maps
+	// 501) rather than having to type-assert on an internal pkg/audit type.
+	var vue *audit.VerificationUnsupportedError
+	if errors.As(err, &vue) {
+		return &transport.NotImplementedError{Method: "VerifyChain"}
 	}
 
 	var wce *service.WatchCanceledError

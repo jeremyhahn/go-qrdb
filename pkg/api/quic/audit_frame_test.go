@@ -171,6 +171,132 @@ func TestHandleAuditQuery_ServiceError(t *testing.T) {
 	}
 }
 
+// mockVerifyingAuditLogger extends mockAuditLogger with VerifyChainSet, so
+// it satisfies audit.Verifier for handleAuditVerifyChain tests.
+// mockAuditLogger itself deliberately does NOT implement Verifier, so it
+// doubles for a backend with no hash chain (RingBuffer, NoopLogger,
+// SlogSink).
+type mockVerifyingAuditLogger struct {
+	mockAuditLogger
+	verifyFn func(ctx context.Context) (*audit.ChainVerification, error)
+}
+
+func (m *mockVerifyingAuditLogger) VerifyChainSet(ctx context.Context) (*audit.ChainVerification, error) {
+	return m.verifyFn(ctx)
+}
+
+var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
+
+// ---------------------------------------------------------------------------
+// handleAuditVerifyChain – nil logger
+// ---------------------------------------------------------------------------
+
+func TestHandleAuditVerifyChain_NilLogger(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+
+	_, err := srv.handleAuditVerifyChain(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected ServiceNotConfiguredError, got nil")
+	}
+	var sncErr *ServiceNotConfiguredError
+	if !errors.As(err, &sncErr) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T", err)
+	}
+	if sncErr.Service != "audit" {
+		t.Errorf("expected service 'audit', got %q", sncErr.Service)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAuditVerifyChain – unsupported backend
+// ---------------------------------------------------------------------------
+
+func TestHandleAuditVerifyChain_UnsupportedBackend(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(&mockAuditLogger{}))
+
+	_, err := srv.handleAuditVerifyChain(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for a backend with no hash chain")
+	}
+	var unsupported *audit.VerificationUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected *audit.VerificationUnsupportedError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAuditVerifyChain – verified
+// ---------------------------------------------------------------------------
+
+func TestHandleAuditVerifyChain_Verified(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 2, Records: 10, Genesis: true}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(logger))
+
+	resp, err := srv.handleAuditVerifyChain(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var report audit.VerificationReport
+	if err := json.Unmarshal(resp, &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !report.Verified {
+		t.Error("expected Verified=true")
+	}
+	if report.Files != 2 || report.Records != 10 {
+		t.Errorf("unexpected report: %+v", report)
+	}
+}
+
+// TestHandleAuditVerifyChain_ChainBroken asserts a tamper verdict is
+// reported as a successful response with Verified=false, NOT an error.
+func TestHandleAuditVerifyChain_ChainBroken(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 3},
+				&audit.ChainBrokenError{Path: "audit-events.ndjson", Index: 1, Expected: "aa", Got: "bb"}
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(logger))
+
+	resp, err := srv.handleAuditVerifyChain(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected a successful response carrying the verdict, got error: %v", err)
+	}
+	var report audit.VerificationReport
+	if err := json.Unmarshal(resp, &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report.Verified {
+		t.Error("expected Verified=false for a broken chain")
+	}
+	if report.Reason == "" {
+		t.Error("expected a non-empty Reason")
+	}
+}
+
+func TestHandleAuditVerifyChain_ConcurrentRotation(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.ConcurrentRotationError{Path: "audit-events.ndjson", Attempts: 5}
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuditLogger(logger))
+
+	_, err := srv.handleAuditVerifyChain(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for a concurrent-rotation race")
+	}
+	var crErr *audit.ConcurrentRotationError
+	if !errors.As(err, &crErr) {
+		t.Fatalf("expected *audit.ConcurrentRotationError, got %T", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // WithAuditLogger option
 // ---------------------------------------------------------------------------

@@ -916,3 +916,68 @@ func TestRESTQueryAudit_Closed(t *testing.T) {
 		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
+
+func TestRESTVerifyChain_Verified(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodGet, "/v1/audit/verify"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.AuditVerifyResult{Verified: true, Files: 2, Records: 10, Genesis: true})
+	})
+	resp, err := rt.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !resp.Verified || resp.Files != 2 || resp.Records != 10 {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+// TestRESTVerifyChain_ChainBroken asserts a 200 response with
+// Verified=false decodes as a successful result, not an error.
+func TestRESTVerifyChain_ChainBroken(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodGet, "/v1/audit/verify"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.AuditVerifyResult{Verified: false, Reason: "chain broken at index 3"})
+	})
+	resp, err := rt.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("expected a successful result carrying the verdict, got error: %v", err)
+	}
+	if resp.Verified {
+		t.Error("expected Verified=false")
+	}
+	if resp.Reason == "" {
+		t.Error("expected a non-empty Reason")
+	}
+}
+
+func TestRESTVerifyChain_NotImplemented(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodGet, "/v1/audit/verify"), func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not configured", http.StatusNotImplemented)
+	})
+	_, err := rt.VerifyChain(context.Background())
+	var nie *transport.NotImplementedError
+	if !errors.As(err, &nie) {
+		t.Fatalf("expected *transport.NotImplementedError, got %v", err)
+	}
+}
+
+func TestRESTVerifyChain_ServerError(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodGet, "/v1/audit/verify"), func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	if _, err := rt.VerifyChain(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRESTVerifyChain_Closed(t *testing.T) {
+	rt, _, _ := newExtTransport(t)
+	_ = rt.Close()
+	_, err := rt.VerifyChain(context.Background())
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T", err)
+	}
+}

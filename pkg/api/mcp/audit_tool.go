@@ -34,6 +34,7 @@ import (
 func auditTools(l audit.AuditLogger) []serverTool {
 	return []serverTool{
 		{Tool: toolAuditQuery(), Perm: permission.AuditQuery, Handler: handleAuditQuery(l)},
+		{Tool: toolAuditVerify(), Perm: permission.AuditVerify, Handler: handleAuditVerify(l)},
 	}
 }
 
@@ -119,6 +120,35 @@ func handleAuditQuery(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
 		b, err := json.Marshal(page)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_audit_query", Err: err}
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+// toolAuditVerify defines the qrdb_audit_verify tool schema.
+func toolAuditVerify() mcp.Tool {
+	return mcp.NewTool("qrdb_audit_verify",
+		mcp.WithDescription("Verify the audit log's tamper-evidence hash chain across the active "+
+			"file and every rotation archive. Requires audit:verify permission. A response with "+
+			"\"verified\": false is a tamper verdict, not a tool failure."),
+	)
+}
+
+// handleAuditVerify returns a tool handler that verifies the audit logger's
+// hash chain. A non-nil error means verification could not be PERFORMED
+// (unsupported backend, missing file, or a rotation race); a successful
+// result with verified=false is a TAMPER VERDICT, not a failure -- see
+// pkg/audit.Verify.
+func handleAuditVerify(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		report, err := audit.Verify(ctx, l)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_verify", Err: err}
+		}
+
+		b, err := json.Marshal(report)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_verify", Err: err}
 		}
 		return mcp.NewToolResultText(string(b)), nil
 	}

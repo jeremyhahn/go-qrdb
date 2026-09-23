@@ -81,7 +81,7 @@ func registerSOGrants() {
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
 		// Audit (operational oversight)
-		AuditRead, AuditQuery,
+		AuditRead, AuditQuery, AuditVerify,
 		// Admin
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
@@ -479,7 +479,7 @@ func registerUserGrants() {
 func registerAuditorGrants() {
 	RegisterRoleGrant(RoleAuditor,
 		// Audit visibility (the core auditor capability)
-		AuditRead, AuditQuery, AuditStream,
+		AuditRead, AuditQuery, AuditStream, AuditVerify,
 		// System state (read-only)
 		AdminHealth, AdminStatus, AdminPeers,
 		// User, role, cert, tenant listing (metadata only — no writes)

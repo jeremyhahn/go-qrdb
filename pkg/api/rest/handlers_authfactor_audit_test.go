@@ -97,6 +97,22 @@ func (s *stubAuditLogger) Query(_ context.Context, f audit.Filter) (*audit.Page,
 
 func (s *stubAuditLogger) Close() error { return nil }
 
+// stubVerifyingAuditLogger extends stubAuditLogger with VerifyChainSet, so
+// it satisfies audit.Verifier for handleAuditVerify tests. stubAuditLogger
+// itself deliberately does NOT implement Verifier, so it can also stand in
+// for a backend that holds no hash chain (RingBuffer, NoopLogger, SlogSink).
+type stubVerifyingAuditLogger struct {
+	stubAuditLogger
+	verifyFn func(ctx context.Context) (*audit.ChainVerification, error)
+}
+
+func (s *stubVerifyingAuditLogger) VerifyChainSet(ctx context.Context) (*audit.ChainVerification, error) {
+	return s.verifyFn(ctx)
+}
+
+// Compile-time interface check.
+var _ audit.Verifier = (*stubVerifyingAuditLogger)(nil)
+
 // ---------------------------------------------------------------------------
 // mapHTTPError
 // ---------------------------------------------------------------------------
@@ -962,4 +978,134 @@ func TestHandleAuditQuery_EmptyEvents_ReturnsEmptySlice(t *testing.T) {
 	if resp.Events == nil {
 		t.Error("expected non-nil events slice (empty, not nil)")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAuditVerify
+// ---------------------------------------------------------------------------
+
+func TestHandleAuditVerify_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+// TestHandleAuditVerify_UnsupportedBackend uses stubAuditLogger, which
+// deliberately does not implement audit.Verifier -- exactly like RingBuffer,
+// NoopLogger, and SlogSink in production.
+func TestHandleAuditVerify_UnsupportedBackend(t *testing.T) {
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(&stubAuditLogger{}))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleAuditVerify_Verified(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 2, Records: 10, Genesis: true, Order: []string{"a", "b"}}, nil
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var result audit.VerificationReport
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !result.Verified {
+		t.Error("expected Verified=true")
+	}
+	if result.Files != 2 || result.Records != 10 || !result.Genesis {
+		t.Errorf("unexpected report: %+v", result)
+	}
+}
+
+// TestHandleAuditVerify_ChainBroken asserts that a tamper verdict is
+// reported as a 200 with Verified=false, NOT as an HTTP error -- exactly as
+// backup verification reports a checksum mismatch as a result field.
+func TestHandleAuditVerify_ChainBroken(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 3},
+				&audit.ChainBrokenError{Path: "audit-events.ndjson", Index: 2, Expected: "aa", Got: "bb"}
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var result audit.VerificationReport
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Verified {
+		t.Error("expected Verified=false for a broken chain")
+	}
+	if result.Reason == "" {
+		t.Error("expected a non-empty Reason describing the break")
+	}
+}
+
+func TestHandleAuditVerify_ConcurrentRotation(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.ConcurrentRotationError{Path: "audit-events.ndjson", Attempts: 5}
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+func TestHandleAuditVerify_FileError(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.FileError{Path: "audit-events.ndjson", Err: errors.New("permission denied")}
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+func TestHandleAuditVerify_Canceled(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.VerificationCanceledError{Path: "audit-events.ndjson", Err: context.Canceled}
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	// The cancellation classifies as Canceled through its unwrapped context
+	// error, and REST has no status of its own for a caller that gave up: the
+	// classification table renders it 500, as for every other cancelled call.
+	assertStatus(t, rec, http.StatusInternalServerError)
+}
+
+func TestHandleAuditVerify_Busy(t *testing.T) {
+	al := &stubVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return nil, &audit.VerificationBusyError{}
+		},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/verify", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuditVerify(rec, req)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
 }

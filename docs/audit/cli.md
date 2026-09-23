@@ -2,11 +2,12 @@
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
 
-Command group: `qrdb audit` — query the compliance-grade audit event log.
-**Requires the `audit:query` permission.** All verbs accept the root persistent
-flags documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
+Command group: `qrdb audit` — query and verify the compliance-grade audit
+event log. All verbs accept the root persistent flags documented in
+[../key-value/cli.md](../key-value/cli.md#global-flags).
 
-There is exactly one verb: querying. Audit entries are written by the
+There are two verbs: querying (`audit:query`) and verifying the tamper-evidence
+hash chain (`audit:verify`). Audit entries are written by the
 subsystems that emit them and there is no CLI path to create, edit or delete
 one — which is the point.
 
@@ -57,6 +58,40 @@ done
 
 The server caps `--limit` at 1000; a wider query must be paged.
 
+## `qrdb audit verify`
+
+Verify the audit log's tamper-evidence hash chain across the active file and
+every rotation archive. No flags — the target is always the server's own
+configured trail. **Requires the `audit:verify` permission.**
+
+```bash
+qrdb audit verify
+qrdb audit verify --output json
+```
+
+Default-format output:
+
+```
+Verified: true
+Files: 3
+Records: 1842
+Genesis: true
+Order: audit-events.20260810-1.ndjson, audit-events.20260811-1.ndjson, audit-events.ndjson
+```
+
+**A tamper finding exits non-zero.** `verify` prints the report either way,
+but when `Verified: false` the command also returns a non-zero exit status —
+useful in a monitoring script or a cron job, distinct from a genuine failure
+to run the check at all (see below).
+
+**Exit status is not the same signal as a caught error.** A run that could
+not PERFORM the check — the configured logger holds no hash chain, the file
+is missing, or a rotation raced the walk — reports the underlying error
+directly (`transport: method not implemented: VerifyChain`, a `503`-class
+message for a rotation race) and is not a report with `Verified: false`. Read
+the message before treating any non-zero exit as a tamper finding; see
+[user.md](user.md) for how to tell the two apart.
+
 ## What gets audited
 
 Identity (`user.*`, `role.*`), certificates (`cert.generate`, `cert.revoke`),
@@ -95,4 +130,7 @@ audited or where it goes. See [user.md](user.md).
 
 ## Parity
 
-`qrdb audit query` has a `CommandDefinition` in the integration parity suite.
+`qrdb audit query` and `qrdb audit verify` each have a `CommandDefinition` in
+the integration parity suite. `verify` is Tier-1 across all six transports
+(REST, gRPC, QUIC, MCP, Unix, embedded) — see
+[api.md](api.md#capability-matrix).

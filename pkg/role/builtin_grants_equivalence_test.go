@@ -65,7 +65,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.BackendsList, permission.BackendsRead,
 	permission.PINRead, permission.PINWrite,
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
-	permission.AuditRead, permission.AuditQuery,
+	permission.AuditRead, permission.AuditQuery, permission.AuditVerify,
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.AdminAddMember, permission.AdminRemoveMember,
 	permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
@@ -256,7 +256,7 @@ var goldenUserPermissions = []permission.Permission{
 }
 
 var goldenAuditorPermissions = []permission.Permission{
-	permission.AuditRead, permission.AuditQuery, permission.AuditStream,
+	permission.AuditRead, permission.AuditQuery, permission.AuditStream, permission.AuditVerify,
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.UsersList, permission.UsersRead,
 	permission.RolesList, permission.RolesRead, permission.PermissionsList,

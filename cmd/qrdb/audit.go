@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,6 +35,7 @@ func newAuditCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newAuditQueryCmd())
+	cmd.AddCommand(newAuditVerifyCmd())
 
 	return cmd
 }
@@ -124,6 +126,82 @@ func newAuditQueryCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cursor, "cursor", "", "Pagination cursor from a previous response")
 
 	return cmd
+}
+
+// newAuditVerifyCmd creates the "audit verify" subcommand.
+func newAuditVerifyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Verify the audit log's tamper-evidence hash chain",
+		Long: "Verify the audit log's tamper-evidence hash chain across the active file and every " +
+			"rotation archive. Requires the audit:verify permission. Exits non-zero when the chain " +
+			"does not verify -- that is a tamper finding, distinct from a request failure.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ac := client.Audit()
+			if ac == nil {
+				return &AuditClientUnavailableError{}
+			}
+
+			result, err := ac.VerifyChain(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				if err := printJSON(result); err != nil {
+					return err
+				}
+			case "yaml":
+				if err := printYAML(result); err != nil {
+					return err
+				}
+			default:
+				printAuditVerifyResult(result)
+			}
+
+			if !result.Verified {
+				return &AuditChainTamperedError{Reason: result.Reason}
+			}
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+// printAuditVerifyResult renders an AuditVerifyResult as human-readable text.
+func printAuditVerifyResult(result *transport.AuditVerifyResult) {
+	_, _ = fmt.Fprintf(outputWriter, "Verified: %t\n", result.Verified)
+	if result.Reason != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Reason: %s\n", result.Reason)
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Files: %s\n", strconv.Itoa(result.Files))
+	_, _ = fmt.Fprintf(outputWriter, "Records: %s\n", strconv.FormatInt(result.Records, 10))
+	_, _ = fmt.Fprintf(outputWriter, "Genesis: %t\n", result.Genesis)
+	if len(result.Order) > 0 {
+		_, _ = fmt.Fprintf(outputWriter, "Order: %s\n", strings.Join(result.Order, ", "))
+	}
+	if result.Seed != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Seed: %s\n", result.Seed)
+	}
+	if result.Handoff != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Handoff: %s\n", result.Handoff)
+	}
+}
+
+// AuditChainTamperedError is returned by "qrdb audit verify" when the audit
+// log's hash chain does not verify -- a tamper finding, not a request
+// failure. It carries a non-zero CLI exit status precisely because the
+// distinction matters to an operator or a compliance harness's script.
+type AuditChainTamperedError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *AuditChainTamperedError) Error() string {
+	return "qrdb: audit: chain verification failed: " + e.Reason
 }
 
 // parseAuditTime parses an RFC3339 timestamp supplied to a --from/--to flag.

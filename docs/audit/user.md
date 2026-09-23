@@ -7,6 +7,13 @@ Who did what, when, and whether it worked. Auditing is on by default.
 ## Prerequisites
 
 - The `audit:query` permission — the Auditor built-in role has it.
+- To verify the tamper-evidence hash chain (`qrdb audit verify` and its
+  transport equivalents below), the `audit:verify` permission instead. It is
+  a system-tenant-only, cross-scope permission — the hash chain covers the
+  whole node's audit trail, not a tenant-filtered slice of it — so a
+  tenant-scoped Auditor cannot verify even their own tenant's events; only a
+  system-tenant principal holding `audit:verify` (the Security Officer and
+  Auditor built-in roles have it) can.
 - A node with an audit sink wired. The daemon always builds one: a hash-chained
   NDJSON file beside the data directory, an in-memory ring buffer, and a mirror
   to the operational log stream.
@@ -241,12 +248,15 @@ audit sink wired. With no sink there is nothing that could fail, so the
 fail-closed posture is inert — it protects a trail you are keeping, and cannot
 conjure one you are not.
 
-**You want to verify the chain.** There is **no command for it.** `qrdb audit`
-has exactly one subcommand, `query`; the chain-verification routine exists in
-the sink but nothing in the daemon or the CLI calls it, so verification is not
-an operator-facing control in this build. Treat the `PrevHash` field as
-*evidence you can check with your own tooling*, not as a feature you can run.
-See the note under "You need to be sure nobody edited the trail" below.
+**You want to verify the chain.** Run `qrdb audit verify`. It walks the active
+file and every rotation archive as one sequence and reports whether the chain
+checked out — see the note under "You need to be sure nobody edited the
+trail" below, and [cli.md](cli.md) for the full command reference. It is also
+reachable from every transport (REST `GET /v1/audit/verify`, gRPC/Unix
+`AuditService.VerifyChain`, QUIC `audit.VerifyChain`, the MCP tool
+`qrdb_audit_verify`, and the embedded SDK's `Client.Audit().VerifyChain`), so
+a compliance harness can verify remotely rather than only from a shell on the
+node.
 
 **The chain runs through the archives, not per file.** The first record of a
 file written after a rotation carries the digest the previous file's
@@ -272,11 +282,18 @@ newest `prev_hash` you have seen somewhere off the node, or ship the trail.
 
 **You need to be sure nobody edited the trail.** Entries carry the hash of the
 previous entry, so an edit or a deletion *within one file* is detectable by
-recomputing the chain.
+recomputing the chain. Run `qrdb audit verify` — it recomputes the chain
+across the whole rotation set for you and reports which file and record index
+broke, if any.
 
-**Do not rely on this as a live control in this build.** The chain is
-*written*, and it is written correctly across write faults, fsync faults,
-rotations and restarts — but nothing verifies it for you: there is no command,
-no startup check and no alert. Verifying it is your own tooling's job, and that
-tooling must walk the archives as one sequence as described above. Chain
-verification is a documented gap, not a shipped control.
+**A verification failure is a tamper finding, not a request failure.** A
+response with `"verified": false` (or, from the CLI, a non-zero exit) means
+the chain did not check out; the report also says whether the walk reached
+the chain's origin (`"genesis": true`) and, when not, that is what pruned
+retention looks like too — see "One clean result is not a complete one"
+above. A verification call that instead returns an ERROR (not a result with
+`verified: false`) means the check could not be PERFORMED at all — the
+configured logger holds no hash chain (`RingBuffer`, `NoopLogger`, or
+`SlogSink` alone, without a `ChainFileLogger`), the file is missing, or the
+sink was mid-rotation when the walk ran (retry). Do not read that error as a
+clean trail.

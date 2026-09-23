@@ -13,6 +13,23 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **The audit log's tamper-evidence hash chain can now be verified.**
+  `pkg/audit.Verify` is the single canonical entry point (a `Verifier`
+  interface `*ChainFileLogger` implements and `aggregateLogger` delegates to),
+  exposed as `qrdb audit verify` and as a Tier-1 capability on all six
+  transports: REST `GET /v1/audit/verify`, gRPC/Unix `AuditService.VerifyChain`,
+  QUIC `audit.VerifyChain`, the MCP tool `qrdb_audit_verify`, and the embedded
+  SDK's `AuditClient.VerifyChain`, gated by the new `audit:verify` permission
+  (granted to the Security Officer and Auditor roles). A tamper verdict
+  (`Verified: false`) is reported as a normal result, never a transport error;
+  an error return means the check could not be PERFORMED at all (unsupported
+  backend, missing file, or a rotation race) (#453). Those errors classify the
+  same on every transport, from the one table in `pkg/api/errclass`
+  (unsupported → `Unimplemented`, busy/rotation/locked → `Unavailable`,
+  cancellation and deadline as themselves), and the QUIC and MCP
+  SDK clients report an unsupported backend as `transport.NotImplementedError`
+  like the others. At most one verification scan runs at a time; concurrent
+  callers are refused with `VerificationBusyError`.
 - **The embedded-server wizard enrols share holders before a Shamir
   initialization.** Its Shamir mode called `initializeShamir` with no holder
   enrolled, which the server refuses. It now starts the embedded server,

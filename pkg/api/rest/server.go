@@ -1974,6 +1974,7 @@ func (s *Server) registerRoutes() {
 
 	// Audit event retrieval route.
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)
+	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/verify", permission.AuditVerify, s.handleAuditVerify)
 }
 
 // dispatch serves a request through the chi router. It is retained as the

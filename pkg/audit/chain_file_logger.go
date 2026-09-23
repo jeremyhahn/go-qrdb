@@ -187,6 +187,22 @@ type ChainFileLogger struct {
 	// Zero means "no failure outstanding". See tryRotate for why an unbounded
 	// retry is an outage of its own. Read and written under l.mu.
 	rotateRetryAt time.Time
+
+	// verifying bounds VerifyChainSet to one in-flight scan at a time. A
+	// rotation set can only grow, so nothing is gained by letting concurrent
+	// callers each walk the whole trail independently -- see
+	// VerifyChainSet's doc comment for why a busy refusal, not a shared
+	// result, is the answer here. Lock-free: a CompareAndSwap claims the
+	// slot, a Store releases it.
+	verifying atomic.Bool
+
+	// scan performs the rotation-set walk VerifyChainSet guards; nil means the
+	// real walk, verifyChainSetAt with this writer's rotation sequence. A
+	// field rather than
+	// a direct call so a test can hold the guarded section open and prove the
+	// guard admits exactly one caller, instead of hoping the scheduler lands
+	// every racer inside a scan's I/O window.
+	scan func(ctx context.Context, path string) (*ChainVerification, error)
 }
 
 // NewFileLogger opens the audit log file at path and returns a ChainFileLogger.
@@ -622,10 +638,39 @@ func (l *ChainFileLogger) VerifyChain(ctx context.Context) error {
 // a contiguous prefix of the archives is the one edit a hash walk cannot tell
 // from retention doing its job; every other edit breaks a link.
 //
-// It takes no lock: l.path never changes after construction, and the walk
-// learns whether a rotation overlapped it from l.rotations.
-func (l *ChainFileLogger) VerifyChainSet(_ context.Context) (*ChainVerification, error) {
-	return verifyChainSetAt(l.path, l.rotations.Load)
+// ctx BOUNDS THE WALK. A full-trail scan opens every file in the rotation
+// set and folds every record in each one, so on a long-lived, high-volume
+// trail it is the slowest call this package makes; a caller (a request
+// context, an operator's Ctrl-C on a CLI invocation) that gives up on it must
+// be able to stop it before it runs to completion regardless. Cancellation is
+// checked per record inside a segment and per segment inside the set --
+// see verifyChainSegment and linkChainSet -- and reported as
+// *VerificationCanceledError, which is NOT a tamper verdict: the walk simply
+// did not finish, and re-running it (with a context that outlives it) is the
+// remedy, exactly as for *ConcurrentRotationError.
+//
+// AT MOST ONE SCAN RUNS AT A TIME. The rotation set only grows, so nothing is
+// gained by letting concurrent callers each walk the whole trail
+// independently -- it multiplies the I/O this call already does by however
+// many callers arrived together, for the same answer each would have gotten
+// alone. A second call arriving while one is in flight is refused immediately
+// with *VerificationBusyError rather than queued or fanned into a shared
+// result: the caller's own context governs how it waits, if it waits at all,
+// and a typed refusal composes with any retry policy a transport wants to
+// put in front of it.
+//
+// It takes no lock on the writer: l.path never changes after construction,
+// and the walk learns whether a rotation overlapped it from l.rotations.
+func (l *ChainFileLogger) VerifyChainSet(ctx context.Context) (*ChainVerification, error) {
+	if !l.verifying.CompareAndSwap(false, true) {
+		return nil, &VerificationBusyError{}
+	}
+	defer l.verifying.Store(false)
+
+	if l.scan != nil {
+		return l.scan(ctx, l.path)
+	}
+	return verifyChainSetAt(ctx, l.path, l.rotations.Load)
 }
 
 // Close flushes and closes the underlying file.

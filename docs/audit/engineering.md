@@ -8,6 +8,12 @@
 
 ```go
 func (c *Client) Audit() transport.AuditClient   // nil if the transport lacks AuditProvider
+
+type AuditClient interface {
+	EmitAudit(ctx context.Context, ev AuditEvent) error
+	QueryAudit(ctx context.Context, f AuditFilter) (*AuditPage, error)
+	VerifyChain(ctx context.Context) (*AuditVerifyResult, error)
+}
 ```
 
 `pkg/audit`:
@@ -29,6 +35,32 @@ func NewRingBuffer(capacity int) *RingBuffer
 func NewSlogSink() *SlogSink
 func NewNoopLogger() *NoopLogger
 func NewAggregateLogger(loggers ...AuditLogger) AuditLogger
+
+// Implemented by backends capable of self-verifying their own tamper-evidence
+// hash chain. *ChainFileLogger is the only first-party implementation.
+type Verifier interface {
+	VerifyChainSet(ctx context.Context) (*ChainVerification, error)
+}
+
+// The outcome of a Verify call. Verified is the only field a caller MUST
+// check.
+type VerificationReport struct {
+	Verified bool
+	Reason   string
+	Files    int
+	Records  int64 // unbounded over a trail's retention window
+	Order    []string
+	Genesis  bool
+	Seed     string
+	Handoff  string
+}
+
+// Verifies l's tamper-evidence hash chain and reports the outcome. Returns a
+// non-nil error only when verification could not be PERFORMED at all
+// (unsupported backend, missing file, a concurrent-rotation race, a canceled
+// context, or a scan already in flight against the same logger) —
+// Verified == false is a TAMPER VERDICT, carried in the report, not an error.
+func Verify(ctx context.Context, l AuditLogger) (*VerificationReport, error)
 
 // The per-decision adapter the authorization middleware consumes.
 type Logger interface {
@@ -165,11 +197,16 @@ state the same value.
 
 | Function | Question it answers |
 |---|---|
-| `verifyChainSegment(path)` | is this one file internally sound, and what does it hand to its successor? |
-| `verifyChainFile(path)` | the same, discarding the handoff |
-| `verifyChainSet(path)` | are every file in the rotation set sound **and** do they form one chain? |
+| `verifyChainSegment(ctx, path)` | is this one file internally sound, and what does it hand to its successor? |
+| `verifyChainFile(ctx, path)` | the same, discarding the handoff |
+| `verifyChainSet(ctx, path)` | are every file in the rotation set sound **and** do they form one chain? |
 | `ChainFileLogger.VerifyChain(ctx)` | `verifyChainSet` over the sink's own directory, verdict only |
 | `ChainFileLogger.VerifyChainSet(ctx)` | the same, returning a `ChainVerification` |
+
+`ctx` bounds the walk end to end (checked per record inside a segment, per
+file inside a set) and `ChainFileLogger.VerifyChainSet` bounds concurrency to
+one in-flight scan per logger -- see the error table below and
+[api.md](api.md) for the transport-level status mapping.
 
 Three details carry the design:
 
@@ -211,13 +248,23 @@ reader. It still never reads the LAST record's stored `PrevHash`; only the
 starting point comes from the file, and only from the one record whose
 predecessor is not in the file to be folded.
 
-Three error types, because the remediation differs:
+Five error types out of the walk itself, because the remediation differs, plus
+one from `pkg/audit.Verify`'s own type assertion:
 
 | Type | Means |
 |---|---|
-| `*ChainBrokenError{Path, Index, Expected, Got}` | a **record** was changed |
-| `*ChainLinkError{Path, Other, Digest, Reason}` | a **file** was removed, duplicated or reordered |
+| `*ChainBrokenError{Path, Index, Expected, Got}` | a **record** was changed — TAMPER VERDICT |
+| `*ChainLinkError{Path, Other, Digest, Reason}` | a **file** was removed, duplicated or reordered — TAMPER VERDICT |
 | `*ConcurrentRotationError{Path, Attempts}` | **no finding** — the sink rotated under the walk and no consistent view was obtained |
+| `*VerificationCanceledError{Path, Err}` | **no finding** — the caller's context was canceled or its deadline exceeded before the walk finished; `Err` unwraps to `context.Canceled` / `context.DeadlineExceeded` |
+| `*VerificationBusyError{}` | **no finding** — a scan against this logger was already in flight; `ChainFileLogger.VerifyChainSet` admits only one at a time |
+| `*VerificationUnsupportedError{}` | **no finding** — `Verify`'s configured `AuditLogger` (or, for an aggregate, none of its children) implements `Verifier` |
+
+The first two are TAMPER VERDICTS, folded into `VerificationReport.Verified =
+false` by `Verify`, never returned as a Go error. The rest answer no question
+about the trail's integrity and are returned as errors instead, so a
+caller checking only `Verified` never mistakes "could not check" for "checked
+and found broken."
 
 **The walk does not hold the writer's lock**, and re-reads the directory
 listing to find out whether it got a consistent view. A rotation renames the

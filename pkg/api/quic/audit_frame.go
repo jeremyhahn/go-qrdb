@@ -58,3 +58,30 @@ func (s *Server) handleAuditQuery(ctx context.Context, payload []byte) ([]byte, 
 	}
 	return b, nil
 }
+
+// handleAuditVerifyChain handles the "audit.VerifyChain" QUIC frame method.
+//
+// The payload is ignored (no parameters today). The response is a
+// JSON-encoded audit.VerificationReport.
+//
+// A non-nil error means verification could not be PERFORMED (unsupported
+// backend, missing file, or a rotation race); a successful response with
+// Verified=false is a TAMPER VERDICT, not a failure -- see pkg/audit.Verify.
+//
+// Authorization: requires "audit:verify" permission.
+func (s *Server) handleAuditVerifyChain(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.auditLogger == nil {
+		return nil, &ServiceNotConfiguredError{Service: "audit"}
+	}
+
+	report, err := audit.Verify(ctx, s.auditLogger)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := json.Marshal(report)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}

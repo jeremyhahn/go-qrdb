@@ -8713,7 +8713,8 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AuditService_Query_FullMethodName = "/qrdb.v1.AuditService/Query"
+	AuditService_Query_FullMethodName       = "/qrdb.v1.AuditService/Query"
+	AuditService_VerifyChain_FullMethodName = "/qrdb.v1.AuditService/VerifyChain"
 )
 
 // AuditServiceClient is the client API for AuditService service.
@@ -8729,6 +8730,13 @@ const (
 type AuditServiceClient interface {
 	// Query returns audit events matching the supplied filter.
 	Query(ctx context.Context, in *AuditQueryRequest, opts ...grpc.CallOption) (*AuditQueryResponse, error)
+	// VerifyChain verifies the audit log's tamper-evidence hash chain across
+	// the active file and every rotation archive, and reports what the walk
+	// covered. Verified=false with a Reason is a TAMPER VERDICT, not an RPC
+	// failure; a non-nil gRPC error means the verification could not be
+	// performed at all (unsupported backend, unreadable file, or a rotation
+	// race -- see pkg/audit.Verify).
+	VerifyChain(ctx context.Context, in *AuditVerifyChainRequest, opts ...grpc.CallOption) (*AuditVerifyChainResponse, error)
 }
 
 type auditServiceClient struct {
@@ -8749,6 +8757,16 @@ func (c *auditServiceClient) Query(ctx context.Context, in *AuditQueryRequest, o
 	return out, nil
 }
 
+func (c *auditServiceClient) VerifyChain(ctx context.Context, in *AuditVerifyChainRequest, opts ...grpc.CallOption) (*AuditVerifyChainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuditVerifyChainResponse)
+	err := c.cc.Invoke(ctx, AuditService_VerifyChain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuditServiceServer is the server API for AuditService service.
 // All implementations must embed UnimplementedAuditServiceServer
 // for forward compatibility.
@@ -8762,6 +8780,13 @@ func (c *auditServiceClient) Query(ctx context.Context, in *AuditQueryRequest, o
 type AuditServiceServer interface {
 	// Query returns audit events matching the supplied filter.
 	Query(context.Context, *AuditQueryRequest) (*AuditQueryResponse, error)
+	// VerifyChain verifies the audit log's tamper-evidence hash chain across
+	// the active file and every rotation archive, and reports what the walk
+	// covered. Verified=false with a Reason is a TAMPER VERDICT, not an RPC
+	// failure; a non-nil gRPC error means the verification could not be
+	// performed at all (unsupported backend, unreadable file, or a rotation
+	// race -- see pkg/audit.Verify).
+	VerifyChain(context.Context, *AuditVerifyChainRequest) (*AuditVerifyChainResponse, error)
 	mustEmbedUnimplementedAuditServiceServer()
 }
 
@@ -8774,6 +8799,9 @@ type UnimplementedAuditServiceServer struct{}
 
 func (UnimplementedAuditServiceServer) Query(context.Context, *AuditQueryRequest) (*AuditQueryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Query not implemented")
+}
+func (UnimplementedAuditServiceServer) VerifyChain(context.Context, *AuditVerifyChainRequest) (*AuditVerifyChainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyChain not implemented")
 }
 func (UnimplementedAuditServiceServer) mustEmbedUnimplementedAuditServiceServer() {}
 func (UnimplementedAuditServiceServer) testEmbeddedByValue()                      {}
@@ -8814,6 +8842,24 @@ func _AuditService_Query_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuditService_VerifyChain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuditVerifyChainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuditServiceServer).VerifyChain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuditService_VerifyChain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuditServiceServer).VerifyChain(ctx, req.(*AuditVerifyChainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuditService_ServiceDesc is the grpc.ServiceDesc for AuditService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -8824,6 +8870,10 @@ var AuditService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Query",
 			Handler:    _AuditService_Query_Handler,
+		},
+		{
+			MethodName: "VerifyChain",
+			Handler:    _AuditService_VerifyChain_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

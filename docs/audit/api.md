@@ -9,11 +9,45 @@ gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
 
 | Capability | REST | gRPC / Unix (`AuditService/`) | QUIC | MCP tool | Embedded (`Client.Audit()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Query events | `POST /v1/audit/query` | `Query` | `audit.Query` | `qrdb_audit_query` | `AuditClient.Query` | `audit:query` |
+| Query events | `GET /v1/audit/events` | `Query` | `audit.Query` | `qrdb_audit_query` | `QueryAudit` | `audit:query` |
+| **Verify chain** | `GET /v1/audit/verify` | `VerifyChain` | `audit.VerifyChain` | `qrdb_audit_verify` | `VerifyChain` | `audit:verify` |
 
-**One capability, on all six transports.** Writing is not a capability: entries
-are emitted by the subsystems that perform the audited operations, and there is
-no endpoint to create, edit or delete one.
+**Two capabilities, on all six transports.** Writing is not a capability:
+entries are emitted by the subsystems that perform the audited operations,
+and there is no endpoint to create, edit or delete one.
+
+**Verify chain** walks the active file and every rotation
+archive as one sequence through `pkg/audit.Verify`, and reports the result —
+it does NOT return a transport error for a broken chain. A non-2xx / non-OK
+response (REST 501, gRPC/Unix `Unimplemented`, etc.) means the check could
+not be PERFORMED (the configured `AuditLogger` implements no `Verifier` — see
+the sink table below — the file is missing, or a rotation raced the walk); a
+successful response with `"verified": false` is the TAMPER VERDICT itself.
+
+The walk is bounded two ways. The caller's context governs it end to end:
+cancellation or a deadline is checked per record and per rotation-set file,
+not only once at the start, and a walk that does not finish in time answers
+REST 504 / gRPC `DeadlineExceeded` (a cancelled call: REST 500 / gRPC
+`Canceled`) rather than running to completion regardless. Every one of these
+conditions is classified in the one table every transport renders
+(`pkg/api/errclass`). And at most one walk runs at a time per logger: a
+second call arriving while one is already in flight is refused immediately
+with REST 503 / gRPC `Unavailable` rather than starting its own concurrent
+full-trail scan. Neither case is a tamper verdict; retrying once the walk
+can complete is the remedy.
+
+See [user.md](user.md) for how to read a verification result and
+[cli.md](cli.md) for `qrdb audit verify`.
+
+| Field | Meaning |
+|---|---|
+| `verified` | `true` only if every linked file's chain checked out |
+| `reason` | human-readable description of the break; empty when `verified` |
+| `files` | rotation-set files that carry records and were linked |
+| `records` | audit records verified, chain anchors excluded |
+| `order` | linked files in chain order, head first |
+| `genesis` | whether the walk reached the chain's origin (see "One clean result is not a complete one" in [user.md](user.md)) |
+| `seed` / `handoff` | hex digest the head continues from (empty at genesis) / the tail ends on |
 
 `Client.Audit()` returns **nil** when the transport does not implement
 `AuditProvider`. Nil-check it.
@@ -84,13 +118,18 @@ Every sink implements one interface, `audit.AuditLogger`. There is no backend
 selector and no configuration: a caller composes the sinks it wants, and
 `NewAggregateLogger` fans one `Emit` out to all of them.
 
-| Sink | Destination | Answers `Query`? |
-|---|---|---|
-| `ChainFileLogger` | `audit-events.ndjson`, hash-chained, one JSON object per line, mode **0600** | **yes** — scans the active file |
-| `RingBuffer` | memory, fixed capacity (the node uses 10 000) | **yes** — serves recent events |
-| `SlogSink` | the operator log via `log/slog` | no — reports `Total: -1` |
-| `NoopLogger` | nowhere | no — reports `Total: -1` |
-| `aggregateLogger` | every child | first **non-empty** page from any child |
+| Sink | Destination | Answers `Query`? | Answers `Verify`? |
+|---|---|---|---|
+| `ChainFileLogger` | `audit-events.ndjson`, hash-chained, one JSON object per line, mode **0600** | **yes** — scans the active file | **yes** — the only sink with a chain to walk |
+| `RingBuffer` | memory, fixed capacity (the node uses 10 000) | **yes** — serves recent events | no — holds no chain |
+| `SlogSink` | the operator log via `log/slog` | no — reports `Total: -1` | no — holds no chain |
+| `NoopLogger` | nowhere | no — reports `Total: -1` | no — holds no chain |
+| `aggregateLogger` | every child | first **non-empty** page from any child | first child that implements `Verifier` (in production, `ChainFileLogger`, wired first) |
+
+A sink answers `Verify` by implementing `audit.Verifier`
+(`VerifyChainSet(ctx) (*ChainVerification, error)`); `pkg/audit.Verify` type-
+asserts the configured `AuditLogger` against it and returns
+`*VerificationUnsupportedError` when none of the composed sinks do.
 
 `Total: -1` is how a sink that keeps nothing says **"not answerable here"**, as
 distinct from `Total: 0`, which is a real empty result. An aggregate skips the

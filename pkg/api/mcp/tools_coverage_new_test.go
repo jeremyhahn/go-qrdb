@@ -2120,11 +2120,14 @@ func TestCovParseUint64_Invalid(t *testing.T) {
 func TestCovAuditTools_Registration(t *testing.T) {
 	logger := &covMockAuditLogger{}
 	tools := auditTools(logger)
-	if len(tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(tools))
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
 	if tools[0].Tool.Name != "qrdb_audit_query" {
 		t.Errorf("expected qrdb_audit_query, got %s", tools[0].Tool.Name)
+	}
+	if tools[1].Tool.Name != "qrdb_audit_verify" {
+		t.Errorf("expected qrdb_audit_verify, got %s", tools[1].Tool.Name)
 	}
 }
 

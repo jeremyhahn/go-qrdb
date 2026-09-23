@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -220,6 +221,20 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			err:  &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed},
 			want: wire.CodeUnavailable,
 			why:  "ListFactors wraps a per-record read failure; the seal beneath it still classifies",
+		},
+		{
+			name: "audit verify: unsupported backend",
+			err:  &audit.VerificationUnsupportedError{},
+			want: wire.CodeUnimplemented,
+			why: "before mapAuditVerifyError joined grpcapi's serviceErrorClassifiers, " +
+				"this transport had no classifier of its own for the audit-verify family " +
+				"and every condition in it fell through to CodeInternal, unlike REST/gRPC/" +
+				"Unix's dedicated mappers",
+		},
+		{
+			name: "audit verify: concurrent rotation",
+			err:  &audit.ConcurrentRotationError{},
+			want: wire.CodeUnavailable,
 		},
 		{
 			name: "unclassified",

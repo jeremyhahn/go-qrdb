@@ -433,6 +433,7 @@ func (s *Server) buildHandlers() {
 
 	// Audit
 	s.handleIf(s.auditLogger != nil, "audit.Query", permission.AuditQuery, s.handleAuditQuery)
+	s.handleIf(s.auditLogger != nil, "audit.VerifyChain", permission.AuditVerify, s.handleAuditVerifyChain)
 
 	// Capability modules (pkg/apimodule.ServiceModule). Registered last so a
 	// module's full-gRPC-method frame key can never shadow a built-in's

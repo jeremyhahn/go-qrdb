@@ -518,6 +518,16 @@ const (
 	AuditQuery Permission = "audit:query"
 	// AuditStream grants access to stream audit events in real time.
 	AuditStream Permission = "audit:stream"
+	// AuditVerify grants access to verify the audit log's tamper-evidence
+	// hash chain (#453).
+	//
+	// Cross-scope (ScopeCross, registered in cross_scope.go), NOT self-scope:
+	// the hash chain covers the node's WHOLE audit trail as one sequence --
+	// there is no per-tenant chain to filter it down to -- so a tenant-local
+	// grant would let that tenant trigger a full-trail scan and receive
+	// global record counts, file paths, and chain digests belonging to every
+	// other tenant. Reserved for the system tenant, matching AuditReadCross.
+	AuditVerify Permission = "audit:verify"
 )
 
 // ---------------------------------------------------------------------------
@@ -969,7 +979,7 @@ var categories = []Category{
 		Name:  "Audit",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			AuditRead, AuditQuery, AuditStream,
+			AuditRead, AuditQuery, AuditStream, AuditVerify,
 		},
 	},
 	{

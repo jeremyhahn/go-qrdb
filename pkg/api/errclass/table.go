@@ -695,6 +695,18 @@ var dekRules = []rule{
 	is(dek.ErrCrypto, Internal),
 }
 
+// auditVerifyRules are the conditions that stop an audit chain verification
+// from being performed at all. A tamper verdict is never an error -- it is a
+// field of the report -- so none of these says anything about the trail's
+// integrity. A cancelled or expired verification unwraps to its context
+// error, which contextRules classify.
+var auditVerifyRules = []rule{
+	as(&audit.VerificationUnsupportedError{}, Unimplemented),
+	as(&audit.ConcurrentRotationError{}, Unavailable),
+	as(&audit.FileLockedError{Path: "audit.ndjson"}, Unavailable),
+	as(&audit.VerificationBusyError{}, Unavailable),
+}
+
 // pinRules are the PIN backend's conditions.
 var pinRules = []rule{
 	is(pin.ErrPINNotSet, PreconditionFailed),

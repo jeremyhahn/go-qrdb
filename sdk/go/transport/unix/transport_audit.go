@@ -75,6 +75,41 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 	return auditQueryResponseToTransport(resp), nil
 }
 
+// VerifyChain verifies the audit log's tamper-evidence hash chain via the
+// qrdb.v1.AuditService.VerifyChain RPC. A non-nil error means verification
+// could not be PERFORMED; a successful response with Verified=false is a
+// TAMPER VERDICT, not an error -- see pkg/audit.Verify.
+// Authorization: requires "audit:verify" permission.
+func (t *Transport) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := pb.NewAuditServiceClient(t.conn).VerifyChain(ctx, &pb.AuditVerifyChainRequest{})
+	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Unimplemented {
+			return nil, &transport.NotImplementedError{Method: "VerifyChain"}
+		}
+		return nil, mapGRPCError("VerifyChain", err)
+	}
+	return auditVerifyChainResponseToTransport(resp), nil
+}
+
+// auditVerifyChainResponseToTransport converts a generated
+// AuditVerifyChainResponse to the SDK's *transport.AuditVerifyResult.
+func auditVerifyChainResponseToTransport(resp *pb.AuditVerifyChainResponse) *transport.AuditVerifyResult {
+	return &transport.AuditVerifyResult{
+		Verified: resp.GetVerified(),
+		Reason:   resp.GetReason(),
+		Files:    int(resp.GetFiles()),
+		Records:  resp.GetRecords(),
+		Order:    resp.GetOrder(),
+		Genesis:  resp.GetGenesis(),
+		Seed:     resp.GetSeed(),
+		Handoff:  resp.GetHandoff(),
+	}
+}
+
 // auditFilterToPB converts an SDK transport.AuditFilter to the generated
 // AuditQueryRequest.
 func auditFilterToPB(f transport.AuditFilter) *pb.AuditQueryRequest {

@@ -60,6 +60,21 @@ func (m *mockAuditLogger) Close() error {
 	return nil
 }
 
+// mockVerifyingAuditLogger extends mockAuditLogger with VerifyChainSet, so
+// it satisfies audit.Verifier for "audit verify" tests. mockAuditLogger
+// itself deliberately does NOT implement Verifier, so it doubles for a
+// backend with no hash chain (RingBuffer, NoopLogger, SlogSink).
+type mockVerifyingAuditLogger struct {
+	mockAuditLogger
+	verifyFn func(ctx context.Context) (*audit.ChainVerification, error)
+}
+
+func (m *mockVerifyingAuditLogger) VerifyChainSet(ctx context.Context) (*audit.ChainVerification, error) {
+	return m.verifyFn(ctx)
+}
+
+var _ audit.Verifier = (*mockVerifyingAuditLogger)(nil)
+
 // ---------------------------------------------------------------------------
 // Test helper
 // ---------------------------------------------------------------------------
@@ -266,5 +281,116 @@ func TestParseAuditTime_Invalid(t *testing.T) {
 	_, err := parseAuditTime("--to", "not-a-date")
 	if err == nil {
 		t.Fatal("expected error for invalid timestamp")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// audit verify
+// ---------------------------------------------------------------------------
+
+func TestAuditVerify_Verified(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 2, Records: 10, Genesis: true}, nil
+		},
+	}
+	output, err := executeAuditCmd(t, logger, "verify")
+	if err != nil {
+		t.Fatalf("audit verify error: %v", err)
+	}
+	for _, want := range []string{"Verified: true", "Files: 2", "Records: 10", "Genesis: true"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q, got: %q", want, output)
+		}
+	}
+}
+
+func TestAuditVerify_JSON(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 3, Genesis: true, Handoff: "cafe"}, nil
+		},
+	}
+
+	oldFormat := outputFormat
+	outputFormat = "json"
+	t.Cleanup(func() { outputFormat = oldFormat })
+
+	output, err := executeAuditCmd(t, logger, "verify")
+	if err != nil {
+		t.Fatalf("audit verify json error: %v", err)
+	}
+	var result transport.AuditVerifyResult
+	if jsonErr := json.Unmarshal([]byte(output), &result); jsonErr != nil {
+		t.Fatalf("JSON unmarshal error: %v, output: %q", jsonErr, output)
+	}
+	if !result.Verified || result.Handoff != "cafe" {
+		t.Errorf("result = %+v", result)
+	}
+}
+
+// TestAuditVerify_ChainBroken asserts that a tamper verdict exits non-zero
+// (RunE returns an error) while still printing the report, so an operator
+// or a monitoring script sees both the detection and a failing exit status.
+func TestAuditVerify_ChainBroken(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 3},
+				&audit.ChainBrokenError{Path: "audit-events.ndjson", Index: 2, Expected: "aa", Got: "bb"}
+		},
+	}
+	output, err := executeAuditCmd(t, logger, "verify")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a broken chain (non-zero exit)")
+	}
+	var tamperedErr *AuditChainTamperedError
+	if !errors.As(err, &tamperedErr) {
+		t.Fatalf("expected *AuditChainTamperedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(output, "Verified: false") {
+		t.Errorf("output missing tamper report, got: %q", output)
+	}
+}
+
+// TestAuditVerify_UnsupportedBackend uses mockAuditLogger, which
+// deliberately does not implement audit.Verifier. The embedded transport
+// maps the resulting *audit.VerificationUnsupportedError to the SAME
+// *transport.NotImplementedError the network transports surface (grpc/unix
+// map codes.Unimplemented, REST maps 501), so a caller checks one type
+// regardless of which transport is active.
+func TestAuditVerify_UnsupportedBackend(t *testing.T) {
+	logger := &mockAuditLogger{}
+	_, err := executeAuditCmd(t, logger, "verify")
+	if err == nil {
+		t.Fatal("expected error for a backend with no hash chain")
+	}
+	var unsupported *transport.NotImplementedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected *transport.NotImplementedError, got %T: %v", err, err)
+	}
+}
+
+func TestAuditVerify_NoLoggerConfigured(t *testing.T) {
+	tr, err := embedded.New(&noopKVService{}, newMockAdminService())
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+	sdkClient, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = sdkClient.Close() })
+
+	oldClient := client
+	t.Cleanup(func() { client = oldClient })
+	client = sdkClient
+
+	cmd := newAuditCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"verify"})
+
+	if err := cmd.ExecuteContext(context.Background()); err == nil {
+		t.Fatal("expected error when no audit logger is configured")
 	}
 }
