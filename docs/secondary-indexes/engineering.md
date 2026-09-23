@@ -182,7 +182,10 @@ significant** — the first field is the leading prefix field.
   its documents and before its metadata (see
   [../collections/architecture.md](../collections/architecture.md)); a
   relational table's index data is reclaimed by `DROP TABLE` before its catalog
-  entry.
+  entry. `DROP INDEX` on a relational table hands the index's entries to the
+  reclaim sweeper instead of deleting them inline, and `RENAME INDEX` moves no
+  entries at all (see `docs/sql/engineering.md`, "Index entries are keyed by
+  incarnation, not name").
 - **Lifecycle ownership is derived from the index NAME; nothing is persisted.**
   There is no owner field on an index and no registry of which object created
   which name. An index created through the explicit API under a name a
@@ -290,7 +293,18 @@ settings are API-only. Storage backend selection follows
 
 ## Persistence
 
-- Index entries live under `__idx:{db}:{tableID}:{index}/`.
+- A relational table's index entries live under
+  `__idx:{db}:{tableID}:{generation}:{incarnation}/`. The generation segment is
+  the table's current TRUNCATE generation (see `docs/sql/engineering.md`'s
+  TRUNCATE TABLE section): it advances on every TRUNCATE, which is what lets a
+  truncated table's old index entries be reclaimed as an ordinary
+  orphaned-keyspace prefix instead of requiring a synchronous per-entry delete.
+  The incarnation segment identifies the index itself: it is allocated when the
+  index is created and never handed out twice within the table -- index DDL
+  refuses while an `ALTER` rewrite is open, and the rewrite's write-back
+  refuses a definition that moved under it, so the counter cannot go back --
+  so renaming an index moves nothing and a dropped index's keyspace --
+  reclaimed in the background -- can never become a newer index's.
 - Compound entries store the concatenated order-preserving encoded field values
   plus the entity key — slightly larger than single-field entries.
 - **Compatibility**: the key encoding is part of the on-disk format. Changing it
