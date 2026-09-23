@@ -85,6 +85,22 @@ type Infra struct {
 	// When nil, those services are omitted from the Node and will be nil.
 	SealBarrier *seal.StorageBarrier
 
+	// SealEnabled records the caller's own configuration decision (its
+	// seal.enabled equivalent) independent of whether SealBarrier ended up
+	// non-nil. A composer sets this from the config value it read BEFORE
+	// attempting to construct a barrier, never by inspecting SealBarrier
+	// afterward: a barrier that was requested but failed to construct
+	// (a bad passphrase, a corrupt seal store, a strategy error) leaves
+	// SealBarrier nil too, and SealEnabled is what keeps that construction
+	// failure from being reported as an operator's decision to run without
+	// encryption. Defaults to false (matching seal.enabled's own default)
+	// for composers that never intended a barrier at all; a composer for
+	// which "no barrier" is not a state it ever chooses (for example, one
+	// that always builds at least a none-strategy barrier) should set this
+	// true unconditionally so the plaintext-at-rest warning below never
+	// misattributes one of ITS failures either.
+	SealEnabled bool
+
 	// Encryptor is the single at-rest encryption authority for all Pebble
 	// stores opened by BuildServices (vector storage, etc.). When nil,
 	// BuildServices derives a no-op Encryptor from SealBarrier so that
@@ -638,6 +654,49 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
 		}
+	}
+
+	// infra.SealEnabled is the composer's own seal.enabled config decision,
+	// read BEFORE it attempted to build a barrier -- NOT an inference from
+	// SealBarrier's nilness, which a failed passphrase/Shamir/strategy
+	// construction also produces and which is a distinct failure, not an
+	// operator's choice to run without encryption (that failure is the
+	// composer's own responsibility to report). Requiring SealBarrier to
+	// ALSO be nil is a deliberate second belt: a composer that supplies a
+	// real barrier without yet knowing about SealEnabled (an older call
+	// site, a test fixture) must not be accused of running one it doesn't
+	// have -- a false positive here wrongly tells an operator their data is
+	// unencrypted, which is worse than the false negative of an omitted
+	// warning from a call site whose barrier construction failed AND whose
+	// composer forgot to report it. This is the single place both the
+	// daemon (cmd/qrdbd) and the embedded SDK node (sdk/go/node) funnel
+	// through on every successful boot path, sealed or not, so logging here
+	// -- rather than in each caller, and only once THIS function's own
+	// construction has fully succeeded -- guarantees the warning fires
+	// exactly once per node start regardless of composer, and never for a
+	// node whose service graph failed to build here. It does not cover a
+	// later failure elsewhere in the boot sequence (server.New, transport
+	// listen, etc.), which BuildServices cannot see. Wording mirrors
+	// go-quicraft's own "strategy none" WARN so an operator sees the same
+	// fact whether the barrier exists-but-does-nothing or does not exist at
+	// all.
+	//
+	// There is no live command, and no safe in-place flag flip, that adds
+	// encryption to a deployment that ran this way: enable-encryption
+	// re-encodes files that are already in qrdb's encrypted-file format, and
+	// this deployment's files were never written in that format at all.
+	// Simply setting seal.enabled: true and restarting does NOT encrypt
+	// existing data -- the encrypting filesystem passes pre-existing
+	// plaintext files through unmodified on read and can fail outright
+	// (encfs: invalid header) the first time a file is reopened for
+	// writing, which can wedge the boot. The hint therefore does not name a
+	// procedure to run in place; the supported path is a new node/tenant
+	// provisioned with seal.enabled: true, with data moved into it through
+	// backup/restore or an application-level re-seed (see
+	// docs/barrier-seal/user.md).
+	if !infra.SealEnabled && infra.SealBarrier == nil {
+		log.Warn("qrdb/seal: seal disabled; at-rest data is stored in plaintext",
+			"hint", "encryption cannot be added in place; provision a new node/tenant with seal.enabled: true and migrate data via backup/restore")
 	}
 
 	return n, nil

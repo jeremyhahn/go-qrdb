@@ -839,6 +839,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Logger:            n.logger,
 		Encryptor:         encryptor,
 		SealBarrier:       barrier,
+		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
 		// Forward an injected (xkms) seal StrategyRegistry into the
@@ -1046,6 +1047,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		Logger:            n.logger,
 		Encryptor:         encryptor,
 		SealBarrier:       barrier,
+		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
 		// DatabaseManager is shared so the shard allocator is not reset
@@ -1498,12 +1500,13 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	profile := profileCfg.EffectiveCapabilities()
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
-		Host:      localHost,
-		WatchHub:  watchHub,
-		DataDir:   dataDir,
-		ReplicaID: cfg.Raft.ReplicaID,
-		Profile:   &profile,
-		Logger:    log,
+		Host:        localHost,
+		WatchHub:    watchHub,
+		DataDir:     dataDir,
+		ReplicaID:   cfg.Raft.ReplicaID,
+		Profile:     &profile,
+		Logger:      log,
+		SealEnabled: cfg.Seal.Enabled,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
@@ -1663,11 +1666,12 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	hostAdapter := raftbackend.New(host)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
-		Host:      hostAdapter,
-		WatchHub:  watchHub,
-		DataDir:   dataDir,
-		ReplicaID: cfg.Raft.ReplicaID,
-		Logger:    log,
+		Host:        hostAdapter,
+		WatchHub:    watchHub,
+		DataDir:     dataDir,
+		ReplicaID:   cfg.Raft.ReplicaID,
+		Logger:      log,
+		SealEnabled: cfg.Seal.Enabled,
 	})
 	if err != nil {
 		_ = host.Close()

@@ -228,11 +228,22 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	}
 
 	// Build all services via the shared lifecycle package.
+	//
+	// SealEnabled is unconditionally true: unlike seal.enabled in the daemon
+	// and SDK node config, this composer has no "no barrier at all" state --
+	// even its default ("" / "none" / "disabled") mode constructs a real
+	// StorageBarrier under seal.NewNoneStrategy above, which already carries
+	// go-quicraft's own plaintext WARN. A nil embeddedBarrier here can only
+	// mean initEmbeddedBarrier failed, which is reported by the WARN above;
+	// it must not also surface as lifecycle.BuildServices' "seal disabled"
+	// warning, which is reserved for an actual operator decision to run
+	// without a barrier at all (go-qrdb#550 review).
 	svcNode, svcErr := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
 		Host:              svcHost,
 		WatchHub:          hub,
 		DataDir:           dataDir,
 		SealBarrier:       embeddedBarrier,
+		SealEnabled:       true,
 		BarrierRegistry:   embeddedRegistry,
 		CredentialCoreSvc: embeddedCred,
 		CeremonyDataDir:   embeddedCeremonyDir,

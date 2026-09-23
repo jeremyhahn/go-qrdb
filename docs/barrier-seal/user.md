@@ -26,6 +26,38 @@ Hardware strategies — TPM 2.0, PKCS#11, AWS KMS, GCP KMS, Azure Key Vault,
 Vault — are available when the deployment composes go-xkms in. From your side
 they are just another `--barrier-strategy` name.
 
+## Running with no barrier at all
+
+`seal.enabled: false` (the default) is a step further than strategy `none`:
+there is no barrier object in front of the data plane at all, so none of the
+barrier commands above apply. Every node started this way logs one WARN at
+startup:
+
+```
+qrdb/seal: seal disabled; at-rest data is stored in plaintext
+```
+
+**There is no supported in-place path from here to encrypted.**
+`barrier enable-encryption` only migrates an *existing* barrier that is
+currently in a credential-free strategy — `none`, or a tenant's
+`system-barrier`-wrapped root key (see "Turn on encryption for a deployment
+that started with `none`" below) — by re-encoding files that are already in
+qrdb's encrypted-file format. With `seal.enabled: false` there is no barrier
+and the data-plane files were never written in that format at all, so
+`enable-encryption` does nothing here, and simply flipping `seal.enabled` to
+`true` and restarting does **not** encrypt anything either: qrdb's encrypting
+filesystem passes pre-existing plaintext files through unmodified on read and
+can fail outright (`encfs: invalid header`) the first time Pebble reopens one
+for writing, which can wedge the boot. Nothing in qrdb rewrites those files
+for you.
+
+If you need encryption at rest for data that started this way, provision a
+**new** node or tenant with `seal.enabled: true` (start it with `strategy:
+none` if you want the option to migrate to a keyed strategy later without a
+second re-provisioning) and move your data into it through a supported
+data-path — a verified backup/restore ([../backup-restore/architecture.md](../backup-restore/architecture.md))
+or an application-level re-seed — never a raw copy of the old data directory.
+
 ## First run
 
 ```bash

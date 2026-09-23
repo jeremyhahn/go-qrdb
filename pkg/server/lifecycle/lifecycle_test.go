@@ -20,8 +20,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
@@ -240,6 +242,199 @@ func TestBuildServices_SealGatedServicesNonNil(t *testing.T) {
 				t.Errorf("%s is nil", tc.name)
 			}
 		})
+	}
+}
+
+// plaintextWarningMsg is the exact message BuildServices logs when
+// infra.SealEnabled is false. Shared by every test in this section so a
+// wording change only needs updating in one place.
+const plaintextWarningMsg = "qrdb/seal: seal disabled; at-rest data is stored in plaintext"
+
+// findLogRecord scans a slog JSON-handler log (one JSON object per line) for
+// the first record whose "msg" equals want, returning its decoded fields or
+// nil if no such record exists. Used to assert on level and attributes, not
+// just substring presence.
+func findLogRecord(t *testing.T, log, want string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if rec["msg"] == want {
+			return rec
+		}
+	}
+	return nil
+}
+
+// TestBuildServices_SealDisabled_LogsPlaintextWarningOnce verifies that
+// BuildServices emits exactly one WARN, at level WARN and carrying a "hint"
+// attribute, when infra.SealEnabled is false -- the actual seal.enabled:
+// false decision, not merely an absent barrier -- so an operator sees the
+// plaintext-at-rest fact regardless of which composer started the process.
+func TestBuildServices_SealDisabled_LogsPlaintextWarningOnce(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+		Logger:   log,
+		// SealEnabled left at its zero value (false): the composer never
+		// requested a barrier, which is the only case this warning covers.
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	out := buf.String()
+	if got := strings.Count(out, plaintextWarningMsg); got != 1 {
+		t.Fatalf("plaintext warning count = %d, want 1 (log: %s)", got, out)
+	}
+	rec := findLogRecord(t, out, plaintextWarningMsg)
+	if rec == nil {
+		t.Fatalf("could not decode the plaintext warning record: %s", out)
+	}
+	if rec["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", rec["level"])
+	}
+	if hint, _ := rec["hint"].(string); hint == "" {
+		t.Errorf("hint attribute missing or empty: %v", rec)
+	}
+}
+
+// TestBuildServices_SealEnabled_NoPlaintextWarning verifies that BuildServices
+// with infra.SealEnabled true and a fully initialised seal barrier does NOT
+// log the seal-disabled plaintext warning: the barrier (even under
+// StrategyNone) is a distinct, unchanged warning path owned by go-quicraft,
+// not this one.
+func TestBuildServices_SealEnabled_NoPlaintextWarning(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		SealEnabled:       true,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		Logger:            log,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	out := buf.String()
+	const unwanted = "qrdb/seal: seal disabled"
+	if strings.Contains(out, unwanted) {
+		t.Errorf("seal-disabled warning logged with a barrier present: %s", out)
+	}
+}
+
+// TestBuildServices_SealEnabledButBarrierMissing_NoPlaintextWarning is the
+// go-qrdb#550 review regression test: a composer that REQUESTED a barrier
+// (SealEnabled true) but whose barrier construction failed for an unrelated
+// reason (a bad passphrase, a corrupt seal store, an invalid strategy config)
+// passes SealBarrier nil too -- exactly the same shape BuildServices sees for
+// an actual seal.enabled: false deployment. Without a signal independent of
+// SealBarrier's nilness, that construction failure would be misreported as
+// the operator's own decision to run without encryption. It must not be.
+func TestBuildServices_SealEnabledButBarrierMissing_NoPlaintextWarning(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:        host,
+		WatchHub:    hub,
+		DataDir:     t.TempDir(),
+		SealEnabled: true,
+		// SealBarrier intentionally left nil: simulates a failed construction
+		// the composer already reported through its own error path.
+		Logger: log,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	out := buf.String()
+	if strings.Contains(out, "qrdb/seal: seal disabled") {
+		t.Errorf("a barrier-construction failure with SealEnabled true must not log the disabled warning: %s", out)
+	}
+}
+
+// TestBuildServices_SealBarrierPresentWithoutSealEnabled_NoPlaintextWarning
+// covers the fourth cell of the truth table the other three tests in this
+// section leave implicit: SealEnabled false (its zero value) with a real
+// SealBarrier present -- an older call site built before SealEnabled existed,
+// or one that never learned to set it, supplying a genuine barrier. The
+// warning's condition is `!SealEnabled && SealBarrier == nil`, deliberately
+// requiring BOTH signals to agree there is no barrier (see the condition's
+// doc comment in lifecycle.go); this test is what would catch an edit that
+// simplified the condition down to the SealBarrier nil check alone, which
+// would leave this exact case correctly silent by accident rather than by
+// the guarantee the second clause provides.
+func TestBuildServices_SealBarrierPresentWithoutSealEnabled_NoPlaintextWarning(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		Logger:            log,
+		// SealEnabled intentionally left at its zero value (false): an
+		// older or non-updated call site that still supplies a real
+		// barrier must not be accused of running one it doesn't have.
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	out := buf.String()
+	if strings.Contains(out, "qrdb/seal: seal disabled") {
+		t.Errorf("a real barrier without SealEnabled set must not log the disabled warning: %s", out)
 	}
 }
 

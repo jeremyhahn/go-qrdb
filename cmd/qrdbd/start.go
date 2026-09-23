@@ -1472,6 +1472,7 @@ func runStart(f *startFlags) error {
 				DatabaseManager:           dbManager,
 				KVOptions:                 nil,
 				SealBarrier:               sealBarrier,
+				SealEnabled:               f.sealConfig.Enabled,
 				BarrierRegistry:           barrierRegistry,
 				TenantDEKManager:          tenantDEKMgr,
 				CredentialCoreSvc:         credCoreSvc,

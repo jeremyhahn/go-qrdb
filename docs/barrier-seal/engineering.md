@@ -298,6 +298,7 @@ claimant proves possession of the registered key by signing a nonce over mTLS.
 
 ```yaml
 seal:
+  enabled: true          # false (the default) runs with no barrier at all
   strategy: passphrase   # passphrase | none | shamir  ("software" = deprecated alias)
 ```
 
@@ -438,3 +439,61 @@ All barrier operations emit audit events when an `AuditLogger` is configured:
 With strategy `none`, every one of those events is marked `strategy: none`, so
 the absence of encryption is permanently visible in the trail rather than
 inferable.
+
+### `seal.enabled: false` startup warning
+
+`seal.enabled: false` is not a barrier operation — there is no barrier
+instance to audit — so it is not in the table above. `lifecycle.BuildServices`
+is the single construction path `cmd/qrdbd`, the embedded `sdk/go/node`
+composer, and the Wails GUI's `cmd/qrdb` composer all call on every
+successful boot, sealed or not, so it is where the warning is logged exactly
+once per node start:
+
+```
+qrdb/seal: seal disabled; at-rest data is stored in plaintext
+```
+
+The condition is `!infra.SealEnabled && infra.SealBarrier == nil`, not a bare
+nil check on `SealBarrier`: `SealEnabled` is the composer's own seal.enabled
+config decision, read and passed in BEFORE it attempted to build a barrier.
+A barrier that was *requested* but failed to construct (a bad passphrase, a
+corrupt seal store, an invalid strategy config) also leaves `SealBarrier` nil,
+and that is a distinct failure the composer is responsible for reporting
+through its own error path — not an operator's decision to run without
+encryption, and this warning must not misattribute it as one. The Wails GUI
+composer (`cmd/qrdb/bindings_server.go`) has no "no barrier at all" state of
+its own — even its default mode constructs a real `none`-strategy barrier —
+so it passes `SealEnabled: true` unconditionally and this warning never fires
+for it; a failed construction there is reported by its own "seal barrier
+unavailable" WARN instead. The warning is logged only after `BuildServices`'s
+own construction has fully succeeded, so it never fires for a node whose
+service graph failed to build there — it says nothing about a later failure
+elsewhere in boot (`server.New`, transport listen, etc.), which
+`BuildServices` cannot observe. Requiring `SealBarrier` to also be nil means
+an older call site that supplies a real barrier without yet setting
+`SealEnabled` is not wrongly accused of running one it doesn't have.
+
+The wording mirrors go-quicraft's own `StrategyNone` WARN
+(`quicraft/seal: barrier performs NO encryption; at-rest data is stored in
+plaintext`) so an operator sees the same fact whether a do-nothing barrier
+exists or none exists at all; it does not fire when a barrier of any kind is
+present, including under `StrategyNone`, whose own WARN is unchanged and
+owned by go-quicraft.
+
+**The `hint` deliberately does not name a procedure to run in place.**
+`enable-encryption` only migrates an *existing* barrier whose current
+strategy is credential-free (`none`, or a tenant's `system-barrier`-wrapped
+root key — see [../seal/enabling-encryption.md](../seal/enabling-encryption.md)),
+by re-encoding files that are already in qrdb's encrypted-file format
+(`pkg/seal/encfs`). A `seal.enabled: false` deployment's files were never
+written in that format, so `enable-encryption` does nothing for it, and
+simply setting `seal.enabled: true` and restarting does **not** encrypt
+existing data either: `encfs.FS.Open` passes a pre-existing plaintext file
+through unmodified (no magic header to decrypt), but `OpenReadWrite` on a
+non-empty file without the header returns `ErrInvalidHeader` — the first
+write-mode reopen of old data under the flipped config can wedge the boot,
+and nothing re-encodes the files that do stay readable. There is no
+supported in-place path here; the `hint` instead points at provisioning a new
+node/tenant with `seal.enabled: true` and moving data into it through
+backup/restore or an application-level re-seed (see
+[user.md](user.md#running-with-no-barrier-at-all)).
