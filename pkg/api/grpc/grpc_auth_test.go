@@ -262,6 +262,7 @@ func TestMapAuthServiceError_IndexCompensationOutranksADuplicateHandle(t *testin
 	}{
 		{"email", &user.EmailExistsError{Email: "a@example.com"}},
 		{"username", &user.UsernameExistsError{Username: "a"}},
+		{"user id", &user.UserIDExistsError{ID: 7}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := mapAuthServiceError(&user.IndexCompensationError{
@@ -292,6 +293,40 @@ func TestMapAuthServiceError_EmailExistsError(t *testing.T) {
 
 func TestMapAuthServiceError_UsernameExistsError(t *testing.T) {
 	err := mapAuthServiceError(&user.UsernameExistsError{Username: "alice"})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists, got %s", st.Code())
+	}
+}
+
+// TestMapAuthServiceError_UserIDExistsError pins go-qrdb#555's atomic
+// create path: a store-generated user id collided with an existing identity
+// claim or primary record, and this must classify AlreadyExists the same
+// way a taken username does, not fall through to Internal.
+func TestMapAuthServiceError_UserIDExistsError(t *testing.T) {
+	err := mapAuthServiceError(&user.UserIDExistsError{ID: 42, TenantID: "t1"})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists, got %s", st.Code())
+	}
+}
+
+// TestGRPC_CreateUser_UserIDExistsError is TestGRPC_CreateUser_Error's
+// go-qrdb#555 sibling: a store-generated id collision must reach the wire
+// as AlreadyExists too, not Internal.
+func TestGRPC_CreateUser_UserIDExistsError(t *testing.T) {
+	userSvc := &mockUserService{
+		createErr: &user.UserIDExistsError{ID: 42, TenantID: "t1"},
+	}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	defer cleanup()
+
+	_, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
+		Username: "alice",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %s", st.Code())

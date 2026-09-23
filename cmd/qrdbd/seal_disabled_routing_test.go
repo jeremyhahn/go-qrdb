@@ -44,9 +44,10 @@ func (p *prefixTenantServicer) GetTenant(context.Context, string) (*tenantpkg.Te
 func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, &mockRaftNode{},
+		context.Background(), mock, mock, tx, &mockRaftNode{},
 		1, 1,
 		&prefixTenantServicer{}, false,
 		nil, // NO barrier registry: sealing is disabled

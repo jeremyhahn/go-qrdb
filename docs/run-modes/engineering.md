@@ -245,6 +245,13 @@ security posture or breaks a dependency of everything else:
 `raft.sm_storage` selects the backend the storage-generic state machines
 (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`, or `memory`.
 
+- **`disk` and `fast` are refused by `qrdbd start` today**, on every start, as
+  is every `sm_type` other than `pebble`, `mvcc` and `mvcc-fast`: none of them
+  has the transaction subsystem atomic role and user creation needs. The check
+  is `requireGuardedBatch` in `cmd/qrdbd/start.go` over
+  `kvstore.ProbeGuardedBatch`; see
+  [../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection).
+
 - **The file backend earned the hot-apply role with real durability**: atomic
   temp-file + rename + fsync writes and an all-or-nothing commit journal
   replayed at open (`pkg/storage/file/journal.go`), plus the `storage.Syncer`

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // legacyAdminRoleIDAcme is the identifier the pre-FIPS UUIDv5 (SHA-1)
@@ -187,5 +188,31 @@ func TestReconcileReport_ReExported(t *testing.T) {
 	}
 	if (&ReconcileReport{TenantID: "acme"}).Changed() {
 		t.Error("empty report reports a change")
+	}
+}
+
+// TestUserIDExistsError_IsTheStoreType pins the alias: a consumer holding a
+// UserServicer through this package classifies the atomic create's id
+// collision with the SDK's exported name, whatever wrapping the store added.
+func TestUserIDExistsError_IsTheStoreType(t *testing.T) {
+	var err error = &user.StoreError{Op: "create", Err: &user.UserIDExistsError{ID: 42, TenantID: "t1"}}
+
+	var got *UserIDExistsError
+	if !errors.As(err, &got) {
+		t.Fatalf("errors.As(%v, *sdk.UserIDExistsError) = false, want true", err)
+	}
+	if got.ID != 42 || got.TenantID != "t1" {
+		t.Errorf("got %+v, want ID 42 in tenant t1", got)
+	}
+}
+
+// TestUserIDExistsError_DoesNotMatchAUsernameConflict is the negative
+// sibling: the two conflicts are distinct types, so a taken username must not
+// classify as an id collision through the alias.
+func TestUserIDExistsError_DoesNotMatchAUsernameConflict(t *testing.T) {
+	var err error = &user.UsernameExistsError{Username: "alice", TenantID: "t1"}
+	var got *UserIDExistsError
+	if errors.As(err, &got) {
+		t.Fatalf("errors.As(%v, *sdk.UserIDExistsError) = true, want false", err)
 	}
 }

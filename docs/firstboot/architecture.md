@@ -145,6 +145,129 @@ An `admin` user for the system tenant is created alongside, bound to the
   entered for a `NotLeader` condition and nothing else — a first-boot failure
   of any other kind is returned with its cause rather than being retried as
   though a leader elsewhere were about to fix it.
+- **A boot-time role or user create is ONE atomic proposal, not several.**
+  The identity claim, the primary record, and every secondary index used to
+  commit as separate Raft proposals — up to four for a role, more for a
+  user with an email login key — so a leadership change between any two of
+  them could leave a claim with no record behind it, or a record missing
+  one of its indexes, permanently: nothing could complete or roll back the
+  remainder without the very leadership that was just lost, and every
+  future create of that same role or user then found the same partial
+  state and refused identically, forever. `role.WithAtomicIdentity` /
+  `user.WithAtomicIdentity` close this by committing the claim and every
+  write as ONE guarded batch, using the multi-guard
+  `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged` for BOTH: a role
+  fences its generated id claim and its name together (an id-only guard
+  cannot see two concurrent creates that use different ids but the same
+  name), and a user fences its generated id, its username, and an optional
+  email together (a single guard cannot express all three at once). A
+  failure anywhere in the sequence now leaves either everything or nothing.
+  Every boot-time composer (`cmd/qrdbd`, and through
+  `pkg/server/lifecycle`, `sdk/go/node`) wires its role and user stores
+  with a guarded adapter, and construction refuses outright when no
+  transaction plane backs it — a compile-time-shaped capability that would
+  otherwise be present in the type and silently absent at run time.
+  That construction-time refusal is necessary but not sufficient: a
+  transaction plane exists for every `--sm` state machine type, but not
+  every one actually implements the MVCC/transaction subsystem
+  `PutAllIfUnchanged`/`PutAllIfAllUnchanged` need underneath it (`pebble`,
+  the default, and `mvcc`/`mvcc-fast` do; `memory`, `standard`,
+  `concurrent`, `fast`, `disk`, `highperf` and `regular` serve KV and batch
+  only). `cmd/qrdbd` closes that remaining gap with a genuine runtime probe —
+  `kvstore.ProbeGuardedBatch`, a real no-op guarded proposal against the
+  shard the daemon just started, not a static capability query — immediately
+  after leader election on **every start**, so an unsupported `--sm` value
+  refuses at startup with a typed error rather than an operator discovering
+  it at the first role or user create. After the leader wait an inconclusive
+  probe also stops the start, with one exception: a follower's probe always
+  answers `NotLeader`, because only the leader proposes, so a follower defers
+  to the leader's probe — every replica of a shard runs the same state
+  machine. Giving every non-default state machine a real MVCC store, closing
+  this gap at its root, is tracked separately.
+- **The routed role/user services `pkg/server/lifecycle`/`sdk/go/node`
+  expose are ALSO atomic for the one tenant where it is safe: the system
+  tenant.** `role.NewRoutingService` / `user.NewRoutingService` resolve a
+  fresh, per-tenant store on every call and build one `kvRoleStore`/
+  `kvUserStore` per distinct store they see — WithAtomicIdentity's
+  same-physical-store precondition holds for exactly one of those resolved
+  stores, because `tenant.NewResolvedIdentityIndex` always backs the
+  identity claim with `resolver.Resolve(ctx, tenant.SystemTenantID)`, so
+  only a role or user create ROUTED to the system tenant shares a physical
+  store with the claim it makes. The router offers the option there, and
+  ONLY there, and only when that resolved store is ALSO
+  `kvstore.MultiGuardedBatchKVStore`-capable. Every other tenant — a
+  barrier-isolated tenant's own store, or a prefix tenant sharing the
+  non-system portion of the shared store — keeps the unconditional
+  sequential path, because its own store is a DIFFERENT physical object
+  than the one the claim would be checked against.
+  This is a deliberate, narrower exception to "fail closed, no silent
+  fallback" than `cmd/qrdbd`'s single fixed state machine gets: the router
+  serves potentially many heterogeneous per-tenant backends from one
+  process, so one tenant's backend lacking the capability keeps that ONE
+  tenant on the sequential path rather than refusing role/user creation for
+  every OTHER tenant too.
+  "Capable" is asked of the state machine, not read off the store's type:
+  `pkg/server/lifecycle` builds its guarded adapter whenever a transaction
+  plane exists, which it always does, including over state machines that
+  refuse a transaction at apply time. The router therefore runs the same
+  genuine no-op guarded proposal `cmd/qrdbd` runs at startup
+  (`kvstore.ProbeGuardedBatch`) the first time a role or user is CREATED in
+  the system tenant, and caches only a DEFINITIVE answer. Only the create
+  path probes: reads, lookups and permission resolution — the authentication
+  path — use a store built without the option and never touch consensus for
+  this, so they keep working while no leader can answer. The guarded adapters
+  report a state machine without the subsystem as
+  `kvstore.GuardedBatchUnsupportedError` (which matches
+  `kvstore.ErrAtomicWriteUnsupported`); that answer keeps the system tenant
+  on the sequential path for the life of the process. A probe that cannot
+  answer — no leader yet, a cancelled request — fails that one role or user
+  operation with a typed `StoreError` and is asked again on the next one. It
+  is never read as "incapable": caching that reading would put the system
+  tenant on the sequential path for the life of the process and reopen the
+  multi-node first-boot race this whole section exists to close.
+- **Known limit: prefix tenants take the sequential create path.** A prefix
+  tenant's own store is a confined view of the shared store, not the system
+  tenant's store the identity claim lives in, so its role and user creates
+  keep the claim-then-write sequence. A leadership change between those
+  proposals can still leave a claim without its record for a prefix-tenant
+  create; the atomic guarantee above holds for the system tenant, which is
+  where first boot creates everything.
+- **A losing create's error is typed even when this node reads stale.** A
+  refused guard means the winner's keys were committed, but a node reading
+  its own applied state (`cmd/qrdbd`'s boot-time `StaleRead`) may not have
+  applied them yet. The diagnosis that turns the refusal into
+  `RoleIDExistsError`/`RoleNameExistsError` or
+  `UserIDExistsError`/`UsernameExistsError`/`EmailExistsError` re-reads
+  within the same bounded window reconciliation uses, so the losing first-boot
+  node still gets the typed error `firstboot` resolves idempotently rather
+  than a generic guard failure.
+- **A concurrent, identical built-in role's create is verified, not
+  assumed — on EITHER collision `CreateRole` can report.** Two nodes'
+  first-boot attempts can both reach `CreateRole` for the SAME built-in role
+  at once; exactly one wins the atomic batch, and the other is refused with
+  the ordinary id-collision OR name-collision error. `firstboot` resolves
+  either refusal by reading the persisted record back and comparing it
+  against the canonical built-in definition — tenant, canonical name, the
+  `System` immutability flag, and permission set always; the id as well for
+  an id collision, but NOT for a name collision, since a cluster seeded
+  before `role.SystemRoleID`'s hash algorithm changed (FIPS 140-3's move off
+  SHA-1) legitimately keeps its roles under a different, older id — before
+  treating either refusal as its own idempotent re-attempt. That check lives
+  in `firstboot`, not in `CreateRole` itself: a general create endpoint
+  accepting "same name and a guessed id means treat it as mine" would let
+  any caller holding `roles:create` adopt another actor's in-flight or
+  malformed role.
+- **The admin is verified the same way, and an id collision with anyone else
+  is retried.** A losing admin create reports `UsernameExistsError` or
+  `UserIDExistsError`; either is accepted as idempotent only when the record
+  under the admin username is the account first boot creates: the admin's
+  tenant and username, the tenant-scoped Admin role, `System` false, and a
+  defined, non-terminal lifecycle (an operator may since have suspended or
+  disabled it; `deleting` or an unknown state is refused). An id collision
+  with no such admin behind it means the generated id repeated some other
+  user's, so the create is retried with a fresh id, a bounded number of
+  times. A username held by anything but the admin is a squatter and is
+  refused.
 - **Sensitive keys live in the barrier.** After unseal they are available in
   memory through `seal.EncryptionBarrier.Decrypt()`.
 

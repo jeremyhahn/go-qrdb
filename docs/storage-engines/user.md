@@ -88,6 +88,13 @@ tier and is refused as a hot apply path. Use `pebble`, `file` or `memory`. Note
 also that the pebble-native state machines (`sm_type: pebble` or `mvcc`) carry
 their own Pebble store and reject a non-pebble `sm_storage`.
 
+**The daemon refused `sm_type: disk` or `fast`** with "atomic role/user
+creation requires an --sm state machine with transaction support". Those are
+the state machines `sm_storage` applies to, and neither has the transaction
+subsystem role and user creation needs, so `qrdbd start` refuses them on every
+start. Use `pebble`, `mvcc` or `mvcc-fast`. See
+[../firstboot/user.md](../firstboot/user.md).
+
 **Everything vanished after a restart.** The engine is `memory`. That is what it
 does.
 

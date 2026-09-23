@@ -384,7 +384,22 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.Backup = service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host), backupOpts...)
 
 	// Auth services (user, role) backed by KV storage.
-	authStore := newKVStoreAdapter(n.KV, n.Index)
+	//
+	// GUARDED: n.Transaction is already built above, unconditionally, so
+	// authStore gets kvstore.MultiGuardedBatchKVStore capability at no extra
+	// cost — the same shared implementation (ExecuteGuardedBatch) cmd/qrdbd's
+	// role/user stores use (go-qrdb#555 owner ruling: every composer that
+	// builds these stores gets the guarded adapter). The plain n.User/n.Role
+	// built directly over it just below stay sequential; where a
+	// StoreResolver is wired further down, the routed services that replace
+	// them (role/user.NewRoutingService over authStore) are what use it,
+	// committing a
+	// system-tenant create atomically once kvstore.ProbeGuardedBatch confirms
+	// the state machine can evaluate the batch.
+	authStore, err := NewGuardedKVStoreAdapter(n.KV, n.Index, n.Transaction)
+	if err != nil {
+		return nil, &UserServiceError{Err: err}
+	}
 	userIDGen, err := dao.NewSnowflakeGenerator(resolveReplicaID(infra.ReplicaID))
 	if err != nil {
 		return nil, &UserServiceError{Err: err}

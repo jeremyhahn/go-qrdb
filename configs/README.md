@@ -22,9 +22,18 @@ or clustered) adds MVCC/watch/lease/lock/transactions/etcd/cluster ops.
 | Embedded, `node://` / `sdk/go/node.NewStandaloneNode` | none — raft-free (`backend.LocalBackend`) | ✅ implemented (full in-process service stack) | programmatic (`qrdbconfig.Config`) |
 | Embedded, `sdk/go/node.NewClusteredNode` | multi-replica Raft, in-process | ✅ implemented | programmatic |
 | **Standalone daemon** (`mode: standalone`) | **none — raft-free** | ✅ implemented: `qrdbd` composes the same LocalBackend stack the SDK uses; raft-only features refused with "requires mode: raft" | [`qrdb-standalone-pebble.yaml`](qrdb-standalone-pebble.yaml) / [`memory`](qrdb-standalone-memory.yaml) / [`file`](qrdb-standalone-file.yaml) |
-| Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (today's default; full feature set incl. MVCC) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-raft-single-mvcc.yaml`](qrdb-raft-single-mvcc.yaml) (mvcc SM), [`qrdb-dev.yaml`](qrdb-dev.yaml) (memory, dev) |
+| Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (today's default; full feature set incl. MVCC) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-raft-single-mvcc.yaml`](qrdb-raft-single-mvcc.yaml) (mvcc SM), [`qrdb-dev.yaml`](qrdb-dev.yaml) (pebble SM, dev; memory until the refusal below is lifted) |
 | Raft clustered daemon (3 nodes) | multi-replica Raft | ✅ implemented | [`qrdb-cluster-node1.yaml`](qrdb-cluster-node1.yaml) / [`node2`](qrdb-cluster-node2.yaml) / [`node3`](qrdb-cluster-node3.yaml) |
-| Raft SM over file/memory storage (`raft.sm_storage`, with `sm_type: disk`/`fast`) | Raft | ✅ implemented: file backend upgraded to durable atomic writes + all-or-nothing commit journal; objstore remains a snapshot/backup tier and is refused as the hot apply path | flags: `--sm disk --sm-storage file` |
+| Raft SM over file/memory storage (`raft.sm_storage`, with `sm_type: disk`/`fast`) | Raft | ⚠️ implemented, but **refused at start** (see below): file backend upgraded to durable atomic writes + all-or-nothing commit journal; objstore remains a snapshot/backup tier and is refused as the hot apply path | flags: `--sm disk --sm-storage file` |
+
+**Only `sm_type` `pebble`, `mvcc` and `mvcc-fast` start a raft daemon.** Every
+other type (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`,
+`regular`) has no transaction subsystem, and `qrdbd start` refuses it on
+**every** start, because role and user creation commits atomically through
+one. That includes the `disk`/`fast` storage row above; `qrdb-dev.yaml` runs
+pebble for that reason until every state machine supports guarded batches. An
+existing deployment on one of those types cannot start on this release. See
+[../docs/firstboot/cli.md](../docs/firstboot/cli.md#daemon-side-mode-selection).
 
 Per-backend nuances for standalone: pebble/memory serve the full standard
 set; file/objstore compose the plain KV engine, so timeseries is

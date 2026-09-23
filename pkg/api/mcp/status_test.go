@@ -179,6 +179,13 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 				"says -- so this case pins that the delegate does not regress",
 		},
 		{
+			name: "generated user id collided",
+			err:  &user.UserIDExistsError{ID: 42, TenantID: "t1"},
+			want: wire.CodeAlreadyExists,
+			why: "the atomic identity create's id guard refused; a conflict exactly " +
+				"as a taken username is, never CodeInternal",
+		},
+		{
 			name: "cert thumbprint bound to another user",
 			err:  &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
 			want: wire.CodeAlreadyExists,

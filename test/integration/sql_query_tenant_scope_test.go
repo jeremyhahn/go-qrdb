@@ -161,6 +161,9 @@ func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminP
 // / DatabaseServiceRegistry.DefaultName), so it is the one database name
 // the ad-hoc REST SQL query surface and the MySQL wire protocol server can
 // both address for an arbitrary, freshly-provisioned tenant.
+//
+// The state machine is "mvcc", not "memory" — see startSingleNodeWithSQL's
+// doc for why: "memory" cannot even complete first boot (go-qrdb#555).
 func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca *testCA) {
 	t.Helper()
 
@@ -177,7 +180,7 @@ func startSingleNodeWithSQLDefaultDB(t *testing.T) (adminPort, mysqlPort int, ca
 		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[0]),
 		"--data-dir", dataDir,
-		"--sm", "memory",
+		"--sm", "mvcc",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
 		"--shard-id", "1",

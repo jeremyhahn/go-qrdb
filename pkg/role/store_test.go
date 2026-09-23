@@ -35,6 +35,10 @@ import (
 
 type memKVStore struct {
 	data sync.Map
+	// mu guards PutAllIfUnchanged (see mem_kvstore_atomic_test.go): sync.Map
+	// gives per-key atomicity, not the check-many-then-write-many atomicity a
+	// guarded batch needs, so that one operation takes this lock instead.
+	mu sync.Mutex
 }
 
 func newMemKVStore() *memKVStore {

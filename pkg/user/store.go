@@ -58,6 +58,25 @@ const (
 	// so it needs a deadline of its own: without one a wedged store would hang a
 	// caller that has already given up.
 	compensationTimeout = 5 * time.Second
+
+	// reconcileTimeout bounds reconcileAmbiguousCreate's read-back after a
+	// PutAllIfAllUnchanged call whose outcome is unknown. Same reasoning as
+	// compensationTimeout: the read-back deliberately outlives the request's
+	// own context (a done ctx is the common reason the outcome went
+	// unknown in the first place), so it needs a deadline of its own. It is
+	// also the default RETRY window: cmd/qrdbd's boot-time stores read via
+	// StaleRead (local applied state, not linearizable ReadIndex), so a
+	// proposal that committed but lost its response may not be locally
+	// visible for a brief window while apply catches up — see
+	// reconcileAmbiguousCreate's doc.
+	reconcileTimeout = 5 * time.Second
+
+	// defaultReconcilePollInterval is the default spacing between
+	// reconcileAmbiguousCreate's retries. Short relative to reconcileTimeout:
+	// a real local-apply catch-up is expected to resolve in single-digit
+	// milliseconds, so this trades a few wasted reads for not adding
+	// meaningful latency to the (rare) ambiguous-outcome path.
+	defaultReconcilePollInterval = 10 * time.Millisecond
 )
 
 // Compile-time interface check.
@@ -89,11 +108,18 @@ var _ UserServicer = (*kvUserStore)(nil)
 // outside its tenant. It is still maintained by the same functions that
 // maintain the keys above, which is what keeps it in step with them.
 type kvUserStore struct {
-	store        kvstore.KVStore
-	idgen        dao.IDGenerator
-	quotaChecker quota.Checker        // optional; nil skips quota enforcement
-	audit        audit.AuditLogger    // optional; nil disables audit emission
-	identity     tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	store          kvstore.KVStore
+	idgen          dao.IDGenerator
+	quotaChecker   quota.Checker        // optional; nil skips quota enforcement
+	audit          audit.AuditLogger    // optional; nil disables audit emission
+	identity       tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	atomicIdentity bool                 // set by WithAtomicIdentity; see that option's doc
+
+	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
+	// retry loop. Zero means "use the production default"; see that
+	// function's doc and WithReconcilePolling for why a test overrides them.
+	reconcilePollInterval time.Duration
+	reconcileWindow       time.Duration
 }
 
 // NewStore creates a new KVStore-backed UserServicer. The provided kvstore
@@ -101,6 +127,12 @@ type kvUserStore struct {
 // source of uint64 user identifiers (a dao.SnowflakeGenerator seeded with the
 // node's Raft ReplicaID); there is no default because a node-unique seed is
 // required to keep IDs globally unique across a cluster.
+//
+// Refuses construction — rather than silently degrading — when
+// WithAtomicIdentity is set without WithIdentityIndex, or over a store that
+// does not implement kvstore.GuardedBatchKVStore. See pkg/role's NewStore
+// for the identical reasoning: both are caller configuration errors fixed
+// at construction, not runtime conditions to defer.
 func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (UserServicer, error) {
 	if store == nil {
 		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
@@ -111,6 +143,24 @@ func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (Use
 	s := &kvUserStore{store: store, idgen: idgen}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.atomicIdentity {
+		if s.identity == nil {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires WithIdentityIndex"}
+		}
+		// A multi-guard capable store is required, not merely a
+		// GuardedBatchKVStore: createUserAtomic guards the identity claim,
+		// the username index, and (when present) the email index together,
+		// which a single-guard store cannot honour for every request shape.
+		if _, ok := store.(kvstore.MultiGuardedBatchKVStore); !ok {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires a kvstore.MultiGuardedBatchKVStore-capable store"}
+		}
+	}
+	if s.reconcilePollInterval <= 0 {
+		s.reconcilePollInterval = defaultReconcilePollInterval
+	}
+	if s.reconcileWindow <= 0 {
+		s.reconcileWindow = reconcileTimeout
 	}
 	return s, nil
 }
@@ -178,6 +228,10 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	emailKey := ""
 	if email != "" {
 		emailKey = emailIndexKey(tenantID, email)
+	}
+
+	if s.atomicIdentity {
+		return s.createUserAtomic(ctx, req, tenantID, userID, idBytes, usernameKey, emailKey, email, initial, authMethods)
 	}
 
 	// The handle claims below WRITE index entries, so the id claim must settle
@@ -317,6 +371,224 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	})
 
 	return user, nil
+}
+
+// createUserAtomic commits the identity claim, the primary record, the
+// tenant index, the username index, and — when the request has one — the
+// email index as ONE guarded batch, so a leadership change anywhere in the
+// sequence leaves either everything or nothing. It is reached for every
+// create once the store is built WithAtomicIdentity; see that option's doc
+// for why the batch must guard more than one key.
+//
+// The batch guards on the identity claim key (fencing a repeated generated
+// id), the username index key (fencing a taken username), and the email
+// index key when present (fencing a taken email) — all evaluated together by
+// kvstore.MultiGuardedBatchKVStore, so no window exists between any two of
+// those checks for a concurrent create to land in.
+//
+// On a guard failure this reads back the occupied key and returns the SAME
+// typed error CreateUser has always returned for that conflict
+// (UsernameExistsError, EmailExistsError) or the new UserIDExistsError for
+// an id collision.
+func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserRequest, tenantID string, userID uint64, idBytes []byte, usernameKey, emailKey, email string, initial Lifecycle, authMethods []string) (*User, error) {
+	guarded, ok := s.store.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		// Unreachable: NewStore refuses WithAtomicIdentity construction over a
+		// store that does not implement this. Defensive rather than a panic if
+		// that check is ever bypassed.
+		return nil, &StoreError{Op: "create", Detail: "atomic identity requires a kvstore.MultiGuardedBatchKVStore"}
+	}
+	claimKV, _, err := s.identity.PrepareClaim(tenant.IdentityUser, identityID(userID), tenantID)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "prepare claim", Err: err}
+	}
+
+	now := time.Now().UTC()
+	u := &User{
+		ID:          userID,
+		Username:    req.Username,
+		Email:       email,
+		Name:        req.Name,
+		TenantID:    tenantID,
+		RoleIDs:     req.RoleIDs,
+		Lifecycle:   initial,
+		System:      false,
+		AuthMethods: authMethods,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if u.RoleIDs == nil {
+		u.RoleIDs = []string{}
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
+	}
+	pk := primaryKey(u.ID)
+	tk := tenantIndexKey(tenantID, u.ID)
+	guards := []kvstore.Guard{
+		{Key: claimKV.Key},
+		{Key: usernameKey},
+	}
+	writes := []kvstore.KV{
+		claimKV,
+		{Key: usernameKey, Value: idBytes},
+		{Key: pk, Value: data},
+		{Key: tk, Value: idBytes},
+	}
+	if emailKey != "" {
+		guards = append(guards, kvstore.Guard{Key: emailKey})
+		writes = append(writes, kvstore.KV{Key: emailKey, Value: idBytes})
+	}
+
+	applied, err := guarded.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotApplied) {
+			// A definite refusal — no leader to propose it, no transaction
+			// subsystem — wrote nothing. Reconciling would only poll for a
+			// write that cannot appear.
+			return nil, &StoreError{Op: "create", Detail: "atomic create", Err: err}
+		}
+		return s.reconcileAmbiguousCreate(ctx, u, writes, err)
+	}
+	if !applied {
+		return nil, s.diagnoseAtomicGuardFailure(ctx, req, tenantID, userID, claimKV.Key, usernameKey, emailKey, email)
+	}
+
+	s.emitAudit(ctx, "create", u.ID, map[string]any{
+		"username":  u.Username,
+		"email":     u.Email,
+		"tenantID":  tenantID,
+		"role_ids":  u.RoleIDs,
+		"lifecycle": string(u.Lifecycle),
+	})
+	return u, nil
+}
+
+// diagnoseAtomicGuardFailure reads back each key createUserAtomic guarded to
+// report the SAME typed conflict error CreateUser has always returned for
+// that condition. PutAllIfAllUnchanged reports only that at least one guard
+// did not hold, not which one, so this issues plain reads — outside the
+// failed transaction, causing no new ambiguity — to find the occupied key.
+//
+// The identity claim is checked first: a caller-supplied or generator-repeated
+// id is the condition go-qrdb#555's review added this guard for, and it is
+// checked ahead of the pre-existing username/email conflicts so a fix to one
+// class of collision does not change which error a caller already handling
+// UsernameExistsError/EmailExistsError sees for that unrelated class.
+//
+// The read-back is POLLED within s.reconcileWindow, for the reason pkg/role's
+// identical function gives: under cmd/qrdbd's boot-time StaleRead the losing
+// node may not have applied the winner's keys yet.
+func (s *kvUserStore) diagnoseAtomicGuardFailure(ctx context.Context, req *CreateUserRequest, tenantID string, userID uint64, claimKey, usernameKey, emailKey, email string) error {
+	dctx, cancel := context.WithTimeout(ctx, s.reconcileWindow)
+	defer cancel()
+	var occupied error
+	s.pollVisible(dctx, func() bool {
+		switch {
+		case s.keyPresent(dctx, claimKey):
+			occupied = &UserIDExistsError{ID: userID, TenantID: tenantID}
+		case s.keyPresent(dctx, usernameKey):
+			occupied = &UsernameExistsError{Username: req.Username, TenantID: tenantID}
+		case emailKey != "" && s.keyPresent(dctx, emailKey):
+			occupied = &EmailExistsError{Email: email, TenantID: tenantID}
+		}
+		return occupied != nil
+	})
+	if occupied != nil {
+		return occupied
+	}
+	// Defensive: the guard reported failure but every guarded key stayed
+	// absent for the whole window — most plausibly a concurrent release
+	// racing these reads. Report the generic conflict rather than fabricating
+	// a more specific one no read could confirm.
+	return &StoreError{Op: "create", Detail: "atomic create guard failed"}
+}
+
+// keyPresent reports whether key currently holds a value on this node.
+func (s *kvUserStore) keyPresent(ctx context.Context, key string) bool {
+	v, err := s.store.Get(ctx, key)
+	return err == nil && v != nil
+}
+
+// reconcileAmbiguousCreate handles a PutAllIfAllUnchanged error whose outcome
+// is UNKNOWN per that method's own contract: the proposal may have
+// committed and only the response been lost. An error marked
+// kvstore.ErrNotApplied never reaches here; createUserAtomic returns it at
+// once. See pkg/role's identical
+// function for the full reasoning; this is its pkg/user sibling.
+//
+// A successful reconciliation emits the SAME create audit event the normal
+// success path does: the batch committed durably either way, and skipping
+// the event here would let a privileged bootstrap user exist with no audit
+// trail whenever a proposal's response — not the proposal itself — was lost.
+//
+// The read-back and the audit emission run on a context DERIVED from ctx via
+// context.WithoutCancel plus its own bound (s.reconcileWindow), not on ctx
+// itself. The ambiguous outcome this function exists to resolve very often
+// IS ctx already being done — a deadline exceeded or a cancellation is
+// exactly the shape of "the response never arrived" — and reusing that same
+// ctx for the reads would then fail EVERY read immediately, always
+// reporting the create as failed and never emitting the audit event this
+// function was added to guarantee. context.WithoutCancel preserves ctx's
+// VALUES (tenant, auth, tracing) while dropping its cancellation, matching
+// the compensation contexts CreateUser's own rollback paths already use.
+//
+// The read-back RETRIES on s.reconcilePollInterval until s.reconcileWindow
+// elapses, rather than reading once (go-qrdb#555 review, round 4): see
+// pkg/role's identical reconcileAmbiguousCreate for the full reasoning —
+// cmd/qrdbd's boot-time stores read via StaleRead, so a proposal that
+// committed but lost its response may not be locally visible for a brief
+// window while apply catches up, and a single immediate read would report a
+// false failure (and skip the audit event) for a create that in fact just
+// committed.
+func (s *kvUserStore) reconcileAmbiguousCreate(ctx context.Context, u *User, writes []kvstore.KV, cause error) (*User, error) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.reconcileWindow)
+	defer cancel()
+	if !s.pollVisible(rctx, func() bool { return s.reconcileWritesMatch(rctx, writes) }) {
+		return nil, &StoreError{Op: "create", Detail: "atomic create", Err: cause}
+	}
+	s.emitAudit(rctx, "create", u.ID, map[string]any{
+		"username":       u.Username,
+		"email":          u.Email,
+		"tenantID":       u.TenantID,
+		"role_ids":       u.RoleIDs,
+		"lifecycle":      string(u.Lifecycle),
+		"reconciliation": "ambiguous_response",
+	})
+	return u, nil
+}
+
+// pollVisible calls visible every s.reconcilePollInterval until it reports
+// true or ctx is done, and reports whether it did. See pkg/role's identical
+// helper: both read-backs after an atomic create read THIS node's applied
+// state, which under cmd/qrdbd's boot-time StaleRead can lag the commit.
+func (s *kvUserStore) pollVisible(ctx context.Context, visible func() bool) bool {
+	ticker := time.NewTicker(s.reconcilePollInterval)
+	defer ticker.Stop()
+	for {
+		if visible() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// reconcileWritesMatch reports whether every write's key currently holds
+// exactly the bytes that write would have stored.
+func (s *kvUserStore) reconcileWritesMatch(ctx context.Context, writes []kvstore.KV) bool {
+	for _, w := range writes {
+		got, err := s.store.Get(ctx, w.Key)
+		if err != nil || !bytes.Equal(got, w.Value) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetUser retrieves a user by its globally unique ID.

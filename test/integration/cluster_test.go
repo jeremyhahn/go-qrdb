@@ -31,7 +31,7 @@ import (
 )
 
 func TestCluster_HealthEndpoint(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	for i, port := range adminPorts {
 		code := httpHealth(t, ca.Pool, port)
@@ -42,7 +42,7 @@ func TestCluster_HealthEndpoint(t *testing.T) {
 }
 
 func TestCluster_StatusEndpoint(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	for i, port := range adminPorts {
 		status := httpStatus(t, ca, port)
@@ -60,7 +60,7 @@ func TestCluster_StatusEndpoint(t *testing.T) {
 }
 
 func TestCluster_LeaderElection(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	// Verify exactly one leader is present.
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
@@ -236,7 +236,7 @@ func waitForSettledFollowerView(t *testing.T, ca *testCA, port int, timeout time
 // committed there -- so the follower-originated request succeeds end to
 // end, exactly as if it had been issued directly to the leader.
 func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "memory")
+	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -355,7 +355,7 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 // the leader commits the removal -- so the follower-originated remove
 // succeeds end to end and the replica disappears from the leader's /peers.
 func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "memory")
+	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -476,7 +476,7 @@ func membershipPeersContainsReplica(peers map[string]interface{}, shardID, repli
 }
 
 func TestCluster_SnapshotTriggered(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
 		"--snapshot-entries", "100",
 		"--compaction-overhead", "10")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -510,7 +510,7 @@ func TestCluster_SnapshotTriggered(t *testing.T) {
 }
 
 func TestCluster_SnapshotDataIntegrity(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
 		"--snapshot-entries", "50",
 		"--compaction-overhead", "5")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -893,19 +893,26 @@ func TestCluster_PebbleSingleNode(t *testing.T) {
 	}
 }
 
-func TestCluster_ConcurrentSingleNode(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "concurrent")
+// TestCluster_MVCCSingleNode replaces what was TestCluster_ConcurrentSingleNode:
+// "concurrent" has no MVCC/transaction subsystem, so go-qrdb#555's boot-time
+// capability probe now refuses it at first boot before any CRUD could run at
+// all (see TestCLI_Start_UnsupportedStateMachineFailsClosed in admin_test.go
+// for that behavior). Giving "concurrent" a real transaction plane is tracked
+// separately as #136; until then, "mvcc" is this matrix's third working SM
+// alongside "pebble" above.
+func TestCluster_MVCCSingleNode(t *testing.T) {
+	adminPort, ca := startSingleNode(t, "mvcc")
 
-	// Basic CRUD with concurrent SM.
-	httpPut(t, ca, adminPort, "conc/key1", []byte("value1"))
-	val := httpGet(t, ca, adminPort, "conc/key1")
+	// Basic CRUD with the mvcc SM.
+	httpPut(t, ca, adminPort, "mvcc/key1", []byte("value1"))
+	val := httpGet(t, ca, adminPort, "mvcc/key1")
 	if !bytes.Equal(val, []byte("value1")) {
-		t.Fatalf("concurrent GET: got %q, want %q", val, "value1")
+		t.Fatalf("mvcc GET: got %q, want %q", val, "value1")
 	}
 
-	httpPut(t, ca, adminPort, "conc/key2", []byte("value2"))
-	keys := httpList(t, ca, adminPort, "conc/")
+	httpPut(t, ca, adminPort, "mvcc/key2", []byte("value2"))
+	keys := httpList(t, ca, adminPort, "mvcc/")
 	if len(keys) != 2 {
-		t.Fatalf("concurrent list: got %d keys, want 2: %v", len(keys), keys)
+		t.Fatalf("mvcc list: got %d keys, want 2: %v", len(keys), keys)
 	}
 }

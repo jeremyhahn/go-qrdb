@@ -67,6 +67,13 @@ transactions, etcd compatibility (`qrdb_etcd`), cluster
 membership/topology, rebalance, shard backup/restore, IsolationRaft and
 IsolationVolume tenancy.
 
+**Only `sm_type` `pebble` (the default), `mvcc` and `mvcc-fast` start a
+raft daemon today.** The other registered types serve KV and batch only, with
+no transaction subsystem, and `qrdbd start` refuses them on every start
+because role and user creation commits atomically through one — see
+[../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection). That
+includes the storage-generic `disk` and `fast` described next.
+
 `raft.sm_storage` selects the storage backend the storage-generic state
 machines (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`,
 or `memory`. The file backend earned the hot-apply role with real

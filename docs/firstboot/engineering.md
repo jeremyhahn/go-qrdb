@@ -77,6 +77,86 @@ a second, unrelated credential bound instead.
   immediate return without duplicates.
 - **Only the leader creates.** Followers detect `NotLeader` and wait for
   replication.
+- **A role's or user's boot-time create is ONE guarded batch, not several
+  proposals.** `role.WithAtomicIdentity` / `user.WithAtomicIdentity` commit
+  the identity claim together with the primary record and its indexes in a
+  single proposal. A leadership change anywhere in what used to be a
+  multi-proposal sequence now leaves either everything or nothing — there is
+  no partial state left for a later attempt to find, repair, or refuse
+  against. `NewStore` refuses construction when `WithAtomicIdentity` is set
+  without the required capability, so the guarantee is fixed at startup, not
+  discovered missing at the first create. Both stores use the SAME
+  multi-guard verb, `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`,
+  because neither can fence its uniqueness handles with a single guard key:
+  - **Role** guards the identity claim key AND the name index key together in
+    one proposal. An id-only guard is exact for the deterministic built-in
+    roles this store seeds (their id IS derived from their name, so the
+    claim and the name denote the same collision), but not for an ordinary
+    caller-supplied id: two concurrent creates with DIFFERENT ids and the
+    SAME tenant/name would each satisfy their own distinct claim guard and
+    both commit, with the second silently overwriting the name index while
+    both primary records, tenant indexes, and claims remained. Guarding the
+    name key too closes that window for every caller, not only the
+    built-in-role case.
+  - **User** guards the identity claim key, the username index key, AND —
+    when the request has one — the email index key, all evaluated together
+    in the SAME proposal. A single guard cannot fence three independent
+    handles (a generated id, a chosen username, and an optional email) at
+    once: an earlier design guarded only the username key on the theory that
+    a freshly generated id essentially never collides, which left a
+    reused-id create able to silently overwrite an existing record and claim
+    under a different, unused username. `WithAtomicIdentity` now applies to
+    EVERY create this store makes, email-bearing or not — there is no
+    sequential fallback path.
+- **A concurrent, identical built-in role's create is verified in
+  `firstboot`, not assumed in `CreateRole`, on EITHER collision `CreateRole`
+  can report.** Exactly one of two simultaneous first-boot attempts wins the
+  guarded batch for a given built-in role; the other is refused with
+  `RoleIDExistsError` or `RoleNameExistsError`, the SAME error types
+  `CreateRole` has always returned for those collisions.
+  `registerBuiltInRoles` resolves EITHER refusal by reading the persisted
+  record back (`role.NameResolver.GetRoleByName`) and comparing tenant,
+  canonical name, the `System` flag, and permission set against the
+  canonical built-in definition — an id collision additionally requires the
+  persisted id to match exactly, while a name collision does not, since
+  `role.SystemRoleID`'s derivation has changed hash algorithm before
+  (UUIDv5/SHA-1 to UUIDv8/SHA-256, for FIPS 140-3) and a cluster seeded under
+  the retired scheme keeps its roles under their legacy identifiers. The
+  `System` check exists because an earlier release persisted every built-in
+  role with `System: false` (`CreateRoleRequest` had no such field then), and
+  matching id/tenant/permissions while accepting that flag mismatch would
+  leave a reserved-name role mutable and deletable through the ordinary role
+  APIs. A mismatch on any required field is refused, not papered over. This
+  lives in `firstboot` specifically because it is the one caller that knows
+  the canonical definition a collision might legitimately mean; `CreateRole`
+  itself never makes this judgment, so a general caller holding
+  `roles:create` cannot use it to adopt another actor's role.
+- **A guarded batch that commits with its response lost still emits the
+  create audit event.** `PutAllIfUnchanged`/`PutAllIfAllUnchanged` report an
+  UNKNOWN outcome, not a failure, when the proposal may have committed and
+  only the acknowledgement was lost; both stores' reconciliation reads every
+  write back and, on a full match, treats the create as successful — and
+  emits the SAME audit event the normal success path does, so a durably
+  created privileged role or bootstrap user is never missing from the audit
+  trail merely because its confirmation was lost.
+  The read-back is POLLED, not a single read: every 10 ms for up to 5 s, on
+  a context that drops the request's cancellation but keeps its values.
+  `cmd/qrdbd`'s boot-time stores read the local state machine (`StaleRead`)
+  rather than through a linearizable read, so a proposal that committed on
+  the cluster may not yet be applied on THIS node the instant its lost
+  response is reported; one immediate read would see the old values and
+  report a create that in fact committed as failed, without its audit
+  event. A write that never committed still reports the original failure
+  once the window closes.
+  A refusal that PROVES nothing was written is not polled at all. The shared
+  guarded-batch implementation (`lifecycle.ExecuteGuardedBatch`) marks those
+  with `kvstore.ErrNotApplied`: a missing transaction service or a state
+  machine without the subsystem (`kvstore.GuardedBatchUnsupportedError`), and
+  anything the service layer marks `service.ErrNotStored`, a propose-time
+  `NotLeader` most commonly. The create returns that error at once instead of
+  waiting 5 s for a write that cannot appear.
+  The guard-failure diagnosis polls through the same window for the mirror
+  reason: the winner's keys are committed but may not be applied here yet.
 - **Only a `NotLeader` failure waits.** The follower wait is entered for that
   condition alone, checked at both layers that express it
   (`service.NotLeaderError` and `quicraft.NotLeaderError`). Every other

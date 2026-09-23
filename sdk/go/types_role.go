@@ -46,6 +46,13 @@ type UsernameExistsError = user.UsernameExistsError
 // login key is already taken within the tenant.
 type EmailExistsError = user.EmailExistsError
 
+// UserIDExistsError is returned when a store-generated user id collides with
+// an existing identity claim or primary record — reachable from
+// WithAtomicIdentity's boot-time create path (go-qrdb#555): two
+// independently seeded nodes racing to create the same deterministic
+// bootstrap account can repeat a generated id.
+type UserIDExistsError = user.UserIDExistsError
+
 // UserNotFoundError is returned when a user lookup (by id, username, email, or
 // cert thumbprint) does not resolve.
 //

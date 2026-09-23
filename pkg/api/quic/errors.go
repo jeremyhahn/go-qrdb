@@ -335,6 +335,25 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusAlreadyExists, msg
 	}
 
+	// The taken-identity family: a username, an email login key, or a
+	// store-generated user id (go-qrdb#555) already held by another record.
+	// AlreadyExists, the answer REST (409) and gRPC give each of them; without
+	// these clauses they fell through to the generic StatusError. All three
+	// sit below the IndexCompensationError arm for the reason that arm
+	// states: a failed rollback wrapping one of these collisions is DataLoss.
+	var uee *user.UsernameExistsError
+	if errors.As(err, &uee) {
+		return wire.StatusAlreadyExists, msg
+	}
+	var eee *user.EmailExistsError
+	if errors.As(err, &eee) {
+		return wire.StatusAlreadyExists, msg
+	}
+	var uide *user.UserIDExistsError
+	if errors.As(err, &uide) {
+		return wire.StatusAlreadyExists, msg
+	}
+
 	var rnfe *role.RoleNotFoundError
 	if errors.As(err, &rnfe) {
 		// Deliberately the SAME status a missing user gets, matching gRPC and

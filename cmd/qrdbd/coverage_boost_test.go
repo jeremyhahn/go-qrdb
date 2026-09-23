@@ -1009,12 +1009,15 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 
 	// bootstrapUserRoleStores requires both boot and runtime KV services.
 	// We use the same mock for both to trigger the error on boot user store.
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	// A throwaway map backs the guarded-batch mock: this test targets the
+	// List/Scan failure path, not the atomic-identity plane.
+	tx := newMockTransactionServicer(make(map[string][]byte))
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	// The error should be from bootstrap, though user/role stores may
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "")
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "")
 	}
 }
 
@@ -1034,7 +1037,8 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	tx := newMockTransactionServicer(make(map[string][]byte))
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1091,7 +1095,7 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1150,7 +1154,7 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1281,7 +1285,7 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1513,7 +1517,7 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),

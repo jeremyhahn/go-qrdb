@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -28,8 +29,9 @@ import (
 // registration claiming a username, invite redemption — get the Raft-native
 // guarantee rather than being refused.
 var (
-	_ kvstore.KVStore       = (*kvServiceAdapter)(nil)
-	_ kvstore.AtomicKVStore = (*kvServiceAdapter)(nil)
+	_ kvstore.KVStore                  = (*kvServiceAdapter)(nil)
+	_ kvstore.AtomicKVStore            = (*kvServiceAdapter)(nil)
+	_ kvstore.MultiGuardedBatchKVStore = (*guardedKVServiceAdapter)(nil)
 )
 
 // kvServiceAdapter adapts service.KVServicer to the kvstore.KVStore interface
@@ -53,6 +55,20 @@ func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegist
 	}
 }
 
+// ErrTransactionServiceRequired is returned by newGuardedKVServiceAdapter
+// when asked to build a guarded store with no transaction plane to back it.
+//
+// It is a construction-time refusal, not a runtime fallback: every caller
+// of this constructor needs kvstore.GuardedBatchKVStore for something it
+// cannot safely skip (custodian enrolment, and since go-qrdb#555, the
+// atomic role/user creation path firstboot's boot-time stores use), so
+// silently handing back a store that cannot honour the guarantee — which
+// this constructor used to do — would make that guarantee visible in the
+// type system and absent at run time. Refusing here surfaces a
+// misconfiguration at startup instead of at the first create it would have
+// silently degraded.
+var ErrTransactionServiceRequired = errors.New("qrdbd: transaction service required for a guarded kvstore")
+
 // newGuardedKVServiceAdapter is newKVServiceAdapter plus the transaction plane,
 // which is what lets the returned store satisfy kvstore.GuardedBatchKVStore.
 //
@@ -60,15 +76,9 @@ func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegist
 // other call site builds a store that has no use for multi-key guarding, and a
 // nil transaction servicer threaded through them all would be a capability that
 // looks present at the type level and is absent at run time.
-func newGuardedKVServiceAdapter(svc service.KVServicer, txSvc service.TransactionServicer, registerer kvstore.EntityRegisterer, lookup kvstore.LookupFunc) kvstore.KVStore {
+func newGuardedKVServiceAdapter(svc service.KVServicer, txSvc service.TransactionServicer, registerer kvstore.EntityRegisterer, lookup kvstore.LookupFunc) (kvstore.KVStore, error) {
 	if txSvc == nil {
-		// Fail CLOSED at construction: without a transaction plane this store
-		// cannot honour the multi-key guarantee, so it must not advertise it.
-		// Returning the plain adapter makes the capability assertion answer
-		// honestly, and a caller that requires the guarantee — the custodian
-		// service does — refuses at startup rather than discovering the gap at
-		// the first enrolment.
-		return newKVServiceAdapter(svc, registerer, lookup)
+		return nil, ErrTransactionServiceRequired
 	}
 	return &guardedKVServiceAdapter{
 		kvServiceAdapter: &kvServiceAdapter{
@@ -77,7 +87,7 @@ func newGuardedKVServiceAdapter(svc service.KVServicer, txSvc service.Transactio
 			lookup:     lookup,
 		},
 		txSvc: txSvc,
-	}
+	}, nil
 }
 
 // guardedKVServiceAdapter is the plain adapter plus the transaction plane.
@@ -107,32 +117,17 @@ type guardedKVServiceAdapter struct {
 // A transaction whose compare fails is a RESULT, not an error: the guard did
 // not hold, nothing was written, and applied=false says so.
 func (a *guardedKVServiceAdapter) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
-	if a.txSvc == nil {
-		// Only reachable if someone constructs this type with a nil servicer.
-		// A store that cannot honour the guarantee must say so rather than
-		// panic or, worse, appear to have applied the write.
-		return false, &service.SMNotConfiguredError{Message: "transaction service not configured"}
-	}
+	return a.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
 
-	ops := make([]service.Op, 0, len(writes))
-	for _, w := range writes {
-		ops = append(ops, service.Op{
-			Type:  service.OpPut,
-			Key:   []byte(w.Key),
-			Value: w.Value,
-		})
-	}
-
-	resp, err := a.txSvc.Execute(ctx, []service.Compare{{
-		Key:    []byte(guardKey),
-		Target: service.CompareValue,
-		Result: service.CompareEqual,
-		Value:  guardValue,
-	}}, ops, nil)
-	if err != nil {
-		return false, err
-	}
-	return resp.Succeeded, nil
+// PutAllIfAllUnchanged applies every write atomically, and only while EVERY
+// guard's key still holds its expected value — the same guarantee
+// PutAllIfUnchanged makes, generalized to more than one guard key
+// (go-qrdb#555). The implementation is lifecycle.ExecuteGuardedBatch, the one
+// shared by every guarded adapter, so the guard encoding and the capability
+// refusal are identical to the embedded composition's.
+func (a *guardedKVServiceAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return lifecycle.ExecuteGuardedBatch(ctx, a.txSvc, guards, writes)
 }
 
 // Put stores a key-value pair through the Raft-replicated KV service.

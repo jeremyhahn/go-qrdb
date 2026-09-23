@@ -144,11 +144,12 @@ func TestCanonicalizePath_SymlinkLoopReturnsError(t *testing.T) {
 func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	// replicaID = 0 triggers idNode = 1 inside bootstrapUserRoleStores.
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 0, // shardID=1, replicaID=0
 		&mockTenantServicer{}, false, nil, "", nil,
 	)
@@ -163,11 +164,12 @@ func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	// 1024 > snowflakeMaxNode (1023) → NewSnowflakeGenerator returns error.
 	_, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1024,
 		&mockTenantServicer{}, false, nil, "", nil,
 	)
@@ -187,17 +189,18 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 	)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
 	authResult, err := bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
+		context.Background(), mgmt, dataDir, node,
 		audit.NewNoopLogger(),
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
@@ -222,10 +225,11 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 	)
 	require.NoError(t, err)
@@ -233,7 +237,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	dataDir := t.TempDir()
 	// nil complianceAudit → custodian.NewService returns ErrNilAuditLogger.
 	_, err = bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
+		context.Background(), mgmt, dataDir, node,
 		nil, // nil complianceAudit
 		false, "",
 		qrdbconfig.AuthABACConfig{},
@@ -522,7 +526,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -568,7 +572,7 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -608,7 +612,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -700,7 +704,7 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -727,9 +731,21 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRunStart_DynamicMembership_FailsAndReturns covers the dynamic membership
-// conditional (lines 1373-1379) by using dynamicMembership=true with a memory
-// SM (which has no lease service), causing startDynamicMembership to fail.
-// The function returns an error deterministically without needing SIGTERM.
+// conditional (lines 1373-1379) by using dynamicMembership=true with the
+// "pebble" SM, causing startDynamicMembership to fail.
+//
+// "pebble" is used deliberately rather than "memory": go-qrdb#555's boot-time
+// capability probe now refuses "memory" (and "concurrent") before first boot
+// completes at all, which would make this test fail at an earlier, unrelated
+// point and never reach the dynamic-membership code path under test.
+// "pebble" gets past first boot (it supports the guarded-batch capability
+// atomic role/user creation needs) but still has no MVCC revision history —
+// membership registration grants a lease, which requires one — so
+// startDynamicMembership fails for the SAME reason "memory" used to,
+// verified below by asserting on the actual error text rather than merely
+// its presence, so a future change that gives "pebble" real MVCC support
+// (unlike this test's premise) turns this red instead of silently
+// vacuous.
 func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 	dir := t.TempDir()
 
@@ -744,7 +760,7 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:           dir,
-		smType:            "memory", // no lease/watch service → startDynamicMembership fails
+		smType:            "pebble", // guarded-batch capable, but no MVCC/lease support
 		discoveryMethod:   "static",
 		peers:             []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:            fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -763,7 +779,9 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 
 	err = runStart(f)
 	require.Error(t, err,
-		"runStart must fail when startDynamicMembership fails due to missing lease service")
+		"runStart must fail when startDynamicMembership fails due to the state machine lacking MVCC/lease support")
+	require.Contains(t, err.Error(), "MVCC",
+		"expected the failure to name the missing MVCC/lease capability, not some unrelated error")
 }
 
 // ---------------------------------------------------------------------------
@@ -788,7 +806,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),

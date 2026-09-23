@@ -31,8 +31,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -129,6 +131,15 @@ type UserCreator interface {
 	CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 }
 
+// UserResolver looks a user up by its tenant-scoped username. qrdb's own
+// user.UserServicer satisfies it; it exists so createAdminUser can verify a
+// create-time collision on the admin's fixed, well-known username actually
+// names the admin, the same way role.NameResolver lets registerBuiltInRoles
+// verify a built-in role collision (go-qrdb#555).
+type UserResolver interface {
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
+}
+
 // Dependencies is the small set of services the bootstrap needs. Pass
 // by interface so the same package works for any binary in the stack.
 // qrdb's own tenant/user/role Servicer interfaces satisfy these narrower
@@ -160,6 +171,14 @@ type Dependencies struct {
 	// resolve them, first-boot fails with UnresolvableSystemRoleError
 	// rather than writing a guessed grant.
 	RoleResolver role.NameResolver
+
+	// UserResolver looks the admin user up by username so createAdminUser can
+	// verify a create-time collision — on either the admin's generated id or
+	// its fixed username — actually names the admin before treating it as
+	// this run's own idempotent re-attempt. Leaving it nil is safe when Users
+	// itself implements UserResolver — qrdb's own user.UserServicer does, and
+	// it is then used automatically.
+	UserResolver UserResolver
 
 	// CA issues the platform admin certificate (Path A: generate-and-distribute).
 	// Optional: used when no AdminCSRPEM is supplied.
@@ -373,6 +392,53 @@ func roleResolver(deps Dependencies) role.NameResolver {
 	return nil
 }
 
+// userResolver returns the seam createAdminUser uses to verify a create-time
+// collision names the admin, preferring an explicit Dependencies.UserResolver
+// and falling back to Users itself when it happens to implement UserResolver
+// — mirroring roleResolver's fallback for the same reason.
+func userResolver(deps Dependencies) UserResolver {
+	if deps.UserResolver != nil {
+		return deps.UserResolver
+	}
+	if r, ok := deps.Users.(UserResolver); ok {
+		return r
+	}
+	return nil
+}
+
+// adminUserAlreadyExists reports whether tenantID already holds the admin
+// this first boot would have created, verified by reading the record back
+// rather than assumed from the create error's type alone.
+//
+// "The admin" means every property first boot itself gives the account, not
+// only its username: the persisted record must name adminUsername in
+// tenantID, hold adminRoleID (the tenant-scoped Admin role), carry
+// System == false (first boot never creates a system user), and be in a
+// defined, non-terminal lifecycle. The lifecycle is deliberately NOT pinned to
+// active: an operator may since have suspended, locked or disabled the admin,
+// and a re-run must stay idempotent across that. What it must never adopt is a
+// record that is no account at all — deleting, or a state this build does not
+// know — nor an unrelated user that merely holds the username.
+//
+// A nil resolver, a lookup error, or a nil result all report false: this
+// function fails closed, since the caller's only alternative on a false is
+// to refuse the whole first-boot run rather than silently accept a
+// collision it cannot verify.
+func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID, adminRoleID string) bool {
+	if resolver == nil {
+		return false
+	}
+	existing, err := resolver.GetUserByUsername(ctx, tenantID, adminUsername)
+	if err != nil || existing == nil {
+		return false
+	}
+	return existing.TenantID == tenantID &&
+		existing.Username == adminUsername &&
+		slices.Contains(existing.RoleIDs, adminRoleID) &&
+		!existing.System &&
+		existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal()
+}
+
 // registerBuiltInRoles installs every role returned by role.BuiltInRoles
 // under the supplied tenant. Already-exists for any individual role is
 // treated as idempotent success; only structural errors propagate.
@@ -381,6 +447,38 @@ func roleResolver(deps Dependencies) role.NameResolver {
 // a store this run seeded — where deriving a system role ID is exactly right,
 // because it is the identifier just written — from one seeded earlier, whose
 // identifiers this code may be unable to derive at all.
+//
+// Two DIFFERENT "already exists" outcomes are tolerated, and BOTH are
+// verified by reading the persisted record back — see
+// builtInRoleAlreadySeeded, which every branch below calls with the checkID
+// value matching its collision kind:
+//
+//   - A name collision (RoleNameExistsError) does not need the persisted id
+//     to equal the freshly derived one: role.SystemRoleID's derivation has
+//     changed hash algorithm before (FIPS 140-3's move off SHA-1), and a
+//     cluster seeded under the retired scheme keeps its roles under their
+//     legacy identifiers rather than this run treating the mismatch as a
+//     reason to refuse. Every OTHER field — tenant, name, System, and the
+//     permission set — must still match exactly: an earlier release
+//     persisted every built-in role with System: false (CreateRoleRequest
+//     had no such field then), and accepting a record like that here would
+//     leave a reserved-name role mutable and deletable through the ordinary
+//     role APIs.
+//   - An id collision (RoleIDExistsError) does not answer "is this already
+//     seeded" from the error alone — see go-qrdb#555. CreateRole's atomic
+//     path guards the id claim and the name together and diagnoses the id
+//     first, so two concurrent first-boot attempts for the SAME built-in
+//     role (the common case an id collision means here) are
+//     indistinguishable, by error type alone, from an id chosen by an
+//     unrelated caller that happens to collide.
+//     This function is the one place trusted to tell them apart, because it
+//     — and only it — knows the FULL canonical definition an id collision
+//     might legitimately mean: it reads the persisted record back by name
+//     and refuses unless every field, id included, matches exactly.
+//     CreateRole itself is never asked to make this judgment, on purpose: a
+//     general create endpoint accepting "same name and a guessed id means
+//     treat it as mine" would let any caller holding roles:create adopt
+//     another actor's in-flight or malformed role.
 func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) (preexisting bool, err error) {
 	roles := role.BuiltInRoles(tenantID)
 	// Under the standard (non-strict) posture also seed the Owner
@@ -390,6 +488,7 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 	if !deps.SeparationOfDuties {
 		roles = append(roles, role.OwnerRole(tenantID))
 	}
+	resolver := roleResolver(deps)
 	for _, r := range roles {
 		_, createErr := deps.Roles.CreateRole(ctx, &role.CreateRoleRequest{
 			ID:          r.ID,
@@ -408,8 +507,33 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 		}
 		var nameExists *role.RoleNameExistsError
 		if errors.As(createErr, &nameExists) {
-			deps.Logger.Debug("first-boot: role already exists",
+			// A reserved built-in name can only ever denote its one
+			// canonical role (pkg/role's requireCanonicalSystemRole pins the
+			// id a canonical name may be created with), but this function
+			// verifies anyway rather than trusting the error alone: the same
+			// provenance check the id-collision branch below performs is run
+			// here too, so a record reached by name with an unexpected id,
+			// tenant, permission set, or a System flag that does not match
+			// the canonical definition is refused rather than silently
+			// accepted as this run's own seed.
+			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r, false) {
+				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
+			}
+			deps.Logger.Debug("first-boot: role already exists (verified identical)",
 				slog.String("name", r.Name),
+				slog.String("tenant", tenantID),
+			)
+			preexisting = true
+			continue
+		}
+		var idExists *role.RoleIDExistsError
+		if errors.As(createErr, &idExists) {
+			if !builtInRoleAlreadySeeded(ctx, resolver, tenantID, r, true) {
+				return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
+			}
+			deps.Logger.Debug("first-boot: role already exists (verified identical)",
+				slog.String("name", r.Name),
+				slog.String("id", r.ID),
 				slog.String("tenant", tenantID),
 			)
 			preexisting = true
@@ -419,6 +543,99 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 	}
 	return preexisting, nil
 }
+
+// builtInRoleAlreadySeeded reports whether the tenant already holds a role
+// named want.Name whose persisted tenant, name, System flag, and permission
+// set are EXACTLY want's — the only condition under which a collision on a
+// built-in role's create is safe to treat as "this run's own idempotent
+// re-attempt" rather than a genuine, unexplained conflict. checkID selects
+// whether the persisted id must ALSO equal want.ID exactly.
+//
+// checkID must be false for a RoleNameExistsError and true for a
+// RoleIDExistsError; registerBuiltInRoles' two call sites pass the matching
+// value and this is not a caller-tunable safety knob.
+//
+//   - On a NAME collision the store's own name-uniqueness rule already
+//     proves the record this function reads back IS the one blocking the
+//     create — there is exactly one way to be blocked on a canonical name.
+//     Its id is deliberately NOT required to equal want.ID:
+//     role.SystemRoleID's derivation has changed hash algorithm before
+//     (UUIDv5/SHA-1 to UUIDv8/SHA-256, for FIPS 140-3), and a cluster seeded
+//     under the retired scheme keeps its roles under their legacy
+//     identifiers rather than this run silently trying to mint a second
+//     "admin" role under the current one.
+//   - On an ID collision, want.ID already names SOME record, but the record
+//     found by NAME could be a different one entirely — an unrelated custom
+//     role might coincidentally claim the canonical name while a wholly
+//     separate record blocks the id. checkID=true confirms the record this
+//     function reads back is the SAME one causing the id collision before
+//     trusting it, closing the provenance gap go-qrdb#555's review raised:
+//     a general CreateRole caller must not be able to adopt another actor's
+//     role by supplying its name and a guessed id.
+//
+// Every field want.System distinguishes is checked independently in BOTH
+// cases, not inferred from the others matching: a persisted record whose id,
+// tenant, and permissions all match while System is false was possible under
+// an older release that predates deriving System from the canonical name
+// (rather than accepting it on the request), and accepting such a record here
+// would leave a role with a reserved name mutable and deletable through the
+// ordinary role APIs — silently defeating the immutability a built-in role
+// is supposed to have. Name is checked for the same reason on the
+// id-collision path, where the record was reached by id rather than by the
+// name this comparison assumes.
+//
+// A nil resolver, a lookup error, a nil result, or any field that does not
+// match all report false: this function fails closed, since the caller's
+// only alternative on a false is to refuse the whole first-boot run rather
+// than silently accept a role it cannot verify.
+func builtInRoleAlreadySeeded(ctx context.Context, resolver role.NameResolver, tenantID string, want *role.Role, checkID bool) bool {
+	if resolver == nil {
+		return false
+	}
+	existing, err := resolver.GetRoleByName(ctx, tenantID, want.Name)
+	if err != nil || existing == nil {
+		return false
+	}
+	if checkID && existing.ID != want.ID {
+		return false
+	}
+	if existing.TenantID != want.TenantID {
+		return false
+	}
+	if existing.Name != want.Name || existing.System != want.System {
+		return false
+	}
+	return permissionSetsEqual(existing.Permissions, want.Permissions)
+}
+
+// permissionSetsEqual compares two permission lists as SETS: a grant's
+// meaning does not depend on the order permissions were listed in, and a
+// repeated permission grants nothing beyond one occurrence of it.
+func permissionSetsEqual(a, b []permission.Permission) bool {
+	as := make(map[permission.Permission]struct{}, len(a))
+	for _, p := range a {
+		as[p] = struct{}{}
+	}
+	bs := make(map[permission.Permission]struct{}, len(b))
+	for _, p := range b {
+		bs[p] = struct{}{}
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for p := range as {
+		if _, ok := bs[p]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// adminCreateAttempts bounds createAdminUser's retries of a generated-id
+// collision with some other user. Each attempt draws a fresh id, so a second
+// collision is already vanishingly unlikely; the bound exists so a store that
+// reports the collision for every id cannot loop first boot forever.
+const adminCreateAttempts = 3
 
 // createAdminUser creates the platform admin user inside the supplied
 // tenant with a single role grant: Admin in that tenant. When tenantID
@@ -561,30 +778,58 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 		roleIDs = append(roleIDs, ownerRoleID)
 	}
 
-	adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
-		// The firstboot admin authenticates by certificate, not by an email login
-		// key, so the omission is declared rather than defaulted (#190).
-		WithoutEmailLoginKey: true,
-		Username:             adminUsername,
-		TenantID:             tenantID,
-		RoleIDs:              roleIDs,
-	})
-	if createErr == nil {
-		deps.Logger.Info("first-boot: admin user created",
-			slog.String("username", adminUsername),
+	// A concurrent bootstrap attempt racing for the SAME fixed admin username
+	// can lose on EITHER guard the atomic create batch holds: UsernameExistsError
+	// when the username collided, or UserIDExistsError when the attempt's
+	// generated id collided (go-qrdb#555's own failure shape — independently
+	// seeded nodes racing first-boot). Either is first checked against the
+	// persisted admin (adminUserAlreadyExists); a verified admin is this run's
+	// idempotent success.
+	//
+	// An id collision that is NOT the admin — the generated id repeated some
+	// other user's — says nothing about the admin at all: the username was
+	// never the problem. The store generates a fresh id on every call, so it
+	// is retried, a bounded number of times. A username held by anyone but
+	// the admin is never retried: that is a squatter, and first boot refuses.
+	users := userResolver(deps)
+	for attempt := 1; ; attempt++ {
+		adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
+			// The firstboot admin authenticates by certificate, not by an email
+			// login key, so the omission is declared rather than defaulted (#190).
+			WithoutEmailLoginKey: true,
+			Username:             adminUsername,
+			TenantID:             tenantID,
+			RoleIDs:              roleIDs,
+		})
+		if createErr == nil {
+			deps.Logger.Info("first-boot: admin user created",
+				slog.String("username", adminUsername),
+				slog.String("tenant", tenantID),
+				slog.Any("role_ids", roleIDs),
+				slog.Bool("separation_of_duties", deps.SeparationOfDuties),
+			)
+			return adminUser, true, nil
+		}
+		var usernameExists *user.UsernameExistsError
+		var idExists *user.UserIDExistsError
+		usernameTaken := errors.As(createErr, &usernameExists)
+		idTaken := errors.As(createErr, &idExists)
+		if !usernameTaken && !idTaken {
+			return nil, false, &AdminUserCreationError{Cause: createErr}
+		}
+		if adminUserAlreadyExists(ctx, users, tenantID, adminRoleID) {
+			deps.Logger.Debug("first-boot: admin user already exists (verified)",
+				slog.String("username", adminUsername),
+				slog.String("tenant", tenantID),
+			)
+			return nil, false, nil
+		}
+		if usernameTaken || attempt >= adminCreateAttempts {
+			return nil, false, &AdminUserCreationError{Cause: createErr}
+		}
+		deps.Logger.Info("first-boot: generated admin id collided with another user; retrying with a fresh id",
+			slog.Int("attempt", attempt),
 			slog.String("tenant", tenantID),
-			slog.Any("role_ids", roleIDs),
-			slog.Bool("separation_of_duties", deps.SeparationOfDuties),
 		)
-		return adminUser, true, nil
 	}
-	var usernameExists *user.UsernameExistsError
-	if errors.As(createErr, &usernameExists) {
-		deps.Logger.Debug("first-boot: admin user already exists",
-			slog.String("username", adminUsername),
-			slog.String("tenant", tenantID),
-		)
-		return nil, false, nil
-	}
-	return nil, false, &AdminUserCreationError{Cause: createErr}
 }

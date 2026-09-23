@@ -2517,13 +2517,19 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// all the way through to runStart: host creation, startShard success,
 	// TLS generation, service creation, and server start. It will block on
 	// waitForSignal, so we send SIGINT shortly after to unblock.
+	//
+	// --sm pebble, not memory (despite the test's name, kept for the
+	// NoPeers sibling which fails before reaching first-boot and is
+	// unaffected): first-boot's atomic role/user creation (go-qrdb#555)
+	// needs a state machine with MVCC/transaction support, which "memory"
+	// does not have, and THIS test runs all the way through first-boot.
 	dir := t.TempDir()
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"--sm", "memory",
+		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", "1=127.0.0.1:63001",
 		"--data-dir", dir,

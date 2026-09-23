@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -513,6 +514,60 @@ func TestMapServiceError_NotLeaderError(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "not leader") {
 		t.Fatalf("expected payload to contain 'not leader', got %q", string(payload))
+	}
+}
+
+// TestMapServiceError_TakenIdentity pins the taken-identity family —
+// username, email, and go-qrdb#555's generated user id — to
+// StatusAlreadyExists, the answer REST (409) and gRPC give each, rather than
+// the generic StatusError. The payload must carry the conflicting handle.
+func TestMapServiceError_TakenIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		needle string
+	}{
+		{name: "username", err: &user.UsernameExistsError{Username: "alice", TenantID: "t1"}, needle: "alice"},
+		{name: "email", err: &user.EmailExistsError{Email: "a@example.com", TenantID: "t1"}, needle: "a@example.com"},
+		{name: "generated user id", err: &user.UserIDExistsError{ID: 42, TenantID: "t1"}, needle: "42"},
+		{name: "wrapped by the store", err: &user.StoreError{Op: "create", Err: &user.UsernameExistsError{Username: "bob"}}, needle: "bob"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statusCode, payload := mapServiceError(tc.err)
+			if statusCode != wire.StatusAlreadyExists {
+				t.Fatalf("status = %d, want StatusAlreadyExists (%d)", statusCode, wire.StatusAlreadyExists)
+			}
+			if !strings.Contains(string(payload), tc.needle) {
+				t.Errorf("payload %q does not name %q", payload, tc.needle)
+			}
+		})
+	}
+}
+
+// TestMapServiceError_IndexCompensationOutranksTakenIdentity pins the arm
+// order: a create whose rollback FAILED after a taken-identity collision is
+// DataLoss, not the AlreadyExists the collision alone would produce, exactly
+// as REST (500) and gRPC (DataLoss) report it.
+func TestMapServiceError_IndexCompensationOutranksTakenIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "username", cause: &user.UsernameExistsError{Username: "alice"}},
+		{name: "email", cause: &user.EmailExistsError{Email: "a@example.com"}},
+		{name: "generated user id", cause: &user.UserIDExistsError{ID: 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &user.IndexCompensationError{
+				Op:       "create",
+				UserID:   7,
+				Cause:    tc.cause,
+				Failures: []error{errors.New("release failed")},
+			}
+			if statusCode, _ := mapServiceError(err); statusCode != wire.StatusDataLoss {
+				t.Fatalf("status = %d, want StatusDataLoss (%d)", statusCode, wire.StatusDataLoss)
+			}
+		})
 	}
 }
 

@@ -37,7 +37,13 @@ const (
 )
 
 // legacyRoleResolver answers as a store seeded before the migration would:
-// every system role resolves to its legacy identifier.
+// every system role resolves to its legacy identifier, with the SAME
+// permission set and System flag the canonical built-in definition carries —
+// so registerBuiltInRoles' provenance check (go-qrdb#555) verifies a
+// legacy-identified record exactly as it would a freshly seeded one. Only
+// Admin and Owner predate the migration this fixture models: SO, Operator,
+// User, Auditor, and Custodian are newer roles a legacy store never had, so
+// this resolver reports them not-found like a real one would.
 type legacyRoleResolver struct {
 	err error
 }
@@ -46,15 +52,31 @@ func (l legacyRoleResolver) GetRoleByName(_ context.Context, tenantID, name stri
 	if l.err != nil {
 		return nil, l.err
 	}
-	ids := map[string]string{
-		role.RoleNameAdmin: legacyAdminRoleIDSystem,
-		role.RoleNameOwner: legacyOwnerRoleIDSystem,
+	switch name {
+	case role.RoleNameAdmin:
+		return &role.Role{
+			ID: legacyAdminRoleIDSystem, Name: name, TenantID: tenantID, System: true,
+			Permissions: adminBuiltInRole(tenantID).Permissions,
+		}, nil
+	case role.RoleNameOwner:
+		return &role.Role{
+			ID: legacyOwnerRoleIDSystem, Name: name, TenantID: tenantID, System: true,
+			Permissions: role.OwnerRole(tenantID).Permissions,
+		}, nil
 	}
-	id, ok := ids[name]
-	if !ok {
-		return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
+	return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
+}
+
+// adminBuiltInRole returns the canonical Admin definition out of
+// role.BuiltInRoles, which returns the full built-in set rather than one role
+// by name.
+func adminBuiltInRole(tenantID string) *role.Role {
+	for _, r := range role.BuiltInRoles(tenantID) {
+		if r.Name == role.RoleNameAdmin {
+			return r
+		}
 	}
-	return &role.Role{ID: id, Name: name, TenantID: tenantID, System: true}, nil
+	panic("firstboot test: role.BuiltInRoles no longer includes Admin")
 }
 
 func TestInitialize_GrantsLegacyRoleIdentifiersWhenAlreadySeeded(t *testing.T) {
@@ -124,8 +146,13 @@ func TestInitialize_FailsWhenRoleIdentifierResolutionFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // legacyRoleCreator is a RoleCreator that ALSO satisfies role.NameResolver,
-// exactly as qrdb's own role.RoleServicer does. It reports every system role
-// as already present under its legacy identifier.
+// exactly as qrdb's own role.RoleServicer does. It reports a role as already
+// present ONLY for the names its embedded legacyRoleResolver can actually
+// resolve (Admin, Owner) — a real legacy store predating SO/Operator/User/
+// Auditor/Custodian would create those fresh, not report them as existing
+// under an identifier it has never heard of, and registerBuiltInRoles'
+// provenance check (go-qrdb#555) needs a resolver answer it can verify for
+// every "already exists" response this double gives.
 type legacyRoleCreator struct {
 	legacyRoleResolver
 	createCalls int
@@ -133,7 +160,10 @@ type legacyRoleCreator struct {
 
 func (l *legacyRoleCreator) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	l.createCalls++
-	return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	if _, err := l.legacyRoleResolver.GetRoleByName(context.Background(), req.TenantID, req.Name); err == nil {
+		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	}
+	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions, System: role.IsSystemRoleName(req.Name)}, nil
 }
 
 func TestInitialize_UsesRolesAsResolverWhenRoleResolverOmitted(t *testing.T) {
@@ -177,6 +207,14 @@ func TestInitialize_RefusesToGuessWhenRolesPreexistAndNothingResolves(t *testing
 	// Roles already there, nothing able to resolve them: the derived
 	// identifier is a guess, and on a pre-migration cluster it is the wrong
 	// one. Fail loudly instead of creating an admin who holds nothing.
+	//
+	// It now fails at registerBuiltInRoles itself, EARLIER than it used to:
+	// go-qrdb#555's provenance check refuses to treat a name collision as
+	// idempotent without a resolver to verify it against, rather than
+	// accepting it blindly and discovering the same lack of a resolver only
+	// later, while resolving the admin grant's role identifiers. Both are
+	// "fail loudly instead of guessing"; this is the earlier, safer point at
+	// which nothing can be verified.
 	users := &fakeUsers{}
 	_, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{},
@@ -185,9 +223,9 @@ func TestInitialize_RefusesToGuessWhenRolesPreexistAndNothingResolves(t *testing
 		Logger:  discardLogger(),
 	})
 
-	var unresolvable *UnresolvableSystemRoleError
-	if !errors.As(err, &unresolvable) {
-		t.Fatalf("err = %v (%T), want *UnresolvableSystemRoleError", err, err)
+	var registrationErr *RolesRegistrationError
+	if !errors.As(err, &registrationErr) {
+		t.Fatalf("err = %v (%T), want *RolesRegistrationError", err, err)
 	}
 	if len(users.createCalls) != 0 {
 		t.Errorf("admin was created with RoleIDs %v despite unresolvable roles", users.createCalls[0].RoleIDs)

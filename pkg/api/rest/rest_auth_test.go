@@ -2363,6 +2363,15 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
+			// A store-generated user id collided with an existing identity
+			// claim or primary record (go-qrdb#555's atomic create path) — a
+			// client-correctable conflict exactly as a taken username is, not
+			// a server fault.
+			name:     "UserIDExistsError",
+			err:      &user.UserIDExistsError{ID: 42, TenantID: "t1"},
+			wantCode: http.StatusConflict,
+		},
+		{
 			// A taken email is a client-correctable conflict, not a server
 			// fault. Before this case it fell through to the StoreError arm
 			// and surfaced as 500 (Codex review, PR #191).
@@ -2442,6 +2451,19 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			err: &user.IndexCompensationError{
 				Op: "create", UserID: 7,
 				Cause:    &user.UsernameExistsError{Username: "a"},
+				Failures: []error{errors.New("release failed")},
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			// The atomic-create sibling (go-qrdb#555): a generated id
+			// collision as the wrapper's cause must outrank the plain 409
+			// the cause alone would produce, the same way the username and
+			// email causes above do.
+			name: "IndexCompensationError wrapping UserIDExistsError",
+			err: &user.IndexCompensationError{
+				Op: "create", UserID: 7,
+				Cause:    &user.UserIDExistsError{ID: 7},
 				Failures: []error{errors.New("release failed")},
 			},
 			wantCode: http.StatusInternalServerError,

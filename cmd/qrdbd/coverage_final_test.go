@@ -270,7 +270,8 @@ func TestBootstrapUserRoleStores_FirstBootFails_NoLeader(t *testing.T) {
 		},
 	}
 
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	tx := newMockTransactionServicer(store)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

@@ -227,6 +227,17 @@ type fakeRoles struct {
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	f.createCalls = append(f.createCalls, *req)
 	if f.existsByName[req.Name] {
+		// Record what is "already persisted" as field-for-field identical to
+		// this request — a restart or another node's own successful attempt
+		// — so GetRoleByName below can find it. go-qrdb#555's provenance
+		// check (registerBuiltInRoles) reads this back and refuses the
+		// collision as unverifiable if it cannot: a fakeRoles that reported
+		// "already exists" without ever remembering a matching record would
+		// make every idempotent re-run fail, not merely fail to prove.
+		f.seeded = append(f.seeded, role.Role{
+			ID: req.ID, Name: req.Name, TenantID: req.TenantID,
+			Permissions: req.Permissions, System: role.IsSystemRoleName(req.Name),
+		})
 		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 	}
 	if f.createErr != nil {
@@ -502,10 +513,21 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 		t.Fatalf("first BootstrapSystem: %v", err)
 	}
 
-	// Second run: barrier already initialized, first-boot idempotent.
+	// Second run: barrier already initialized, first-boot idempotent. Users
+	// is a fakeUsersWithLookup, not plain fakeUsers: go-qrdb#555's
+	// provenance check (createAdminUser) now verifies a username collision
+	// by reading the record back, exactly as a real user.UserServicer would
+	// let it, rather than trusting UsernameExistsError alone.
 	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true},
-		Users:   &fakeUsers{exists: true},
+		Users: &fakeUsersWithLookup{
+			fakeUsers: fakeUsers{exists: true},
+			lookupUser: &user.User{
+				ID: 1, Username: "admin", TenantID: tenant.SystemTenantID,
+				RoleIDs:   []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+				Lifecycle: user.LifecycleActive,
+			},
+		},
 		Roles: &fakeRoles{existsByName: map[string]bool{
 			role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
 			role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,

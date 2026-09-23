@@ -489,7 +489,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
-	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble, memory, concurrent")
+	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble (default), mvcc or mvcc-fast. The other registered types (memory, standard, concurrent, fast, disk, highperf, regular) have no transaction subsystem and are refused at every start")
 	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk")
 	cmd.Flags().StringVar(&f.smStorage, "sm-storage", "", "Storage backend for the storage-generic state machines (sm type disk/fast): pebble (default), file, memory")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
@@ -1720,7 +1720,7 @@ func runStart(f *startFlags) (err error) {
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
 
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -1743,7 +1743,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3170,7 +3170,7 @@ type authBootstrapResult struct {
 // the structurally-privileged system tenant. Required (non-nil): tests
 // supply a small in-memory tenant servicer; production startup wires
 // the real one from svcNode.Tenant.
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -3181,6 +3181,18 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	userIDGen, err := dao.NewSnowflakeGenerator(idNode)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user id generator", Err: err}
+	}
+
+	// A leader must be known before the capability probe below can mean
+	// anything: PutAllIfUnchanged proposes through Raft, and a probe run
+	// before any leader is elected would see NotLeader and could not tell
+	// "no leader yet" apart from "this state machine cannot do this at
+	// all". runFirstBoot waits again once it starts its own sequence; that
+	// second wait is cheap (GetLeaderID is a local, already-known answer
+	// once a leader exists) and keeps this function independently correct
+	// rather than relying on ordering against its caller.
+	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
+		return nil, &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 
 	// Create bootstrap stores backed by StaleRead for initial setup.
@@ -3196,8 +3208,46 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// tenant.IdentityNamespace is the single formula both sides call. Building
 	// the prefix by hand here is what the whole class of write-path/read-path
 	// divergences has come from.
+	//
+	// GUARDED: the boot store is where firstboot creates the built-in roles
+	// and the platform admin, and go-qrdb#555 found that a Raft leadership
+	// change between the identity claim and the record's own first write —
+	// or between any two of the record's own several writes — left a
+	// permanently unrecoverable partial state, because completing OR rolling
+	// back the remainder needs the very leadership that was just lost. The
+	// guarded adapter is what lets role.WithAtomicIdentity /
+	// user.WithAtomicIdentity below commit the claim and every write as ONE
+	// proposal instead. txSvc is threaded in for exactly this; every raft
+	// node this daemon builds constructs one unconditionally
+	// (pkg/server/lifecycle.BuildServices), so this does not newly require
+	// anything a production node does not already have.
+	guardedBootAdapter, gerr := newGuardedKVServiceAdapter(bootKVSvc, txSvc, nil, nil)
+	if gerr != nil {
+		return nil, &AuthBootstrapError{Step: "boot store adapter", Err: gerr}
+	}
+	// FAIL CLOSED here, not at the first CreateRole/CreateUser call: a
+	// non-nil txSvc makes guardedBootAdapter satisfy
+	// kvstore.MultiGuardedBatchKVStore at the TYPE level unconditionally, but
+	// only a state machine with the MVCC/transaction subsystem can evaluate
+	// the batch. kvstore.ProbeGuardedBatch asks the shard this daemon
+	// actually started, with a genuine no-op proposal. The leader wait above
+	// has already run, so an inconclusive probe is a failure here too, not
+	// something to start past — except NotLeader; see requireGuardedBatch.
+	//
+	// This runs on EVERY start, not only the first: the runtime stores below
+	// use the same atomic create path for every role and user created after
+	// first boot, so a node that cannot honour it must not serve.
+	guardedBatch, ok := guardedBootAdapter.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		// Unreachable: newGuardedKVServiceAdapter's success return always
+		// implements this. Defensive rather than a panic if that changes.
+		return nil, &AuthBootstrapError{Step: "boot store adapter", Err: ErrTransactionServiceRequired}
+	}
+	if err := requireGuardedBatch(ctx, guardedBatch); err != nil {
+		return nil, err
+	}
 	bootStore, err := kvstore.NewNamespacedKVStore(
-		newKVServiceAdapter(bootKVSvc, nil, nil),
+		guardedBootAdapter,
 		tenant.IdentityNamespace(tenant.SystemTenantID),
 	)
 	if err != nil {
@@ -3214,13 +3264,18 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot placement index", Err: err}
 	}
+	// WithAtomicIdentity is safe here — and ONLY here, never on a routed
+	// store — because bootIdentityIndex is built with tenant.NewIdentityIndex
+	// over bootStore itself: the claim and every record write this store
+	// makes land in the SAME physical store, by construction, not by
+	// assumption. See role.WithAtomicIdentity / user.WithAtomicIdentity.
 	bootUserSvc, err := user.NewStore(bootStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex))
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex), user.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
 	bootRoleSvc, err := role.NewStore(bootStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex))
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -3242,7 +3297,22 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// services so they address the same keys the routed services do for the
 	// system tenant — the invariant the comment on mgmtBootstrapResult
 	// describes and that authorization depends on.
-	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
+	//
+	// GUARDED, for the same go-qrdb#555 reason bootStore is above: userSvc
+	// and roleSvc are reached by the admin API for every role/user create
+	// AFTER first-boot too, not only during it, and this is the one
+	// canonical construction bootstrapAuthEnforcement's own runtime store
+	// reuses (mgmtBootstrapResult.legacyFactorStore) rather than building a
+	// second guarded adapter over the same underlying KVServicer.
+	// Not re-probed: runtimeKVSvc and bootKVSvc read the SAME shard through
+	// the SAME txSvc, so the capability kvstore.ProbeGuardedBatch already
+	// ran against bootStore above answers identically here — the state
+	// machine's transaction support is a property of the shard, not of
+	// which KVServicer consistency mode wraps it.
+	runtimeStore, gerr := newGuardedKVServiceAdapter(runtimeKVSvc, txSvc, nil, nil)
+	if gerr != nil {
+		return nil, &AuthBootstrapError{Step: "runtime store adapter", Err: gerr}
+	}
 	systemStore, err := kvstore.NewNamespacedKVStore(
 		runtimeStore, tenant.IdentityNamespace(tenant.SystemTenantID))
 	if err != nil {
@@ -3257,12 +3327,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		return nil, &AuthBootstrapError{Step: "system placement index", Err: err}
 	}
 	userSvc, err := user.NewStore(systemStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex))
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex), user.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
 	roleSvc, err := role.NewStore(systemStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex))
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -3334,18 +3404,19 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
-	// Create a runtime KV adapter for the custodian service store.
-	// The GUARDED adapter: the custodian service writes an enrolment's three
-	// keys as one transaction fenced on the username claim, and refuses to
-	// construct without that capability (go-qrdb#21). Handing it the plain
-	// adapter would fail the daemon at startup, which is the intended failure
-	// mode for a store that cannot fence an enrolment — but here the
-	// capability exists and simply has to be wired.
-	runtimeStore := newGuardedKVServiceAdapter(runtimeKVSvc, runtimeTxSvc, nil, nil)
+	// The custodian service store, reused from mgmt.legacyFactorStore rather
+	// than built again here: bootstrapUserRoleStores already constructed it
+	// as the ONE guarded adapter over this daemon's runtime KVServicer, and
+	// a second adapter instance over the identical underlying service would
+	// be the exact duplication the guarded-adapter wiring is meant to avoid
+	// (go-qrdb#555 owner ruling: "one canonical construction; nothing
+	// duplicated"). It already satisfies kvstore.GuardedBatchKVStore
+	// (go-qrdb#21) for the same reason it does there.
+	runtimeStore := mgmt.legacyFactorStore
 
 	// Per-decision audit rides the SAME tamper-evident chained event log as
 	// every other audited operation, via the decision bridge — one audit
@@ -3626,6 +3697,34 @@ func isNotLeader(err error) bool {
 	}
 	var raftErr *quicraft.NotLeaderError
 	return errors.As(err, &raftErr)
+}
+
+// requireGuardedBatch refuses to start a node whose state machine cannot
+// evaluate a guarded batch, asking it with kvstore.ProbeGuardedBatch.
+//
+// Three answers end the start: "unsupported" (the --sm type has no
+// MVCC/transaction subsystem), and any inconclusive failure other than
+// NotLeader — the caller has already waited for a leader, so a missing one
+// is not the explanation.
+//
+// NotLeader is the exception because it is not inconclusive about THIS
+// question so much as unanswerable here: only the leader can propose, so a
+// follower's probe always returns it, exactly as runFirstBoot's own writes
+// do. Every replica of the shard runs the same state machine, so the
+// leader's probe answers for all of them; a follower refusing on NotLeader
+// would stop every multi-node cluster from starting.
+func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchKVStore) error {
+	capable, err := kvstore.ProbeGuardedBatch(ctx, guarded)
+	switch {
+	case err != nil && isNotLeader(err):
+		slog.Info("guarded batch capability probe: not the leader; the leader's probe decides")
+		return nil
+	case err != nil:
+		return &AuthBootstrapError{Step: "guarded batch capability probe", Err: err}
+	case !capable:
+		return &AuthBootstrapError{Step: "atomic role/user creation requires an --sm state machine with transaction support", Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	return nil
 }
 
 // waitForLeaderElection polls GetLeaderID until a leader is known.

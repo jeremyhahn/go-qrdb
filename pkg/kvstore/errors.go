@@ -119,6 +119,72 @@ func (e *ConflictingIndexError) Error() string {
 	return "kvstore: index " + e.IndexName + " is already registered with a different definition"
 }
 
+// GuardedBatchUnsupportedError is returned by a MultiGuardedBatchKVStore
+// whose TYPE offers guarded batches but whose backing state machine refused
+// the transaction as a capability it was not built with — the "memory" and
+// "concurrent" state machines, which carry no MVCC/transaction subsystem, are
+// the production case. It is a statement about the NODE, not about the
+// request: the proposal committed and changed nothing.
+//
+// It matches ErrAtomicWriteUnsupported under errors.Is, so a caller that
+// needs the guarantee fails closed on the one sentinel, and Unwraps to the
+// backend's own refusal so its detail is not lost.
+type GuardedBatchUnsupportedError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the refused capability.
+func (e *GuardedBatchUnsupportedError) Error() string {
+	msg := "kvstore: backing state machine does not support guarded batches"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the backend's refusal.
+func (e *GuardedBatchUnsupportedError) Unwrap() error { return e.Err }
+
+// Is reports the ErrAtomicWriteUnsupported marker, and ErrNotApplied: a
+// refused capability wrote nothing.
+func (e *GuardedBatchUnsupportedError) Is(target error) bool {
+	return target == ErrAtomicWriteUnsupported || target == ErrNotApplied
+}
+
+// ErrNotApplied marks a conditional-write error that PROVES nothing was
+// written: the request was refused before it could commit — no leader to
+// propose it, a state machine without the capability, no transaction plane
+// at all. A caller holding an "outcome unknown" error must reconcile by
+// reading back; a caller holding this one need not, and should not wait for
+// a write that cannot appear.
+//
+// It is the kvstore-level twin of service.ErrNotStored, for callers that
+// cannot import the service layer. An unmarked error means the outcome is
+// unknown; the marker is opt-in and claimed only where it is proven.
+var ErrNotApplied = errors.New("kvstore: conditional write proven not applied")
+
+// NotAppliedError marks Err as proving nothing was written; see
+// ErrNotApplied. It matches ErrNotApplied under errors.Is and unwraps to Err,
+// so the cause stays classifiable.
+type NotAppliedError struct {
+	Err error
+}
+
+// Error returns the cause's message unchanged: the marker is a fact about
+// the error, not something to read in a log line.
+func (e *NotAppliedError) Error() string {
+	if e.Err == nil {
+		return ErrNotApplied.Error()
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the marked cause.
+func (e *NotAppliedError) Unwrap() error { return e.Err }
+
+// Is reports the ErrNotApplied marker.
+func (e *NotAppliedError) Is(target error) bool { return target == ErrNotApplied }
+
 // SealedError is returned when the KV store is sealed and cannot
 // process requests.
 type SealedError struct{}

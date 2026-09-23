@@ -821,6 +821,14 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	}
 
+	// A store-generated user id collided with an existing identity claim or
+	// primary record (go-qrdb#555) — AlreadyExists for the same reason a
+	// taken username is; without this it fell through to Internal.
+	var uide *user.UserIDExistsError
+	if errors.As(err, &uide) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
 	// A taken email is AlreadyExists for the same reason a taken username is;
 	// without this it fell through to Internal.
 	var eee *user.EmailExistsError

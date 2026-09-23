@@ -46,6 +46,7 @@ var classifierFixtures = []struct {
 	{"data plane: compacted revision", &service.RevisionCompactedError{}, codes.OutOfRange},
 	{"identity: missing user", &user.UserNotFoundError{ID: 3}, codes.NotFound},
 	{"identity: username taken", &user.UsernameExistsError{}, codes.AlreadyExists},
+	{"identity: generated user id collided", &user.UserIDExistsError{}, codes.AlreadyExists},
 	{"identity: thumbprint bound to another user", &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9}, codes.AlreadyExists},
 	{"identity: lost concurrent update", &user.ConcurrentUpdateError{}, codes.Aborted},
 	{"identity: missing role", &role.RoleNotFoundError{ID: "admin"}, codes.NotFound},
@@ -90,6 +91,7 @@ func TestServiceErrorCode_AgreesWithTheFamilyMapper(t *testing.T) {
 		{"data plane", &service.CapabilityUnsupportedError{Message: "x"}, mapServiceError},
 		{"identity", &user.UserNotFoundError{ID: 1}, mapAuthServiceError},
 		{"identity", &user.UsernameExistsError{}, mapAuthServiceError},
+		{"identity", &user.UserIDExistsError{}, mapAuthServiceError},
 		{"identity", &role.RoleNotFoundError{ID: "r"}, mapAuthServiceError},
 	} {
 		t.Run(tc.name+": "+tc.err.Error(), func(t *testing.T) {

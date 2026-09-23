@@ -114,6 +114,16 @@ wait for the writes to replicate. Nothing to do.
 this node's own failure and it is reported as itself — read the error. It is
 not a replication delay and waiting will not clear it.
 
+**"atomic role/user creation requires an --sm state machine with transaction
+support".** The daemon was started with a state machine type that has no
+MVCC/transaction subsystem — anything other than `pebble` (the default),
+`mvcc` or `mvcc-fast` — and role and user creation needs one. The check runs
+on every start, not only the first. On a fresh deployment nothing was created,
+so restart with `--sm pebble`, `--sm mvcc` or `--sm mvcc-fast`. An existing
+deployment on another type cannot switch — its data belongs to that state
+machine — and has to stay on the previous release for now. See
+[cli.md](cli.md#daemon-side-mode-selection).
+
 **The system started but the barrier is sealed.** Bootstrap does not unseal for
 you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 

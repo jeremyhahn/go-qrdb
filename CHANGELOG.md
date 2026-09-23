@@ -98,6 +98,58 @@ are not reconstructed here — their history is in the git log.
   alias and inherits the new signature automatically; every caller — in this
   repository and downstream (go-xkms's `NewLiteralSecretValue` wraps this
   function) — must be updated to check the error.
+- **BREAKING: `qrdbd start` refuses every `--sm` / `raft.sm_type` other than `pebble`, `mvcc`
+  and `mvcc-fast`, on EVERY start, not only the first.** `memory`, `standard`, `concurrent`,
+  `fast`, `disk`, `highperf` and `regular` have no transaction subsystem, and role and user
+  creation now commits atomically through one. The check runs right after leader election and
+  exits with `auth bootstrap failed at "atomic role/user creation requires an --sm state
+  machine with transaction support"`. **An already-bootstrapped deployment on one of those
+  types stops starting after this upgrade**, and cannot switch type because its data belongs to
+  that state machine: stay on the previous release until that state machine gains transaction
+  support. `configs/qrdb-dev.yaml` moves from `sm_type: memory` to `pebble` so it still starts;
+  it returns to memory once every state machine supports guarded batches. A follower defers to the
+  leader's probe (only the leader can propose); any other inconclusive probe also stops the
+  start.
+
+### Fixed
+
+- **Multi-node first boot no longer races on built-in roles and the admin user.** A role or
+  user create commits its identity claim, primary record and every secondary index as ONE
+  guarded proposal (`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`), so a leadership
+  change can no longer leave a claim without its record. A role guards its id claim and its
+  name together; a user guards its id claim, username and optional email together. First boot
+  verifies that a built-in role or admin already created by another node matches the canonical
+  definition instead of trusting the collision.
+- A lost response on that proposal is reconciled by polling the written keys (every 10 ms, up
+  to 5 s) rather than one read, so a create that committed on the cluster but was not yet
+  applied locally is not reported as failed and still emits its audit event. A losing create's
+  conflict diagnosis polls the same way, so a node reading stale local state still gets the
+  typed already-exists error first boot resolves.
+- A guard expecting a present, empty value (`kvstore.Guard{Value: []byte{}}`) no longer matches
+  an absent key.
+- `user.UserIDExistsError` (re-exported as `sdk.UserIDExistsError`) is a conflict on every
+  transport: REST 409, gRPC / Unix `ALREADY_EXISTS`, QUIC `StatusAlreadyExists`, MCP
+  `CodeAlreadyExists`. It previously fell through to an internal error.
+- QUIC answers a taken username (`user.UsernameExistsError`) or email
+  (`user.EmailExistsError`) with `StatusAlreadyExists`, as REST and gRPC already did, instead
+  of the generic `StatusError`. A failed rollback wrapping any of the three stays
+  `StatusDataLoss`.
+
+### Changed
+
+- The routed role/user services an embedded node exposes ask the state machine whether it
+  supports guarded batches (`kvstore.ProbeGuardedBatch`) instead of trusting the store's type,
+  and only when a role or user is CREATED in the system tenant; reads, lookups and permission
+  resolution never send the probe. A definitive "unsupported"
+  (`kvstore.GuardedBatchUnsupportedError`, matching `kvstore.ErrAtomicWriteUnsupported`) keeps
+  the system tenant on the sequential path; an inconclusive probe fails that one create and is
+  asked again.
+- A create refused in a way that proves nothing was written (`kvstore.ErrNotApplied`: a
+  propose-time `NotLeader`, an unsupported capability) returns at once instead of waiting out
+  the 5 s lost-response reconciliation.
+- First boot verifies an existing admin by its role, `System` flag and lifecycle, not only its
+  username, and retries a generated-id collision with some other user using a fresh id
+  instead of aborting.
 
 ## [0.20.6-alpha] - 2026-09-25
 

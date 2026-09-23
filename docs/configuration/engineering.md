@@ -132,7 +132,7 @@ Viper-bound, equivalent to their flags:
 | `--compaction-overhead`         | `raft.compaction_overhead`         |
 | `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
 | `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
-| `--sm`                          | `raft.sm_type`                     |
+| `--sm`                          | `raft.sm_type` (only `pebble`, `mvcc`, `mvcc-fast` start; the rest are refused at every start — see `../firstboot/cli.md`) |
 | `--tls-ca-file`                 | `tls.ca_file`                      |
 | `--tls-cert-file`               | `tls.cert_file`                    |
 | `--tls-key-file`                | `tls.key_file`                     |

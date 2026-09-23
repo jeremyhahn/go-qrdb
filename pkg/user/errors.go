@@ -48,6 +48,22 @@ func (e *UsernameExistsError) Error() string {
 	return "user: username already exists: " + e.Username + " in tenant " + e.TenantID
 }
 
+// UserIDExistsError is returned when a store-generated user id collides with
+// an existing identity claim or primary record. A fresh Snowflake id
+// essentially never collides within one generator, but two independently
+// seeded nodes racing to create the same deterministic bootstrap account can
+// produce it (go-qrdb#555), and the atomic create path guards against it
+// explicitly rather than assuming it away.
+type UserIDExistsError struct {
+	ID       uint64
+	TenantID string
+}
+
+// Error returns a human-readable description of the conflict.
+func (e *UserIDExistsError) Error() string {
+	return "user: id already exists: " + strconv.FormatUint(e.ID, 10) + " in tenant " + e.TenantID
+}
+
 // EmailExistsError is returned when an email login key is already taken within
 // the tenant. It is distinct from UsernameExistsError because the two handles
 // are independently unique: a caller that collides on one needs to know which.

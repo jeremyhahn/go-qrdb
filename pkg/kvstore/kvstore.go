@@ -228,10 +228,12 @@ type KV struct {
 // (go-qrdb#21, and the Codex finding on PR #111). Checking more often narrows
 // the window; only evaluating the guard and the writes together closes it.
 //
-// The guard is deliberately ONE key rather than a general compare set. Every
-// caller in this repository fences a multi-key write on a single ownership
-// token, and a narrow capability is one every backend can implement without
-// exposing a transaction API through the storage abstraction.
+// The guard is deliberately ONE key for the common case, where every write in
+// the batch is fenced by a single ownership token. MultiGuardedBatchKVStore
+// below generalizes this to more than one independent guard, for the batches
+// that must fence on two or more uniqueness indexes at once (go-qrdb#555: a
+// user create claims BOTH a generated id and a caller-chosen username, and
+// neither guard alone is sufficient — see that interface's doc).
 type GuardedBatchKVStore interface {
 	KVStore
 
@@ -244,6 +246,46 @@ type GuardedBatchKVStore interface {
 	// An empty writes slice is applied as a no-op that still reports whether
 	// the guard held, which is a cheap ownership test with the same atomicity.
 	PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (applied bool, err error)
+}
+
+// Guard is one absent/expected-value condition evaluated as part of a
+// PutAllIfAllUnchanged batch. A nil Value means the key must be absent,
+// exactly as PutAllIfUnchanged's guardValue does. A non-nil Value means the
+// key must be PRESENT and hold exactly Value — so a non-nil empty Value is
+// refused by an absent key, never treated as equal to it.
+type Guard struct {
+	Key   string
+	Value []byte
+}
+
+// MultiGuardedBatchKVStore generalizes GuardedBatchKVStore to more than one
+// independent guard key, evaluated and applied in ONE atomic proposal.
+//
+// It exists because a single guard cannot express two uniqueness fences at
+// once: go-qrdb#555's review found that a boot-time user create guarded only
+// on the username key, so a Snowflake id repeated by an independently seeded
+// node (the exact failure #555 evidenced for role ids) could overwrite an
+// existing primary record and identity claim, since nothing guarded the id
+// itself. Sequencing two single-key guarded batches would reopen the same
+// window this whole design exists to close (the leadership-change race
+// between two separate proposals), so the primitive is extended instead of
+// working around it with a non-atomic fallback.
+//
+// Every production GuardedBatchKVStore in this repository also implements
+// this interface: the underlying transaction plane already accepts a slice of
+// compares, so PutAllIfUnchanged is implemented in terms of
+// PutAllIfAllUnchanged with a single-element guard list wherever both are
+// provided.
+type MultiGuardedBatchKVStore interface {
+	GuardedBatchKVStore
+
+	// PutAllIfAllUnchanged applies every write atomically, and only while
+	// EVERY guard's key still holds its expected value. The applied/err
+	// contract matches PutAllIfUnchanged: applied=true when the writes were
+	// made, applied=false with a nil error when at least one guard did not
+	// hold (the store is unchanged), and a non-nil error means the outcome is
+	// unknown.
+	PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (applied bool, err error)
 }
 
 // AtomicKVStore is the optional capability of performing a write whose outcome

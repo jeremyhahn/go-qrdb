@@ -37,11 +37,18 @@ type cliTestCase struct {
 	nodes     int
 }
 
+// startTestCases exercises only the state machines a node can actually
+// complete first boot with: qrdbd's boot-time role/user stores now require a
+// kvstore.GuardedBatchKVStore-capable state machine (go-qrdb#555), which
+// "memory" and "concurrent" do not implement, so a node started with either
+// refuses at first boot rather than becoming healthy — see
+// TestCLI_Start_UnsupportedStateMachineFailsClosed below for THAT behavior.
+// "pebble" and "mvcc" replace them here for the healthy-startup matrix.
 var startTestCases = []cliTestCase{
-	{name: "memory/static/1-node", smType: "memory", discovery: "static", nodes: 1},
-	{name: "memory/static/3-node", smType: "memory", discovery: "static", nodes: 3},
-	{name: "concurrent/static/1-node", smType: "concurrent", discovery: "static", nodes: 1},
-	{name: "concurrent/static/3-node", smType: "concurrent", discovery: "static", nodes: 3},
+	{name: "pebble/static/1-node", smType: "pebble", discovery: "static", nodes: 1},
+	{name: "pebble/static/3-node", smType: "pebble", discovery: "static", nodes: 3},
+	{name: "mvcc/static/1-node", smType: "mvcc", discovery: "static", nodes: 1},
+	{name: "mvcc/static/3-node", smType: "mvcc", discovery: "static", nodes: 3},
 }
 
 func TestCLI_Start_TableDriven(t *testing.T) {
@@ -106,7 +113,7 @@ func TestCLI_Start_GracefulShutdown(t *testing.T) {
 		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
 		"--data-dir", dataDir,
-		"--sm", "memory",
+		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
 		"--shard-id", "1",
@@ -168,7 +175,7 @@ func TestCLI_Start_ClusterFormation(t *testing.T) {
 			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
 			"--data-dir", dataDir,
-			"--sm", "memory",
+			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
 			"--shard-id", "1",
@@ -214,6 +221,52 @@ func TestCLI_Start_InvalidSM(t *testing.T) {
 	}
 	if !strings.Contains(out, "bogus") {
 		t.Errorf("expected error mentioning 'bogus', got: %s", out)
+	}
+}
+
+// TestCLI_Start_UnsupportedStateMachineFailsClosed is the direct end-to-end
+// counterpart to startTestCases' removal of "memory" and "concurrent": both
+// are VALID --sm values (TestCLI_Start_InvalidSM covers an unknown one), so
+// the daemon gets past flag validation and into first boot, where
+// probeGuardedBatchCapability (go-qrdb#555) discovers — against the real,
+// running state machine, not a static descriptor — that neither implements
+// the transaction plane atomic role/user creation requires. The process must
+// exit non-zero with the typed capability error rather than hang waiting for
+// a health signal that will never come.
+func TestCLI_Start_UnsupportedStateMachineFailsClosed(t *testing.T) {
+	binary := buildBinary(t)
+	ca := generateTestCA(t)
+
+	for _, smType := range []string{"memory", "concurrent"} {
+		t.Run(smType, func(t *testing.T) {
+			ports := allocatePorts(t, 1)
+			adminPorts := allocateTCPPorts(t, 1)
+			grpcPorts := allocateTCPPorts(t, 1)
+			dataDir := t.TempDir()
+
+			args := []string{
+				"start",
+				"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
+				"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
+				"--data-dir", dataDir,
+				"--sm", smType,
+				"--discovery", "static",
+				"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
+				"--shard-id", "1",
+				"--replica-id", "1",
+				"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
+				"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
+			}
+			args = append(args, ca.tlsFlags(t)...)
+
+			out, err := runCLI(t, binary, args...)
+			if err == nil {
+				t.Fatalf("expected non-zero exit for --sm %s (no transaction support); output:\n%s", smType, out)
+			}
+			if !strings.Contains(out, "transaction support") {
+				t.Errorf("expected output naming the capability refusal, got:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -302,7 +355,7 @@ func TestCLI_Start_AllFlags(t *testing.T) {
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
 		"--data-dir", dataDir,
 		"--deployment-id", "42",
-		"--sm", "memory",
+		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
 		"--shard-id", "100",
@@ -355,7 +408,7 @@ func TestCLI_Status(t *testing.T) {
 		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
 		"--data-dir", dataDir,
-		"--sm", "memory",
+		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
 		"--shard-id", "1",
@@ -403,7 +456,7 @@ func TestCLI_Peers(t *testing.T) {
 		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
 		"--data-dir", dataDir,
-		"--sm", "memory",
+		"--sm", "pebble",
 		"--discovery", "static",
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", ports[0]),
 		"--shard-id", "1",
@@ -454,7 +507,7 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
 			"--data-dir", dataDir,
-			"--sm", "memory",
+			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
 			"--shard-id", "1",
@@ -512,7 +565,7 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
 			"--data-dir", dataDir,
-			"--sm", "memory",
+			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
 			"--shard-id", "1",

@@ -183,7 +183,7 @@ func TestRunStart_InvalidDatabaseEngine_ReturnsError(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		listen:          "0.0.0.0:0",
 		raftAddress:     "127.0.0.1:0",

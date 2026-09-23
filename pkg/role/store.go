@@ -15,6 +15,7 @@
 package role
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -66,15 +67,39 @@ var _ RoleServicer = (*kvRoleStore)(nil)
 // than into this store — a tenant's own store must not be able to write
 // outside its tenant.
 type kvRoleStore struct {
-	store        kvstore.KVStore
-	quotaChecker quota.Checker        // optional; nil skips quota enforcement
-	audit        audit.AuditLogger    // optional; nil disables audit emission
-	identity     tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	store          kvstore.KVStore
+	quotaChecker   quota.Checker        // optional; nil skips quota enforcement
+	audit          audit.AuditLogger    // optional; nil disables audit emission
+	identity       tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	atomicIdentity bool                 // set by WithAtomicIdentity; see that option's doc
+
+	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
+	// retry loop. Zero means "use the production default"; see that
+	// function's doc and WithReconcilePolling for why a test overrides them.
+	reconcilePollInterval time.Duration
+	reconcileWindow       time.Duration
 }
 
 // NewStore creates a new KVStore-backed RoleServicer. The provided
 // kvstore must not be nil. Optional Options (e.g. WithAuditLogger) tune
 // the store's behavior.
+//
+// Refuses construction — rather than silently degrading — when
+// WithAtomicIdentity is set without WithIdentityIndex (there would be no
+// claim to make atomic) or over a store that does not implement
+// kvstore.MultiGuardedBatchKVStore (there would be nothing to make it atomic
+// WITH). Both are caller configuration errors, not runtime conditions: a
+// store's capabilities and a package's options are fixed at construction, so
+// there is nothing to gain by deferring the failure to the first CreateRole
+// call — and something to lose, since that failure would then depend on
+// which caller happens to create the first role.
+//
+// MultiGuardedBatchKVStore, not the single-guard GuardedBatchKVStore: the
+// atomic batch guards the identity claim key AND the name-index key
+// together (see createRoleAtomic), because guarding the claim alone leaves
+// two concurrent creates for DIFFERENT ids but the SAME tenant/name free to
+// both pass their own (distinct) claim guards and both commit, silently
+// racing the name index (go-qrdb#555 review, round 3).
 func NewStore(store kvstore.KVStore, opts ...Option) (RoleServicer, error) {
 	if store == nil {
 		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
@@ -82,6 +107,20 @@ func NewStore(store kvstore.KVStore, opts ...Option) (RoleServicer, error) {
 	s := &kvRoleStore{store: store}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.atomicIdentity {
+		if s.identity == nil {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires WithIdentityIndex"}
+		}
+		if _, ok := store.(kvstore.MultiGuardedBatchKVStore); !ok {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires a kvstore.MultiGuardedBatchKVStore-capable store"}
+		}
+	}
+	if s.reconcilePollInterval <= 0 {
+		s.reconcilePollInterval = defaultReconcilePollInterval
+	}
+	if s.reconcileWindow <= 0 {
+		s.reconcileWindow = reconcileTimeout
 	}
 	return s, nil
 }
@@ -95,8 +134,18 @@ func (s *kvRoleStore) WithQuotaChecker(checker quota.Checker) *kvRoleStore {
 
 // CreateRole creates a new role with a generated UUID. It validates the
 // request, checks name uniqueness within the tenant via the secondary
-// index, validates all permissions, and atomically writes the primary
-// record plus both indexes.
+// index, validates all permissions, and writes the primary record plus both
+// indexes.
+//
+// When the store was built WithAtomicIdentity, the identity claim and all
+// three writes commit as ONE guarded batch (see createRoleAtomic): a
+// leadership change anywhere in the sequence leaves either everything or
+// nothing, closing the interrupted-create window go-qrdb#555 found. Every
+// other construction keeps the original three-proposal sequence below,
+// unchanged, because folding the claim into one batch requires the claim's
+// backing store to be the exact store this call writes to — true for a
+// boot-confined identity index, not provable for a StoreResolver-backed one
+// (see WithAtomicIdentity).
 func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (created *Role, retErr error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
@@ -180,6 +229,10 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 		}
 	}
 
+	if s.atomicIdentity {
+		return s.createRoleAtomic(ctx, r, tenantID, nameKey)
+	}
+
 	// CLAIM the id across ALL tenants before anything is written. The
 	// per-tenant check above cannot see another tenant's store, and the
 	// identity index is global: without a claim, a tenant could create a role
@@ -249,6 +302,225 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 	})
 
 	return r, nil
+}
+
+// createRoleAtomic commits the identity claim, the name-index claim, and all
+// three writes (primary record, tenant index, name index) as ONE guarded
+// batch, so a leadership change anywhere in the sequence leaves either
+// everything or nothing — never the partial states go-qrdb#555 found (a
+// claim with no record, or a record missing one of its indexes). It is
+// reached only when the store was built WithAtomicIdentity; see that
+// option's doc for the precondition it asserts on the caller's behalf and
+// why this cannot be the only path.
+//
+// The batch guards BOTH the identity claim key and the name-index key,
+// evaluated together via kvstore.MultiGuardedBatchKVStore. A single guard on
+// the claim alone is exact for the deterministic built-in roles
+// WithAtomicIdentity's callers seed (their id IS derived from their name, so
+// the claim and the name denote the same collision) but not for an ordinary
+// caller-supplied id: two concurrent creates with DIFFERENT ids and the SAME
+// tenant/name would each satisfy their own distinct claim guard and both
+// commit, with the second silently overwriting the name index while both
+// primary records, tenant indexes, and claims remained — an id-guard-only
+// design cannot see a same-name collision at all. Guarding the name key too
+// closes that window for every caller, not only the built-in-role case.
+//
+// On a guard failure this reads back the occupied key and returns the SAME
+// typed error CreateRole has always returned for that conflict
+// (RoleIDExistsError for an id collision, RoleNameExistsError for a name
+// collision). It does not itself decide whether a
+// concurrent, identical built-in role's create should be treated as
+// success: that determination requires comparing the existing record's full
+// definition against a KNOWN-GOOD one, which only the caller minting that
+// definition (pkg/firstboot, for the six built-in roles) can do honestly.
+// Doing it here would let ANY caller holding roles:create adopt another
+// tenant's or another actor's in-flight custom role by supplying its exact
+// name and a guessed id — the provenance problem an earlier version of this
+// function had.
+func (s *kvRoleStore) createRoleAtomic(ctx context.Context, r *Role, tenantID, nameKey string) (*Role, error) {
+	guarded, ok := s.store.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		// Unreachable: NewStore refuses WithAtomicIdentity construction over a
+		// store that does not implement this. Defensive rather than a panic if
+		// that check is ever bypassed.
+		return nil, &StoreError{Op: "create", Detail: "atomic identity requires a kvstore.MultiGuardedBatchKVStore"}
+	}
+	claimKV, _, err := s.identity.PrepareClaim(tenant.IdentityRole, r.ID, tenantID)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "prepare claim", Err: err}
+	}
+	data, err := marshalRole(r)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
+	}
+	pk := primaryKey(r.ID)
+	tk := tenantIndexKey(tenantID, r.ID)
+	guards := []kvstore.Guard{
+		{Key: claimKV.Key},
+		{Key: nameKey},
+	}
+	writes := []kvstore.KV{
+		claimKV,
+		{Key: pk, Value: data},
+		{Key: tk, Value: []byte(r.ID)},
+		{Key: nameKey, Value: []byte(r.ID)},
+	}
+
+	applied, err := guarded.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotApplied) {
+			// A definite refusal — no leader to propose it, no transaction
+			// subsystem — wrote nothing. Reconciling would only poll for a
+			// write that cannot appear.
+			return nil, &StoreError{Op: "create", Detail: "atomic create", Err: err}
+		}
+		return s.reconcileAmbiguousCreate(ctx, r, writes, err)
+	}
+	if !applied {
+		return nil, s.diagnoseAtomicGuardFailure(ctx, r, tenantID, claimKV.Key, nameKey)
+	}
+
+	s.emitAudit(ctx, "create", "role:"+r.ID, map[string]any{
+		"name":        r.Name,
+		"tenantID":    tenantID,
+		"permissions": len(r.Permissions),
+	})
+	return r, nil
+}
+
+// diagnoseAtomicGuardFailure reads back each key createRoleAtomic guarded to
+// report the SAME typed conflict error CreateRole has always returned for
+// that condition. PutAllIfAllUnchanged reports only that at least one guard
+// did not hold, not which one, so this issues plain reads — outside the
+// failed transaction, causing no new ambiguity — to find the occupied key.
+//
+// The identity claim is checked first, matching pkg/user's equivalent: an id
+// collision is the condition go-qrdb#555 added guarding for, checked ahead
+// of the pre-existing name collision so this fix does not change which error
+// a caller already handling RoleNameExistsError sees for that unrelated,
+// pre-existing conflict.
+//
+// The read-back is POLLED (pollVisible), bounded by s.reconcileWindow. The
+// state machine refused the guard because the winner's keys were committed,
+// but under cmd/qrdbd's boot-time StaleRead this node may not have applied
+// them yet: a single read would find every key absent and hand the losing
+// first-boot node a generic failure instead of the typed already-exists
+// error firstboot resolves idempotently.
+func (s *kvRoleStore) diagnoseAtomicGuardFailure(ctx context.Context, r *Role, tenantID, claimKey, nameKey string) error {
+	dctx, cancel := context.WithTimeout(ctx, s.reconcileWindow)
+	defer cancel()
+	var occupied error
+	s.pollVisible(dctx, func() bool {
+		switch {
+		case s.keyPresent(dctx, claimKey):
+			occupied = &RoleIDExistsError{ID: r.ID, TenantID: tenantID}
+		case s.keyPresent(dctx, nameKey):
+			occupied = &RoleNameExistsError{Name: r.Name, TenantID: tenantID}
+		}
+		return occupied != nil
+	})
+	if occupied != nil {
+		return occupied
+	}
+	// Defensive: the guard reported failure but every guarded key stayed
+	// absent for the whole window — most plausibly a concurrent release
+	// racing these reads. Report the generic conflict rather than fabricating
+	// a more specific one no read could confirm.
+	return &StoreError{Op: "create", Detail: "atomic create guard failed"}
+}
+
+// keyPresent reports whether key currently holds a value on this node.
+func (s *kvRoleStore) keyPresent(ctx context.Context, key string) bool {
+	v, err := s.store.Get(ctx, key)
+	return err == nil && v != nil
+}
+
+// reconcileAmbiguousCreate handles a PutAllIfAllUnchanged error whose outcome
+// is UNKNOWN per that method's own contract: the proposal may have committed
+// and only the response been lost. An error marked kvstore.ErrNotApplied is
+// not unknown and never reaches here; createRoleAtomic returns it at once. It reads every key the batch would have
+// written and treats the create as successful ONLY when every single one
+// holds exactly the bytes this call would have written — never on the
+// primary key alone, so a store that applied some of the batch's writes but
+// not all of them (unreachable for a truly atomic store, but not something
+// this function should assume without checking) is reported as a failure
+// rather than a false success. Any other outcome returns a StoreError whose
+// Err is the original cause, so errors.Is/As classification upstream (a
+// NotLeader, say) still reaches it through Unwrap.
+//
+// A successful reconciliation emits the SAME create audit event the normal
+// success path does. The batch committed durably either way — only the
+// response describing it was lost — and skipping the event here would let a
+// privileged role exist with no audit trail whenever that happens.
+//
+// The read-back and the audit emission run on a context DERIVED from ctx via
+// context.WithoutCancel plus its own bound (s.reconcileWindow), not on ctx
+// itself. The ambiguous outcome this function exists to resolve very often
+// IS ctx already being done — a deadline exceeded or a cancellation is
+// exactly the shape of "the response never arrived" — and reusing that same
+// ctx for the reads would then fail EVERY read immediately, always
+// reporting the create as failed and never emitting the audit event this
+// function was added to guarantee. context.WithoutCancel preserves ctx's
+// VALUES (tenant, auth, tracing) while dropping its cancellation, matching
+// the compensation contexts CreateRole's own rollback path already uses.
+//
+// The read-back RETRIES on s.reconcilePollInterval until s.reconcileWindow
+// elapses, rather than reading once (go-qrdb#555 review, round 4): cmd/qrdbd
+// deliberately reads the boot-time role/user stores via StaleRead — the
+// local state machine's own applied state, not a linearizable ReadIndex —
+// to avoid a startup deadlock before the ReadIndex pipeline is warmed up.
+// A proposal whose response was lost can therefore be committed to the Raft
+// log but not yet visible to a StaleRead on THIS node for a brief window
+// while local apply catches up; one immediate read during exactly that
+// window would see stale/absent values and report a failure — and skip the
+// audit event — for a create that in fact just committed. Retrying gives
+// local apply the window it needs: a write that will never appear still
+// times out and reports failure once s.reconcileWindow elapses, correctly.
+func (s *kvRoleStore) reconcileAmbiguousCreate(ctx context.Context, r *Role, writes []kvstore.KV, cause error) (*Role, error) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.reconcileWindow)
+	defer cancel()
+	if !s.pollVisible(rctx, func() bool { return s.reconcileWritesMatch(rctx, writes) }) {
+		return nil, &StoreError{Op: "create", Detail: "atomic create", Err: cause}
+	}
+	s.emitAudit(rctx, "create", "role:"+r.ID, map[string]any{
+		"name":           r.Name,
+		"tenantID":       r.TenantID,
+		"permissions":    len(r.Permissions),
+		"reconciliation": "ambiguous_response",
+	})
+	return r, nil
+}
+
+// pollVisible calls visible every s.reconcilePollInterval until it reports
+// true or ctx is done, and reports whether it did. Both read-backs after an
+// atomic create go through it — reconciling a lost response, and diagnosing a
+// refused guard — because both read THIS node's applied state, which under
+// cmd/qrdbd's boot-time StaleRead can lag the commit the read is about.
+func (s *kvRoleStore) pollVisible(ctx context.Context, visible func() bool) bool {
+	ticker := time.NewTicker(s.reconcilePollInterval)
+	defer ticker.Stop()
+	for {
+		if visible() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// reconcileWritesMatch reports whether every write's key currently holds
+// exactly the bytes that write would have stored.
+func (s *kvRoleStore) reconcileWritesMatch(ctx context.Context, writes []kvstore.KV) bool {
+	for _, w := range writes {
+		got, err := s.store.Get(ctx, w.Key)
+		if err != nil || !bytes.Equal(got, w.Value) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetRole retrieves a role by its globally unique ID.

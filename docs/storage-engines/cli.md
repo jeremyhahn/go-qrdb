@@ -30,6 +30,12 @@ Objstore is a snapshot and backup tier and is **refused** as a hot apply path.
 The pebble-native state machines (`sm_type: pebble` or `mvcc`) carry their own
 Pebble store and reject a non-pebble `sm_storage`.
 
+`sm_storage` is read only by the storage-generic state machines
+(`sm_type: disk` or `fast`), and **`qrdbd start` currently refuses those on
+every start**: they have no transaction subsystem, and role and user creation
+commits atomically through one. See
+[../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection).
+
 ## Per-database storage — `qrdb database`
 
 A database's backend is chosen at creation and is visible through the database

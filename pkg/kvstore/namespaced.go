@@ -21,12 +21,20 @@ import (
 	"sync/atomic"
 )
 
-// Compile-time interface checks. Only the atomic variant carries PutIfAbsent,
-// so the AtomicKVStore assertion answers honestly over a non-atomic inner
-// store — the same discipline seal.NewTenantSharedKVStore uses.
+// Compile-time interface checks. Only the capability-carrying variants
+// implement AtomicKVStore / GuardedBatchKVStore, so the type assertion a
+// caller performs after NewNamespacedKVStore answers honestly over a
+// non-capable inner store — the same discipline seal.NewTenantSharedKVStore
+// uses.
 var (
-	_ KVStore       = (*namespacedKVStore)(nil)
-	_ AtomicKVStore = (*atomicNamespacedKVStore)(nil)
+	_ KVStore                  = (*namespacedKVStore)(nil)
+	_ AtomicKVStore            = (*atomicNamespacedKVStore)(nil)
+	_ GuardedBatchKVStore      = (*guardedNamespacedKVStore)(nil)
+	_ AtomicKVStore            = (*guardedAtomicNamespacedKVStore)(nil)
+	_ GuardedBatchKVStore      = (*guardedAtomicNamespacedKVStore)(nil)
+	_ MultiGuardedBatchKVStore = (*multiGuardedNamespacedKVStore)(nil)
+	_ AtomicKVStore            = (*multiGuardedAtomicNamespacedKVStore)(nil)
+	_ MultiGuardedBatchKVStore = (*multiGuardedAtomicNamespacedKVStore)(nil)
 )
 
 // NewNamespacedKVStore returns a KVStore that confines every operation to a
@@ -47,7 +55,16 @@ var (
 // exists to prevent, and silently — so it is an error rather than a no-op
 // wrapper.
 //
-// The returned store implements AtomicKVStore only when inner does.
+// The returned store implements AtomicKVStore and/or GuardedBatchKVStore
+// exactly when inner does — never more, so a type assertion after this call
+// never advertises a capability inner cannot actually deliver, and never
+// less, so a namespaced view over a capable store is not quietly downgraded
+// to a plain one. go-qrdb#555's atomic role/user creation needs
+// GuardedBatchKVStore to survive this wrapping: a boot-time composer's
+// store is namespaced to the system identity namespace before role.NewStore
+// or user.NewStore ever see it, so if the capability did not survive here,
+// WithAtomicIdentity's construction-time check would refuse every boot-time
+// composer unconditionally.
 func NewNamespacedKVStore(inner KVStore, prefix string) (KVStore, error) {
 	if inner == nil {
 		return nil, &NilInnerStoreError{}
@@ -56,10 +73,25 @@ func NewNamespacedKVStore(inner KVStore, prefix string) (KVStore, error) {
 		return nil, &EmptyNamespaceError{}
 	}
 	base := &namespacedKVStore{inner: inner, prefix: prefix}
-	if atomicInner, ok := inner.(AtomicKVStore); ok {
+	atomicInner, isAtomic := inner.(AtomicKVStore)
+	multiInner, isMulti := inner.(MultiGuardedBatchKVStore)
+	guardedInner, isGuarded := inner.(GuardedBatchKVStore)
+	switch {
+	case isAtomic && isMulti:
+		ga := &guardedAtomicNamespacedKVStore{namespacedKVStore: base, atomicInner: atomicInner, guardedInner: multiInner}
+		return &multiGuardedAtomicNamespacedKVStore{guardedAtomicNamespacedKVStore: ga, multiInner: multiInner}, nil
+	case isAtomic && isGuarded:
+		return &guardedAtomicNamespacedKVStore{namespacedKVStore: base, atomicInner: atomicInner, guardedInner: guardedInner}, nil
+	case isMulti:
+		g := &guardedNamespacedKVStore{namespacedKVStore: base, inner: multiInner}
+		return &multiGuardedNamespacedKVStore{guardedNamespacedKVStore: g, multiInner: multiInner}, nil
+	case isGuarded:
+		return &guardedNamespacedKVStore{namespacedKVStore: base, inner: guardedInner}, nil
+	case isAtomic:
 		return &atomicNamespacedKVStore{namespacedKVStore: base, inner: atomicInner}, nil
+	default:
+		return base, nil
 	}
-	return base, nil
 }
 
 // namespacedKVStore confines a KVStore to a key prefix.
@@ -305,4 +337,129 @@ func (s *atomicNamespacedKVStore) CompareAndDelete(ctx context.Context, key stri
 // atomicity is the inner store's; this type only routes the key.
 func (s *atomicNamespacedKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return s.inner.CompareAndSwap(ctx, s.route(key), expected, next)
+}
+
+// guardedNamespacedKVStore adds PutAllIfUnchanged for an inner store that
+// implements GuardedBatchKVStore but NOT AtomicKVStore. It is a separate
+// type from guardedAtomicNamespacedKVStore, for the same reason
+// atomicNamespacedKVStore is separate from the plain namespacedKVStore: the
+// GuardedBatchKVStore assertion a caller performs after NewNamespacedKVStore
+// must answer honestly, which means the method exists on the type ONLY when
+// the inner store can actually honour it.
+//
+// No production store in this repository currently implements
+// GuardedBatchKVStore without ALSO implementing AtomicKVStore — every
+// KVServicer-backed adapter answers PutIfAbsent unconditionally and adds
+// PutAllIfUnchanged only when a transaction plane is wired — so this type is
+// exercised by conformance tests rather than production wiring today. It
+// exists so that ceases to be true without silently losing the guarded
+// capability through this wrapper.
+type guardedNamespacedKVStore struct {
+	*namespacedKVStore
+	inner GuardedBatchKVStore
+}
+
+// PutAllIfUnchanged applies every write, confined to the namespace, only
+// while the namespaced guard key still holds guardValue. The atomicity is
+// the inner store's; this type adds only the confinement, routing the guard
+// key and every write's key exactly as route() does for every other
+// operation.
+func (s *guardedNamespacedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (bool, error) {
+	return s.inner.PutAllIfUnchanged(ctx, s.route(guardKey), guardValue, s.routeWrites(writes))
+}
+
+// guardedAtomicNamespacedKVStore composes namespacing with BOTH capability
+// tiers for an inner store that implements both — true of every guarded
+// adapter this codebase constructs today (see
+// cmd/qrdbd/kvstore_adapter.go's guardedKVServiceAdapter and
+// pkg/server/lifecycle's guarded kvStoreAdapter). It is a fourth,
+// independent type rather than one wrapper embedding another: embedding
+// atomicNamespacedKVStore inside guardedNamespacedKVStore (or vice versa)
+// would embed *namespacedKVStore at two different depths through two
+// different paths, and every KVStore method it does not itself override
+// becomes an ambiguous selector — a compile error, not a subtle bug, but
+// one this shape avoids needing to explain at every call site.
+type guardedAtomicNamespacedKVStore struct {
+	*namespacedKVStore
+	atomicInner  AtomicKVStore
+	guardedInner GuardedBatchKVStore
+}
+
+// PutIfAbsent stores value under the namespaced key only when it is absent.
+func (s *guardedAtomicNamespacedKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return s.atomicInner.PutIfAbsent(ctx, s.route(key), value)
+}
+
+// CompareAndDelete removes the namespaced key only when its stored value
+// still equals expected.
+func (s *guardedAtomicNamespacedKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return s.atomicInner.CompareAndDelete(ctx, s.route(key), expected)
+}
+
+// CompareAndSwap replaces the namespaced key's value only when its stored
+// value still equals expected.
+func (s *guardedAtomicNamespacedKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return s.atomicInner.CompareAndSwap(ctx, s.route(key), expected, next)
+}
+
+// PutAllIfUnchanged applies every write, confined to the namespace, only
+// while the namespaced guard key still holds guardValue.
+func (s *guardedAtomicNamespacedKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (bool, error) {
+	return s.guardedInner.PutAllIfUnchanged(ctx, s.route(guardKey), guardValue, s.routeWrites(writes))
+}
+
+// routeGuards rewrites each guard's key to its namespaced form, exactly as
+// route() does for every other key this package touches.
+func (s *namespacedKVStore) routeGuards(guards []Guard) []Guard {
+	routed := make([]Guard, len(guards))
+	for i, g := range guards {
+		routed[i] = Guard{Key: s.route(g.Key), Value: g.Value}
+	}
+	return routed
+}
+
+// routeWrites rewrites each write's key to its namespaced form.
+func (s *namespacedKVStore) routeWrites(writes []KV) []KV {
+	routed := make([]KV, len(writes))
+	for i, w := range writes {
+		routed[i] = KV{Key: s.route(w.Key), Value: w.Value}
+	}
+	return routed
+}
+
+// multiGuardedNamespacedKVStore adds PutAllIfAllUnchanged for an inner store
+// that implements MultiGuardedBatchKVStore but NOT AtomicKVStore. It embeds
+// guardedNamespacedKVStore — ONE level of embedding beyond namespacedKVStore,
+// through a single path — so PutAllIfUnchanged and every plain KVStore method
+// promote without the ambiguous-selector hazard guardedAtomicNamespacedKVStore's
+// doc explains: that hazard comes from combining two SEPARATE wrappers that
+// each embed *namespacedKVStore directly, not from wrapping one composite type
+// again.
+type multiGuardedNamespacedKVStore struct {
+	*guardedNamespacedKVStore
+	multiInner MultiGuardedBatchKVStore
+}
+
+// PutAllIfAllUnchanged applies every write, confined to the namespace, only
+// while EVERY namespaced guard key still holds its expected value.
+func (s *multiGuardedNamespacedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (bool, error) {
+	return s.multiInner.PutAllIfAllUnchanged(ctx, s.routeGuards(guards), s.routeWrites(writes))
+}
+
+// multiGuardedAtomicNamespacedKVStore composes namespacing with the atomic,
+// single-guard, AND multi-guard capability tiers for an inner store that
+// implements all three — true of every guarded adapter this codebase
+// constructs today (cmd/qrdbd/kvstore_adapter.go's guardedKVServiceAdapter and
+// pkg/server/lifecycle's guardedKVStoreAdapter). It embeds
+// guardedAtomicNamespacedKVStore for the same single-path reason
+// multiGuardedNamespacedKVStore embeds guardedNamespacedKVStore.
+type multiGuardedAtomicNamespacedKVStore struct {
+	*guardedAtomicNamespacedKVStore
+	multiInner MultiGuardedBatchKVStore
+}
+
+// PutAllIfAllUnchanged applies every write, confined to the namespace, only
+// while EVERY namespaced guard key still holds its expected value.
+func (s *multiGuardedAtomicNamespacedKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (bool, error) {
+	return s.multiInner.PutAllIfAllUnchanged(ctx, s.routeGuards(guards), s.routeWrites(writes))
 }

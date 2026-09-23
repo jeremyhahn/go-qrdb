@@ -602,6 +602,7 @@ func mapUserError(err error) int {
 	var ve *user.ValidationError
 	var unf *user.UserNotFoundError
 	var ue *user.UsernameExistsError
+	var uide *user.UserIDExistsError
 	var ee *user.EmailExistsError
 	var ice *user.IndexCompensationError
 	var cu *user.ConcurrentUpdateError
@@ -655,6 +656,11 @@ func mapUserError(err error) int {
 		// withdrawn.
 		return http.StatusNotFound
 	case errors.As(err, &ue):
+		return http.StatusConflict
+	case errors.As(err, &uide):
+		// A store-generated user id collided with an existing identity claim
+		// or primary record (go-qrdb#555) — the same client-correctable
+		// conflict a taken username or email is, not a server fault.
 		return http.StatusConflict
 	case errors.As(err, &ee):
 		// A taken email is a client-correctable conflict, exactly as a taken

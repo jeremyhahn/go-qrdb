@@ -93,6 +93,15 @@ type Dependencies struct {
 	// tenant admin to a guessed identifier; see that field for why.
 	RoleResolver role.NameResolver
 
+	// UserResolver looks the admin user up by username so createAdminUser can
+	// verify a create-time collision — on either the admin's generated id or
+	// its fixed username — actually names the admin before treating it as
+	// this run's own idempotent re-attempt (firstboot.Dependencies.UserResolver,
+	// go-qrdb#555). Leaving it nil is safe when Users itself implements
+	// firstboot.UserResolver — qrdb's own user.UserServicer does, and it is
+	// then used automatically.
+	UserResolver firstboot.UserResolver
+
 	// CA issues certificates via the generate-and-distribute path (Path A).
 	// Optional: used when no CSR PEM is supplied.
 	CA firstboot.CertProvider
@@ -263,6 +272,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Users:              deps.Users,
 		Roles:              deps.Roles,
 		RoleResolver:       deps.RoleResolver,
+		UserResolver:       deps.UserResolver,
 		CA:                 deps.CA,
 		Signer:             deps.Signer,
 		AdminCSRPEM:        cfg.AdminCSRPEM,
