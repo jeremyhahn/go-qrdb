@@ -11,6 +11,85 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Relational tables created by v0.20.0 through v0.21.0 must be dropped and
+  re-created; there is no migration.** Those releases wrote rows and index entries under
+  a key layout that carried neither a table generation nor an index incarnation, which
+  `TRUNCATE TABLE` in O(1) and background reclamation both require. Such a table is now
+  refused, never read as empty: every read, write and `TRUNCATE` fails with MySQL error
+  1459 (`ER_TABLE_NEEDS_UPGRADE`; PostgreSQL SQLSTATE 55000), gRPC/Unix/MCP
+  `FAILED_PRECONDITION`, QUIC `StatusFailedPrecondition` or REST 412, naming the table
+  and the remedy. `DROP TABLE` still works and reclaims the old data; then `CREATE
+  TABLE` it again and reload its rows. A legacy table whose v0.20.x `ALTER` rewrite was
+  interrupted is droppable too; `information_schema` lists it with the refusal as its
+  comment.
+- **DDL on a table refuses while its `ALTER TABLE ... DROP/MODIFY COLUMN` rewrite is
+  unfinished.** `CREATE`/`DROP`/`RENAME INDEX`, `ADD`/`DROP`/`UPDATE FOREIGN KEY` and
+  `RENAME TABLE` now fail with the rewrite-in-progress error, as `ALTER` and `TRUNCATE`
+  already did, instead of committing a change the rewrite's completion would undo. `DROP
+  TABLE` still works.
+
+### Changed
+
+- **`TRUNCATE TABLE` is O(1) regardless of table size.** Relational row and index keys
+  carry a generation number; `TRUNCATE` advances it in one transaction and publishes a
+  durable reclaim job for the old generation instead of scanning and deleting every row.
+  A statement or transaction that raced it fails with MySQL error 1213 / SQLSTATE 40001
+  (retry the statement), never with rows from the wrong generation.
+- **Index entries are keyed by an index incarnation, not the index name.** An incarnation
+  is allocated when the index is created and never handed out twice within a table, so `ALTER TABLE ... RENAME
+  INDEX` is a catalog-only change that moves no data, and a new index created under an
+  old name never shares a keyspace with the entries being reclaimed for the old one.
+- **`DROP INDEX` reclaims its entries in the background.** They are no longer deleted
+  inline, so a statement still reading the index is never cut short; one that outlives
+  the drop fails with 1213 / 40001.
+- **Orphaned keyspace is reclaimed in the background, never under a live reader.** A
+  sweeper on every node deletes a truncated generation or a dropped index's entries only
+  after every statement that could still be reading them has finished or been failed with
+  the retryable error above. Each job is swept by the one node that can reach its store --
+  the system leader for the shared store, the publishing node for a node-local store, a
+  dedicated Raft group's own leader -- through the same tenant and database view it was
+  written through, with bounded work per sweep that resumes where the last one stopped.
+- **`DROP TABLE` reclaims its rows in the background.** The catalog entry, generation
+  counter and sequences go in one transaction that publishes a reclaim job for the rows
+  and index entries, so a statement still reading the table is never cut short, and a
+  crash can leave only the whole table or the job that reclaims it. A `DROP TABLE` that
+  races a `TRUNCATE` or DDL fails with 1213 / 40001 instead of leaking the new
+  generation's rows.
+- **The sweeper deletes each page of orphaned keys in one transaction**, one Raft
+  proposal per page rather than one per key.
+- **A stale table resolution is retryable on every transport.** A statement whose table
+  was truncated or whose definition changed while it ran now reaches gRPC, Unix-socket
+  and MCP clients as `ABORTED`, QUIC clients as `StatusAborted` and REST clients as 409,
+  matching MySQL 1213 / SQLSTATE 40001, instead of an internal error.
+- **DML is fenced on the table definition it was planned against.** An `INSERT`,
+  `UPDATE` or `DELETE` whose statement resolved the table before a concurrent DDL
+  committed fails with 1213 / 40001 instead of maintaining the wrong set of indexes, so a
+  new index can no longer miss rows written while it was created.
+
+### Fixed
+
+- `DROP TABLE` deletes a table's `TRUNCATE` generation counter in the same transaction as
+  its catalog entry, and refuses to commit over a `TRUNCATE` that raced it, so a failed or
+  interrupted drop can no longer leave a resolvable table reading generation 0 or a counter
+  nothing will ever delete.
+- A read-only transaction that first touches a table after a `TRUNCATE` or DDL committed
+  since its snapshot fails with 1213 / 40001 instead of returning no rows -- including
+  through a table handle resolved before a `TRUNCATE` its snapshot already includes.
+- A dropped index can no longer be resurrected, and its incarnation handed out again, by
+  an `ALTER` rewrite completing over a definition that changed after the rewrite began.
+- A long statement that re-proves its table mid-rewrite checks the index incarnations it
+  reads, not only the generation.
+- `CREATE INDEX`'s build is fenced on the definition listing the new index, so a `DROP
+  INDEX` landing mid-build fails the build instead of leaving orphaned entries.
+- `ALTER TABLE ... DROP COLUMN` and a type-changing `MODIFY COLUMN` rebuild every index on
+  the column under a new index incarnation. The old entries, which were encoded for the old
+  column set, are reclaimed in the background, and so are the entries of an index the drop
+  leaves with no columns. Before, the index kept those stale entries or leaked them. A
+  `UNIQUE` index narrowed onto repeating values now fails the `ALTER` and leaves the table
+  unchanged.
+
 ## [0.21.3-alpha] - 2026-09-30
 
 Security hotfix: tenant isolation on the tenant-administration surface of every network transport (REST, gRPC, Unix socket, QUIC, MCP).

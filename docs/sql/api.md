@@ -58,6 +58,8 @@ return the protocol's own codes directly.
 | Syntax or analysis error | 400 | `INVALID_ARGUMENT` | MySQL parse error |
 | Duplicate key | 409 | `ALREADY_EXISTS` | MySQL **1062** |
 | Transaction conflict | 409 | `ABORTED` | MySQL **1213** / SQLSTATE **40001** |
+| Table truncated or its definition changed under the statement (retry it) | 409 | `ABORTED` | MySQL **1213** / SQLSTATE **40001** |
+| Table created by v0.20.0–v0.21.0 (drop and re-create it) | 412 | `FAILED_PRECONDITION` | MySQL **1459** / SQLSTATE **55000** |
 | Database / table / column access denied | 403 | `PERMISSION_DENIED` | MySQL **1044** / **1142** / **1143** |
 | Cached plan result-type change | — | — | SQLSTATE **0A000** (PostgreSQL only) |
 | Missing `kv:range` | 403 | `PERMISSION_DENIED` | connection refused at auth |

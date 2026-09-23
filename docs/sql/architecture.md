@@ -301,6 +301,22 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 - **Privileges are enforced for non-system tenants only.** A deployment running
   everything as the system tenant is unrestricted by design.
 - **No cross-database transaction.** One CAS commit targets one Raft shard.
+- **`TRUNCATE TABLE` does not scan or delete rows synchronously.** Row and
+  index-entry keys carry a generation number; `TRUNCATE` bumps that number in
+  one CAS and hands the orphaned old generation to a background sweeper
+  (`service.ReclaimSweeper`) rather than paying an O(table size)
+  scan-and-delete inline. The sweeper deletes nothing until every statement
+  that could still be reading the old generation has finished or been failed
+  with a retryable error, and each job is swept by the one node that can reach
+  its store. `DROP TABLE` hands its rows to the same sweeper. Index entries
+  are keyed by an index incarnation that is never handed out twice within a
+  table — no catalog change can land while an `ALTER` rewrite is open and be
+  undone by its write-back — so `RENAME INDEX` moves no data and a dropped
+  index's keyspace can never become a live one's. **Tables created by v0.20.0 through v0.21.0 must
+  be dropped and re-created**: they were written under the previous key layout
+  and there is no migration. Such a table is refused (MySQL 1459 /
+  SQLSTATE 55000) rather than read as empty; `DROP TABLE` still works.
+  See [engineering.md](engineering.md#truncate-table-generation-scoped-keys-o1-regardless-of-table-size).
 - **No read-set conflict detection by default** — see the isolation model in
   [engineering.md](engineering.md).
 - **Isolation levels are accepted, not differentiated.** MySQL's

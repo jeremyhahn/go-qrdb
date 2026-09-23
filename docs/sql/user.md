@@ -76,9 +76,17 @@ COMMIT;
 
 `ROLLBACK` is free — nothing was sent until `COMMIT`.
 
+**Re-create tables from v0.20.0 through v0.21.0.** A relational table created
+by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000
+on the PostgreSQL wire): its data was written under a key layout this version
+does not read, and there is no migration. `DROP TABLE` it, `CREATE TABLE` it
+again, and reload its rows from your own source of truth.
+
 **Retry a conflicted transaction.** Concurrent writers to the same row make one
 of them lose at `COMMIT` with **MySQL error 1213**, which is exactly the code
-your driver or ORM already treats as "retry". Retry by **re-running the
+your driver or ORM already treats as "retry". A statement whose table was
+truncated, dropped or altered while it ran fails the same way, as do the REST
+(409), gRPC (`ABORTED`) and QUIC (`StatusAborted`) endpoints. Retry by **re-running the
 statements**, not by re-issuing `COMMIT`: the server buffered operations, not
 your SQL, so replaying `SET n = n + 1` would re-apply a stale value.
 
