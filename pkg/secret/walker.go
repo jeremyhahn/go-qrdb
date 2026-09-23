@@ -194,6 +194,19 @@ func (p *ConfigProcessor) processValue(ctx context.Context, v reflect.Value, pat
 	case reflect.Struct:
 		p.processStruct(ctx, v, path, result, depth)
 	case reflect.Pointer:
+		// A nil pointer is skipped, not descended -- there is nothing here to
+		// walk. That is also the boundary of what this package guarantees:
+		// a required SecretValue nested inside a nil pointer (a whole config
+		// section deleted, e.g. `Database *DatabaseConfig`) is never reached,
+		// so its requiredness is never checked here. This package walks the
+		// VALUE it is handed, not the TYPE against a schema, so it cannot
+		// tell "this section is optional and was omitted" from "this section
+		// is required and was deleted" -- that is a decision about the shape
+		// of the config, not about one field's secret, and it belongs to the
+		// consumer's own Validate(), the same place it already checks that
+		// other required sections are present (docs/credentials/
+		// secret-resolution.md, "The boundary: requiredness only for a leaf
+		// the walk reaches").
 		if !v.IsNil() {
 			p.processValue(ctx, v.Elem(), path, result, depth+1)
 		}

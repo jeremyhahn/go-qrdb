@@ -182,6 +182,32 @@ into a successful boot.
 Boxed targets the walk *can* write to (an `any` struct field, an `any` map
 value) are resolved through an addressable copy and assigned back.
 
+### The boundary: requiredness only for a leaf the walk reaches
+
+Everything above guarantees requiredness for a protected leaf the walk
+**reaches**. It does not, and is not meant to, guarantee that the walk reaches
+every leaf a config's author intended to be there.
+
+A `SecretValue` nested inside a `nil` pointer or absent map entry is never
+examined: the walk descends a pointer only `if !v.IsNil()`, so deleting an
+entire config section — `database:` removed from the YAML rather than left
+with an empty `password:` — skips the required field inside it along with the
+rest of the section, and `Process` returns success under `WithFailClosed()`.
+The field-type contract above (`SecretValue` means required, `*SecretValue`
+means optional) says nothing about the container the field lives in, because
+`pkg/secret` walks the config **value** it is handed, not the config **type**
+against a schema — deciding that a section must be present at all is a
+decision about the shape of the config, not about one field's secret, and
+`pkg/secret` is deliberately not a config-validation framework.
+
+**That is the consumer's job, in its own `Validate()`, the same place it
+already checks that required non-secret fields are present.** A `Database`
+struct whose absence should fail startup is validated the same way a
+`Database.Host` of `""` would be — by the caller who knows the section is
+required — not by `pkg/secret`, which cannot distinguish "this section is
+optional and was omitted" from "this section is required and was deleted"
+without a schema neither its input type nor its call carries.
+
 ### Migrating off `string` fields
 
 `WithNoPlaintextStrings()` is the ratchet. With it set, the processor refuses to
