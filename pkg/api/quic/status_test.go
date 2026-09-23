@@ -33,12 +33,14 @@ import (
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -363,6 +365,7 @@ var conditions = []conditionRow{
 	{"not the leader", &service.NotLeaderError{ShardID: 1, LeaderID: 2}, wire.StatusUnavailable, codes.Unavailable},
 	{"barrier sealed", &service.BarrierSealedError{TenantID: "t"}, wire.StatusUnavailable, codes.Unavailable},
 	{"tenant barrier sealed", tenant.ErrTenantSealed, wire.StatusUnavailable, codes.Unavailable},
+	{"barrier sealed mid-request (real seal.ErrSealed)", seal.ErrSealed, wire.StatusUnavailable, codes.Unavailable},
 	{"cluster has no free node", &placement.InsufficientNodesError{}, wire.StatusUnavailable, codes.Unavailable},
 
 	// --- authority --------------------------------------------------------
@@ -427,6 +430,22 @@ var conditions = []conditionRow{
 	{"tenant supplied is not the caller's", &tenant.CrossTenantDeniedError{
 		IdentityTenantID: "a", RequestedTenantID: "b", Op: "users.list",
 	}, wire.StatusPermissionDenied, codes.PermissionDenied},
+
+	// --- the ceremony-time auth-factor surface (pkg/authfactors) ---------
+	// Each row is one arm of pkg/api/grpc.mapAuthFactorGRPCError; the live
+	// parity check below holds QUIC to the class gRPC actually answers. A
+	// malformed, unknown, consumed or reclaimed challenge id all surface as
+	// EnrollmentNotFoundError.
+	{"auth-factor enrollment or challenge missing", &authfactors.EnrollmentNotFoundError{EnrollmentID: "000000000001.c"}, wire.StatusNotFound, codes.NotFound},
+	{"auth-factor factor not registered", &authfactors.FactorNotFoundError{Name: "totp"}, wire.StatusNotFound, codes.NotFound},
+	{"auth-factor record invalid", &authfactors.EnrollmentInvalidError{EnrollmentID: "e1", Reason: "unmarshal failed"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"auth-factor tenant mismatch", &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"auth-factor enrollment revoked", &authfactors.EnrollmentRevokedError{EnrollmentID: "e1"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"auth-factor challenge expired", &authfactors.ChallengeExpiredError{ChallengeID: "000000000001.c"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"auth-factor verification failed", &authfactors.VerificationFailedError{FactorName: "piv", Reason: "bad signature"}, wire.StatusUnauthenticated, codes.Unauthenticated},
+	{"auth-factor hardware unavailable", &authfactors.HardwareUnavailableError{Factor: "piv", Reason: "no reader"}, wire.StatusUnavailable, codes.Unavailable},
+	{"auth-factor factor disabled", authfactors.ErrFactorDisabled, wire.StatusUnimplemented, codes.Unimplemented},
+	{"auth-factor list read sealed mid-list", &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}, wire.StatusUnavailable, codes.Unavailable},
 
 	// A PROJECTED capability module's answer, which arrives in gRPC's
 	// vocabulary and reaches the wire through the bridge in status.go. This is

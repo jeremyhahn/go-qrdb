@@ -25,8 +25,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -182,6 +184,36 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			want: wire.CodeAlreadyExists,
 			why: "a hijack attempt the store refused on purpose; it was CodeInternal " +
 				"because the gRPC mapper this renders had no arm for it (go-qrdb#536)",
+		},
+		{
+			name: "auth-factor enrollment tenant mismatch",
+			err:  &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"},
+			want: wire.CodeInvalidArgument,
+			why: "the ceremony-time auth-factor tenant refusal (go-qrdb#464): a request " +
+				"naming a tenant other than the caller's context is the caller's input " +
+				"being wrong, not a tool execution fault, and this transport takes the " +
+				"classification from pkg/api/grpc's mapAuthFactorGRPCError rather than " +
+				"owning a clause of its own",
+		},
+		{
+			name: "auth-factor tenant already sealed at Resolve",
+			err:  tenant.ErrTenantSealed,
+			want: wire.CodeUnavailable,
+			why:  "a sealed barrier-isolated tenant is retryable after unseal, on every transport",
+		},
+		{
+			name: "auth-factor tenant sealed between Resolve and the store op",
+			err:  &ToolError{Tool: "qrdb_authfactor_challenge", Err: seal.ErrSealed},
+			want: wire.CodeUnavailable,
+			why: "the resolved store's own read meets the barrier's live seal check and " +
+				"returns seal.ErrSealed, not tenant.ErrTenantSealed; both are the same " +
+				"condition to a caller, and a handler's ToolError must not hide it",
+		},
+		{
+			name: "auth-factor list read sealed mid-list",
+			err:  &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed},
+			want: wire.CodeUnavailable,
+			why:  "ListFactors wraps a per-record read failure; the seal beneath it still classifies",
 		},
 		{
 			name: "unclassified",

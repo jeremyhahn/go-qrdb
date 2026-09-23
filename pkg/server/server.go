@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -801,20 +802,50 @@ func (s *Server) wireVolumeStoreResolver() {
 	})
 }
 
+// ErrAuthFactorTenantRoutingRequired is returned by Start when a caller
+// supplied WithFactorRegistry but no WithTenantStoreResolver.
+//
+// WithFactorRegistry's own contract promises that the server "automatically"
+// exposes the enrollment/challenge/verify surface on every transport once a
+// registry is supplied. Building the auth-factor service requires a
+// tenant.StoreResolver — there is no unrouted construction to fall back to —
+// so a composition that made that promise but supplied no way to keep it
+// fails Start() outright rather than booting successfully with every
+// transport silently answering Unimplemented for a capability
+// WithFactorRegistry said would be there.
+var ErrAuthFactorTenantRoutingRequired = errors.New("server: WithFactorRegistry requires WithTenantStoreResolver")
+
 // ensureAuthFactorService completes the WithFactorRegistry contract: when
 // a caller injected a FactorRegistry via WithFactorRegistry but did not
 // supply an explicit WithAuthFactorService, this method constructs the
-// unified AuthFactorService from the registry and the KV service and
-// assigns it so every transport that checks s.opts.authFactorSvc sees a
-// valid instance. It is a no-op when authFactorSvc is already set or when
-// factorRegistry is nil (no factors to serve).
+// tenant-routed AuthFactorService from the registry and assigns it so every
+// transport that checks s.opts.authFactorSvc sees a valid instance.
+//
+// The service it constructs is the TENANT-ROUTED one
+// (service.NewRoutingAuthFactorService), built over the resolver supplied by
+// WithTenantStoreResolver — mirroring ensureUserAuthFactorService immediately
+// below, for the same reason (go-qrdb#464): this ceremony-time custodian
+// surface used to be built over the bare KV servicer, one flat keyspace, so a
+// custodian factor enrolled under one tenant resolved a call made under
+// another.
+//
+// It is a no-op when authFactorSvc is already set or when factorRegistry is
+// nil (no factors to serve, so WithFactorRegistry was never called and there
+// is no promise to keep). It is a hard failure — ErrAuthFactorTenantRoutingRequired
+// — when factorRegistry is set but NO tenant store resolver was supplied:
+// there is no unrouted fallback, and a composition that cannot say which
+// tenant a request belongs to must not silently omit the surface it
+// advertised.
 func (s *Server) ensureAuthFactorService() error {
 	if s.opts.authFactorSvc != nil || s.opts.factorRegistry == nil {
 		return nil
 	}
-	svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-		Factors: s.opts.factorRegistry.All(),
-		KV:      s.kvSvc,
+	if s.opts.tenantStoreRes == nil {
+		return ErrAuthFactorTenantRoutingRequired
+	}
+	svc, err := service.NewRoutingAuthFactorService(service.RoutingAuthFactorServiceConfig{
+		Factors:  s.opts.factorRegistry.All(),
+		Resolver: s.opts.tenantStoreRes,
 	})
 	if err != nil {
 		return err

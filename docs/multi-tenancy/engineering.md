@@ -44,6 +44,16 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   Enrolment (`Add`) routes on the tenant owning the named user id and REFUSES a
   caller that may not reach it; `LookupByCredentialKey` routes on the context
   tenant, which is the tenant the login was begun under.
+- **The ceremony-time custodian auth-factor service is routed the same way:**
+  `service.NewRoutingAuthFactorService` over the same
+  `StoreResolver`, wired by `pkg/server`'s `ensureAuthFactorService` and
+  `cmd/qrdbd`'s `buildAuthFactorServiceOption`, with the same no-resolver-no-
+  surface refusal. It has no owner index, unlike `Add` above: a custodian
+  enrollment id is issued inside the enrolling tenant and only ever presented
+  back to it, so every verb routes on the context tenant. Pre-cutover records
+  at the flat `__sys:authfactor/` key are not migrated — go-qrdb is
+  pre-release alpha — and are unreachable through the routed service after
+  this change; see [../auth-factors/engineering.md](../auth-factors/engineering.md#the-custodian-surface-is-routed-too).
 - **The resolver-served store namespaces at `{tenant}/`, not
   `{tenant}/{db}/`.** It serves identity, and identity is tenant-wide — a user
   authenticates whichever database a request names. Per-database namespacing

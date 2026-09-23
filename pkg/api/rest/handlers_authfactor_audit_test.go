@@ -21,12 +21,15 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,6 +154,80 @@ func TestMapAuthFactorError_HardwareUnavailable(t *testing.T) {
 func TestMapAuthFactorError_ErrFactorDisabled(t *testing.T) {
 	if code := mapAuthFactorError(authfactors.ErrFactorDisabled); code != http.StatusNotImplemented {
 		t.Errorf("ErrFactorDisabled = %d, want 501", code)
+	}
+}
+
+func TestMapAuthFactorError_ErrTenantSealed(t *testing.T) {
+	if code := mapAuthFactorError(tenant.ErrTenantSealed); code != http.StatusServiceUnavailable {
+		t.Errorf("mapAuthFactorError(ErrTenantSealed) = %d, want %d", code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestMapAuthFactorError_ListReadErrorWrappingErrTenantSealed(t *testing.T) {
+	err := &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: tenant.ErrTenantSealed}
+	if code := mapAuthFactorError(err); code != http.StatusServiceUnavailable {
+		t.Errorf("mapAuthFactorError(AuthFactorListReadError{ErrTenantSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestMapAuthFactorError_ErrSealed covers a review finding: a tenant sealing
+// AFTER StoreResolver.Resolve succeeds but BEFORE the resolved store's own
+// Get/Put runs produces seal.ErrSealed, a distinct sentinel from
+// tenant.ErrTenantSealed (what Resolve itself returns for an ALREADY-sealed
+// tenant) that the mapper had not recognized (go-qrdb#464 round 6).
+func TestMapAuthFactorError_ErrSealed(t *testing.T) {
+	if code := mapAuthFactorError(seal.ErrSealed); code != http.StatusServiceUnavailable {
+		t.Errorf("mapAuthFactorError(seal.ErrSealed) = %d, want %d", code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestMapAuthFactorError_ListReadErrorWrappingErrSealed covers the same
+// condition surfacing through ListFactors's List-then-Get race, wrapped in
+// AuthFactorListReadError exactly as tenant.ErrTenantSealed already is.
+func TestMapAuthFactorError_ListReadErrorWrappingErrSealed(t *testing.T) {
+	err := &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
+	if code := mapAuthFactorError(err); code != http.StatusServiceUnavailable {
+		t.Errorf("mapAuthFactorError(AuthFactorListReadError{ErrSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestAuthFactorHandlers_SealedAfterResolve drives every REST auth-factor
+// handler with the error a tenant sealing between Resolve and the store
+// operation actually produces — seal.ErrSealed, asserted end to end against a
+// real barrier in pkg/service — bare and wrapped as ListFactors wraps a
+// per-record read, and asserts 503 rather than 500.
+func TestAuthFactorHandlers_SealedAfterResolve(t *testing.T) {
+	listErr := &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
+	svc := &stubAuthFactorSvc{
+		enrollErr:    seal.ErrSealed,
+		challengeErr: seal.ErrSealed,
+		verifyErr:    seal.ErrSealed,
+		listErr:      listErr,
+		revokeErr:    seal.ErrSealed,
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuthFactorService(svc))
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		body    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"enroll", http.MethodPost, "/v1/authfactors/piv/enroll", `{"user_id":"u1"}`, srv.handleAuthFactorEnroll},
+		{"challenge", http.MethodPost, "/v1/authfactors/e1/challenge", "", srv.handleAuthFactorChallenge},
+		{"verify", http.MethodPost, "/v1/authfactors/e1/verify", `{"challenge_id":"000000000001.c"}`, srv.handleAuthFactorVerify},
+		{"list", http.MethodGet, "/v1/authfactors/list", "", srv.handleAuthFactorList},
+		{"revoke", http.MethodDelete, "/v1/authfactors/e1", "", srv.handleAuthFactorRevoke},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("%s with a tenant sealed after Resolve = %d, want %d", tc.name, rec.Code, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 
@@ -487,6 +564,46 @@ func TestHandleAuthFactorList_ServiceError(t *testing.T) {
 	srv.handleAuthFactorList(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("list error = %d, want 500", rec.Code)
+	}
+}
+
+// TestHandleAuthFactorList_SealedTenant covers a review finding:
+// handleAuthFactorList wrote http.StatusInternalServerError directly rather
+// than going through mapAuthFactorError like every other handler in this
+// file, so a sealed tenant's ListFactors call — including the
+// AuthFactorListReadError wrap a List/Get race produces — got 500 at THIS
+// call site even though mapAuthFactorError's own unit tests (which call the
+// mapper directly, not the handler) already asserted 503. This drives the
+// real handler function, not the mapper, so it would have caught the
+// mismatch.
+func TestHandleAuthFactorList_SealedTenant(t *testing.T) {
+	svc := &stubAuthFactorSvc{listErr: tenant.ErrTenantSealed}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuthFactorService(svc))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/authfactors/list", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuthFactorList(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("list over a sealed tenant = %d, want 503", rec.Code)
+	}
+}
+
+// TestHandleAuthFactorList_SealedTenantWrappedInListReadError covers the
+// same call site for the wrapped form ListFactors actually returns when the
+// seal is discovered mid-scan (a List succeeds, then a per-record Get racing
+// the seal fails): AuthFactorListReadError.Unwrap() must still classify to
+// 503 through this handler, not just through mapAuthFactorError in isolation.
+func TestHandleAuthFactorList_SealedTenantWrappedInListReadError(t *testing.T) {
+	svc := &stubAuthFactorSvc{
+		listErr: &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: tenant.ErrTenantSealed},
+	}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuthFactorService(svc))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/authfactors/list", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAuthFactorList(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("list over a sealed tenant (wrapped) = %d, want 503", rec.Code)
 	}
 }
 

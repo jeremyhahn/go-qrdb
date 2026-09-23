@@ -151,6 +151,20 @@ func (e *LoginWiringError) Error() string {
 // Unwrap returns the underlying error.
 func (e *LoginWiringError) Unwrap() error { return e.Err }
 
+// ErrNoAuthFactorTenantRouting indicates the node lifecycle produced no
+// tenant-routed store resolver, so there is nothing to route the
+// ceremony-time custodian AuthFactorService through.
+//
+// It is a refusal rather than a fallback, for the same reason
+// ErrNoTenantRouting is: an AuthFactorService built over the node's bare KV
+// servicer (svcNode.KV) resolves every tenant's custodian enrollments out of
+// one keyspace, which is the defect (#464) closing this one for the
+// user-side service (#393) left behind. In practice svcNode.StoreResolver is
+// always non-nil — lifecycle.BuildServices constructs one whether or not a
+// barrier is configured — so this is reached only by a lifecycle composition
+// that has not wired a resolver at all.
+var ErrNoAuthFactorTenantRouting = errors.New("node: no tenant-routed store resolver for the auth-factor service")
+
 // AuthFactorWiringError indicates that the AuthFactorService could not be
 // constructed from the caller-supplied FactorRegistry. This prevents a
 // misconfigured enrollment/challenge/verify surface from silently

@@ -469,6 +469,34 @@ func TestMapServiceError_KeyNotFoundError(t *testing.T) {
 	}
 }
 
+// TestMapServiceError_AuthFactorTenantMismatch asserts the ceremony-time
+// auth-factor tenant refusal (go-qrdb#464) classifies as StatusInvalidArgument
+// rather than falling through to the generic StatusError: a request naming a
+// tenant other than the caller's context is the caller's input being wrong,
+// not a server fault, matching REST's 400 and gRPC's InvalidArgument.
+func TestMapServiceError_AuthFactorTenantMismatch(t *testing.T) {
+	err := &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
+	statusCode, payload := mapServiceError(err)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
+	}
+	if !strings.Contains(string(payload), "globex") || !strings.Contains(string(payload), "acme") {
+		t.Fatalf("expected payload to name both tenants, got %q", string(payload))
+	}
+}
+
+// TestMapServiceError_WrappedAuthFactorTenantMismatch asserts the
+// classification survives being wrapped, matching how every other clause in
+// this ladder is tested against a wrapped instance.
+func TestMapServiceError_WrappedAuthFactorTenantMismatch(t *testing.T) {
+	inner := &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
+	wrapped := &HandlerError{Method: "authfactor.Enroll", Err: inner}
+	statusCode, _ := mapServiceError(wrapped)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
+	}
+}
+
 func TestMapServiceError_NotLeaderError(t *testing.T) {
 	err := &service.NotLeaderError{
 		ShardID:       1,

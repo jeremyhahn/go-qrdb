@@ -601,8 +601,10 @@ type Node struct {
 	loginFactorSvc atomic.Pointer[service.UserAuthFactorServicer]
 
 	// authFactorSvc is the custodian enrollment/challenge/verify service shared
-	// by the embedded transport and the multi-protocol server so both see the
-	// same in-memory challenge cache and the same persisted enrollment records.
+	// by the embedded transport and the multi-protocol server. It holds no
+	// in-process state: enrollments and pending challenges are persisted in
+	// the caller's tenant store, so a challenge issued over one surface
+	// verifies over the other.
 	// Populated in wireClientAndServer from the caller-supplied
 	// server.WithAuthFactorService or constructed automatically from
 	// server.WithFactorRegistry when no explicit service is supplied.
@@ -1967,13 +1969,23 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// server.WithAuthFactorService it is already in crypto.AuthFactorService.
 	// If they supplied only a FactorRegistry, construct the service now so the
 	// embedded transport and all wire protocol servers share one instance.
+	//
+	// The service built here is the TENANT-ROUTED one
+	// (service.NewRoutingAuthFactorService), over svcNode.StoreResolver — the
+	// same resolver buildLoginOpts requires for the user-side service, and
+	// for the same reason (#464, mirroring #393): building it over the bare
+	// svcNode.KV resolves every tenant's custodian enrollments out of one
+	// keyspace. There is no unrouted fallback; see ErrNoAuthFactorTenantRouting.
 	if crypto.AuthFactorService != nil {
 		authFactorSvc := crypto.AuthFactorService
 		n.authFactorSvc.Store(&authFactorSvc)
 	} else if crypto.FactorRegistry != nil {
-		svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-			Factors: crypto.FactorRegistry.All(),
-			KV:      svcNode.KV,
+		if svcNode.StoreResolver == nil {
+			return &AuthFactorWiringError{Err: ErrNoAuthFactorTenantRouting}
+		}
+		svc, err := service.NewRoutingAuthFactorService(service.RoutingAuthFactorServiceConfig{
+			Factors:  crypto.FactorRegistry.All(),
+			Resolver: svcNode.StoreResolver,
 		})
 		if err != nil {
 			return &AuthFactorWiringError{Err: err}

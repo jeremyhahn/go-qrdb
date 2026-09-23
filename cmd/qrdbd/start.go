@@ -2027,15 +2027,19 @@ func runStart(f *startFlags) error {
 			// endpoint is available regardless of auth-enabled state.
 			serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
 
-			// Auth factor service is always constructed (factor implementations
-			// return ErrFactorDisabled for absent hardware, which handlers map to
-			// HTTP 501 -- the correct response for "feature not available in this
-			// deployment"). Exposed via /v1/authfactors/* for consumers like xkms.
-			if svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-				Factors: defaultAuthFactors(),
-				KV:      authKVSvc,
-			}); err == nil {
-				serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
+			// Auth factor service is constructed tenant-routed (factor
+			// implementations return ErrFactorDisabled for absent hardware,
+			// which handlers map to HTTP 501 -- the correct response for
+			// "feature not available in this deployment"). Exposed via
+			// /v1/authfactors/* for consumers like xkms. See
+			// buildAuthFactorServiceOption for why this is the routed
+			// service rather than the flat one authKVSvc would give it
+			// (go-qrdb#464), and why there is no migration for records a
+			// previous build wrote flat.
+			if opt, err := buildAuthFactorServiceOption(mgmtResult.storeResolver, defaultAuthFactors()); err == nil {
+				serverOpts = append(serverOpts, opt)
+			} else {
+				slog.Error("auth factor service disabled", slog.Any("error", err))
 			}
 
 			// User-side N-factor service (M14) is always constructed, giving

@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -409,12 +410,17 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 
-	if errors.Is(err, tenant.ErrTenantSealed) {
+	if errors.Is(err, tenant.ErrTenantSealed) || errors.Is(err, seal.ErrSealed) {
 		// A barrier-isolated tenant's IAM (user/role) store resolved to a
 		// SEALED barrier. The StoreResolver fails closed rather than leaking
 		// the operation through the shared system store — surface Unavailable
 		// so the caller retries after the tenant's barrier is unsealed,
 		// matching the BarrierSealedError data-plane mapping.
+		// tenant.ErrTenantSealed is what Resolve returns when the barrier is
+		// ALREADY sealed; seal.ErrSealed is what the resolved store's own
+		// Get/Put return when the barrier seals AFTER Resolve succeeded but
+		// BEFORE the store operation runs (go-qrdb#464 round 6) — a live
+		// per-call check, not a cached decision.
 		return status.Error(codes.Unavailable, err.Error())
 	}
 

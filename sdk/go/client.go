@@ -224,8 +224,10 @@ func (c *Client) AuthFactors() transport.AuthFactorClient {
 // (Type, LookupKey) tuples to a User.
 //
 // Returns nil when the underlying transport does not implement the
-// UserAuthFactorClient interface (e.g., the embedded transport which
-// currently only exposes the legacy AuthFactorClient surface). Callers
+// UserAuthFactorClient interface. Every transport this SDK ships —
+// including embedded, which also implements the ceremony-time
+// AuthFactorClient surface — satisfies it; a caller reaching nil here is
+// therefore using a transport built outside this repository. Callers
 // SHOULD nil-check the result and fall back appropriately.
 func (c *Client) UserAuthFactors() transport.UserAuthFactorClient {
 	if uac, ok := c.transport.(transport.UserAuthFactorClient); ok {

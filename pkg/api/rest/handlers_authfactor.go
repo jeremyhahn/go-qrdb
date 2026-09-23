@@ -22,6 +22,9 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -214,7 +217,7 @@ func (s *Server) handleAuthFactorList(w http.ResponseWriter, r *http.Request) {
 
 	enrollments, err := s.authFactorSvc.ListFactors(r.Context(), subject)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapAuthFactorError(err), err)
 		return
 	}
 
@@ -312,13 +315,14 @@ func mapAuthFactorError(err error) int {
 		verificationFailed  *authfactors.VerificationFailedError
 		factorNotFound      *authfactors.FactorNotFoundError
 		hardwareUnavailable *authfactors.HardwareUnavailableError
+		tenantMismatch      *service.AuthFactorTenantMismatchError
 	)
 	switch {
 	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
 		return http.StatusNotFound
 	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
 		return http.StatusGone
-	case errors.As(err, &enrollmentInvalid):
+	case errors.As(err, &enrollmentInvalid), errors.As(err, &tenantMismatch):
 		return http.StatusBadRequest
 	case errors.As(err, &verificationFailed):
 		return http.StatusUnauthorized
@@ -326,6 +330,20 @@ func mapAuthFactorError(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, authfactors.ErrFactorDisabled):
 		return http.StatusNotImplemented
+	case errors.Is(err, tenant.ErrTenantSealed), errors.Is(err, seal.ErrSealed):
+		// A barrier-isolated tenant's routed store resolved to a SEALED
+		// barrier -- the same condition every other tenant-routed surface
+		// (IAM, data-plane) maps to 503, matching pkg/api/rest/handlers.go
+		// and handlers_users.go/handlers_roles.go. AuthFactorListReadError
+		// wraps this unchanged, so errors.Is reaches it there too: a caller
+		// retries after the tenant's barrier is unsealed rather than being
+		// told the server itself is broken. seal.ErrSealed covers the
+		// narrower race where the barrier seals AFTER Resolve already
+		// returned a store but BEFORE this call's own Get/Put ran against it
+		// -- the live per-call seal check tenantSharedKVStore performs, not
+		// a cached decision -- which surfaces that sentinel unwrapped rather
+		// than tenant.ErrTenantSealed.
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

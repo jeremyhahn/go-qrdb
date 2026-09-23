@@ -351,10 +351,11 @@ pre-existing unnamespaced documents are left in place rather than migrated.
 ### The resolver-served store is confined by construction
 
 `tenant.StoreResolver.Resolve` returns the `kvstore.KVStore` backing a tenant's
-resolver-served records (IAM — users, roles and the user-side **auth factors**
-that authenticate them — invitations, permission scopes, and any
-`dao.GenericDAO` a consumer builds). For a shared-prefix tenant it returns the
-system store **confined to `{tenant}/`** — the tenant alone.
+resolver-served records (IAM — users, roles, the user-side **auth factors**
+that authenticate them, and the ceremony-time **custodian auth factors** —
+invitations, permission scopes, and any `dao.GenericDAO` a consumer builds).
+For a shared-prefix tenant it returns the system store **confined to
+`{tenant}/`** — the tenant alone.
 
 The confinement is a property of the store, not of the caller. That distinction
 is the whole point: a `dao.GenericDAO` keys entities `{entityType}/{id}` and has

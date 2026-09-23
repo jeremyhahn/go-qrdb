@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -1322,12 +1323,18 @@ func mapHTTPError(err error) int {
 		return http.StatusNotFound
 	case errors.As(err, &bse):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, tenant.ErrTenantSealed):
+	case errors.Is(err, tenant.ErrTenantSealed), errors.Is(err, seal.ErrSealed):
 		// A barrier-isolated tenant's IAM (user/role) store resolved to a
 		// SEALED barrier. The StoreResolver fails closed rather than leaking
 		// the operation through the shared system store — surface 503 so the
 		// caller retries after the tenant's barrier is unsealed, matching the
-		// BarrierSealedError data-plane mapping.
+		// BarrierSealedError data-plane mapping. tenant.ErrTenantSealed is
+		// what Resolve itself returns when the barrier is ALREADY sealed;
+		// seal.ErrSealed is what the resolved store's own Get/Put return when
+		// the barrier seals AFTER Resolve succeeded but before the store
+		// operation runs — a live check on every call, not a cached
+		// decision (go-qrdb#464 round 6) — and reaches here unwrapped from
+		// tenantSharedKVStore's Encrypt/Decrypt.
 		return http.StatusServiceUnavailable
 	case errors.As(err, &ibu):
 		// Required isolation backend not wired — fail closed as 503 rather than

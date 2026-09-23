@@ -19,11 +19,13 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -357,6 +359,26 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusInvalidArgument, msg
 	}
 
+	// The ceremony-time auth-factor tenant mismatch refusal (go-qrdb#464),
+	// matching REST's 400 and gRPC's InvalidArgument: an EnrollFactor request
+	// naming a tenant other than the caller's context is the caller's input
+	// being wrong, not a server fault. Unclassified here it fell to the
+	// generic wire.StatusError, indistinguishable from an internal failure —
+	// exactly the ambiguity the surrounding vocabulary exists to remove.
+	var tenantMismatch *service.AuthFactorTenantMismatchError
+	if errors.As(err, &tenantMismatch) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	// The ceremony-time auth-factor surface's own typed errors, classified
+	// row for row as pkg/api/grpc.mapAuthFactorGRPCError classifies them.
+	// Unclassified here, a missing or expired challenge reached a QUIC
+	// caller as the generic wire.StatusError while every other transport
+	// reported it as not-found or failed-precondition.
+	if st, ok := authFactorStatus(err); ok {
+		return st, msg
+	}
+
 	// Must precede ProposeError and ReadError: a call that met a closed store
 	// arrives wrapped in one of them, and StatusError would tell the caller
 	// the server broke when in fact the node is going away underneath it
@@ -664,12 +686,19 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusFailedPrecondition, msg
 	}
 
-	if errors.Is(err, tenant.ErrTenantSealed) {
+	if errors.Is(err, tenant.ErrTenantSealed) || errors.Is(err, seal.ErrSealed) {
 		// A barrier-isolated tenant's IAM (user/role) store resolved to a
 		// SEALED barrier. The StoreResolver fails closed rather than leaking
 		// the operation through the shared system store — surface Unavailable
 		// so the caller retries after the tenant's barrier is unsealed,
 		// matching the BarrierSealedError data-plane mapping.
+		// tenant.ErrTenantSealed is what Resolve returns when the barrier is
+		// ALREADY sealed; seal.ErrSealed is what the resolved store's own
+		// Get/Put return when the barrier seals AFTER Resolve succeeded but
+		// BEFORE the store operation runs (go-qrdb#464 round 6) — a live
+		// per-call check, not a cached decision. Mirrors
+		// pkg/api/grpc.mapServiceError's identical addition, per this
+		// function's own row-for-row doc comment.
 		return wire.StatusUnavailable, msg
 	}
 
@@ -914,4 +943,40 @@ func pinStatus(err error) (uint16, bool) {
 		}
 	}
 	return 0, false
+}
+
+// authFactorStatusRules classifies pkg/authfactors's error types. It mirrors
+// pkg/api/grpc.mapAuthFactorGRPCError rule for rule, in the same order, so
+// one condition reaches a QUIC caller and a gRPC caller as the same class;
+// TestMapServiceError_EveryCondition holds the two to that against the live
+// gRPC classifier.
+var authFactorStatusRules = []struct {
+	matches func(error) bool
+	status  uint16
+}{
+	{isErrorType[*authfactors.EnrollmentNotFoundError], wire.StatusNotFound},
+	{isErrorType[*authfactors.FactorNotFoundError], wire.StatusNotFound},
+	{isErrorType[*authfactors.EnrollmentInvalidError], wire.StatusInvalidArgument},
+	{isErrorType[*authfactors.EnrollmentRevokedError], wire.StatusFailedPrecondition},
+	{isErrorType[*authfactors.ChallengeExpiredError], wire.StatusFailedPrecondition},
+	{isErrorType[*authfactors.VerificationFailedError], wire.StatusUnauthenticated},
+	{isErrorType[*authfactors.HardwareUnavailableError], wire.StatusUnavailable},
+	{func(err error) bool { return errors.Is(err, authfactors.ErrFactorDisabled) }, wire.StatusUnimplemented},
+}
+
+// authFactorStatus returns the status the first matching
+// authFactorStatusRules row assigns err, and whether any row matched.
+func authFactorStatus(err error) (uint16, bool) {
+	for _, rule := range authFactorStatusRules {
+		if rule.matches(err) {
+			return rule.status, true
+		}
+	}
+	return 0, false
+}
+
+// isErrorType reports whether err's chain holds an error of type T.
+func isErrorType[T error](err error) bool {
+	_, ok := errors.AsType[T](err)
+	return ok
 }

@@ -32,8 +32,27 @@ var _ transport.AuthFactorClient = (*Transport)(nil)
 // AuthFactorClient implementation
 // ---------------------------------------------------------------------------
 
+// restEnrollFactorRequest is the wire shape pkg/api/rest's
+// handleAuthFactorEnroll actually decodes: `user_id`, not the
+// transport.EnrollFactorRequest.Subject field's `subject` tag.
+//
+// It is a package-local struct, mirroring the shape
+// sdk/go/transport/quic's own quicEnrollFactorRequest already uses for the
+// identical reason: transport.EnrollFactorRequest is the PUBLIC, Go-level
+// request every transport's client method takes, and its field names and
+// JSON tags are chosen for that surface, not for any one wire format. gRPC
+// encodes it as protobuf (unaffected by JSON tags), QUIC and MCP already
+// build their own wire shapes from its fields, and only this REST client
+// used to marshal it directly — which is what let the tag drift from the
+// REST server's body contract unnoticed.
+type restEnrollFactorRequest struct {
+	UserID       string         `json:"user_id"`
+	TenantID     string         `json:"tenant_id,omitempty"`
+	MethodParams map[string]any `json:"method_params,omitempty"`
+}
+
 // EnrollFactor enrolls a custodian in the given auth factor type via
-// POST /v1/authfactors/{factor_name}/enroll.
+// POST /v1/authfactors/{factor_name}/enroll, which responds 201 Created.
 func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFactorRequest) (*transport.EnrollFactorResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -41,7 +60,11 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 
 	path := fmt.Sprintf("/v1/authfactors/%s/enroll", req.FactorName)
 
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(restEnrollFactorRequest{
+		UserID:       req.Subject,
+		TenantID:     req.TenantID,
+		MethodParams: req.MethodParams,
+	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "EnrollFactor", Err: &jsonEncodeError{Err: err}}
 	}
@@ -58,7 +81,7 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated {
 		return nil, t.decodeErrorResponse("EnrollFactor", resp)
 	}
 
@@ -171,7 +194,7 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 }
 
 // RevokeFactor permanently revokes an enrollment via
-// DELETE /v1/authfactors/{enrollment_id}.
+// DELETE /v1/authfactors/{enrollment_id}, which responds 204 No Content.
 func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFactorRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -190,7 +213,7 @@ func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFacto
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusNoContent {
 		return t.decodeErrorResponse("RevokeFactor", resp)
 	}
 

@@ -15,8 +15,11 @@
 package sdk
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // newTestBarrier constructs a minimal in-memory StorageBarrier for the
@@ -83,5 +86,30 @@ func TestNewBarrierService_NoCeremony(t *testing.T) {
 func TestCredentialStrategyBarrierReExport(t *testing.T) {
 	if CredentialStrategyBarrier != "barrier" {
 		t.Fatalf("CredentialStrategyBarrier = %q, want %q", CredentialStrategyBarrier, "barrier")
+	}
+}
+
+// TestAuthFactorTenantMismatch_IsAnAliasNotACopy is the compile-time half of
+// the seam-error contract (docs/auth-factors/architecture.md#the-seams-error-contract):
+// a type declared here that merely resembled service.AuthFactorTenantMismatchError,
+// rather than aliasing it, would compile and still leave every transport's
+// errors.As blind to a value built through this name.
+func TestAuthFactorTenantMismatch_IsAnAliasNotACopy(t *testing.T) {
+	var _ *service.AuthFactorTenantMismatchError = (*AuthFactorTenantMismatchError)(nil)
+}
+
+// TestAuthFactorTenantMismatch_ConstructibleThroughTheSDK is the runtime half:
+// a value built through the SDK-visible type name, with no pkg/service import
+// of its own, must still match pkg/service's type via errors.As — the same
+// assertion form every transport's classifier is written against.
+func TestAuthFactorTenantMismatch_ConstructibleThroughTheSDK(t *testing.T) {
+	var err error = &AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
+
+	var target *service.AuthFactorTenantMismatchError
+	if !errors.As(err, &target) {
+		t.Fatalf("a value built through the SDK alias must match pkg/service's type, got %T: %v", err, err)
+	}
+	if target.Requested != "globex" || target.Context != "acme" {
+		t.Errorf("fields did not survive the alias: got Requested=%q Context=%q", target.Requested, target.Context)
 	}
 }

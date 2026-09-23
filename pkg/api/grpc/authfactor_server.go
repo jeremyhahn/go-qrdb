@@ -26,7 +26,9 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // authFactorServer implements the generated pb.AuthFactorServiceServer.
@@ -180,11 +182,12 @@ func mapAuthFactorGRPCError(err error) error {
 		challengeExpired    *authfactors.ChallengeExpiredError
 		verificationFailed  *authfactors.VerificationFailedError
 		hardwareUnavailable *authfactors.HardwareUnavailableError
+		tenantMismatch      *service.AuthFactorTenantMismatchError
 	)
 	switch {
 	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.As(err, &enrollmentInvalid):
+	case errors.As(err, &enrollmentInvalid), errors.As(err, &tenantMismatch):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
 		return status.Error(codes.FailedPrecondition, err.Error())
@@ -194,6 +197,18 @@ func mapAuthFactorGRPCError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, authfactors.ErrFactorDisabled):
 		return status.Error(codes.Unimplemented, err.Error())
+	case errors.Is(err, tenant.ErrTenantSealed), errors.Is(err, seal.ErrSealed):
+		// A barrier-isolated tenant's routed store resolved to a SEALED
+		// barrier -- the same condition pkg/api/grpc/errors.go's
+		// mapServiceError and service_auth.go already map to Unavailable for
+		// every other tenant-routed surface. Unix inherits this for free: it
+		// registers the same gRPC AuthFactorService. seal.ErrSealed covers
+		// the narrower race where the barrier seals AFTER Resolve already
+		// returned a store but BEFORE this call's own Get/Put ran against it
+		// (go-qrdb#464 round 6) -- a live per-call check, not a cached
+		// decision -- which surfaces that sentinel unwrapped rather than
+		// tenant.ErrTenantSealed.
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
