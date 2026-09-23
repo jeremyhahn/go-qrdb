@@ -895,6 +895,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
+	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 
 	// Build the IsolationVolume tenant stack when the caller opted in via
 	// WithTenantIsolation and the prerequisites are all present. The guard
@@ -1008,6 +1009,46 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 		leaseSvc.Revoke,
 		n.logger,
 	)
+}
+
+// startReclaimSweep starts the reclaim-job sweeper
+// (lifecycle.Node.ReclaimSweeper, go-qrdb#547) for a clustered node,
+// mirroring startLeaseExpiry's wiring immediately above -- and the daemon's
+// equivalent in cmd/qrdbd -- so the two can never drift onto different
+// composition paths.
+//
+// Unlike the lease sweeper, it runs on EVERY clustered node, not only the
+// system shard's leader: that leadership decides ownership of shared-store
+// jobs only, while a node-local store's jobs belong to the node that holds
+// it and a dedicated Raft group's to that group's leader (see
+// service.ReclaimStoreResolver.Owns). The server installs the resolver once
+// it is built; until then a sweep resolves nothing. sweeper is always
+// non-nil (see lifecycle.BuildServices); host nil is the only disabling
+// condition, matching startLeaseExpiry.
+func (n *Node) startReclaimSweep(host *quicraft.Host, sweeper *service.ReclaimSweeper, replicaID uint64) {
+	if host == nil || sweeper == nil {
+		return
+	}
+	go sweeper.Run(n.background(), service.DefaultReclaimInterval,
+		func() bool {
+			leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+			return err == nil && ok && leaderID == replicaID
+		},
+		n.logger,
+	)
+}
+
+// startReclaimSweepStandalone starts svcNode.ReclaimSweeper for a standalone
+// (backend.LocalBackend, no Raft) node -- completeStandaloneBoot and
+// NewStandaloneNode's seal-disabled path. There is no host to ask for
+// leadership: a LocalBackend node is a single process with no peers, so it
+// owns every shared-store job itself. sweeper is always non-nil (see
+// lifecycle.BuildServices).
+func (n *Node) startReclaimSweepStandalone(sweeper *service.ReclaimSweeper) {
+	if sweeper == nil {
+		return
+	}
+	go sweeper.Run(n.background(), service.DefaultReclaimInterval, nil, n.logger)
 }
 
 // completeClusteredBoot finishes wiring the clustered node after the barrier
@@ -1191,6 +1232,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// below it cannot be forgotten. The sweeper needs nothing that boot
 	// produces after this line, and nothing is serving traffic yet.
 	n.startLeaseExpiry(host, lr, svcNode.Lease, pending.cfg.Raft.ReplicaID)
+	n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, false); err != nil {
 		// Stop the reconciler goroutine before tearing down the resources it
@@ -1582,6 +1624,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
+	n.startReclaimSweepStandalone(svcNode.ReclaimSweeper)
 
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, true); err != nil {
 		_ = svcNode.Stop(context.Background())
@@ -1742,6 +1785,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// through that function, so it needs the same wiring; omitting it here is
 	// how the unsealed path kept the defect after the sealed path was fixed.
 	n.startLeaseExpiry(host, lr, svcNode.Lease, cfg.Raft.ReplicaID)
+	n.startReclaimSweep(host, svcNode.ReclaimSweeper, cfg.Raft.ReplicaID)
 
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false); err != nil {
 		if n.bgCancel != nil {
@@ -2207,6 +2251,15 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the server's to supply, and it is a no-op without a host registry.
 	if svcNode.KeyspaceReclaim != nil {
 		allOpts = append(allOpts, server.WithKeyspaceReclaimService(svcNode.KeyspaceReclaim))
+	}
+	// The reclaim sweeper (go-qrdb#547), already constructed by
+	// lifecycle.BuildServices and started by startReclaimSweep: the server
+	// installs the resolver that routes each pending job to its owner and
+	// store, through the same registry its transports resolve requests
+	// with. A server built without a DatabaseServiceRegistry serves no
+	// relational DDL, publishes no jobs, and installs none.
+	if svcNode.ReclaimSweeper != nil {
+		allOpts = append(allOpts, server.WithReclaimSweeper(svcNode.ReclaimSweeper))
 	}
 	// Wire the IsolationRaft backend factory into every transport so
 	// dedicated-raft tenant database requests resolve to the right live shard

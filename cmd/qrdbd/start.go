@@ -2118,6 +2118,12 @@ func runStart(f *startFlags) (err error) {
 				// lifecycle.BuildServices; only the tenant routing is the
 				// server's to supply.
 				server.WithKeyspaceReclaimService(svcNode.KeyspaceReclaim),
+				// The reclaim sweeper (go-qrdb#547), built by
+				// lifecycle.BuildServices and started below: the server
+				// installs the resolver that routes each pending job to
+				// the node that sweeps it and to its store, through the
+				// same registry the transports resolve requests with.
+				server.WithReclaimSweeper(svcNode.ReclaimSweeper),
 			}
 			// The transaction/CAS family is served in BOTH modes (owner
 			// ruling 2026-08-23, go-qrdb#62): a standalone node is
@@ -2334,6 +2340,16 @@ func runStart(f *startFlags) (err error) {
 					slog.Default(),
 				)
 			}
+
+			// Reclaim-job sweeper (go-qrdb#547). It runs on every daemon --
+			// standalone included, where host is nil and there is no leader
+			// to ask -- and decides per job which node sweeps it; see
+			// startReclaimSweeper.
+			var isSystemLeader func() bool
+			if host != nil {
+				isSystemLeader = systemShardLeader(host, f.replicaID)
+			}
+			startReclaimSweeper(bootCtx, svcNode.ReclaimSweeper, service.DefaultReclaimInterval, isSystemLeader, slog.Default())
 
 			// Storage-quota reconciler (Phase 3). Periodically flushes the in-memory
 			// byte accumulator to the persisted CurrentStorageBytes counters and, for

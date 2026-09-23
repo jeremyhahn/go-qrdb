@@ -191,6 +191,7 @@ type serverOptions struct {
 	rebalanceSvc       service.RebalanceServicer
 	dbRegistry         *DatabaseServiceRegistry
 	keyspaceReclaim    *service.KeyspaceReclaimService
+	reclaimSweeper     *service.ReclaimSweeper
 	tenantHosts        *TenantHostRegistry
 	raftBackend        *RaftBackendFactory
 	quotaAccountant    *quota.Accountant
@@ -553,6 +554,21 @@ func WithKeyspaceReclaimService(svc *service.KeyspaceReclaimService) ServerOptio
 	}
 }
 
+// WithReclaimSweeper supplies the sweeper that drains pending reclaim jobs
+// (lifecycle.Node.ReclaimSweeper, go-qrdb#547). The composer that built it
+// also starts it (see sdk/go/node's startReclaimSweep and cmd/qrdbd's
+// startReclaimSweeper); the server's part is the resolver that routes each
+// job to the node that sweeps it and to its store, which only the server can
+// build -- it resolves through the same registry the transports use (see
+// wireReclaimStoreResolver). Without a DatabaseServiceRegistry the server
+// serves no relational DDL, so no job can be published and none is
+// installed.
+func WithReclaimSweeper(sweeper *service.ReclaimSweeper) ServerOption {
+	return func(o *serverOptions) {
+		o.reclaimSweeper = sweeper
+	}
+}
+
 // WithDatabaseServiceRegistry sets the per-database service registry.
 // When set, protocol handlers can resolve the correct service set for a
 // given database name instead of falling back to the single shared set.
@@ -773,6 +789,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 
 	s.wireVolumeStoreResolver()
 	s.wireTenantDataProbe()
+	s.wireReclaimStoreResolver()
 
 	return s
 }
@@ -830,6 +847,38 @@ func (s *Server) wireVolumeStoreResolver() {
 // transport silently answering Unimplemented for a capability
 // WithFactorRegistry said would be there.
 var ErrAuthFactorTenantRoutingRequired = errors.New("server: WithFactorRegistry requires WithTenantStoreResolver")
+
+// wireReclaimStoreResolver installs the resolver that routes each pending
+// reclaim job (go-qrdb#547) to the node that sweeps it and to its store.
+// It resolves through a registry built from the SAME options the transports'
+// registries are (restRegistryOptions), so a job is swept through exactly
+// the (tenant, database) view it was published through. The registry is
+// held for the server's lifetime rather than rebuilt per sweep: the
+// per-request construction buildServiceRegistry documents exists to keep
+// collection ID generators from being shared across transports, and the
+// sweeper touches no collection. It is a no-op without a sweeper.
+func (s *Server) wireReclaimStoreResolver() {
+	if s.opts.reclaimSweeper == nil || s.opts.dbRegistry == nil {
+		return
+	}
+	reg := newRESTRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+	var shards reclaimShardLeader
+	if s.opts.raftBackend != nil {
+		shards = s.opts.raftBackend
+	}
+	s.opts.reclaimSweeper.SetStoreResolver(newReclaimStoreResolver(reg, shards, s.reclaimOrigin()))
+}
+
+// reclaimOrigin is this node's identity on reclaim-job index entries: its
+// system-shard replica ID, unique within a cluster and stable across
+// restarts. The registry that publishes entries and the resolver that
+// matches them both take it from here, so they cannot disagree.
+func (s *Server) reclaimOrigin() string {
+	if s.config == nil {
+		return ""
+	}
+	return strconv.FormatUint(s.config.Raft.ReplicaID, 10)
+}
 
 // ensureAuthFactorService completes the WithFactorRegistry contract: when
 // a caller injected a FactorRegistry via WithFactorRegistry but did not
@@ -1295,7 +1344,14 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
 	}
-	regOpts := []RESTRegistryOption{}
+	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+}
+
+// restRegistryOptions is the one option list every restServiceRegistry this
+// server builds is configured with -- the transports' per-call registries
+// and the reclaim-store resolver's long-lived one alike.
+func (s *Server) restRegistryOptions() []RESTRegistryOption {
+	regOpts := []RESTRegistryOption{withReclaimOrigin(s.reclaimOrigin())}
 	if s.opts.tenantSvc != nil {
 		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 	}
@@ -1315,7 +1371,7 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.config.SQL.DefaultDatabase != "" {
 		regOpts = append(regOpts, WithSharedSQLDefaultDatabase(s.config.SQL.DefaultDatabase))
 	}
-	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...)
+	return regOpts
 }
 
 // startGRPC creates and starts the gRPC server with configured options.

@@ -283,6 +283,16 @@ type Node struct {
 	// not exist yet at the point BuildServices runs.
 	KeyspaceReclaim *service.KeyspaceReclaimService
 
+	// ReclaimSweeper drains pending reclaim jobs (go-qrdb#547) -- durable
+	// records of keyspace an operation orphaned instead of deleting inline:
+	// TRUNCATE TABLE's superseded generation, RENAME INDEX's old name (see
+	// service.ReclaimJob). It is always non-nil, built here -- the one
+	// composition point every composer shares -- so that starting its Run
+	// loop is never a construction a composer can forget (go-qrdb#174). Every
+	// composer that serves relational DDL (the daemon, the SDK node) starts
+	// Run on every node; the server installs its resolver.
+	ReclaimSweeper *service.ReclaimSweeper
+
 	// PlacementStore is the replicated placement table for dedicated tenant
 	// Raft groups (Phase 4c). It is always non-nil: the DatabaseService writes
 	// a database's computed placement here on create, and the daemon threads it
@@ -541,6 +551,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		Vector: n.Vector,
 	})
 	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
+
+	// go-qrdb#547's reclaim-job sweeper, over the un-namespaced system store
+	// where every pending job's index entry lives. Each job's own store is
+	// resolved per entry once the server installs its resolver
+	// (server.WithReclaimSweeper). Every composer starts this ONE instance's
+	// Run loop (see the ReclaimSweeper field doc comment); none constructs
+	// its own.
+	n.ReclaimSweeper = service.NewReclaimSweeper(n.MVCC)
 
 	// Embedding and RAG services: constructed only when providers are
 	// configured. buildEmbeddingAndRAG is a no-op stub in non-vector builds.

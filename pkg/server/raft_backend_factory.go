@@ -493,6 +493,26 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 	return rs.services, nil
 }
 
+// LeadsDatabase reports whether this node's replica currently leads the
+// dedicated Raft group of (tenantID, db). It consults only shards this node
+// has already started -- it never attaches one -- so asking about a database
+// this node is not a member of is free of side effects and answers false.
+// The reclaim sweeper uses it to decide which node sweeps a dedicated-group
+// database's reclaim jobs (go-qrdb#547).
+func (f *RaftBackendFactory) LeadsDatabase(tenantID, db string) bool {
+	if f == nil || f.host == nil {
+		return false
+	}
+	f.mu.Lock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	f.mu.Unlock()
+	if !ok {
+		return false
+	}
+	info, err := f.host.GetShardInfo(rs.shardID)
+	return err == nil && info != nil && info.IsLeader
+}
+
 // Attach starts (and caches) a dedicated raft shard eagerly. It is used at boot
 // to re-attach IsolationRaft databases before serving. It is idempotent: an
 // already-attached database is a no-op.

@@ -26,6 +26,9 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -71,9 +74,25 @@ type raftNodeOpts struct {
 	// which is never cancelled, so the sweeper survived by accident rather
 	// than by design.
 	cancelBootCtx bool
+
+	// serverOpts are passed to NewClusteredNode as the caller's own server
+	// options.
+	serverOpts []server.ServerOption
 }
 
 func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transport.KVClient, *sdk.Client) {
+	t.Helper()
+	n, kv := bootRaftNodeFull(t, opts)
+	coord, err := n.Client().Coordination()
+	if err != nil {
+		t.Fatalf("Coordination: %v", err)
+	}
+	return coord, kv, n.Client()
+}
+
+// bootRaftNodeFull boots a single-member clustered node and returns it once
+// writable.
+func bootRaftNodeFull(t *testing.T, opts raftNodeOpts) (*node.Node, transport.KVClient) {
 	t.Helper()
 
 	port, err := qrdbdharness.ReserveTCPPort()
@@ -103,7 +122,7 @@ func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transp
 	t.Cleanup(cancelBoot)
 
 	members := map[uint64]string{1: cfg.Raft.RaftAddress}
-	n, err := node.NewClusteredNode(bootCtx, cfg, members, nil)
+	n, err := node.NewClusteredNode(bootCtx, cfg, members, opts.serverOpts)
 	if err != nil {
 		t.Fatalf("NewClusteredNode(seal=%v): %v", opts.sealEnabled, err)
 	}
@@ -118,12 +137,7 @@ func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transp
 
 	kv := n.Client().KV()
 	awaitWritable(t, kv)
-
-	coord, err := n.Client().Coordination()
-	if err != nil {
-		t.Fatalf("Coordination: %v", err)
-	}
-	return coord, kv, n.Client()
+	return n, kv
 }
 
 // assertLeaseKeyReaped acquires a short lease, waits for Done, and then
@@ -312,6 +326,127 @@ func TestRaft_LeaseTTLExpiry(t *testing.T) {
 			coord, _, _ := bootRaftNodeOpts(t, tc.opts)
 			assertLeaseKeyReaped(t, coord, "ephemeral/"+tc.name)
 		})
+	}
+}
+
+// TestRaft_TruncateReclaimSweeperRuns is TestRaft_LeaseTTLExpiry's
+// go-qrdb#547 counterpart: it proves the reclaim-job sweeper
+// (lifecycle.Node.ReclaimSweeper) is actually RUNNING on both clustered
+// composition paths, with the resolver the server installs, named after the
+// go-qrdb#174 lesson -- constructing a sweeper once, centrally, does not by
+// itself prove every composer remembered to START it.
+//
+// The job is not hand-written: a real TRUNCATE TABLE is published through a
+// registry over the node's own services, so the row, the job and the index
+// entry land exactly where production puts them (the job and row
+// composite-namespaced, the entry un-namespaced in the system store). The
+// node's server is given the same DatabaseServiceRegistry, which is what
+// makes it install a resolver on the node's sweeper at all.
+func TestRaft_TruncateReclaimSweeperRuns(t *testing.T) {
+	cases := []struct {
+		name string
+		opts raftNodeOpts
+		// what a failure of THIS case, and only this case, would mean
+		proves string
+	}{
+		{
+			name:   "SealEnabled",
+			opts:   raftNodeOpts{sealEnabled: true},
+			proves: "completeClusteredBoot starts the reclaim sweeper",
+		},
+		{
+			name:   "SealDisabled",
+			opts:   raftNodeOpts{sealEnabled: false},
+			proves: "the seal-disabled branch of NewClusteredNode starts it too",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbReg := server.NewDatabaseServiceRegistry("system")
+			tc.opts.serverOpts = []server.ServerOption{server.WithDatabaseServiceRegistry(dbReg)}
+			n, _ := bootRaftNodeFull(t, tc.opts)
+			svc := n.Services()
+			dbReg.Register("system", &server.DatabaseServices{
+				Name: "system", KV: svc.KV, MVCC: svc.MVCC, Transaction: svc.Transaction,
+				Batch: svc.Batch, Index: svc.Index,
+			})
+			assertTruncateReclaimed(t, dbReg, svc.MVCC)
+		})
+	}
+}
+
+// assertTruncateReclaimed truncates a one-row table through a registry over
+// dbReg and polls the raw store until the old generation's row, the job
+// record and its index entry are all gone.
+func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry, raw service.MVCCKVServicer) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenant.SystemTenantID), 90*time.Second)
+	defer cancel()
+
+	reg := server.NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID)
+	tables, err := reg.TableService(tenant.SystemTenantID, "system")
+	if err != nil {
+		t.Fatalf("TableService: %v", err)
+	}
+	def, err := tables.CreateTable(ctx, &service.CreateTableRequest{
+		Database: "system", Name: "reclaim_canary",
+		Columns:    []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+	kv, err := reg.KVService(tenant.SystemTenantID, "system")
+	if err != nil {
+		t.Fatalf("KVService: %v", err)
+	}
+	oldRows := service.TableDataPrefix("system", def.TableID, 0)
+	if err := kv.Put(ctx, oldRows+"row", []byte("orphaned")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := tables.TruncateTable(ctx, "system", "reclaim_canary", true); err != nil {
+		t.Fatalf("TruncateTable: %v", err)
+	}
+
+	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "system")
+	prefixes := []string{ns + oldRows, ns + "__reclaim:job/", "__reclaim:index/"}
+	remaining := func() map[string][]string {
+		left := map[string][]string{}
+		for _, prefix := range prefixes {
+			keys, lerr := raw.ListAll(ctx, prefix)
+			if lerr != nil {
+				t.Fatalf("ListAll(%q): %v", prefix, lerr)
+			}
+			if len(keys) > 0 {
+				left[prefix] = keys
+			}
+		}
+		return left
+	}
+	// Confirm the fixture actually landed before waiting on its removal.
+	if left := remaining(); len(left) != len(prefixes) {
+		t.Fatalf("the row, job and index entry must all exist before the sweep; found %v", left)
+	}
+
+	// Drained only after one sweep observes the job and ReclaimQuiescence
+	// passes; poll well past both rather than sleeping a fixed budget.
+	deadline := time.Now().Add(service.ReclaimQuiescence + 6*service.DefaultReclaimInterval)
+	for {
+		left := remaining()
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still present after the sweep deadline: %v -- nothing is sweeping pending reclaim jobs "+
+				"on this clustered path (go-qrdb#547, following the go-qrdb#174 lesson)", left)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context ended while waiting for the sweep: %v", ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 }
 

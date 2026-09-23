@@ -91,6 +91,11 @@ type restServiceRegistry struct {
 	// Backend()) case. Always non-nil; unused when dbManager is nil.
 	dedicatedStore *dedicatedStoreServiceCache
 
+	// reclaimOrigin identifies this node on the reclaim-job index entries
+	// its TableServices publish (service.ReclaimIndexEntry.Origin), so a job
+	// in a store local to this node is swept here. See withReclaimOrigin.
+	reclaimOrigin string
+
 	// collections caches the (tenant, db)-namespaced collection services
 	// applyComposite builds over the wrapped engines. Always non-nil. Like
 	// dedicatedStore, its entries carry process-local increment ID
@@ -117,6 +122,18 @@ func NewRESTServiceRegistry(
 	systemTenant string,
 	opts ...RESTRegistryOption,
 ) rest.ServiceRegistry {
+	return newRESTRegistry(dbReg, barrierReg, systemTenant, opts...)
+}
+
+// newRESTRegistry is NewRESTServiceRegistry returning the concrete type, for
+// in-package callers that need more than the rest.ServiceRegistry surface
+// (the reclaim-store resolver).
+func newRESTRegistry(
+	dbReg *DatabaseServiceRegistry,
+	barrierReg *seal.BarrierRegistry,
+	systemTenant string,
+	opts ...RESTRegistryOption,
+) *restServiceRegistry {
 	r := &restServiceRegistry{
 		dbReg:          dbReg,
 		barrierReg:     barrierReg,
@@ -194,6 +211,16 @@ func withDatabaseManager(mgr *database.Manager) RESTRegistryOption {
 	}
 }
 
+// withReclaimOrigin sets this node's identity as recorded on the reclaim-job
+// index entries its TableServices publish (go-qrdb#547). It must equal the
+// origin the node's reclaim-store resolver compares against, which is why
+// both are derived from the same Server (see Server.reclaimOrigin).
+func withReclaimOrigin(origin string) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.reclaimOrigin = origin
+	}
+}
+
 // WithDatabaseCatalog sets the catalog used to check whether a database exists
 // for a tenant. When configured, any database that exists resolves to a
 // namespaced view of the shared service set, even when it is not pre-registered
@@ -236,7 +263,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			return nil, err
 		}
 		prefix := tenant.ComposeNamespace(tenantID, db)
-		return r.applyQuota(r.applyComposite(base, prefix), tenantID, info), nil
+		svcs := r.applyQuota(r.applyComposite(base, prefix), tenantID, info)
+		svcs.Placement = service.StorePlacementNode
+		return svcs, nil
 	}
 
 	// IsolationRaft tenants back each database with its OWN dedicated Raft group
@@ -270,7 +299,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			}
 			return nil, err
 		}
-		return r.applyQuota(base, tenantID, info), nil
+		svcs := r.applyQuota(base, tenantID, info)
+		svcs.Placement = service.StorePlacementShard
+		return svcs, nil
 	}
 
 	// A specific database may carry its OWN encryption barrier over its OWN
@@ -283,6 +314,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// falling through to dbReg.Default() below (which would silently serve a
 	// different, unencrypted keyspace under the same database name).
 	if svcs, err := r.resolveDedicatedDatabaseBarrier(tenantID, db, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+		if svcs != nil {
+			svcs.Placement = service.StorePlacementNode
+		}
 		return svcs, err
 	}
 
@@ -291,11 +325,22 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// the named database is used when present (e.g. the default database);
 	// otherwise any database that exists for the tenant resolves to a
 	// namespaced view of the default service set.
+	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
+		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+	}
+	return r.resolveShared(tenantID, db, info)
+}
+
+// resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped
+// view of the shared service set: resolve's final branch, without the
+// existence check that precedes it there. The reclaim-store resolver uses it
+// directly for a job published under service.StorePlacementShared, because
+// the existence check reads this NODE's catalog, which a node other than the
+// one that created the database does not hold -- while the shared store
+// itself is replicated and reachable from every node.
+func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
 	svcs := r.dbReg.GetOrDefault(db)
 	if svcs == nil {
-		if !r.databaseExists(tenantID, db) {
-			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
-		}
 		svcs = r.dbReg.Default()
 		if svcs == nil {
 			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
@@ -308,7 +353,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// transparently scoped, which keeps each database's keyspace disjoint from
 	// every other database and every other tenant.
 	prefix := tenant.ComposeNamespace(tenantID, db)
-	return r.applyQuota(r.applyComposite(svcs, prefix), tenantID, info), nil
+	out := r.applyQuota(r.applyComposite(svcs, prefix), tenantID, info)
+	out.Placement = service.StorePlacementShared
+	return out, nil
 }
 
 // resolveDedicatedDatabaseBarrier resolves a database that carries its OWN
@@ -708,7 +755,18 @@ func (r *restServiceRegistry) TableService(tenantID, db string) (service.TableSe
 		return nil, notImplemented("table", "")
 	}
 	seq := service.NewSequenceService(svcs.MVCC, svcs.Transaction)
-	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq), nil
+
+	// Reclaim-publishing DDL (TRUNCATE TABLE, DROP INDEX, DROP TABLE) writes its index
+	// entry through the SYSTEM store's own, un-namespaced transaction -- the
+	// one place the sweeper lists -- never svcs.Transaction, which is
+	// namespaced or a different store altogether (go-qrdb#547). Without a
+	// system store no option is passed, and those operations refuse rather
+	// than publish a job nothing could find.
+	var opts []service.TableServiceOption
+	if sys := r.dbReg.Default(); sys != nil && sys.Transaction != nil {
+		opts = append(opts, service.WithReclaimIndex(sys.Transaction, svcs.Placement, r.reclaimOrigin))
+	}
+	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq, opts...), nil
 }
 
 // SequenceService returns the SequenceServicer for the given (tenant, db)
