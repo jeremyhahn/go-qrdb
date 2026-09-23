@@ -17,11 +17,14 @@ package ivf
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api"
 )
 
 // The seed is REQUIRED, not decorative. This test asserts that the three
@@ -110,6 +113,236 @@ func TestKMeans_TooFewVectors(t *testing.T) {
 	_, _, err := km.Cluster(vectors)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot create 10 clusters from 2 vectors")
+}
+
+// TestKMeans_Cluster_DimensionMismatch pins that Cluster refuses a vector
+// whose length disagrees with Config.Dimensions with a typed error, rather
+// than feeding it to the distance funcs -- which treat a length mismatch as
+// math.MaxFloat32, a sentinel that k-means++ then squares while summing
+// totalWeight (go-qrdb#565), overflowing to +Inf.
+func TestKMeans_Cluster_DimensionMismatch(t *testing.T) {
+	config := &Config{
+		NumCentroids:   2,
+		Dimensions:     128,
+		MaxIterations:  25,
+		Convergence:    0.0001,
+		InitMethod:     "kmeans++",
+		DefaultNProbe:  1,
+		DistanceMetric: L2Distance,
+	}
+
+	vectors := make([][]float32, 4)
+	for i := range vectors {
+		vectors[i] = make([]float32, 128)
+	}
+	vectors[3] = make([]float32, 64) // wrong dimension
+
+	km := NewKMeans(config)
+	_, _, err := km.Cluster(vectors)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dimensions")
+
+	var dimErr *api.KMeansDimensionMismatchError
+	require.ErrorAs(t, err, &dimErr)
+	assert.Equal(t, 3, dimErr.Index)
+	assert.Equal(t, 64, dimErr.Got)
+	assert.Equal(t, 128, dimErr.Expected)
+}
+
+// TestKMeans_Cluster_AllIdenticalPoints pins that clustering a set of
+// perfectly identical vectors terminates deterministically -- rather than
+// stalling in the k-means++ weighted-sampling loop, where every remaining
+// point's distance to the already-chosen centroids is zero from the second
+// centroid onward -- and still returns exactly NumCentroids centroids.
+func TestKMeans_Cluster_AllIdenticalPoints(t *testing.T) {
+	config := &Config{
+		NumCentroids:   4,
+		Dimensions:     8,
+		MaxIterations:  25,
+		Convergence:    0.0001,
+		InitMethod:     "kmeans++",
+		DefaultNProbe:  1,
+		DistanceMetric: L2Distance,
+	}
+
+	point := []float32{1, 2, 3, 4, 5, 6, 7, 8}
+	vectors := make([][]float32, 50)
+	for i := range vectors {
+		vectors[i] = copyVector(point)
+	}
+
+	km := NewKMeans(config)
+	centroids, assignments, err := km.Cluster(vectors)
+
+	require.NoError(t, err)
+	assert.Len(t, centroids, 4)
+	assert.Len(t, assignments, len(vectors))
+}
+
+// TestKMeans_Cluster_FewerDistinctPointsThanK pins that clustering terminates
+// deterministically when the dataset has far fewer distinct positions than
+// requested centroids -- the totalWeight==0 branch of k-means++ initialisation
+// fires for most of the run, and must still return exactly NumCentroids
+// centroids rather than silently returning fewer once it runs out of points
+// that are not yet "chosen".
+func TestKMeans_Cluster_FewerDistinctPointsThanK(t *testing.T) {
+	config := &Config{
+		NumCentroids:   10,
+		Dimensions:     4,
+		MaxIterations:  25,
+		Convergence:    0.0001,
+		InitMethod:     "kmeans++",
+		DefaultNProbe:  1,
+		DistanceMetric: L2Distance,
+	}
+
+	// Only 3 distinct positions repeated across 60 vectors, requesting 10
+	// centroids.
+	distinct := [][]float32{
+		{0, 0, 0, 0},
+		{10, 10, 10, 10},
+		{20, 20, 20, 20},
+	}
+	vectors := make([][]float32, 60)
+	for i := range vectors {
+		vectors[i] = copyVector(distinct[i%len(distinct)])
+	}
+
+	// Assert directly on the INITIALIZER's own output, not merely on
+	// Cluster()'s. recomputeCentroids allocates a full NumCentroids-length
+	// slice on its very first call regardless of how many centroids
+	// initialization actually produced, so a short slice returned by
+	// initializeKMeansPlusPlus is invisible by the time Cluster returns --
+	// the refinement step silently repairs the count before any assertion
+	// downstream of it could observe the regression this pins. Reverting to
+	// the parent implementation (the totalWeight==0 branch scanning for an
+	// "unchosen" point instead of drawing uniformly) makes exactly this
+	// assertion fail: with only 3 distinct positions, that scan runs out of
+	// unchosen points and initializeKMeansPlusPlus returns roughly 3
+	// centroids instead of the requested 10.
+	km := NewKMeans(config)
+	initial, err := km.initializeKMeansPlusPlus(vectors)
+	require.NoError(t, err)
+	assert.Len(t, initial, 10)
+
+	// Cluster() itself must still complete end to end and hand back a full,
+	// usable clustering built on top of that initialization.
+	km2 := NewKMeans(config)
+	centroids, assignments, err := km2.Cluster(vectors)
+	require.NoError(t, err)
+	assert.Len(t, centroids, 10)
+	assert.Len(t, assignments, len(vectors))
+}
+
+// referenceKMeansPlusPlus is the pre-go-qrdb#565 k-means++ initializer's
+// SELECTION shape, unchanged: for every candidate point it rescans every
+// already-chosen centroid from scratch and takes the minimum of the RAW
+// distanceFunc output before squaring it into a sampling weight. It is
+// deliberately O(n*k^2) -- that cost is exactly what made the optimized
+// initializeKMeansPlusPlus necessary -- and exists ONLY as a test oracle: an
+// independent, obviously-correct-by-construction implementation to compare
+// the optimized one against.
+//
+// Its weight/totalWeight/target/cumulative arithmetic is float64, matching
+// initializeKMeansPlusPlus's own (later) overflow fix -- see squaredWeight's
+// doc comment -- rather than the float32 arithmetic the original shipped
+// with. Comparing raw-before-square is the property this test exists to pin;
+// the arithmetic width is not, and leaving this oracle in float32 while
+// production moved to float64 would make the two diverge on ordinary
+// floating-point rounding in the weighted draw, for reasons unrelated to
+// either bug this test guards against.
+func referenceKMeansPlusPlus(rng *rand.Rand, vectors [][]float32, numCentroids int, distFunc DistanceFunc) [][]float32 {
+	centroids := make([][]float32, 0, numCentroids)
+
+	firstIdx := rng.Intn(len(vectors))
+	centroids = append(centroids, copyVector(vectors[firstIdx]))
+
+	weights := make([]float64, len(vectors))
+	for k := 1; k < numCentroids; k++ {
+		var totalWeight float64
+		for i, vec := range vectors {
+			minDist := float32(math.MaxFloat32)
+			for _, centroid := range centroids {
+				if d := distFunc(vec, centroid); d < minDist {
+					minDist = d
+				}
+			}
+			weights[i] = squaredWeight(minDist)
+			totalWeight += weights[i]
+		}
+
+		if totalWeight == 0 {
+			nextIdx := rng.Intn(len(vectors))
+			centroids = append(centroids, copyVector(vectors[nextIdx]))
+			continue
+		}
+
+		target := rng.Float64() * totalWeight
+		cumulative := float64(0)
+		nextIdx := len(vectors) - 1
+		for i, weight := range weights {
+			cumulative += weight
+			if cumulative >= target {
+				nextIdx = i
+				break
+			}
+		}
+		centroids = append(centroids, copyVector(vectors[nextIdx]))
+	}
+
+	return centroids
+}
+
+// TestKMeans_InitializeKMeansPlusPlus_SignedMetricWeights pins that
+// initializeKMeansPlusPlus's incremental minimum-distance tracking produces
+// the IDENTICAL selection distribution as referenceKMeansPlusPlus for a
+// SIGNED metric (DotProductDistance, where a MORE NEGATIVE raw distance is
+// CLOSER -- see its doc comment).
+//
+// The two implementations consume km.rng in the exact same sequence --
+// Intn once for the first centroid, then one Float64 per subsequent
+// centroid -- PROVIDED the zero-weight fallback never fires, which the
+// dataset below (eight vectors of widely varying magnitude and direction,
+// all pairwise distinct) guarantees. Given that, the two produce
+// bit-identical centroid sequences, seed for seed, if and only if they
+// compute the same weight for every point at every step -- so an
+// implementation that compared min(d^2) instead of min(d)^2 (the bug this
+// pins: -10 and 3 have min(d)=-10, weight 100, but min(d^2) picks 3,
+// weight 9) would diverge from the reference on some seed in this range.
+// Verified over 2,000 seeds with zero divergences.
+func TestKMeans_InitializeKMeansPlusPlus_SignedMetricWeights(t *testing.T) {
+	vectors := [][]float32{
+		{100, 0}, {-100, 0},
+		{1, 0}, {-1, 0},
+		{0, 50}, {0, 1},
+		{50, 50}, {-50, -50},
+	}
+	const numCentroids = 4
+	distFunc := GetDistanceFunc(DotProductDistance)
+
+	for seed := int64(1); seed <= 2000; seed++ {
+		config := &Config{
+			NumCentroids:   numCentroids,
+			Dimensions:     2,
+			MaxIterations:  25,
+			Convergence:    0.0001,
+			InitMethod:     "kmeans++",
+			DefaultNProbe:  1,
+			DistanceMetric: DotProductDistance,
+			Seed:           seed,
+		}
+
+		km := NewKMeans(config)
+		got, err := km.initializeKMeansPlusPlus(vectors)
+		require.NoError(t, err)
+
+		want := referenceKMeansPlusPlus(rand.New(rand.NewSource(seed)), vectors, numCentroids, distFunc)
+
+		require.Lenf(t, got, len(want), "seed %d", seed)
+		for i := range want {
+			assert.Equalf(t, want[i], got[i], "seed %d, centroid %d", seed, i)
+		}
+	}
 }
 
 func TestKMeans_RandomInit(t *testing.T) {
@@ -463,6 +696,177 @@ func TestCopyVector(t *testing.T) {
 	// Original should be unchanged
 	assert.Equal(t, float32(1.0), original[0])
 	assert.Equal(t, float32(99.0), copied[0])
+}
+
+// TestClampedMin_OverflowAndNaN pins clampedMin's clamping behaviour
+// directly, deterministically, with no dependence on RNG state: a candidate
+// that is +Inf, -Inf or NaN must never be compared AS ITSELF -- each is
+// clamped to a finite bound (+/-math.MaxFloat32, or math.MaxFloat32 for NaN)
+// first, and only the clamped value is ever compared against current via
+// "<". Both infinities are overflow artifacts here, not just +Inf: a signed
+// metric's raw distance (DotProductDistance) can overflow to -Inf from
+// finite inputs just as validly as it can overflow to +Inf (see
+// TestKMeans_InitializeKMeansPlusPlus_DotProductOverflow), and an unclamped
+// -Inf would compare less than every finite value -- including this
+// function's own sentinel -- as if it were a genuinely closer point, when
+// squaredWeight would then square it right back into +Inf.
+func TestClampedMin_OverflowAndNaN(t *testing.T) {
+	sentinel := float32(math.MaxFloat32)
+	posInf := float32(math.Inf(1))
+	negInf := float32(math.Inf(-1))
+	nan := float32(math.NaN())
+
+	tests := []struct {
+		name      string
+		current   float32
+		candidate float32
+		want      float32
+	}{
+		{"finite candidate replaces sentinel", sentinel, 5, 5},
+		{"finite candidate replaces a smaller running minimum only if smaller", float32(5), float32(10), float32(5)},
+		{"finite candidate replaces a larger running minimum", float32(10), float32(5), float32(5)},
+		{"+Inf candidate never replaces the sentinel", sentinel, posInf, sentinel},
+		{"+Inf candidate never replaces a finite running minimum", float32(5), posInf, float32(5)},
+		{"NaN candidate never replaces the sentinel", sentinel, nan, sentinel},
+		{"NaN candidate never replaces a finite running minimum", float32(5), nan, float32(5)},
+		{"-Inf candidate is clamped to -MaxFloat32, not accepted as a literal -Inf minimum", sentinel, negInf, -sentinel},
+		{"a clamped -MaxFloat32 candidate still legitimately replaces a less-negative running minimum", float32(-1000), negInf, -sentinel},
+		{"-Inf candidate does not replace an already-more-negative running minimum", -sentinel, negInf, -sentinel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, clampedMin(tt.current, tt.candidate))
+		})
+	}
+
+	// Contrast against the shape this replaces: an unconditional assignment
+	// (`minDist[i] = d`) with no "<" comparison at all, which is what
+	// initializeKMeansPlusPlus's very first per-vector precompute did before
+	// this fix. That shape takes an overflowing (or NaN) distanceFunc result
+	// unchanged, rather than clamping it to whatever was already known.
+	unconditionalAssign := func(_, candidate float32) float32 { return candidate }
+	assert.NotEqual(t, sentinel, unconditionalAssign(sentinel, posInf),
+		"the parent shape (direct assignment) lets +Inf through uncontested")
+	require.True(t, math.IsInf(float64(unconditionalAssign(sentinel, posInf)), 1))
+	assert.NotEqual(t, unconditionalAssign(sentinel, posInf), clampedMin(sentinel, posInf))
+
+	// Contrast against clamping +Inf only (the version this round's review
+	// caught): -Inf left unclamped would be accepted as the new minimum
+	// here, and squaredWeight would turn it right back into +Inf.
+	clampPositiveOnly := func(current, candidate float32) float32 {
+		if math.IsInf(float64(candidate), 1) || math.IsNaN(float64(candidate)) {
+			candidate = math.MaxFloat32
+		}
+		if candidate < current {
+			return candidate
+		}
+		return current
+	}
+	halfClamped := clampPositiveOnly(sentinel, negInf)
+	assert.True(t, math.IsInf(float64(halfClamped), -1),
+		"clamping +Inf alone leaves -Inf uncontested")
+	assert.True(t, math.IsInf(squaredWeight(halfClamped), 1),
+		"squaring an unclamped -Inf reproduces the overflow this fix exists to prevent")
+	assert.False(t, math.IsInf(squaredWeight(clampedMin(sentinel, negInf)), 0),
+		"squaring clampedMin's actual (fully clamped) result must not overflow")
+}
+
+// TestSquaredWeight_LargeFiniteDistanceNoOverflow pins that squaredWeight
+// does NOT reproduce the overflow clampedMin exists to prevent: clampedMin
+// only stops an already-`+Inf`/NaN DISTANCE from replacing a smaller one, it
+// does nothing to stop SQUARING a large-but-finite value -- including its own
+// sentinel, math.MaxFloat32 -- from overflowing float32's ~3.4e38 range.
+// Every case here is a value that DOES overflow when squared in plain
+// float32 arithmetic (asserted as a test-setup precondition), and must NOT
+// overflow through squaredWeight.
+func TestSquaredWeight_LargeFiniteDistanceNoOverflow(t *testing.T) {
+	tests := []struct {
+		name string
+		d    float32
+	}{
+		{"an ordinary large finite distance", 3e19},
+		{"the clampedMin sentinel itself", float32(math.MaxFloat32)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.True(t, math.IsInf(float64(tt.d*tt.d), 0),
+				"test setup: %v must overflow when squared in float32 for this test to prove anything", tt.d)
+
+			got := squaredWeight(tt.d)
+			assert.False(t, math.IsInf(got, 0), "squaredWeight overflowed to +/-Inf")
+			assert.False(t, math.IsNaN(got), "squaredWeight produced NaN")
+			assert.Greater(t, got, 0.0)
+		})
+	}
+}
+
+// TestKMeans_DotProductOverflow_ClampedToFiniteWeight pins the specific
+// failure this round's review caught: DotProductDistance's raw output is
+// signed, and its own float32 accumulation overflows to -Inf for two
+// well-aligned, sufficiently large-magnitude but otherwise perfectly finite
+// vectors -- not merely a hypothetical -Inf, but one produced by the actual
+// distance function initializeKMeansPlusPlus calls. A -Inf raw distance
+// compares less than every finite value, including clampedMin's own
+// sentinel, so leaving it unclamped would accept it as the new minimum and
+// squaredWeight would square it right back into +Inf.
+func TestKMeans_DotProductOverflow_ClampedToFiniteWeight(t *testing.T) {
+	huge := float32(1e20)
+	a := []float32{huge, 0}
+	b := []float32{huge, 0} // identical direction and magnitude: maximally "close"
+
+	raw := DotProduct(a, b)
+	require.True(t, math.IsInf(float64(raw), -1),
+		"test setup: DotProduct(a, b) must overflow to -Inf for this dataset")
+
+	clamped := clampedMin(float32(math.MaxFloat32), raw)
+	assert.False(t, math.IsInf(float64(clamped), 0), "clampedMin must clamp the -Inf raw distance to a finite bound")
+
+	weight := squaredWeight(clamped)
+	assert.False(t, math.IsInf(weight, 0), "the resulting k-means++ sampling weight must not be +/-Inf")
+	assert.False(t, math.IsNaN(weight))
+	assert.Greater(t, weight, 0.0)
+}
+
+// TestKMeans_InitializeKMeansPlusPlus_DotProductOverflow runs the full
+// initializer end to end against a dataset that mixes an overflowing
+// DotProduct pair with ordinary points, as a regression net alongside the
+// precise unit-level proof above: it must complete without hanging or
+// panicking and return exactly NumCentroids centroids built only from the
+// input's own (large but FINITE) values, across many seeds.
+func TestKMeans_InitializeKMeansPlusPlus_DotProductOverflow(t *testing.T) {
+	huge := float32(1e20)
+	vectors := [][]float32{
+		{huge, 0}, {huge, 0}, {-huge, 0}, {-huge, 0},
+		{1, 0}, {0, 1}, {-1, 0}, {0, -1},
+	}
+	require.True(t, math.IsInf(float64(DotProduct(vectors[0], vectors[1])), -1),
+		"test setup: this dataset must overflow DotProduct for this test to prove anything")
+
+	for seed := int64(1); seed <= 200; seed++ {
+		config := &Config{
+			NumCentroids:   3,
+			Dimensions:     2,
+			MaxIterations:  25,
+			Convergence:    0.0001,
+			InitMethod:     "kmeans++",
+			DefaultNProbe:  1,
+			DistanceMetric: DotProductDistance,
+			Seed:           seed,
+		}
+		km := NewKMeans(config)
+		centroids, err := km.initializeKMeansPlusPlus(vectors)
+		require.NoError(t, err)
+		require.Len(t, centroids, 3)
+
+		for _, c := range centroids {
+			for _, v := range c {
+				assert.False(t, math.IsInf(float64(v), 0), "seed %d: centroid component is +/-Inf", seed)
+				assert.False(t, math.IsNaN(float64(v)), "seed %d: centroid component is NaN", seed)
+			}
+		}
+	}
 }
 
 // Benchmarks

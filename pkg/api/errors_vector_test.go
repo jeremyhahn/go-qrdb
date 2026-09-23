@@ -199,6 +199,18 @@ func TestKMeansErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("DimensionMismatch", func(t *testing.T) {
+		e := &KMeansDimensionMismatchError{Index: 2, Got: 64, Expected: 128}
+		want := "vector 2 has 64 dimensions, expected 128"
+		if got := e.Error(); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		de := NewKMeansDimensionMismatchError("kmeans.cluster", 2, 64, 128)
+		if de.Code != dberrors.ErrInvalidInput {
+			t.Errorf("code = %v", de.Code)
+		}
+	})
+
 	t.Run("InitError", func(t *testing.T) {
 		e := &KMeansInitError{Cause: cause}
 		want := "failed to initialize centroids: math error"
