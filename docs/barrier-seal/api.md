@@ -161,6 +161,7 @@ that is deliberate, since it is how an operator finds out what to do next.
 | Any PIN with `strategy: none` | 400 | `INVALID_ARGUMENT` — `PINsNotAllowedError` |
 | Shares below threshold | 200 with progress | `OK` with progress — not an error |
 | `enable-encryption` on a tenant using the shared system barrier | 409 | `FAILED_PRECONDITION` |
+| `enable-encryption` while another migration on the same barrier (system or tenant) is already in progress | 409 | `FAILED_PRECONDITION` — `seal.ErrMigrationInProgress` |
 | CA operation while sealed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | No encryption migrator wired | 404 (route unregistered) | `UNIMPLEMENTED` |

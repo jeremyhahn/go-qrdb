@@ -1142,7 +1142,7 @@ func runStart(f *startFlags) error {
 	// the now-keyed root key). The OS process never exits. Tenant-scope migration
 	// is handled separately by the per-tenant Host registry.
 	migrateCh := make(chan *systemMigrationRequest, 1)
-	sysMigrator := newDaemonSystemMigrator(migrateCh)
+	sysMigrator := buildSysMigrator(f, migrateCh)
 	for {
 		var rebootForMigration bool
 		bootErr := func() error {

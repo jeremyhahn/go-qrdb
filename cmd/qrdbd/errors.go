@@ -589,3 +589,17 @@ func (e *NoFreePortError) Error() string {
 
 // Unwrap returns the last bind error observed while searching.
 func (e *NoFreePortError) Unwrap() error { return e.Err }
+
+// SystemMigrationSealDisabledError is returned when a system-scope
+// enable-encryption request reaches the boot loop while the node is running
+// with seal.enabled: false. There is no seal subsystem for the boot loop to
+// migrate. daemonSystemMigrator.EnableEncryption rejects this earlier, before
+// ever enqueueing the request; handleSystemMigration returns this error only
+// as a defensive guard for a future caller that reaches it another way,
+// instead of dereferencing the nil seal subsystem (go-qrdb#550 review).
+type SystemMigrationSealDisabledError struct{}
+
+// Error returns a human-readable description.
+func (e *SystemMigrationSealDisabledError) Error() string {
+	return "qrdbd: cannot enable encryption: seal.enabled is false for this node"
+}
