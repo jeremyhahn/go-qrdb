@@ -712,7 +712,6 @@ func compositeHarnessTable(t *testing.T, h *ddlHarness, database, table string) 
 		WithTableService(h.tableSvc),
 		WithTransactionService(h.txnSvc),
 		WithSequenceService(h.seqSvc),
-		WithBatchService(h.batchSvc),
 	)
 	require.NoError(t, err)
 	return tbl

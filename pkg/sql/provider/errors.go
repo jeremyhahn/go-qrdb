@@ -340,6 +340,21 @@ func (e *RowRewriteError) Unwrap() error {
 	return e.Err
 }
 
+// RewriteChunkConflictError is returned when a rewrite write-back chunk's
+// compare-and-swap fails for a reason other than a stale generation (see
+// runRewrite in relational_rewrite.go) -- unexpected, since the generation
+// Compare is the only precondition a chunk's proposal carries, but reported
+// explicitly rather than silently treated as success.
+type RewriteChunkConflictError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *RewriteChunkConflictError) Error() string {
+	return "provider: table " + e.Database + "." + e.Name + ": rewrite write-back chunk lost its compare-and-swap for an unexplained reason"
+}
+
 // PrimaryKeyRewriteUnsupportedError is returned when a DROP COLUMN or
 // MODIFY COLUMN would change the physical encoding of the table's primary
 // key -- a different column set or order, a different prefix length, or a
@@ -461,17 +476,6 @@ type TransactionServiceUnavailableError struct {
 // Error returns a human-readable description.
 func (e *TransactionServiceUnavailableError) Error() string {
 	return "provider: transaction service unavailable for relational table: " + e.Table
-}
-
-// BatchServiceUnavailableError is returned by RelationalTable.Truncate when
-// the table was constructed without WithBatchService.
-type BatchServiceUnavailableError struct {
-	Table string
-}
-
-// Error returns a human-readable description.
-func (e *BatchServiceUnavailableError) Error() string {
-	return "provider: batch service unavailable for relational table: " + e.Table
 }
 
 // SequenceServiceUnavailableError is returned by a RelationalTable

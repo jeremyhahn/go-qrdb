@@ -39,6 +39,7 @@ type fakeTableService struct {
 	listTablesFn      func(ctx context.Context, database string) ([]string, error)
 	rewriteJournalFn  func(ctx context.Context, database, name string) (*service.TableDDLJournal, *service.TableDef, error)
 	completeRewriteFn func(ctx context.Context, database, name string) (*service.TableDef, error)
+	truncateTableFn   func(ctx context.Context, database, name string, resetSequence bool) (*service.TableDef, error)
 
 	referencingForeignKeysFn func(ctx context.Context, database, parent string) ([]service.TableForeignKey, error)
 }
@@ -81,6 +82,9 @@ func (f *fakeTableService) CreateIndex(context.Context, *service.CreateTableInde
 	return nil
 }
 func (f *fakeTableService) DropIndex(context.Context, string, string, string) error { return nil }
+func (f *fakeTableService) RenameIndex(context.Context, *service.RenameTableIndexRequest) error {
+	return nil
+}
 func (f *fakeTableService) AddForeignKey(context.Context, *service.CreateTableForeignKeyRequest) error {
 	return nil
 }
@@ -105,6 +109,12 @@ func (f *fakeTableService) CompleteRewrite(ctx context.Context, database, name s
 		return f.completeRewriteFn(ctx, database, name)
 	}
 	return nil, &service.TableNoRewriteInProgressError{Database: database, Name: name}
+}
+func (f *fakeTableService) TruncateTable(ctx context.Context, database, name string, resetSequence bool) (*service.TableDef, error) {
+	if f.truncateTableFn != nil {
+		return f.truncateTableFn(ctx, database, name, resetSequence)
+	}
+	return nil, &service.TableNotFoundError{Database: database, Name: name}
 }
 
 // ---------------------------------------------------------------------------

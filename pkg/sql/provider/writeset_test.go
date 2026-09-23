@@ -486,6 +486,40 @@ func TestWriteSet_BaselineCompare_RevisionNotFoundYieldsAbsencePrecondition(t *t
 	assert.EqualValues(t, 0, cmp.Version)
 }
 
+// TestWriteSet_GenerationAt_AbsentAtTheSnapshotIsGenerationZero: a table
+// never truncated has no generation key, which a real MVCC store reports at
+// the snapshot revision as *service.RevisionNotFoundError. That is
+// generation 0, not a failure -- every table's first touch in an
+// interactive transaction reads it.
+func TestWriteSet_GenerationAt_AbsentAtTheSnapshotIsGenerationZero(t *testing.T) {
+	for name, absent := range map[string]error{
+		"no version at revision": &service.RevisionNotFoundError{Revision: 7},
+		"key never written":      &service.KeyNotFoundError{Key: "g"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := newWriteSet(false, IsolationWritten)
+			require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{}))
+			ws.mvccSvc = &errMVCC{getErr: absent}
+
+			generation, err := ws.generationAt(context.Background(), "g")
+			require.NoError(t, err)
+			assert.Zero(t, generation)
+		})
+	}
+}
+
+// TestWriteSet_GenerationAt_CompactedSnapshotIsAnError: a snapshot the store
+// no longer holds is a genuine failure.
+func TestWriteSet_GenerationAt_CompactedSnapshotIsAnError(t *testing.T) {
+	ws := newWriteSet(false, IsolationWritten)
+	require.NoError(t, ws.bind(context.Background(), "t1", "db1", nil, &errMVCC{}))
+	ws.mvccSvc = &errMVCC{getErr: &service.RevisionCompactedError{Requested: 3, Compacted: 9}}
+
+	_, err := ws.generationAt(context.Background(), "g")
+	var compacted *service.RevisionCompactedError
+	require.ErrorAs(t, err, &compacted)
+}
+
 func TestSnapshotAbsent_Classification(t *testing.T) {
 	tests := []struct {
 		name string

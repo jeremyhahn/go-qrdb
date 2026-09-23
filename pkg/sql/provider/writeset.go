@@ -263,6 +263,34 @@ type WriteSet struct {
 	savepoints map[string]int // name -> undoLog length at the time of the mark
 
 	totalBytes int
+
+	// resolutions holds one resolutionGuard per relational table this
+	// transaction has participated in (read or written), keyed by the
+	// table's generation key (see RequireResolution), and resolutionOrder
+	// its first-registration order. Populated by
+	// RelationalTable.activeWriteSet the first time each table resolves
+	// this write-set, and folded into every commit's compares regardless
+	// of ws.level (see commit/Compares) -- go-qrdb#547's generation and
+	// definition fences are a distinct correctness concern from the
+	// user-selectable conflict-detection IsolationLevel, so IsolationNone,
+	// which otherwise attaches no preconditions at all, must not skip them.
+	resolutions     map[string]resolutionGuard
+	resolutionOrder []string
+}
+
+// resolutionGuard is one relational table's commit-time fence on what the
+// transaction resolved: the preconditions themselves (compares: the
+// generation, and the definition's metadata revision when known) plus what
+// they expect and enough identifying detail to report which one failed
+// commit (see WriteSet.staleResolution).
+type resolutionGuard struct {
+	key              string
+	compares         []service.Compare
+	database         string
+	table            string
+	generation       uint64
+	metadataKey      string
+	metadataRevision int64
 }
 
 // newWriteSet creates an empty, unbound WriteSet. readOnly reflects the
@@ -325,6 +353,105 @@ func (ws *WriteSet) bind(ctx context.Context, tenantID, database string, txnSvc 
 	ws.revision = rev
 	ws.bound = true
 	return nil
+}
+
+// RequireResolution registers the fence for one relational table
+// participating in this transaction (see RelationalTable.resolutionFence),
+// so this transaction's commit is rejected if a TRUNCATE or DDL raced it --
+// independent of ws.level, since IsolationNone otherwise attaches no
+// preconditions at all (see Compares/noCompares). commit applies it only
+// when there is something buffered to write, so a purely read-only
+// transaction pays nothing extra.
+//
+// A table already registered is a no-op: the first registration is what
+// this whole transaction was planned against. Callers must check
+// PinnedResolution BEFORE calling this -- a later statement resolving a
+// different generation or definition means one moved during the
+// transaction, which committing (or even reading) against would silently
+// use the wrong keyspace. See RelationalTable.activeWriteSet, the only
+// caller.
+func (ws *WriteSet) RequireResolution(guard resolutionGuard) {
+	if _, ok := ws.resolutions[guard.key]; ok {
+		return
+	}
+	if ws.resolutions == nil {
+		ws.resolutions = make(map[string]resolutionGuard)
+	}
+	ws.resolutions[guard.key] = guard
+	ws.resolutionOrder = append(ws.resolutionOrder, guard.key)
+}
+
+// PinnedResolution reports what an earlier statement in this transaction
+// already pinned for the table whose generation key is key, and whether one
+// is pinned at all.
+func (ws *WriteSet) PinnedResolution(key string) (resolutionGuard, bool) {
+	g, ok := ws.resolutions[key]
+	return g, ok
+}
+
+// generationAt reads the generation the transaction's snapshot holds for the
+// table whose generation key is key -- 0 when the key did not exist at the
+// snapshot revision.
+func (ws *WriteSet) generationAt(ctx context.Context, key string) (uint64, error) {
+	kv, err := ws.mvccSvc.GetAtRevision(ctx, key, ws.revision)
+	if err != nil {
+		// A generation key the snapshot predates is generation 0, whichever
+		// of the two "absent at this revision" errors the store reports.
+		if snapshotAbsent(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if kv == nil {
+		return 0, nil
+	}
+	return service.DecodeTableGeneration(kv.Value), nil
+}
+
+// staleResolution reports the first registered table fence that no longer
+// holds, distinguishing a TRUNCATE or DDL race (go-qrdb#547) from an
+// ordinary write conflict when commit's compare-and-swap fails (see
+// QRDBSession.CommitTransaction): a *service.TableGenerationStaleError or a
+// *service.TableDefinitionStaleError, or nil when every fence still holds.
+// Fences are checked in registration order so a transaction touching several
+// tables reports the first one it looked at, matching statement order.
+//
+// These are plain reads through the MVCCKVServicer the transaction already
+// bound, run at most once and only after commit has already failed -- never
+// on the successful path.
+func (ws *WriteSet) staleResolution(ctx context.Context) (stale error, err error) {
+	for _, key := range ws.resolutionOrder {
+		g := ws.resolutions[key]
+		live, err := ws.mvccSvc.Get(ctx, key)
+		if err != nil {
+			if !isNotFound(err) {
+				return nil, err
+			}
+			live = nil
+		}
+		// Compared as decoded generation NUMBERS, not raw bytes: an absent
+		// generation key (0) is fenced against an EMPTY value rather than
+		// EncodeTableGeneration(0)'s eight zero bytes (generationCompare).
+		if liveGeneration := service.DecodeTableGeneration(live); liveGeneration != g.generation {
+			return &service.TableGenerationStaleError{
+				Database: g.database, Name: g.table,
+				Expected: g.generation, Actual: liveGeneration,
+			}, nil
+		}
+		if g.metadataRevision == 0 {
+			continue
+		}
+		meta, err := ws.mvccSvc.GetRevision(ctx, g.metadataKey)
+		switch {
+		case err != nil && isNotFound(err):
+			return &service.TableDefinitionStaleError{Database: g.database, Name: g.table, Reason: "the table was renamed or dropped"}, nil
+		case err != nil:
+			return nil, err
+		case meta.ModRevision != g.metadataRevision:
+			return &service.TableDefinitionStaleError{Database: g.database, Name: g.table, Reason: "its definition changed"}, nil
+		}
+	}
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -803,5 +930,9 @@ func (ws *WriteSet) commit(ctx context.Context) (*service.TransactionResponse, e
 	if !ws.bound || len(ws.order) == 0 {
 		return &service.TransactionResponse{Succeeded: true}, nil
 	}
-	return ws.txnSvc.Execute(ctx, ws.Compares(), ws.Ops(), nil)
+	compares := ws.Compares()
+	for _, key := range ws.resolutionOrder {
+		compares = append(compares, ws.resolutions[key].compares...)
+	}
+	return ws.txnSvc.Execute(ctx, compares, ws.Ops(), nil)
 }

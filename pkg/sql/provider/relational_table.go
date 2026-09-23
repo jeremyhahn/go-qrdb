@@ -15,10 +15,12 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/sqltypes"
@@ -78,11 +80,6 @@ type RelationalTable struct {
 	// AUTO_INCREMENT value generation (relational_autoincrement.go).
 	seqSvc service.SequenceServicer
 
-	// batchSvc is nil unless supplied via WithBatchService. It backs
-	// Truncate's bulk row/index reclamation, reusing the same chunked
-	// deletion path as Database.DropTable (reclaimTableData).
-	batchSvc service.BatchServicer
-
 	// indexSpecs resolves every secondary index in def to its columns'
 	// schema ordinals, its uniqueness, and its value KeyCodecs, computed
 	// once at construction and shared by the planner-facing surface
@@ -115,8 +112,6 @@ type RelationalTable struct {
 	// independent.
 	rowIDs *sequenceBlock
 
-	dataPrefix string
-
 	// pkSpec resolves the table's DECLARED primary key -- of any arity --
 	// in the same shape as a secondary index, and hasPK reports whether
 	// there is one at all (a table with no declared primary key is keyed by
@@ -130,6 +125,25 @@ type RelationalTable struct {
 	// table's own data prefix. See primaryKeysFromRanges.
 	pkSpec indexSpec
 	hasPK  bool
+
+	// state is the generation this handle reads and writes, the row prefix
+	// derived from it, and when it was last known current (see
+	// tableGeneration). It is one immutable value behind one atomic pointer:
+	// TRUNCATE on this handle, and a pin renewal, publish a new value
+	// rather than mutating fields a concurrent read could see half-updated.
+	// def.Generation is only the value the handle was resolved with.
+	state atomic.Pointer[tableGeneration]
+
+	// now is the clock pins are measured with; time.Now outside tests. Its
+	// readings carry a monotonic component, so a pin's age never depends on
+	// wall-clock adjustments.
+	now func() time.Time
+
+	// postgres is true when this table is served over the PostgreSQL wire
+	// protocol (see WithPostgreSQLDialect / Database.postgres). It governs
+	// only Truncate's AUTO_INCREMENT/sequence behavior; every other
+	// capability in this file is dialect-agnostic. See Truncate for why.
+	postgres bool
 }
 
 // RelationalTableOption configures optional RelationalTable dependencies
@@ -173,11 +187,13 @@ func WithSequenceService(svc service.SequenceServicer) RelationalTableOption {
 	}
 }
 
-// WithBatchService returns a RelationalTableOption that supplies the
-// BatchServicer backing Truncate's bulk row/index reclamation.
-func WithBatchService(svc service.BatchServicer) RelationalTableOption {
+// WithPostgreSQLDialect returns a RelationalTableOption marking the table as
+// served over the PostgreSQL wire protocol rather than MySQL's, which
+// changes exactly one thing: Truncate does not reset the table's
+// AUTO_INCREMENT sequence (see Truncate).
+func WithPostgreSQLDialect() RelationalTableOption {
 	return func(t *RelationalTable) {
-		t.batchSvc = svc
+		t.postgres = true
 	}
 }
 
@@ -218,8 +234,9 @@ func NewRelationalTable(def *service.TableDef, kvSvc service.KVServicer, mvccSvc
 		indexSpecs: indexSpecs,
 		autoInc:    &sequenceBlock{},
 		rowIDs:     &sequenceBlock{},
-		dataPrefix: service.TableDataPrefix(def.Database, def.TableID),
+		now:        time.Now,
 	}
+	t.setGeneration(def.Generation, def.GenerationReadAt)
 
 	if len(def.PrimaryKey) > 0 {
 		pkSpec, perr := buildIndexSpec(def, schema, primaryKeyIndexOf(def))
@@ -293,7 +310,8 @@ func (t *RelationalTable) PartitionRows(ctx *sqle.Context, part sqle.Partition) 
 // client-side before decoding; because catalog.KeyCodec is order-preserving,
 // that lexicographic sort is exactly primary key order.
 func (t *RelationalTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
-	data, err := t.txScan(ctx, t.dataPrefix)
+	g := t.gen()
+	data, err := t.txScan(ctx, g.dataPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +324,7 @@ func (t *RelationalTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) 
 
 	rows := make([]sqle.Row, 0, len(keys))
 	for _, k := range keys {
-		row, derr := t.decodeRow(k[len(t.dataPrefix):], data[k])
+		row, derr := t.decodeRow(k[len(g.dataPrefix):], data[k])
 		if derr != nil {
 			return nil, derr
 		}
@@ -320,12 +338,18 @@ func (t *RelationalTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) 
 // accelerated path LookupPartitions builds for an exact-match primary key
 // predicate.
 func (t *RelationalTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartition) (sqle.RowIter, error) {
+	g := t.gen()
 	rows := make([]sqle.Row, 0, len(ip.keys))
 	for _, key := range ip.keys {
-		raw, err := t.txGet(ctx, t.dataPrefix+string(key))
+		raw, err := t.txGet(ctx, g.dataPrefix+string(key))
 		if err != nil {
-			// Row may have been deleted after the index lookup; skip it.
-			continue
+			if isNotFound(err) {
+				// Deleted after the index lookup; skip it.
+				continue
+			}
+			// Anything else -- a failed read, or the typed stale-generation
+			// error -- is not "no such row" and must not be reported as one.
+			return nil, err
 		}
 		row, err := t.decodeRow(string(key), raw)
 		if err != nil {
@@ -376,9 +400,14 @@ func (t *RelationalTable) RowCount(ctx *sqle.Context) (uint64, bool, error) {
 		return 0, false, nil
 	}
 
-	prefix := []byte(t.dataPrefix)
+	prefix := []byte(t.gen().dataPrefix)
 	_, count, _, err := t.mvccSvc.Range(ctx, prefix, prefixEnd(prefix), service.WithCountOnly())
 	if err != nil {
+		return 0, false, err
+	}
+	// An exact count is a read like any other: it is reported only once the
+	// generation it counted is proven not to be one being reclaimed.
+	if err := t.confirmGenerationPin(ctx); err != nil {
 		return 0, false, err
 	}
 	if count < 0 {
@@ -547,6 +576,7 @@ func (t *RelationalTable) lookupKeys(ctx *sqle.Context, qIdx *qrdbIndex, ranges 
 // column sitting after an unbound one -- reports exact false so the caller
 // falls back to filteredScanRows. See indexSpec.pointPrefix.
 func (t *RelationalTable) primaryKeysFromRanges(ctx *sqle.Context, ranges []sqle.Range) (keys [][]byte, exact bool, err error) {
+	g := t.gen()
 	seen := make(map[string]struct{}, len(ranges))
 	add := func(key string) {
 		if _, dup := seen[key]; dup {
@@ -569,7 +599,7 @@ func (t *RelationalTable) primaryKeysFromRanges(ctx *sqle.Context, ranges []sqle
 			continue
 		}
 
-		data, serr := t.txScan(ctx, t.dataPrefix+encoded)
+		data, serr := t.txScan(ctx, g.dataPrefix+encoded)
 		if serr != nil {
 			return nil, false, serr
 		}
@@ -582,7 +612,7 @@ func (t *RelationalTable) primaryKeysFromRanges(ctx *sqle.Context, ranges []sqle
 		// order-preserving key encoding means (and what MySQL returns).
 		sort.Strings(scanned)
 		for _, k := range scanned {
-			add(k[len(t.dataPrefix):])
+			add(k[len(g.dataPrefix):])
 		}
 	}
 	return keys, true, nil
@@ -755,7 +785,8 @@ func pointValue(ctx *sqle.Context, t sqle.Type, colExpr sqle.MySQLRangeColumnExp
 // make the row order of every multi-row indexed lookup differ from one
 // execution of the same query to the next.
 func (t *RelationalTable) lookupIndexValue(ctx *sqle.Context, spec indexSpec, encodedVal string, wholeTuple bool) ([][]byte, error) {
-	prefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, spec.name)
+	g := t.gen()
+	prefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, g.generation, spec.incarnation)
 
 	if spec.unique && wholeTuple {
 		raw, err := t.txGet(ctx, prefix+encodedVal)
@@ -798,7 +829,8 @@ func (t *RelationalTable) lookupIndexValue(ctx *sqle.Context, spec indexSpec, en
 // but, unlike a plain full scan, is safe to return directly to a caller that
 // has already dropped the predicate as redundant (see PreciseMatch).
 func (t *RelationalTable) filteredScanRows(ctx *sqle.Context, ordinals []int, ranges []sqle.Range) ([]sqle.Row, error) {
-	data, err := t.txScan(ctx, t.dataPrefix)
+	g := t.gen()
+	data, err := t.txScan(ctx, g.dataPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -816,7 +848,7 @@ func (t *RelationalTable) filteredScanRows(ctx *sqle.Context, ordinals []int, ra
 
 	var rows []sqle.Row
 	for _, k := range keys {
-		row, derr := t.decodeRow(k[len(t.dataPrefix):], data[k])
+		row, derr := t.decodeRow(k[len(g.dataPrefix):], data[k])
 		if derr != nil {
 			return nil, derr
 		}
@@ -857,6 +889,14 @@ func (t *RelationalTable) filteredScanRows(ctx *sqle.Context, ordinals []int, ra
 // what keeps ordinary autocommit reads and writes on their original,
 // zero-added-latency code path -- no pinned-revision read, no buffering --
 // exactly as before this table gained interactive-transaction support.
+//
+// Every resolution also registers this table's generation and definition as
+// a commit-time fence (see WriteSet.RequireResolution and go-qrdb#547): a
+// TRUNCATE or DDL racing this transaction then fails its commit rather than
+// letting it write rows into a generation about to be reclaimed, or maintain
+// an index set that is no longer the table's. This happens for a read-only
+// participation too, harmlessly -- WriteSet.commit only ever proposes the
+// fence when there are buffered writes to commit alongside it.
 func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 	if !ctx.GetIgnoreAutoCommit() {
 		return nil, nil
@@ -879,6 +919,59 @@ func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 	if err := ws.bind(ctx, sess.TenantID(), t.def.Database, t.txnSvc, t.mvccSvc); err != nil {
 		return nil, err
 	}
+
+	g := t.gen()
+	fence := t.resolutionFence(g)
+	if pinned, ok := ws.PinnedResolution(fence.key); ok {
+		// An earlier statement in this SAME transaction already pinned this
+		// table. Refusing HERE, at resolution, rather than deferring to
+		// WriteSet.commit, is load-bearing: this transaction's reads are
+		// served from the snapshot revision pinned when it FIRST bound (see
+		// bind), and that snapshot knows nothing of a TRUNCATE or DDL that
+		// committed since -- continuing would read or write under the
+		// table's CURRENT key prefixes and index set while resolving values
+		// from the older snapshot, silently producing empty or wrong
+		// results. Deferring to commit would not even catch it reliably: a
+		// read-only transaction's commit proposes nothing at all.
+		if pinned.generation != g.generation {
+			stale := &service.TableGenerationStaleError{
+				Database: t.def.Database, Name: t.def.Name,
+				Expected: pinned.generation, Actual: g.generation,
+			}
+			return nil, sqle.ErrLockDeadlock.Wrap(stale, t.def.Name)
+		}
+		if pinned.metadataRevision != 0 && t.def.MetadataRevision != 0 && pinned.metadataRevision != t.def.MetadataRevision {
+			return nil, t.definitionStale("its definition changed during this transaction")
+		}
+		return ws, nil
+	}
+	// First registration. The snapshot may have been bound earlier, by
+	// another table: if this table's generation or definition was written
+	// after that snapshot, the snapshot holds neither this generation's rows
+	// nor this definition's index entries, and reading it would return
+	// them as absent. Refuse instead.
+	//
+	// The revision comparison alone is not enough: it catches a generation
+	// written AFTER the snapshot, but not a handle resolved BEFORE a
+	// TRUNCATE that the snapshot already includes -- that handle names an
+	// older generation than the snapshot holds, with a revision below the
+	// snapshot's. So the generation the snapshot actually holds is read and
+	// compared too; it is one read, once per table per transaction.
+	snapshotGeneration, serr := ws.generationAt(ctx, fence.key)
+	if serr != nil {
+		return nil, serr
+	}
+	if t.def.GenerationRevision > ws.revision || snapshotGeneration != g.generation {
+		stale := &service.TableGenerationStaleError{
+			Database: t.def.Database, Name: t.def.Name,
+			Expected: snapshotGeneration, Actual: g.generation,
+		}
+		return nil, sqle.ErrLockDeadlock.Wrap(stale, t.def.Name)
+	}
+	if t.def.MetadataRevision > ws.revision {
+		return nil, t.definitionStale("its definition changed after this transaction began")
+	}
+	ws.RequireResolution(fence)
 	return ws, nil
 }
 
@@ -887,30 +980,183 @@ func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 // linearizable KVServicer.Get exactly as before this table gained
 // interactive-transaction support. Returns *service.KeyNotFoundError when
 // key does not exist, matching KVServicer.Get's contract either way.
+//
+// Either result -- a value or a miss -- is only returned once
+// confirmGenerationPin has passed: a miss on a generation being reclaimed
+// must surface as the typed stale-generation error, never as "no such row".
 func (t *RelationalTable) txGet(ctx *sqle.Context, key string) ([]byte, error) {
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var val []byte
 	if ws != nil {
-		return ws.Get(ctx, key)
+		val, err = ws.Get(ctx, key)
+	} else {
+		val, err = t.kvSvc.Get(ctx, key)
 	}
-	return t.kvSvc.Get(ctx, key)
+	if err != nil && !isNotFound(err) {
+		return nil, err
+	}
+	if perr := t.confirmGenerationPin(ctx); perr != nil {
+		return nil, perr
+	}
+	return val, err
 }
 
 // txScan scans prefix through the active write-set when one is open
 // (snapshot overlaid with buffered writes), otherwise falls back to a
 // direct, linearizable KVServicer.Scan exactly as before this table gained
-// interactive-transaction support.
+// interactive-transaction support. Like txGet, its result is returned only
+// once confirmGenerationPin has passed.
 func (t *RelationalTable) txScan(ctx *sqle.Context, prefix string) (map[string][]byte, error) {
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var data map[string][]byte
 	if ws != nil {
-		return ws.RangeOverlay(ctx, prefix)
+		data, err = ws.RangeOverlay(ctx, prefix)
+	} else {
+		data, err = t.kvSvc.Scan(ctx, prefix)
 	}
-	return t.kvSvc.Scan(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if perr := t.confirmGenerationPin(ctx); perr != nil {
+		return nil, perr
+	}
+	return data, nil
+}
+
+// tableGeneration is one immutable view of the generation a RelationalTable
+// uses: the generation number, the row prefix derived from it, and when it
+// was last known to be current -- the start of its pin (a zero time means
+// unknown, so the next read re-proves it). Every operation loads it once
+// (gen) and uses that one value throughout, so a TRUNCATE on the same handle
+// can never leave an operation writing rows under one generation and
+// fencing on another.
+type tableGeneration struct {
+	generation uint64
+	dataPrefix string
+	pinnedAt   time.Time
+}
+
+// gen returns the handle's current generation state.
+func (t *RelationalTable) gen() *tableGeneration {
+	return t.state.Load()
+}
+
+// setGeneration publishes generation, pinned from pinnedAt, as the handle's
+// state.
+func (t *RelationalTable) setGeneration(generation uint64, pinnedAt time.Time) {
+	t.state.Store(&tableGeneration{
+		generation: generation,
+		dataPrefix: service.TableDataPrefix(t.def.Database, t.def.TableID, generation),
+		pinnedAt:   pinnedAt,
+	})
+}
+
+// confirmGenerationPin is the reader half of go-qrdb#547's reader-quiescence
+// guarantee (the sweeper half is service.ReclaimQuiescence). It runs after a
+// read and before that read's result is used.
+//
+// While the pin is younger than service.TableGenerationPinTTL, the read is
+// known complete before any reclamation of this generation could begin --
+// the sweeper waits longer than that after the TRUNCATE that orphans it
+// commits, and the pin was taken before that commit -- so it costs nothing.
+// Once the pin is older, the resolution is re-proven (reproveResolution):
+// unchanged, the pin is renewed from the instant before that read; changed,
+// the statement fails with the typed, retryable
+// *service.TableGenerationStaleError (or *service.TableDefinitionStaleError
+// for a dropped index or table) rather than return rows that may be torn
+// between a keyspace and its reclamation.
+func (t *RelationalTable) confirmGenerationPin(ctx *sqle.Context) error {
+	g := t.gen()
+	if !g.pinnedAt.IsZero() && t.now().Sub(g.pinnedAt) < service.TableGenerationPinTTL {
+		return nil
+	}
+	renewedAt := t.now()
+	if err := t.reproveResolution(ctx, g); err != nil {
+		return err
+	}
+	// Renew only the pin this check proved: if the handle moved to another
+	// generation meanwhile, that state carries its own pin.
+	t.state.CompareAndSwap(g, &tableGeneration{generation: g.generation, dataPrefix: g.dataPrefix, pinnedAt: renewedAt})
+	return nil
+}
+
+// reproveResolution re-proves that what this statement resolved is still
+// what the catalog holds: the same table, at the same generation, still
+// listing every index incarnation the statement may read. A dropped index's
+// entries are reclaimed under the same quiescence as a truncated generation,
+// so a statement that resolved it must not outlive the pin on it either.
+//
+// While the catalog is mid-rewrite GetTable reports the rewrite rather than
+// a definition, so the committed definition is read through the rewrite
+// journal instead and proven the same way: TRUNCATE, and index DDL, are
+// refused during a rewrite, but a rewrite interrupted and resumed spans
+// statements, and the proof must not weaken for its duration. Without a
+// TableServicer the generation is the one thing that can be re-proven, and
+// is.
+func (t *RelationalTable) reproveResolution(ctx *sqle.Context, g *tableGeneration) error {
+	if t.tableSvc == nil {
+		return t.checkGenerationStale(ctx, g)
+	}
+	live, err := t.tableSvc.GetTable(ctx, t.def.Database, t.def.Name)
+	var inRewrite *service.TableRewriteInProgressError
+	if errors.As(err, &inRewrite) {
+		_, live, err = t.tableSvc.RewriteJournal(ctx, t.def.Database, t.def.Name)
+		// The rewrite completed between the two reads: the committed
+		// definition is readable again, and is proven like any other.
+		var completed *service.TableNoRewriteInProgressError
+		if errors.As(err, &completed) {
+			live, err = t.tableSvc.GetTable(ctx, t.def.Database, t.def.Name)
+		}
+	}
+	var notFound *service.TableNotFoundError
+	if errors.As(err, &notFound) {
+		return t.definitionStale("the table was dropped")
+	}
+	if err != nil {
+		return err
+	}
+	if live.TableID != t.def.TableID {
+		return t.definitionStale("the table was replaced")
+	}
+	if live.Generation != g.generation {
+		stale := &service.TableGenerationStaleError{
+			Database: t.def.Database, Name: t.def.Name,
+			Expected: g.generation, Actual: live.Generation,
+		}
+		return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
+	}
+	// Index entries are keyed by incarnation, so a renamed index still reads
+	// correctly; one whose incarnation is gone was dropped, and its entries
+	// are being reclaimed.
+	for _, idx := range t.def.Indexes {
+		if !hasIncarnation(live, idx.Incarnation) {
+			return t.definitionStale("index " + idx.Name + " was dropped")
+		}
+	}
+	return nil
+}
+
+// hasIncarnation reports whether def still lists an index with incarnation.
+func hasIncarnation(def *service.TableDef, incarnation uint64) bool {
+	for _, idx := range def.Indexes {
+		if idx.Incarnation == incarnation {
+			return true
+		}
+	}
+	return false
+}
+
+// definitionStale reports the typed, retryable definition-change error the
+// same way a stale generation is reported: as sql.ErrLockDeadlock.
+func (t *RelationalTable) definitionStale(reason string) error {
+	stale := &service.TableDefinitionStaleError{Database: t.def.Database, Name: t.def.Name, Reason: reason}
+	return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
 }
 
 // columnOrdinal returns the schema index of the column named name, or -1

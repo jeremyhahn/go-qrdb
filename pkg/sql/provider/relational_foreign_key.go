@@ -288,14 +288,20 @@ func (t *RelationalTable) GetReferencedForeignKeys(ctx *sqle.Context) ([]sqle.Fo
 	if t.tableSvc == nil {
 		return nil, &TableServiceUnavailableError{Table: t.def.Name}
 	}
-	refs, err := t.tableSvc.ReferencingForeignKeys(ctx, t.def.Database, t.def.Name)
+	return referencingForeignKeyConstraints(ctx, t.tableSvc, t.def.Database, t.def.Name)
+}
+
+// referencingForeignKeyConstraints renders, in go-mysql-server's shape,
+// every constraint in database that names parent as its parent table.
+func referencingForeignKeyConstraints(ctx *sqle.Context, tableSvc service.TableServicer, database, parent string) ([]sqle.ForeignKeyConstraint, error) {
+	refs, err := tableSvc.ReferencingForeignKeys(ctx, database, parent)
 	if err != nil {
 		return nil, err
 	}
 
 	fks := make([]sqle.ForeignKeyConstraint, 0, len(refs))
 	for _, ref := range refs {
-		fk, cerr := foreignKeyConstraintOf(t.def.Database, ref.Table, ref.ForeignKey)
+		fk, cerr := foreignKeyConstraintOf(database, ref.Table, ref.ForeignKey)
 		if cerr != nil {
 			return nil, cerr
 		}

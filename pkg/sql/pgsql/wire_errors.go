@@ -21,6 +21,7 @@ import (
 	"regexp"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
@@ -75,7 +76,25 @@ func sqlStateFor(err error) (codes.Code, bool) {
 // sqlStateForLevel classifies one level of the error chain.
 func sqlStateForLevel(err error) (codes.Code, bool) {
 	var duplicate *provider.DuplicateKeyError
+	var mysqlErr *mysql.SQLError
 	switch {
+	case errors.As(err, &mysqlErr) && mysqlErr.Num == provider.ErrCodeTableLayoutUnsupported:
+		// A table created by v0.20.0 through v0.21.0, which this version
+		// cannot read until it is dropped and re-created: PostgreSQL's
+		// class for an object not in the state the operation requires.
+		return codes.ObjectNotInPrerequisiteState, true
+	case sql.ErrLockDeadlock.Is(err):
+		// ErrLockDeadlock is go-mysql-server's own vocabulary for a
+		// serialization failure (see that Kind's doc comment): a buffered
+		// transaction's commit-time compare-and-swap lost a race, whether
+		// to an ordinary write conflict (provider.TransactionConflictError)
+		// or to a TRUNCATE advancing a table's generation out from under it
+		// (service.TableGenerationStaleError, go-qrdb#547). PostgreSQL
+		// reports both the same way -- 40001, serialization_failure -- and
+		// so does MySQL (ER_LOCK_DEADLOCK/1213, via go-mysql-server's own
+		// wire translation), so one case here covers whichever cause
+		// QRDBSession.CommitTransaction wrapped.
+		return codes.SerializationFailure, true
 	case sql.ErrUniqueKeyViolation.Is(err),
 		sql.ErrPrimaryKeyViolation.Is(err),
 		sql.ErrDuplicateEntry.Is(err),

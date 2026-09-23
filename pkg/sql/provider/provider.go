@@ -222,7 +222,7 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 		readOnly:      p.readOnly,
 		prescopedKV:   p.prescopedKV,
 		registry:      p.registry,
-		pgCatalog:     p.servesPGCatalog(),
+		postgres:      p.servesPGCatalog(),
 	}
 	if p.readOnly {
 		return newReadOnlyDatabase(db)
@@ -442,7 +442,14 @@ type Database struct {
 	readOnly      bool                       // true strips write capability from served tables
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
-	pgCatalog     bool                       // true when unqualified pg_catalog relations resolve here
+
+	// postgres is true when this database is served over the PostgreSQL
+	// wire protocol (provider.protocol == ProtocolPostgreSQL). It drives
+	// two dialect-specific behaviors: unqualified pg_catalog relations
+	// resolve here (see GetTableInsensitive), and relational tables built
+	// from this database follow PostgreSQL's TRUNCATE semantics rather
+	// than MySQL's (see RelationalTable.Truncate / WithPostgreSQLDialect).
+	postgres bool
 }
 
 // Name returns the database name.
@@ -512,7 +519,7 @@ func (d *Database) hasTable(name string) bool {
 func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Table, bool, error) {
 	lower := strings.ToLower(name)
 
-	if d.pgCatalog {
+	if d.postgres {
 		if tbl, ok := pgcatalog.Relation(lower); ok {
 			return tbl, true, nil
 		}
@@ -571,10 +578,20 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 }
 
 // sessionTenantID returns the tenant carried by the QRDBSession installed on
-// ctx, or tenant.SystemTenantID when no such session is present. It is the
-// single place that fallback is applied, so every tenant-scoped resolution
-// path (namespacePrefix, relationalTable) agrees on it.
+// ctx, or tenant.SystemTenantID when no such session is present. It is a
+// thin wrapper over the package-level sessionTenantIDOf, which exists
+// because RelationalTable (relational_writer.go's Truncate, which has no
+// *Database to call this method on) needs the identical fallback rule.
 func (d *Database) sessionTenantID(ctx *sqle.Context) string {
+	return sessionTenantIDOf(ctx)
+}
+
+// sessionTenantIDOf returns the tenant carried by the QRDBSession installed
+// on ctx, or tenant.SystemTenantID when no such session is present. It is
+// the single place that fallback is applied, so every tenant-scoped
+// resolution path (Database.sessionTenantID, RelationalTable.Truncate)
+// agrees on it.
+func sessionTenantIDOf(ctx *sqle.Context) string {
 	if sess, ok := ctx.Session.(*QRDBSession); ok {
 		return sess.TenantID()
 	}

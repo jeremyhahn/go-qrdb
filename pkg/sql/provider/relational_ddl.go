@@ -15,13 +15,14 @@
 package provider
 
 import (
-	"context"
+	"errors"
 	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // Compile-time interface assertions.
@@ -101,25 +102,24 @@ func (d *Database) createTable(ctx *sqle.Context, name string, schema sqle.Prima
 	return err
 }
 
-// DropTable drops a user-defined relational table, reclaiming its row and
-// secondary-index data before removing the catalog entry.
+// DropTable drops a user-defined relational table. The drop is one
+// TableServicer.DropTable transaction: the catalog entry, generation
+// counter and sequences go, and a ReclaimJob for the rows and index entries
+// is published with them. The data is not deleted here: a statement that
+// resolved the table before the drop may still be reading it, and the
+// sweeper deletes it only after ReclaimQuiescence, so no reader ever sees a
+// partially-deleted table.
 //
-// Ordering matters here and is deliberate: TableServicer.DropTable only
-// ever deletes catalog metadata (see its doc comment), so reclaiming the
-// row/index data and deleting the catalog entry cannot be a single atomic
-// operation the way every other DDL mutation in this package is (a single
-// compare-and-swap). Data is reclaimed FIRST and the catalog entry is
-// deleted LAST: if a crash interrupts reclamation partway through, the
-// table's catalog entry is still present (GetTable still resolves it,
-// listing it, describing it, and re-issuing DROP TABLE will all still
-// work), so the operation is safely retryable -- a retried DropTable simply
-// re-scans the (now smaller) data/index prefixes, deleting nothing twice
-// with any lasting effect, and finishes by deleting the now-fully-reclaimed
-// catalog entry. The alternative ordering (catalog delete first) would
-// instead leave a genuinely unreclaimable orphan on a crash: TableID is
-// never reused (see SequenceServicer), so once the catalog record naming it
-// is gone, nothing will ever again compute that TableID's data/index
-// prefixes to finish deleting them.
+// The drop is fenced on the definition and generation resolved here: a
+// TRUNCATE or DDL landing in between refuses it with the same retryable
+// sql.ErrLockDeadlock a stale DML statement gets, rather than dropping a
+// table state the statement never saw -- and never leaking a generation
+// whose job nobody would publish.
+//
+// A table created by v0.20.0 through v0.21.0 (service.
+// TableLayoutUnsupportedError) is dropped the same way, unfenced: dropping
+// it is the one operation it still supports, and the service names its
+// old-layout prefixes in the job.
 func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 	if d.registry == nil {
 		return &RelationalCatalogUnavailableError{Operation: "DROP TABLE"}
@@ -133,33 +133,24 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	req := &service.DropTableRequest{Database: d.name, Name: name}
 	def, err := tableSvc.GetTable(ctx, d.name, name)
-	if err != nil {
+	var legacy *service.TableLayoutUnsupportedError
+	switch {
+	case errors.As(err, &legacy):
+	case err != nil:
 		return err
+	default:
+		req.Resolution = def
 	}
 
-	kvSvc, err := d.registry.KVService(tenantID, d.name)
-	if err != nil {
-		return err
+	// The tenant travels on the context to the ReclaimJob the drop
+	// publishes, exactly as TruncateTable's does.
+	err = tableSvc.DropTable(tenant.WithTenantID(ctx, tenantID), req)
+	if service.IsTableResolutionStale(err) {
+		return sqle.ErrLockDeadlock.Wrap(err, err.Error())
 	}
-	batchSvc, err := d.registry.BatchService(tenantID, d.name)
-	if err != nil {
-		return err
-	}
-
-	if err := reclaimTableData(ctx, kvSvc, batchSvc, d.name, def); err != nil {
-		return err
-	}
-
-	seqSvc, err := d.registry.SequenceService(tenantID, d.name)
-	if err != nil {
-		return err
-	}
-	if err := reclaimTableSequences(ctx, seqSvc, d.name, def); err != nil {
-		return err
-	}
-
-	return tableSvc.DropTable(ctx, &service.DropTableRequest{Database: d.name, Name: name})
+	return err
 }
 
 // RenameTable renames a user-defined relational table. Row and index keys
@@ -332,164 +323,8 @@ func collationString(c sqle.CollationID) string {
 }
 
 // ---------------------------------------------------------------------------
-// DropTable data reclamation
-// ---------------------------------------------------------------------------
-
-const (
-	// ddlChunkMaxOps bounds the number of operations grouped into a single
-	// chunked DDL data-reclamation proposal, guarding against a pathological
-	// proposal op count even when every individual operation is tiny.
-	ddlChunkMaxOps = 500
-
-	// ddlChunkMaxBytes bounds the estimated encoded size of a single chunked
-	// DDL data-reclamation proposal. It is set well under go-quicraft's
-	// per-entry ceiling (8 MiB) to leave headroom for op framing overhead
-	// this estimate does not account for exactly.
-	ddlChunkMaxBytes = 4 << 20 // 4 MB
-
-	// ddlOpOverheadBytes is a conservative fixed per-operation estimate
-	// (framing, key/value length prefixes) added on top of an op's own
-	// key+value bytes when deciding where to cut a chunk.
-	ddlOpOverheadBytes = 32
-)
-
-// reclaimTableData deletes every row and secondary-index entry belonging to
-// def, chunked so no single proposal exceeds ddlChunkMaxOps/ddlChunkMaxBytes.
-// See the doc comment on Database.DropTable for why this must run before the
-// catalog entry is deleted, not after.
-func reclaimTableData(ctx context.Context, kvSvc service.KVServicer, batchSvc service.BatchServicer, database string, def *service.TableDef) error {
-	prefixes := make([]string, 0, 1+len(def.Indexes))
-	prefixes = append(prefixes, service.TableDataPrefix(database, def.TableID))
-	for _, idx := range def.Indexes {
-		prefixes = append(prefixes, service.TableIndexPrefix(database, def.TableID, idx.Name))
-	}
-	for _, prefix := range prefixes {
-		if err := deleteByPrefix(ctx, kvSvc, batchSvc, prefix); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// reclaimTableSequences deletes the two sequence counters keyed by def's
-// TableID: the AUTO_INCREMENT counter and the hidden row-id counter.
-//
-// Both are deleted unconditionally, without first asking whether the table
-// declared an AUTO_INCREMENT column or lacked a PRIMARY KEY. SequenceServicer
-// documents Delete as idempotent and forbids an implementation from returning
-// a not-found error, precisely so a teardown can be re-issued; an absent
-// counter is already the replicated state and proposes nothing. Reading the
-// column definitions to decide would add a branch that can be wrong -- a table
-// altered to drop its AUTO_INCREMENT column still has the counter -- in
-// exchange for nothing.
-//
-// It runs BEFORE the catalog entry is deleted, for the same reason
-// reclaimTableData does: both counter names are derived from the immutable
-// TableID, and after the catalog row is gone there is nothing left that maps
-// this table's name to that id. A failure here therefore leaves a droppable
-// table rather than an unreachable pair of counters, and DROP TABLE is
-// retryable.
-//
-// This is DROP's teardown, not TRUNCATE's. TRUNCATE reuses reclaimTableData
-// but must not reuse this: MySQL resets a truncated table's AUTO_INCREMENT
-// rather than removing it, and this package does neither today (go-qrdb#547).
-func reclaimTableSequences(ctx context.Context, seqSvc service.SequenceServicer, database string, def *service.TableDef) error {
-	for _, name := range []string{
-		service.TableAutoIncrementSequenceName(def.TableID),
-		service.TableRowIDSequenceName(def.TableID),
-	} {
-		if err := seqSvc.Delete(ctx, database, name); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// deleteByPrefix deletes every key under prefix, proposing the deletes in
-// chunks via BatchServicer rather than one at a time, so reclaiming a large
-// table's data does not issue one Raft round trip per row.
-func deleteByPrefix(ctx context.Context, kvSvc service.KVServicer, batchSvc service.BatchServicer, prefix string) error {
-	keys, err := kvSvc.List(ctx, prefix)
-	if err != nil {
-		return err
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-
-	ops := make([]service.Op, len(keys))
-	for i, k := range keys {
-		ops[i] = service.Op{Type: service.OpDelete, Key: []byte(k)}
-	}
-	return executeDDLChunks(ctx, batchSvc, ops)
-}
-
-// executeDDLChunks proposes ops in bounded chunks (see buildDDLChunks)
-// through batchSvc, in order, stopping at the first error.
-func executeDDLChunks(ctx context.Context, batchSvc service.BatchServicer, ops []service.Op) error {
-	for _, chunk := range buildDDLChunks(ops) {
-		if _, err := batchSvc.Execute(ctx, chunk); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// buildDDLChunks splits ops into chunks bounded by both ddlChunkMaxOps and
-// an estimated ddlChunkMaxBytes, mirroring the same chunking discipline
-// service.BatchService's own import path applies against go-quicraft's
-// per-entry proposal ceiling. Every chunk contains at least one op
-// regardless of size, since a single oversized op has nowhere smaller to
-// go; ddlOpOverheadBytes gives enough headroom below the real 8 MiB Raft
-// entry ceiling that this is not expected to matter in practice for the
-// key-only (DropTable reclamation) and row (rewrite) payloads this is used
-// for.
-func buildDDLChunks(ops []service.Op) [][]service.Op {
-	if len(ops) == 0 {
-		return nil
-	}
-
-	var chunks [][]service.Op
-	cur := make([]service.Op, 0, min(len(ops), ddlChunkMaxOps))
-	curBytes := 0
-
-	for _, op := range ops {
-		opBytes := len(op.Key) + len(op.Value) + ddlOpOverheadBytes
-		if len(cur) > 0 && (len(cur) >= ddlChunkMaxOps || curBytes+opBytes > ddlChunkMaxBytes) {
-			chunks = append(chunks, cur)
-			cur = make([]service.Op, 0, min(len(ops), ddlChunkMaxOps))
-			curBytes = 0
-		}
-		cur = append(cur, op)
-		curBytes += opBytes
-	}
-	if len(cur) > 0 {
-		chunks = append(chunks, cur)
-	}
-	return chunks
-}
-
-// ---------------------------------------------------------------------------
 // Shared small helpers
 // ---------------------------------------------------------------------------
-
-// deleteAllByPrefix deletes every key under prefix one at a time through
-// kvSvc.Delete. It is used by RelationalTable's index maintenance
-// (DropIndex, RenameIndex), which -- unlike Database.DropTable's bulk
-// reclamation -- has no BatchServicer available and operates at the same
-// one-entry-at-a-time granularity as BuildIndex's population loop.
-func deleteAllByPrefix(ctx context.Context, kvSvc service.KVServicer, prefix string) error {
-	keys, err := kvSvc.List(ctx, prefix)
-	if err != nil {
-		return err
-	}
-	for _, k := range keys {
-		if err := kvSvc.Delete(ctx, k); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // indexValueKeyCodec builds a catalog.KeyCodec for encoding a secondary
 // index's column values in the same order-preserving format primary keys

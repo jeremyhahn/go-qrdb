@@ -554,7 +554,7 @@ func TestForeignKey_CreateIndexForForeignKeyBackfills(t *testing.T) {
 	assert.True(t, idx.ForeignKey)
 
 	// ...and the physical entries exist for all three pre-existing rows.
-	entries, err := h.kvSvc.List(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_company"))
+	entries, err := h.kvSvc.List(context.Background(), service.TableIndexPrefix("shop", def.TableID, 0, incarnationOf(def, "idx_company")))
 	require.NoError(t, err)
 	assert.Len(t, entries, 3, "index was not backfilled from existing rows")
 }
@@ -906,7 +906,6 @@ func fkTableWith(t *testing.T, h *ddlHarness, svc service.TableServicer) *Relati
 		WithTableService(svc),
 		WithTransactionService(h.txnSvc),
 		WithSequenceService(h.seqSvc),
-		WithBatchService(h.batchSvc),
 	)
 	require.NoError(t, err)
 	return tbl

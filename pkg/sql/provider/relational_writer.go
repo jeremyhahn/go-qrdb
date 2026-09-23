@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,10 @@ type indexSpec struct {
 	name    string
 	comment string
 	unique  bool
+
+	// incarnation is the index's TableIndex.Incarnation: its entries live
+	// under TableIndexPrefix(..., incarnation), never under its name.
+	incarnation uint64
 
 	// prefixed reports that at least one column declares a MySQL prefix
 	// length (KEY idx (name(10))). Such an index is written and its
@@ -275,12 +280,13 @@ func buildIndexSpec(def *service.TableDef, schema sqle.Schema, idx service.Table
 	}
 
 	return indexSpec{
-		name:     idx.Name,
-		comment:  idx.Comment,
-		unique:   idx.Unique,
-		prefixed: prefixed,
-		columns:  columns,
-		codecs:   codecs,
+		name:        idx.Name,
+		comment:     idx.Comment,
+		unique:      idx.Unique,
+		incarnation: idx.Incarnation,
+		prefixed:    prefixed,
+		columns:     columns,
+		codecs:      codecs,
 	}, nil
 }
 
@@ -307,12 +313,225 @@ func columnOrdinalOf(schema sqle.Schema, name string) int {
 // always self-delimiting (catalog.KeyCodec / index.EncodeCompoundValue), so
 // a prefix scan for encodedVal alone (see lookupIndexValue) can never spill
 // into a different value's entries regardless of what pkKey follows it.
-func indexEntryKey(database string, tableID uint64, indexName string, unique bool, encodedVal, pkKey string) string {
-	prefix := service.TableIndexPrefix(database, tableID, indexName)
+func indexEntryKey(database string, tableID, generation, incarnation uint64, unique bool, encodedVal, pkKey string) string {
+	prefix := service.TableIndexPrefix(database, tableID, generation, incarnation)
 	if unique {
 		return prefix + encodedVal
 	}
 	return prefix + encodedVal + pkKey
+}
+
+// ---------------------------------------------------------------------------
+// Generation fencing (go-qrdb#547)
+//
+// Every DML commit -- autocommit (below) and buffered/interactive
+// transaction (WriteSet.commit, writeset.go) alike -- includes
+// generationCompare in the SAME Raft transaction as its row and index
+// writes: TRUNCATE (TableService.TruncateTable) advances a table's
+// generation atomically, and a commit whose Compare list still names the
+// generation it was PLANNED under fails the instant that no longer matches,
+// with no separate read of its own -- the Compare rides in a transaction
+// the write already has to propose. Only on the FAILURE path does
+// checkGenerationStale spend one extra read to tell "the generation moved"
+// apart from "a candidate key collided".
+//
+// This is what keeps the guard's cost from scaling with row count, not what
+// makes it free: resolving the table AT ALL, once per statement
+// (TableService.GetTable), already performs one linearizable read of the
+// generation key (readGeneration) -- the same statement-scoped cost
+// GetTable already paid for the journal and metadata keys before this
+// existed. A multi-row INSERT resolves the table once and calls Insert once
+// per row on that SAME handle, so this cost is O(1) per statement, not
+// O(rows) -- see TestGenerationFencing_BulkInsert_NoPerRowConsensusRead.
+// ---------------------------------------------------------------------------
+
+// generationCompare returns the Compare that fences a DML commit on the
+// generation g names -- see the section doc
+// comment above.
+//
+// Generation 0 -- a table that has never been TRUNCATEd -- is compared
+// against an EMPTY Value rather than EncodeTableGeneration(0)'s eight zero
+// bytes: the generation key itself does not exist until the first TRUNCATE
+// ever writes it (see TableService.TruncateTable's revisionOrAbsent), and
+// CompareValue's absent-key semantics (mvcc.Evaluate, pebbleEvaluateCompare)
+// read an absent key's value as empty, not as any particular byte pattern.
+// Comparing against the encoded zero would therefore fail on EVERY table
+// that had never been truncated -- which, before a table's first TRUNCATE,
+// is every table -- rejecting every single DML statement. Generation 1+
+// compares against the exact encoding TruncateTable wrote, which by then is
+// genuinely present.
+func (t *RelationalTable) generationCompare(g *tableGeneration) service.Compare {
+	cmp := service.Compare{
+		Key:    []byte(service.TableGenerationKey(t.def.Database, t.def.TableID)),
+		Target: service.CompareValue,
+		Result: service.CompareEqual,
+	}
+	if g.generation > 0 {
+		cmp.Value = service.EncodeTableGeneration(g.generation)
+	}
+	return cmp
+}
+
+// metadataCompare returns the Compare that fences a DML commit on the
+// definition t was resolved from: the metadata record's ModRevision as
+// GetTable read it (TableDef.MetadataRevision). Any DDL rewrites that record
+// -- CREATE, DROP or RENAME INDEX, ALTER, RENAME TABLE, DROP TABLE -- so a
+// statement planned against an index set the table no longer has fails
+// instead of committing index maintenance for the wrong one: an index
+// created meanwhile would otherwise permanently lack this row's entry, and a
+// dropped one would gain entries after its reclamation. ok is false for a
+// definition read without its revision, which cannot be fenced this way.
+func (t *RelationalTable) metadataCompare() (cmp service.Compare, ok bool) {
+	if t.def.MetadataRevision == 0 {
+		return service.Compare{}, false
+	}
+	return service.Compare{
+		Key:         []byte(service.TableMetadataKey(t.def.Database, t.def.Name)),
+		Target:      service.CompareModRevision,
+		Result:      service.CompareEqual,
+		ModRevision: t.def.MetadataRevision,
+	}, true
+}
+
+// resolutionCompares returns every Compare a DML commit carries to fence
+// what its statement resolved: the generation, and the definition.
+func (t *RelationalTable) resolutionCompares(g *tableGeneration) []service.Compare {
+	compares := []service.Compare{t.generationCompare(g)}
+	if cmp, ok := t.metadataCompare(); ok {
+		compares = append(compares, cmp)
+	}
+	return compares
+}
+
+// resolutionFence is the per-table fence a buffered transaction registers
+// (WriteSet.RequireResolution): the same Compares an autocommit statement
+// carries, keyed by the generation key, plus what they expect.
+func (t *RelationalTable) resolutionFence(g *tableGeneration) resolutionGuard {
+	return resolutionGuard{
+		key:              string(service.TableGenerationKey(t.def.Database, t.def.TableID)),
+		compares:         t.resolutionCompares(g),
+		database:         t.def.Database,
+		table:            t.def.Name,
+		generation:       g.generation,
+		metadataKey:      service.TableMetadataKey(t.def.Database, t.def.Name),
+		metadataRevision: t.def.MetadataRevision,
+	}
+}
+
+// generationFencedChunkSize bounds how many ops one compare-and-swap
+// proposal carries when a caller needs to write a POTENTIALLY LARGE,
+// enumerated set of physical keys under a resolution fence -- CREATE
+// INDEX's build (indexBuildInserter), which has no natural per-row CAS the
+// way ordinary DML does. See writeChunkedWithResolutionFence.
+const generationFencedChunkSize = 500
+
+// writeChunkedWithResolutionFence submits ops in chunks of at most
+// generationFencedChunkSize, each chunk proposed as its OWN compare-and-swap
+// guarded by t's current generationCompare AND by the table's metadata
+// record still being at metadataRevision. A TRUNCATE, or a DDL such as DROP
+// INDEX, that commits in the window between chunks fails the NEXT chunk's
+// CAS immediately, stopping further writes into a keyspace the reclaim
+// sweeper is already draining -- rather than a single up-front check
+// followed by an unconditional write loop, which only detects a race that
+// happened before the check, not one that happens during the write itself.
+//
+// metadataRevision is passed rather than taken from t.def: the index being
+// built was added after t resolved the table, so the revision to hold is
+// the one that lists it (see catalogIncarnation).
+//
+// This is deliberately NOT used on the per-row DML insert path
+// (relational_writer.go's Insert/Update/Delete): those already carry the
+// resolution Compares in the SAME proposal their own row/index write makes,
+// at zero added cost. This helper exists for a caller with NO such natural
+// per-operation proposal to ride along in -- CREATE INDEX's build, which
+// enumerates and writes an unbounded number of keys.
+func (t *RelationalTable) writeChunkedWithResolutionFence(ctx *sqle.Context, ops []service.Op, metadataRevision int64) error {
+	if t.txnSvc == nil {
+		return &TransactionServiceUnavailableError{Table: t.def.Name}
+	}
+	g := t.gen()
+	metaKey := service.TableMetadataKey(t.def.Database, t.def.Name)
+	compares := []service.Compare{
+		t.generationCompare(g),
+		{Key: []byte(metaKey), Target: service.CompareModRevision, Result: service.CompareEqual, ModRevision: metadataRevision},
+	}
+	for start := 0; start < len(ops); start += generationFencedChunkSize {
+		end := min(start+generationFencedChunkSize, len(ops))
+		resp, err := t.txnSvc.Execute(ctx, compares, ops[start:end], nil)
+		if err != nil {
+			return err
+		}
+		if !resp.Succeeded {
+			if staleErr := t.checkGenerationStale(ctx, g); staleErr != nil {
+				return staleErr
+			}
+			if t.mvccSvc == nil {
+				return &RelationalMVCCUnavailableError{Table: t.def.Name}
+			}
+			live, err := t.mvccSvc.GetRevision(ctx, metaKey)
+			if err != nil && !isNotFound(err) {
+				return err
+			}
+			if err != nil || live == nil || live.ModRevision != metadataRevision {
+				return t.definitionStale("its definition changed during the index build")
+			}
+			return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
+		}
+	}
+	return nil
+}
+
+// checkGenerationStale reports a wrapped *service.TableGenerationStaleError
+// when t's table has been truncated since g was resolved, by reading the live
+// generation directly -- only ever after a CAS carrying the generation
+// Compare has failed for some reason, or to re-prove an old pin. A nil
+// return means it was NOT a stale generation.
+//
+// The error is wrapped in sql.ErrLockDeadlock -- go-mysql-server's own
+// serialization-failure vocabulary, MySQL ER_LOCK_DEADLOCK/1213 over the
+// wire -- exactly as QRDBSession.CommitTransaction wraps the buffered
+// transaction's equivalent conflict, so autocommit and buffered DML map to
+// the identical MySQL error code and, via pkg/sql/pgsql's
+// sql.ErrLockDeadlock.Is check, the identical PostgreSQL SQLSTATE 40001:
+// "retry the statement".
+func (t *RelationalTable) checkGenerationStale(ctx *sqle.Context, g *tableGeneration) error {
+	live, err := service.TableGeneration(ctx, t.kvSvc, t.def.Database, t.def.TableID)
+	if err != nil {
+		return err
+	}
+	if live == g.generation {
+		return nil
+	}
+	stale := &service.TableGenerationStaleError{
+		Database: t.def.Database, Name: t.def.Name,
+		Expected: g.generation, Actual: live,
+	}
+	return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
+}
+
+// checkResolutionStale is checkGenerationStale for a DML commit, which is
+// also fenced on the definition (metadataCompare): after a failed CAS it
+// reports which of the two moved, if either. A nil return means neither
+// did, and the caller proceeds to its duplicate-vs-transient classification
+// (resolveDuplicate).
+func (t *RelationalTable) checkResolutionStale(ctx *sqle.Context, g *tableGeneration) error {
+	if err := t.checkGenerationStale(ctx, g); err != nil {
+		return err
+	}
+	if _, fenced := t.metadataCompare(); !fenced || t.mvccSvc == nil {
+		return nil
+	}
+	live, err := t.mvccSvc.GetRevision(ctx, service.TableMetadataKey(t.def.Database, t.def.Name))
+	if err != nil {
+		if isNotFound(err) {
+			return t.definitionStale("the table was renamed or dropped")
+		}
+		return err
+	}
+	if live.ModRevision != t.def.MetadataRevision {
+		return t.definitionStale("its definition changed")
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -401,31 +620,52 @@ func (t *RelationalTable) Replacer(_ *sqle.Context) sqle.RowReplacer {
 	return &relationalWriter{table: t}
 }
 
-// Truncate deletes every row and secondary-index entry belonging to the
-// table, reusing the same chunked BatchServicer reclamation path
-// Database.DropTable uses (reclaimTableData). Unlike ordinary DML, this is
-// not required to be a single atomic CAS: an interrupted TRUNCATE leaves
-// the table safely retryable (any row not yet deleted still has all of its
-// own index entries, since rows are reclaimed before indexes -- see
-// reclaimTableData) and, in the other direction, an index entry whose row
-// was already deleted is exactly the same "row deleted after the index
-// lookup" case every read path in this package already tolerates (see
-// e.g. indexedPartitionRows).
+// Truncate advances the table to a new generation in one Raft transaction
+// (TableServicer.TruncateTable) rather than scanning and deleting its rows
+// and index entries -- which is what makes it O(1) regardless of table
+// size. The table's current rows and index entries, at the OLD generation's
+// key prefixes, are simply never resolved again by anything that reads the
+// table normally (see TableDataPrefix/TableIndexPrefix); TruncateTable
+// publishes a ReclaimJob in the same transaction so the background
+// ReclaimSweeper deletes them without racing whatever DML was still
+// committing under the old generation up to the instant this commits (see
+// go-qrdb#547).
+//
+// MySQL resets AUTO_INCREMENT on TRUNCATE, returning the table to its
+// just-created state; PostgreSQL's plain TRUNCATE does not touch a
+// sequence it owns. Both behaviors go through the identical generation
+// bump -- rows are gone either way -- and differ only in whether
+// TruncateTable is also asked to reset the sequence, which is exactly what
+// t.postgres (see WithPostgreSQLDialect) decides here.
+//
+// Unlike real MySQL's row count for DELETE, TRUNCATE's own affected-rows
+// count is not derived from the table's prior contents (MySQL does not
+// report one either); this always returns 0.
 func (t *RelationalTable) Truncate(ctx *sqle.Context) (int, error) {
-	if t.batchSvc == nil {
-		return 0, &BatchServiceUnavailableError{Table: t.def.Name}
+	if t.tableSvc == nil {
+		return 0, &TableServiceUnavailableError{Table: t.def.Name}
 	}
 	if err := flushPendingWriteSet(ctx); err != nil {
 		return 0, err
 	}
-	keys, err := t.kvSvc.List(ctx, t.dataPrefix)
+
+	// The tenant is bound onto the context here, not added as a parameter
+	// to TruncateTable: TableService.TruncateTable derives it via
+	// tenant.FromContext, the same way the rest of the SQL layer derives
+	// its own session tenant, so the tenant/database ReclaimJob and
+	// ReclaimIndexEntry records need (see go-qrdb#547's sweeper-scoping
+	// design) travel through without widening TableServicer's public
+	// signature.
+	tenantCtx := tenant.WithTenantID(ctx, sessionTenantIDOf(ctx))
+	newDef, err := t.tableSvc.TruncateTable(tenantCtx, t.def.Database, t.def.Name, !t.postgres)
 	if err != nil {
 		return 0, err
 	}
-	if err := reclaimTableData(ctx, t.kvSvc, t.batchSvc, t.def.Database, t.def); err != nil {
-		return 0, err
-	}
-	return len(keys), nil
+
+	t.setGeneration(newDef.Generation, newDef.GenerationReadAt)
+	t.autoInc.discard()
+
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +713,7 @@ func (w *relationalWriter) Close(_ *sqle.Context) error { return nil }
 // proposed immediately -- see bufferInsert.
 func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	t := w.table
+	g := t.gen()
 	if err := t.requireWritable(); err != nil {
 		return err
 	}
@@ -496,9 +737,9 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	if err := checkValueSize(t.def.Name, encodedRow); err != nil {
 		return err
 	}
-	rowKey := t.dataPrefix + pk
+	rowKey := g.dataPrefix + pk
 
-	actions, candidates, err := t.buildInsertIndexWrites(row, pk)
+	actions, candidates, err := t.buildInsertIndexWrites(g, row, pk)
 	if err != nil {
 		return err
 	}
@@ -509,14 +750,15 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 		return err
 	}
 	if ws != nil {
-		return t.bufferInsert(ctx, ws, candidates, rowKey, encodedRow, actions)
+		return t.bufferInsert(ctx, ws, g, candidates, rowKey, encodedRow, actions)
 	}
 
 	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
 		idxOps, idxCompares := actionsToOpsAndCompares(actions)
-		compares := append([]service.Compare{{
-			Key: []byte(rowKey), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0,
-		}}, idxCompares...)
+		compares := append([]service.Compare{
+			{Key: []byte(rowKey), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0},
+		}, t.resolutionCompares(g)...)
+		compares = append(compares, idxCompares...)
 		ops := append([]service.Op{{Type: service.OpPut, Key: []byte(rowKey), Value: encodedRow}}, idxOps...)
 
 		if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
@@ -531,7 +773,11 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 			return nil
 		}
 
-		dupErr, transient, rerr := t.resolveDuplicate(ctx, candidates)
+		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
+			return staleErr
+		}
+
+		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
 		if rerr != nil {
 			return rerr
 		}
@@ -552,8 +798,8 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 // proposed yet -- is reported synchronously, at INSERT time, exactly as
 // autocommit Insert reports it. Only once every candidate is confirmed
 // absent does it buffer the row and its index entries into ws.
-func (t *RelationalTable) bufferInsert(ctx *sqle.Context, ws *WriteSet, candidates []uniqueCandidate, rowKey string, encodedRow []byte, actions []indexAction) error {
-	if dupErr, transient, err := t.resolveDuplicate(ctx, candidates); err != nil {
+func (t *RelationalTable) bufferInsert(ctx *sqle.Context, ws *WriteSet, g *tableGeneration, candidates []uniqueCandidate, rowKey string, encodedRow []byte, actions []indexAction) error {
+	if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
 		return err
 	} else if !transient {
 		return dupErr
@@ -628,7 +874,7 @@ func applyActionsToWriteSet(ctx *sqle.Context, ws *WriteSet, actions []indexActi
 // UNIQUE index's Compare guards the tuple rather than its leading column:
 // ('a','x') and ('a','y') occupy two distinct entries and coexist, exactly
 // as they do in MySQL.
-func (t *RelationalTable) buildInsertIndexWrites(row sqle.Row, pk string) (actions []indexAction, candidates []uniqueCandidate, err error) {
+func (t *RelationalTable) buildInsertIndexWrites(g *tableGeneration, row sqle.Row, pk string) (actions []indexAction, candidates []uniqueCandidate, err error) {
 	for _, spec := range t.indexSpecs {
 		encoded, ok, eerr := spec.encode(row)
 		if eerr != nil {
@@ -637,7 +883,7 @@ func (t *RelationalTable) buildInsertIndexWrites(row sqle.Row, pk string) (actio
 		if !ok {
 			continue // A NULL in any indexed column contributes no entry.
 		}
-		key := indexEntryKey(t.def.Database, t.def.TableID, spec.name, spec.unique, encoded, pk)
+		key := indexEntryKey(t.def.Database, t.def.TableID, g.generation, spec.incarnation, spec.unique, encoded, pk)
 		if err := checkKeySize(t.def.Name, key); err != nil {
 			return nil, nil, err
 		}
@@ -664,6 +910,7 @@ func (t *RelationalTable) buildInsertIndexWrites(row sqle.Row, pk string) (actio
 // never fails.
 func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	t := w.table
+	g := t.gen()
 	if err := t.requireWritable(); err != nil {
 		return err
 	}
@@ -672,7 +919,7 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	if err != nil {
 		return err
 	}
-	rowKey := t.dataPrefix + pk
+	rowKey := g.dataPrefix + pk
 
 	actions := []indexAction{{key: rowKey, delete: true}}
 	for _, spec := range t.indexSpecs {
@@ -683,7 +930,7 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		if !ok {
 			continue
 		}
-		key := indexEntryKey(t.def.Database, t.def.TableID, spec.name, spec.unique, encoded, pk)
+		key := indexEntryKey(t.def.Database, t.def.TableID, g.generation, spec.incarnation, spec.unique, encoded, pk)
 		actions = append(actions, indexAction{key: key, delete: true})
 	}
 
@@ -696,12 +943,25 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	}
 
 	ops, _ := actionsToOpsAndCompares(actions)
-	if err := checkProposalSize(t.def.Name, nil, ops); err != nil {
+	compares := t.resolutionCompares(g)
+	if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
 		return err
 	}
 
-	_, err = t.txnSvc.Execute(ctx, nil, ops, nil)
-	return err
+	resp, err := t.txnSvc.Execute(ctx, compares, ops, nil)
+	if err != nil {
+		return err
+	}
+	if resp.Succeeded {
+		return nil
+	}
+	if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
+		return staleErr
+	}
+	// The generation compare is the only precondition this proposal carries,
+	// so a failure that is not a stale generation should not happen; report
+	// it as a conflict rather than silently treating it as success.
+	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
 }
 
 // Update updates a row from old to newRow, atomically maintaining every
@@ -736,6 +996,7 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 // actually changed are touched.
 func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error {
 	t := w.table
+	g := t.gen()
 	if err := t.requireWritable(); err != nil {
 		return err
 	}
@@ -759,11 +1020,11 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		return err
 	}
 
-	oldRowKey := t.dataPrefix + oldPK
-	newRowKey := t.dataPrefix + newPK
+	oldRowKey := g.dataPrefix + oldPK
+	newRowKey := g.dataPrefix + newPK
 	pkChanged := oldPK != newPK
 
-	actions, candidates, err := t.diffIndexEntries(old, newRow, oldPK, newPK, pkChanged)
+	actions, candidates, err := t.diffIndexEntries(g, old, newRow, oldPK, newPK, pkChanged)
 	if err != nil {
 		return err
 	}
@@ -776,7 +1037,7 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		return err
 	}
 	if ws != nil {
-		return t.bufferUpdate(ctx, ws, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
+		return t.bufferUpdate(ctx, ws, g, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
 	}
 
 	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
@@ -793,6 +1054,7 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		} else {
 			ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(newRowKey), Value: encodedNewRow})
 		}
+		compares = append(compares, t.resolutionCompares(g)...)
 		compares = append(compares, idxCompares...)
 		ops = append(ops, idxOps...)
 
@@ -808,7 +1070,11 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 			return nil
 		}
 
-		dupErr, transient, rerr := t.resolveDuplicate(ctx, candidates)
+		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
+			return staleErr
+		}
+
+		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
 		if rerr != nil {
 			return rerr
 		}
@@ -827,9 +1093,9 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 // snapshot-ModRevision precondition rather than an absence check, giving
 // the row itself first-committer-wins protection for the duration of the
 // transaction.
-func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, candidates []uniqueCandidate, oldRowKey, newRowKey string, encodedNewRow []byte, pkChanged bool, actions []indexAction) error {
+func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, g *tableGeneration, candidates []uniqueCandidate, oldRowKey, newRowKey string, encodedNewRow []byte, pkChanged bool, actions []indexAction) error {
 	if pkChanged {
-		if dupErr, transient, err := t.resolveDuplicate(ctx, candidates); err != nil {
+		if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
 			return err
 		} else if !transient {
 			return dupErr
@@ -866,7 +1132,7 @@ func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, candidat
 // and an UPDATE that changes any one of its columns -- or that nulls any
 // one of them, which removes the entry entirely (see indexSpec.encode) --
 // is therefore a value change for that index.
-func (t *RelationalTable) diffIndexEntries(old, newRow sqle.Row, oldPK, newPK string, pkChanged bool) (actions []indexAction, candidates []uniqueCandidate, err error) {
+func (t *RelationalTable) diffIndexEntries(g *tableGeneration, old, newRow sqle.Row, oldPK, newPK string, pkChanged bool) (actions []indexAction, candidates []uniqueCandidate, err error) {
 	for _, spec := range t.indexSpecs {
 		var oldEncoded, newEncoded string
 		var oldExists, newExists bool
@@ -878,10 +1144,10 @@ func (t *RelationalTable) diffIndexEntries(old, newRow sqle.Row, oldPK, newPK st
 		}
 
 		if spec.unique {
-			actions, candidates, err = t.diffUniqueIndexEntry(spec, actions, candidates,
+			actions, candidates, err = t.diffUniqueIndexEntry(g, spec, actions, candidates,
 				oldExists, newExists, oldEncoded, newEncoded, oldPK, newPK, pkChanged)
 		} else {
-			actions, err = t.diffNonUniqueIndexEntry(spec, actions,
+			actions, err = t.diffNonUniqueIndexEntry(g, spec, actions,
 				oldExists, newExists, oldEncoded, newEncoded, oldPK, newPK)
 		}
 		if err != nil {
@@ -895,11 +1161,11 @@ func (t *RelationalTable) diffIndexEntries(old, newRow sqle.Row, oldPK, newPK st
 // diffIndexEntries. See that method's doc comment for the physical-key
 // reasoning this implements.
 func (t *RelationalTable) diffUniqueIndexEntry(
-	spec indexSpec,
+	g *tableGeneration, spec indexSpec,
 	actions []indexAction, candidates []uniqueCandidate,
 	oldExists, newExists bool, oldEncoded, newEncoded, oldPK, newPK string, pkChanged bool,
 ) ([]indexAction, []uniqueCandidate, error) {
-	prefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, spec.name)
+	prefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, g.generation, spec.incarnation)
 
 	switch {
 	case !oldExists && !newExists:
@@ -942,15 +1208,15 @@ func (t *RelationalTable) diffUniqueIndexEntry(
 // with the row's own primary key, a primary-key change always moves the
 // entry, never merely overwrites it in place.
 func (t *RelationalTable) diffNonUniqueIndexEntry(
-	spec indexSpec, actions []indexAction,
+	g *tableGeneration, spec indexSpec, actions []indexAction,
 	oldExists, newExists bool, oldEncoded, newEncoded, oldPK, newPK string,
 ) ([]indexAction, error) {
 	var oldKey, newKey string
 	if oldExists {
-		oldKey = indexEntryKey(t.def.Database, t.def.TableID, spec.name, false, oldEncoded, oldPK)
+		oldKey = indexEntryKey(t.def.Database, t.def.TableID, g.generation, spec.incarnation, false, oldEncoded, oldPK)
 	}
 	if newExists {
-		newKey = indexEntryKey(t.def.Database, t.def.TableID, spec.name, false, newEncoded, newPK)
+		newKey = indexEntryKey(t.def.Database, t.def.TableID, g.generation, spec.incarnation, false, newEncoded, newPK)
 	}
 
 	if oldKey == newKey {
@@ -1002,7 +1268,7 @@ type uniqueCandidate struct {
 // this diagnostic read ran -- and transient is reported true so the caller
 // can safely retry the whole write (autocommit) or proceed to buffer it
 // (interactive transaction).
-func (t *RelationalTable) resolveDuplicate(ctx *sqle.Context, candidates []uniqueCandidate) (dupErr error, transient bool, err error) {
+func (t *RelationalTable) resolveDuplicate(ctx *sqle.Context, g *tableGeneration, candidates []uniqueCandidate) (dupErr error, transient bool, err error) {
 	for _, c := range candidates {
 		raw, gerr := t.txGet(ctx, c.key)
 		if gerr != nil {
@@ -1015,10 +1281,10 @@ func (t *RelationalTable) resolveDuplicate(ctx *sqle.Context, candidates []uniqu
 		var existingRaw []byte
 		var existingPK string
 		if c.isPK {
-			existingRaw, existingPK = raw, c.key[len(t.dataPrefix):]
+			existingRaw, existingPK = raw, c.key[len(g.dataPrefix):]
 		} else {
 			existingPK = string(raw)
-			existingRaw, gerr = t.txGet(ctx, t.dataPrefix+existingPK)
+			existingRaw, gerr = t.txGet(ctx, g.dataPrefix+existingPK)
 			if gerr != nil {
 				if isNotFound(gerr) {
 					continue

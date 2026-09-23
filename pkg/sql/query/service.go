@@ -191,10 +191,21 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 	start := time.Now()
 	result, err := run(ctx, eng, dbName, query)
 	if err != nil {
-		return nil, &service.SQLExecutionError{Query: query, Err: err}
+		return nil, executionError(query, err)
 	}
 	result.Duration = time.Since(start).String()
 	return result, nil
+}
+
+// executionError wraps an engine failure for the service boundary. The
+// engine reports a failed INSERT row inside sql.WrappedInsertError, which
+// has neither Unwrap nor Cause(), so a typed error beneath it -- a stale
+// table resolution, a layout refusal -- would be invisible to every
+// transport classifier (service.IsTableResolutionStale,
+// service.IsTableLayoutUnsupported). The wrapper adds only the offending
+// row, and its message is its cause's, so it is shed here.
+func executionError(query string, err error) *service.SQLExecutionError {
+	return &service.SQLExecutionError{Query: query, Err: sql.UnwrapError(err)}
 }
 
 // engineFor returns the cached go-mysql-server engine for key, building and
