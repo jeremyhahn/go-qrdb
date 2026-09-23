@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.0-alpha] - 2026-09-23
+
 ### Changed — BREAKING
 
 - **`User.Enabled` is removed; `Lifecycle` is the only account-state field.**
@@ -31,6 +33,29 @@ are not reconstructed here — their history is in the git log.
   audit details. qrdb authorization resolves user → role bindings → roles →
   permissions and no path read the field; a layer that needs group membership
   stores it itself.
+
+### Removed — BREAKING
+
+- **`database.StandaloneBackend.Storage()` is removed** (and with it from the
+  SDK's `StandaloneBackend` alias). Writes through the raw store bypassed the
+  backend's write mutex, which is what makes its guarded verbs atomic; nothing
+  in production called it.
+
+### Fixed
+
+- **A missing lease is reported as not-found on every transport.** Lease
+  time-to-live for an absent lease now returns the typed `LeaseNotFoundError`
+  from both lessor-backed state machines (`mvcc` and the default `pebble`)
+  instead of a generic invalid-query error, and every transport maps it to its
+  not-found status. An expired lease is indistinguishable from an absent one.
+- `DROP TABLE` reclaims the table's sequence counters.
+
+### Changed
+
+- CI enforces a blocking coverage gate: a repo-wide floor plus a per-package
+  ratchet against `test/coverage-baseline.txt`.
+- Trivy blocks on every push; the auth integration suite runs per push and the
+  cluster integration suite nightly.
 
 ## [0.19.0-alpha] - 2026-09-17
 
