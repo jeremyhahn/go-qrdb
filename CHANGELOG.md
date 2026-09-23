@@ -11,6 +11,25 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.1-alpha] - 2026-09-23
+
+### Fixed
+
+- **`secrets:*` permissions are own-tenant only.** They now use `ScopeSelfStrict`: a tenant's
+  principal can reach only its own vault, and the system tenant is confined to its own vault
+  rather than lifted over every tenant.
+- **Auth failures that could not be recorded are distinguishable from a sealed tenant.**
+  `AuthFailureUnavailable` is split into two classes, "could not evaluate" and "could not
+  record the decision". They map to the same transport status but can no longer be conflated
+  in control flow, and an outer audit-gate failure wins over its inner cause.
+- `qrdbd` no longer has a window during signal-handler reset in which a SIGTERM kills the
+  process without cleanup.
+
+### Documentation
+
+- `pkg/secret` states its requiredness boundary. A required secret is guaranteed only for a
+  leaf the walk reaches; whether a containing section is present is the consumer's `Validate()`.
+
 ## [0.20.0-alpha] - 2026-09-23
 
 ### Changed — BREAKING
