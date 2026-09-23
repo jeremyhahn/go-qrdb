@@ -37,12 +37,21 @@ package permission
 //   - mcp            Model Context Protocol transport scopes
 //   - agent:runtime  agent runtime lifecycle scopes
 //
-// Every permission declared here is tagged ScopeTenantOnly at init time:
-// secrets, trust, acme, MCP sessions, and agent runtimes are tenant-owned
-// surfaces. A platform (system) operator must not exercise them on a tenant's
-// behalf, and they are never cross-tenant. (The RBAC ScopeTenantOnly rule
-// admits them only when the identity is NOT in the system tenant AND the
-// identity's tenant matches the request's target tenant.)
+// trust, acme, MCP sessions, and agent runtimes are tagged ScopeTenantOnly at
+// init time: they are tenant-owned surfaces held ON A TENANT'S BEHALF, so a
+// platform (system) operator must not exercise them, and they are never
+// cross-tenant. (The RBAC ScopeTenantOnly rule admits them only when the
+// identity is NOT in the system tenant AND the identity's tenant matches the
+// request's target tenant.)
+//
+// secrets:* is the one exception, tagged ScopeSelfStrict instead. It is a
+// per-tenant vault, and the system tenant needs a private vault over its OWN
+// namespace exactly as every other tenant does -- ScopeTenantOnly would deny
+// it that outright, which is a regression relative to the pre-broker world
+// where the system tenant reached its own secret material through the
+// cross-scoped credentials:store. ScopeSelfStrict admits every identity,
+// system tenant included, against its own tenant only -- no cross-tenant
+// lift, no system-tenant denial (go-qrdb#372).
 // ---------------------------------------------------------------------------
 
 const (
@@ -91,8 +100,12 @@ const (
 )
 
 // brokerScopePermissions returns every broker-domain permission declared in
-// this file as a single slice. The init() function below registers each
-// permission in the global registry and tags it ScopeTenantOnly.
+// this file as a single slice, for Register() and Categories(). The init()
+// function below tags each member's SCOPE separately -- secrets:* is
+// ScopeSelfStrict, everything else here is ScopeTenantOnly -- by naming the
+// members of each group explicitly rather than through a shared helper (a
+// family tagged through a helper silently picks up whatever the helper later
+// grows to cover).
 func brokerScopePermissions() []Permission {
 	return []Permission{
 		SecretsRead, SecretsWrite, SecretsDelete, SecretsList,
@@ -149,6 +162,12 @@ func brokerCategories() []Category {
 func init() {
 	perms := brokerScopePermissions()
 	Register(perms...)
-	RegisterScope(ScopeTenantOnly, perms...)
+	RegisterScope(ScopeSelfStrict, SecretsRead, SecretsWrite, SecretsDelete, SecretsList)
+	RegisterScope(ScopeTenantOnly,
+		TrustRead, TrustWrite,
+		ACMERead, ACMEWrite,
+		MCPTools, MCPResources, MCPAdmin,
+		AgentRuntimeSpawn, AgentRuntimePrompt, AgentRuntimeStatus,
+	)
 	categories = append(categories, brokerCategories()...)
 }

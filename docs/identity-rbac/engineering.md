@@ -275,6 +275,20 @@ GET /api/v1/orchestrator/health
 It now sits in `nodeStateScopePermissions()` and is declared `ScopeSelf` by
 name in `self_scope.go`.
 
+**`secrets:*` is the family-call hazard's mirror image: one member of a
+`ScopeTenantOnly` family that needed a DIFFERENT scope, not a wider one.**
+`pkg/permission/broker_scope.go` registers the broker-domain family --
+`secrets`, `trust`, `acme`, `mcp`, `agent:runtime` -- and every member except
+`secrets:*` is correctly `ScopeTenantOnly`: those surfaces are held on a
+tenant's behalf, so the platform operator must not exercise them.
+`secrets:read/write/delete/list` name a per-tenant VAULT instead, and a vault
+is exactly the case `ScopeSelfStrict` exists for: the system tenant needs one
+over its own namespace as much as any other tenant does, and `ScopeTenantOnly`
+would deny it that outright. `init()` tags the two groups with separate
+`RegisterScope` calls, each naming its members explicitly, so `secrets:*`
+cannot silently drift back onto the family's default the next time someone
+edits the list.
+
 **The counter-example is in the same family, and it is the more instructive
 one.** `orchestrator:status` looks like the same case and is not: it is
 declared as *"read access to orchestration SESSION status"* and sits in the run

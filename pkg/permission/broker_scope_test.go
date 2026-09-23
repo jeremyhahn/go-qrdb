@@ -71,15 +71,42 @@ func TestBrokerScope_ParseAndRegistered(t *testing.T) {
 }
 
 // TestBrokerScope_TenantOnlyScope verifies that every broker-domain
-// permission is tagged ScopeTenantOnly in the built-in scope layer.
+// permission OTHER THAN secrets:* is tagged ScopeTenantOnly in the built-in
+// scope layer. secrets:* is ScopeSelfStrict instead (see
+// TestBrokerScope_SecretsIsSelfStrict) so the system tenant gets a private
+// vault over its own namespace rather than being denied outright.
 func TestBrokerScope_TenantOnlyScope(t *testing.T) {
+	secrets := map[Permission]bool{
+		SecretsRead: true, SecretsWrite: true, SecretsDelete: true, SecretsList: true,
+	}
 	for _, tc := range brokerScopeExpectations {
+		if secrets[tc.perm] {
+			continue
+		}
 		t.Run(string(tc.perm), func(t *testing.T) {
 			if got := mustScope(t, tc.perm); got != ScopeTenantOnly {
 				t.Fatalf("LookupScope(%q): got %v, want %v", tc.perm, got, ScopeTenantOnly)
 			}
 			if IsCrossScope(tc.perm) {
 				t.Fatalf("IsCrossScope(%q): got true, want false", tc.perm)
+			}
+		})
+	}
+}
+
+// TestBrokerScope_SecretsIsSelfStrict verifies that secrets:read/write/
+// delete/list are tagged ScopeSelfStrict, not ScopeTenantOnly: the system
+// tenant must reach its own vault (ScopeTenantOnly would deny it), and it
+// must not be lifted across other tenants' vaults (ScopeSelf would allow
+// that). See go-qrdb#372.
+func TestBrokerScope_SecretsIsSelfStrict(t *testing.T) {
+	for _, p := range []Permission{SecretsRead, SecretsWrite, SecretsDelete, SecretsList} {
+		t.Run(string(p), func(t *testing.T) {
+			if got := mustScope(t, p); got != ScopeSelfStrict {
+				t.Fatalf("LookupScope(%q): got %v, want %v", p, got, ScopeSelfStrict)
+			}
+			if IsCrossScope(p) {
+				t.Fatalf("IsCrossScope(%q): got true, want false", p)
 			}
 		})
 	}

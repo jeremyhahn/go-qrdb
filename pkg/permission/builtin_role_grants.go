@@ -196,12 +196,17 @@ func registerAdminGrants() {
 		// Admin. The self-scope CertsRevoke above still covers every
 		// revocation of the tenant's own issued certificates.
 		CertsRevokeCross,
-		// Broker-domain tenant security surfaces (ScopeTenantOnly: a tenant
-		// admin manages their OWN tenant's secret vault, trust pool, and ACME
-		// issuance; the system tenant is structurally denied by the
-		// ScopeTenantOnly rule). Parallels the Admin role already holding
-		// certs:* and passwords:*. mcp/agent scopes are intentionally NOT
-		// granted here — they are wired by the broker's role->scope mapping.
+		// Broker-domain tenant security surfaces. Trust pool and ACME
+		// issuance are ScopeTenantOnly: a tenant admin manages their OWN
+		// tenant's trust pool and ACME issuance, and the system tenant is
+		// structurally denied. secrets:* is ScopeSelfStrict instead
+		// (go-qrdb#372): a tenant admin still manages only their OWN vault,
+		// but the system tenant is confined to its own vault rather than
+		// denied outright, since the system tenant needs a private vault
+		// over its own namespace exactly as every other tenant does.
+		// Parallels the Admin role already holding certs:* and passwords:*.
+		// mcp/agent scopes are intentionally NOT granted here — they are
+		// wired by the broker's role->scope mapping.
 		SecretsRead, SecretsWrite, SecretsDelete,
 		SecretsList,
 		TrustRead, TrustWrite,
