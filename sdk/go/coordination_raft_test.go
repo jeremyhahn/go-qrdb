@@ -44,7 +44,8 @@ import (
 // bootRaftNodeOpts for the other and for why the distinction is load-bearing.
 func bootRaftNode(t *testing.T) (*sdk.Coordinator, transport.KVClient) {
 	t.Helper()
-	return bootRaftNodeOpts(t, raftNodeOpts{sealEnabled: true})
+	coord, kv, _ := bootRaftNodeOpts(t, raftNodeOpts{sealEnabled: true})
+	return coord, kv
 }
 
 // raftNodeOpts selects which clustered composition path the node is built
@@ -72,7 +73,7 @@ type raftNodeOpts struct {
 	cancelBootCtx bool
 }
 
-func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transport.KVClient) {
+func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transport.KVClient, *sdk.Client) {
 	t.Helper()
 
 	port, err := qrdbdharness.ReserveTCPPort()
@@ -122,7 +123,7 @@ func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transp
 	if err != nil {
 		t.Fatalf("Coordination: %v", err)
 	}
-	return coord, kv
+	return coord, kv, n.Client()
 }
 
 // assertLeaseKeyReaped acquires a short lease, waits for Done, and then
@@ -308,7 +309,7 @@ func TestRaft_LeaseTTLExpiry(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			coord, _ := bootRaftNodeOpts(t, tc.opts)
+			coord, _, _ := bootRaftNodeOpts(t, tc.opts)
 			assertLeaseKeyReaped(t, coord, "ephemeral/"+tc.name)
 		})
 	}
@@ -589,6 +590,39 @@ func runSubTTLRenewalCycles(
 		anchor, prevRenew = sentAt, renewTook
 	}
 	return renewalOverrun{}, false
+}
+
+// TestRaft_LeaseTimeToLive_NotFoundIsRealNotHandcrafted drives the actual
+// state machine -> service -> transport path for go-qrdb#387's "missing
+// lease" classification, with no injected or handcrafted error anywhere in
+// the chain: bootRaftNodeOpts's node runs every protocol server disabled
+// (see its own doc comment), so n.Client() is backed by the embedded
+// transport (sdk/go/transport/embedded) talking to a REAL
+// pkg/engine.MVCCEngine and pkg/lease.Lessor over a REAL single-replica raft
+// group -- the same composition TestRaft_LeaseLifecycle and
+// TestRaft_LeaseTTLExpiry already exercise for other lease behavior. A lease
+// ID that was never granted must classify as *transport.LeaseNotFoundError,
+// the same typed error every OTHER transport's own tests (REST, gRPC, QUIC,
+// MCP, Unix) pin -- this is embedded's turn, and the only one of the six
+// where the error being asserted comes from a real miss against the real
+// Lessor rather than a test double told what to return.
+func TestRaft_LeaseTimeToLive_NotFoundIsRealNotHandcrafted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, _, client := bootRaftNodeOpts(t, raftNodeOpts{sealEnabled: true})
+
+	_, err := client.Lease().LeaseTimeToLive(ctx, 999999999)
+	if err == nil {
+		t.Fatal("LeaseTimeToLive on a never-granted lease ID succeeded, want error")
+	}
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 999999999 {
+		t.Errorf("LeaseID = %d, want 999999999", notFound.LeaseID)
+	}
 }
 
 // TestRaft_LeaseExclusive proves acquisition is exclusive: while one holder
