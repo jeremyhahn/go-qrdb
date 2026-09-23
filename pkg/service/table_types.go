@@ -82,6 +82,59 @@ type TableDef struct {
 	// columns are present.
 	SchemaVersion uint32 `json:"schema_version"`
 
+	// Layout is the physical key layout this table's rows and index entries
+	// were written under. CreateTable records TableLayoutCurrent; a record
+	// without one was written by v0.20.0 through v0.21.0, before rows and
+	// index entries carried a generation or an index incarnation, and is
+	// refused rather than read (see TableLayoutUnsupportedError).
+	Layout uint32 `json:"layout,omitempty"`
+
+	// IndexIncarnations is the last TableIndex.Incarnation allocated for
+	// this table. It only ever grows, which is what makes an incarnation
+	// unique for the table's lifetime.
+	IndexIncarnations uint64 `json:"index_incarnations,omitempty"`
+
+	// Generation is the table's current data generation (go-qrdb#547),
+	// advanced only by TRUNCATE. It is NOT part of the persisted catalog
+	// record -- GetTable populates it from the dedicated generation key
+	// (tableGenerationKey) on every read, deliberately kept separate from
+	// this record's own compare-and-swap so an unrelated RENAME/ALTER never
+	// invalidates a DML statement planned against the current generation,
+	// and a TRUNCATE never invalidates one planned against the current
+	// schema. Row and index keys are composed from it (TableDataPrefix,
+	// TableIndexPrefix): a table's live data always lives under its CURRENT
+	// generation's prefix, and every DML commit -- autocommit and buffered
+	// transaction alike -- guards on the generation it was planned under,
+	// failing with the typed retryable error when a TRUNCATE has moved it.
+	Generation uint64 `json:"-"`
+
+	// GenerationRevision is the ModRevision of the generation key as read
+	// with Generation (0 when the key is absent). A buffered transaction
+	// compares it against its snapshot revision: a generation written after
+	// the snapshot means the snapshot cannot hold this generation's rows.
+	// Never persisted.
+	GenerationRevision int64 `json:"-"`
+
+	// MetadataRevision is the ModRevision of the metadata record this
+	// definition was decoded from, read in the same call, so the two always
+	// describe one catalog state. Every DML commit compares it (see
+	// TableMetadataKey), so a statement planned against an index set or
+	// schema that DDL has since changed is refused rather than committed
+	// against the wrong one. 0 means the definition was not read with its
+	// revision (e.g. CreateTable's own return value), and no such fence is
+	// possible. Never persisted.
+	MetadataRevision int64 `json:"-"`
+
+	// GenerationReadAt is when this process began the read that returned
+	// Generation, on the local clock (it carries a monotonic reading), and is
+	// likewise never persisted. A reader may rely on Generation for
+	// TableGenerationPinTTL from this instant; after that it must re-prove
+	// the generation is current before trusting another read of it. It is
+	// taken BEFORE the generation read, never after, so the window can only
+	// err short. The zero value means "not known", which a reader treats as
+	// already expired.
+	GenerationReadAt time.Time `json:"-"`
+
 	// Collation is the table's default collation, empty for the server default.
 	Collation string `json:"collation,omitempty"`
 
@@ -143,6 +196,20 @@ type PKColumn struct {
 type TableIndex struct {
 	Name    string     `json:"name"`
 	Columns []IndexCol `json:"columns"`
+
+	// Incarnation identifies this index's physical entries: they live under
+	// TableIndexPrefix(database, tableID, generation, Incarnation), never
+	// under the name. TableService assigns it -- from the table's own
+	// IndexIncarnations counter, in the same compare-and-swap that adds the
+	// index. The counter only moves forward: index DDL refuses while a
+	// rewrite is open, and a rewrite's write-back (CompleteRewrite) refuses a
+	// record that moved since its Target was derived, so no earlier copy of
+	// the counter is ever written back. It is never reused within a table: a
+	// dropped index's
+	// entries, reclaimed in the background, can never be the keyspace of an
+	// index created later under the same name, and RENAME INDEX moves no
+	// data at all (go-qrdb#547). Any value a caller supplies is overwritten.
+	Incarnation uint64 `json:"incarnation"`
 
 	// Unique enforces at most one row per index value.
 	Unique bool `json:"unique,omitempty"`
@@ -260,6 +327,13 @@ const (
 	// tableIndexPrefix is the key space holding secondary index entries.
 	tableIndexPrefix = "__idx:"
 
+	// tableGenerationPrefix is the key space holding each table's current
+	// generation counter (go-qrdb#547). TRUNCATE is the only operation that
+	// advances it; a table that has never been truncated has no key here,
+	// decoding as generation 0 the same way an unallocated sequence decodes
+	// as counter 0.
+	tableGenerationPrefix = "__tblgen:"
+
 	// tableIDSequenceName is the per-database sequence that allocates TableID.
 	tableIDSequenceName = "__tableid"
 )
@@ -289,16 +363,44 @@ func tableSequenceKey(database, name string) string {
 	return tableSequencePrefix + database + ":" + name
 }
 
-// tableDataPrefixFor returns the prefix enumerating a table's rows. Rows are
-// keyed by TableID rather than name so a rename does not move them.
-func tableDataPrefixFor(database string, tableID uint64) string {
-	return tableDataPrefix + database + ":" + strconv.FormatUint(tableID, 10) + "/"
+// tableDataPrefixFor returns the prefix enumerating a table's rows at the
+// given generation. Rows are keyed by TableID rather than name so a rename
+// does not move them, and by generation (go-qrdb#547) so TRUNCATE is a single
+// Raft transaction that publishes a new generation rather than a scan and
+// delete of every row: a table's current rows always live under its CURRENT
+// generation's prefix, and a prior generation's rows are simply never
+// enumerated again by anything that resolves the table normally. See
+// TableService.TruncateTable and pkg/service/reclaim_job.go for how a
+// superseded generation's keys are eventually deleted.
+func tableDataPrefixFor(database string, tableID, generation uint64) string {
+	return tableDataPrefix + database + ":" + strconv.FormatUint(tableID, 10) +
+		":" + strconv.FormatUint(generation, 10) + "/"
 }
 
-// tableIndexPrefixFor returns the prefix enumerating one index's entries.
-func tableIndexPrefixFor(database string, tableID uint64, index string) string {
-	return tableIndexPrefix + database + ":" +
-		strconv.FormatUint(tableID, 10) + ":" + index + "/"
+// tableIndexPrefixFor returns the prefix enumerating one index's entries at
+// the given generation. See tableDataPrefixFor for why generation is part of
+// the key. The index is identified by its incarnation, never its name (see
+// TableIndex.Incarnation): a name can be reused and renamed, an incarnation
+// cannot, and a numeric segment terminated by "/" can never be a prefix of
+// another index's segment.
+func tableIndexPrefixFor(database string, tableID, generation, incarnation uint64) string {
+	return tableIndexGenerationPrefixFor(database, tableID, generation) + strconv.FormatUint(incarnation, 10) + "/"
+}
+
+// tableIndexGenerationPrefixFor returns the prefix enumerating EVERY index's
+// entries for one table at one generation, whatever the index is named. A
+// generation's reclamation names this prefix rather than one prefix per
+// catalogued index, so entries of an incarnation the catalog no longer lists
+// are reclaimed with the rest of the generation instead of outliving it.
+func tableIndexGenerationPrefixFor(database string, tableID, generation uint64) string {
+	return tableIndexPrefix + database + ":" + strconv.FormatUint(tableID, 10) +
+		":" + strconv.FormatUint(generation, 10) + ":"
+}
+
+// tableGenerationKey returns the key holding a table's current generation
+// counter.
+func tableGenerationKey(database string, tableID uint64) string {
+	return tableGenerationPrefix + database + ":" + strconv.FormatUint(tableID, 10)
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +424,13 @@ type CreateTableRequest struct {
 type DropTableRequest struct {
 	Database string `json:"database"`
 	Name     string `json:"name"`
+
+	// Resolution, when set, is the definition the caller resolved the table
+	// as (TableServicer.GetTable). The drop is then refused -- with the
+	// retryable *TableDefinitionStaleError or *TableGenerationStaleError --
+	// if the table's definition or generation has moved since, rather than
+	// dropping a table in a state the caller never saw.
+	Resolution *TableDef `json:"-"`
 }
 
 // RenameTableRequest contains parameters for renaming a relational table.
@@ -395,6 +504,15 @@ type CreateTableIndexRequest struct {
 	Index    TableIndex `json:"index"`
 }
 
+// RenameTableIndexRequest contains parameters for renaming a secondary
+// index (TableServicer.RenameIndex).
+type RenameTableIndexRequest struct {
+	Database string `json:"database"`
+	Table    string `json:"table"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+}
+
 // CreateTableForeignKeyRequest contains parameters for adding a foreign key
 // constraint to a table's catalog entry.
 type CreateTableForeignKeyRequest struct {
@@ -456,6 +574,11 @@ type TableDDLJournal struct {
 
 	// Target is the definition being migrated to.
 	Target *TableDef `json:"target,omitempty"`
+
+	// MetadataRevision is the ModRevision of the metadata record Target was
+	// derived from. CompleteRewrite writes Target back only while the record
+	// is still at this revision.
+	MetadataRevision int64 `json:"metadata_revision,omitempty"`
 
 	// Changes carries the AlterTableChange list that triggered this rewrite,
 	// so the rewrite executor can deterministically re-derive, for every

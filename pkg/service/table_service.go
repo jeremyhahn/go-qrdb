@@ -19,10 +19,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/retry"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TableServicer manages the catalog of user-defined relational tables: the
@@ -36,17 +38,29 @@ type TableServicer interface {
 	// from it rather than from Name.
 	CreateTable(ctx context.Context, req *CreateTableRequest) (*TableDef, error)
 
-	// DropTable removes a table's catalog entry. It does not delete the
-	// table's row or index data -- that is the responsibility of the
-	// (not yet implemented) table data-plane engine that owns
-	// tableDataPrefixFor/tableIndexPrefixFor; see the DropTable doc comment
-	// on TableService for the reasoning.
+	// DropTable removes a table's catalog entry, its generation counter and
+	// its sequences, and publishes a ReclaimJob for its rows and index
+	// entries, in one transaction; see TableService.DropTable.
 	DropTable(ctx context.Context, req *DropTableRequest) error
 
 	// RenameTable changes a table's name without moving any data: row and
 	// index keys are composed from the table's immutable TableID, never
 	// from its name, so a rename is a pure catalog compare-and-swap.
 	RenameTable(ctx context.Context, req *RenameTableRequest) error
+
+	// TruncateTable atomically advances a table's generation and, unless
+	// resetSequence is false (PostgreSQL's TRUNCATE does not touch a
+	// sequence), resets its AUTO_INCREMENT counter to zero -- both in ONE
+	// Raft transaction, so neither ever applies without the other. It also
+	// publishes a ReclaimJob naming the old generation's now-orphaned row
+	// and index key prefixes, in the SAME transaction, so the background
+	// ReclaimSweeper can delete them once no reader can still be using them
+	// (see ReclaimQuiescence).
+	// See TableDataPrefix/TableIndexPrefix for what "generation" changes,
+	// and go-qrdb#547 for why this makes TRUNCATE TABLE O(1) rather than a
+	// scan of every row. Returns the table's new definition, with
+	// Generation already updated.
+	TruncateTable(ctx context.Context, database, name string, resetSequence bool) (*TableDef, error)
 
 	// GetTable returns a table's current definition. It performs a fresh
 	// linearizable read on every call -- see the doc comment on
@@ -67,8 +81,15 @@ type TableServicer interface {
 	// CreateIndex adds a secondary index to a table's catalog entry.
 	CreateIndex(ctx context.Context, req *CreateTableIndexRequest) error
 
-	// DropIndex removes a secondary index from a table's catalog entry.
+	// DropIndex removes a secondary index from a table's catalog entry and
+	// publishes a ReclaimJob for its entries, in one transaction; see
+	// TableService.DropIndex.
 	DropIndex(ctx context.Context, database, table, index string) error
+
+	// RenameIndex renames a secondary index. Entries are keyed by the
+	// index's incarnation, never its name, so this is a pure catalog change;
+	// see TableService.RenameIndex.
+	RenameIndex(ctx context.Context, req *RenameTableIndexRequest) error
 
 	// AddForeignKey appends a foreign key constraint to a table's catalog
 	// entry. A foreign key name is unique across the whole database in
@@ -161,6 +182,43 @@ type TableService struct {
 	mvcc tableMVCCService
 	txn  TransactionServicer
 	seq  SequenceServicer
+
+	// reclaimIndex configures where reclaim-publishing operations
+	// (TruncateTable, DropIndex, DropTable) write their ReclaimIndexEntry. nil means
+	// they refuse rather than publish a job the sweeper could never find:
+	// see WithReclaimIndex.
+	reclaimIndex *tableReclaimIndex
+}
+
+// tableReclaimIndex holds what a reclaim-publishing operation needs to
+// publish a job's index entry -- see WithReclaimIndex.
+type tableReclaimIndex struct {
+	// txn proposes against the SYSTEM store, un-namespaced: the one place
+	// ReclaimSweeper lists. It is never this TableService's own txn, which
+	// may be namespaced or a different store altogether.
+	txn TransactionServicer
+
+	// placement and origin are recorded on every entry so the sweeper knows
+	// which node owns the job (see ReclaimStoreResolver.Owns).
+	placement StorePlacement
+	origin    string
+}
+
+// TableServiceOption configures optional TableService behavior not every
+// composition needs -- currently only WithReclaimIndex.
+type TableServiceOption func(*TableService)
+
+// WithReclaimIndex configures reclaim-publishing operations to write their
+// ReclaimIndexEntry through systemTxn -- a TransactionServicer on the
+// un-namespaced system store -- recording placement (where THIS
+// TableService's own store lives) and origin (this node's identity). See
+// ReclaimIndexEntry for why the entry is always its own, earlier
+// transaction. The composer wiring TableService (pkg/server's registry) is
+// the only caller that knows all three.
+func WithReclaimIndex(systemTxn TransactionServicer, placement StorePlacement, origin string) TableServiceOption {
+	return func(s *TableService) {
+		s.reclaimIndex = &tableReclaimIndex{txn: systemTxn, placement: placement, origin: origin}
+	}
 }
 
 // Compile-time interface check.
@@ -168,8 +226,12 @@ var _ TableServicer = (*TableService)(nil)
 
 // NewTableService creates a new TableServicer backed by the given KV read
 // interface, MVCC read interface, TransactionServicer, and SequenceServicer.
-func NewTableService(kv tableKVService, mvcc tableMVCCService, txn TransactionServicer, seq SequenceServicer) *TableService {
-	return &TableService{kv: kv, mvcc: mvcc, txn: txn, seq: seq}
+func NewTableService(kv tableKVService, mvcc tableMVCCService, txn TransactionServicer, seq SequenceServicer, opts ...TableServiceOption) *TableService {
+	s := &TableService{kv: kv, mvcc: mvcc, txn: txn, seq: seq}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateTable creates a new table. TableID is allocated first from the
@@ -189,22 +251,29 @@ func (s *TableService) CreateTable(ctx context.Context, req *CreateTableRequest)
 		return nil, err
 	}
 
+	indexes := append([]TableIndex(nil), req.Indexes...)
+	for i := range indexes {
+		indexes[i].Incarnation = uint64(i) + 1
+	}
+
 	now := time.Now().UTC()
 	def := &TableDef{
-		TableID:       tableID,
-		Name:          req.Name,
-		Database:      req.Database,
-		Columns:       append([]ColumnDef(nil), req.Columns...),
-		PrimaryKey:    append([]PKColumn(nil), req.PrimaryKey...),
-		Indexes:       append([]TableIndex(nil), req.Indexes...),
-		ForeignKeys:   append([]ForeignKeyDef(nil), req.ForeignKeys...),
-		Checks:        append([]CheckDef(nil), req.Checks...),
-		AutoIncColumn: autoIncrementColumnName(req.Columns),
-		SchemaVersion: 1,
-		Collation:     req.Collation,
-		Comment:       req.Comment,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Layout:            TableLayoutCurrent,
+		IndexIncarnations: uint64(len(indexes)),
+		TableID:           tableID,
+		Name:              req.Name,
+		Database:          req.Database,
+		Columns:           append([]ColumnDef(nil), req.Columns...),
+		PrimaryKey:        append([]PKColumn(nil), req.PrimaryKey...),
+		Indexes:           indexes,
+		ForeignKeys:       append([]ForeignKeyDef(nil), req.ForeignKeys...),
+		Checks:            append([]CheckDef(nil), req.Checks...),
+		AutoIncColumn:     autoIncrementColumnName(req.Columns),
+		SchemaVersion:     1,
+		Collation:         req.Collation,
+		Comment:           req.Comment,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	data, err := json.Marshal(def)
@@ -223,16 +292,26 @@ func (s *TableService) CreateTable(ctx context.Context, req *CreateTableRequest)
 	return def, nil
 }
 
-// DropTable removes a table's catalog entry (definition, DDL journal if
-// any) and bumps the database's catalog epoch, atomically.
+// DropTable removes a table in one transaction: its catalog entry, DDL
+// journal if any, TRUNCATE generation counter and two sequence counters are
+// deleted, the database's catalog epoch is bumped, and a ReclaimJob is
+// published for the rows and index entries of its current generation (older
+// generations already have their TRUNCATE jobs). The data is not deleted
+// inline: a statement that resolved the table before the drop may still be
+// reading it, so it goes through the same quiescence as a truncated
+// generation (ReclaimQuiescence), and a crash at any point leaves either the
+// whole table or the job that reclaims it. DML planned against the table
+// cannot land after the drop: its commit compares the metadata record, which
+// is gone.
 //
-// It deliberately does not enumerate or delete the table's rows
-// (tableDataPrefixFor) or index entries (tableIndexPrefixFor): reclaiming
-// that data is the responsibility of the table data-plane engine, which is
-// not part of this catalog service and is not yet implemented (the same
-// phase boundary AlterTable's rewrite executor sits behind). A caller that
-// needs the data reclaimed today must do so itself before or after calling
-// DropTable, e.g. by scanning tableDataPrefixFor(database, def.TableID).
+// req.Resolution, when set, fences the drop on what the caller resolved: a
+// TRUNCATE or DDL landing after that resolution refuses it with the typed
+// stale error instead of dropping a state the caller never saw.
+//
+// It deliberately does not check the key layout: dropping a table created
+// by v0.20.0 through v0.21.0 is the remedy TableLayoutUnsupportedError
+// names. Such a table's old-layout data lives under LegacyTableKeyPrefixes,
+// which the job names as well.
 func (s *TableService) DropTable(ctx context.Context, req *DropTableRequest) error {
 	if err := validateTableRef(req.Database, req.Name); err != nil {
 		return err
@@ -242,21 +321,66 @@ func (s *TableService) DropTable(ctx context.Context, req *DropTableRequest) err
 	journalKey := tableDDLJournalKey(req.Database, req.Name)
 	epochKey := tableCatalogEpochKey(req.Database)
 
-	return s.runCatalogCAS(ctx, req.Database, req.Name, func() ([]Compare, []Op, error) {
+	return s.runReclaimPublishingCAS(ctx, req.Database, req.Name, func() (*reclaimPublication, error) {
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Name}
+			return nil, &TableNotFoundError{Database: req.Database, Name: req.Name}
+		}
+		var def TableDef
+		if err := json.Unmarshal(rev.Value, &def); err != nil {
+			return nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		genKey := tableGenerationKey(req.Database, def.TableID)
+		genRev, err := s.revisionOrAbsent(ctx, genKey)
+		if err != nil {
+			return nil, err
+		}
+		generation := decodeSequenceCounter(genRev.Value)
+		if r := req.Resolution; r != nil {
+			if r.TableID != def.TableID || r.MetadataRevision != rev.ModRevision {
+				return nil, &TableDefinitionStaleError{Database: req.Database, Name: req.Name, Reason: "its definition changed before the drop"}
+			}
+			if r.GenerationRevision != genRev.ModRevision {
+				return nil, &TableGenerationStaleError{Database: req.Database, Name: req.Name, Expected: r.Generation, Actual: generation}
+			}
 		}
 
-		compares := []Compare{{
-			Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
-		}}
-		ops := []Op{
-			{Type: OpDelete, Key: []byte(metaKey)},
-			{Type: OpDelete, Key: []byte(journalKey)},
-			{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
+		prefixes := []string{
+			tableDataPrefixFor(req.Database, def.TableID, generation),
+			tableIndexGenerationPrefixFor(req.Database, def.TableID, generation),
 		}
-		return compares, ops, nil
+		if def.Layout != TableLayoutCurrent {
+			prefixes = append(prefixes, LegacyTableKeyPrefixes(req.Database, def.TableID)...)
+		}
+
+		return &reclaimPublication{
+			compares: []Compare{
+				{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision},
+				// A TRUNCATE landing between this read and this commit fails
+				// the attempt, which re-reads and names the new generation.
+				{Key: []byte(genKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: genRev.ModRevision},
+			},
+			ops: []Op{
+				{Type: OpDelete, Key: []byte(metaKey)},
+				{Type: OpDelete, Key: []byte(journalKey)},
+				// The generation counter and the sequences go in the SAME
+				// transaction as the definition that names their TableID: a
+				// crash can leave neither without the other, and TableID is
+				// never reused, so nothing would ever compute their keys
+				// again.
+				{Type: OpDelete, Key: []byte(genKey)},
+				{Type: OpDelete, Key: []byte(tableSequenceKey(req.Database, TableAutoIncrementSequenceName(def.TableID)))},
+				{Type: OpDelete, Key: []byte(tableSequenceKey(req.Database, TableRowIDSequenceName(def.TableID)))},
+				{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
+			},
+			label:    "drop:" + req.Database + ":" + strconv.FormatUint(def.TableID, 10) + ":" + strconv.FormatUint(generation, 10),
+			prefixes: prefixes,
+			// Committing deletes metaKey, which settles the attempt.
+			fences: []ReclaimFence{
+				{Key: metaKey, ModRevision: rev.ModRevision},
+				{Key: genKey, ModRevision: genRev.ModRevision},
+			},
+		}, nil
 	})
 }
 
@@ -281,6 +405,10 @@ func (s *TableService) RenameTable(ctx context.Context, req *RenameTableRequest)
 	epochKey := tableCatalogEpochKey(req.Database)
 
 	return s.runCatalogCAS(ctx, req.Database, req.From, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, req.Database, req.From)
+		if err != nil {
+			return nil, nil, err
+		}
 		fromRev, err := s.mvcc.GetRevision(ctx, fromKey)
 		if err != nil {
 			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.From}
@@ -310,6 +438,7 @@ func (s *TableService) RenameTable(ctx context.Context, req *RenameTableRequest)
 		compares := []Compare{
 			{Key: []byte(fromKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: fromRev.ModRevision},
 			{Key: []byte(toKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: 0},
+			noRewrite,
 		}
 		ops := []Op{
 			{Type: OpDelete, Key: []byte(fromKey)},
@@ -318,6 +447,311 @@ func (s *TableService) RenameTable(ctx context.Context, req *RenameTableRequest)
 		}
 		return compares, ops, nil
 	})
+}
+
+// TruncateTable atomically advances database.name's generation, optionally
+// resets its AUTO_INCREMENT counter, and publishes a ReclaimJob for the
+// superseded generation's data -- see the TableServicer doc comment on this
+// method and reclaim_job.go's package doc comment for the full design.
+//
+// It does not write the table's own metadata record (Name, Columns,
+// SchemaVersion, ...): the generation lives at a key of its own
+// (tableGenerationKey), so a TRUNCATE fails a racing DML statement through
+// its generation guard alone, never its definition guard. It does compare
+// the record, so a DDL landing between this attempt's read and its commit
+// fails the attempt, which re-reads.
+//
+// Like every other catalog change it refuses while a rewrite journal exists
+// (requireNoRewrite): a rewrite resuming against a generation it no longer
+// matches is exactly the hazard the generation guard exists to catch, and
+// refusing up front is simpler than teaching the rewrite executor to retry.
+func (s *TableService) TruncateTable(ctx context.Context, database, name string, resetSequence bool) (*TableDef, error) {
+	if err := validateTableRef(database, name); err != nil {
+		return nil, err
+	}
+
+	metaKey := tableMetadataKey(database, name)
+
+	var result *TableDef
+	err := s.runReclaimPublishingCAS(ctx, database, name, func() (*reclaimPublication, error) {
+		result = nil
+		// The new generation becomes current when this attempt commits,
+		// which is after this instant -- a valid, conservative start for a
+		// caller's pin on it.
+		attemptAt := time.Now()
+
+		noRewrite, err := s.requireNoRewrite(ctx, database, name)
+		if err != nil {
+			return nil, err
+		}
+
+		metaRev, err := s.mvcc.GetRevision(ctx, metaKey)
+		if err != nil {
+			return nil, &TableNotFoundError{Database: database, Name: name}
+		}
+		var def TableDef
+		if err := json.Unmarshal(metaRev.Value, &def); err != nil {
+			return nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		if err := checkTableLayout(&def, database, name); err != nil {
+			return nil, err
+		}
+
+		genKey := tableGenerationKey(database, def.TableID)
+		genRev, err := s.revisionOrAbsent(ctx, genKey)
+		if err != nil {
+			return nil, err
+		}
+		oldGeneration := decodeSequenceCounter(genRev.Value)
+		newGeneration := oldGeneration + 1
+
+		compares := []Compare{
+			// Absent decodes as ModRevision 0, the same "absent" encoding
+			// SequenceService and RenameTable's own guard use, so a table
+			// truncated for the first time and one truncated again flow
+			// through the identical compare.
+			{Key: []byte(genKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: genRev.ModRevision},
+			// The definition this attempt read must still be current at
+			// commit time: a concurrent RENAME/DROP/ALTER landing in between
+			// fails this attempt rather than let it commit against a
+			// definition that is no longer the table's.
+			{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: metaRev.ModRevision},
+			// A rewrite journal created concurrently must fail this attempt
+			// for the same reason the up-front check above exists.
+			noRewrite,
+		}
+		ops := []Op{
+			{Type: OpPut, Key: []byte(genKey), Value: encodeSequenceCounter(newGeneration)},
+		}
+
+		if resetSequence {
+			seqKey := tableSequenceKey(database, TableAutoIncrementSequenceName(def.TableID))
+			seqRev, err := s.revisionOrAbsent(ctx, seqKey)
+			if err != nil {
+				return nil, err
+			}
+			// The compare and the Put are unconditional, even when the
+			// observed counter already reads 0: the compare is what catches
+			// a concurrent SequenceServicer.Allocate that writes a nonzero
+			// counter between this read and this transaction's commit.
+			compares = append(compares, Compare{
+				Key: []byte(seqKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: seqRev.ModRevision,
+			})
+			ops = append(ops, Op{Type: OpPut, Key: []byte(seqKey), Value: encodeSequenceCounter(0)})
+		}
+
+		def.Generation = newGeneration
+		def.GenerationReadAt = attemptAt
+		// The compare above holds metaKey at this revision through commit.
+		def.MetadataRevision = metaRev.ModRevision
+		result = &def
+		return &reclaimPublication{
+			compares: compares,
+			ops:      ops,
+			label:    "table:" + database + ":" + strconv.FormatUint(def.TableID, 10) + ":" + strconv.FormatUint(oldGeneration, 10),
+			// The whole generation's index keyspace, not one prefix per
+			// catalogued index: see tableIndexGenerationPrefixFor.
+			prefixes: []string{
+				tableDataPrefixFor(database, def.TableID, oldGeneration),
+				tableIndexGenerationPrefixFor(database, def.TableID, oldGeneration),
+			},
+			// Committing bumps genKey, and anything else that could still
+			// let this attempt commit leaves metaKey unchanged -- so once
+			// either reads a different ModRevision this attempt is settled.
+			// genKey can only return to absent (ModRevision 0) through DROP
+			// TABLE, which deletes metaKey in the same transaction.
+			fences: []ReclaimFence{
+				{Key: metaKey, ModRevision: metaRev.ModRevision},
+				{Key: genKey, ModRevision: genRev.ModRevision},
+			},
+		}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// RenameIndex renames a secondary index. Index entries are keyed by the
+// index's incarnation, not its name (see TableIndex.Incarnation), so this is
+// a pure catalog compare-and-swap: no entry moves, nothing is orphaned, and a
+// later index created under the old name gets an incarnation -- and a
+// keyspace -- of its own.
+func (s *TableService) RenameIndex(ctx context.Context, req *RenameTableIndexRequest) error {
+	if err := validateTableRef(req.Database, req.Table); err != nil {
+		return err
+	}
+	if req.From == "" {
+		return &TableInvalidNameError{Kind: "index", Name: req.From, Reason: "must not be empty"}
+	}
+	if req.To == "" {
+		return &TableInvalidNameError{Kind: "index", Name: req.To, Reason: "must not be empty"}
+	}
+
+	metaKey := tableMetadataKey(req.Database, req.Table)
+	epochKey := tableCatalogEpochKey(req.Database)
+
+	return s.runCatalogCAS(ctx, req.Database, req.Table, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, req.Database, req.Table)
+		if err != nil {
+			return nil, nil, err
+		}
+		metaRev, err := s.mvcc.GetRevision(ctx, metaKey)
+		if err != nil {
+			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
+		}
+		var def TableDef
+		if err := json.Unmarshal(metaRev.Value, &def); err != nil {
+			return nil, nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		if err := checkTableLayout(&def, req.Database, req.Table); err != nil {
+			return nil, nil, err
+		}
+
+		idx := -1
+		for i, existing := range def.Indexes {
+			if existing.Name == req.To {
+				return nil, nil, &TableIndexAlreadyExistsError{Database: req.Database, Table: req.Table, Index: req.To}
+			}
+			if existing.Name == req.From {
+				idx = i
+			}
+		}
+		if idx == -1 {
+			return nil, nil, &TableIndexNotFoundError{Database: req.Database, Table: req.Table, Index: req.From}
+		}
+		renamed := def.Indexes[idx]
+		renamed.Name = req.To
+		if err := validateIndex(columnNameSet(&def), renamed); err != nil {
+			return nil, nil, err
+		}
+
+		def.Indexes = append(def.Indexes[:idx:idx], append([]TableIndex{renamed}, def.Indexes[idx+1:]...)...)
+		def.UpdatedAt = time.Now().UTC()
+		data, err := json.Marshal(&def)
+		if err != nil {
+			return nil, nil, &TableMetadataError{Op: "marshal", Err: err}
+		}
+		compares := []Compare{
+			{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: metaRev.ModRevision},
+			noRewrite,
+		}
+		ops := []Op{
+			{Type: OpPut, Key: []byte(metaKey), Value: data},
+			{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
+		}
+		return compares, ops, nil
+	})
+}
+
+// reclaimPublication is one attempt of a reclaim-publishing catalog
+// operation: the compare-and-swap it proposes, plus the keyspace it orphans
+// and the fences a sweeper uses to settle its index entry (see
+// ReclaimIndexEntry.Fences).
+type reclaimPublication struct {
+	compares []Compare
+	ops      []Op
+	label    string
+	prefixes []string
+	fences   []ReclaimFence
+}
+
+// runReclaimPublishingCAS is runCatalogCAS for an operation that orphans a
+// keyspace. Every attempt publishes under a fresh job ID (newReclaimJobID):
+//
+//  1. its ReclaimIndexEntry, alone, against the system store;
+//  2. its own compare-and-swap with the ReclaimJob record added as one more
+//     Op, so the job commits if and only if the operation does.
+//
+// An attempt whose compare-and-swap definitely lost withdraws its own entry
+// before retrying; because the ID is this attempt's alone, no other attempt's
+// entry can be withdrawn by mistake. An attempt whose outcome is unknown
+// leaves its entry for the sweeper, whose fence check settles it either way.
+//
+// A publication naming no prefixes orphans nothing: it is proposed as a plain
+// compare-and-swap, with no index entry and no job, so an operation that only
+// sometimes orphans a keyspace (CompleteRewrite, AbortRewrite) goes through
+// one path either way.
+func (s *TableService) runReclaimPublishingCAS(ctx context.Context, database, table string, build func() (*reclaimPublication, error)) error {
+	// The tenant is part of what locates the job's store. It is carried on
+	// ctx rather than widening every signature: the SQL layer binds the
+	// session's tenant before calling in, and tenant.FromContext falls back
+	// to the system tenant for a context with none, like every other
+	// tenant-context reader in the tree.
+	tenantID := tenant.FromContext(ctx)
+	conflictKey := tableMetadataKey(database, table)
+
+	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
+		pub, err := build()
+		if err != nil {
+			return err
+		}
+		if len(pub.prefixes) == 0 {
+			resp, err := s.txn.Execute(ctx, pub.compares, pub.ops, nil)
+			if err != nil {
+				return err
+			}
+			if !resp.Succeeded {
+				return &TransactionConflictError{Key: conflictKey}
+			}
+			return nil
+		}
+		if s.reclaimIndex == nil {
+			return &ReclaimIndexUnconfiguredError{Database: database, Name: table}
+		}
+
+		now := time.Now().UTC()
+		jobID := newReclaimJobID(tenantID, pub.label)
+		indexOp, err := ReclaimIndexOp(ReclaimIndexEntry{
+			JobID:     jobID,
+			TenantID:  tenantID,
+			Database:  database,
+			Placement: s.reclaimIndex.placement,
+			Origin:    s.reclaimIndex.origin,
+			Fences:    pub.fences,
+			CreatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+		jobOp, err := ReclaimJobOp(ReclaimJob{
+			ID: jobID, TenantID: tenantID, Database: database, KeyPrefixes: pub.prefixes, CreatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+
+		resp, err := s.reclaimIndex.txn.Execute(ctx, nil, []Op{indexOp}, nil)
+		if err != nil {
+			return err
+		}
+		if !resp.Succeeded {
+			return &TransactionConflictError{Key: string(indexOp.Key)}
+		}
+
+		ops := make([]Op, 0, len(pub.ops)+1)
+		ops = append(ops, pub.ops...)
+		ops = append(ops, jobOp)
+		resp, err = s.txn.Execute(ctx, pub.compares, ops, nil)
+		if err != nil {
+			return err
+		}
+		if !resp.Succeeded {
+			// Best effort: if the withdrawal itself fails, the entry's
+			// fences settle it on a later sweep instead.
+			_, _ = s.reclaimIndex.txn.Execute(ctx, nil, []Op{{Type: OpDelete, Key: indexOp.Key}}, nil)
+			return &TransactionConflictError{Key: conflictKey}
+		}
+		return nil
+	})
+	if err == nil {
+		return nil
+	}
+	var conflict *TransactionConflictError
+	if errors.As(err, &conflict) {
+		return &TableDDLConflictError{Database: database, Name: table, Err: conflict}
+	}
+	return err
 }
 
 // GetTable returns a table's current definition with a fresh linearizable
@@ -330,20 +764,102 @@ func (s *TableService) GetTable(ctx context.Context, database, name string) (*Ta
 		return nil, err
 	}
 
-	if journal, err := s.kv.Get(ctx, tableDDLJournalKey(database, name)); err == nil && journal != nil {
-		return nil, &TableRewriteInProgressError{Database: database, Name: name}
-	}
+	_, journalErr := s.kv.Get(ctx, tableDDLJournalKey(database, name))
+	inRewrite := journalErr == nil
 
-	data, err := s.kv.Get(ctx, tableMetadataKey(database, name))
-	if err != nil || data == nil {
+	metaRev, err := s.mvcc.GetRevision(ctx, tableMetadataKey(database, name))
+	if err != nil || metaRev == nil || metaRev.Value == nil {
+		if inRewrite {
+			return nil, &TableRewriteInProgressError{Database: database, Name: name}
+		}
 		return nil, &TableNotFoundError{Database: database, Name: name}
 	}
 
 	var def TableDef
-	if err := json.Unmarshal(data, &def); err != nil {
+	if err := json.Unmarshal(metaRev.Value, &def); err != nil {
 		return nil, &TableMetadataError{Op: "unmarshal", Err: err}
 	}
+	// The layout is checked before the rewrite journal: a table created by
+	// v0.20.0 through v0.21.0 whose rewrite was interrupted must still
+	// resolve as what it is -- droppable -- not as a rewrite that can never
+	// be resumed.
+	if err := checkTableLayout(&def, database, name); err != nil {
+		return nil, err
+	}
+	if inRewrite {
+		return nil, &TableRewriteInProgressError{Database: database, Name: name}
+	}
+	def.MetadataRevision = metaRev.ModRevision
+
+	readAt := time.Now()
+	genRev, err := s.revisionOrAbsent(ctx, tableGenerationKey(database, def.TableID))
+	if err != nil {
+		return nil, err
+	}
+	def.Generation = decodeSequenceCounter(genRev.Value)
+	def.GenerationRevision = genRev.ModRevision
+	def.GenerationReadAt = readAt
+
 	return &def, nil
+}
+
+// readGeneration returns tableID's current generation, or 0 for a table that
+// has never been truncated (the same "absent key decodes as zero" contract
+// SequenceServicer uses; see tableGenerationKey).
+func (s *TableService) readGeneration(ctx context.Context, database string, tableID uint64) (uint64, error) {
+	data, err := s.kv.Get(ctx, tableGenerationKey(database, tableID))
+	if err != nil {
+		if isKeyNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if data == nil {
+		return 0, nil
+	}
+	return decodeSequenceCounter(data), nil
+}
+
+// revisionOrAbsent reads key's current revision, returning a zero-value
+// *KeyValue (ModRevision 0, Value nil, decoding as counter 0 via
+// decodeSequenceCounter) rather than an error when key has never been
+// written -- the same "absent decodes as zero" contract readGeneration and
+// SequenceServicer use. TruncateTable relies on this for both the
+// generation counter (absent on a table's very first TRUNCATE) and the
+// AUTO_INCREMENT sequence (absent on a table that has never had a row
+// inserted), so either key's first-ever write is guarded by the same
+// ModRevision-0 compare-and-swap as every later one, with no special case
+// at the call site.
+func (s *TableService) revisionOrAbsent(ctx context.Context, key string) (*KeyValue, error) {
+	rev, err := s.mvcc.GetRevision(ctx, key)
+	if err != nil {
+		if isKeyNotFound(err) {
+			return &KeyValue{}, nil
+		}
+		return nil, err
+	}
+	return rev, nil
+}
+
+// requireNoRewrite refuses a catalog change to database.name while an
+// ALTER TABLE rewrite is in flight (a TableDDLJournal exists), and returns
+// the Compare that keeps it refused through commit: journalKey must still be
+// absent. A rewrite finishes by writing its journaled Target over the
+// metadata record (CompleteRewrite); a change accepted in between -- an
+// index created, dropped or renamed, a foreign key, a rename -- would be
+// silently undone by that write, resurrecting a dropped index whose entries
+// are being reclaimed or re-issuing an index incarnation. The Compare, not
+// only the up-front check, is what closes the window between the two.
+func (s *TableService) requireNoRewrite(ctx context.Context, database, name string) (Compare, error) {
+	journalKey := tableDDLJournalKey(database, name)
+	rev, err := s.revisionOrAbsent(ctx, journalKey)
+	if err != nil {
+		return Compare{}, err
+	}
+	if rev.ModRevision != 0 {
+		return Compare{}, &TableRewriteInProgressError{Database: database, Name: name}
+	}
+	return Compare{Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: 0}, nil
 }
 
 // ListTables returns the names of every table in the given database. The
@@ -430,6 +946,9 @@ func (s *TableService) AlterTable(ctx context.Context, req *AlterTableRequest) (
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
 			return nil, nil, &TableMetadataError{Op: "unmarshal", Err: err}
 		}
+		if err := checkTableLayout(&def, req.Database, req.Name); err != nil {
+			return nil, nil, err
+		}
 
 		fromVersion := def.SchemaVersion
 		requiresRewrite, layoutChanged, err := applyAlterChanges(&def, req.Changes)
@@ -452,8 +971,11 @@ func (s *TableService) AlterTable(ctx context.Context, req *AlterTableRequest) (
 				FromVersion: fromVersion,
 				ToVersion:   def.SchemaVersion,
 				Target:      &def,
-				Changes:     append([]AlterTableChange(nil), req.Changes...),
-				StartedAt:   time.Now().UTC(),
+				// The record Target was derived from, which CompleteRewrite
+				// requires to be unchanged when it writes Target back.
+				MetadataRevision: rev.ModRevision,
+				Changes:          append([]AlterTableChange(nil), req.Changes...),
+				StartedAt:        time.Now().UTC(),
 			}
 			journalData, jerr := json.Marshal(journal)
 			if jerr != nil {
@@ -483,6 +1005,13 @@ func (s *TableService) AlterTable(ctx context.Context, req *AlterTableRequest) (
 	if result == nil {
 		return nil, &TableRewriteRequiredError{Database: req.Database, Name: req.Name}
 	}
+	readAt := time.Now()
+	generation, gerr := s.readGeneration(ctx, req.Database, result.TableID)
+	if gerr != nil {
+		return nil, gerr
+	}
+	result.Generation = generation
+	result.GenerationReadAt = readAt
 	return result, nil
 }
 
@@ -496,6 +1025,8 @@ func (s *TableService) AlterTable(ctx context.Context, req *AlterTableRequest) (
 // AUTO_INCREMENT column and adds a new one in the same call is evaluated
 // against its final state rather than rejected on an intermediate one.
 func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewrite, layoutChanged bool, err error) {
+	// Incarnations above this were allocated by this ALTER itself.
+	freshAbove := def.IndexIncarnations
 	for _, change := range changes {
 		switch change.Action {
 		case AlterAddColumn:
@@ -511,7 +1042,9 @@ func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewri
 				return false, false, ferr
 			}
 			def.Columns = append(def.Columns[:idx:idx], def.Columns[idx+1:]...)
+			narrowed := indexesOn(def, change.Name)
 			dropColumnReferences(def, change.Name)
+			reincarnateIndexes(def, narrowed, freshAbove)
 			requiresRewrite = true
 			layoutChanged = true
 
@@ -553,7 +1086,11 @@ func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewri
 				def.Columns[idx] = newCol
 				break
 			}
+			if !strings.EqualFold(current.Name, newCol.Name) {
+				renameColumnReferences(def, current.Name, newCol.Name)
+			}
 			def.Columns[idx] = newCol
+			reincarnateIndexes(def, indexesOn(def, newCol.Name), freshAbove)
 			requiresRewrite = true
 			layoutChanged = true
 
@@ -659,6 +1196,39 @@ func renameColumnReferences(def *TableDef, oldName, newName string) {
 	}
 }
 
+// indexesOn returns the incarnations of def's indexes covering column
+// (matched case-insensitively).
+func indexesOn(def *TableDef, column string) map[uint64]struct{} {
+	on := make(map[uint64]struct{})
+	for _, idx := range def.Indexes {
+		for _, c := range idx.Columns {
+			if strings.EqualFold(c.Name, column) {
+				on[idx.Incarnation] = struct{}{}
+				break
+			}
+		}
+	}
+	return on
+}
+
+// reincarnateIndexes gives each index of def whose incarnation is in which a
+// new incarnation from def's IndexIncarnations counter. An index whose
+// column set or column encoding a rewrite changes must not keep its
+// incarnation: its existing entries were encoded for the old definition. The
+// rewrite rebuilds the new incarnation, and the transaction that makes the
+// definition current reclaims the old one (CompleteRewrite). An index that
+// already has an incarnation above freshAbove was re-incarnated by an
+// earlier change of the same ALTER and is left alone.
+func reincarnateIndexes(def *TableDef, which map[uint64]struct{}, freshAbove uint64) {
+	for i := range def.Indexes {
+		if _, ok := which[def.Indexes[i].Incarnation]; !ok || def.Indexes[i].Incarnation > freshAbove {
+			continue
+		}
+		def.IndexIncarnations++
+		def.Indexes[i].Incarnation = def.IndexIncarnations
+	}
+}
+
 // dropColumnReferences removes name (matched case-insensitively) from
 // def.PrimaryKey, from every def.Indexes entry, and from every
 // def.ForeignKeys entry, dropping any index or constraint that would
@@ -750,6 +1320,10 @@ func (s *TableService) CreateIndex(ctx context.Context, req *CreateTableIndexReq
 	epochKey := tableCatalogEpochKey(req.Database)
 
 	return s.runCatalogCAS(ctx, req.Database, req.Table, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, req.Database, req.Table)
+		if err != nil {
+			return nil, nil, err
+		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
 			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
@@ -757,6 +1331,9 @@ func (s *TableService) CreateIndex(ctx context.Context, req *CreateTableIndexReq
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
 			return nil, nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		if err := checkTableLayout(&def, req.Database, req.Table); err != nil {
+			return nil, nil, err
 		}
 
 		if err := validateIndex(columnNameSet(&def), req.Index); err != nil {
@@ -768,16 +1345,20 @@ func (s *TableService) CreateIndex(ctx context.Context, req *CreateTableIndexReq
 			}
 		}
 
-		def.Indexes = append(def.Indexes, req.Index)
+		def.IndexIncarnations++
+		added := req.Index
+		added.Incarnation = def.IndexIncarnations
+		def.Indexes = append(def.Indexes, added)
 		def.UpdatedAt = time.Now().UTC()
 		data, err := json.Marshal(&def)
 		if err != nil {
 			return nil, nil, &TableMetadataError{Op: "marshal", Err: err}
 		}
 
-		compares := []Compare{{
-			Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
-		}}
+		compares := []Compare{
+			{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision},
+			noRewrite,
+		}
 		ops := []Op{
 			{Type: OpPut, Key: []byte(metaKey), Value: data},
 			{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
@@ -786,7 +1367,13 @@ func (s *TableService) CreateIndex(ctx context.Context, req *CreateTableIndexReq
 	})
 }
 
-// DropIndex removes a secondary index from a table's catalog entry.
+// DropIndex removes a secondary index from a table's catalog entry and, in
+// the same transaction, publishes a ReclaimJob for its entries at the
+// table's current generation. They are not deleted inline: a statement that
+// resolved the table before the drop may still be reading them, so they go
+// through the same quiescence as a truncated generation (ReclaimQuiescence).
+// The compare on the generation key makes a racing TRUNCATE fail this
+// attempt, so the job always names the generation the entries are under.
 func (s *TableService) DropIndex(ctx context.Context, database, table, index string) error {
 	if err := validateTableRef(database, table); err != nil {
 		return err
@@ -798,14 +1385,21 @@ func (s *TableService) DropIndex(ctx context.Context, database, table, index str
 	metaKey := tableMetadataKey(database, table)
 	epochKey := tableCatalogEpochKey(database)
 
-	return s.runCatalogCAS(ctx, database, table, func() ([]Compare, []Op, error) {
+	return s.runReclaimPublishingCAS(ctx, database, table, func() (*reclaimPublication, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, database, table)
+		if err != nil {
+			return nil, err
+		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
-			return nil, nil, &TableNotFoundError{Database: database, Name: table}
+			return nil, &TableNotFoundError{Database: database, Name: table}
 		}
 		var def TableDef
 		if err := json.Unmarshal(rev.Value, &def); err != nil {
-			return nil, nil, &TableMetadataError{Op: "unmarshal", Err: err}
+			return nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		if err := checkTableLayout(&def, database, table); err != nil {
+			return nil, err
 		}
 
 		idx := -1
@@ -816,24 +1410,44 @@ func (s *TableService) DropIndex(ctx context.Context, database, table, index str
 			}
 		}
 		if idx == -1 {
-			return nil, nil, &TableIndexNotFoundError{Database: database, Table: table, Index: index}
+			return nil, &TableIndexNotFoundError{Database: database, Table: table, Index: index}
 		}
+		dropped := def.Indexes[idx]
+
+		genKey := tableGenerationKey(database, def.TableID)
+		genRev, err := s.revisionOrAbsent(ctx, genKey)
+		if err != nil {
+			return nil, err
+		}
+		generation := decodeSequenceCounter(genRev.Value)
 
 		def.Indexes = append(def.Indexes[:idx:idx], def.Indexes[idx+1:]...)
 		def.UpdatedAt = time.Now().UTC()
 		data, err := json.Marshal(&def)
 		if err != nil {
-			return nil, nil, &TableMetadataError{Op: "marshal", Err: err}
+			return nil, &TableMetadataError{Op: "marshal", Err: err}
 		}
 
-		compares := []Compare{{
-			Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
-		}}
-		ops := []Op{
-			{Type: OpPut, Key: []byte(metaKey), Value: data},
-			{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
-		}
-		return compares, ops, nil
+		return &reclaimPublication{
+			compares: []Compare{
+				{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision},
+				{Key: []byte(genKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: genRev.ModRevision},
+				noRewrite,
+			},
+			ops: []Op{
+				{Type: OpPut, Key: []byte(metaKey), Value: data},
+				{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
+			},
+			label: "index:" + database + ":" + strconv.FormatUint(def.TableID, 10) + ":" +
+				strconv.FormatUint(generation, 10) + ":" + strconv.FormatUint(dropped.Incarnation, 10),
+			prefixes: []string{tableIndexPrefixFor(database, def.TableID, generation, dropped.Incarnation)},
+			// Committing rewrites metaKey, so it settles this attempt the
+			// moment it lands.
+			fences: []ReclaimFence{
+				{Key: metaKey, ModRevision: rev.ModRevision},
+				{Key: genKey, ModRevision: genRev.ModRevision},
+			},
+		}, nil
 	})
 }
 
@@ -862,6 +1476,16 @@ func (s *TableService) RewriteJournal(ctx context.Context, database, name string
 	if err := json.Unmarshal(currentData, &current); err != nil {
 		return nil, nil, &TableMetadataError{Op: "unmarshal", Err: err}
 	}
+	if err := checkTableLayout(&current, database, name); err != nil {
+		return nil, nil, err
+	}
+	readAt := time.Now()
+	generation, gerr := s.readGeneration(ctx, database, current.TableID)
+	if gerr != nil {
+		return nil, nil, gerr
+	}
+	current.Generation = generation
+	current.GenerationReadAt = readAt
 
 	return &journal, &current, nil
 }
@@ -878,26 +1502,74 @@ func (s *TableService) RewriteJournal(ctx context.Context, database, name string
 // and fails. Transient failures (a storage error mid-write, a crash) must
 // NOT abort: their journal is what makes the interrupted rewrite resumable.
 // The caller is the one who can tell the two apart.
+//
+// A rewrite rebuilds every index it narrows or re-encodes under a fresh
+// incarnation that only the journal's Target lists; entries it built for
+// them before failing would otherwise be unreachable. The abort publishes a
+// ReclaimJob for those incarnations in the same transaction that discards
+// the journal.
 func (s *TableService) AbortRewrite(ctx context.Context, database, name string) error {
 	if err := validateTableRef(database, name); err != nil {
 		return err
 	}
 	journalKey := tableDDLJournalKey(database, name)
-	return s.runCatalogCAS(ctx, database, name, func() ([]Compare, []Op, error) {
+	metaKey := tableMetadataKey(database, name)
+	return s.runReclaimPublishingCAS(ctx, database, name, func() (*reclaimPublication, error) {
 		rev, err := s.mvcc.GetRevision(ctx, journalKey)
 		if err != nil {
-			return nil, nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+			return nil, &TableNoRewriteInProgressError{Database: database, Name: name}
 		}
-		compares := []Compare{{
-			Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
-		}}
-		ops := []Op{{Type: OpDelete, Key: []byte(journalKey)}}
-		return compares, ops, nil
+		pub := &reclaimPublication{
+			compares: []Compare{{
+				Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
+			}},
+			ops: []Op{{Type: OpDelete, Key: []byte(journalKey)}},
+			// Committing deletes journalKey.
+			fences: []ReclaimFence{{Key: journalKey, ModRevision: rev.ModRevision}},
+		}
+
+		var journal TableDDLJournal
+		if err := json.Unmarshal(rev.Value, &journal); err != nil || journal.Target == nil {
+			// Nothing names fresh incarnations: discard the journal alone.
+			return pub, nil
+		}
+		metaRev, err := s.revisionOrAbsent(ctx, metaKey)
+		if err != nil {
+			return nil, err
+		}
+		if metaRev.ModRevision == 0 {
+			return pub, nil
+		}
+		var current TableDef
+		if err := json.Unmarshal(metaRev.Value, &current); err != nil {
+			return nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		genKey := tableGenerationKey(database, current.TableID)
+		genRev, err := s.revisionOrAbsent(ctx, genKey)
+		if err != nil {
+			return nil, err
+		}
+		generation := decodeSequenceCounter(genRev.Value)
+		pub.compares = append(pub.compares, Compare{
+			Key: []byte(genKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: genRev.ModRevision,
+		})
+		pub.label = "abort:" + database + ":" + strconv.FormatUint(current.TableID, 10) + ":" + strconv.FormatUint(generation, 10)
+		pub.prefixes = incarnationPrefixes(database, current.TableID, generation, retiredIncarnations(journal.Target, &current))
+		return pub, nil
 	})
 }
 
 // CompleteRewrite finalizes an in-flight rewrite. See the doc comment on
 // TableServicer.CompleteRewrite.
+//
+// The transaction that makes the journal's Target the definition also
+// publishes a ReclaimJob for every index incarnation the definition stops
+// listing (retiredIncarnations): an index the rewrite narrowed or re-encoded
+// was rebuilt under a new incarnation, and one it emptied is gone. Their
+// entries are reclaimed only after quiescence, since a statement that
+// resolved the old definition may still be reading them. It is fenced on the
+// metadata record and the generation, so the job names exactly the keyspace
+// the replaced definition used.
 func (s *TableService) CompleteRewrite(ctx context.Context, database, name string) (*TableDef, error) {
 	if err := validateTableRef(database, name); err != nil {
 		return nil, err
@@ -908,43 +1580,121 @@ func (s *TableService) CompleteRewrite(ctx context.Context, database, name strin
 	epochKey := tableCatalogEpochKey(database)
 
 	var result *TableDef
-	err := s.runCatalogCAS(ctx, database, name, func() ([]Compare, []Op, error) {
+	err := s.runReclaimPublishingCAS(ctx, database, name, func() (*reclaimPublication, error) {
 		result = nil
 
 		journalRev, err := s.mvcc.GetRevision(ctx, journalKey)
 		if err != nil {
-			return nil, nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+			return nil, &TableNoRewriteInProgressError{Database: database, Name: name}
 		}
 		var journal TableDDLJournal
 		if err := json.Unmarshal(journalRev.Value, &journal); err != nil {
-			return nil, nil, &TableMetadataError{Op: "unmarshal-journal", Err: err}
+			return nil, &TableMetadataError{Op: "unmarshal-journal", Err: err}
 		}
 		if journal.Target == nil {
-			return nil, nil, &TableRewriteTargetMissingError{Database: database, Name: name}
+			return nil, &TableRewriteTargetMissingError{Database: database, Name: name}
 		}
+		if err := checkTableLayout(journal.Target, database, name); err != nil {
+			return nil, err
+		}
+		// Target was derived from the metadata record AlterTable read;
+		// writing it over a record that has changed since would undo that
+		// change. Every catalog change refuses while the journal exists
+		// (requireNoRewrite), so this cannot happen through the service --
+		// but a moved record is refused outright, not retried: a retry
+		// would read the same journal and fail the same way.
+		metaRev, err := s.revisionOrAbsent(ctx, metaKey)
+		if err != nil {
+			return nil, err
+		}
+		if metaRev.ModRevision != journal.MetadataRevision {
+			return nil, &TableDefinitionStaleError{Database: database, Name: name, Reason: "its definition changed under the rewrite"}
+		}
+		var current TableDef
+		if err := json.Unmarshal(metaRev.Value, &current); err != nil {
+			return nil, &TableMetadataError{Op: "unmarshal", Err: err}
+		}
+		genKey := tableGenerationKey(database, current.TableID)
+		genRev, err := s.revisionOrAbsent(ctx, genKey)
+		if err != nil {
+			return nil, err
+		}
+		generation := decodeSequenceCounter(genRev.Value)
 
 		target := *journal.Target
 		target.UpdatedAt = time.Now().UTC()
 		data, err := json.Marshal(&target)
 		if err != nil {
-			return nil, nil, &TableMetadataError{Op: "marshal", Err: err}
+			return nil, &TableMetadataError{Op: "marshal", Err: err}
 		}
 
-		compares := []Compare{{
-			Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: journalRev.ModRevision,
-		}}
-		ops := []Op{
-			{Type: OpPut, Key: []byte(metaKey), Value: data},
-			{Type: OpDelete, Key: []byte(journalKey)},
-			{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
-		}
 		result = &target
-		return compares, ops, nil
+		return &reclaimPublication{
+			compares: []Compare{
+				{Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: journalRev.ModRevision},
+				// And it must still be that record when this commits.
+				{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: journal.MetadataRevision},
+				// The job names this generation's keyspace.
+				{Key: []byte(genKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: genRev.ModRevision},
+			},
+			ops: []Op{
+				{Type: OpPut, Key: []byte(metaKey), Value: data},
+				{Type: OpDelete, Key: []byte(journalKey)},
+				{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},
+			},
+			label:    "rewrite:" + database + ":" + strconv.FormatUint(current.TableID, 10) + ":" + strconv.FormatUint(generation, 10),
+			prefixes: incarnationPrefixes(database, current.TableID, generation, retiredIncarnations(&current, &target)),
+			// Committing overwrites metaKey.
+			fences: []ReclaimFence{
+				{Key: metaKey, ModRevision: metaRev.ModRevision},
+				{Key: genKey, ModRevision: genRev.ModRevision},
+			},
+		}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	readAt := time.Now()
+	generation, gerr := s.readGeneration(ctx, database, result.TableID)
+	if gerr != nil {
+		return nil, gerr
+	}
+	result.Generation = generation
+	result.GenerationReadAt = readAt
 	return result, nil
+}
+
+// retiredIncarnations returns, in from's index order, every index
+// incarnation from lists and to does not: the indexes a definition change
+// dropped or rebuilt under a new incarnation.
+func retiredIncarnations(from, to *TableDef) []uint64 {
+	var retired []uint64
+	for _, idx := range from.Indexes {
+		if !listsIncarnation(to, idx.Incarnation) {
+			retired = append(retired, idx.Incarnation)
+		}
+	}
+	return retired
+}
+
+// listsIncarnation reports whether def lists an index with incarnation.
+func listsIncarnation(def *TableDef, incarnation uint64) bool {
+	for _, idx := range def.Indexes {
+		if idx.Incarnation == incarnation {
+			return true
+		}
+	}
+	return false
+}
+
+// incarnationPrefixes returns the index-entry prefix of each incarnation at
+// generation.
+func incarnationPrefixes(database string, tableID, generation uint64, incarnations []uint64) []string {
+	prefixes := make([]string, len(incarnations))
+	for i, incarnation := range incarnations {
+		prefixes[i] = tableIndexPrefixFor(database, tableID, generation, incarnation)
+	}
+	return prefixes
 }
 
 // ---------------------------------------------------------------------------

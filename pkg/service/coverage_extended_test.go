@@ -49,11 +49,6 @@ func newTestDatabaseServiceWithOpts(t *testing.T, opts ...DatabaseServiceOption)
 	return NewDatabaseService(mgr, opts...)
 }
 
-// tenantCtx returns a context carrying the given tenant ID.
-func tenantCtx(tenantID string) context.Context {
-	return tenant.WithTenantID(context.Background(), tenantID)
-}
-
 // ---------------------------------------------------------------------------
 // errors.go - import/barrier error types (0% covered)
 // ---------------------------------------------------------------------------

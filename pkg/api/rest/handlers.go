@@ -1190,6 +1190,18 @@ func mapHTTPError(err error) int {
 	switch {
 	case errors.As(err, &sni):
 		return http.StatusNotImplemented
+	// A table created by v0.20.0 through v0.21.0 predates the current key
+	// layout and is refused until it is dropped and re-created
+	// (go-qrdb#547): 412, the precondition the operator must restore. Near
+	// the top so no wrapper's arm below claims it as a 500.
+	case service.IsTableLayoutUnsupported(err):
+		return http.StatusPreconditionFailed
+	// A statement that outlived the table resolution it planned against --
+	// the table truncated, or its definition changed, underneath it
+	// (go-qrdb#547): 409, a conflict with the table's current state that
+	// re-issuing the request resolves.
+	case service.IsTableResolutionStale(err):
+		return http.StatusConflict
 	// A closed store is the node going away underneath the request, not a
 	// broken server: 503 says "try another node or try again", which is true,
 	// where 500 says "this request is poison", which is not (go-qrdb#371).

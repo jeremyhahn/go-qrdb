@@ -117,6 +117,25 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Unimplemented, err.Error())
 	}
 
+	// A table created by v0.20.0 through v0.21.0 predates the current key
+	// layout and is refused until it is dropped and re-created
+	// (go-qrdb#547). Not retryable -- the precondition is the operator's to
+	// restore -- and not a server fault. Ahead of the ReadError/ProposeError
+	// arms below, which would otherwise claim it through a wrapper.
+	if service.IsTableLayoutUnsupported(err) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+
+	// A statement that outlived the table resolution it planned against --
+	// the table truncated, or its definition changed, underneath it
+	// (go-qrdb#547). Aborted: gRPC's code for a concurrency conflict the
+	// client resolves by retrying the whole operation, which re-resolves the
+	// table. Ahead of the wrapper arms below for the same reason as the
+	// layout refusal.
+	if service.IsTableResolutionStale(err) {
+		return status.Error(codes.Aborted, err.Error())
+	}
+
 	var knf *service.KeyNotFoundError
 	if errors.As(err, &knf) {
 		return status.Error(codes.NotFound, err.Error())

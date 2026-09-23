@@ -71,6 +71,10 @@ func (s *TableService) AddForeignKey(ctx context.Context, req *CreateTableForeig
 	epochKey := tableCatalogEpochKey(req.Database)
 
 	return s.runCatalogCAS(ctx, req.Database, req.Table, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, req.Database, req.Table)
+		if err != nil {
+			return nil, nil, err
+		}
 		if err := s.requireForeignKeyNameAvailable(ctx, req.Database, req.ForeignKey.Name); err != nil {
 			return nil, nil, err
 		}
@@ -89,7 +93,7 @@ func (s *TableService) AddForeignKey(ctx context.Context, req *CreateTableForeig
 		}
 
 		def.ForeignKeys = append(def.ForeignKeys, req.ForeignKey)
-		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision)
+		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision, noRewrite)
 	})
 }
 
@@ -107,6 +111,10 @@ func (s *TableService) DropForeignKey(ctx context.Context, database, table, name
 	epochKey := tableCatalogEpochKey(database)
 
 	return s.runCatalogCAS(ctx, database, table, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, database, table)
+		if err != nil {
+			return nil, nil, err
+		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
 			return nil, nil, &TableNotFoundError{Database: database, Name: table}
@@ -122,7 +130,7 @@ func (s *TableService) DropForeignKey(ctx context.Context, database, table, name
 		}
 
 		def.ForeignKeys = append(def.ForeignKeys[:idx:idx], def.ForeignKeys[idx+1:]...)
-		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision)
+		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision, noRewrite)
 	})
 }
 
@@ -145,6 +153,10 @@ func (s *TableService) UpdateForeignKey(ctx context.Context, req *UpdateTableFor
 	renaming := !strings.EqualFold(req.Name, req.ForeignKey.Name)
 
 	return s.runCatalogCAS(ctx, req.Database, req.Table, func() ([]Compare, []Op, error) {
+		noRewrite, err := s.requireNoRewrite(ctx, req.Database, req.Table)
+		if err != nil {
+			return nil, nil, err
+		}
 		rev, err := s.mvcc.GetRevision(ctx, metaKey)
 		if err != nil {
 			return nil, nil, &TableNotFoundError{Database: req.Database, Name: req.Table}
@@ -174,7 +186,7 @@ func (s *TableService) UpdateForeignKey(ctx context.Context, req *UpdateTableFor
 		}
 
 		def.ForeignKeys[idx] = req.ForeignKey
-		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision)
+		return foreignKeyCASOps(&def, metaKey, epochKey, rev.ModRevision, noRewrite)
 	})
 }
 
@@ -214,15 +226,16 @@ func (s *TableService) ReferencingForeignKeys(ctx context.Context, database, par
 // foreignKeyCASOps renders the compare-and-swap that commits a mutated
 // definition: the definition itself, guarded on the ModRevision it was read
 // at, plus the database's catalog epoch bump every other mutation performs.
-func foreignKeyCASOps(def *TableDef, metaKey, epochKey string, modRevision int64) ([]Compare, []Op, error) {
+func foreignKeyCASOps(def *TableDef, metaKey, epochKey string, modRevision int64, noRewrite Compare) ([]Compare, []Op, error) {
 	def.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(def)
 	if err != nil {
 		return nil, nil, &TableMetadataError{Op: "marshal", Err: err}
 	}
-	compares := []Compare{{
-		Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: modRevision,
-	}}
+	compares := []Compare{
+		{Key: []byte(metaKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: modRevision},
+		noRewrite,
+	}
 	ops := []Op{
 		{Type: OpPut, Key: []byte(metaKey), Value: data},
 		{Type: OpPut, Key: []byte(epochKey), Value: epochValue()},

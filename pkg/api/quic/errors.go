@@ -274,6 +274,23 @@ func mapServiceError(err error) (uint16, []byte) {
 
 	msg := []byte(err.Error())
 
+	// A table created by v0.20.0 through v0.21.0 predates the current key
+	// layout and is refused until it is dropped and re-created
+	// (go-qrdb#547). Not retryable -- the precondition is the operator's to
+	// restore -- and not a server fault. Ahead of the ReadError/ProposeError
+	// arms below, which would otherwise claim it through a wrapper.
+	if service.IsTableLayoutUnsupported(err) {
+		return wire.StatusFailedPrecondition, msg
+	}
+
+	// A statement that outlived the table resolution it planned against
+	// (go-qrdb#547): retryable -- re-issuing it re-resolves the table -- so
+	// StatusAborted, the wire's retry-the-operation conflict, never the
+	// generic error.
+	if service.IsTableResolutionStale(err) {
+		return wire.StatusAborted, msg
+	}
+
 	// Unimplemented, not Error. The node is healthy; it simply was not built
 	// with this verb on the configured state machine (an absent opcode, or a
 	// subsystem it was constructed without). Mapping it to the generic error

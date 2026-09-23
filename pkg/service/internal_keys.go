@@ -135,6 +135,36 @@ var internalKeyPrefixes = []internalKeyPrefix{
 	// enumerates the namespace, so it is granted no escape.
 	{prefix: tableSequencePrefix},
 
+	// A table's TRUNCATE generation counter (go-qrdb#547). Read and written
+	// by exact key only (TableGeneration, TableService.readGeneration,
+	// TruncateTable's own compare-and-swap); nothing enumerates the
+	// namespace. Without this entry, MVCC restore treats a generation
+	// counter as ordinary user data and can roll it back independently of
+	// the row/index keys it fences, silently resurrecting rows a TRUNCATE
+	// already superseded or hiding rows that were never truncated.
+	{prefix: tableGenerationPrefix},
+
+	// Pending reclaim-job records (go-qrdb#547): durable proof of a
+	// generation's orphaned key prefixes, drained by ReclaimSweeper via
+	// ListAll (which already bypasses this guard entirely -- see ListAll's
+	// own doc comment -- so this entry grants no enumeration escape). It
+	// exists so ordinary user-facing List/Scan and MVCC restore do not treat
+	// a job record as user data: restoring one after its sweep already
+	// deleted the record would resurrect an instruction to delete a
+	// generation's keyspace that may since have been reused.
+	{prefix: reclaimJobPrefix},
+
+	// The system-store index of pending reclaim jobs (go-qrdb#547 scoping):
+	// (JobID, TenantID, Database, Isolation) pointer records ReclaimSweeper
+	// lists via reclaimIndexPrefix to avoid a fleet-wide (tenant, database)
+	// scan every tick -- see reclaim_job.go's package doc comment on the
+	// index. Without this entry, ordinary user-facing List/Scan and MVCC
+	// restore treat an index pointer as user data: restoring one after its
+	// job was already drained resurrects a pointer to a job record (and
+	// keyspace) that may since have been reused, and a bulk scan of the
+	// system store would surface it as though it were a caller's own key.
+	{prefix: reclaimIndexPrefix},
+
 	// Time-series points, indexes, and retention policies. The time-series
 	// subsystem reads through its own storage engine (pkg/timeseries), never
 	// through KV enumeration. The constants are cited rather than repeated,

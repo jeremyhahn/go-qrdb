@@ -497,7 +497,7 @@ func TestTableService_ForeignKeyFieldsDefaultOnLegacyRecord(t *testing.T) {
 		`"columns":[{"name":"id","type":"BIGINT UNSIGNED","nullable":false},` +
 		`{"name":"company_id","type":"BIGINT UNSIGNED","nullable":true}],` +
 		`"foreign_keys":[{"name":"fk_legacy","columns":["company_id"],` +
-		`"parent_table":"companies","parent_columns":["id"]}],"schema_version":1}`
+		`"parent_table":"companies","parent_columns":["id"]}],"schema_version":1,"layout":1}`
 	_, err := store.Execute(ctx, nil, []Op{{
 		Type: OpPut, Key: []byte(tableMetadataKey("shop", "users")), Value: []byte(legacy),
 	}}, nil)
