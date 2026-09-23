@@ -1894,6 +1894,23 @@ check-iface-sweep-findings:
 test-iface-sweep-findings:
 	@./scripts/check-iface-sweep-findings_test.sh
 
+# go-qrdb#403. check-iface-sweep-findings closed the absolute-path leak for
+# exactly the two files that shipped one; this is the repo-wide
+# generalization, over every KNOWN committed generated artifact
+# (test/coverage-baseline.txt, test/tools/deadcode/baseline.txt, the two
+# ifacesweep findings files, lockstep-baseline). Add a new artifact to
+# scripts/check-artifact-paths.sh's ARTIFACTS list the day it is committed.
+.PHONY: check-artifact-paths
+check-artifact-paths:
+	@./scripts/check-artifact-paths.sh
+
+# Same reasoning as test-iface-sweep-findings: a healthy tree only exercises
+# the accepting branch, so the rejecting ones are proven against synthetic
+# fixtures. No network, no Go build.
+.PHONY: test-artifact-paths
+test-artifact-paths:
+	@./scripts/check-artifact-paths_test.sh
+
 .PHONY: vet
 vet:
 	$(GOVET) $(TAG_FLAG) ./...

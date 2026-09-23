@@ -341,6 +341,17 @@ jobs:
       - name: Test the iface-sweep findings guard
         run: make test-iface-sweep-findings
 
+      # go-qrdb#403. The generalization of the leg above: every committed
+      # generated artifact (test/coverage-baseline.txt,
+      # test/tools/deadcode/baseline.txt, lockstep-baseline, and the two
+      # ifacesweep findings files again) is scanned for an absolute
+      # workstation path, not just the two files #271 already fixed.
+      - name: Generated artifacts carry no absolute paths
+        run: make check-artifact-paths
+
+      - name: Test the artifact-paths guard
+        run: make test-artifact-paths
+
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
       # unmapped module, an empty or rootless discovery, a partial traversal —
