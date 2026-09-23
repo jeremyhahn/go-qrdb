@@ -98,6 +98,36 @@ func (e *SystemUserImmutableError) Error() string {
 	return "user: system user cannot be deleted: " + strconv.FormatUint(e.ID, 10)
 }
 
+// SystemTenantRequiredError is returned when a caller asks to create or
+// promote a System user outside the system tenant. The cluster-wide
+// bootstrap admin is scoped to the system tenant by definition; nothing
+// else may ever carry the flag.
+type SystemTenantRequiredError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the tenant constraint.
+func (e *SystemTenantRequiredError) Error() string {
+	return "user: system flag requires the system tenant, got: " + e.TenantID
+}
+
+// SystemUserAlreadyExistsError is returned when a caller asks to create or
+// promote a second System user. At most one such record may exist in the
+// store at any time -- the single, cluster-wide bootstrap admin.
+type SystemUserAlreadyExistsError struct {
+	// ExistingID names the record that already holds the flag, when it could
+	// be resolved. Zero when the holder could not be read (best-effort).
+	ExistingID uint64
+}
+
+// Error returns a human-readable description of the uniqueness constraint.
+func (e *SystemUserAlreadyExistsError) Error() string {
+	if e.ExistingID == 0 {
+		return "user: a system user already exists"
+	}
+	return "user: a system user already exists: " + strconv.FormatUint(e.ExistingID, 10)
+}
+
 // StoreError is returned for store-level operation failures.
 type StoreError struct {
 	Op     string

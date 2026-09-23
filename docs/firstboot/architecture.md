@@ -284,9 +284,11 @@ An `admin` user for the system tenant is created alongside, bound to the
   is retried.** A losing admin create reports `UsernameExistsError` or
   `UserIDExistsError`; either is accepted as idempotent only when the record
   under the admin username is the account first boot creates: the admin's
-  tenant and username, the tenant-scoped Admin role, `System` false, and a
-  defined, non-terminal lifecycle (an operator may since have suspended or
-  disabled it; `deleting` or an unknown state is refused). An id collision
+  tenant and username, the tenant-scoped Admin role, and a defined,
+  non-terminal lifecycle (an operator may since have suspended or disabled
+  it; `deleting` or an unknown state is refused). `System` is not part of the
+  check: first boot creates the admin as the System user, and an admin made
+  before the flag existed is promoted to it on the same run. An id collision
   with no such admin behind it means the generated id repeated some other
   user's, so the create is retried with a fresh id, a bounded number of
   times. A username held by anything but the admin is a squatter and is

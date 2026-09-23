@@ -180,8 +180,9 @@ The admin is identified the way the boot check finds it — `admin` in the
 `system` tenant — evaluated on the record as committed, before the change. A
 rename is therefore itself refused, so under `required` the admin cannot stop
 being the admin, and the username index keeps any other account from taking
-the name. (It is not a `System` user; first boot creates it with
-`System == false`.)
+the name. It is also the `System` user: first boot creates it with
+`System: true` (and promotes an admin created before the flag existed), so
+`DeleteUser` refuses it whatever the binding policy.
 
 **A live binding is not the whole check.** The boot check also refuses an admin
 whose lifecycle state does not permit a login (`AdminBindingCannotAuthenticate`)

@@ -517,6 +517,11 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		Username:             adminUsername,
 		TenantID:             cfg.TenantID,
 		RoleIDs:              []string{adminRoleID},
+		// System is deliberately left false (zero value) here (go-qrdb#106).
+		// This is a PER-TENANT admin, one of potentially many created by
+		// ProvisionTenant, and must stay deletable so a tenant can be fully
+		// deprovisioned. Immutability is reserved for the single system-tenant
+		// admin that pkg/firstboot.Initialize mints.
 		// Deferred enrollment (#193) landed on main during this branch. Both
 		// sides of the conflict are load-bearing and neither supersedes the
 		// other: the admin has no email login key AND, under deferred mode,

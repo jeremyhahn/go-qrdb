@@ -441,6 +441,11 @@ var identityRules = []rule{
 	// primary record (go-qrdb#555).
 	as(&user.UserIDExistsError{}, AlreadyExists),
 	as(&user.EmailExistsError{}, AlreadyExists),
+	// A second System user: at most one exists, the bootstrap admin
+	// (go-qrdb#106).
+	as(&user.SystemUserAlreadyExistsError{}, AlreadyExists),
+	// The System flag asked for outside the system tenant: a bad field value.
+	as(&user.SystemTenantRequiredError{}, InvalidArgument),
 	// A thumbprint already bound to ANOTHER user: rebinding it silently would
 	// hand the caller that user's mTLS identity (go-qrdb#536).
 	as(&user.CertBindingConflictError{}, AlreadyExists),

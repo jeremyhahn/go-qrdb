@@ -188,6 +188,22 @@ type CreateUserRequest struct {
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
 	AuthMethods []string
+
+	// System marks the record as a built-in, undeletable user (see
+	// User.System). It exists SOLELY for the internal first-boot orchestration
+	// (pkg/firstboot) to mint the single system-tenant bootstrap admin — the
+	// one account a cluster can never be locked out of by an accidental
+	// delete.
+	//
+	// No wire DTO on any transport (REST, gRPC, QUIC, MCP, unix, embedded)
+	// ever carries this field: every handler builds CreateUserRequest
+	// field-by-field from its own request type, none of which declares a
+	// System input, so an external caller has no representable way to set it
+	// regardless of permissions held. Per-tenant admins minted by
+	// pkg/bootstrap.ProvisionTenant deliberately leave this false — those
+	// accounts must remain deletable when a tenant is deprovisioned; only the
+	// single system-tenant admin is immutable.
+	System bool
 }
 
 // UpdateUserRequest holds parameters for updating a user.

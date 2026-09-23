@@ -635,6 +635,12 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q]", adminReq.RoleIDs, wantRoleID)
 	}
+	// go-qrdb#106: a per-tenant admin minted by ProvisionTenant must stay
+	// deletable, so it must NOT carry the immutable System flag reserved for
+	// the single system-tenant bootstrap admin.
+	if adminReq.System {
+		t.Error("per-tenant admin CreateUserRequest.System = true, want false (go-qrdb#106)")
+	}
 
 	// Cert enrolled + bound.
 	if ca.lastID != "acme" || ca.lastSubj != "admin" {

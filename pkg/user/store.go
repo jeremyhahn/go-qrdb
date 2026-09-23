@@ -51,6 +51,15 @@ const (
 	// secondary index (thumbprint -> user ID).
 	keyPrefixCertThumbprint = "__sys:user_idx/cert_spki/"
 
+	// keySystemSentinel is the single fixed key that names whichever user, if
+	// any, holds System: true. CreateUser and PromoteToSystemUser both claim
+	// it atomically (PutIfAbsent) before a record is ever written or flipped
+	// with the flag set, so the store can never hold more than one such
+	// record at a time -- enforcing in the store what the type's own name
+	// promises ("the cluster-wide bootstrap admin", singular), independent of
+	// which in-process caller asks (go-qrdb#106 review).
+	keySystemSentinel = "__sys:users/system_sentinel"
+
 	// defaultPageSize is used when ListUsersRequest.PageSize is zero.
 	defaultPageSize = 100
 
@@ -227,6 +236,21 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		tenantID = tenant.SystemTenantID
 	}
 
+	// System is the flag that makes a record undeletable. It has no wire
+	// representation on any transport request -- an ordinary caller has no
+	// way to construct one -- but an in-process consumer holding a raw
+	// user.UserServicer (sdk/go's embedded surface, a downstream composer's
+	// adapter) calls this exact method directly, so the invariant has to be
+	// enforced HERE, independent of caller identity, rather than trusted to
+	// the wire boundary alone. Two checks, both cheap and both required
+	// before anything is written: the flag only ever applies to the system
+	// tenant, and at most one such record may ever exist.
+	if req.System {
+		if tenantID != tenant.SystemTenantID {
+			return nil, &SystemTenantRequiredError{TenantID: tenantID}
+		}
+	}
+
 	if s.quotaChecker != nil {
 		if err := s.quotaChecker.Check(ctx, tenantID, quota.ResourceUsers); err != nil {
 			return nil, err
@@ -314,6 +338,13 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	// makes uniqueness real under concurrency; the previous Get-then-Put let two
 	// concurrent creates both observe the key absent and both proceed.
 	//
+	// The username claim goes FIRST, ahead of the system-sentinel claim below:
+	// a repeated CreateUser for a username that already exists (the shape every
+	// idempotent bootstrap re-run takes) must still be reported as
+	// UsernameExistsError, not preempted by a sentinel that a PRIOR successful
+	// call already claimed. Claiming the sentinel first would turn every
+	// idempotent re-run of the system-user create into a hard failure instead
+	// of the recognized already-exists response callers rely on.
 	takenName, cerr := s.claimHandle(ctx, usernameKey, idBytes)
 	if cerr != nil {
 		return nil, &StoreError{Op: "create", Detail: "claim username index", Err: cerr}
@@ -322,6 +353,20 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		return nil, &UsernameExistsError{Username: req.Username, TenantID: tenantID}
 	}
 	claimed = append(claimed, usernameKey)
+
+	// The username claim just succeeded, so this is unambiguously a NEW
+	// record — not a race with, and not a retry of, any existing one. Only
+	// now does a second system-user attempt need to be refused.
+	if req.System {
+		takenSystem, serr := s.claimHandle(ctx, keySystemSentinel, idBytes)
+		if serr != nil {
+			return nil, &StoreError{Op: "create", Detail: "claim system sentinel", Err: serr}
+		}
+		if takenSystem {
+			return nil, &SystemUserAlreadyExistsError{ExistingID: s.existingSystemUserID(ctx)}
+		}
+		claimed = append(claimed, keySystemSentinel)
+	}
 
 	if emailKey != "" {
 		takenEmail, eerr := s.claimHandle(ctx, emailKey, idBytes)
@@ -353,7 +398,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		// field silently — an invited-but-not-yet-enrolled account would come
 		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
 		Lifecycle:   initial,
-		System:      false,
+		System:      req.System,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -438,7 +483,7 @@ func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserReque
 		TenantID:    tenantID,
 		RoleIDs:     req.RoleIDs,
 		Lifecycle:   initial,
-		System:      false,
+		System:      req.System,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -466,6 +511,13 @@ func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserReque
 	if emailKey != "" {
 		guards = append(guards, kvstore.Guard{Key: emailKey})
 		writes = append(writes, kvstore.KV{Key: emailKey, Value: idBytes})
+	}
+	// A System record claims the uniqueness sentinel in the same batch, so
+	// it exists exactly when the record does and a second System create
+	// fails the guard instead of racing it.
+	if req.System {
+		guards = append(guards, kvstore.Guard{Key: keySystemSentinel})
+		writes = append(writes, kvstore.KV{Key: keySystemSentinel, Value: idBytes})
 	}
 
 	applied, err := guarded.PutAllIfAllUnchanged(ctx, guards, writes)
@@ -519,6 +571,8 @@ func (s *kvUserStore) diagnoseAtomicGuardFailure(ctx context.Context, req *Creat
 			occupied = &UsernameExistsError{Username: req.Username, TenantID: tenantID}
 		case emailKey != "" && s.keyPresent(dctx, emailKey):
 			occupied = &EmailExistsError{Email: email, TenantID: tenantID}
+		case req.System && s.keyPresent(dctx, keySystemSentinel):
+			occupied = &SystemUserAlreadyExistsError{ExistingID: s.existingSystemUserID(dctx)}
 		}
 		return occupied != nil
 	})

@@ -544,6 +544,19 @@ wrong fails a test rather than passing a typed-in column.
   `UpdateUserRequest` without being named there would be silently dropped by the
   fast path, and a test asserts the list covers every field.
 - **`System: true` records are undeletable.**
+- **At most one System user exists, recorded by a uniqueness sentinel.** The
+  sentinel names the System record and is written in the same write as the
+  flag: on the atomic create path it is one more guard and write in the
+  create's guarded batch, and `PromoteToSystemUser` — which first boot calls
+  to heal an admin created before the flag existed — writes the flag and the
+  sentinel as ONE `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`,
+  guarded on the sentinel being absent and the record being unchanged since
+  it was read. No crash can leave one without the other, a concurrent
+  promotion of a different record fails the guard, and a concurrent update of
+  the admin is retried rather than overwritten. A store without that
+  capability is refused (`ErrStoreNotAtomic`) instead of being promoted in two
+  steps, and a lost response is `CommitOutcomeUnknownError`: the retry answers
+  from what committed.
 - **The system-tenant rule reads `identity.TenantID`, so that field must
   arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates

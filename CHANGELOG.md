@@ -177,6 +177,9 @@ are not reconstructed here — their history is in the git log.
 - **Unix SDK: a successful `VerifyFactor` or `RevokeFactor` no longer returns
   an error.** `mapGRPCError` turned a nil gRPC error into a `RequestError`, so
   both calls reported failure on success.
+- The admin account first boot creates in the system tenant is now the System user, so
+  `DeleteUser` refuses it. A cluster whose admin predates this is promoted on its next start,
+  and at most one System user can exist in a cluster.
 
 ### Security
 

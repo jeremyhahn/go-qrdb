@@ -68,6 +68,17 @@ type memKVStore struct {
 	// destructive step, which is the only place that can say whether the record
 	// was claimed BEFORE the cascade or merely during it.
 	onDelete func(key string)
+
+	// beforeBatch, when set, runs immediately before PutAllIfAllUnchanged
+	// evaluates its guards, with the store's lock not yet taken, so a test
+	// can land an interfering write at exactly the instant that makes the
+	// batch's guard fail.
+	beforeBatch func()
+
+	// batchErr, when set, is consulted by PutAllIfAllUnchanged before it
+	// evaluates anything; a non-nil return is returned verbatim with nothing
+	// written, modelling the "outcome unknown" error the capability documents.
+	batchErr func() error
 }
 
 func newMemKVStore() *memKVStore {

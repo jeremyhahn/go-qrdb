@@ -1270,3 +1270,52 @@ func TestRoutingUserService_ReadsNeverProbe(t *testing.T) {
 		t.Errorf("probes = %d, want exactly the create's one", store.probes)
 	}
 }
+
+// TestRoutingUserService_PromoteToSystemUser_RoutesByID is the round-2
+// regression test: routingUserService (the production servicer
+// pkg/firstboot's OPTIONAL systemPromoter type assertion must match) has to
+// implement PromoteToSystemUser itself, routing by id exactly as GetUser
+// does, rather than leaving the assertion to fail silently against the
+// production servicer the way it did before this method existed.
+func TestRoutingUserService_PromoteToSystemUser_RoutesByID(t *testing.T) {
+	shared := newMemKVStore()
+	resolver := &fakeResolver{shared: shared}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		WithoutEmailLoginKey: true, Username: "legacy-admin", TenantID: tenant.SystemTenantID,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if created.System {
+		t.Fatal("setup: the record must start as an ordinary (non-System) user")
+	}
+
+	promoter, ok := svc.(interface {
+		PromoteToSystemUser(ctx context.Context, id uint64) (*User, error)
+	})
+	if !ok {
+		t.Fatal("routingUserService must implement PromoteToSystemUser")
+	}
+
+	promoted, err := promoter.PromoteToSystemUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("PromoteToSystemUser: %v", err)
+	}
+	if !promoted.System {
+		t.Fatal("expected the routed promotion to set System=true")
+	}
+
+	fetched, err := svc.GetUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if !fetched.System {
+		t.Error("expected the persisted record to read back System=true")
+	}
+}

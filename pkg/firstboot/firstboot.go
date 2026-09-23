@@ -436,9 +436,11 @@ func userResolver(deps Dependencies) UserResolver {
 //
 // "The admin" means every property first boot itself gives the account, not
 // only its username: the persisted record must name adminUsername in
-// tenantID, hold adminRoleID (the tenant-scoped Admin role), carry
-// System == false (first boot never creates a system user), and be in a
-// defined, non-terminal lifecycle. The lifecycle is deliberately NOT pinned to
+// tenantID, hold adminRoleID (the tenant-scoped Admin role), and be in a
+// defined, non-terminal lifecycle. System is deliberately NOT pinned: first
+// boot creates the admin as the System user (go-qrdb#106), and an admin
+// created by a build that predates the flag carries System == false until
+// reconcileExistingAdmin promotes it, so both are the admin. The lifecycle is deliberately NOT pinned to
 // active: an operator may since have suspended, locked or disabled the admin,
 // and a re-run must stay idempotent across that. What it must never adopt is a
 // record that is no account at all — deleting, or a state this build does not
@@ -459,7 +461,6 @@ func adminUserAlreadyExists(ctx context.Context, resolver UserResolver, tenantID
 	return existing.TenantID == tenantID &&
 		existing.Username == adminUsername &&
 		slices.Contains(existing.RoleIDs, adminRoleID) &&
-		!existing.System &&
 		existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal()
 }
 
@@ -824,6 +825,13 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 			Username:             adminUsername,
 			TenantID:             tenantID,
 			RoleIDs:              roleIDs,
+			// System marks THE single system-tenant bootstrap admin as
+			// immutable (go-qrdb#106): DeleteUser refuses it with
+			// SystemUserImmutableError. No other identity in the cluster --
+			// including a per-tenant admin minted by
+			// pkg/bootstrap.ProvisionTenant -- carries this flag, so tenant
+			// deprovisioning is never blocked by it.
+			System: true,
 		})
 		if createErr == nil {
 			deps.Logger.Info("first-boot: admin user created",
@@ -846,7 +854,7 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 				slog.String("username", adminUsername),
 				slog.String("tenant", tenantID),
 			)
-			return nil, false, nil
+			return reconcileExistingAdmin(ctx, deps, tenantID), false, nil
 		}
 		if usernameTaken || attempt >= adminCreateAttempts {
 			return nil, false, &AdminUserCreationError{Cause: createErr}
@@ -856,4 +864,54 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 			slog.String("tenant", tenantID),
 		)
 	}
+}
+
+// systemPromoter is an OPTIONAL capability a concrete UserCreator may
+// implement (pkg/user's store does). It is reached by type assertion rather
+// than added to UserCreator itself, because a downstream composer's adapter
+// (quicbaas, xkms) implementing only CreateUser against its own IAM store has
+// no notion of qrdb's System flag -- skipping the reconciliation for such an
+// adapter is correct, not a regression.
+type systemPromoter interface {
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
+	PromoteToSystemUser(ctx context.Context, id uint64) (*user.User, error)
+}
+
+// reconcileExistingAdmin heals a bootstrap admin created before go-qrdb#106
+// existed -- or one whose System flag did not persist for any other reason.
+// createAdminUser's own CreateUser call cannot do this: an already-exists
+// response tells it the admin is there, not what flag it carries. Every
+// start of every node reaches here once the admin already exists, so a
+// restarted node ends up with a protected admin even though its ONE create
+// attempt, at whatever version first minted the record, may not have set the
+// flag.
+//
+// Best-effort by design: a Users implementation that cannot reconcile (an
+// adapter without the capability, or a transient store error) logs and
+// leaves the existing record exactly as it was, rather than failing an
+// otherwise-successful first-boot over a repair it was never guaranteed to
+// be able to make.
+func reconcileExistingAdmin(ctx context.Context, deps Dependencies, tenantID string) *user.User {
+	reconciler, ok := deps.Users.(systemPromoter)
+	if !ok {
+		return nil
+	}
+	existing, err := reconciler.GetUserByUsername(ctx, tenantID, adminUsername)
+	if err != nil || existing == nil {
+		deps.Logger.Warn("first-boot: could not resolve the existing admin to check its System flag",
+			slog.String("tenant", tenantID), slog.Any("error", err))
+		return nil
+	}
+	if existing.System {
+		return existing
+	}
+	promoted, perr := reconciler.PromoteToSystemUser(ctx, existing.ID)
+	if perr != nil {
+		deps.Logger.Warn("first-boot: could not promote the pre-existing admin to System",
+			slog.String("tenant", tenantID), slog.Uint64("user_id", existing.ID), slog.Any("error", perr))
+		return existing
+	}
+	deps.Logger.Info("first-boot: promoted a pre-existing admin to System (go-qrdb#106)",
+		slog.String("tenant", tenantID), slog.Uint64("user_id", promoted.ID))
+	return promoted
 }

@@ -3636,9 +3636,25 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// Phase 2: Check if admin user already exists using local state
 	// machine reads (StaleRead via bootstrapHostAdapter). This returns
 	// immediately without waiting for ReadIndex.
-	if adminExists(ctx, userSvc, tenant.SystemTenantID) {
-		slog.Debug("first-boot: admin user exists, skipping")
-		return nil
+	//
+	// The fast path only skips Phase 3 when the existing admin is ALREADY
+	// the System user. An admin created before go-qrdb#106 -- or one whose
+	// flag did not persist for any other reason -- carries System: false,
+	// and returning here unconditionally skipped the ONLY code path that
+	// ever repairs that: firstboot.Initialize/BootstrapSystem's idempotent
+	// createAdminUser, whose UsernameExistsError branch calls
+	// reconcileExistingAdmin. A cluster upgraded across #106 would keep an
+	// admin that was permanently System: false and therefore deletable,
+	// forever, because every subsequent start took this same early return.
+	if existingAdmin, ok := adminExists(ctx, userSvc, tenant.SystemTenantID); ok {
+		if existingAdmin.System {
+			slog.Debug("first-boot: admin user exists and is already the System user, skipping")
+			return nil
+		}
+		slog.Info("first-boot: admin user exists but is not yet the System user; running reconciliation",
+			slog.Uint64("user_id", existingAdmin.ID))
+		// Fall through to Phase 3: its idempotent init path reconciles the
+		// existing admin's System flag without minting a second user.
 	}
 
 	// Phase 3: Run the canonical first-boot path. It creates the system
@@ -3855,11 +3871,16 @@ func warmupReadIndex(ctx context.Context, kvSvc service.KVServicer) {
 	}
 }
 
-// adminExists checks whether the admin user already exists using
-// a local StaleRead (via bootstrapHostAdapter).
-func adminExists(ctx context.Context, userSvc user.UserServicer, tenantID string) bool {
-	_, err := userSvc.GetUserByUsername(ctx, tenantID, "admin")
-	return err == nil
+// adminExists checks whether the admin user already exists using a local
+// StaleRead (via bootstrapHostAdapter), returning the record so a caller can
+// inspect its System flag rather than only the boolean fact of its
+// existence.
+func adminExists(ctx context.Context, userSvc user.UserServicer, tenantID string) (*user.User, bool) {
+	u, err := userSvc.GetUserByUsername(ctx, tenantID, "admin")
+	if err != nil {
+		return nil, false
+	}
+	return u, true
 }
 
 // waitForAdminReplication polls the local state machine until the admin
@@ -3871,7 +3892,7 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 	backoff := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
-		if adminExists(ctx, userSvc, tenantID) {
+		if _, ok := adminExists(ctx, userSvc, tenantID); ok {
 			slog.Info("auth bootstrap: admin user replicated from leader")
 			return nil
 		}
