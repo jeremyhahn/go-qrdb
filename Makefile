@@ -1154,12 +1154,53 @@ COVER_TOLERANCE    := 1.0
 COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest
 COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)"
 
+# COVERAGE_MERGE_SUBPROCESS builds the combined profile from two DISJOINT
+# package sets: the bulk `-coverprofile` run below, over every package EXCEPT
+# the ones scripts/coverage-merge-subprocess.sh --list discovers, and that
+# script's own run of exactly those packages. The two are concatenated
+# (keeping one "mode:" header) rather than merged, which is correct BECAUSE
+# they are disjoint -- see the script's header for why a subprocess test
+# needs this treatment at all and why concatenation, not `covdata merge`, is
+# the right operation here.
+#
+# `set -e`: without it, a `;`-joined recipe has NO fail-fast of its own -- a
+# failed bulk test run or a failed subprocess merge would leave `head`/`tail`
+# to run anyway over whatever partial output exists, and the recipe's exit
+# status is the LAST command's, which always succeeds. The ratchet would then
+# read a stale or truncated profile and could pass vacuously. Found in review
+# (round 2), confirmed with `make -n coverage` before this fix existed.
+#
+# COVERAGE_MERGE_TAGS is the RAW, unquoted tag list (Make's BUILD_TAGS is
+# already space-separated) -- not $(TAG_FLAG), which is the string
+# `-tags "..."` WITH LITERAL QUOTE CHARACTERS baked into the Make variable's
+# value. Exporting that string as an environment variable and later
+# interpolating it unquoted in the script does not re-parse those characters
+# as shell quoting; it hands the shell literal `"` bytes, which either land
+# inside a tag name or, as measured with `make -n coverage` before this fix,
+# terminate the assignment early and turn the next tag word (`raft`) into a
+# command the shell tries to execute. The script does its own quoting around
+# the raw list (scripts/coverage-merge-subprocess.sh), which is the only
+# place that can be correct, since only code that is ITSELF shell source can
+# emit shell quoting -- a value round-tripped through a Make variable and an
+# environment variable cannot.
+define COVERAGE_MERGE_SUBPROCESS
+	set -e; \
+	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
+	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
+	BULK_PKGS=$$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS; \
+	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out; \
+	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
+	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
+	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
+endef
+
 # The package set is the SAME one the baseline is generated from. If CI
 # measured a different set, a package present in one and not the other would
 # read as "missing" or "new". /proto/ is generated code with no tests.
 .PHONY: coverage
 coverage: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
+	$(COVERAGE_MERGE_SUBPROCESS)
 	$(COVER_RATCHET) -min $(COVER_MIN) -tolerance $(COVER_TOLERANCE)
 
 # Regenerate the baseline from a fresh `make coverage` profile. Run it after
@@ -1167,7 +1208,7 @@ coverage: | _cover-dir
 # header, that a LOWERED number is the one thing a reviewer should question.
 .PHONY: coverage-baseline
 coverage-baseline: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
+	$(COVERAGE_MERGE_SUBPROCESS)
 	$(COVER_RATCHET) -write
 
 # The gate's own tests. It fails CI when it misreads a profile, so it has to be
@@ -1176,6 +1217,14 @@ coverage-baseline: | _cover-dir
 .PHONY: test-coverratchet
 test-coverratchet:
 	$(GOTEST) ./test/tools/coverratchet/...
+
+# scripts/coverage-merge-subprocess.sh's own tests: usage validation and that
+# --list names packages that actually resolve. Does NOT drive --run end to
+# end -- that path compiles and runs three packages under -race, which is
+# `make coverage`'s job, not a fast per-change regression test's.
+.PHONY: test-coverage-merge-subprocess
+test-coverage-merge-subprocess:
+	@GO="$(GO)" ./scripts/coverage-merge-subprocess_test.sh
 
 .PHONY: coverage-config
 coverage-config: | _cover-dir

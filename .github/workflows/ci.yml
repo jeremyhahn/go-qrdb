@@ -299,6 +299,20 @@ jobs:
       - name: The coverage gate's own tests
         run: make test-coverratchet
 
+      # scripts/coverage-merge-subprocess.sh's own tests (go-qrdb#114 review,
+      # round 3): it was written, and had a round-2 bug fixed, without ever
+      # being reached by `make test` or this workflow -- its own exact
+      # five-package discovery assertions, and the discovery-floor guard that
+      # exists so the pattern going stale reports LOUDLY, could regress with
+      # nothing here to catch it. Same reasoning as the coverage gate's own
+      # tests just above: reported in minutes, before the Test job's `make
+      # coverage` run depends on this script producing a correct merged
+      # profile.
+      #
+      # No network, no Go build beyond the small binaries `go list` needs.
+      - name: The coverage-merge-subprocess script's own tests
+        run: make test-coverage-merge-subprocess
+
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
       # sees one diff, and a violation can be contributed by neither side of a

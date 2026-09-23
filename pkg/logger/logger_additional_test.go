@@ -196,6 +196,28 @@ func TestLogger_Panicf(t *testing.T) {
 	logger.Panicf("panic test %s %d", "formatted", 123)
 }
 
+// subprocessCoverArgs appends -test.gocoverdir to args when GOCOVERDIR is set
+// in the environment, so a child re-exec of this test binary has its own
+// coverage captured too.
+//
+// Without this the child's execution is INVISIBLE to `go tool covdata`,
+// empirically confirmed rather than assumed: a child that only inherits
+// GOCOVERDIR via its environment, with no -test.gocoverdir flag of its own,
+// writes no counter file at all — go's own -cover instrumentation needs the
+// flag, not just the variable, to know where to write (go-qrdb#114 review,
+// round 4). os.Exit inside the child does not change this: go's coverage
+// runtime registers an exit hook that still fires, confirmed separately —
+// only a signal the child cannot catch (SIGKILL, or a test timeout that
+// kills rather than exits) skips it, which is
+// pkg/seal/encfs/pebble_sigkill_test.go's documented, unfixable case, not
+// this one.
+func subprocessCoverArgs(args ...string) []string {
+	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
+		args = append(args, "-test.gocoverdir="+dir)
+	}
+	return args
+}
+
 // TestLogger_Fatal tests the Fatal method using subprocess pattern.
 func TestLogger_Fatal(t *testing.T) {
 	if os.Getenv("BE_FATAL") == "1" {
@@ -213,7 +235,7 @@ func TestLogger_Fatal(t *testing.T) {
 
 	// Run the test in a subprocess
 	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
-	cmd := exec.Command(os.Args[0], "-test.run=TestLogger_Fatal")
+	cmd := exec.Command(os.Args[0], subprocessCoverArgs("-test.run=TestLogger_Fatal")...)
 	cmd.Env = append(os.Environ(), "BE_FATAL=1")
 	err := cmd.Run()
 
@@ -244,7 +266,7 @@ func TestLogger_Fatalf(t *testing.T) {
 
 	// Run the test in a subprocess
 	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
-	cmd := exec.Command(os.Args[0], "-test.run=TestLogger_Fatalf")
+	cmd := exec.Command(os.Args[0], subprocessCoverArgs("-test.run=TestLogger_Fatalf")...)
 	cmd.Env = append(os.Environ(), "BE_FATALF=1")
 	err := cmd.Run()
 

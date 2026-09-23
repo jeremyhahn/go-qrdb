@@ -112,11 +112,22 @@ func TestHelperProcess_ResetSignalHandlersRace(t *testing.T) {
 // and asserts the helper above exits cleanly rather than being killed by a
 // signal -- the regression test for go-qrdb#442.
 func TestResetSignalHandlers_NoUnhandledSignalWindow(t *testing.T) {
+	args := []string{"-test.run=^TestHelperProcess_ResetSignalHandlersRace$", "-test.v"}
+	// Forward the coverage directory, not just inherit it: a child that only
+	// inherits GOCOVERDIR via its environment, with no -test.gocoverdir flag
+	// of its own, writes no counter file at all — empirically confirmed
+	// rather than assumed (go-qrdb#114 review, round 4) — so its execution
+	// would otherwise be invisible to `go tool covdata` even though it
+	// completes normally (no SIGKILL, no test-timeout kill) and could
+	// otherwise be captured.
+	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
+		args = append(args, "-test.gocoverdir="+dir)
+	}
 	// #nosec G204 -- re-exec of this test binary: argv[0] is os.Args[0], the
 	// path `go test` invoked, and every other argument is a compile-time
 	// literal. No shell is involved and nothing from outside the process
 	// reaches this argv.
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess_ResetSignalHandlersRace$", "-test.v")
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), resetRaceHelperEnvVar+"=1")
 	out, runErr := cmd.CombinedOutput()
 	t.Logf("helper process output:\n%s", out)

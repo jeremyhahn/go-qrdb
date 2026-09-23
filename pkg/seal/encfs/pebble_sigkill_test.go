@@ -77,6 +77,15 @@ func TestHelperProcess_Boot1Kill(t *testing.T) {
 // then reopens the same on-disk state — exactly what xkmsd does when
 // restarting an embedded qrdb node after a crash — and must be able to read
 // the key back.
+//
+// Deliberately does NOT forward -test.gocoverdir to the helper, unlike this
+// tree's other subprocess tests: a SIGKILL'd process has no code path left to
+// run the exit hook Go's coverage runtime uses to flush counters, kill
+// signal or not, so the helper's own execution is invisible to `go tool
+// covdata` regardless. Documented in scripts/coverage-merge-subprocess.sh's
+// header as the one class of subprocess test the coverage-merge mechanism
+// cannot close (go-qrdb#114 review, round 4) — not a gap in this test's own
+// wiring.
 func TestPebble_SurvivesSIGKILLRestart(t *testing.T) {
 	root := t.TempDir()
 
