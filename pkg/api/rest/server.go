@@ -1526,7 +1526,14 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-shares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/seal-vote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/rekey", permission.SealRekey, s.handleBarrierRekey)
-	s.routeIf(barrierOn && s.encMigrator != nil, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
+	// Registered unconditionally, not gated on barrierOn or s.encMigrator
+	// (go-qrdb#558): the handler's own encMigrator nil-check already answers
+	// with a typed 501 when unavailable (no barrier / standalone), and gating
+	// the ROUTE itself made this transport alone 404 for that condition
+	// instead of returning it -- gRPC/Unix/QUIC/MCP always expose the
+	// method/tool and let the same nil-check decide, never depending on
+	// barrierOn.
+	s.routeIf(true, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/generate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/recover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
 	s.routeIf(barrierOn, http.MethodDelete, "/v1/barrier/recovery", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)

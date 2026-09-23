@@ -184,10 +184,19 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // by delegating to the injected BarrierServicer. SO PIN verification is
 // enforced when a pin.PINBackend is injected and has a SO PIN set.
-// BarrierEnableEncryption is not supported on the embedded transport; enable
-// encryption via the REST or gRPC (unix) transports.
+//
+// BarrierEnableEncryption has no EncryptionMigrator wired into this
+// transport at all -- unlike REST/gRPC/Unix/QUIC/MCP, which always expose
+// the method/tool/route and let a nil migrator produce a typed refusal at
+// call time, this composer never has one to check. It refuses with the same
+// service.ErrMigrationProviderUnavailable those transports use for that
+// state (go-qrdb#558), rather than a transport-specific NotImplementedError,
+// so a caller that checks for the shared sentinel gets the same answer here
+// too. An embedder that needs system-scope enable-encryption should drive it
+// directly through sdk/go/node's Node.EnableEncryption(ctx, scope, opts) API
+// instead of this transport (see docs/seal/enabling-encryption.md).
 func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+	return nil, service.ErrMigrationProviderUnavailable
 }
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {

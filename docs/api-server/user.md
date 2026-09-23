@@ -109,8 +109,11 @@ the binary lacks. `qrdb admin capabilities` distinguishes them.
 
 **A route 404s that you are sure exists.** Some routes are registered
 conditionally — `/v1/ca/bootstrap` only with a bootstrap certificate,
-`/metrics` only with a gatherer, `/v1/barrier/enable-encryption` only with an
-encryption migrator wired. An unregistered route is a 404, not a 501.
+`/metrics` only with a gatherer. An unregistered route is a 404, not a 501.
+`/v1/barrier/enable-encryption` is *not* one of these: it is always
+registered, and refuses with a 501 (not a 404) when no encryption migrator is
+configured for the deployment (standalone mode) — see
+[../barrier-seal/api.md](../barrier-seal/api.md).
 
 **The server refused to start with an authorization assertion.** A route, RPC or
 tool has no permission declaration. This is the default-deny assertion doing its

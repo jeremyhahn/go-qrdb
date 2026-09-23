@@ -630,6 +630,12 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_stop_shard",
 		"qrdb_shard_state",
 		"qrdb_topology",
+		// Registered unconditionally, like the kv/admin tools above, not
+		// gated behind a barrier service or migrator (go-qrdb#558): the
+		// handler itself refuses with a typed error when no
+		// EncryptionMigrator is configured, rather than the tool being
+		// absent.
+		"qrdb_barrier_enable_encryption",
 	}
 
 	registeredTools := s.MCPServer().ListTools()

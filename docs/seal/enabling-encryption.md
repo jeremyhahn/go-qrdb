@@ -122,11 +122,18 @@ but **never initialized**, it offers a first-time **Configure Encryption**
 action (a plain `Initialize`, safe because there is no committed strategy or
 data yet).
 
-> **Transport support:** the operation is available over REST (`POST
-> /v1/barrier/enable-encryption`) and gRPC / unix (the default CLI transport).
-> The QUIC, MCP, and embedded `BarrierClient` *transports* return
-> `NotImplemented` — enable-encryption runs on the node, not through that
-> transport. An embedded node instead drives it directly via the
+> **Transport support:** on the node itself the endpoint/tool is available on
+> every network transport — REST (`POST /v1/barrier/enable-encryption`),
+> gRPC, Unix (the default CLI transport), QUIC, and MCP — registered
+> unconditionally and refusing with a typed "no encryption migrator
+> configured" error (never a bare 404/tool-not-found) on a deployment where
+> none is wired (standalone mode). The SDK **client** wrappers for QUIC, MCP,
+> and the embedded `BarrierClient` transport are a narrower story: those
+> three stub `BarrierEnableEncryption` locally (embedded with
+> `service.ErrMigrationProviderUnavailable`, QUIC/MCP with a
+> `NotImplementedError`) rather than forwarding the call, so reaching the
+> node over those SDK clients specifically is not possible today — use REST
+> or gRPC/Unix's SDK client, or an embedded node driving it directly via the
 > `node.EnableEncryption(ctx, scope, opts)` API
 > (see [Embedded-node tenant enable-encryption](#embedded-node-tenant-enable-encryption) below).
 >

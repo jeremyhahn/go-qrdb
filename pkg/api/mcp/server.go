@@ -32,6 +32,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -579,6 +580,24 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.barrierSvc != nil {
 		s.addTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator)...)
+	} else {
+		// No barrier (seal disabled, or a composer that never wired one): the
+		// rest of the barrier tool group has nothing to operate on, but
+		// enable-encryption's own availability depends on encMigrator, not
+		// barrierSvc, so register it independently instead of omitting it
+		// along with the whole group (go-qrdb#558) -- matching
+		// REST/gRPC/Unix/QUIC, which never depended on a barrier service
+		// existing to expose this endpoint. Registered even when s.encMigrator
+		// is ALSO nil (standalone mode with seal disabled): the handler's own
+		// nil check is what answers with the typed
+		// service.ErrMigrationProviderUnavailable refusal then, rather than
+		// this tool being absent and the caller seeing a bare "tool not
+		// found" instead of that typed error.
+		s.addTools(serverTool{
+			Tool:    toolBarrierEnableEncryption(),
+			Perm:    permission.SealEnableEncryption,
+			Handler: handleBarrierEnableEncryption(s.encMigrator),
+		})
 	}
 	if s.ceremonySvc != nil {
 		s.addTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)

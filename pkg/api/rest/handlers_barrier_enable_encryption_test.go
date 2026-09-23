@@ -60,15 +60,62 @@ func newEnableEncTestServer(t *testing.T, mig service.EncryptionMigrator) *Serve
 }
 
 func TestHandleBarrierEnableEncryption_NotWired(t *testing.T) {
-	// No migrator configured → the route is not even registered, so a request
-	// is a 404/405; assert it is not a success and not a 202-style start.
+	// No migrator configured: the ROUTE is still registered (go-qrdb#558 --
+	// it no longer depends on barrierOn or encMigrator), and the handler's
+	// own nil check answers 501, not a router-level 404/405.
 	srv := newEnableEncTestServer(t, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
 		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("expected non-200 when no migrator is wired, got %d", rec.Code)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d (StatusNotImplemented) when no migrator is wired", rec.Code, http.StatusNotImplemented)
+	}
+}
+
+// TestHandleBarrierEnableEncryption_NoBarrierMigratorConfigured is the
+// go-qrdb#558 regression test: a node with an EncryptionMigrator configured
+// but NO barrier service at all (mirroring seal.enabled: false in
+// raft/clustered mode, where the daemon's system migrator exists
+// independent of whether a barrier does) must still reach the migrator over
+// REST. Before the fix, the route registration itself was gated on
+// barrierOn (s.barrierSvc != nil) in addition to s.encMigrator != nil, so
+// this exact configuration 404'd at the router before the handler -- and
+// therefore the migrator -- was ever reached, while gRPC/Unix/QUIC/MCP,
+// which never depended on barrierOn, worked correctly.
+func TestHandleBarrierEnableEncryption_NoBarrierMigratorConfigured(t *testing.T) {
+	mig := &captureMigrator{ch: make(chan migrateCall, 1)}
+	// Deliberately NOT WithBarrierService: mirrors seal.enabled: false.
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithEncryptionMigrator(mig))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
+		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("status = 404: the route must be reachable without a barrier service (go-qrdb#558)")
+	}
+
+	select {
+	case <-mig.ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("migrator was never invoked: request did not reach the handler")
+	}
+}
+
+// TestHandleBarrierEnableEncryption_NoBarrierNoMigrator proves the fully
+// unavailable case (no barrier, no migrator -- e.g. standalone mode with
+// seal disabled) gives the same typed 501 as TestHandleBarrierEnableEncryption_NotWired
+// rather than a 404, so a caller can distinguish "this operation is
+// unsupported right now" from "this path does not exist".
+func TestHandleBarrierEnableEncryption_NoBarrierNoMigrator(t *testing.T) {
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
+		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d (StatusNotImplemented)", rec.Code, http.StatusNotImplemented)
 	}
 }
 

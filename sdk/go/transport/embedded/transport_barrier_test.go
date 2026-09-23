@@ -1498,6 +1498,31 @@ func TestEmbeddedBarrier_Request_BarrierGenerateRootToken_InvalidRequest(t *test
 }
 
 // ---------------------------------------------------------------------------
+// BarrierEnableEncryption
+// ---------------------------------------------------------------------------
+
+// TestEmbeddedBarrier_EnableEncryption_RefusesTyped is the go-qrdb#558
+// transport-matrix test for this transport: this composer has no
+// EncryptionMigrator wired into it at all (unlike REST/gRPC/Unix/QUIC/MCP,
+// which always expose the endpoint/tool/route and let a nil migrator
+// produce a typed refusal at call time), so it refuses unconditionally --
+// but with the SAME shared sentinel (service.ErrMigrationProviderUnavailable)
+// those transports use for "unavailable", not a transport-specific
+// NotImplementedError, so a caller checking for the shared error gets a
+// consistent answer regardless of which transport it used.
+func TestEmbeddedBarrier_EnableEncryption_RefusesTyped(t *testing.T) {
+	tr := newBarrierTransport(t, &mockBarrierService{})
+
+	_, err := tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
+		Strategy:   "passphrase",
+		Passphrase: []byte("pw"),
+	})
+	if !errors.Is(err, service.ErrMigrationProviderUnavailable) {
+		t.Fatalf("err = %v, want service.ErrMigrationProviderUnavailable", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // WithBarrierService option test
 // ---------------------------------------------------------------------------
 

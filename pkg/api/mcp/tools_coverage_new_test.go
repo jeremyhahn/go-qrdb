@@ -478,8 +478,8 @@ func (m *covMockAuditLogger) Close() error { return nil }
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	tools := barrierTools(svc, nil, nil)
-	if len(tools) != 22 {
-		t.Fatalf("expected 22 tools, got %d", len(tools))
+	if len(tools) != 23 {
+		t.Fatalf("expected 23 tools, got %d", len(tools))
 	}
 	names := []string{
 		"qrdb_barrier_initialize",
@@ -504,6 +504,10 @@ func TestCovBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_recovery_officer_register",
 		"qrdb_barrier_recovery_share_claim_begin",
 		"qrdb_barrier_recovery_share_claim_complete",
+		// Registered even with a nil encMigrator (go-qrdb#558): the handler
+		// itself refuses with a typed error rather than the tool being
+		// omitted.
+		"qrdb_barrier_enable_encryption",
 	}
 	for i, n := range names {
 		if tools[i].Tool.Name != n {

@@ -24,9 +24,29 @@ Officer, share-claim and recovery-officer endpoints belong to
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` |
 | Root token | `POST /v1/barrier/root-token` | `BarrierRootToken` | `barrier.RootToken` | `qrdb_barrier_root_token` | `RootToken` | `seal:bootstrap` |
 
-`POST /v1/barrier/enable-encryption` is registered **only when an encryption
-migrator is wired** (`s.encMigrator != nil`). Without it the route does not
-exist, rather than existing and failing.
+Enable-encryption is registered **unconditionally** on REST, gRPC, Unix, QUIC,
+and MCP, independent of whether a barrier service exists on the node (a
+seal-disabled node in raft/clustered mode still runs its system migrator).
+When no encryption migrator is configured for that deployment (standalone
+mode, or a composer that never wired one), the request still reaches the
+handler/tool and is refused there with a typed "no encryption migrator" error
+mapped to `501` / `Unimplemented` — never a plain route-not-found `404` or a
+"tool absent" response. All five transports agree on this; only the
+transport-specific error type differs (REST returns its usual
+`ServiceNotImplementedError`-shaped body, gRPC/Unix `codes.Unimplemented`,
+QUIC/MCP their own `ServiceNotConfiguredError`/`ToolError`-wrapped
+`service.ErrMigrationProviderUnavailable`). REST previously gated route
+*registration itself* on a barrier service also being present, which made a
+seal-disabled node with the migrator configured 404 instead of returning that
+typed refusal — the one transport that behaved differently for the exact same
+condition.
+
+Embedded (`sdk/go/transport/embedded`) is the one exception: it has no
+encryption migrator wiring of any kind, so `EnableEncryption` always refuses
+with `service.ErrMigrationProviderUnavailable` regardless of node state. An
+embedder needing system-scope enable-encryption drives it directly through
+`sdk/go/node`'s `Node.EnableEncryption(ctx, scope, opts)` API instead (see
+[../seal/enabling-encryption.md](../seal/enabling-encryption.md)).
 
 ## Per-database and per-tenant barriers
 
@@ -164,7 +184,7 @@ that is deliberate, since it is how an operator finds out what to do next.
 | `enable-encryption` while another migration on the same barrier (system or tenant) is already in progress | 409 | `FAILED_PRECONDITION` — `seal.ErrMigrationInProgress` |
 | CA operation while sealed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| No encryption migrator wired | 404 (route unregistered) | `UNIMPLEMENTED` |
+| No encryption migrator wired (standalone, or a composer that never configured one) | `501` | `UNIMPLEMENTED` |
 
 The complete HTTP status mapping table is in
 [seal/README.md](../seal/README.md#barrier-http-status-mapping) if that file is
