@@ -2753,6 +2753,7 @@ func startDynamicMembership(
 func waitForSignal() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
 }

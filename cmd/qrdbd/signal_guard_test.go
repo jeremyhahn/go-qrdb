@@ -53,11 +53,34 @@ func armSignalGuard() {
 	signal.Notify(signalGuard, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
-// resetSignalHandlers drops the handlers a test installed -- including any the
-// code under test left behind -- and then restores the guard. Use it in place
-// of signal.Reset, which would leave the default disposition armed.
+// resetSignalHandlers re-arms the guard for sigs. Use it in place of a bare
+// signal.Reset, which would leave the default disposition armed with nothing
+// to restore it.
+//
+// It used to also call signal.Reset(sigs...) first, to drop a handler a test
+// or the code under test left behind. signal.Reset(sig...) removes EVERY
+// channel registered for the named signals, guard included, and
+// unconditionally disables the OS-level handler for them before the
+// following armSignalGuard() call re-enables it -- a real window, between
+// those two calls, in which a signal has no handler at all and the OS
+// default disposition kills the whole test binary. signalAfterReady and
+// stopDaemon's own retry loops make that window reachable: a SIGTERM they
+// already sent can still be in flight when a test's cleanup calls this
+// function, and landing in the window is what "signal: terminated" with no
+// failing assertion looked like (go-qrdb#442).
+//
+// Dropping the Reset call removes the window rather than narrowing it: this
+// function no longer calls anything that can disable a signal for every
+// registered channel, so there is no instant at which none is registered.
+// It is also not a loss of the old behaviour's purpose. Every production
+// signal.Notify call site pairs itself with its own signal.Stop
+// (signal.NotifyContext's stop function, or a deferred signal.Stop next to a
+// raw Notify -- see start.go), so a leaked handler from the code under test
+// is not this function's problem to clean up; and signal.Notify's delivery
+// to a channel nobody is reading from any more is a non-blocking send that
+// is silently dropped, so a stale test channel some earlier revision left
+// registered was always inert, never a correctness hazard.
 func resetSignalHandlers(sigs ...os.Signal) {
-	signal.Reset(sigs...)
 	armSignalGuard()
 }
 
