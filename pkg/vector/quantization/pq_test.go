@@ -18,6 +18,7 @@ package quantization
 import (
 	"errors"
 	"math"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -382,6 +383,200 @@ func TestPQ_SmallNbits(t *testing.T) {
 	for _, c := range codes {
 		assert.Less(t, c, uint8(16))
 	}
+}
+
+// TestClampedMin_OverflowAndNaN pins clampedMin's clamping behaviour
+// directly and deterministically: a candidate that is +Inf or NaN must never
+// replace current, matching the sentinel-init idiom kmeansCluster's
+// refinement loop uses (start at math.MaxFloat32, or the running minimum,
+// and only ever move down via "<").
+func TestClampedMin_OverflowAndNaN(t *testing.T) {
+	sentinel := float32(math.MaxFloat32)
+	posInf := float32(math.Inf(1))
+	nan := float32(math.NaN())
+
+	tests := []struct {
+		name      string
+		current   float32
+		candidate float32
+		want      float32
+	}{
+		{"finite candidate replaces sentinel", sentinel, 5, 5},
+		{"smaller finite candidate replaces a running minimum", float32(10), float32(5), float32(5)},
+		{"larger finite candidate does not replace a running minimum", float32(5), float32(10), float32(5)},
+		{"+Inf candidate never replaces the sentinel", sentinel, posInf, sentinel},
+		{"+Inf candidate never replaces a finite running minimum", float32(5), posInf, float32(5)},
+		{"NaN candidate never replaces the sentinel", sentinel, nan, sentinel},
+		{"NaN candidate never replaces a finite running minimum", float32(5), nan, float32(5)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, clampedMin(tt.current, tt.candidate))
+		})
+	}
+
+	// Contrast against the shape this replaces: an unconditional assignment
+	// (`distances[i] = l2Squared(...)`) with no "<" comparison at all, which
+	// is what kmeansCluster's initial per-candidate precompute did before
+	// this fix. That shape takes an overflowing (or NaN) l2Squared result
+	// unchanged, rather than clamping it to whatever was already known.
+	unconditionalAssign := func(_, candidate float32) float32 { return candidate }
+	assert.NotEqual(t, sentinel, unconditionalAssign(sentinel, posInf),
+		"the parent shape (direct assignment) lets +Inf through uncontested")
+	require.True(t, math.IsInf(float64(unconditionalAssign(sentinel, posInf)), 1))
+	assert.NotEqual(t, unconditionalAssign(sentinel, posInf), clampedMin(sentinel, posInf))
+}
+
+// referenceKMeansPlusPlusInit is kmeansPlusPlusInit's SELECTION shape as it
+// existed before the clampedMin fix: it assigns each candidate's distance
+// directly from l2Squared's raw result, with no sentinel comparison at all,
+// so an overflowing (+Inf) or NaN result propagates unchanged into the
+// weighted-sampling sum. It exists ONLY as a test oracle, sharing the same
+// injected rng as the real implementation so the two are directly
+// comparable: TestKMeansPlusPlusInit_OverflowDistanceClamped asserts they
+// select IDENTICAL centroids on ordinary input, and DIVERGE once l2Squared
+// genuinely overflows -- which is what proves clampedMin is on the path
+// actually exercised, not merely correct in isolation.
+func referenceKMeansPlusPlusInit(rng *rand.Rand, vectors [][]float32, k int) [][]float32 {
+	n := len(vectors)
+	dim := len(vectors[0])
+
+	centroids := make([][]float32, k)
+	centroids[0] = make([]float32, dim)
+	copy(centroids[0], vectors[rng.IntN(n)])
+
+	distances := make([]float32, n)
+	for i := 0; i < n; i++ {
+		distances[i] = l2Squared(vectors[i], centroids[0])
+	}
+
+	for c := 1; c < k; c++ {
+		var totalDist float64
+		for i := 0; i < n; i++ {
+			totalDist += float64(distances[i])
+		}
+
+		var selected int
+		if totalDist == 0 {
+			selected = rng.IntN(n)
+		} else {
+			threshold := rng.Float64() * totalDist
+			var cumulative float64
+			selected = n - 1
+			for i := 0; i < n; i++ {
+				cumulative += float64(distances[i])
+				if cumulative >= threshold {
+					selected = i
+					break
+				}
+			}
+		}
+
+		centroids[c] = make([]float32, dim)
+		copy(centroids[c], vectors[selected])
+
+		for i := 0; i < n; i++ {
+			if d := l2Squared(vectors[i], centroids[c]); d < distances[i] {
+				distances[i] = d
+			}
+		}
+	}
+
+	return centroids
+}
+
+// kmeansPlusPlusInitEqual reports whether got and want selected the same
+// centroids, comparing by value rather than by the (freshly-allocated, so
+// never pointer-equal) slice headers.
+func kmeansPlusPlusInitEqual(t *testing.T, got, want [][]float32) bool {
+	t.Helper()
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if !assert.ObjectsAreEqual(got[i], want[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// TestKMeansPlusPlusInit_OverflowDistanceClamped makes kmeansCluster's
+// first-centroid draw seedable (kmeansPlusPlusInit takes an injected
+// *rand.Rand) specifically so this test can discriminate, rather than only
+// checking that the output happens to still look reasonable: reverting
+// kmeansPlusPlusInit's two clampedMin call sites to a direct
+// `distances[i] = l2Squared(...)` assignment -- i.e. collapsing it onto
+// referenceKMeansPlusPlusInit -- makes this test fail, which a test that
+// merely asserts "no panic, finite output" cannot do, since both the clamped
+// and unclamped forms copy finite input vectors into their centroid slices
+// either way.
+//
+// Control case: on ordinary, non-overflowing input, the real and reference
+// implementations -- given the SAME seeded rng -- must select IDENTICAL
+// centroids over many seeds, since clampedMin(current, candidate) and a bare
+// "if candidate < current" comparison agree whenever candidate is finite.
+//
+// Overflow case: on input whose pairwise l2Squared genuinely overflows
+// float32 to +Inf, the two must DIVERGE on at least one seed in the same
+// range: the reference's uncontested +Inf propagates into its weighted draw
+// (degenerating it to whichever row is scanned first once the running sum
+// reaches +Inf, or to a NaN threshold if the random draw lands on exactly
+// zero, which then defaults to the last row), while the real implementation
+// clamps that +Inf away and keeps drawing from a normal, finite-weighted
+// distribution.
+func TestKMeansPlusPlusInit_OverflowDistanceClamped(t *testing.T) {
+	// numCentroids MUST be >= 3: with only 2, the incremental fold-in call
+	// site (the second of kmeansPlusPlusInit's two clampedMin uses) runs
+	// once, after the LAST centroid is already selected, so its output is
+	// never read by another selection and the test cannot tell whether that
+	// call site is clamped. With 3, the fold-in after selecting centroid 1
+	// feeds the distances selecting centroid 2 reads, so both call sites are
+	// on the path this test's assertions actually exercise.
+	const numCentroids = 3
+	const seeds = 500
+
+	t.Run("control: no overflow, must match the reference on every seed", func(t *testing.T) {
+		vectors := [][]float32{
+			{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {5, 5}, {-5, -5},
+		}
+		require.False(t, math.IsInf(float64(l2Squared(vectors[0], vectors[1])), 0))
+
+		for seed := uint64(1); seed <= seeds; seed++ {
+			got := kmeansPlusPlusInit(vectors, numCentroids, rand.New(rand.NewPCG(seed, seed)))
+			want := referenceKMeansPlusPlusInit(rand.New(rand.NewPCG(seed, seed)), vectors, numCentroids)
+			require.Truef(t, kmeansPlusPlusInitEqual(t, got, want), "seed %d: got %v, want %v", seed, got, want)
+		}
+	})
+
+	t.Run("overflow: must diverge from the unclamped reference on some seed", func(t *testing.T) {
+		huge := float32(1e20)
+		vectors := [][]float32{
+			{huge, 0}, {-huge, 0}, {0, huge}, {0, -huge},
+		}
+		require.True(t, math.IsInf(float64(l2Squared(vectors[0], vectors[1])), 1),
+			"test setup: this dataset must overflow l2Squared for this test to prove anything")
+
+		diverged := false
+		for seed := uint64(1); seed <= seeds; seed++ {
+			got := kmeansPlusPlusInit(vectors, numCentroids, rand.New(rand.NewPCG(seed, seed)))
+			want := referenceKMeansPlusPlusInit(rand.New(rand.NewPCG(seed, seed)), vectors, numCentroids)
+
+			require.Len(t, got, numCentroids)
+			for _, c := range got {
+				for _, v := range c {
+					assert.False(t, math.IsInf(float64(v), 0), "seed %d: clamped centroid component is +/-Inf", seed)
+					assert.False(t, math.IsNaN(float64(v)), "seed %d: clamped centroid component is NaN", seed)
+				}
+			}
+
+			if !kmeansPlusPlusInitEqual(t, got, want) {
+				diverged = true
+			}
+		}
+		assert.True(t, diverged, "the clamped and unclamped implementations never diverged over %d seeds on overflowing input -- clampedMin may not be on the exercised path", seeds)
+	})
 }
 
 func BenchmarkPQ_Encode(b *testing.B) {

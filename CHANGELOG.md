@@ -11,6 +11,41 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **k-means++ initialisation in `pkg/vector/ivf` and `pkg/vector/quantization`
+  is O(n·k·d), not O(n·k²·d).** Both implementations picked each centroid by
+  rescanning every previously-chosen centroid from scratch; at the shipped
+  defaults (256 centroids) that quadratic term, amplified by the race
+  detector's per-access instrumentation, drove a k-means test past testing's
+  10-minute alarm and killed the test binary before it could write
+  `pkg/vector/ivf`'s coverage profile — surfacing in CI as the package
+  reporting **missing** coverage rather than a normal test failure. Both now
+  track a running minimum distance, updated incrementally against only the
+  newly-added centroid.
+- **Degenerate k-means++ input (fewer distinct points than the requested
+  centroid count) could silently return fewer centroids than requested,**
+  violating an invariant every caller downstream assumes. The fallback now
+  draws uniformly at random instead of scanning for an "unchosen" point that
+  may not exist.
+- **The k-means++ running-minimum comparison now uses the metric's raw
+  (unsquared) distance, not its square, before taking a minimum** — required
+  for signed metrics such as `DotProductDistance`, where comparing squares
+  first can pick the wrong centroid as nearest and silently change the
+  weighted-sampling distribution.
+- **The k-means++ running minimum is clamped against float32 overflow and
+  NaN** instead of being assigned directly, so a distance computation that
+  overflows to `+Inf` cannot propagate into the weighted-sampling sum. In
+  `pkg/vector/ivf`, the sampling weight itself (the clamped minimum squared)
+  is now computed in float64, since squaring a large-but-finite clamped
+  value — including the clamp's own sentinel, `math.MaxFloat32` — can still
+  overflow float32 on its own.
+- `ivf.KMeans.Cluster` now validates every vector's dimensionality itself and
+  returns the typed `api.KMeansDimensionMismatchError`, rather than letting a
+  caller who invokes `Cluster` directly (bypassing `Index.Train`'s own check)
+  feed a mismatched vector into the distance functions' overflow-prone
+  length-mismatch sentinel.
+
 ## [0.20.3-alpha] - 2026-09-24
 
 ### Changed

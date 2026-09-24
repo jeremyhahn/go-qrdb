@@ -20,6 +20,7 @@ import (
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
@@ -103,6 +104,15 @@ func (pq *PQQuantizer) Train(vectors [][]float32) error {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
 
+	// One rng, shared across every sub-quantizer's k-means++ run, mirroring
+	// how the single package-level source this replaced was shared across
+	// all of them. Seeded from the clock: nothing here needs to be
+	// reproducible in production, only injectable in tests (see
+	// kmeansCluster's doc comment).
+	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
+	now := uint64(time.Now().UnixNano())
+	rng := rand.New(rand.NewPCG(now, now^0x9E3779B97F4A7C15))
+
 	for sub := 0; sub < pq.m; sub++ {
 		// Extract sub-vectors for this sub-space.
 		subVectors := make([][]float32, len(vectors))
@@ -111,7 +121,7 @@ func (pq *PQQuantizer) Train(vectors [][]float32) error {
 			subVectors[i] = v[offset : offset+pq.subDim]
 		}
 
-		centroids, err := kmeansCluster(subVectors, pq.nCentroids, defaultMaxKMeansIterations)
+		centroids, err := kmeansCluster(subVectors, pq.nCentroids, defaultMaxKMeansIterations, rng)
 		if err != nil {
 			return &QuantizationError{
 				Op:      "PQQuantizer.Train",
@@ -276,7 +286,15 @@ func (pq *PQQuantizer) findNearestCentroid(sub int, subVec []float32) uint8 {
 
 // kmeansCluster runs k-means clustering on the provided vectors and returns k centroids.
 // Uses k-means++ initialization for better convergence.
-func kmeansCluster(vectors [][]float32, k, maxIter int) ([][]float32, error) {
+//
+// rng supplies the randomness for centroid initialisation. It is an explicit
+// parameter -- rather than the package-level math/rand/v2 functions this
+// replaced -- so a test can inject a reproducibly-seeded source and assert on
+// the EXACT centroids kmeansPlusPlusInit selects, mirroring ivf.KMeans's rng
+// field. Train constructs one clock-seeded *rand.Rand and shares it across
+// every sub-quantizer's call, the same way the single package-level source it
+// replaced was implicitly shared across all of them.
+func kmeansCluster(vectors [][]float32, k, maxIter int, rng *rand.Rand) ([][]float32, error) {
 	n := len(vectors)
 	if n == 0 {
 		return nil, &EmptyVectorSetError{Op: "kmeansCluster"}
@@ -289,51 +307,7 @@ func kmeansCluster(vectors [][]float32, k, maxIter int) ([][]float32, error) {
 	}
 
 	dim := len(vectors[0])
-
-	// k-means++ initialization
-	centroids := make([][]float32, k)
-	centroids[0] = make([]float32, dim)
-	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
-	copy(centroids[0], vectors[rand.IntN(n)])
-
-	distances := make([]float32, n)
-	for c := 1; c < k; c++ {
-		var totalDist float64
-		for i := 0; i < n; i++ {
-			minDist := float32(math.MaxFloat32)
-			for j := 0; j < c; j++ {
-				d := l2Squared(vectors[i], centroids[j])
-				if d < minDist {
-					minDist = d
-				}
-			}
-			distances[i] = minDist
-			totalDist += float64(minDist)
-		}
-
-		// Weighted random selection
-		if totalDist == 0 {
-			// All points identical to existing centroids; pick randomly.
-			centroids[c] = make([]float32, dim)
-			// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
-			copy(centroids[c], vectors[rand.IntN(n)])
-			continue
-		}
-
-		// #nosec G404 -- k-means++ weighted selection; statistical sampling, not security.
-		threshold := rand.Float64() * totalDist
-		var cumulative float64
-		selected := n - 1
-		for i := 0; i < n; i++ {
-			cumulative += float64(distances[i])
-			if cumulative >= threshold {
-				selected = i
-				break
-			}
-		}
-		centroids[c] = make([]float32, dim)
-		copy(centroids[c], vectors[selected])
-	}
+	centroids := kmeansPlusPlusInit(vectors, k, rng)
 
 	// Iterative refinement
 	assignments := make([]int, n)
@@ -392,6 +366,101 @@ func kmeansCluster(vectors [][]float32, k, maxIter int) ([][]float32, error) {
 	return centroids, nil
 }
 
+// kmeansPlusPlusInit picks k initial centroids from vectors using k-means++
+// weighted sampling, and is kmeansCluster's initialization step, extracted so
+// it is directly testable: a test can assert on the EXACT centroids it
+// returns, independent of the refinement iterations kmeansCluster runs
+// afterward, mirroring ivf.KMeans.initializeKMeansPlusPlus.
+//
+// distances[i] tracks the squared distance from vectors[i] to the NEAREST
+// centroid chosen so far and is updated with a single pass against just the
+// newly-added centroid on every iteration -- not recomputed from scratch
+// against every previously-chosen centroid. Recomputing from scratch is
+// O(n*k^2): choosing the LAST of k centroids re-derives the same minimums
+// already found while choosing the first k-1, so the total cost grows
+// quadratically in k. At nbits=8 (256 centroids per sub-space, the shipped
+// default) that quadratic term is what drove TestPQ_RecallAccuracy past
+// testing's 10-minute alarm under -race -- confirmed by a mid-run trace
+// sitting in this loop, still making forward progress rather than
+// deadlocked. This incremental form does the same initialization in O(n*k)
+// distance evaluations.
+//
+// distances[i] is tracked through clampedMin, sentinel-initialised to
+// math.MaxFloat32, so an l2Squared result that overflows float32 to +Inf (or
+// is NaN) can never replace it and propagate into the weighted-sampling sum
+// below -- it is clamped to MaxFloat32 instead, exactly as the
+// pre-optimisation per-candidate scan (which re-initialised this same
+// sentinel for every existing centroid on every iteration) behaved. Storing
+// the raw l2Squared result directly here would let a single overflowing pair
+// make that point's weight +Inf, which then either degenerates the weighted
+// draw to whichever row is scanned first with a running sum already at
+// +Inf, or -- once folded into later iterations by the incremental update
+// below -- keeps re-selecting that same +Inf-weighted row.
+// TestKMeansPlusPlusInit_OverflowDistanceClamped pins this directly against
+// referenceKMeansPlusPlusInit, an unclamped test oracle sharing the same
+// injected rng: the two must select IDENTICAL centroids on ordinary input,
+// and DIVERGE on input whose pairwise l2Squared genuinely overflows.
+//
+// l2Squared, unlike ivf's generic DistanceFunc, is already the squared
+// distance in one step -- there is no separate "square the clamped minimum"
+// step the way ivf.KMeans.initializeKMeansPlusPlus has, so l2Squared's own
+// output never needs a second, float64 squaring pass to avoid re-overflowing
+// (contrast squaredWeight in pkg/vector/ivf).
+func kmeansPlusPlusInit(vectors [][]float32, k int, rng *rand.Rand) [][]float32 {
+	n := len(vectors)
+	dim := len(vectors[0])
+
+	centroids := make([][]float32, k)
+	centroids[0] = make([]float32, dim)
+	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
+	copy(centroids[0], vectors[rng.IntN(n)])
+
+	distances := make([]float32, n)
+	for i := 0; i < n; i++ {
+		distances[i] = clampedMin(float32(math.MaxFloat32), l2Squared(vectors[i], centroids[0]))
+	}
+
+	for c := 1; c < k; c++ {
+		var totalDist float64
+		for i := 0; i < n; i++ {
+			totalDist += float64(distances[i])
+		}
+
+		var selected int
+		if totalDist == 0 {
+			// Every remaining point coincides with an already-chosen
+			// centroid: duplicate/degenerate input, or fewer distinct
+			// points than k. No point has a distance that would bias the
+			// draw, so choose uniformly at random.
+			// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
+			selected = rng.IntN(n)
+		} else {
+			// #nosec G404 -- k-means++ weighted selection; statistical sampling, not security.
+			threshold := rng.Float64() * totalDist
+			var cumulative float64
+			selected = n - 1
+			for i := 0; i < n; i++ {
+				cumulative += float64(distances[i])
+				if cumulative >= threshold {
+					selected = i
+					break
+				}
+			}
+		}
+
+		centroids[c] = make([]float32, dim)
+		copy(centroids[c], vectors[selected])
+
+		// Fold the new centroid into the running minimum with one pass,
+		// instead of rescanning every previously-chosen centroid.
+		for i := 0; i < n; i++ {
+			distances[i] = clampedMin(distances[i], l2Squared(vectors[i], centroids[c]))
+		}
+	}
+
+	return centroids
+}
+
 // l2Squared computes the squared L2 distance between two vectors.
 func l2Squared(a, b []float32) float32 {
 	var sum float32
@@ -400,4 +469,19 @@ func l2Squared(a, b []float32) float32 {
 		sum += diff * diff
 	}
 	return sum
+}
+
+// clampedMin returns the smaller of current and candidate, but a candidate
+// that fails a plain "<" comparison against current -- because it is +Inf or
+// NaN -- can never replace it. Used in kmeansCluster to track the minimum
+// squared distance to the nearest already-chosen k-means++ centroid, so an
+// l2Squared result that overflows float32 to +Inf (or is NaN) is clamped to
+// whatever finite value was already found -- or to the sentinel
+// math.MaxFloat32 on the very first comparison -- rather than propagating
+// into the weighted-sampling sum.
+func clampedMin(current, candidate float32) float32 {
+	if candidate < current {
+		return candidate
+	}
+	return current
 }
