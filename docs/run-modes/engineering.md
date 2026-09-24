@@ -55,8 +55,10 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   stays mandatory.
 - **Every no-argument `*Node` accessor performs a race-free read** from any
   goroutine at any point — a fully constructed value or nil, never a torn one.
-  **`Close` itself is not synchronised against `Unseal` or `EnableEncryption`**;
-  callers must not overlap them. See *Node accessor concurrency* below.
+  **`Close` is serialised with a system-scope `EnableEncryption`**: it blocks
+  until the migration finishes. It is **not yet** serialised with `Unseal` or
+  with a tenant-scope migration; callers must not overlap those. See *Node
+  accessor concurrency* below.
 
 ## Node accessor concurrency
 
@@ -82,24 +84,37 @@ Those documented nils are an invitation to hold the node in one goroutine and
 poll it while a second drives `Unseal` — the sealed-window shape every embedder
 uses (`ServeSealedWindow` on one goroutine, the operator's unseal on another).
 
-### NOT guaranteed: `Close` is not synchronised against boot or migration
+### `Close` and system-scope migration: serialised
 
-`Node` has no lifecycle state. Two interleavings are therefore **undefined**,
-and callers must not create them:
+The owner ruled that `Close` **blocks** rather than racing work in flight.
+For a system-scope `EnableEncryption` that is implemented: the migration holds
+the node's migration lock for its entire recycle — data-plane teardown,
+re-encryption and `Reopen` — and `Close` takes the same lock before it touches
+anything. So:
+
+- **`Close` blocks until an in-flight system-scope migration finishes**,
+  including its `Reopen`, which may rebuild the whole data plane first. A
+  `Close` can therefore take as long as that migration takes.
+- **A system-scope migration requested after `Close` has begun** waits for
+  `Close` to return and then fails cleanly on the closed node, rather than
+  rebuilding a data plane after shutdown.
+
+### NOT yet guaranteed: `Close` with `Unseal` or a tenant-scope migration
+
+Two interleavings are **not yet serialised**, and callers must not create them
+until they are:
 
 - **`Close` concurrent with `Unseal`.** `Close` retracts the handles, then the
   in-flight boot's `Store` calls republish them, and the node looks open again
   after `Close` returned.
-- **`Close` concurrent with `EnableEncryption`.** The migration reloads
-  `barrier` and `barrierRegistry` after `Close` has nilled them, and `Reopen`
-  can rebuild the data plane after shutdown.
+- **`Close` concurrent with a tenant-scope `EnableEncryption`.** Tenant
+  migrations recycle only that tenant's host and do not take the node's
+  migration lock, so `Close` does not wait for them.
 
-Neither is a torn read — the reads are still atomic — so this is an **ordering**
-gap, not the publication defect the accessors fixed. Closing it needs an
-explicit lifecycle state plus a ruling on what `Close` means for an embedded
-`Node` (block on an in-flight `Unseal`, or start failing it and with which
-typed error). That ruling is the owner's, and the gap is deliberately left
-open until it is made.
+Neither is a torn read — the reads are still atomic — so this is an
+**ordering** gap, not the publication defect the accessors fixed. The same
+"`Close` blocks" ruling covers both, and the work to apply it to them is the
+next change to the node lifecycle.
 
 ### Mechanism
 

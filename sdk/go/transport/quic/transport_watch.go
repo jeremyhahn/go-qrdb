@@ -77,13 +77,11 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 		return nil, &streamError{Err: err}
 	}
 
-	// Close the write side (send FIN) to signal the server that the
-	// request frame is complete while keeping the read side open for
-	// streaming responses.
-	if err := stream.Close(); err != nil {
-		stream.CancelRead(0)
-		return nil, &streamError{Err: err}
-	}
+	// The write side stays open until readWatchResponses is done reading:
+	// under wire.ProtocolV2 the client's FIN acknowledges what it has read,
+	// and the server waits for it after the terminal frame it sends when it
+	// stops, so that frame is delivered rather than lost to the connection
+	// closing behind it.
 
 	// Tie the stream's read side to ctx: OpenStreamSync only used ctx to
 	// establish the stream, so without this a caller cancellation (Ctrl-C,
@@ -117,6 +115,8 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 func readWatchResponses(ctx context.Context, stream *quicgo.Stream, ch chan<- transport.WatchResponse) {
 	defer close(ch)
 	defer stream.CancelRead(0)
+	// Runs first: the FIN that acknowledges every frame read so far.
+	defer func() { _ = stream.Close() }()
 
 	for {
 		select {

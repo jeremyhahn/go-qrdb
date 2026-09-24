@@ -482,22 +482,32 @@ type pendingClusteredBoot struct {
 // wireClientAndServer()` under -race, twice, from independent consumer runs,
 // the second reproduced at a clean base.
 //
-// What is NOT guaranteed. Node has no lifecycle state, so CLOSE IS NOT
-// SYNCHRONISED AGAINST BOOT OR MIGRATION:
+// What is NOT guaranteed. Node has no general lifecycle state, so CLOSE IS
+// NOT SYNCHRONISED AGAINST BOOT, and is only PARTIALLY synchronised against
+// MIGRATION:
 //
 //   - Close concurrent with Unseal is undefined. Close retracts the handles,
 //     then the in-flight boot's Store calls republish them, and the node looks
 //     open again after Close returned.
-//   - Close concurrent with EnableEncryption is undefined. The migration
-//     reloads barrier and barrierRegistry after Close has nilled them, and
-//     Reopen can rebuild the data plane after shutdown.
+//   - Close concurrent with a SYSTEM-scope EnableEncryption is now
+//     synchronised: both take migrateMu (Close for its whole run, the
+//     migration for its whole recycle), so Close blocks until any in-flight
+//     system migration has fully finished before touching barrier,
+//     barrierRegistry, or sealStore, and a system migration attempted after
+//     Close has begun blocks on the same lock and then fails cleanly once it
+//     observes the now-nilled state. See Close's own doc comment.
+//   - Close concurrent with a TENANT-scope EnableEncryption remains undefined:
+//     that path does not contend on migrateMu (see the field's doc), and races
+//     Close's teardown of tenantHosts the same way it always has.
 //
-// Neither is a torn read — the reads are still atomic — so this is an ordering
-// gap, not the defect #176 fixed. Callers must not overlap Close with Unseal or
-// EnableEncryption. Closing that gap needs an explicit lifecycle state and a
-// ruling on what Close means for an embedded Node (does it block on an in-flight
-// Unseal, or does Unseal start failing, and with which typed error). That is
-// tracked as go-qrdb#226, NOT fixed here.
+// None of these is a torn read — the reads are still atomic — so this is an
+// ordering gap, not the defect #176 fixed. Callers must not overlap Close with
+// Unseal or a tenant-scope EnableEncryption. Closing the Unseal gap (and the
+// tenant-scope one) needs an explicit lifecycle state and a ruling on what
+// Close means for an embedded Node more generally (does it block on an
+// in-flight Unseal, or does Unseal start failing, and with which typed
+// error). That is tracked as go-qrdb#226; only the system-migration slice of
+// it is fixed here.
 //
 // Retraction, within those limits. Close retracts every handle it published
 // before stopping what backs them, and teardownDataPlane (the in-process
@@ -1240,6 +1250,27 @@ func (n *Node) retractDataPlaneServices() {
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
 //
+// Close blocks on an in-flight system-scope migration rather than racing it
+// (the go-qrdb#226 shutdown discipline). nodeSystemMigrator.EnableEncryption
+// holds migrateMu for the ENTIRE recycle — teardownDataPlane, re-encryption,
+// and Reopen — because that sequence touches the same fields Close tears
+// down below (client, srv, services, barrier, sealStore). Before this fix
+// Close raced that goroutine directly: a migration a transport handler had
+// already returned "migration_started" for (the accept-window pattern every
+// handler uses) kept running after the handler's own call returned, and a
+// concurrent Close nilled n.sealStore out from under
+// nodeMigrationProvider.Reopen's canonicalRootKeyStrategy read, segfaulting
+// on a nil *pebble.PebbleStorage. Acquiring migrateMu here — and holding it
+// for the rest of Close via defer — makes Close wait for that migration to
+// fully finish (including its Reopen, which may rebuild the whole data plane
+// again) before touching anything, and blocks a NEW migration from starting
+// once Close has begun: EnableEncryption's first step is the same Lock, so it
+// stalls until Close returns and then fails cleanly on the now-nilled
+// registry/barrier rather than reaching for freed resources. Tenant-scope
+// migrations are unaffected: they never contend on migrateMu (see its field
+// doc), and Close's own teardown of tenantHosts below stops them the same way
+// it always has.
+//
 // All barriers (system and per-tenant) are sealed before their references
 // are dropped so unsealed DEKs and root keys held in go-enclave enclaves are
 // wiped deterministically rather than waiting on GC finalizers. Close does
@@ -1250,6 +1281,9 @@ func (n *Node) retractDataPlaneServices() {
 // to the binary that owns the process; cmd/qrdbd/start.go's runStart is the
 // reference wiring.
 func (n *Node) Close() error {
+	n.migrateMu.Lock()
+	defer n.migrateMu.Unlock()
+
 	var firstErr error
 
 	record := func(err error) {

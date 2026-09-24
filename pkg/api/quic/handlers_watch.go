@@ -63,15 +63,18 @@ func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, r
 		return
 	}
 
-	// Tie the watcher's lifetime to the client stream: when the client closes
-	// or resets the stream, stream.Context() is canceled, which cancels the
-	// watcher and ends the stream loop. The parent ctx (server-side) cancels on
-	// shutdown.
+	// Tie the watcher's lifetime to the client stream and to the server: when
+	// the client closes or resets the stream, stream.Context() is canceled,
+	// and when Stop begins, s.stopping is closed; either cancels the watcher
+	// and ends the stream loop, so an open watch does not hold Stop's drain
+	// for its whole grace period.
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
 		select {
 		case <-stream.Context().Done():
+			cancel()
+		case <-s.stopping:
 			cancel()
 		case <-watchCtx.Done():
 		}
@@ -107,6 +110,7 @@ func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, r
 	for {
 		select {
 		case <-watchCtx.Done():
+			s.writeWatchShutdown(stream, requestID, w.WatchID())
 			return
 		case resp, ok := <-w.Events():
 			if !ok {
@@ -141,4 +145,38 @@ func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, r
 			}
 		}
 	}
+}
+
+// watchShutdownReason is the CancelReason of the terminal frame a watch stream
+// receives when the server stops.
+const watchShutdownReason = "server shutting down"
+
+// writeWatchShutdown ends a watch stream that Stop is ending with a terminal
+// WatchResponse (Canceled, CancelReason watchShutdownReason), so the client
+// learns why its watch stopped instead of seeing the stream end bare. It does
+// nothing when the watch ended for any other reason -- the client closing the
+// stream has nobody left to tell. The frame is acknowledged like a unary
+// response, so it is delivered before Stop closes the connection.
+func (s *Server) writeWatchShutdown(stream *quicgo.Stream, requestID uint64, watchID int64) {
+	select {
+	case <-s.stopping:
+	default:
+		return
+	}
+	data, err := proto.Marshal(&pb.WatchResponse{
+		WatchId:      watchID,
+		Canceled:     true,
+		CancelReason: watchShutdownReason,
+	})
+	if err != nil {
+		return
+	}
+	if err := wire.WriteResponse(stream, requestID, wire.StatusOK, data); err != nil {
+		return
+	}
+	// Stop closes the connection once this handler returns, which would
+	// discard the frame if it were still queued: wait for the client's
+	// acknowledgement exactly as a unary reply does (see writeResponse).
+	_ = stream.Close()
+	awaitStreamAck(stream)
 }

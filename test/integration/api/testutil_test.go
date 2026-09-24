@@ -21,6 +21,8 @@ import (
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
 
 // deadAddr is a TCP/UDP endpoint nothing binds to: port 1 is privileged and,
@@ -124,7 +126,7 @@ func selfSignedQUICCert(t *testing.T) tls.Certificate {
 // TestIsQUICServerAvailable_LiveServer is the positive twin of the dead-port
 // case: a probe that never reports true for a real, reachable server would
 // be as useless as one that never reports false for a dead one. It starts a
-// real QUIC listener (ALPN "qrdb-quic", matching pkg/api/quic/server.go and
+// real QUIC listener (ALPN wire.ProtocolV2, matching pkg/api/quic/server.go and
 // sdk/go/transport/quic/transport.go's buildTLSConfig) and asserts the probe
 // completes a genuine handshake against it — not just a socket that happens
 // to accept a SYN, since QUIC rides UDP and has no such thing.
@@ -134,7 +136,7 @@ func TestIsQUICServerAvailable_LiveServer(t *testing.T) {
 	ln, err := quicgo.ListenAddr("127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{"qrdb-quic"},
+		NextProtos:   []string{wire.ProtocolV2},
 	}, &quicgo.Config{
 		MaxIdleTimeout:  5 * time.Second,
 		KeepAlivePeriod: time.Second,

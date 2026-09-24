@@ -110,6 +110,14 @@ are not reconstructed here — their history is in the git log.
   it returns to memory once every state machine supports guarded batches. A follower defers to the
   leader's probe (only the leader can propose); any other inconclusive probe also stops the
   start.
+- **BREAKING: the QUIC listener accepts only the ALPN protocol `qrdb-quic/2`.**
+  The frames are unchanged; under `qrdb-quic/2` the client closes its side of
+  each request stream only after it has read the response, and the server
+  waits (bounded) for that close before it counts a request as finished. The
+  listener no longer accepts `qrdb-quic`, and the Go SDK offers only
+  `qrdb-quic/2` and refuses a connection on which anything else was selected.
+  A Go SDK older than this release cannot connect to a current server, and a
+  current Go SDK cannot connect to an older server: upgrade both together.
 
 ### Fixed
 
@@ -134,6 +142,21 @@ are not reconstructed here — their history is in the git log.
   (`user.EmailExistsError`) with `StatusAlreadyExists`, as REST and gRPC already did, instead
   of the generic `StatusError`. A failed rollback wrapping any of the three stays
   `StatusDataLoss`.
+- **Three production faults in the enable-encryption migration path are fixed.**
+  `sdk/go/node`'s `Node.Close` could segfault when it ran concurrently with a
+  still-in-flight system-scope encryption migration; it now blocks on the
+  same lock the migration holds for its entire recycle, so Close always
+  waits for an in-flight migration to finish before tearing anything down.
+  The QUIC server could sever a request's connection before it delivered an
+  already-decided `"migration_started"` response, reporting "server shutting
+  down" instead of the real answer when a migration's synchronous phase
+  finished faster than the accept window; it now waits for in-flight
+  requests, each confirmed delivered by the `qrdb-quic/2` acknowledgement,
+  before closing connections, and ends open watch streams at once instead of
+  waiting out its grace period behind them. The recycle could then fail to
+  restart the QUIC listener with "address already in use", leaving a
+  migrated node without one; the listener now releases its UDP port before
+  its stop returns.
 
 ### Changed
 

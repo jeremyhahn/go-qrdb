@@ -157,6 +157,46 @@ to exactly the behaviour it had before, never a misclassification. The server
 and the Go SDK ship from one repository, so a mixed deployment loses precision
 on old clients and nothing else.
 
+### QUIC protocol version and response acknowledgement
+
+The QUIC listener speaks exactly one protocol, selected by TLS ALPN:
+**`qrdb-quic/2`**. A client that does not offer it fails the TLS handshake. The
+Go SDK offers only `qrdb-quic/2` and refuses a connection on which any other
+protocol was selected.
+
+**Breaking change.** The listener no longer accepts `qrdb-quic`, the identifier
+before it. The frames are unchanged; what changed is when the client closes
+its half of each request stream, and a server cannot tell an old client's
+close from the new one's. A Go SDK older than this change cannot connect to a
+current server, and a current Go SDK cannot connect to an older server.
+Upgrade both together.
+
+| | The client closes its side of the request stream | What the server does after writing a response |
+|---|---|---|
+| `qrdb-quic/2` | only after it has read the whole response | waits, up to 2 s, for that close before the request counts as finished |
+
+The client's close is an acknowledgement that the response arrived. The
+server needs one because QUIC gives it no other way to learn that a reply was
+delivered rather than merely queued, and closing a connection discards
+anything still queued. The case that matters is a server that is stopping: it
+waits for in-flight requests to finish before it closes their connections, and
+"finished" means "acknowledged". A system-scope `enable-encryption` restarts
+the listener that is answering the request, so this is how the caller of a
+fast migration receives `migration_started` rather than a connection closed
+with `server shutting down`.
+
+The server closes its own side of the stream in the same step as it writes the
+response, so a client that reads to the end of the stream rather than one frame
+is not held for the acknowledgement. Watch streams are the exception to
+"wait for in-flight requests": a watch never finishes on its own, so a stopping
+server ends every open watch at once instead of waiting for it. It ends each
+with a final frame — `Canceled`, reason `server shutting down` — which the
+client acknowledges by closing its side, exactly as it does a response, so the
+frame is delivered before the connection closes.
+
+The listener advertises only `qrdb-quic/2` even when its TLS configuration is
+shared with the REST listener, whose `h3` and `h2` it does not speak.
+
 ### Absence is typed over QUIC, and never read out of the message
 
 `StatusNotFound` is what lets an SDK consumer's `errors.As` mean the same thing

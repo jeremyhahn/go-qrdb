@@ -90,7 +90,7 @@ func generateCredentialE2ETLS(t *testing.T) (*tls.Config, *tls.Config) {
 	}
 	clientCfg := &tls.Config{
 		RootCAs:    caPool,
-		NextProtos: []string{"qrdb-quic"},
+		NextProtos: []string{wire.ProtocolV2},
 		MinVersion: tls.VersionTLS13,
 	}
 	return serverCfg, clientCfg

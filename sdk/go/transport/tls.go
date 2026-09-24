@@ -90,7 +90,7 @@ type TLSBuildOptions struct {
 	KeyFile string
 
 	// NextProtos lists ALPN protocols the connection must advertise
-	// (e.g. "qrdb-quic" for the QUIC transport). Protocols already
+	// (e.g. "qrdb-quic/2" for the QUIC transport). Protocols already
 	// present in a Custom config are not duplicated.
 	NextProtos []string
 }

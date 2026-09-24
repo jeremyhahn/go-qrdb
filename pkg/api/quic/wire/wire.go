@@ -203,6 +203,23 @@ func StatusDeclared(status uint16) bool {
 	return ok
 }
 
+// ProtocolV2 is the TLS ALPN identifier of this frame protocol, and the only
+// one a qrdb QUIC listener accepts: a peer that does not offer it fails the
+// handshake. It replaced "qrdb-quic", whose frames were identical but which
+// let the client half-close a request stream as soon as it had written the
+// request.
+//
+// Under ProtocolV2 the client holds its write side open until it has READ the
+// whole response frame, and only then closes it. That FIN is the client's
+// acknowledgement that the response arrived, and the server waits for it
+// (bounded) before it treats a request as finished. It is what lets a server
+// that is stopping tell "my reply was delivered" from "my reply was queued",
+// which quic-go gives it no other way to learn: closing a connection discards
+// whatever it had queued but not yet sent. The old identifier is not accepted
+// alongside it because a client that half-closes early sends a FIN that
+// proves nothing, and a server cannot tell that FIN from an acknowledgement.
+const ProtocolV2 = "qrdb-quic/2"
+
 // MaxMethodLen is the maximum length of a method name in bytes.
 const MaxMethodLen = 256
 

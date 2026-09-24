@@ -77,10 +77,14 @@ func pollNodeAccessors(n *Node, accessors []reflect.Method) int {
 
 // assertAllAccessorsNil checks that every no-argument exported accessor reads
 // nil (or false) after Close. That holds only for a caller that did NOT overlap
-// Close with Unseal or EnableEncryption — Node has no lifecycle state, so those
-// interleavings are undefined (go-qrdb#226) and no test here creates one. It
-// names the offender, so a handle someone forgets to retract fails here rather
-// than becoming a stale handle in a consumer.
+// Close with Unseal or a TENANT-scope EnableEncryption — Node has no general
+// lifecycle state, so those two interleavings are undefined (go-qrdb#226) and
+// no test here creates one. A SYSTEM-scope EnableEncryption is excluded from
+// that list: Close now blocks on migrateMu until any in-flight system
+// migration finishes (see Close's doc comment), so overlapping the two no
+// longer produces a race to assert around here. This helper names the
+// offender, so a handle someone forgets to retract fails here rather than
+// becoming a stale handle in a consumer.
 func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 	t.Helper()
 	rv := reflect.ValueOf(n)

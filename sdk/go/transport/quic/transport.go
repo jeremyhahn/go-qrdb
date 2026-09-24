@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -89,8 +90,8 @@ func New(opts ...transport.Option) (*Transport, error) {
 }
 
 // Connect establishes the QUIC connection to the QRDB server. QUIC
-// always requires TLS; the ALPN protocol is set to "qrdb-quic" to
-// match the server-side configuration.
+// always requires TLS; ALPN must select wire.ProtocolV2 (see
+// buildTLSConfig), and any other selection is refused.
 // quicConnectBudget bounds QUIC connection establishment (dial + health
 // probe) so a stalled UDP handshake fails fast rather than hanging until the
 // caller's outer deadline, leaving the rest of that deadline for the RPC.
@@ -128,6 +129,18 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
 			Err:     &dialError{Err: err},
+		}
+	}
+
+	// A caller-supplied TLS config may offer other protocols alongside
+	// wire.ProtocolV2, and a server that is not a qrdb QUIC listener could
+	// select one of them. Every call on this connection relies on ProtocolV2's
+	// stream discipline, so anything else is refused rather than spoken to.
+	if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV2 {
+		_ = conn.CloseWithError(0, "unsupported protocol")
+		return &transport.ConnectionError{
+			Address: t.config.Address,
+			Err:     &alpnMismatchError{Negotiated: got},
 		}
 	}
 
@@ -695,6 +708,12 @@ func (t *Transport) callContext(ctx context.Context) (context.Context, context.C
 // frame, reads the response frame, and maps non-OK status codes to SDK
 // error types. Each RPC uses a dedicated stream that is closed after the
 // response is read.
+//
+// The stream's write side is NOT closed until after ReadResponse returns --
+// the deferred Close is the only close -- so its FIN is this client's
+// acknowledgement that the response arrived, which the server waits for
+// before it can close the connection during a system-scope migration's
+// recycle (go-qrdb#550). See wire.ProtocolV2.
 func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
 	ctx, cancel := t.callContext(ctx)
 	defer cancel()
@@ -705,23 +724,32 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 	}
 	defer stream.Close()
 
+	// OpenStreamSync only used ctx to establish the stream. Bound the reads
+	// and writes on it by ctx too, so a server that never answers cannot hold
+	// the caller past its deadline or its cancellation: the deadline is set on
+	// the stream, and cancellation resets both directions, which also ends the
+	// server's wait for this client's acknowledgement at once. stopCancel is
+	// deferred after stream.Close, so it runs first and a context canceled
+	// after the call returns cannot reset a stream that already finished.
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = stream.SetDeadline(deadline)
+	}
+	stopCancel := context.AfterFunc(ctx, func() {
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+	})
+	defer stopCancel()
+
 	reqID := t.requestID.Add(1)
 
 	if err := wire.WriteRequest(stream, method, t.database, reqID, payload); err != nil {
 		stream.CancelWrite(0)
-		return nil, &transport.RequestError{Method: method, Err: err}
-	}
-
-	// Signal end of request data so the server reads the complete frame.
-	// Stream.Close sends a FIN on the write side while keeping the read
-	// side open for the response. The deferred Close above is idempotent.
-	if err := stream.Close(); err != nil {
-		return nil, &transport.RequestError{Method: method, Err: err}
+		return nil, &transport.RequestError{Method: method, Err: callContextError(ctx, err)}
 	}
 
 	_, statusCode, respPayload, err := wire.ReadResponse(stream)
 	if err != nil {
-		return nil, &transport.RequestError{Method: method, Err: err}
+		return nil, &transport.RequestError{Method: method, Err: callContextError(ctx, err)}
 	}
 
 	if statusCode != wire.StatusOK {
@@ -731,9 +759,27 @@ func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]
 	return respPayload, nil
 }
 
+// callContextError reports err as the context's own error when the context is
+// what ended the stream operation, so a caller's errors.Is(err,
+// context.DeadlineExceeded) or context.Canceled holds on this transport as it
+// does on the others. The stream deadline and the context's timer are set from
+// the same instant but fire independently, so a stream timeout on a context
+// with a deadline is the deadline even if the context's timer has not fired
+// yet.
+func callContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	var netErr net.Error
+	if _, ok := ctx.Deadline(); ok && errors.As(err, &netErr) && netErr.Timeout() {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 // buildTLSConfig constructs the TLS configuration from the transport
-// config. QUIC always requires TLS; the ALPN protocol is set to
-// "qrdb-quic" to match the server-side configuration.
+// config. QUIC always requires TLS; ALPN offers wire.ProtocolV2, the only
+// protocol a qrdb QUIC listener accepts.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 	return transport.BuildTLSConfig(transport.TLSBuildOptions{
 		Custom:     t.config.TLSConfig,
@@ -741,7 +787,7 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 		CAFile:     t.config.TLSCAFile,
 		CertFile:   t.config.TLSCertFile,
 		KeyFile:    t.config.TLSKeyFile,
-		NextProtos: []string{"qrdb-quic"},
+		NextProtos: []string{wire.ProtocolV2},
 	})
 }
 

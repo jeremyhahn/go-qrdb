@@ -485,7 +485,7 @@ func (c cell) boot(t *testing.T) clients {
 // transport is TLS-only by design — the client certificate IS the identity the
 // auth middleware authenticates — so there is no insecure shortcut here, and
 // server.WithTLS feeds REST, gRPC, QUIC and unix from this one config (the
-// QUIC listener appends its own "qrdb-quic" ALPN on top).
+// QUIC listener replaces its ALPN list with its own "qrdb-quic/2").
 func remoteServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
 	t.Helper()
 	certDir := t.TempDir()
