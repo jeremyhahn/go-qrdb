@@ -453,21 +453,17 @@ func (e *MVCCEngine) listKeys(prefix string) ([]string, error) {
 	// records.
 	skipFilter := skipInternalKeyFilter(prefix)
 
+	// Seeks per key length rather than walking the whole namespace; see
+	// mvcc.ForEachMetaKeyInRange.
 	var keys []string
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		userKey, decErr := mvcc.DecodeMetaKey(iter.Key())
-		if decErr != nil {
-			continue
-		}
+	err := mvcc.ForEachMetaKeyWithPrefix(iter, []byte(prefix), func(userKey []byte) bool {
 		userKeyStr := string(userKey)
-		if !skipFilter && isInternalKey(userKeyStr) {
-			continue
-		}
-		if prefix == "" || strings.HasPrefix(userKeyStr, prefix) {
+		if skipFilter || !isInternalKey(userKeyStr) {
 			keys = append(keys, userKeyStr)
 		}
-	}
-	if err := iter.Error(); err != nil {
+		return true
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -493,28 +489,19 @@ func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byt
 
 	result := make(map[string][]byte)
 	count := 0
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		userKey, decErr := mvcc.DecodeMetaKey(iter.Key())
-		if decErr != nil {
-			continue
-		}
-		if !strings.HasPrefix(string(userKey), prefix) {
-			continue
-		}
+	err := mvcc.ForEachMetaKeyWithPrefix(iter, q.Prefix, func(userKey []byte) bool {
 		if !skipFilter && isInternalKey(string(userKey)) {
-			continue
+			return true
 		}
-		kvResult, err := e.store.Get(userKey)
-		if err != nil || kvResult == nil {
-			continue
+		kvResult, getErr := e.store.Get(userKey)
+		if getErr != nil || kvResult == nil {
+			return true
 		}
 		result[string(userKey)] = kvResult.Value
 		count++
-		if q.Limit > 0 && count >= q.Limit {
-			break
-		}
-	}
-	if err := iter.Error(); err != nil {
+		return q.Limit <= 0 || count < q.Limit
+	})
+	if err != nil {
 		return nil, err
 	}
 	return result, nil
