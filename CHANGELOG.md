@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.4-alpha] - 2026-09-24
+
+### Fixed
+
+- **k-means++ initialisation no longer hangs.** `pkg/vector/ivf` and `pkg/vector/quantization`
+  recomputed every chosen centroid's distance on each selection (O(n·k²·d)); they now keep a
+  running minimum (O(n·k·d)). One `DefaultConfig` training call under `-race` drops from ~77s
+  to under a second, and the IVF coverage profile is produced again.
+- Degenerate training data (fewer distinct points than centroids) always yields exactly k
+  initial centroids. Distance overflow (±Inf, NaN) is clamped before weighting, so selection
+  never degenerates into Inf/NaN arithmetic. Signed metrics weight by the raw minimum distance.
+- `KMeans.Cluster` refuses mismatched vector dimensions with a typed
+  `KMeansDimensionMismatchError`.
+
 ### Fixed
 
 - **k-means++ initialisation in `pkg/vector/ivf` and `pkg/vector/quantization`

@@ -9,7 +9,7 @@ require (
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
-	github.com/jeremyhahn/go-qrdb v0.20.3-alpha
+	github.com/jeremyhahn/go-qrdb v0.20.4-alpha
 	github.com/jeremyhahn/go-quicraft v0.11.0-alpha
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.62.0
