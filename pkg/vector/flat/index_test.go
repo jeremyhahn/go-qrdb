@@ -298,6 +298,45 @@ func TestFlatIndex_SearchKGreaterThanCount_Sorted(t *testing.T) {
 	}
 }
 
+// TestFlatIndex_SortAllResults_RequiresSwap exercises sortAllResults directly
+// with a deliberately descending-distance input, forcing the insertion sort's
+// swap branch to execute on every run.
+//
+// Search's only caller of sortAllResults builds its ids/distances slices from
+// sync.Map.Range, whose iteration order is randomized by the Go runtime.
+// Whether that order happens to need a swap to reach ascending distance is
+// therefore a coin flip per invocation, and under -race with GOMAXPROCS=1 the
+// scheduler serializes TestFlatIndex_ConcurrentInsertSearch's writers and
+// readers differently than an unconstrained run, changing how many of those
+// coin flips occur and occasionally landing all of them on "already sorted".
+// That produced an intermittent two-statement, ~1.9pp swing in this package's
+// measured coverage (92.3% vs 90.4%) purely from scheduler timing. Calling
+// sortAllResults directly with known-unsorted input removes the dependency on
+// map iteration order and goroutine interleaving, so the swap branch is
+// covered deterministically regardless of contention.
+func TestFlatIndex_SortAllResults_RequiresSwap(t *testing.T) {
+	idx := NewIndex(hnsw.L2Distance)
+
+	// Distances given in strictly descending order: every adjacent pair is
+	// an inversion, so the insertion sort must swap on each outer iteration.
+	ids := []uint64{1, 2, 3, 4}
+	distances := []float32{4.0, 3.0, 2.0, 1.0}
+
+	results := idx.sortAllResults(ids, distances)
+
+	wantIDs := []uint64{4, 3, 2, 1}
+	for i, r := range results {
+		if r.ID != wantIDs[i] {
+			t.Errorf("result[%d]: expected ID=%d, got ID=%d", i, wantIDs[i], r.ID)
+		}
+	}
+	for i := 1; i < len(results); i++ {
+		if results[i].Distance < results[i-1].Distance {
+			t.Errorf("results not sorted at %d: %f < %f", i, results[i].Distance, results[i-1].Distance)
+		}
+	}
+}
+
 // TestFlatIndex_DuplicateID verifies that re-inserting an existing ID
 // updates the vector (upsert behavior).
 func TestFlatIndex_DuplicateID(t *testing.T) {
