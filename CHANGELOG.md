@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.2-alpha] - 2026-09-23
+
+### Fixed
+
+- **Prefix and range scans no longer walk the whole store.** Metadata keys sort by length
+  first, so the keys of one prefix are not one contiguous run, and `List`, `Scan` and `Range`
+  read every metadata key in the store and filtered. They now seek once per key length
+  (`mvcc.ForEachMetaKeyInRange`) and read only the matching keys. Output order and `Limit`
+  are unchanged. go-quicbaas measured ~3.6 s to list 3,648 records before this (#560).
+
 ## [0.20.1-alpha] - 2026-09-23
 
 ### Fixed
