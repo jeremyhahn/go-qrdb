@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/kmeans"
 )
 
 func TestPQ_TrainAndEncodeDecode(t *testing.T) {
@@ -577,6 +578,99 @@ func TestKMeansPlusPlusInit_OverflowDistanceClamped(t *testing.T) {
 		}
 		assert.True(t, diverged, "the clamped and unclamped implementations never diverged over %d seeds on overflowing input -- clampedMin may not be on the exercised path", seeds)
 	})
+}
+
+// TestKMeansCluster_RepairsEmptyClustersWiredWithL2Squared pins the EXACT
+// arguments PQ's call site passes -- kmeans.RepairEmptyClusters(vectors,
+// assignments, counts, centroids, l2Squared) -- precisely and
+// deterministically, complementing rather than replacing
+// pkg/vector/kmeans's own thorough, direct tests of the shared mechanism
+// itself.
+//
+// This test calls kmeans.RepairEmptyClusters directly, which means it
+// cannot detect the production call at pq.go's own call site being removed
+// or miswired -- reverting or deleting that line would leave this test
+// green, since it never goes through kmeansCluster at all.
+// TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement below is what
+// closes that gap, by calling refineAndRepair -- the actual production
+// function containing that call site -- with hand-picked initial centroids
+// chosen to force an empty cluster deterministically, rather than trying to
+// trigger one through kmeansCluster's randomized public entry point (which
+// an exhaustive search -- 50,000+ seeds across several adversarial
+// datasets -- found it never does; see that test's doc comment).
+func TestKMeansCluster_RepairsEmptyClustersWiredWithL2Squared(t *testing.T) {
+	vectors := [][]float32{
+		{0, 0}, {0.1, 0.1}, // cluster 0
+		{10, 10}, {10.1, 10.1}, // cluster 1
+		{20, 20}, // cluster 2, and the point about to be donated
+	}
+	assignments := []int{0, 0, 1, 1, 1}
+	counts := []int{2, 3, 0}
+	centroids := [][]float32{
+		{0.05, 0.05},
+		{13.4, 13.4}, // cluster 1's mean, pulled toward vectors[4]
+		{13.4, 13.4}, // cluster 2: a duplicate of cluster 1's centroid
+	}
+
+	result := kmeans.RepairEmptyClusters(vectors, assignments, counts, centroids, l2Squared)
+
+	require.Len(t, result, 3)
+	distinct := map[[2]float32]bool{}
+	for _, c := range result {
+		distinct[[2]float32{c[0], c[1]}] = true
+	}
+	assert.Len(t, distinct, 3, "3 distinct positions were available, so the repair must produce 3 distinct centroids: got %v", result)
+	assert.Equal(t, []float32{20, 20}, result[2])
+	assert.Equal(t, 2, assignments[4])
+	assert.Equal(t, []int{2, 2, 1}, counts)
+}
+
+// TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement is the
+// regression test for the PRODUCTION wiring: it calls refineAndRepair --
+// the real function kmeansCluster delegates to, containing the actual
+// kmeans.RepairEmptyClusters call site -- with hand-picked initial centroids
+// designed to force an empty cluster deterministically through ordinary
+// Lloyd iteration, no randomness involved.
+//
+// centroids 0 and 1 are set to the EXACT same point. Vectors 0-2 are also
+// exactly that point, so in the very first assignment step every one of
+// them computes an IDENTICAL distance to centroid 0 and centroid 1; the
+// assignment loop's strict "<" comparison means ties always keep the
+// first (lower-indexed) candidate, so centroid 0 claims all three and
+// centroid 1 claims none -- deterministically, on every run, for any
+// maxIter >= 1. Centroid 2 independently claims vectors 3-4, which are far
+// from the duplicate mass and distinct from each other, giving cluster 2 a
+// genuine (non-zero-distance) farthest point to donate. This is exactly
+// the shape TestRepairEmptyClusters_LargestClusterIsDegenerate exercises
+// at the shared-function level (a large duplicate-cored cluster beside a
+// smaller but genuinely spread one) -- reproduced here through the real
+// kmeansCluster refinement path.
+//
+// Removing or miswiring refineAndRepair's call to
+// kmeans.RepairEmptyClusters makes this test fail: without it, cluster 1
+// stays exactly the duplicate it started as, and only 2 of the 3 available
+// distinct positions end up represented.
+func TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement(t *testing.T) {
+	vectors := [][]float32{
+		{0, 0}, {0, 0}, {0, 0}, // 3 exact duplicates
+		{10, 0}, {20, 0}, // 2 distinct points, far from the duplicate mass
+	}
+	initialCentroids := [][]float32{
+		{0, 0}, // claims all 3 duplicates
+		{0, 0}, // an exact duplicate of centroid 0: claims nothing, by the
+		// tie-breaking argument above
+		{15, 0}, // claims both far points
+	}
+
+	result := refineAndRepair(vectors, initialCentroids, 3, 1)
+
+	require.Len(t, result, 3)
+	distinct := map[[2]float32]bool{}
+	for _, c := range result {
+		distinct[[2]float32{c[0], c[1]}] = true
+	}
+	assert.Len(t, distinct, 3,
+		"3 distinct positions were available (the duplicate mass, and each of the 2 far points), so refineAndRepair must produce 3 distinct centroids: got %v", result)
 }
 
 func BenchmarkPQ_Encode(b *testing.B) {

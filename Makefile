@@ -3052,6 +3052,24 @@ coverage-vector-quantization: | _cover-dir ## Generate quantization coverage rep
 	$(call check-coverage,$(COVER_DIR)/vector-quantization.out,vector-quantization)
 
 # ============================================================================
+# Shared k-means (pkg/vector/kmeans) -- consumed by pkg/vector/ivf and
+# pkg/vector/quantization; see docs/vectors/engineering.md.
+# ============================================================================
+
+.PHONY: test-vector-kmeans
+test-vector-kmeans: ## Run shared k-means unit tests
+	$(GOTEST) $(TAG_FLAG) ./pkg/vector/kmeans/...
+
+.PHONY: bench-vector-kmeans
+bench-vector-kmeans: ## Run shared k-means benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem -count=3 ./pkg/vector/kmeans/...
+
+.PHONY: coverage-vector-kmeans
+coverage-vector-kmeans: | _cover-dir ## Generate shared k-means coverage report
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-kmeans.out ./pkg/vector/kmeans/...
+	$(call check-coverage,$(COVER_DIR)/vector-kmeans.out,vector-kmeans)
+
+# ============================================================================
 # Bloom Filter
 # ============================================================================
 

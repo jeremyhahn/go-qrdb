@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/kmeans"
 )
 
 // KMeans implements the k-means clustering algorithm.
@@ -409,45 +410,7 @@ func (km *KMeans) maxCentroidMovement(old, new [][]float32) float32 {
 
 // handleEmptyClusters fixes empty clusters by splitting large clusters.
 func (km *KMeans) handleEmptyClusters(vectors [][]float32, assignments []int, clusterSizes []int, centroids [][]float32) [][]float32 {
-	// Find empty and large clusters
-	for i, size := range clusterSizes {
-		if size == 0 {
-			// Find largest cluster
-			maxSize := 0
-			maxIdx := 0
-			for j, s := range clusterSizes {
-				if s > maxSize {
-					maxSize = s
-					maxIdx = j
-				}
-			}
-
-			if maxSize > 1 {
-				// Find farthest point in largest cluster
-				maxDist := float32(0)
-				farthestIdx := -1
-				for j, vec := range vectors {
-					if assignments[j] == maxIdx {
-						dist := km.distanceFunc(vec, centroids[maxIdx])
-						if dist > maxDist {
-							maxDist = dist
-							farthestIdx = j
-						}
-					}
-				}
-
-				if farthestIdx >= 0 {
-					// Move farthest point to empty cluster
-					centroids[i] = copyVector(vectors[farthestIdx])
-					assignments[farthestIdx] = i
-					clusterSizes[i] = 1
-					clusterSizes[maxIdx]--
-				}
-			}
-		}
-	}
-
-	return centroids
+	return kmeans.RepairEmptyClusters(vectors, assignments, clusterSizes, centroids, km.distanceFunc)
 }
 
 // copyVector creates a deep copy of a vector.

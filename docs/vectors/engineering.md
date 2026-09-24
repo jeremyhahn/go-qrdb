@@ -232,21 +232,114 @@ k-length slice regardless of how many centroids initialisation actually
 produced, which hides a short initializer result from any assertion made
 only at the `Cluster()` level.
 
-**The duplicate centroid this uniform draw can produce is handled
-differently by the two refinement loops, and only one of them is
-self-healing.** ivf's `handleEmptyClusters` (see above) moves the farthest
-point of the largest cluster into an empty one once real cluster sizes are
-known, so a duplicate centroid there is transient. PQ's refinement loop does
-not: its own comment says so plainly — "Empty clusters keep their previous
-centroid" — so a cluster that starts empty (because k-means++ handed it a
-duplicate of another centroid, and no point was ever nearer to the duplicate
-than to the original) stays exactly that duplicate for the rest of training
-and for the life of the trained codebook. This is pre-existing PQ behavior,
-not something the k-means++ initialisation fix above changed or introduced,
-and it is not fixed here: it is a real reduction in effective codebook
-cardinality on degenerate training data (fewer distinct vectors than
-`nCentroids`), traded for not having ported ivf's largest-cluster-donor
-repair into a code path this change did not otherwise need to touch.
+**The duplicate centroid this uniform draw can produce is repaired by a
+mechanism BOTH refinement loops now share:
+`pkg/vector/kmeans.RepairEmptyClusters`.** ivf's `handleEmptyClusters` (see
+above) is now a one-line call into it; PQ's `kmeansCluster` gained the same
+call it did not have before, at the same point in its own refinement loop —
+after the loop, using whatever `assignments`/`counts` it left behind, exactly
+as ivf's own call does. `pkg/vector/kmeans` was extracted rather than PQ
+reimplementing ivf's repair a second time: it takes vectors, assignments,
+per-cluster sizes, centroids and a `func(a, b []float32) float32` distance
+callback — needing no true metric, since it only ever compares outputs to
+find a maximum. The two callers do not even agree on what that callback
+computes: PQ passes `l2Squared`, its own hardcoded squared distance, while
+ivf passes `km.distanceFunc` — the index's **configured** metric (`L2`,
+`Cosine`, or the signed `DotProduct`), raw and unsquared, whichever one
+`Config.DistanceMetric` selected. `RepairEmptyClusters` is written to that
+looser contract on purpose: it only ever compares two calls' outputs to each
+other, never assumes a particular scale, sign, or squaring, and has no
+imports of its own besides the standard library, so nothing importing it can
+create a cycle back to either caller.
+
+The repair moves the single farthest displaceable point into each empty
+cluster, in turn, so a duplicate centroid is transient rather than permanent
+for BOTH implementations now, **provided the training data actually contains
+enough distinct positions to fill every cluster**.
+
+**The donor search considers EVERY cluster with more than one member, not
+only the largest one.** Restricting the search to the single largest cluster
+was a real bug caught by review, not a simplification: a cluster can be large
+in COUNT while every one of its points sits exactly on its own centroid (a
+mass of exact duplicates), in which case every distance in it is zero and the
+largest cluster has nothing usable to donate — even though a SMALLER cluster
+elsewhere holds a point that is genuinely far from its own centroid and would
+happily fill the empty one. A largest-cluster-only search picks the large,
+degenerate one, finds no usable donor, and gives up without ever looking
+elsewhere.
+`TestRepairEmptyClusters_LargestClusterIsDegenerate` (`pkg/vector/kmeans`)
+and `TestKMeans_HandleEmptyClusters_LargestClusterIsDegenerate`
+(`pkg/vector/ivf`) both pin this exact shape — a large duplicate-cored
+cluster beside a smaller but genuinely spread one — and were verified by hand
+to fail against the largest-cluster-only version.
+
+**The donor search also does not assume distFunc is non-negative.** It seeds
+its running maximum from the first eligible candidate rather than a fixed
+zero, and compares candidates only against each other. A version seeded at a
+fixed zero is a second bug review caught: `ivf.KMeans`'s own call passes its
+signed `DistanceFunc` (`DotProductDistance`, where a MORE NEGATIVE value is
+CLOSER — see below), and a cluster whose points are all reasonably close can
+have every one of its raw distances negative, in which case a
+zero-seeded threshold rejects every candidate and reports no donor even
+though a real one exists. `TestRepairEmptyClusters_SignedDistanceFunction`
+pins this with a synthetic signed distance function and was verified by hand
+to fail against the zero-seeded version.
+
+A vector whose value is **identical to its own centroid is excluded from the
+donor search** rather than rejected after it. Moving such a vector could only
+duplicate a value that already exists, so it is never a candidate, and a
+genuinely displaceable vector elsewhere still wins even when an identical one
+would score as "farthest" (which a signed metric such as `DotProductDistance`
+can produce). A cluster is therefore left exactly as it was found (no
+reassignment, no size change) only when no eligible candidate remains: every
+splittable cluster consists of vectors identical to their own centroid (the
+totally-degenerate case), every candidate distance was NaN, or no cluster has
+more than one member. `TestRepairEmptyClusters_IdenticalCandidateDoesNotBlockAnotherDonor`
+pins the exclusion under a signed metric;
+`TestRepairEmptyClusters_YieldsKDistinctCentroidsWhereDataAllows` pins the
+achievable case (k distinct centroids when the data has them); and
+`TestRepairEmptyClusters_CannotExceedTheDistinctPointsAvailable` pins the
+boundary, asserting assignments and cluster sizes are left completely
+untouched when the data has only one distinct position.
+
+**A candidate distance that is NaN is skipped outright, and one that is
+±Inf is clamped to a finite sentinel, the same way `clampedMin` protects
+ivf and PQ's own initialisation from the identical overflow (see above).**
+ivf's configurable distance functions can produce either: `Cosine` returns
+NaN for large-but-finite input (dividing one float32 overflow by another is
+Inf/Inf), and `DotProductDistance` can overflow to a clean `+Inf` or `-Inf`.
+A NaN candidate cannot be meaningfully compared as farther or nearer than
+anything — IEEE 754 makes both `x > NaN` and `NaN > x` false — so accepting
+one as the running maximum (an earlier version of this code did, for
+whichever candidate happened to be scanned first) poisons every later
+comparison and the search silently keeps the first candidate scanned
+instead of the true farthest one, regardless of scale.
+`TestRepairEmptyClusters_SkipsNaNCandidates` reproduces this with
+`Cosine({1e20, 0}, {5e19, 0})` — perfectly finite input — and was verified by
+hand to fail against the version that does not skip NaN.
+Clamping cannot change the ORDER of candidates (-Inf < any finite value <
++Inf either way); what it changes is ties. A clamped `+Inf` ties with, rather
+than beats, an earlier `+MaxFloat32` candidate, and a clamped `-Inf` ties with
+a later `-MaxFloat32`. `TestRepairEmptyClusters_ClampTiesInfinityWithTheFiniteBound`
+and `TestRepairEmptyClusters_ClampTiesNegativeInfinityWithTheFiniteBound` pin
+exactly those ties, and each fails if its clamp branch is removed;
+`TestRepairEmptyClusters_ClampsInfiniteCandidates` additionally checks that no
+literal infinity reaches a centroid.
+
+`quantization`'s own suite additionally pins the specific call site PQ's
+`kmeansCluster` uses —
+`TestKMeansCluster_RepairsEmptyClustersWiredWithL2Squared` calls
+`kmeans.RepairEmptyClusters` directly with PQ's exact arguments, and
+`TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement` calls the real
+production function containing PQ's call site
+(`refineAndRepair`) with hand-picked initial centroids chosen to force an
+empty cluster deterministically — since k-means++ initialization is
+specifically designed to avoid leaving an empty cluster behind in the first
+place (an exhaustive seed search across several adversarial datasets, over
+50,000 seeds through `kmeansCluster`'s own public entry point, found none),
+which is consistent with ivf's own measurement of its analogous `kmeans++`
+configuration elsewhere in this document: 0 degenerate runs in 60,000 seeds,
+against thousands for `random` initialization, which PQ does not offer.
 
 **The running minimum must compare the metric's raw (unsquared) output,
 never its square, before taking the minimum.** `DistanceMetric` is not always
@@ -267,17 +360,51 @@ implementation over 2,000 seeds using `DotProductDistance`.
 directly.** Both implementations track it through a small `clampedMin(current,
 candidate)` helper — sentinel-initialised to `math.MaxFloat32` and only ever
 lowered by `<`, the same idiom `findNearestCentroid` uses — so a distance
-computation that overflows float32 to `+Inf`, or that produces `NaN`, can
-never replace a smaller (or the sentinel) value and propagate into the
-weighted-sampling sum. An unconditional assignment would let a single
-overflowing pair make one point's sampling weight `+Inf`; multiplying that
-into a random draw that happens to land on exactly zero produces `NaN`,
-against which every subsequent `>=` comparison is false, silently defaulting
-selection to the last-scanned vector instead of an actual weighted choice.
-`TestClampedMin_OverflowAndNaN` (in both `pkg/vector/ivf` and
-`pkg/vector/quantization`) pins `clampedMin` directly and deterministically;
-`TestKMeansCluster_OverflowDistanceClamped` runs the full PQ initialisation
-against vectors whose pairwise distance genuinely overflows float32.
+computation that overflows float32, or that produces `NaN`, can never replace
+a smaller (or the sentinel) value and propagate into the weighted-sampling
+sum. An unconditional assignment would let a single overflowing pair make one
+point's sampling weight `+Inf`; multiplying that into a random draw that
+happens to land on exactly zero produces `NaN`, against which every
+subsequent `>=` comparison is false, silently defaulting selection to the
+last-scanned vector instead of an actual weighted choice.
+
+`ivf.KMeans`'s `clampedMin` clamps BOTH `+Inf` and `-Inf` (as well as `NaN`)
+to a finite bound (`±math.MaxFloat32`) before ever comparing a candidate —
+not `+Inf` alone. `DotProductDistance`'s raw output is signed (a MORE
+NEGATIVE value is CLOSER), and its own float32 accumulation can overflow to
+`-Inf` from perfectly finite, merely large-magnitude and well-aligned input
+just as validly as it can overflow to `+Inf` from anti-aligned input. An
+unclamped `-Inf` compares less than every finite value — including the
+sentinel — so it would be accepted as a legitimately closer point rather than
+recognised as the overflow artifact it is, and squaring it back into a weight
+reproduces exactly the `+Inf` failure the clamp exists to prevent.
+`quantization.kmeansCluster`'s `clampedMin` only needs the `+Inf`/NaN side:
+its distance function, `l2Squared`, is unsigned by construction and cannot
+overflow negative. `TestClampedMin_OverflowAndNaN` (in both `pkg/vector/ivf`
+and `pkg/vector/quantization`) pins each package's `clampedMin` directly and
+deterministically; `TestKMeans_DotProductOverflow_ClampedToFiniteWeight` and
+`TestKMeans_InitializeKMeansPlusPlus_DotProductOverflow` exercise the ivf
+`-Inf` case specifically, through the real `DotProduct` function rather than
+a synthetic `-Inf` literal; `TestKMeansPlusPlusInit_OverflowDistanceClamped`
+runs PQ's initializer against vectors whose pairwise distance genuinely
+overflows float32, comparing it seed-for-seed against an unclamped reference
+oracle to confirm the two select identical centroids on ordinary input and
+diverge once the overflow is real.
+
+**Squaring the clamped minimum is a second, independent overflow hazard in
+`ivf.KMeans`, and clamping alone does not close it.** `clampedMin` only
+prevents an already-non-finite DISTANCE from replacing a smaller one; it does
+nothing to stop the SQUARING of a large-but-finite value — including its own
+sentinel, `math.MaxFloat32` — from overflowing float32's ~3.4e38 range on its
+own (`math.MaxFloat32 * math.MaxFloat32` computed in float32 is itself
+`+Inf`). The k-means++ sampling weight is therefore computed by
+`squaredWeight`, which squares in float64 (headroom to ~1.16e77, against a
+~1.8e308 ceiling) rather than float32.
+`TestSquaredWeight_LargeFiniteDistanceNoOverflow` pins this directly: values
+that overflow when squared in plain float32 arithmetic do not overflow
+through `squaredWeight`. `quantization.kmeansCluster` has no equivalent
+second step: `l2Squared` is already the squared distance in one step, so
+there is no separate "square the clamped minimum" operation to protect.
 
 ### `KMeansDimensionMismatchError` guards `KMeans.Cluster` called directly
 

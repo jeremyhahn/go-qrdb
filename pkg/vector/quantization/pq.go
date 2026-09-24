@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/kmeans"
 )
 
 const (
@@ -306,8 +307,31 @@ func kmeansCluster(vectors [][]float32, k, maxIter int, rng *rand.Rand) ([][]flo
 		return nil, &InsufficientVectorsError{Required: k, Got: n}
 	}
 
-	dim := len(vectors[0])
 	centroids := kmeansPlusPlusInit(vectors, k, rng)
+	return refineAndRepair(vectors, centroids, k, maxIter), nil
+}
+
+// refineAndRepair runs Lloyd's iteration starting from centroids -- normally
+// kmeansPlusPlusInit's output, but accepted as a parameter rather than
+// computed internally so a test can supply hand-picked initial centroids and
+// deterministically exercise the empty-cluster repair below. Going through
+// kmeansCluster's public entry point cannot do that: k-means++
+// initialisation is specifically designed to avoid ever leaving a cluster
+// with no assigned points, by drawing each centroid weighted by its distance
+// from every centroid already chosen, and an exhaustive search -- 50,000+
+// seeds through kmeansCluster's own entry point, across several datasets
+// designed to be adversarial -- found zero occurrences (see
+// TestKMeansCluster_RepairsEmptyClustersWiredWithL2Squared's doc comment).
+// TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement calls this
+// function directly with initial centroids chosen to force an empty cluster
+// deterministically, which is what makes the production call to
+// kmeans.RepairEmptyClusters below actually regression-tested: removing or
+// miswiring it fails that test, which calling kmeans.RepairEmptyClusters
+// directly in a test (as pkg/vector/kmeans's own suite does, to test the
+// mechanism itself) cannot detect.
+func refineAndRepair(vectors [][]float32, centroids [][]float32, k, maxIter int) [][]float32 {
+	n := len(vectors)
+	dim := len(vectors[0])
 
 	// Iterative refinement
 	assignments := make([]int, n)
@@ -359,11 +383,24 @@ func kmeansCluster(vectors [][]float32, k, maxIter int, rng *rand.Rand) ([][]flo
 				}
 				copy(centroids[c], newCentroids[c])
 			}
-			// Empty clusters keep their previous centroid.
+			// Empty clusters keep their previous centroid here; a cluster
+			// that is STILL empty once refinement is done is repaired below.
 		}
 	}
 
-	return centroids, nil
+	// Fix any cluster left with no assigned vectors -- most commonly a
+	// duplicate centroid kmeansPlusPlusInit's zero-weight fallback drew when
+	// there were fewer distinct training points than k -- by donating the
+	// globally farthest displaceable point to it, exactly as
+	// pkg/vector/ivf.KMeans.Cluster's own call to the same shared repair
+	// does. assignments and counts are used exactly as the refinement loop
+	// above left them: counts is reset and recomputed only when an
+	// iteration reaches its update step, which the `!changed` break skips,
+	// so on that exit counts reflects the PREVIOUS iteration's assignments
+	// rather than necessarily this one's. That is the same "handed over as
+	// the loop left them" contract pkg/vector/ivf.KMeans.Cluster documents
+	// for its own call, not a defect introduced here.
+	return kmeans.RepairEmptyClusters(vectors, assignments, counts, centroids, l2Squared)
 }
 
 // kmeansPlusPlusInit picks k initial centroids from vectors using k-means++
