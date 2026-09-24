@@ -649,8 +649,9 @@ type BarrierClient interface {
 	// keyed strategy. The migration runs asynchronously on the server (a
 	// system-scope migration recycles the data-plane server in process); the
 	// response acknowledges the start and clients poll BarrierStatus for the
-	// strategy change. Supported on REST and gRPC; other transports return
-	// NotImplementedError.
+	// strategy change. Supported on every transport -- REST, gRPC, Unix,
+	// QUIC, MCP and embedded -- and refuses with a typed error when the node
+	// has no EncryptionMigrator configured.
 	BarrierEnableEncryption(ctx context.Context, req *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error)
 
 	// BarrierGenerateRecoveryKeys generates recovery keys for disaster

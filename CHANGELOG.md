@@ -11,6 +11,21 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Enable-encryption reaches the node on every SDK transport.** The embedded
+  Go SDK transport now carries real `EncryptionMigrator` wiring from
+  `sdk/go/node` (mirroring how the network transports receive theirs), so it
+  migrates when a migrator is configured and refuses with the typed
+  `service.ErrMigrationProviderUnavailable` only when one truly isn't. The
+  QUIC and MCP Go SDK clients now forward `BarrierEnableEncryption` to their
+  already-working server handlers instead of returning an unconditional
+  `NotImplementedError` stub. The MCP server also registers
+  `qrdb_barrier_enable_encryption` unconditionally, closing a gap where a
+  standalone node with seal disabled (no barrier service and no migrator)
+  returned tool-not-found instead of the typed refusal every other transport
+  gives in that state.
+
 ## [0.20.5-alpha] - 2026-09-24
 
 ### Fixed

@@ -120,6 +120,7 @@ type Transport struct {
 	shareSvc          ceremony.ShareServicer
 	authFactorSvc     service.AuthFactorServicer
 	auditLogger       audit.AuditLogger
+	encMigrator       service.EncryptionMigrator
 
 	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
 	// kvSvc/dbSvc on first Query call. See transport_sql.go (compiled

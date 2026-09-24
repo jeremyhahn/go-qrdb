@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -1501,15 +1502,30 @@ func TestEmbeddedBarrier_Request_BarrierGenerateRootToken_InvalidRequest(t *test
 // BarrierEnableEncryption
 // ---------------------------------------------------------------------------
 
-// TestEmbeddedBarrier_EnableEncryption_RefusesTyped is the go-qrdb#558
-// transport-matrix test for this transport: this composer has no
-// EncryptionMigrator wired into it at all (unlike REST/gRPC/Unix/QUIC/MCP,
-// which always expose the endpoint/tool/route and let a nil migrator
-// produce a typed refusal at call time), so it refuses unconditionally --
-// but with the SAME shared sentinel (service.ErrMigrationProviderUnavailable)
-// those transports use for "unavailable", not a transport-specific
-// NotImplementedError, so a caller checking for the shared error gets a
-// consistent answer regardless of which transport it used.
+// stubEmbeddedMigrator is a minimal service.EncryptionMigrator test double
+// for BarrierEnableEncryption tests.
+type stubEmbeddedMigrator struct {
+	ch  chan embeddedMigrateCall
+	err error
+}
+
+type embeddedMigrateCall struct {
+	scope service.BarrierScope
+	opts  seal.MigrationOptions
+}
+
+func (m *stubEmbeddedMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	m.ch <- embeddedMigrateCall{scope: scope, opts: opts}
+	return m.err
+}
+
+// TestEmbeddedBarrier_EnableEncryption_RefusesTyped proves that with no
+// EncryptionMigrator configured (the default -- WithEncryptionMigrator was
+// never supplied), BarrierEnableEncryption refuses with the SAME shared
+// sentinel (service.ErrMigrationProviderUnavailable) REST/gRPC/Unix/QUIC/MCP
+// use for "unavailable", not a transport-specific NotImplementedError, so a
+// caller checking for the shared error gets a consistent answer regardless
+// of which transport it used.
 func TestEmbeddedBarrier_EnableEncryption_RefusesTyped(t *testing.T) {
 	tr := newBarrierTransport(t, &mockBarrierService{})
 
@@ -1519,6 +1535,87 @@ func TestEmbeddedBarrier_EnableEncryption_RefusesTyped(t *testing.T) {
 	})
 	if !errors.Is(err, service.ErrMigrationProviderUnavailable) {
 		t.Fatalf("err = %v, want service.ErrMigrationProviderUnavailable", err)
+	}
+}
+
+// TestEmbeddedBarrier_EnableEncryption_SystemStarts proves that with an
+// EncryptionMigrator configured via WithEncryptionMigrator (the wiring
+// sdk/go/node supplies from its own live migrator), BarrierEnableEncryption
+// actually reaches it and reports "migration_started", matching the
+// REST/gRPC/Unix/QUIC/MCP handlers.
+func TestEmbeddedBarrier_EnableEncryption_SystemStarts(t *testing.T) {
+	mig := &stubEmbeddedMigrator{ch: make(chan embeddedMigrateCall, 1)}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithEncryptionMigrator(mig))
+	if err != nil {
+		t.Fatalf("failed to create transport: %v", err)
+	}
+
+	resp, err := tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
+		Strategy:   "passphrase",
+		Passphrase: []byte("pw"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != "migration_started" {
+		t.Fatalf("Status = %q, want migration_started", resp.Status)
+	}
+	if resp.Scope != "system" {
+		t.Fatalf("Scope = %q, want system", resp.Scope)
+	}
+
+	select {
+	case call := <-mig.ch:
+		if call.scope.Kind != service.ScopeSystem {
+			t.Fatalf("scope.Kind = %v, want ScopeSystem", call.scope.Kind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("migrator was never invoked")
+	}
+}
+
+// TestEmbeddedBarrier_EnableEncryption_InvalidOptionsRejectedSynchronously
+// proves invalid options are rejected before the migrator is ever invoked.
+func TestEmbeddedBarrier_EnableEncryption_InvalidOptionsRejectedSynchronously(t *testing.T) {
+	mig := &stubEmbeddedMigrator{ch: make(chan embeddedMigrateCall, 1)}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithEncryptionMigrator(mig))
+	if err != nil {
+		t.Fatalf("failed to create transport: %v", err)
+	}
+
+	// strategy "none" is not a valid migration target.
+	_, err = tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
+		Strategy: "none",
+	})
+	if err == nil {
+		t.Fatal("expected an error for strategy=none")
+	}
+	select {
+	case <-mig.ch:
+		t.Fatal("migrator must not be invoked for invalid options")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestEmbeddedBarrier_EnableEncryption_Closed proves a closed transport
+// refuses before ever consulting the migrator.
+func TestEmbeddedBarrier_EnableEncryption_Closed(t *testing.T) {
+	mig := &stubEmbeddedMigrator{ch: make(chan embeddedMigrateCall, 1)}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithEncryptionMigrator(mig))
+	if err != nil {
+		t.Fatalf("failed to create transport: %v", err)
+	}
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
+		Strategy:   "passphrase",
+		Passphrase: []byte("pw"),
+	})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("err = %v (%T), want *transport.ClosedError", err, err)
 	}
 }
 

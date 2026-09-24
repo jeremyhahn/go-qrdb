@@ -31,7 +31,7 @@ When no encryption migrator is configured for that deployment (standalone
 mode, or a composer that never wired one), the request still reaches the
 handler/tool and is refused there with a typed "no encryption migrator" error
 mapped to `501` / `Unimplemented` — never a plain route-not-found `404` or a
-"tool absent" response. All five transports agree on this; only the
+"tool absent" response. All five network transports agree on this; only the
 transport-specific error type differs (REST returns its usual
 `ServiceNotImplementedError`-shaped body, gRPC/Unix `codes.Unimplemented`,
 QUIC/MCP their own `ServiceNotConfiguredError`/`ToolError`-wrapped
@@ -41,12 +41,21 @@ seal-disabled node with the migrator configured 404 instead of returning that
 typed refusal — the one transport that behaved differently for the exact same
 condition.
 
-Embedded (`sdk/go/transport/embedded`) is the one exception: it has no
-encryption migrator wiring of any kind, so `EnableEncryption` always refuses
-with `service.ErrMigrationProviderUnavailable` regardless of node state. An
-embedder needing system-scope enable-encryption drives it directly through
-`sdk/go/node`'s `Node.EnableEncryption(ctx, scope, opts)` API instead (see
+Embedded (`sdk/go/transport/embedded`) reaches the same refusal through the
+same sentinel rather than a route: `sdk/go/node` wires its
+`EncryptionMigrator` into the embedded transport the same way the daemon
+wires one into the network transports (`server.NewScopedEncryptionMigrator`),
+so `EnableEncryption` migrates when one is available and refuses with
+`service.ErrMigrationProviderUnavailable` only when it truly isn't. An
+embedder can also drive system-scope enable-encryption directly through
+`sdk/go/node`'s `Node.EnableEncryption(ctx, scope, opts)` API instead of going
+through the `Client.Barrier()` transport (see
 [../seal/enabling-encryption.md](../seal/enabling-encryption.md)).
+
+Every Go SDK client (`sdk/go/transport/{rest,grpc,unix,quic,mcp,embedded}`)
+forwards `BarrierEnableEncryption` to its transport's server handler above
+using the same marshal/dial pattern it uses for every other barrier call; none
+of them stub the call locally.
 
 ## Per-database and per-tenant barriers
 

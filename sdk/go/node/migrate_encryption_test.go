@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // nodeCaptureDist is a test-only seal.CeremonyDistributor that captures the
@@ -158,6 +160,72 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 		require.NoErrorf(t, rerr, "Get(%q) after restart", k)
 		require.Equalf(t, v, string(gotR), "value for %q after restart", k)
 	}
+}
+
+// TestNode_EnableEncryption_ViaEmbeddedTransport is the go-qrdb#558 SDK-wiring
+// regression test: enable-encryption must reach the SAME node-level migrator
+// whether driven directly via Node.EnableEncryption (proven by
+// TestNode_EnableEncryption_SystemNoneToPassphrase above) or through the
+// embedded SDK transport (n.Client().Barrier().BarrierEnableEncryption).
+// Before buildEmbeddedOpts wired embedded.WithEncryptionMigrator, this call
+// always failed with service.ErrMigrationProviderUnavailable regardless of
+// node state, since the embedded transport had no migrator wiring of any
+// kind.
+//
+// Unlike the direct call, which runs synchronously to completion, the
+// transport handler races the migration against an accept window and
+// reports "migration_started" immediately (matching every other transport),
+// so this test polls BarrierStatus for the strategy to change.
+func TestNode_EnableEncryption_ViaEmbeddedTransport(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	require.False(t, n.IsSealed(), "none-strategy node boots unsealed")
+
+	kv := n.KVService()
+	require.NoError(t, kv.Put(ctx, "key/embedded-transport", []byte("value")))
+
+	resp, err := n.Client().Barrier().BarrierEnableEncryption(ctx, &transport.BarrierEnableEncryptionRequest{
+		Strategy:   string(seal.StrategyPassphrase),
+		Passphrase: []byte("enable-enc-pass-embedded"),
+	})
+	require.NoError(t, err, "BarrierEnableEncryption over the embedded transport")
+	require.Equal(t, "migration_started", resp.Status)
+	require.Equal(t, "system", resp.Scope)
+
+	require.Eventually(t, func() bool {
+		// The system-scope migration recycles the whole in-process data
+		// plane, briefly swapping n.client to nil between teardown and the
+		// rebuilt client's Store -- this poll must tolerate that window
+		// rather than dereferencing a nil *sdk.Client.
+		client := n.Client()
+		if client == nil {
+			return false
+		}
+		status, serr := client.Barrier().BarrierStatus(ctx)
+		return serr == nil && status.Strategy == string(seal.StrategyPassphrase)
+	}, 5*time.Second, 20*time.Millisecond, "strategy never changed from none to passphrase")
+
+	// The data plane is rebuilt and serving again under the keyed barrier,
+	// reached through a freshly-resolved client (the recycle replaces it).
+	kv2 := n.KVService()
+	require.NotNil(t, kv2, "KV service must be available after the in-process recycle")
+	got, gerr := kv2.Get(ctx, "key/embedded-transport")
+	require.NoError(t, gerr)
+	require.Equal(t, "value", string(got))
 }
 
 // TestNode_EnableEncryption_InPlaceMechanism repeats the migration with the

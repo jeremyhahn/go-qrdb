@@ -67,6 +67,41 @@ func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope,
 	return (*mig).EnableEncryption(ctx, scope, opts)
 }
 
+// nodeEmbeddedMigrator adapts *Node to service.EncryptionMigrator for the
+// embedded SDK transport (sdk/go/transport/embedded), wired in via
+// embedded.WithEncryptionMigrator in buildEmbeddedOpts. It resolves
+// n.encMigrator on every call rather than capturing a value once: the
+// embedded transport (like the network transports) is built once per
+// data-plane construction, and a system-scope migration replaces
+// n.encMigrator's target in place (see wireClientAndServer) without
+// necessarily rebuilding the transport around it, so a captured value could
+// go stale across that recycle where a live re-resolve does not.
+//
+// Unlike Node.EnableEncryption, which is the direct Go API and returns a
+// Node-specific *MigrationNotSupportedError with a reason, this adapter
+// returns the shared service.ErrMigrationProviderUnavailable sentinel every
+// other transport (REST/gRPC/Unix/QUIC/MCP) uses for "not available" --
+// giving a caller checking for that sentinel through the embedded transport
+// the same answer it would get anywhere else, regardless of the Node-level
+// reason (seal not enabled vs. not yet unsealed).
+type nodeEmbeddedMigrator struct {
+	node *Node
+}
+
+// EnableEncryption implements service.EncryptionMigrator by delegating to the
+// node's own live scoped migrator, or refusing with
+// service.ErrMigrationProviderUnavailable when none is configured yet.
+func (m *nodeEmbeddedMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	mig := m.node.encMigrator.Load()
+	if mig == nil {
+		return service.ErrMigrationProviderUnavailable
+	}
+	return (*mig).EnableEncryption(ctx, scope, opts)
+}
+
+// Compile-time check that nodeEmbeddedMigrator implements service.EncryptionMigrator.
+var _ service.EncryptionMigrator = (*nodeEmbeddedMigrator)(nil)
+
 // nodeSystemMigrator adapts *Node to service.EncryptionMigrator for the system
 // scope only. It holds n.migrateMu for the entire duration of each system
 // migration so the data-plane tear-down and rebuild are serialized. Tenant

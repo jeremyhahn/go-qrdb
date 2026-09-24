@@ -2199,6 +2199,15 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 		embedded.WithEmbeddingService(svcNode.Embedding),
 		embedded.WithRAGService(svcNode.RAG),
 		embedded.WithDatabaseService(svcNode.Database),
+		// Wired unconditionally, matching the network transports
+		// (server.WithEncryptionMigrator is set whenever the node's own
+		// scoped router exists, independent of barrier/seal state): the
+		// adapter resolves n.encMigrator live on every call and answers
+		// with the shared service.ErrMigrationProviderUnavailable when it
+		// is not yet set, so BarrierEnableEncryption through this transport
+		// behaves the same as through REST/gRPC/Unix/QUIC/MCP instead of
+		// the transport-specific stub it used to be (go-qrdb#558).
+		embedded.WithEncryptionMigrator(&nodeEmbeddedMigrator{node: n}),
 	}
 	// The transaction/CAS family is served in EVERY mode (owner ruling
 	// 2026-08-23, go-qrdb#62). A standalone node is engine-direct and
