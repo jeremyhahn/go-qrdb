@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.5-alpha] - 2026-09-24
+
+### Fixed
+
+- The CI coverage gate no longer fails at random on `pkg/vector/flat`. The insertion-sort
+  swap branch in `sortAllResults` was covered only when `sync.Map`'s randomized iteration
+  happened to produce an unsorted order (a 1.9-point swing under CPU contention); a
+  deterministic test now covers it on every run.
+
 ## [0.20.4-alpha] - 2026-09-24
 
 ### Fixed
