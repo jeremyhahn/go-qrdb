@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.3-alpha] - 2026-09-24
+
+### Changed
+
+- CI guards every committed generated artifact (coverage baseline, deadcode baseline,
+  ifacesweep findings, lockstep baseline) with a per-artifact allowlist. Each
+  path-bearing column must be a go-qrdb import path or a repo-relative path. Absolute
+  workstation paths, `..` traversal, header-only artifacts and unknown artifacts all
+  fail the Lint job.
+
 ## [0.20.2-alpha] - 2026-09-23
 
 ### Fixed
