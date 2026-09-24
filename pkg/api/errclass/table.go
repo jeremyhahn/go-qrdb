@@ -112,6 +112,12 @@ var dominantRules = []rule{
 	// inconsistent.
 	as(&user.IndexCompensationError{}, DataLoss),
 
+	// A user was read but its enrolled auth factors could not be listed, so
+	// the response cannot say whether it has a second factor. Retryable,
+	// whatever store failure the listing met: that cause is not the answer
+	// the caller asked for.
+	as(&user.FactorLookupError{}, Unavailable),
+
 	// A collection document write whose outcome is unknown -- the write
 	// failed and may have committed, its post-write fence could not read the
 	// metadata back, or a fenced-out write could not be retracted. The
@@ -467,6 +473,15 @@ var identityRules = []rule{
 	// The state is valid; the record is not somewhere this move starts from.
 	as(&user.LifecycleTransitionError{}, FailedPrecondition),
 	as(&user.ValidationError{}, InvalidArgument),
+	// A role-assignment write named a role that does not exist, or one that
+	// may not be granted in the tenant it targets: a bad field in the write,
+	// whose subject is a user, not the role. ReferenceError wraps the lookup's
+	// RoleNotFoundError, so it must precede that row.
+	as(&role.ReferenceError{}, InvalidArgument),
+	as(&role.NotAssignableError{}, InvalidArgument),
+	// A role-assignment write named a role and the node has no role service
+	// to check it against: the node cannot serve the write as composed.
+	as(&role.ServiceRequiredError{}, Unimplemented),
 	as(&role.RoleNotFoundError{}, NotFound),
 	as(&role.RoleNameExistsError{}, AlreadyExists),
 	as(&role.RoleIDExistsError{}, AlreadyExists),

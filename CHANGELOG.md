@@ -55,6 +55,16 @@ are not reconstructed here — their history is in the git log.
   account's enrolled auth `factors` (never their credential data), and `mfaEnabled`,
   `mfaMethods` and `mfaEnrolledAt` derived from those factors. `UpdateUser` sets or clears
   `roleBindings` and `attributes` on every transport.
+- A role binding grants its role in authorization checks that target the binding's tenant,
+  and nowhere else. REST, gRPC, unix, QUIC and MCP resolve the tenant a request acts on — the
+  tenant of the user or role it names, or the tenant a per-tenant barrier operation names —
+  before the route-level permission check and authorize against it, so a binding for tenant A
+  works on every route that acts on A. Tenant administration (a tenant's record, quotas and
+  entitlements) stays checked against the caller's own tenant. The FIPS 140-3 Security Officer deny-list and strict separation of duties
+  apply to bound roles as they do to held ones.
+- `embedded.WithAuthMiddleware`; `sdk/go/node` hands the embedded transport the same
+  `AuthMiddleware` its network transports enforce with. The SDK re-exports
+  `RoleNotAssignableError`, `RoleServiceRequiredError` and `UserFactorLookupError`.
 
 ### Changed — BREAKING
 
@@ -145,6 +155,17 @@ are not reconstructed here — their history is in the git log.
   unsealed` on gRPC, Unix, QUIC and MCP. A client polling it across the unseal
   retries against the regular listener. It no longer starts the MySQL or
   PostgreSQL wire protocols, which carry no sealed-window verb.
+- Writing `roleIDs` (`CreateUser`, `UpdateUser`) or `roleBindings` or `attributes`
+  (`UpdateUser`) requires `roles:assign` in the user's tenant, and in the tenant of every
+  binding written, on every transport including embedded. Every referenced role must exist
+  and belong to its tenant (400 / `INVALID_ARGUMENT`), whether or not RBAC is enabled; a node
+  with no role service refuses the write (501 / `UNIMPLEMENTED`).
+- User attributes reach ABAC policies only as `subject.user_attrs.<key>` (match key
+  `user_attrs.<key>`), never as the authenticated `subject.attrs.<key>`, so an attribute
+  cannot forge a certificate- or token-derived value.
+- `User.Factors` is removed. Factors and MFA state are read from the auth-factor store once
+  per response; if that read fails the request fails with 503 / `UNAVAILABLE` instead of
+  reporting no second factor.
 
 ### Changed
 

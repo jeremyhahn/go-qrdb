@@ -567,23 +567,23 @@ wrong fails a test rather than passing a typed-in column.
   capability is refused (`ErrStoreNotAtomic`) instead of being promoted in two
   steps, and a lost response is `CommitOutcomeUnknownError`: the retry answers
   from what committed.
-- **MFA state is derived from `Factors`, never stored.** `User.HasMFA`,
-  `MFAMethods` and `MFAEnrolledAt` are pure functions of the enrolled-factor
-  slice — true iff at least one factor is enrolled, the distinct factor names
-  in first-enrollment order, and the earliest enrollment time respectively.
-  There is no `MFAEnabled` field on the domain type to fall out of sync with
-  `Factors`; `user.WireMFA` computes all three at the point a response is
-  projected, on every transport. An enrolled factor is a fact about what the
-  account HAS, not a policy statement that MFA is REQUIRED for it.
-- **`Factors` is metadata-only on every wire, in both directions.**
-  `user.WireFactors` projects `ID`, `FactorName` and `CreatedAt` and drops
-  `Data` unconditionally; no transport's create or update request declares a
-  `factors` input, so enrollment stays its own factor-specific verb, never
-  `CreateUser`/`UpdateUser`. Before this, the MCP transport `json.Marshal`ed
-  the domain `*User` directly and leaked `Data` (`json.RawMessage` survives an
-  ordinary marshal untouched) — it now builds the same metadata-only
-  projection REST, gRPC and QUIC do. See **Known limitations** below: no
-  production enrollment path currently writes `User.Factors` at all.
+- **MFA state and `Factors` metadata are computed AT READ TIME from the real
+  enrollment records, never stored on the domain `User`.** There is no
+  `User.Factors` field: `pkg/user.FactorLister` is the narrow interface
+  every transport's projection consumes, backed in production by
+  `service.UserAuthFactorServicer` — the SAME store `/v1/users/factors`
+  reads and writes. `user.ResolveFactorView` lists the account's factors
+  ONCE and derives everything from that one list: `Factors` (`ID`,
+  `FactorName`, `CreatedAt` for each active factor; `Data` is dropped
+  unconditionally), `MFAEnabled` (true iff at least one active factor),
+  `MFAMethods` (distinct factor types in first-registration order) and
+  `MFAEnrolledAt` (earliest active registration). One list means `Factors`
+  and the MFA fields can never describe two different moments. A failed list
+  is `*user.FactorLookupError` — 503 on REST, `Unavailable` on gRPC, QUIC and
+  MCP, the typed error on embedded — never a response reporting the account
+  as having no second factor. No transport's create or update request
+  declares a `factors` input, so enrollment stays its own factor-specific
+  verb, never `CreateUser`/`UpdateUser`.
 - **The system-tenant rule reads `identity.TenantID`, so that field must
   arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
@@ -605,46 +605,117 @@ wrong fails a test rather than passing a typed-in column.
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
 
-## Known limitations
+## Authorization model
 
-Three gaps a security review of the RoleBindings/Attributes/Factors wire work
-surfaced. None is a defect the wiring itself introduced — all three predate
-it — but the wiring makes each one reachable and visible where it previously
-was not, so they are recorded here rather than left implicit.
+Writing `RoleIDs`, `RoleBindings`, or `Attributes` requires `roles:assign` —
+the same permission the RBAC model already defines for granting a role
+directly — in addition to the route's own `users:create`/`users:update`
+permission. `pkg/auth/middleware.AuthorizeRoleAssignmentWrite` (`UpdateUser`)
+and `AuthorizeRoleAssignmentWriteOnCreate` (`CreateUser`, `RoleIDs` only —
+`RoleBindings`/`Attributes` are not settable at create time) are the ONE
+gate, called by every transport. Embedded calls it on the `AuthMiddleware`
+installed with `embedded.WithAuthMiddleware`; `sdk/go/node` builds its
+network `AuthMiddleware` before the embedded transport and hands it the same
+instance, so the two authorize identically — and neither authorizes anything
+when auth is disabled.
 
-- **`RoleBindings` and `Attributes` are authorized identically to `RoleIDs`:
-  `users:update` alone, with no role-existence or tenant-scope validation.**
-  This is the SAME permission model `RoleIDs` (system-scoped role grants) has
-  always used on `UpdateUser` — extending `RoleBindings`/`Attributes` to match
-  it, rather than inventing a narrower one just for the two new fields, was
-  the explicit scope of this change. Whether `users:update` should keep this
-  breadth at all — a dedicated `roles:assign`-style gate, and validation that
-  a bound role id actually exists in the target tenant — is an authorization
-  model decision for the two fields together with `RoleIDs`, not something to
-  decide unilaterally for two of the three.
-- **Neither `RoleBindings` nor `Attributes` has any authorization effect yet.**
-  `pkg/auth/middleware`'s identity-building path copies only `User.RoleIDs`
-  onto `auth.Identity.Roles`; `pkg/auth/rbac.effectiveRoles` resolves
-  permissions from `identity.Roles` alone. A tenant-scoped role binding or an
-  ABAC attribute is stored and now visible on every transport, but grants or
-  constrains nothing during authorization — "tenant-admin for one customer
-  without being an admin of the whole system" (see
-  [architecture.md](architecture.md#three-authorization-inputs-on-one-user))
-  describes the intended shape, not the current behavior. Wiring either field
-  into the authorizer is a change to the authentication/authorization path
-  itself and needs its own design, not a follow-on to a wire-exposure change.
-- **No production path writes `User.Factors`.** The working auth-factor
-  enrollment system in this codebase is `pkg/auth.AuthFactor` (via
-  `AuthFactorService` / `/v1/users/factors`), which persists its own records
-  and never touches `User.Factors`. `User.Factors`, `HasMFA`, `MFAMethods` and
-  `MFAEnrolledAt` are all correctly implemented against
-  **whatever populates `User.Factors`** — today that is nothing, the same
-  unreachable-field shape `User.System` itself was in before something was
-  made to populate it: the mechanism is real, wired, and tested, and nothing
-  in this codebase calls it with real data. Deciding what should populate it
-  (the existing
-  `AuthFactorService` records, a `pkg/authfactors`-driven enrollment path, or
-  something else) is an owner decision, not one this change makes.
+Each gate is two steps with different conditions:
+
+1. **Authorization** — `roles:assign` in the target tenant, and again in the
+   `TenantID` of every `RoleBindings` entry. Writing a binding that names
+   tenant `acme` is an act of granting a role WITHIN `acme`, so holding
+   `roles:assign` only in the target user's own tenant must not be enough to
+   mint an `acme` grant. A nil `*AuthMiddleware` (no RBAC configured) skips
+   this step, as every `AuthMiddleware` gate does.
+2. **Validation** — never skipped. `role.ValidateAssignable` confirms every
+   `RoleIDs` entry exists and belongs to the target tenant, and every
+   binding's role to the binding's tenant (a system-tenant built-in role is
+   valid everywhere). A role reference with no role service to check it is
+   `*role.ServiceRequiredError`: a refusal, never an unvalidated write.
+
+The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
+(`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
+context tenant: `UpdateUser` routes its target purely by id, so a
+system-tenant administrator updating a tenant-A user is authorized, and has
+its `RoleIDs` validated, against tenant A. `CreateUser`'s target tenant is
+the EFFECTIVE tenant the new record will be created in
+(`tenant.EffectiveTenant`), the resolution `routingUserService.CreateUser`
+performs itself.
+
+The gate's refusals are typed, and every transport renders them through the
+one classification table (`pkg/api/errclass`), not a mapper of its own. A role
+that does not exist is `*role.ReferenceError` (it wraps the lookup's
+`*role.RoleNotFoundError`) and a role that may not be granted where it is
+being granted is `*role.NotAssignableError`; both are `InvalidArgument` (400),
+DELIBERATELY not the `NotFound` a missing user gets: `UpdateUser` is a
+single-subject method whose id names the USER, and the SDK's not-found
+reconstruction rebuilds `transport.UserNotFoundError` from that id whenever
+the status means "not found", so a bad ROLE reference reported that way would
+name the wrong subject as missing. The `ReferenceError` row sits above the
+`RoleNotFoundError` row for exactly that reason. `*role.ServiceRequiredError`
+is `Unimplemented` (501): a composition fault, not a caller error. A target
+user the gate cannot find is the ordinary `*user.UserNotFoundError`.
+
+`pkg/auth/rbac.RBACAuthorizer.Authorize` consumes `RoleBindings` on the READ
+side. `finalizeIdentity` clears `auth.Identity.RoleBindings` and
+`Attributes` before the user lookup whenever a user store is configured, then
+fills them from the record, so the store is their only source and a withdrawn
+binding stops applying on every path — found, not found, tenant sealed. The
+bindings whose `TenantID` equals the check's target tenant are resolved
+SEPARATELY from `identity.Roles`, in that tenant, and the two permission sets
+are unioned. Resolving both as one role-id list in one tenant — the shape
+this replaced — failed the whole call whenever the tenants disagreed,
+because `kvRoleStore.ResolvePermissions` errors on any id absent from the
+tenant it resolves against. The FIPS 140-3 SO deny-list and the strict
+separation-of-duties Owner strip apply to that effective set: a bound SO
+role is resolved in its tenant and denied like a held one, and a bound Owner
+role is stripped in the tenant that issued it.
+`pkg/auth/rbac/role_binding_test.go` proves it against a tenant-aware role
+double that fails, as production does, on an id from the wrong tenant.
+
+**Route-level checks resolve the target first.** A RoleBinding only counts
+when the check's target tenant is the one it names, so every transport
+resolves the request's target before its route-level permission check and
+authorizes against it (`pkg/auth/middleware/target.go`). The resolution lives
+in one place, `AuthMiddleware.ResolveTarget`, over a `Target` value each
+transport extracts from its own request shape:
+
+| Transport | Where the extractor is declared |
+|---|---|
+| REST | `routeTarget`/`routeIfTarget` beside the route (`RESTPathUser`, `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, `RESTBodyTenant`, `RESTBodyUser`) |
+| gRPC and unix | `grpc.IdentityTargets`, registered on the shared middleware with `RegisterGRPCTargets` by both listeners |
+| QUIC | `identityTargets` in `pkg/api/quic/targets.go`, attached to the method registry |
+| MCP | `identityTargets` in `pkg/api/mcp/targets.go`, attached to the tool registry |
+| embedded | no route-level check of its own; its role-assignment gate authorizes against the record's tenant, and `AuthMiddleware.AuthorizeTarget` is the entry point for a typed call's target |
+
+A `UserTarget` or `RoleTarget` is resolved by reading the record through the
+same routed user or role service the handler uses, with the caller's own
+context. A record the caller cannot see — absent, or in a tenant the routed
+service hides from it — resolves to the caller's own tenant, and the handler
+then answers not-found as before; any other lookup failure refuses the
+request as unavailable rather than authorizing against a guess. The target
+is bound into a context used only for the decision: the handler still sees
+the caller's own tenant, so nothing downstream mistakes the target for the
+caller. Requests that name nothing — the data plane — are checked against the
+caller's own tenant, exactly as before, and so is the tenant-administration
+surface (a tenant's record, quotas and entitlements): those are the platform
+operator's, and a binding in a tenant must not reach its own plan. The
+binding fixture in `pkg/auth/authtest` is the one every transport's test
+drives, over the real built-in role store: a system-tenant operator whose
+only grant is a tenant-A binding to that tenant's Admin role is allowed the
+update of a tenant-A user and refused a tenant-B one.
+
+`Attributes` reaches `pkg/auth/abac` through `auth.Identity.Attributes`, a
+field kept separate from `Identity.Metadata` and exposed in its own
+namespace: `abac.Subject.UserAttributes`, read by `subject.user_attrs.<key>`
+in a condition and by a `user_attrs.<key>` match key. `Metadata` is
+authentication-derived (certificate fields, token claims) and becomes
+`Subject.Attributes` (`subject.attrs.<key>`, bare match keys); `Attributes`
+is written by anyone holding `roles:assign`, a weaker trust level. A bare
+name never reads the user namespace, so an attribute called `organization`,
+`dns_san` or `tenant_source` can never satisfy a policy written against the
+authenticated value — whether or not the authenticator set one.
+`pkg/auth/abac/decorator_test.go` attempts exactly that forgery for each.
 
 ## Error semantics
 

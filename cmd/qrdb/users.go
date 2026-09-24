@@ -376,7 +376,7 @@ func printUser(u *transport.User) error {
 			_, _ = fmt.Fprintf(outputWriter, "Attribute: %s=%s\n", k, v)
 		}
 		// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from the account's
-		// enrolled factors, never stored — see pkg/user.WireMFA.
+		// enrolled factors, never stored — see pkg/user.ResolveFactorView.
 		_, _ = fmt.Fprintf(outputWriter, "MFAEnabled: %s\n", strconv.FormatBool(u.MFAEnabled))
 		if len(u.MFAMethods) > 0 {
 			_, _ = fmt.Fprintf(outputWriter, "MFAMethods: %s\n", strings.Join(u.MFAMethods, ", "))

@@ -63,7 +63,7 @@ func TestAuthorize_UnknownMethodDenied(t *testing.T) {
 	// is REJECTED rather than allowed through. The fine-grained authorizer is
 	// not consulted (the request is denied before the permission check).
 	ctx := context.Background()
-	err := srv.authorize(ctx, "unknown.Method")
+	err := srv.authorize(ctx, "unknown.Method", nil)
 	if err == nil {
 		t.Fatal("expected unmapped method to be denied, got nil")
 	}
@@ -93,7 +93,7 @@ func TestAuthorize_KnownMethodDenied(t *testing.T) {
 		TenantID: "tenant-1",
 	})
 
-	err := srv.authorize(ctx, "kv.Put")
+	err := srv.authorize(ctx, "kv.Put", nil)
 	if err == nil {
 		t.Fatal("expected AuthorizationError, got nil")
 	}
@@ -125,7 +125,7 @@ func TestAuthorize_KnownMethodAllowed(t *testing.T) {
 		TenantID: "system",
 	})
 
-	err := srv.authorize(ctx, "kv.Get")
+	err := srv.authorize(ctx, "kv.Get", nil)
 	if err != nil {
 		t.Fatalf("expected nil error for authorized method, got: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestAuthorize_NoIdentityInContext(t *testing.T) {
 	)
 
 	// No identity injected, so AuthorizeQUIC will return an unauthenticated error.
-	err := srv.authorize(context.Background(), "kv.Delete")
+	err := srv.authorize(context.Background(), "kv.Delete", nil)
 	if err == nil {
 		t.Fatal("expected error when no identity in context")
 	}

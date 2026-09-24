@@ -396,3 +396,24 @@ func joinLifecycles(states []Lifecycle) string {
 	}
 	return out
 }
+
+// FactorLookupError is returned when a user's enrolled auth factors could not
+// be listed while projecting the user for a response. It fails the read rather
+// than reporting no factors, because "the lookup failed" and "the account has
+// no second factor" are different answers and only one of them is true.
+type FactorLookupError struct {
+	UserID uint64
+	Err    error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *FactorLookupError) Error() string {
+	msg := "user: could not list auth factors for user " + strconv.FormatUint(e.UserID, 10)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes the underlying factor-store error.
+func (e *FactorLookupError) Unwrap() error { return e.Err }

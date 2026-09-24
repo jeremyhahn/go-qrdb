@@ -257,13 +257,54 @@ module, not to the subject.
 Tenant-scoped bindings are the reason a control-plane user can be tenant-admin
 for tenant X without being an admin of the system tenant.
 
-> **Known limitation.** This describes the intended shape of the model, not
-> its current enforcement: the authorization path
-> (`pkg/auth/middleware` → `pkg/auth/rbac`) resolves permissions from
-> `RoleIDs` only. `RoleBindings` and `Attributes` are persisted and readable
-> on every transport (`docs/identity-rbac/api.md`), but neither currently
-> influences an authorization decision. See
-> [engineering.md](engineering.md#known-limitations).
+All three fields influence an authorization decision. `finalizeIdentity`
+carries `RoleBindings` and `Attributes` onto the authenticated identity
+alongside `RoleIDs`. With a user store configured the store is their only
+source: whatever the authenticator carried in is cleared before the lookup,
+and the store's current state replaces it, so a withdrawn binding or a
+cleared attribute stops applying on the next request — including when the
+record is not found or the tenant is sealed. `pkg/auth/rbac.RBACAuthorizer.
+Authorize` resolves `RoleIDs` in the identity's own tenant and, separately,
+resolves any `RoleBindings` entry whose `TenantID` equals the tenant the
+check targets, in THAT tenant, then unions the two permission sets — a
+binding for tenant A grants there and nowhere else. The FIPS 140-3 SO
+deny-list and the strict separation-of-duties Owner strip both apply to the
+effective role set: a bound SO role is denied exactly as a directly held
+one, and a bound Owner role is stripped in the tenant that issued it.
+
+`Attributes` reaches `pkg/auth/abac` in its own namespace
+(`subject.user_attrs.<key>`, or a `user_attrs.<key>` match key), never in
+the authenticated one (`subject.attrs.<key>`) that certificate fields and
+token claims populate, so an attribute written to a user record can never
+satisfy a policy written against an authentication-derived value of the same
+name. See [../auth/abac.md](../auth/abac.md#tenant-scoping).
+
+**Which tenant a binding is matched against.** A binding counts in an
+authorization check whose target is the tenant it names, and in no other. The
+target is resolved from the request BEFORE the route-level permission check,
+on every network transport: a request that names a user or role is checked
+against the tenant that user or role belongs to, a per-tenant barrier
+operation against the tenant it names, and every other request — the whole
+data plane, and the tenant-administration surface (a tenant's record, its
+quotas and entitlements), which only the platform operator may manage —
+against the caller's own tenant. A system-tenant operator whose only grant
+for tenant A is a binding can therefore update a tenant-A user through any
+transport, and is refused the same update on a tenant-B user. Only the
+decision uses the target; the operation itself still runs as the caller.
+
+Writing `RoleIDs`, `RoleBindings`, or `Attributes` — on `CreateUser` for
+`RoleIDs`, on `UpdateUser` for all three — requires `roles:assign` in
+addition to the route's own `users:create`/`users:update` permission, on
+every transport including embedded, which authorizes through the node's own
+`AuthMiddleware`. The check targets the tenant the record lives in (read from
+the record on update, the effective create tenant on create), and each
+`RoleBindings` entry additionally requires `roles:assign` in the tenant it
+names: writing a binding is itself an act of granting a role there. Every
+referenced role is validated to exist and to belong to its tenant (or be one
+of the system tenant's built-in roles, valid everywhere) before the write
+commits — whether or not RBAC is enabled. See
+[engineering.md](engineering.md#authorization-model) for the mechanism and
+its tests.
 
 ### Alternatives rejected
 

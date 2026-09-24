@@ -18,7 +18,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -61,16 +60,6 @@ type CertBinding struct {
 	Thumbprint string          `json:"thumbprint"`
 	Kind       CertBindingKind `json:"kind"`
 	NotAfter   time.Time       `json:"notAfter,omitempty"`
-}
-
-// FactorEnrollment is an opaque auth-factor enrollment record (webauthn, fido2,
-// piv, ...). qrdb stores it; the registered pkg/authfactors.Factor named by
-// FactorName interprets Data during verification. qrdb never inspects Data.
-type FactorEnrollment struct {
-	ID         string          `json:"id"`
-	FactorName string          `json:"factorName"`
-	Data       json.RawMessage `json:"data,omitempty"`
-	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // spkiThumbprintLen is the decoded byte length of a canonical SPKI thumbprint

@@ -419,11 +419,7 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 	// Check if role is already assigned.
 	for _, rid := range u.RoleIDs {
 		if rid == req.RoleID {
-			out, err := json.Marshal(userToWireResponse(u))
-			if err != nil {
-				return nil, &MarshalError{Err: err}
-			}
-			return out, nil
+			return s.marshalUser(ctx, u)
 		}
 	}
 
@@ -436,11 +432,7 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, err
 	}
 
-	out, err := json.Marshal(userToWireResponse(updated))
-	if err != nil {
-		return nil, &MarshalError{Err: err}
-	}
-	return out, nil
+	return s.marshalUser(ctx, updated)
 }
 
 // handleUnassignRole unmarshals a JSON unassign role request, removes the
@@ -480,11 +472,7 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 		return nil, err
 	}
 
-	out, err := json.Marshal(userToWireResponse(updated))
-	if err != nil {
-		return nil, &MarshalError{Err: err}
-	}
-	return out, nil
+	return s.marshalUser(ctx, updated)
 }
 
 // handleListPermissions returns all registered permissions grouped by

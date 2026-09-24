@@ -2504,7 +2504,7 @@ func TestCovHandleAuditQuery_ServiceError(t *testing.T) {
 
 func TestCovHandleUserGetByUsername_Success(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserGetByUsername(svc)
+	handler := handleUserGetByUsername(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_username", map[string]any{
 		"username": "alice", "tenant_id": "system",
 	})
@@ -2518,7 +2518,7 @@ func TestCovHandleUserGetByUsername_Success(t *testing.T) {
 }
 
 func TestCovHandleUserGetByUsername_MissingUsername(t *testing.T) {
-	handler := handleUserGetByUsername(&mockUserService{})
+	handler := handleUserGetByUsername(&mockUserService{}, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_username", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2532,7 +2532,7 @@ func TestCovHandleUserGetByUsername_ServiceError(t *testing.T) {
 			return nil, errors.New("not found")
 		},
 	}
-	handler := handleUserGetByUsername(mock)
+	handler := handleUserGetByUsername(mock, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_username", map[string]any{"username": "x"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -2578,7 +2578,7 @@ func TestCovParseExactInt64_Default(t *testing.T) {
 }
 
 func TestCovHandleUserGetByCertThumbprint_MissingThumbprint(t *testing.T) {
-	handler := handleUserGetByCertThumbprint(&mockUserService{})
+	handler := handleUserGetByCertThumbprint(&mockUserService{}, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_cert_thumbprint", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2592,7 +2592,7 @@ func TestCovHandleUserGetByCertThumbprint_ServiceError(t *testing.T) {
 			return nil, errors.New("not found")
 		},
 	}
-	handler := handleUserGetByCertThumbprint(mock)
+	handler := handleUserGetByCertThumbprint(mock, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_cert_thumbprint", map[string]any{"thumbprint": "bad"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -2606,7 +2606,7 @@ func TestCovHandleUserGetByCertThumbprint_Success(t *testing.T) {
 			return &user.User{ID: 1, Username: "alice", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
-	handler := handleUserGetByCertThumbprint(mock)
+	handler := handleUserGetByCertThumbprint(mock, nil)
 	req := buildCallToolRequest(t, "qrdb_user_get_by_cert_thumbprint", map[string]any{"thumbprint": "sha256:abc"})
 	result, err := handler(context.Background(), req)
 	if err != nil {

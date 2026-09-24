@@ -414,21 +414,31 @@ settable on `CreateUser`, matching the domain request shape:
 | Replace | `[{...}]` / `{"k":"v"}` | flag `true` + entries | `role_bindings`/`attributes: "<json>"` |
 
 `roleBindings` are **additive** to `roleIDs`; effective permissions are the
-union. `attributes` are the ABAC inputs.
+union, and a binding naming tenant `acme` grants in checks that target `acme`
+and nowhere else (see
+[architecture.md](architecture.md#three-authorization-inputs-on-one-user) for
+which tenant a check targets). `attributes` are ABAC inputs in their own
+namespace — `subject.user_attrs.<key>` in a policy condition, `user_attrs.<key>`
+as a match key — so an attribute can never satisfy a policy written against a
+certificate- or token-derived value of the same name (see
+[../auth/abac.md](../auth/abac.md#tenant-scoping)).
 
-> **Known limitation.** Storing and reading `roleBindings`/`attributes` is
-> fully wired on every transport; the authorizer is not yet updated to act on
-> them. `pkg/auth/middleware` currently copies only `roleIDs` onto the
-> authenticated identity, so a tenant-scoped role binding grants nothing
-> during an actual request today, and an ABAC attribute constrains nothing.
-> See [engineering.md](engineering.md#known-limitations).
-
-Writing `roleBindings`/`attributes` requires only `users:update`, the same
-permission `roleIDs` has always required on `UpdateUser` — this is a
-deliberate continuation of that existing model, not a narrower one invented
-for these two fields; see
-[engineering.md](engineering.md#known-limitations) for the authorization
-question this leaves open.
+Writing `roleIDs` (on `CreateUser` or `UpdateUser`), or `roleBindings`/
+`attributes` (on `UpdateUser` only — neither is settable at create time)
+requires `roles:assign`, the same permission the RBAC model already defines
+for granting a role directly, IN ADDITION to the route's own
+`users:create`/`users:update` permission. Each `roleBindings` entry
+additionally requires `roles:assign` in ITS OWN target tenant, separately
+from the tenant the check above authorizes: writing a binding that names
+tenant `acme` is itself an act of granting a role within `acme`, and is
+refused for an operator who cannot grant roles there even if they can
+otherwise update the account. Every referenced role — in `roleIDs` or in a
+binding — must exist and belong to the relevant tenant (or be a system
+tenant built-in role, valid everywhere); a role that does not exist, or
+belongs to the wrong tenant, is refused with a client error before anything
+is written. The role check runs whether or not RBAC is enabled; only the
+`roles:assign` check depends on it. See
+[engineering.md](engineering.md#authorization-model) for the full mechanism.
 
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
@@ -471,6 +481,9 @@ of its own, and the listing never contains one.
 | Certificate with no matching binding | 401 | `UNAUTHENTICATED` |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
+| Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
+| The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
 
 ## Pagination
 

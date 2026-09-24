@@ -19,8 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -44,6 +45,22 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
 			ctx := boundedCtx(t)
+			if tk == embeddedTransport {
+				// The embedded transport authenticates nothing on its own:
+				// there is no mTLS handshake to resolve an identity from,
+				// unlike the five remote cells, whose client certificate
+				// resolves to the "matrix" identity seedIdentityFixtures
+				// grants roles:assign (among others) via c.roleID. sdk/go/node
+				// hands the embedded transport the same AuthMiddleware the
+				// remote cells enforce with, so the UpdateUser(replace) call
+				// below needs an identity in ctx here, holding the same
+				// granted role the remote cells' certificate resolves to.
+				ctx = auth.WithIdentity(ctx, &auth.Identity{
+					Subject:  "conformance-embedded",
+					TenantID: tenant.SystemTenantID,
+					Roles:    []string{c.roleID},
+				})
+			}
 
 			created, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 				Username:             "ext-fields-" + string(tk),
@@ -65,7 +82,18 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: fresh user Factors = %+v, want empty (no wire path ever populates it)", tk, created.Factors)
 			}
 
-			// REPLACE: both RoleBindings and Attributes.
+			// REPLACE: both RoleBindings and Attributes. The bound role must be
+			// a REAL role in tenant-a: go-qrdb#192 item 3 validates every
+			// RoleBinding's RoleID against its OWN TenantID before the write
+			// commits, so a fabricated identifier here would be refused by the
+			// very check this suite is not testing.
+			if _, err := c.rawRoles.CreateRole(ctx, &role.CreateRoleRequest{
+				ID:       "role-a",
+				Name:     "role-a",
+				TenantID: "tenant-a",
+			}); err != nil {
+				t.Fatalf("%s: seed role-a in tenant-a: %v", tk, err)
+			}
 			wantBindings := []transport.RoleBinding{{RoleID: "role-a", TenantID: "tenant-a"}}
 			wantAttrs := map[string]string{"department": "eng"}
 			updated, err := c.users.UpdateUser(ctx, &transport.UpdateUserRequest{
@@ -156,18 +184,20 @@ func TestUserExtensionFields_RealFactorMetadataAndMFAAcrossEveryTransport(t *tes
 				t.Fatalf("%s: CreateUser: %v", tk, err)
 			}
 
-			// Seed a REAL enrollment directly against the domain store. This is
-			// the one write no transport's own client can perform (Factors is
-			// read-only everywhere), so it goes through store rather than
-			// c.users -- exactly as seedIdentityFixtures seeds its own fixtures
-			// in-process rather than through a transport call.
-			if _, err := c.store.UpdateUser(ctx, &user.UpdateUserRequest{
-				ID: created.ID,
-				Factors: []user.FactorEnrollment{
-					{ID: "f1", FactorName: "fido2", Data: []byte(sentinelData), CreatedAt: enrolledAt},
-				},
+			// Seed a REAL enrollment directly against the auth-factor service
+			// that is the sole source of truth for Factors metadata and MFA
+			// state (pkg/user.FactorLister, computed at read time). This is the
+			// one write no transport's own client can perform (Factors is
+			// read-only everywhere), so it goes through rawUserAuthFactors
+			// rather than c.users -- exactly as seedIdentityFixtures seeds its
+			// own fixtures in-process rather than through a transport call.
+			if err := c.rawUserAuthFactors.Add(ctx, created.ID, &auth.AuthFactor{
+				ID:           "f1",
+				Type:         auth.AuthFactorType("fido2"),
+				Credential:   []byte(sentinelData),
+				RegisteredAt: enrolledAt,
 			}); err != nil {
-				t.Fatalf("%s: seed Factors via the domain store: %v", tk, err)
+				t.Fatalf("%s: seed a real factor enrollment: %v", tk, err)
 			}
 
 			got, err := c.users.GetUser(ctx, created.ID)

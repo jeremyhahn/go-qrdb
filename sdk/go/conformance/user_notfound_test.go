@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -410,6 +411,22 @@ type userClients struct {
 	// arranging state no transport can write -- a binding whose expiry has
 	// passed, which enrolment refuses -- never for the calls under test.
 	store user.UserServicer
+
+	// rawRoles is the SAME in-process domain role.RoleServicer the server
+	// under test resolves role references against. It exists to seed a REAL
+	// role in an arbitrary tenant (e.g. one a RoleBinding names) so a
+	// conformance test exercising go-qrdb#192 item 3's role-existence
+	// validation is not refused by the very check it is trying to get past.
+	rawRoles role.RoleServicer
+
+	// rawUserAuthFactors is the SAME in-process service.UserAuthFactorServicer
+	// the server under test derives Factors metadata and MFA state FROM at
+	// read time (pkg/user.FactorLister). Enrollment has exactly one source of
+	// truth -- this service -- and no wire request populates it on any
+	// transport, so seeding a real enrollment for a conformance test goes
+	// through here, the same way store seeds the identity fixtures no
+	// transport's own client can create.
+	rawUserAuthFactors service.UserAuthFactorServicer
 }
 
 // bootUserCell brings up a standalone node carrying exactly one listener and
@@ -473,13 +490,15 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 
 	if !tk.remote() {
 		return userClients{
-			users:      n.Client().Users(),
-			roles:      n.Client().Roles(),
-			roleID:     roleID,
-			realUserID: realUserID,
-			tenants:    n.Client().Tenants(),
-			node:       n,
-			store:      n.Services().User,
+			users:              n.Client().Users(),
+			roles:              n.Client().Roles(),
+			roleID:             roleID,
+			realUserID:         realUserID,
+			tenants:            n.Client().Tenants(),
+			node:               n,
+			store:              n.Services().User,
+			rawRoles:           n.Services().Role,
+			rawUserAuthFactors: n.Services().UserAuthFactor,
 		}
 	}
 
@@ -504,13 +523,15 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 	}
 
 	return userClients{
-		users:      sdkClient.Users(),
-		roles:      sdkClient.Roles(),
-		roleID:     roleID,
-		realUserID: realUserID,
-		tenants:    sdkClient.Tenants(),
-		node:       n,
-		store:      n.Services().User,
+		users:              sdkClient.Users(),
+		roles:              sdkClient.Roles(),
+		roleID:             roleID,
+		realUserID:         realUserID,
+		tenants:            sdkClient.Tenants(),
+		node:               n,
+		store:              n.Services().User,
+		rawRoles:           n.Services().Role,
+		rawUserAuthFactors: n.Services().UserAuthFactor,
 	}
 }
 

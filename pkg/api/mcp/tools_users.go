@@ -24,8 +24,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // userRecord is the JSON wire representation of a user entity returned by
@@ -118,16 +121,14 @@ func roleBindingsToRecord(bindings []user.RoleBinding) []mcpRoleBinding {
 	return out
 }
 
-// factorsToRecord renders the account's enrolled auth-factor METADATA ONLY,
-// through the shared projection; the opaque data blob never crosses this
-// transport (go-qrdb#192/#197).
-func factorsToRecord(factors []user.FactorEnrollment) []mcpFactorMetadata {
-	wire := user.WireFactors(factors)
-	if wire == nil {
+// factorsToRecord renders factor METADATA (see user.FactorView); the opaque
+// data blob never crosses this transport (go-qrdb#192/#197).
+func factorsToRecord(factors []transport.FactorMetadata) []mcpFactorMetadata {
+	if len(factors) == 0 {
 		return nil
 	}
-	out := make([]mcpFactorMetadata, len(wire))
-	for i, f := range wire {
+	out := make([]mcpFactorMetadata, len(factors))
+	for i, f := range factors {
 		out[i] = mcpFactorMetadata{ID: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
 	}
 	return out
@@ -141,16 +142,25 @@ type listUsersRecord struct {
 	HasMore bool          `json:"hasMore"`
 }
 
-// userToRecord converts a user.User to its MCP wire representation.
-func userToRecord(u *user.User) *userRecord {
+// userToRecord converts a user.User to its MCP wire representation. Factors
+// metadata and the derived MFA fields are computed at read time from the
+// real enrollment records via lister (service.UserAuthFactorServicer), read
+// once -- never from a stored field on u. lister may be nil (the auth-factor
+// subsystem is not configured for this deployment); a lister that fails
+// returns the *user.FactorLookupError rather than a record claiming no
+// factors.
+func userToRecord(ctx context.Context, lister user.FactorLister, u *user.User) (*userRecord, error) {
 	if u == nil {
-		return nil
+		return nil, nil
 	}
 	roleIDs := u.RoleIDs
 	if roleIDs == nil {
 		roleIDs = []string{}
 	}
-	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
+	factors, err := user.ResolveFactorView(ctx, lister, u.ID)
+	if err != nil {
+		return nil, err
+	}
 	var lastAuth string
 	if u.LastAuth != nil {
 		lastAuth = u.LastAuth.UTC().Format(time.RFC3339)
@@ -169,57 +179,72 @@ func userToRecord(u *user.User) *userRecord {
 		CertBindings:  certBindingsToRecord(u.CertBindings),
 		RoleBindings:  roleBindingsToRecord(u.RoleBindings),
 		Attributes:    u.Attributes,
-		Factors:       factorsToRecord(u.Factors),
-		MFAEnabled:    mfaEnabled,
-		MFAMethods:    mfaMethods,
-		MFAEnrolledAt: mfaEnrolledAt,
+		Factors:       factorsToRecord(factors.Factors),
+		MFAEnabled:    factors.MFAEnabled,
+		MFAMethods:    factors.MFAMethods,
+		MFAEnrolledAt: factors.MFAEnrolledAt,
 		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+	}, nil
+}
+
+// marshalUserRecord projects u (see userToRecord) and encodes it. Either
+// failure -- a factor lookup or the encoding -- is returned for the caller's
+// ToolError, so the tool middleware classifies it like any service error.
+func marshalUserRecord(ctx context.Context, lister user.FactorLister, u *user.User) ([]byte, error) {
+	rec, err := userToRecord(ctx, lister, u)
+	if err != nil {
+		return nil, err
 	}
+	return json.Marshal(rec)
 }
 
 // userTools returns the MCP tool registrations for user management operations.
-func userTools(svc user.UserServicer) []serverTool {
+//
+// authMW and roleSvc are used by handleUserCreate and handleUserUpdate, to
+// authorize and validate a write that touches RoleIDs, RoleBindings, or
+// Attributes (go-qrdb#192 item 3); every other handler ignores them.
+func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolUserCreate(),
 			Perm:    permission.UsersCreate,
-			Handler: handleUserCreate(svc),
+			Handler: handleUserCreate(svc, factorSvc, authMW, roleSvc),
 		},
 		{
 			Tool:    toolUserGet(),
 			Perm:    permission.UsersRead,
-			Handler: handleUserGet(svc),
+			Handler: handleUserGet(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserGetByUsername(),
 			Perm:    permission.UsersRead,
-			Handler: handleUserGetByUsername(svc),
+			Handler: handleUserGetByUsername(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserGetByEmail(),
 			Perm:    permission.UsersRead,
-			Handler: handleUserGetByEmail(svc),
+			Handler: handleUserGetByEmail(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserGetByCertThumbprint(),
 			Perm:    permission.UsersGetByCertThumbprint,
-			Handler: handleUserGetByCertThumbprint(svc),
+			Handler: handleUserGetByCertThumbprint(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserAddCertBinding(),
 			Perm:    permission.UsersAddCertBinding,
-			Handler: handleUserAddCertBinding(svc),
+			Handler: handleUserAddCertBinding(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserRemoveCertBinding(),
 			Perm:    permission.UsersRemoveCertBinding,
-			Handler: handleUserRemoveCertBinding(svc),
+			Handler: handleUserRemoveCertBinding(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserUpdate(),
 			Perm:    permission.UsersUpdate,
-			Handler: handleUserUpdate(svc),
+			Handler: handleUserUpdate(svc, factorSvc, authMW, roleSvc),
 		},
 		{
 			Tool:    toolUserDelete(),
@@ -229,7 +254,7 @@ func userTools(svc user.UserServicer) []serverTool {
 		{
 			Tool:    toolUserList(),
 			Perm:    permission.UsersList,
-			Handler: handleUserList(svc),
+			Handler: handleUserList(svc, factorSvc),
 		},
 		{
 			Tool:    toolUserEnable(),
@@ -283,7 +308,7 @@ func toolUserCreate() mcp.Tool {
 }
 
 // handleUserCreate returns a tool handler that delegates to svc.CreateUser.
-func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserCreate(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		username := mcp.ParseString(req, "username", "")
 		if username == "" {
@@ -302,6 +327,12 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(aerr.Error()), nil
 		}
 
+		if len(roleIDs) > 0 {
+			if err := authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, roleSvc, tenantID, roleIDs); err != nil {
+				return nil, &ToolError{Tool: "qrdb_user_create", Err: err}
+			}
+		}
+
 		u, err := svc.CreateUser(ctx, &user.CreateUserRequest{
 			Username:             username,
 			Email:                mcp.ParseString(req, "email", ""),
@@ -317,9 +348,9 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_create", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_create", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -338,7 +369,7 @@ func toolUserGet() mcp.Tool {
 }
 
 // handleUserGet returns a tool handler that delegates to svc.GetUser.
-func handleUserGet(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserGet(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		idStr := mcp.ParseString(req, "id", "")
 		if idStr == "" {
@@ -354,9 +385,9 @@ func handleUserGet(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_get", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -379,7 +410,7 @@ func toolUserGetByUsername() mcp.Tool {
 
 // handleUserGetByUsername returns a tool handler that delegates to
 // svc.GetUserByUsername.
-func handleUserGetByUsername(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserGetByUsername(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		username := mcp.ParseString(req, "username", "")
@@ -392,9 +423,9 @@ func handleUserGetByUsername(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -417,7 +448,7 @@ func toolUserGetByEmail() mcp.Tool {
 
 // handleUserGetByEmail returns a tool handler that delegates to
 // svc.GetUserByEmail.
-func handleUserGetByEmail(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserGetByEmail(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		email := mcp.ParseString(req, "email", "")
@@ -430,9 +461,9 @@ func handleUserGetByEmail(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -453,7 +484,7 @@ func toolUserGetByCertThumbprint() mcp.Tool {
 
 // handleUserGetByCertThumbprint returns a tool handler that delegates to
 // svc.UserByCertThumbprint.
-func handleUserGetByCertThumbprint(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserGetByCertThumbprint(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		thumbprint := mcp.ParseString(req, "thumbprint", "")
 		if thumbprint == "" {
@@ -465,9 +496,9 @@ func handleUserGetByCertThumbprint(svc user.UserServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_cert_thumbprint", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -494,7 +525,7 @@ func toolUserAddCertBinding() mcp.Tool {
 
 // handleUserAddCertBinding returns a tool handler that delegates to
 // svc.AddCertBinding.
-func handleUserAddCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserAddCertBinding(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userIDStr := mcp.ParseString(req, "user_id", "")
 		if userIDStr == "" {
@@ -518,9 +549,9 @@ func handleUserAddCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -545,7 +576,7 @@ func toolUserRemoveCertBinding() mcp.Tool {
 
 // handleUserRemoveCertBinding returns a tool handler that delegates to
 // svc.RemoveCertBinding.
-func handleUserRemoveCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserRemoveCertBinding(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userIDStr := mcp.ParseString(req, "user_id", "")
 		if userIDStr == "" {
@@ -567,9 +598,9 @@ func handleUserRemoveCertBinding(svc user.UserServicer) mcpserver.ToolHandlerFun
 			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_remove_cert_binding", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -624,7 +655,7 @@ func toolUserUpdate() mcp.Tool {
 }
 
 // handleUserUpdate returns a tool handler that delegates to svc.UpdateUser.
-func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserUpdate(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		idStr := mcp.ParseString(req, "id", "")
 		if idStr == "" {
@@ -694,14 +725,20 @@ func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			updateReq.Attributes = map[string]string{}
 		}
 
+		if authmw.TouchesRoleAssignment(updateReq.RoleIDs, updateReq.RoleBindings, updateReq.Attributes) {
+			if err := authMW.AuthorizeRoleAssignmentWrite(ctx, svc, roleSvc, id, updateReq.RoleIDs, updateReq.RoleBindings); err != nil {
+				return nil, &ToolError{Tool: "qrdb_user_update", Err: err}
+			}
+		}
+
 		u, err := svc.UpdateUser(ctx, updateReq)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_update", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(userToRecord(u))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_user_update", Err: jsonErr}
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_update", Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -756,7 +793,7 @@ func toolUserList() mcp.Tool {
 }
 
 // handleUserList returns a tool handler that delegates to svc.ListUsers.
-func handleUserList(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleUserList(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		resp, err := svc.ListUsers(ctx, &user.ListUsersRequest{
 			TenantID: mcp.ParseString(req, "tenant_id", ""),
@@ -769,7 +806,9 @@ func handleUserList(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 
 		records := make([]*userRecord, len(resp.Users))
 		for i, u := range resp.Users {
-			records[i] = userToRecord(u)
+			if records[i], err = userToRecord(ctx, factorSvc, u); err != nil {
+				return nil, &ToolError{Tool: "qrdb_user_list", Err: err}
+			}
 		}
 		data, jsonErr := json.Marshal(listUsersRecord{
 			Users:   records,

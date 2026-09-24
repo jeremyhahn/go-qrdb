@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -43,6 +45,11 @@ type AuthMiddleware struct {
 	users          user.UserServicer
 	usersFallback  user.UserServicer
 	audit          audit.Logger
+
+	// roles resolves a RoleTarget to the tenant the role belongs to (see
+	// ResolveTarget). Optional: without it a RoleTarget is the caller's own
+	// tenant.
+	roles role.RoleServicer
 
 	// auditFailure is what authorize() does when m.audit cannot record a
 	// decision. Its ZERO VALUE is audit.FailClosed, so an AuthMiddleware built
@@ -87,6 +94,10 @@ type AuthMiddleware struct {
 	// whole set in one atomic store, and the interceptors' per-request lookup
 	// stays lock-free.
 	publicGRPCMethods atomic.Pointer[map[string]struct{}]
+
+	// grpcTargets maps a gRPC full method name to how its request names the
+	// tenant it acts on. See RegisterGRPCTargets.
+	grpcTargets atomic.Pointer[map[string]GRPCTargetFunc]
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup. A
@@ -324,6 +335,15 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	identity.TenantID = tenant.Normalize(identity.TenantID)
 
 	if m.users != nil {
+		// RoleBindings and Attributes are user-record state, and with a user
+		// store configured the store is their ONLY source. Clear whatever the
+		// authenticator carried in BEFORE the lookup, so every path below --
+		// found, not found, tenant sealed -- starts from none: a binding
+		// withdrawn from the record, or never on it, cannot survive on an
+		// identity issued earlier or forwarded from elsewhere.
+		identity.RoleBindings = nil
+		identity.Attributes = nil
+
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
 			// A dedicated-isolation tenant whose barrier is sealed (or not
@@ -417,8 +437,19 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				return ctx, nil, perr
 			}
 
-			// Enrich identity with persistent role assignments.
+			// Enrich identity with persistent role assignments. Roles,
+			// RoleBindings and Attributes are overwritten from the store's
+			// current state, never merged, so a withdrawal on the record
+			// takes effect here.
 			identity.Roles = u.RoleIDs
+			identity.RoleBindings = convertRoleBindings(u.RoleBindings)
+
+			// Attributes stays separate from Metadata (see
+			// auth.Identity.Attributes): Metadata is authentication-derived,
+			// Attributes is record state an administrator holding
+			// roles:assign writes. Cloned so the identity never aliases the
+			// record's map.
+			identity.Attributes = maps.Clone(u.Attributes)
 		}
 	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 		// No user store: no account can be resolved, so under the
@@ -436,6 +467,27 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	return ctx, identity, nil
+}
+
+// convertRoleBindings copies a user's RoleBindings into their auth.RoleBinding
+// mirror, field by field rather than through a shared type: pkg/auth cannot
+// import pkg/user (pkg/user already imports pkg/auth), so auth.RoleBinding is
+// this package's own copy of the same two fields.
+//
+// A nil or empty input returns nil rather than an empty non-nil slice, so
+// finalizeIdentity's unconditional assignment (identity.RoleBindings =
+// convertRoleBindings(u.RoleBindings)) correctly CLEARS the field when the
+// store reports no bindings, rather than requiring a caller to special-case
+// emptiness itself.
+func convertRoleBindings(bindings []user.RoleBinding) []auth.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]auth.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = auth.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
 }
 
 // lookupUser looks up a user by username, first trying the primary user

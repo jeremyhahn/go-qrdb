@@ -795,8 +795,10 @@ type AdminUserLookup interface {
 // back as an invitation target. It fails closed unless the record is TRULY
 // the pending admin an invitation may attach to: a persisted id, the exact
 // tenant and username requested, the tenant-scoped Admin role, a lifecycle
-// of exactly pending, and no bound credential (no cert bindings, no enrolled
-// factors). Anything else — an unrelated squatter under the admin username,
+// of exactly pending, and no bound certificate. Enrolled auth factors are
+// checked separately by ensureNoActiveFactors against the canonical
+// auth-factor store — the record itself carries no factor field to check
+// here. Anything else — an unrelated squatter under the admin username,
 // an admin already activated, suspended, locked, disabled or being deleted,
 // a record with an absent or unrecognized lifecycle, or an adapter that
 // ignored CreateUserRequest.Pending — is refused rather than converted into
@@ -816,8 +818,6 @@ func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) 
 		reason = "admin lifecycle is " + strconv.Quote(string(u.Lifecycle)) + ", not pending"
 	case len(u.CertBindings) > 0:
 		reason = "admin already holds a bound certificate"
-	case len(u.Factors) > 0:
-		reason = "admin already holds enrolled auth factors"
 	default:
 		return nil
 	}

@@ -15,118 +15,206 @@
 package user
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
-func TestHasMFA(t *testing.T) {
+// fakeFactorLister is a controllable FactorLister double: it returns exactly
+// the factors it was constructed with, or an error when errAfter is set.
+// There is no in-process real UserAuthFactorServicer usable from pkg/user
+// without an import cycle (pkg/service imports pkg/user), so this is the
+// package's own boundary double for the interface it declares.
+type fakeFactorLister struct {
+	factors []*auth.AuthFactor
+	err     error
+}
+
+func (f *fakeFactorLister) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.factors, nil
+}
+
+func activeFactor(id, factorType string, registeredAt time.Time) *auth.AuthFactor {
+	return &auth.AuthFactor{ID: id, Type: auth.AuthFactorType(factorType), RegisteredAt: registeredAt}
+}
+
+func revokedFactor(id, factorType string, registeredAt time.Time) *auth.AuthFactor {
+	now := time.Now().UTC()
+	return &auth.AuthFactor{ID: id, Type: auth.AuthFactorType(factorType), RegisteredAt: registeredAt, RevokedAt: &now}
+}
+
+// countingFactorLister counts List calls, so a test can assert a projection
+// reads the factor store exactly once.
+type countingFactorLister struct {
+	fakeFactorLister
+	calls int
+}
+
+func (c *countingFactorLister) List(ctx context.Context, userID uint64) ([]*auth.AuthFactor, error) {
+	c.calls++
+	return c.fakeFactorLister.List(ctx, userID)
+}
+
+func TestResolveFactorView_NilListerIsZero(t *testing.T) {
+	view, err := ResolveFactorView(context.Background(), nil, 1)
+	if err != nil {
+		t.Fatalf("ResolveFactorView(nil lister) error = %v, want nil", err)
+	}
+	if view.Factors != nil || view.MFAEnabled || view.MFAMethods != nil || view.MFAEnrolledAt != "" {
+		t.Errorf("ResolveFactorView(nil lister) = %+v, want the zero FactorView", view)
+	}
+}
+
+// TestResolveFactorView_ListErrorPropagates asserts a factor-store failure is
+// an error, never an account reported as having no second factor.
+func TestResolveFactorView_ListErrorPropagates(t *testing.T) {
+	storeErr := errors.New("store unavailable")
+	view, err := ResolveFactorView(context.Background(), &fakeFactorLister{err: storeErr}, 7)
+	var lookupErr *FactorLookupError
+	if !errors.As(err, &lookupErr) {
+		t.Fatalf("ResolveFactorView(List error) error = %v, want *FactorLookupError", err)
+	}
+	if lookupErr.UserID != 7 || !errors.Is(err, storeErr) {
+		t.Errorf("FactorLookupError = %+v, want UserID 7 wrapping the store error", lookupErr)
+	}
+	if view.MFAEnabled || view.Factors != nil {
+		t.Errorf("ResolveFactorView(List error) view = %+v, want zero", view)
+	}
+}
+
+func TestResolveFactorView_ListsOnce(t *testing.T) {
+	lister := &countingFactorLister{fakeFactorLister: fakeFactorLister{factors: []*auth.AuthFactor{
+		activeFactor("f1", "fido2", time.Now()),
+	}}}
+	if _, err := ResolveFactorView(context.Background(), lister, 1); err != nil {
+		t.Fatalf("ResolveFactorView() error = %v", err)
+	}
+	if lister.calls != 1 {
+		t.Errorf("List called %d times, want exactly 1", lister.calls)
+	}
+}
+
+func TestResolveFactorView_MFAEnabled(t *testing.T) {
 	tests := []struct {
-		name string
-		u    *User
-		want bool
+		name   string
+		lister FactorLister
+		want   bool
 	}{
-		{"nil user", nil, false},
-		{"no factors", &User{}, false},
-		{"one factor", &User{Factors: []FactorEnrollment{{ID: "f1", FactorName: "fido2"}}}, true},
+		{"nil lister", nil, false},
+		{"no factors", &fakeFactorLister{}, false},
+		{"one active factor", &fakeFactorLister{factors: []*auth.AuthFactor{
+			activeFactor("f1", "fido2", time.Now()),
+		}}, true},
+		{"only revoked factors", &fakeFactorLister{factors: []*auth.AuthFactor{
+			revokedFactor("f1", "fido2", time.Now()),
+		}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.u.HasMFA(); got != tt.want {
-				t.Errorf("HasMFA() = %v, want %v", got, tt.want)
+			view, err := ResolveFactorView(context.Background(), tt.lister, 1)
+			if err != nil {
+				t.Fatalf("ResolveFactorView() error = %v", err)
+			}
+			if view.MFAEnabled != tt.want {
+				t.Errorf("MFAEnabled = %v, want %v", view.MFAEnabled, tt.want)
 			}
 		})
 	}
 }
 
-func TestMFAMethods(t *testing.T) {
-	u := &User{Factors: []FactorEnrollment{
-		{ID: "f1", FactorName: "fido2"},
-		{ID: "f2", FactorName: "piv"},
-		{ID: "f3", FactorName: "fido2"}, // duplicate name, deduplicated
+func TestResolveFactorView_Methods(t *testing.T) {
+	now := time.Now().UTC()
+	lister := &fakeFactorLister{factors: []*auth.AuthFactor{
+		activeFactor("f1", "fido2", now),
+		activeFactor("f2", "piv", now),
+		revokedFactor("f3", "tpm2", now),
+		activeFactor("f4", "fido2", now), // duplicate type, deduplicated
 	}}
-	got := u.MFAMethods()
+	view, err := ResolveFactorView(context.Background(), lister, 1)
+	if err != nil {
+		t.Fatalf("ResolveFactorView() error = %v", err)
+	}
 	want := []string{"fido2", "piv"}
-	if len(got) != len(want) {
-		t.Fatalf("MFAMethods() = %v, want %v", got, want)
+	if len(view.MFAMethods) != len(want) {
+		t.Fatalf("MFAMethods = %v, want %v", view.MFAMethods, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("MFAMethods()[%d] = %q, want %q", i, got[i], want[i])
+		if view.MFAMethods[i] != want[i] {
+			t.Errorf("MFAMethods[%d] = %q, want %q", i, view.MFAMethods[i], want[i])
 		}
 	}
-
-	if got := (&User{}).MFAMethods(); got != nil {
-		t.Errorf("MFAMethods() on no factors = %v, want nil", got)
-	}
-	var nilUser *User
-	if got := nilUser.MFAMethods(); got != nil {
-		t.Errorf("MFAMethods() on nil user = %v, want nil", got)
-	}
 }
 
-func TestMFAEnrolledAt(t *testing.T) {
+func TestResolveFactorView_EnrolledAt(t *testing.T) {
 	early := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	late := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	u := &User{Factors: []FactorEnrollment{
-		{ID: "f1", FactorName: "piv", CreatedAt: late},
-		{ID: "f2", FactorName: "fido2", CreatedAt: early},
+	tests := []struct {
+		name    string
+		factors []*auth.AuthFactor
+		want    string
+	}{
+		{"earliest wins regardless of order", []*auth.AuthFactor{
+			activeFactor("f1", "piv", late),
+			activeFactor("f2", "fido2", early),
+		}, early.Format(time.RFC3339)},
+		{"revoked earlier factor ignored", []*auth.AuthFactor{
+			revokedFactor("f1", "piv", early),
+			activeFactor("f2", "fido2", late),
+		}, late.Format(time.RFC3339)},
+		{"no factors", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			view, err := ResolveFactorView(context.Background(), &fakeFactorLister{factors: tt.factors}, 1)
+			if err != nil {
+				t.Fatalf("ResolveFactorView() error = %v", err)
+			}
+			if view.MFAEnrolledAt != tt.want {
+				t.Errorf("MFAEnrolledAt = %q, want %q", view.MFAEnrolledAt, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveFactorView_FactorsAreMetadataOnly(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	lister := &fakeFactorLister{factors: []*auth.AuthFactor{
+		{ID: "f1", Type: "fido2", RegisteredAt: now, Credential: []byte("do-not-leak")},
+		revokedFactor("f2", "piv", now),
 	}}
-	got, ok := u.MFAEnrolledAt()
-	if !ok {
-		t.Fatal("MFAEnrolledAt() ok = false, want true")
+	view, err := ResolveFactorView(context.Background(), lister, 1)
+	if err != nil {
+		t.Fatalf("ResolveFactorView() error = %v", err)
 	}
-	if !got.Equal(early) {
-		t.Errorf("MFAEnrolledAt() = %v, want the earliest enrollment %v", got, early)
+	if len(view.Factors) != 1 {
+		t.Fatalf("Factors len = %d, want 1 (revoked excluded)", len(view.Factors))
 	}
-
-	if _, ok := (&User{}).MFAEnrolledAt(); ok {
-		t.Error("MFAEnrolledAt() on no factors: ok = true, want false")
-	}
-}
-
-func TestWireFactors(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	factors := []FactorEnrollment{
-		{ID: "f1", FactorName: "fido2", Data: []byte(`{"secret":"do-not-leak"}`), CreatedAt: now},
-	}
-	out := WireFactors(factors)
-	if len(out) != 1 {
-		t.Fatalf("WireFactors() len = %d, want 1", len(out))
-	}
-	if out[0].ID != "f1" || out[0].FactorName != "fido2" {
-		t.Errorf("WireFactors()[0] = %+v, want ID=f1 FactorName=fido2", out[0])
-	}
-	if out[0].CreatedAt != now.Format(time.RFC3339) {
-		t.Errorf("WireFactors()[0].CreatedAt = %q, want %q", out[0].CreatedAt, now.Format(time.RFC3339))
-	}
-
-	if got := WireFactors(nil); got != nil {
-		t.Errorf("WireFactors(nil) = %v, want nil", got)
+	got := view.Factors[0]
+	if got.ID != "f1" || got.FactorName != "fido2" || got.CreatedAt != now.Format(time.RFC3339) {
+		t.Errorf("Factors[0] = %+v, want ID=f1 FactorName=fido2 CreatedAt=%s", got, now.Format(time.RFC3339))
 	}
 }
 
-func TestWireMFA(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	u := &User{Factors: []FactorEnrollment{{ID: "f1", FactorName: "piv", CreatedAt: now}}}
-
-	enabled, methods, enrolledAt := WireMFA(u)
-	if !enabled {
-		t.Error("WireMFA() enabled = false, want true")
+func TestFactorLookupError_Error(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *FactorLookupError
+		want string
+	}{
+		{"with cause", &FactorLookupError{UserID: 3, Err: errors.New("boom")}, "user: could not list auth factors for user 3: boom"},
+		{"without cause", &FactorLookupError{UserID: 3}, "user: could not list auth factors for user 3"},
 	}
-	if len(methods) != 1 || methods[0] != "piv" {
-		t.Errorf("WireMFA() methods = %v, want [piv]", methods)
-	}
-	if enrolledAt != now.Format(time.RFC3339) {
-		t.Errorf("WireMFA() enrolledAt = %q, want %q", enrolledAt, now.Format(time.RFC3339))
-	}
-
-	enabled, methods, enrolledAt = WireMFA(&User{})
-	if enabled || methods != nil || enrolledAt != "" {
-		t.Errorf("WireMFA(no factors) = (%v, %v, %q), want (false, nil, \"\")", enabled, methods, enrolledAt)
-	}
-
-	enabled, methods, enrolledAt = WireMFA(nil)
-	if enabled || methods != nil || enrolledAt != "" {
-		t.Errorf("WireMFA(nil) = (%v, %v, %q), want (false, nil, \"\")", enabled, methods, enrolledAt)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

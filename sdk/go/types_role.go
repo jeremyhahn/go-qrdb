@@ -119,6 +119,17 @@ type ReservedRoleNameError = role.ReservedRoleNameError
 // or "your write failed", and only the typed error separates them.
 type SystemRoleImmutableError = role.SystemRoleImmutableError
 
+// RoleNotAssignableError is returned when a role-assignment write (a user's
+// RoleIDs or a RoleBinding) names a role that exists but belongs to a tenant
+// other than the one the assignment targets.
+type RoleNotAssignableError = role.NotAssignableError
+
+// RoleServiceRequiredError is returned when a role-assignment write names a
+// role but the node has no role service to validate it against. It is a
+// composition fault, never an authorization decision: the write is refused
+// rather than accepted unvalidated.
+type RoleServiceRequiredError = role.ServiceRequiredError
+
 // ReconcileReport is the outcome of a built-in role reconciliation for one
 // tenant: one entry per built-in role that CHANGED, so an empty report means
 // the tenant already agreed with the build and nothing was written.

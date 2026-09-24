@@ -431,6 +431,35 @@ func TestRoutingUserService_SameTenantRoutesToSelf(t *testing.T) {
 	}
 }
 
+// GetUserByEmail routes on the effective tenant exactly as GetUserByUsername
+// does: same-tenant resolves to the caller's own store, and a system caller
+// may target another tenant's store by name.
+func TestRoutingUserService_GetUserByEmail(t *testing.T) {
+	svc, storeA, _ := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	created, err := svc.CreateUser(actx, &CreateUserRequest{Username: "annie", Email: "annie@example.com", TenantID: "a"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if len(storeA.m) == 0 {
+		t.Fatal("user was not routed to tenant A's store")
+	}
+
+	got, err := svc.GetUserByEmail(actx, "", "annie@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail(empty tenant): %v", err)
+	}
+	if got.ID != created.ID || got.TenantID != "a" {
+		t.Fatalf("GetUserByEmail = %+v, want ID=%d TenantID=a", got, created.ID)
+	}
+
+	var xt *tenant.CrossTenantDeniedError
+	if _, err := svc.GetUserByEmail(actx, "b", "annie@example.com"); !errors.As(err, &xt) {
+		t.Fatalf("GetUserByEmail(cross-tenant) = %v, want *tenant.CrossTenantDeniedError", err)
+	}
+}
+
 // A system-tenant caller MAY target another tenant: the request tenant is
 // honored and the record lands in that tenant's store.
 func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {

@@ -22,8 +22,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
+
+// testFactorLister is a minimal, UNTAGGED user.FactorLister double, local to
+// this file rather than borrowed from tools_coverage_new_test.go's
+// covMockUserAuthFactorSvc: that type lives behind a `codec_json && raft`
+// build constraint, narrower than this file's (none), and a helper's
+// constraint must be a superset of every caller's (AGENTS.md).
+type testFactorLister struct {
+	factors []*auth.AuthFactor
+	err     error
+}
+
+func (f *testFactorLister) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.factors, nil
+}
 
 // ---------------------------------------------------------------------------
 // userToRecord / projection helpers (go-qrdb#192, go-qrdb#197)
@@ -39,14 +58,14 @@ func TestUserToRecord_ProjectsExtensionFieldsAndOmitsFactorData(t *testing.T) {
 			{RoleID: "role-a", TenantID: "acme"},
 		},
 		Attributes: map[string]string{"department": "eng"},
-		Factors: []user.FactorEnrollment{
-			{ID: "f1", FactorName: "fido2", Data: []byte(`{"secret":"do-not-leak"}`), CreatedAt: created},
-		},
-		CreatedAt: created,
-		UpdatedAt: created,
+		CreatedAt:  created,
+		UpdatedAt:  created,
 	}
+	factorSvc := &testFactorLister{factors: []*auth.AuthFactor{
+		{ID: "f1", Type: "fido2", RegisteredAt: created, Credential: []byte("do-not-leak")},
+	}}
 
-	rec := userToRecord(u)
+	rec := mustUserToRecord(t, factorSvc, u)
 	if len(rec.RoleBindings) != 1 || rec.RoleBindings[0].RoleID != "role-a" || rec.RoleBindings[0].TenantID != "acme" {
 		t.Errorf("RoleBindings = %+v, want [{role-a acme}]", rec.RoleBindings)
 	}
@@ -77,13 +96,13 @@ func TestUserToRecord_ProjectsExtensionFieldsAndOmitsFactorData(t *testing.T) {
 }
 
 func TestUserToRecord_Nil(t *testing.T) {
-	if got := userToRecord(nil); got != nil {
+	if got := mustUserToRecord(t, nil, nil); got != nil {
 		t.Errorf("userToRecord(nil) = %+v, want nil", got)
 	}
 }
 
 func TestUserToRecord_NoExtensionFields(t *testing.T) {
-	rec := userToRecord(&user.User{ID: 1, Username: "bare"})
+	rec := mustUserToRecord(t, nil, &user.User{ID: 1, Username: "bare"})
 	if rec.MFAEnabled || len(rec.MFAMethods) != 0 || rec.MFAEnrolledAt != "" {
 		t.Errorf("MFA state = enabled=%v methods=%v enrolledAt=%q, want all-empty",
 			rec.MFAEnabled, rec.MFAMethods, rec.MFAEnrolledAt)
@@ -105,7 +124,7 @@ func TestRoleBindingsToRecord_NoneIsNil(t *testing.T) {
 	}
 }
 
-func TestFactorsToRecord_NoneIsNil(t *testing.T) {
+func TestFactorsToRecord_NoActiveFactorsIsNil(t *testing.T) {
 	if got := factorsToRecord(nil); got != nil {
 		t.Errorf("factorsToRecord(nil) = %v, want nil", got)
 	}
@@ -264,7 +283,9 @@ func TestUserUpdateTool_RoleBindingsAndAttributesReplace(t *testing.T) {
 			return &user.User{ID: req.ID}, nil
 		},
 	}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, &mockRoleService{getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: "acme"}, nil
+	}})
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"id":            "1",
@@ -293,7 +314,7 @@ func TestUserUpdateTool_ClearRoleBindingsAndAttributes(t *testing.T) {
 			return &user.User{ID: req.ID}, nil
 		},
 	}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"id":                  "1",
@@ -316,7 +337,7 @@ func TestUserUpdateTool_ClearRoleBindingsAndAttributes(t *testing.T) {
 
 func TestUserUpdateTool_RoleBindingsMalformedIsToolError(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"id":            "1",
@@ -332,7 +353,7 @@ func TestUserUpdateTool_RoleBindingsMalformedIsToolError(t *testing.T) {
 
 func TestUserUpdateTool_AttributesMalformedIsToolError(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"id":         "1",
@@ -357,15 +378,15 @@ func TestUserListTool_ProjectsFactorsMetadataOnly(t *testing.T) {
 				Users: []*user.User{{
 					ID:       1,
 					Username: "alice",
-					Factors: []user.FactorEnrollment{
-						{ID: "f1", FactorName: "fido2", Data: []byte(`{"secret":"do-not-leak"}`)},
-					},
 				}},
 				Total: 1,
 			}, nil
 		},
 	}
-	handler := handleUserList(svc)
+	factorSvc := &testFactorLister{factors: []*auth.AuthFactor{
+		{ID: "f1", Type: "fido2", Credential: []byte("do-not-leak")},
+	}}
+	handler := handleUserList(svc, factorSvc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {

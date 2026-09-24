@@ -104,10 +104,15 @@ type User struct {
 	// thumbprint — qrdb-owned mTLS identity. See cert_binding.go.
 	CertBindings []CertBinding `json:"certBindings,omitempty"`
 
-	// Factors holds extensible auth-factor enrollments (webauthn/fido2/piv),
-	// registered via pkg/authfactors. qrdb stores them opaquely; the registered
-	// factor interprets Data.
-	Factors []FactorEnrollment `json:"factors,omitempty"`
+	// There is deliberately NO Factors field here. Enrolled auth factors have
+	// exactly one source of truth: pkg/auth.AuthFactor via
+	// service.UserAuthFactorServicer (the /v1/users/factors API on every
+	// transport). A parallel, independently-writable field on this struct
+	// would let it drift from the records that API reports — the same defect
+	// go-qrdb#106 found in User.System before something was made to populate
+	// it, except here duplicated rather than dead. Factor metadata and the
+	// derived MFA state are computed at READ time from those records; see
+	// FactorLister, WireFactors and WireMFA in mfa.go.
 
 	// CreatedAt records when the user was created (UTC).
 	CreatedAt time.Time `json:"createdAt"`
@@ -234,8 +239,9 @@ type UpdateUserRequest struct {
 	// maintains the SPKI-thumbprint secondary index accordingly.
 	CertBindings []CertBinding
 
-	// Factors replaces the auth-factor enrollments when non-nil.
-	Factors []FactorEnrollment
+	// There is deliberately no Factors field here either: enrollment is its
+	// own verb (service.UserAuthFactorServicer), never a bulk field on this
+	// request. See the note on User.
 
 	// Lifecycle transitions the account when non-empty. The move is checked
 	// against the transition table: a state the record cannot reach from where

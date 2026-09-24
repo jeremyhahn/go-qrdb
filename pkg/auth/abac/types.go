@@ -14,7 +14,10 @@
 
 package abac
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // PolicyKind is the required value of the Kind field on every policy
 // document.
@@ -178,9 +181,19 @@ type Subject struct {
 	// Groups is the list of group IDs.
 	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty"`
 
-	// Attributes contains custom attributes, resolvable in condition
-	// expressions via subject.attrs.<key>.
+	// Attributes contains the AUTHENTICATION-DERIVED attributes (certificate
+	// fields, token claims, middleware sentinels), resolvable in condition
+	// expressions via subject.attrs.<key> and in a subject selector's match
+	// map by their bare key.
 	Attributes map[string]interface{} `json:"attributes,omitempty" yaml:"attributes,omitempty"`
+
+	// UserAttributes contains the attributes stored on the subject's USER
+	// RECORD, which an administrator holding roles:assign writes. They live
+	// in their own namespace so no value written there can ever be read as
+	// an authentication-derived attribute: a condition reaches them only as
+	// subject.user_attrs.<key>, and a subject selector only through a match
+	// key carrying UserAttributePrefix. A bare key never resolves here.
+	UserAttributes map[string]interface{} `json:"user_attributes,omitempty" yaml:"user_attributes,omitempty"`
 
 	// Authenticated indicates whether the subject is authenticated.
 	Authenticated bool `json:"authenticated" yaml:"authenticated"`
@@ -193,6 +206,26 @@ type Subject struct {
 
 	// LastLogin is the last login timestamp.
 	LastLogin *time.Time `json:"last_login,omitempty" yaml:"last_login,omitempty"`
+}
+
+// UserAttributePrefix is the subject-selector match-key prefix that selects
+// Subject.UserAttributes rather than Subject.Attributes: the match key
+// "user_attrs.department" reads the user record's "department" attribute,
+// while the bare key "department" reads only an authentication-derived one.
+const UserAttributePrefix = "user_attrs."
+
+// attribute resolves a subject-selector match key against the namespace it
+// names: a key carrying UserAttributePrefix reads UserAttributes, every other
+// key reads Attributes. The two maps are never consulted for the same key, so
+// a user-record attribute cannot satisfy a matcher written against an
+// authentication-derived attribute of the same name.
+func (s *Subject) attribute(key string) (interface{}, bool) {
+	if name, ok := strings.CutPrefix(key, UserAttributePrefix); ok {
+		v, found := s.UserAttributes[name]
+		return v, found
+	}
+	v, found := s.Attributes[key]
+	return v, found
 }
 
 // CheckResponse represents an authorization check response.

@@ -15,8 +15,12 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -69,6 +73,9 @@ type restRouteEntry struct {
 	// the entry is filed under is canonical (see RESTRouteKey), so a
 	// collision is reported with both spellings.
 	pattern string
+
+	// target, when set, extracts the tenant a request names (SetTarget).
+	target RESTTargetFunc
 }
 
 // RESTRouteKey is the identity of a REST route: its method and its pattern
@@ -149,6 +156,43 @@ func (e *RESTRouteCollisionError) Error() string {
 	return "middleware: duplicate REST route registration: " + e.Method + " " + e.Pattern +
 		" is the same route as the already-registered " + e.Method + " " + e.Existing +
 		" (module/route collision)"
+}
+
+// RESTTargetFunc extracts the Target a REST request names. param resolves
+// the matched route's path parameters ("id" for "/users/{id}"). A request
+// whose target cannot be read — a malformed id, an unparseable body — names
+// the caller's own tenant; the handler then rejects the malformed input
+// itself.
+type RESTTargetFunc func(r *http.Request, param func(name string) string) Target
+
+// SetTarget attaches a target extractor to an already-registered permission
+// route, so RESTMiddleware authorizes the route's permission against the
+// tenant the request names rather than the caller's own (see Target).
+// Attaching one to an unregistered route is a programmer error and panics,
+// the same construction-time posture as SetFallback.
+func (rr *RESTRouteRegistry) SetTarget(method, pattern string, fn RESTTargetFunc) {
+	key := RESTRouteKey(method, pattern)
+	e, ok := rr.entries[key]
+	if !ok {
+		panic("middleware: SetTarget on unregistered route: " + method + " " + pattern)
+	}
+	e.target = fn
+	rr.entries[key] = e
+}
+
+// targetFor returns the Target r names under its matched route's extractor,
+// or the caller's own tenant when the route declares none.
+func (rr *RESTRouteRegistry) targetFor(r *http.Request) Target {
+	if rr == nil {
+		return SelfTarget()
+	}
+	rctx := chi.NewRouteContext()
+	pattern := rr.matcher.Find(rctx, r.Method, r.URL.Path)
+	e, ok := rr.entries[RESTRouteKey(r.Method, pattern)]
+	if !ok || e.target == nil {
+		return SelfTarget()
+	}
+	return e.target(r, rctx.URLParam)
 }
 
 // RESTRouteRegistry is the single source of truth for REST route
@@ -452,4 +496,105 @@ func sameFallback(a, b RESTAuthFallback) bool {
 		return false
 	}
 	return a == b
+}
+
+// restTargetBodyLimit bounds how much of a request body RESTBodyTenant and
+// RESTBodyUser read to find their field. The bytes read are handed back to
+// the handler ahead of the rest of the body, so the handler still sees the
+// whole body and still applies its own size bound.
+const restTargetBodyLimit = 64 << 10
+
+// RESTPathUser targets the user whose id is the path parameter name.
+func RESTPathUser(name string) RESTTargetFunc {
+	return func(_ *http.Request, param func(string) string) Target {
+		id, err := strconv.ParseUint(param(name), 10, 64)
+		if err != nil {
+			return SelfTarget()
+		}
+		return UserTarget(id)
+	}
+}
+
+// RESTPathRole targets the role whose id is the path parameter name.
+func RESTPathRole(name string) RESTTargetFunc {
+	return func(_ *http.Request, param func(string) string) Target {
+		return RoleTarget(param(name))
+	}
+}
+
+// RESTPathTenant targets the tenant named by the path parameter name.
+func RESTPathTenant(name string) RESTTargetFunc {
+	return func(_ *http.Request, param func(string) string) Target {
+		return TenantTarget(param(name))
+	}
+}
+
+// RESTQueryTenant targets the tenant named by the query parameter name.
+func RESTQueryTenant(name string) RESTTargetFunc {
+	return func(r *http.Request, _ func(string) string) Target {
+		return TenantTarget(r.URL.Query().Get(name))
+	}
+}
+
+// RESTBodyTenant targets the tenant named by the JSON body field.
+func RESTBodyTenant(field string) RESTTargetFunc {
+	return func(r *http.Request, _ func(string) string) Target {
+		v, _ := restBodyField(r, field)
+		s, _ := v.(string)
+		return TenantTarget(s)
+	}
+}
+
+// RESTBodyUser targets the user whose id is the JSON body field. The id may
+// be a JSON number or a decimal string, as the IAM request types accept both.
+func RESTBodyUser(field string) RESTTargetFunc {
+	return func(r *http.Request, _ func(string) string) Target {
+		v, _ := restBodyField(r, field)
+		switch id := v.(type) {
+		case string:
+			n, err := strconv.ParseUint(id, 10, 64)
+			if err != nil {
+				return SelfTarget()
+			}
+			return UserTarget(n)
+		case json.Number:
+			n, err := strconv.ParseUint(id.String(), 10, 64)
+			if err != nil {
+				return SelfTarget()
+			}
+			return UserTarget(n)
+		default:
+			return SelfTarget()
+		}
+	}
+}
+
+// restBodyField reads up to restTargetBodyLimit bytes of r's body, decodes
+// them as a JSON object and returns field's value. The bytes read are always
+// put back in front of the unread remainder, so the handler reads the body
+// exactly as sent.
+func restBodyField(r *http.Request, field string) (any, bool) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, false
+	}
+	head, err := io.ReadAll(io.LimitReader(r.Body, restTargetBodyLimit))
+	r.Body = restoredBody{Reader: io.MultiReader(bytes.NewReader(head), r.Body), Closer: r.Body}
+	if err != nil {
+		return nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(head))
+	dec.UseNumber()
+	var obj map[string]any
+	if dec.Decode(&obj) != nil {
+		return nil, false
+	}
+	v, ok := obj[field]
+	return v, ok
+}
+
+// restoredBody is a request body whose already-read prefix has been put back
+// ahead of the rest; closing it closes the original body.
+type restoredBody struct {
+	io.Reader
+	io.Closer
 }

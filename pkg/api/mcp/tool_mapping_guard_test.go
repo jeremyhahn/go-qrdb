@@ -472,10 +472,10 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 		Roles:    []string{"admin"},
 	})
 
-	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_totally_unknown_tool"); err == nil {
+	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_totally_unknown_tool", nil); err == nil {
 		t.Error("unknown tool must be denied (default-deny)")
 	}
-	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_ceremony_claim_share"); err == nil {
+	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_ceremony_claim_share", nil); err == nil {
 		t.Error("dead table entry qrdb_ceremony_claim_share must be denied (it has no tool)")
 	}
 	if authz.calls != 0 {
@@ -484,7 +484,7 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 
 	// A few known tools spanning permission families resolve and authorize.
 	for _, tool := range []string{"qrdb_put", "qrdb_status", "qrdb_tenant_update_entitlements", "qrdb_audit_query"} {
-		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, tool); err != nil {
+		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, tool, nil); err != nil {
 			t.Errorf("registered tool %q: unexpected authorize error: %v", tool, err)
 		}
 	}

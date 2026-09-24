@@ -32,11 +32,23 @@ platform-wide guardrails. One tenant's policies never affect another
 tenant. When the target *is* the system tenant, the set is evaluated once.
 
 The check subject is built from the `auth.Identity`: `Subject`,
-`TenantID`, `Roles` map directly; `Metadata` becomes the ABAC attribute
-map (`subject.attrs.<key>` in conditions); `Authenticated` is true only
-for a non-nil identity. A nil identity matches no policy and always falls
-through to the inner authorizer. The target tenant is available in
-conditions as `request.tenant`.
+`TenantID`, `Roles` map directly; `Authenticated` is true only for a
+non-nil identity. A nil identity matches no policy and always falls through
+to the inner authorizer. The target tenant is available in conditions as
+`request.tenant`.
+
+The subject carries two attribute namespaces, and they are never merged:
+
+| Namespace | Source | Condition | `match` key |
+|---|---|---|---|
+| authenticated | `Identity.Metadata` — certificate fields, token claims | `subject.attrs.<key>` | `<key>` |
+| user record | `Identity.Attributes` — the user's stored `attributes`, written by an administrator holding `roles:assign` | `subject.user_attrs.<key>` | `user_attrs.<key>` |
+
+A bare name only ever reads the authenticated namespace. A user-record
+attribute called `organization` is therefore invisible to a policy that
+matches `organization`, whether or not the authenticator set one: nobody who
+can edit a user record can forge a value a policy treats as coming from the
+certificate or token.
 
 ### Live reload
 
@@ -126,7 +138,7 @@ spec:
     groups: ["editors"]
     roles: ["admin"]
     services: ["api-service"]
-    match: { department: engineering, level: { gte: 3 } }
+    match: { department: engineering, level: { gte: 3 }, user_attrs.region: us-east }
     authenticated: true # any authenticated subject
     any: false          # everyone, including anonymous
   variables:

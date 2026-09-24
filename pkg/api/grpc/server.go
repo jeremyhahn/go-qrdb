@@ -512,6 +512,9 @@ func (s *Server) Start() error {
 		DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
+		if err := s.authMW.RegisterGRPCTargets(IdentityTargets()); err != nil {
+			return err
+		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
 	if s.authMW != nil && s.soGate != nil {
@@ -552,36 +555,37 @@ func (s *Server) Start() error {
 
 	// Register the QRDB gRPC service.
 	svc := &qrdbServiceServer{
-		kvSvc:         s.kvSvc,
-		adminSvc:      s.adminSvc,
-		mvccSvc:       s.mvccSvc,
-		txSvc:         s.txSvc,
-		batchSvc:      s.batchSvc,
-		watchSvc:      s.watchSvc,
-		leaseSvc:      s.leaseSvc,
-		lockSvc:       s.lockSvc,
-		indexSvc:      s.indexSvc,
-		tsSvc:         s.tsSvc,
-		vectorSvc:     s.vectorSvc,
-		embeddingSvc:  s.embeddingSvc,
-		ragSvc:        s.ragSvc,
-		databaseSvc:   s.databaseSvc,
-		barrierSvc:    s.barrierSvc,
-		encMigrator:   s.encMigrator,
-		pinBackend:    s.pinBackend,
-		ceremonySvc:   s.ceremonySvc,
-		ceremonyCA:    s.ceremonyCA,
-		credentialSvc: s.credentialSvc,
-		tenantSvc:     s.tenantSvc,
-		userSvc:       s.userSvc,
-		roleSvc:       s.roleSvc,
-		certProv:      s.certProv,
-		collectionSvc: s.collectionSvc,
-		backupSvc:     s.backupSvc,
-		rebalanceSvc:  s.rebalanceSvc,
-		sqlSvc:        s.sqlSvc,
-		registry:      s.registry,
-		authMW:        s.authMW,
+		kvSvc:             s.kvSvc,
+		adminSvc:          s.adminSvc,
+		mvccSvc:           s.mvccSvc,
+		txSvc:             s.txSvc,
+		batchSvc:          s.batchSvc,
+		watchSvc:          s.watchSvc,
+		leaseSvc:          s.leaseSvc,
+		lockSvc:           s.lockSvc,
+		indexSvc:          s.indexSvc,
+		tsSvc:             s.tsSvc,
+		vectorSvc:         s.vectorSvc,
+		embeddingSvc:      s.embeddingSvc,
+		ragSvc:            s.ragSvc,
+		databaseSvc:       s.databaseSvc,
+		barrierSvc:        s.barrierSvc,
+		encMigrator:       s.encMigrator,
+		pinBackend:        s.pinBackend,
+		ceremonySvc:       s.ceremonySvc,
+		ceremonyCA:        s.ceremonyCA,
+		credentialSvc:     s.credentialSvc,
+		tenantSvc:         s.tenantSvc,
+		userSvc:           s.userSvc,
+		userAuthFactorSvc: s.userAuthFactorSvc,
+		roleSvc:           s.roleSvc,
+		certProv:          s.certProv,
+		collectionSvc:     s.collectionSvc,
+		backupSvc:         s.backupSvc,
+		rebalanceSvc:      s.rebalanceSvc,
+		sqlSvc:            s.sqlSvc,
+		registry:          s.registry,
+		authMW:            s.authMW,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
 

@@ -228,7 +228,16 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// Authorize the action (permission.IdentityGated short-circuits inside
 		// authorize: possession of an authenticated identity is the middleware
 		// requirement and the handler enforces the real binding check).
-		if authzErr := m.authorize(ctx, identity, perm); authzErr != nil {
+		//
+		// The permission is authorized against the tenant the request names
+		// (the route's RESTTargetFunc), resolved before the check: a
+		// RoleBinding grants only in its own tenant, so the check must be
+		// made where the operation lands. The handler's context keeps the
+		// caller's own tenant.
+		// Extracting the target may read a body prefix and put it back on
+		// this request, so the SAME request value is handed on below.
+		r = r.WithContext(ctx)
+		if authzErr := m.authorizeTarget(ctx, identity, perm, routes.targetFor(r)); authzErr != nil {
 			code := mapHTTPAuthError(authzErr)
 			// Must be set before writeJSONError's WriteHeader call --
 			// net/http silently drops headers set after the status line has
@@ -238,7 +247,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			return
 		}
 
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r)
 	})
 }
 

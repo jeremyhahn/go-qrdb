@@ -20,6 +20,8 @@ import (
 	"time"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -55,7 +57,7 @@ func TestUpdateUser_RoleBindingsHasFlagCarriesClearVersusLeaveAlone(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &mockUserService{updateResult: &user.User{ID: 1}}
-			s := &qrdbServiceServer{userSvc: svc}
+			s := &qrdbServiceServer{userSvc: svc, roleSvc: &mockRoleService{getResult: &role.Role{ID: "role-a", TenantID: "acme"}}}
 			if _, err := s.UpdateUser(context.Background(), tc.req); err != nil {
 				t.Fatalf("UpdateUser: %v", err)
 			}
@@ -128,18 +130,21 @@ func TestUpdateUser_AttributesHasFlagCarriesClearVersusLeaveAlone(t *testing.T) 
 // TestUserToProto_ProjectsExtensionFieldsAndOmitsFactorData asserts the
 // response side: GetUser must carry RoleBindings, Attributes, Factors
 // METADATA ONLY and the derived MFA fields, and Factors[].Data must never
-// reach the wire.
+// reach the wire. Factors/MFA are computed at read time from the real
+// enrollment records (service.UserAuthFactorServicer), never from a stored
+// field on the domain user, so they are seeded here via the SAME
+// userAuthFactorSvc double the auth-factor RPC tests use.
 func TestUserToProto_ProjectsExtensionFieldsAndOmitsFactorData(t *testing.T) {
 	enrolledAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	svc := &mockUserService{getResult: &user.User{
 		ID:           1,
 		RoleBindings: []user.RoleBinding{{RoleID: "role-a", TenantID: "acme"}},
 		Attributes:   map[string]string{"department": "eng"},
-		Factors: []user.FactorEnrollment{
-			{ID: "f1", FactorName: "fido2", Data: []byte(`{"secret":"do-not-leak"}`), CreatedAt: enrolledAt},
-		},
 	}}
-	s := &qrdbServiceServer{userSvc: svc}
+	factorSvc := &mockUserAuthFactorSvc{listResult: []*auth.AuthFactor{
+		{ID: "f1", Type: "fido2", RegisteredAt: enrolledAt, Credential: []byte("do-not-leak")},
+	}}
+	s := &qrdbServiceServer{userSvc: svc, userAuthFactorSvc: factorSvc}
 
 	resp, err := s.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 	if err != nil {
@@ -205,7 +210,7 @@ func TestProtoToRoleBindings_Empty(t *testing.T) {
 	}
 }
 
-func TestFactorsToProto_NoneIsNil(t *testing.T) {
+func TestFactorsToProto_NoActiveFactorsIsNil(t *testing.T) {
 	if got := factorsToProto(nil); got != nil {
 		t.Errorf("factorsToProto(nil) = %v, want nil", got)
 	}

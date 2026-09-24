@@ -121,6 +121,18 @@ func (e *InvalidPublicGRPCMethodError) Error() string {
 	return "auth/middleware: invalid public gRPC method name (want \"/package.Service/Method\"): " + e.Method
 }
 
+// InvalidGRPCTargetError is returned by RegisterGRPCTargets for a method name
+// that is not a full gRPC method name ("/package.Service/Method") or that is
+// registered with no extractor.
+type InvalidGRPCTargetError struct {
+	Method string
+}
+
+// Error returns a human-readable description of the rejected registration.
+func (e *InvalidGRPCTargetError) Error() string {
+	return "auth/middleware: invalid gRPC target registration (want \"/package.Service/Method\" and an extractor): " + e.Method
+}
+
 // AuthMethodNotPermittedError is returned when an account authenticated
 // successfully by a method its own policy does not permit.
 //

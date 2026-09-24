@@ -23,7 +23,8 @@ import (
 
 // TestValidatePendingAdmin_BoundCredentialIsRefused pins the last two
 // refusals: a record that is otherwise the pending admin but already holds a
-// bound certificate or an enrolled factor is not an invitation target.
+// bound certificate is not an invitation target. Enrolled factors are not on
+// the record; ensureNoActiveFactors checks them against the auth-factor store.
 func TestValidatePendingAdmin_BoundCredentialIsRefused(t *testing.T) {
 	const tenantID, username, adminRoleID = "acme", "admin", "role-admin"
 	pending := func() *user.User {
@@ -38,7 +39,6 @@ func TestValidatePendingAdmin_BoundCredentialIsRefused(t *testing.T) {
 		mutate func(*user.User)
 	}{
 		{name: "bound certificate", mutate: func(u *user.User) { u.CertBindings = []user.CertBinding{{}} }},
-		{name: "enrolled factor", mutate: func(u *user.User) { u.Factors = []user.FactorEnrollment{{}} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := pending()

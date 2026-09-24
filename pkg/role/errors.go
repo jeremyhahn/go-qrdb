@@ -24,6 +24,55 @@ func (e *RoleNotFoundError) Error() string {
 	return "role: not found: " + e.ID
 }
 
+// NotAssignableError is returned when a role referenced by an assignment
+// (a user's RoleIDs, or a RoleBinding) cannot be granted within the named
+// tenant: the role does not exist, or it exists but belongs to neither that
+// tenant nor the system tenant's global built-in role set (go-qrdb#192).
+type NotAssignableError struct {
+	RoleID   string
+	TenantID string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *NotAssignableError) Error() string {
+	return "role: " + e.RoleID + " is not assignable within tenant " + e.TenantID
+}
+
+// ReferenceError is returned when a role-assignment write names a role that
+// does not exist. It wraps the lookup's own *RoleNotFoundError, so errors.As
+// still finds it, but it classifies as a bad field in the WRITE rather than as
+// a missing resource: the request that carried the reference names a user,
+// and reporting "not found" for it would name the wrong subject.
+type ReferenceError struct {
+	RoleID string
+	Err    error
+}
+
+// Error returns a human-readable description of the unresolved reference.
+func (e *ReferenceError) Error() string {
+	msg := "role: reference to unknown role " + e.RoleID
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes the lookup's own error.
+func (e *ReferenceError) Unwrap() error { return e.Err }
+
+// ServiceRequiredError is returned when a write names one or more role
+// references (RoleIDs, or a RoleBinding) but no RoleServicer was available
+// to validate them. Whenever role references are present, validating them
+// is mandatory, not best-effort: a composition that cannot resolve a role
+// service must refuse the write rather than accept an unvalidated
+// reference (go-qrdb#192 round 2).
+type ServiceRequiredError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *ServiceRequiredError) Error() string {
+	return "role: a role service is required to validate the referenced role(s), and none was configured"
+}
+
 // RoleNameExistsError is returned when a role name is already taken
 // within the tenant.
 type RoleNameExistsError struct {

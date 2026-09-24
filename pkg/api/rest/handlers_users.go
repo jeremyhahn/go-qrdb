@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -143,6 +144,13 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if len(req.RoleIDs) > 0 {
+		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.TenantID, req.RoleIDs); err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
+	}
+
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
 		Username:             req.Username,
 		Email:                req.Email,
@@ -159,9 +167,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusCreated, u)
 }
 
 // handleListUsers handles GET /users/list -- returns a paginated user list.
@@ -207,7 +213,11 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	users := make([]*userResponse, len(resp.Users))
 	for i, u := range resp.Users {
-		users[i] = userToResponse(u)
+		users[i], err = userToResponse(ctx, s.userAuthFactorSvc, u)
+		if err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
 	}
 
 	writeJSON(w, listUsersResponse{
@@ -392,7 +402,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id uint64
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleGetUserByUsername handles GET /users/by-username/{username}
@@ -411,7 +421,7 @@ func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // lookupUserRequest is the JSON body for POST /users/lookup. The email travels
@@ -443,7 +453,7 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleGetUserByCertThumbprint handles GET /users/by-cert-thumbprint/{thumbprint}
@@ -459,7 +469,7 @@ func (s *Server) handleGetUserByCertThumbprint(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // addCertBindingRequest is the JSON payload for POST /users/{userID}/cert-bindings.
@@ -487,7 +497,7 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleRemoveCertBinding handles DELETE /users/{userID}/cert-bindings/{thumbprint}
@@ -504,7 +514,7 @@ func (s *Server) handleRemoveCertBinding(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleUpdateUser handles PUT /users/{id} -- applies partial updates.
@@ -539,13 +549,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 		updateReq.LastAuth = &utc
 	}
 
+	if authmw.TouchesRoleAssignment(updateReq.RoleIDs, updateReq.RoleBindings, updateReq.Attributes) {
+		if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, id, updateReq.RoleIDs, updateReq.RoleBindings); err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
+	}
+
 	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
-	writeJSON(w, userToResponse(u))
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleDeleteUser handles DELETE /users/{id} -- removes a non-system user.
@@ -592,9 +609,16 @@ func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id ui
 // ---------------------------------------------------------------------------
 
 // userToResponse converts a user.User to its JSON response representation.
-func userToResponse(u *user.User) *userResponse {
+// Factors metadata and the derived MFA fields are computed at read time from
+// the real enrollment records (service.UserAuthFactorServicer, the same
+// store /v1/users/factors reads), never from a stored field on u -- there is
+// exactly one source of truth, read once. lister may be nil (the auth-factor
+// subsystem is not configured for this deployment); a lister that fails
+// returns the *user.FactorLookupError rather than a response claiming no
+// factors.
+func userToResponse(ctx context.Context, lister user.FactorLister, u *user.User) (*userResponse, error) {
 	if u == nil {
-		return nil
+		return nil, nil
 	}
 
 	roleIDs := u.RoleIDs
@@ -602,7 +626,10 @@ func userToResponse(u *user.User) *userResponse {
 		roleIDs = []string{}
 	}
 
-	mfaEnabled, mfaMethods, mfaEnrolledAt := user.WireMFA(u)
+	factors, err := user.ResolveFactorView(ctx, lister, u.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &userResponse{
 		ID:            u.ID,
@@ -618,13 +645,26 @@ func userToResponse(u *user.User) *userResponse {
 		CertBindings:  user.WireCertBindings(u.CertBindings),
 		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
 		Attributes:    u.Attributes,
-		Factors:       user.WireFactors(u.Factors),
-		MFAEnabled:    mfaEnabled,
-		MFAMethods:    mfaMethods,
-		MFAEnrolledAt: mfaEnrolledAt,
+		Factors:       factors.Factors,
+		MFAEnabled:    factors.MFAEnabled,
+		MFAMethods:    factors.MFAMethods,
+		MFAEnrolledAt: factors.MFAEnrolledAt,
 		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+	}, nil
+}
+
+// writeUserJSON projects u (see userToResponse) and writes it with status,
+// or writes the projection's error when its factors could not be listed.
+func (s *Server) writeUserJSON(ctx context.Context, w http.ResponseWriter, status int, u *user.User) {
+	resp, err := userToResponse(ctx, s.userAuthFactorSvc, u)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // parseUserID parses a user ID path segment into the uint64 wire type,

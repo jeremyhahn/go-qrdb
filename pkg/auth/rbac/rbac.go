@@ -385,30 +385,50 @@ func (a *RBACAuthorizer) staleMayDenote(ctx context.Context, roleID, roleName st
 // settle it, which is the case where the role may be persisted under another
 // identifier — a legacy seeding, or a role recreated under a generated ID.
 func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Identity, roleName string) (bool, error) {
-	canonical := role.SystemRoleID(identity.TenantID, roleName)
-	for _, r := range identity.Roles {
+	return a.roleIDsHoldSystemRole(ctx, identity.Roles, identity.TenantID, roleName)
+}
+
+// roleIDsHoldSystemRole reports whether roleIDs — all belonging to tenantID —
+// includes the named system role of tenantID, by role name or by any
+// identifier that denotes it. It is holdsSystemRole's tenant-parameterized
+// core, shared with the bound-role SO check in Authorize: a role id must be
+// resolved in the SAME tenant it actually belongs to, whether it came from
+// an identity's own Roles (that identity's home tenant) or from a
+// RoleBinding's RoleID (the tenant the binding names) — resolving either set
+// in the WRONG tenant either hides a genuine system-role grant (an
+// unrelated-tenant lookup reports RoleNotFound, read as absence) or fails
+// the whole call outright (kvRoleStore.ResolvePermissions/GetRole error on
+// an id that belongs to a different tenant's store).
+//
+// The name and the canonical identifier are matched first because neither
+// needs the store: an identity classified by those is classified with no I/O
+// and no staleness whatsoever. The store is consulted only when they do not
+// settle it, which is the case where the role may be persisted under another
+// identifier — a legacy seeding, or a role recreated under a generated ID.
+func (a *RBACAuthorizer) roleIDsHoldSystemRole(ctx context.Context, roleIDs []string, tenantID, roleName string) (bool, error) {
+	canonical := role.SystemRoleID(tenantID, roleName)
+	for _, r := range roleIDs {
 		if r == roleName || r == canonical {
 			return true, nil
 		}
 	}
-	if len(identity.Roles) == 0 {
+	if len(roleIDs) == 0 {
 		return false, nil
 	}
 
-	// Resolve under the IDENTITY's tenant, not the request's. kvRoleStore's
-	// ownership check reads the context tenant, so on a cross-tenant request
-	// — a system-tenant identity acting on tenant X — the request context
-	// hides the identity's own system-tenant role and the lookup comes back
+	// Resolve under tenantID, not whatever tenant ctx already carries.
+	// kvRoleStore's ownership check reads the context tenant, so a mismatch
+	// here hides a genuine system-role grant and the lookup comes back
 	// RoleNotFound. That reads as genuine absence, leaves the legacy
 	// identifier out of the set, and silently switches off the SO deny-list
 	// for exactly the privileged caller it exists to constrain.
-	ctx = tenant.WithTenantID(ctx, identity.TenantID)
+	ctx = tenant.WithTenantID(ctx, tenantID)
 
-	ids, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, roleName)
+	ids, authoritative, err := a.systemRoleIDs(ctx, tenantID, roleName)
 	if err != nil {
 		return false, err
 	}
-	for _, r := range identity.Roles {
+	for _, r := range roleIDs {
 		if slices.Contains(ids, r) {
 			return true, nil
 		}
@@ -422,7 +442,7 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 	// generated identifier. "Not in the stale set" is therefore not a finding
 	// of innocence, so each unmatched identifier is checked from the ID side
 	// before the grant is cleared.
-	for _, r := range identity.Roles {
+	for _, r := range roleIDs {
 		mayDenote, err := a.staleMayDenote(ctx, r, roleName)
 		if err != nil {
 			return false, err
@@ -434,37 +454,65 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 	return false, nil
 }
 
-// effectiveRoles returns the identity's roles with the Owner convenience role
-// removed when strict separation of duties is active. Owner may be referenced
-// either by its name (role.RoleNameOwner) or by any identifier that denotes
-// the tenant's Owner role — the canonical one, a legacy identifier on a
-// cluster seeded before the UUIDv5 migration, or a generated one if the role
-// was recreated. All such forms are stripped; recognising only the canonical
-// identifier would leave such a grant live under a posture that exists to
-// void it.
+// boundRoleIDs returns the RoleID of every identity.RoleBindings entry whose
+// TenantID equals the request's TARGET tenant — tenant.FromContext(ctx), the
+// same resolution Authorize's scope rule already reads for this call — so a
+// binding grants its role exactly when the request is operating against the
+// tenant the binding names, and contributes nothing otherwise (go-qrdb#192
+// item 4: "a binding in tenant A grants in A and NOT in B").
 //
-// The identifiers are resolved on this call rather than cached, for the
-// reason given on systemRoleIDs. In the standard posture the roles are
-// returned unchanged and no lookup is performed at all.
-func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Identity) ([]string, error) {
-	if !a.strictSoD {
-		return identity.Roles, nil
+// It must run against the INCOMING ctx, before any of Authorize's tenant
+// rebinds (the home-tenant resolve, the bound-tenant resolve, the Owner
+// strip): the target tenant of THIS call and the identity's home tenant are
+// frequently different (a system-tenant caller acting on tenant A, or
+// exactly the cross-tenant grant a RoleBinding exists to express), and
+// rebinding first would silently answer with the wrong tenant.
+//
+// Every entry this returns shares the SAME tenant (the target), which is
+// what lets callers resolve them together in one tenant context rather than
+// per binding.
+func boundRoleIDs(ctx context.Context, identity *auth.Identity) []string {
+	if len(identity.RoleBindings) == 0 {
+		return nil
 	}
-	if len(identity.Roles) == 0 {
-		return identity.Roles, nil
+	target := tenant.FromContext(ctx)
+	var out []string
+	for _, b := range identity.RoleBindings {
+		if b.TenantID == target {
+			out = append(out, b.RoleID)
+		}
 	}
-	// Same tenant-scoping as holdsSystemRole: the Owner role being stripped is
-	// the identity's own tenant's, so it must be resolved under that tenant's
-	// context or a cross-tenant request cannot see it and the strip silently
-	// stops applying.
-	ctx = tenant.WithTenantID(ctx, identity.TenantID)
+	return out
+}
 
-	ownerIDs, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameOwner)
+// stripOwnerRole removes any entry of roleIDs that denotes tenantID's Owner
+// role under strict separation of duties, by name, canonical id, or a
+// legacy/generated id staleMayDenote cannot rule out. It is effectiveRoles'
+// former inline logic, parameterized so the SAME stripping applies to role
+// ids resolved in ANY tenant: an identity's own Roles in its home tenant, or
+// a RoleBinding's RoleID in the tenant the binding targets. Resolving the
+// strip only in the identity's home tenant — the previous behavior — left a
+// CROSS-TENANT bound Owner grant completely unstripped, since the tenant
+// that actually issued it was never consulted.
+//
+// roleIDs is returned unchanged, with no lookup performed, whenever strict
+// SoD is off or roleIDs is empty.
+func (a *RBACAuthorizer) stripOwnerRole(ctx context.Context, roleIDs []string, tenantID string) ([]string, error) {
+	if !a.strictSoD || len(roleIDs) == 0 {
+		return roleIDs, nil
+	}
+	// Same tenant-scoping as roleIDsHoldSystemRole: the Owner role being
+	// stripped is TENANTID's, so it must be resolved under that tenant's
+	// context or a mismatched request cannot see it and the strip silently
+	// stops applying.
+	ctx = tenant.WithTenantID(ctx, tenantID)
+
+	ownerIDs, authoritative, err := a.systemRoleIDs(ctx, tenantID, role.RoleNameOwner)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(identity.Roles))
-	for _, r := range identity.Roles {
+	out := make([]string, 0, len(roleIDs))
+	for _, r := range roleIDs {
 		if !authoritative && r != role.RoleNameOwner && !slices.Contains(ownerIDs, r) {
 			// Stale set: an identifier it does not account for may be an Owner
 			// role recreated after the replica's snapshot. Strip it unless the
@@ -483,6 +531,26 @@ func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Iden
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// effectiveRoles returns the identity's OWN Roles with the Owner convenience
+// role removed when strict separation of duties is active (see
+// stripOwnerRole). It no longer folds in bound role ids — see
+// resolveEffectivePermissions, which resolves an identity's home-tenant
+// Roles and any tenant-scoped RoleBindings as TWO SEPARATE permission
+// resolutions and unions the results, rather than one combined role-id list.
+//
+// Combining them into one list and resolving that list in a single tenant
+// context was the shape of a real bug: routingRoleService.ResolvePermissions
+// resolves every listed role id in ONE tenant (tenant.FromContext(ctx)), and
+// kvRoleStore.ResolvePermissions/GetRole return an error — failing the
+// ENTIRE call — for any id that does not belong to that tenant's store. A
+// combined list containing both the identity's home-tenant role ids and a
+// bound role id from a DIFFERENT tenant therefore failed outright whenever
+// the two disagreed, denying access a valid binding alone would have
+// granted.
+func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Identity) ([]string, error) {
+	return a.stripOwnerRole(ctx, identity.Roles, identity.TenantID)
 }
 
 // IsSystemTenant reports whether identity is scoped to the structurally
@@ -518,6 +586,62 @@ func (a *RBACAuthorizer) resolveScope(ctx context.Context, identity *auth.Identi
 	return a.scopes.ResolveScope(ctx, identity.TenantID, p)
 }
 
+// resolvePermissionSet resolves roleIDs into their union of permissions,
+// via the cache when possible, with the same primary/StaleRead-fallback
+// pattern Authorize has always used for a single tenant's role ids.
+//
+// resolveCtx must already be bound to the tenant roleIDs belong to (the
+// caller resolves this; ResolvePermissions itself also reads
+// tenant.FromContext(resolveCtx) via the routing role service). subject
+// and cacheTenantID form the rest of the cache key alongside roleIDs; a
+// caller resolving BOUND role ids passes the bound tenant here, which is
+// what keeps a bound-role permission set from colliding in the cache with
+// the SAME subject's home-tenant set.
+func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheTenantID, subject string, roleIDs []string) (map[permission.Permission]struct{}, error) {
+	if permSet, ok := a.cache.get(cacheTenantID, subject, roleIDs); ok {
+		return permSet, nil
+	}
+	// Bound the primary linearizable resolve when a StaleRead fallback is
+	// available, so a SLOW (not just failed) ReadIndex — cold pipeline,
+	// draining host, transient consensus latency — fails over within
+	// resolveSyncTimeout instead of blocking the whole request until its
+	// outer deadline. A healthy ReadIndex answers in microseconds; the
+	// only cost of the short budget is a marginally-staler read on a blip,
+	// which is safe for replicated role data. Mirrors the auth user-lookup
+	// guard and is the companion to the error-triggered fallback below.
+	primaryCtx := resolveCtx
+	var cancel context.CancelFunc
+	if a.rolesFallback != nil {
+		primaryCtx, cancel = context.WithTimeout(resolveCtx, resolveSyncTimeout)
+	}
+	perms, err := a.roles.ResolvePermissions(primaryCtx, roleIDs)
+	if cancel != nil {
+		cancel()
+	}
+	if err != nil {
+		// Primary (linearizable) resolution failed or timed out. Retry
+		// against the StaleRead-backed fallback when available — this keeps
+		// authorization working when the ReadIndex pipeline is not yet
+		// warm or the host is draining (which rejects linearizable
+		// reads). Role data is replicated before servers start, so the
+		// stale read is safe. Mirrors the user-store fallback.
+		if a.rolesFallback == nil {
+			return nil, &ResolveError{Err: err}
+		}
+		fperms, ferr := a.rolesFallback.ResolvePermissions(resolveCtx, roleIDs)
+		if ferr != nil {
+			return nil, &ResolveError{Err: err}
+		}
+		perms = fperms
+	}
+	a.cache.set(cacheTenantID, subject, roleIDs, perms)
+	permSet := make(map[permission.Permission]struct{}, len(perms))
+	for _, p := range perms {
+		permSet[p] = struct{}{}
+	}
+	return permSet, nil
+}
+
 // Authorize checks whether the given identity has permission to perform
 // the specified action on the resource. It returns nil if the action is
 // allowed, auth.ErrUnauthenticated if the identity is nil, or a
@@ -546,12 +670,30 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		return auth.ErrUnauthenticated
 	}
 
+	// Captured BEFORE any tenant rebind below: boundRoleIDs and the SO/
+	// permission resolution below both need the call's ORIGINAL target
+	// tenant, and every entry boundRoleIDs returns belongs to it.
+	target := tenant.FromContext(ctx)
+	bound := boundRoleIDs(ctx, identity)
+
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.
+	// Checked against BOTH sources of role grants — the identity's own
+	// Roles in its home tenant, and any RoleBinding scoped to this call's
+	// target tenant — so a bound SO grant plus an unrelated crypto grant is
+	// denied exactly as a plain SO role already is. Checking only Roles left
+	// a bound SO grant free to combine with another tenant-scoped grant and
+	// evade the FIPS denial entirely.
 	if isSODenied(resource, action) {
 		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
 		if err != nil {
 			return err
+		}
+		if !isSO && len(bound) > 0 {
+			isSO, err = a.roleIDsHoldSystemRole(ctx, bound, target, role.RoleNameSO)
+			if err != nil {
+				return err
+			}
 		}
 		if isSO {
 			return &PermissionDeniedError{
@@ -563,65 +705,40 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		}
 	}
 
-	// Resolve the identity's effective permissions, with caching. The
-	// cache key includes the effective role set (see permissionCache), so
-	// a change in the identity's enriched roles is never masked by a
-	// stale entry.
-	effRoles, err := a.effectiveRoles(ctx, identity)
+	// Resolve the identity's effective permissions. Home-tenant Roles and
+	// target-tenant-scoped RoleBindings are resolved as TWO SEPARATE calls,
+	// each in the tenant its role ids actually belong to, and their
+	// permission sets are unioned — never combined into one role-id list
+	// and resolved in a single tenant, which fails outright the moment the
+	// two tenants disagree (see effectiveRoles' doc comment).
+	homeRoles, err := a.effectiveRoles(ctx, identity)
 	if err != nil {
 		return err
 	}
-	permSet, ok := a.cache.get(identity.TenantID, identity.Subject, effRoles)
-	if !ok {
-		// Bound the primary linearizable resolve when a StaleRead fallback is
-		// available, so a SLOW (not just failed) ReadIndex — cold pipeline,
-		// draining host, transient consensus latency — fails over within
-		// resolveSyncTimeout instead of blocking the whole request until its
-		// outer deadline. A healthy ReadIndex answers in microseconds; the
-		// only cost of the short budget is a marginally-staler read on a blip,
-		// which is safe for replicated role data. Mirrors the auth user-lookup
-		// guard and is the companion to the error-triggered fallback below.
-		//
-		// Resolved under the IDENTITY's own tenant, never the request's
-		// target -- the same tenant-scoping holdsSystemRole and
-		// effectiveRoles apply, and the only one consistent with the cache
-		// above, which is keyed by the identity's tenant because an
-		// identity's permissions do not depend on what it targets. The
-		// target is bound into ctx by AuthorizeTenant, and the role store
-		// refuses a role outside the context tenant, so a system-tenant
-		// operator's roles resolved under a target tenant's context came
-		// back not-found: its first decision against another tenant failed
-		// whenever the cache was cold.
-		ownCtx := tenant.WithTenantID(ctx, identity.TenantID)
-		primaryCtx := ownCtx
-		var cancel context.CancelFunc
-		if a.rolesFallback != nil {
-			primaryCtx, cancel = context.WithTimeout(ownCtx, resolveSyncTimeout)
+	homeCtx := tenant.WithTenantID(ctx, identity.TenantID)
+	permSet, err := a.resolvePermissionSet(homeCtx, identity.TenantID, identity.Subject, homeRoles)
+	if err != nil {
+		return err
+	}
+	if len(bound) > 0 {
+		strippedBound, serr := a.stripOwnerRole(ctx, bound, target)
+		if serr != nil {
+			return serr
 		}
-		perms, err := a.roles.ResolvePermissions(primaryCtx, effRoles)
-		if cancel != nil {
-			cancel()
-		}
-		if err != nil {
-			// Primary (linearizable) resolution failed or timed out. Retry
-			// against the StaleRead-backed fallback when available — this keeps
-			// authorization working when the ReadIndex pipeline is not yet
-			// warm or the host is draining (which rejects linearizable
-			// reads). Role data is replicated before servers start, so the
-			// stale read is safe. Mirrors the user-store fallback.
-			if a.rolesFallback == nil {
-				return &ResolveError{Err: err}
+		if len(strippedBound) > 0 {
+			boundCtx := tenant.WithTenantID(ctx, target)
+			boundPerms, berr := a.resolvePermissionSet(boundCtx, target, identity.Subject, strippedBound)
+			if berr != nil {
+				return berr
 			}
-			fperms, ferr := a.rolesFallback.ResolvePermissions(ownCtx, effRoles)
-			if ferr != nil {
-				return &ResolveError{Err: err}
+			merged := make(map[permission.Permission]struct{}, len(permSet)+len(boundPerms))
+			for p := range permSet {
+				merged[p] = struct{}{}
 			}
-			perms = fperms
-		}
-		a.cache.set(identity.TenantID, identity.Subject, effRoles, perms)
-		permSet = make(map[permission.Permission]struct{}, len(perms))
-		for _, p := range perms {
-			permSet[p] = struct{}{}
+			for p := range boundPerms {
+				merged[p] = struct{}{}
+			}
+			permSet = merged
 		}
 	}
 

@@ -443,6 +443,11 @@ func (s *Server) buildHandlers() {
 	// dot-separated key; see registerModules.
 	s.registerModules()
 
+	// Declare, for every method that acts on a named user, role or tenant,
+	// how its payload names it, so the route-level check authorizes against
+	// that tenant (see targets.go).
+	s.registerTargets()
+
 	s.assertMethodsAuthorized()
 }
 

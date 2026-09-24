@@ -44,7 +44,7 @@ func TestHandleUserRemoveCertBinding_CarriesUserIDAndThumbprint(t *testing.T) {
 			return &user.User{ID: userID, Username: "alice"}, nil
 		},
 	}
-	handler := handleUserRemoveCertBinding(svc)
+	handler := handleUserRemoveCertBinding(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_user_remove_cert_binding", map[string]any{
 		"user_id":    "1001",
@@ -94,7 +94,7 @@ func TestHandleUserRemoveCertBinding_RefusesMissingArguments(t *testing.T) {
 					return nil, nil
 				},
 			}
-			handler := handleUserRemoveCertBinding(svc)
+			handler := handleUserRemoveCertBinding(svc, nil)
 
 			result, err := handler(context.Background(),
 				buildCallToolRequest(t, "qrdb_user_remove_cert_binding", args))
@@ -119,7 +119,7 @@ func TestHandleUserRemoveCertBinding_PropagatesTheServiceRefusal(t *testing.T) {
 			return nil, &user.CertBindingNotFoundError{UserID: userID, Thumbprint: tp}
 		},
 	}
-	handler := handleUserRemoveCertBinding(svc)
+	handler := handleUserRemoveCertBinding(svc, nil)
 
 	_, err := handler(context.Background(),
 		buildCallToolRequest(t, "qrdb_user_remove_cert_binding", map[string]any{
@@ -166,7 +166,7 @@ func TestHandleUserAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
 			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
 		},
 	}
-	handler := handleUserAddCertBinding(svc)
+	handler := handleUserAddCertBinding(svc, nil)
 
 	_, err := handler(context.Background(),
 		buildCallToolRequest(t, "qrdb_user_add_cert_binding", map[string]any{
@@ -212,10 +212,14 @@ func TestUserTools_BootstrapAdminLockoutIsFailedPrecondition(t *testing.T) {
 		handler func(user.UserServicer) mcpserver.ToolHandlerFunc
 		args    map[string]any
 	}{
-		"qrdb_user_remove_cert_binding": {handleUserRemoveCertBinding, map[string]any{"user_id": "1001", "thumbprint": "AAAA"}},
-		"qrdb_user_delete":              {handleUserDelete, map[string]any{"id": "1001"}},
-		"qrdb_user_disable":             {handleUserDisable, map[string]any{"id": "1001"}},
-		"qrdb_user_update":              {handleUserUpdate, map[string]any{"id": "1001", "username": "root"}},
+		"qrdb_user_remove_cert_binding": {func(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+			return handleUserRemoveCertBinding(svc, nil)
+		}, map[string]any{"user_id": "1001", "thumbprint": "AAAA"}},
+		"qrdb_user_delete":  {handleUserDelete, map[string]any{"id": "1001"}},
+		"qrdb_user_disable": {handleUserDisable, map[string]any{"id": "1001"}},
+		"qrdb_user_update": {func(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+			return handleUserUpdate(svc, nil, nil, nil)
+		}, map[string]any{"id": "1001", "username": "root"}},
 	}
 	for tool, tc := range cases {
 		t.Run(tool, func(t *testing.T) {
@@ -241,7 +245,7 @@ func TestHandleUserAddCertBinding_PastExpiryIsInvalidArgument(t *testing.T) {
 		},
 	}
 	const tool = "qrdb_user_add_cert_binding"
-	_, err := handleUserAddCertBinding(svc)(context.Background(),
+	_, err := handleUserAddCertBinding(svc, nil)(context.Background(),
 		buildCallToolRequest(t, tool, map[string]any{"user_id": "1001", "thumbprint": "AAAA", "not_after_unix": 1}))
 	var expired *user.CertBindingExpiredError
 	if !errors.As(err, &expired) {

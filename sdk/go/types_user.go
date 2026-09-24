@@ -29,8 +29,9 @@ type (
 	CertBinding = user.CertBinding
 	// CertBindingKind selects the cert-matching scheme.
 	CertBindingKind = user.CertBindingKind
-	// FactorEnrollment is an opaque auth-factor enrollment (webauthn/fido2/piv).
-	FactorEnrollment = user.FactorEnrollment
+	// There is deliberately no FactorEnrollment re-export: enrolled auth
+	// factors have exactly one source of truth, pkg/auth.AuthFactor via the
+	// AuthFactorService already re-exported below.
 	// RoleBinding grants a role within a tenant scope (tenant-scoped RBAC).
 	RoleBinding = user.RoleBinding
 
@@ -97,6 +98,11 @@ var NormalizeEmail = user.NormalizeEmail
 // (SHA-256 over SubjectPublicKeyInfo, base64url). Consumers must not reimplement
 // it.
 var ComputeSPKIThumbprint = user.ComputeSPKIThumbprint
+
+// UserFactorLookupError is returned when a user was read but its enrolled
+// auth factors could not be listed, so its Factors and MFA fields are unknown.
+// It is returned instead of a user reported as having no second factor.
+type UserFactorLookupError = user.FactorLookupError
 
 // UserValidationError is returned when a user request fails validation.
 type UserValidationError = user.ValidationError

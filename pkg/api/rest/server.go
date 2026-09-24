@@ -1120,6 +1120,25 @@ func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.P
 	s.recordStaticRoute(method, pattern, h)
 }
 
+// routeTarget is route for a route whose request names the tenant it acts on:
+// target extracts that tenant, and the middleware authorizes perm against it
+// rather than against the caller's own tenant (see authmw.Target).
+func (s *Server) routeTarget(method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
+	s.routeIfTarget(true, method, pattern, perm, target, h)
+}
+
+// routeIfTarget is routeIf plus a target extractor. The extractor is attached
+// only to a route this server registered: a module that already claimed the
+// route keeps its own contract.
+func (s *Server) routeIfTarget(enabled bool, method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
+	if s.routePerms.Covered(method, pattern) {
+		s.routeIf(enabled, method, pattern, perm, h)
+		return
+	}
+	s.routeIf(enabled, method, pattern, perm, h)
+	s.routePerms.SetTarget(method, pattern, target)
+}
+
 // public registers a route that is reachable WITHOUT authentication. The
 // route must also be on RESTMiddleware's pre-authentication exact-path
 // allowlist; the registry marker makes the exemption explicit for the
@@ -1557,40 +1576,40 @@ func (s *Server) registerRoutes() {
 
 	// User management routes.
 	userOn := s.userSvc != nil
-	s.routeIf(userOn, http.MethodPost, "/users", permission.UsersCreate, s.handleCreateUser)
-	s.routeIf(userOn, http.MethodGet, "/users/list", permission.UsersList, s.handleListUsers)
+	s.routeIfTarget(userOn, http.MethodPost, "/users", permission.UsersCreate, authmw.RESTBodyTenant("tenant_id"), s.handleCreateUser)
+	s.routeIfTarget(userOn, http.MethodGet, "/users/list", permission.UsersList, authmw.RESTQueryTenant("tenantID"), s.handleListUsers)
 
 	// User path-param routes (the handler nil-checks the user service).
-	s.route(http.MethodGet, "/users/{id}", permission.UsersRead, s.handleUser)
-	s.route(http.MethodPut, "/users/{id}", permission.UsersUpdate, s.handleUser)
-	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
-	s.route(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, s.handleUser)
+	s.routeTarget(http.MethodGet, "/users/{id}", permission.UsersRead, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPut, "/users/{id}", permission.UsersUpdate, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodDelete, "/users/{id}", permission.UsersDelete, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, authmw.RESTPathUser("id"), s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
-	s.route(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, s.handleUser)
-	s.route(http.MethodPost, "/users/lookup", permission.UsersRead, s.handleUser)
+	s.routeTarget(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, authmw.RESTQueryTenant("tenantID"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/lookup", permission.UsersRead, authmw.RESTBodyTenant("tenant_id"), s.handleUser)
 
 	// Role management routes.
 	rolesOn := s.roleSvc != nil
-	s.routeIf(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, s.handleCreateRole)
-	s.routeIf(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, s.handleListRoles)
-	s.routeIf(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, s.handleGetRoleByName)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, authmw.RESTBodyTenant("tenant_id"), s.handleCreateRole)
+	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, authmw.RESTQueryTenant("tenantID"), s.handleListRoles)
+	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, authmw.RESTQueryTenant("tenant_id"), s.handleGetRoleByName)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/resolve-permissions", permission.PermissionsResolve, s.handleResolvePermissions)
 	// Reconcile carries roles:create, not a verb of its own. Reconciliation IS
 	// the seeding operation applied to an existing tenant, and a dedicated
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
-	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, s.handleReconcileRoles)
-	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
-	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, authmw.RESTBodyTenant("tenant_id"), s.handleReconcileRoles)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, authmw.RESTBodyUser("user_id"), s.handleAssignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, authmw.RESTBodyUser("user_id"), s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
 
 	// Role path-param routes (the handler nil-checks the role service).
-	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
-	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
-	s.route(http.MethodDelete, "/roles/{id}", permission.RolesDelete, s.handleRole)
+	s.routeTarget(http.MethodGet, "/roles/{id}", permission.RolesRead, authmw.RESTPathRole("id"), s.handleRole)
+	s.routeTarget(http.MethodPut, "/roles/{id}", permission.RolesUpdate, authmw.RESTPathRole("id"), s.handleRole)
+	s.routeTarget(http.MethodDelete, "/roles/{id}", permission.RolesDelete, authmw.RESTPathRole("id"), s.handleRole)
 
 	// Without a role service the legacy dispatcher still routed the /roles/
 	// keyword paths to handleRole, which reports 501. Attach the same
@@ -1642,8 +1661,8 @@ func (s *Server) registerRoutes() {
 	// ONLY while the middleware reports the tenant's IAM as unreachable
 	// (middleware.IdentityIAMSealed); see authorizeTenantBarrierSealedOp.
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.IdentityGated, s.handleTenantByID)
-	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, s.handleTenantByID)
-	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, s.handleTenantByID)
+	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	// barrier/init is IdentityGated at the ROUTE level because its real
 	// authorization is conditional and lives in the handler
 	// (authorizeTenantBarrierInit): an initialized barrier demands the full
@@ -1655,9 +1674,9 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal-share", permission.IdentityGated, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleTenantByID)
 

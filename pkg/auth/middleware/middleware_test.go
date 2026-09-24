@@ -359,6 +359,143 @@ func TestAuthenticate_UserEnrichment(t *testing.T) {
 	}
 }
 
+// TestAuthenticate_UserEnrichment_RoleBindingsAndAttributes asserts the
+// go-qrdb#192 item 4 enrichment: the user's tenant-scoped RoleBindings land
+// on the identity for rbac.effectiveRoles to consume, and the user's ABAC
+// Attributes land on identity.Attributes — a SEPARATE field from Metadata,
+// never merged into it (see auth.Identity.Attributes and
+// abac.Decorator.Authorize for why: Attributes must never be able to shadow
+// an authentication-derived Metadata key).
+func TestAuthenticate_UserEnrichment_RoleBindingsAndAttributes(t *testing.T) {
+	id := &auth.Identity{Subject: "charlie", TenantID: "t1"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+	users := &mockUserServicer{
+		user: &user.User{
+			ID:           1,
+			Username:     "charlie",
+			TenantID:     "t1",
+			Lifecycle:    user.LifecycleActive,
+			RoleBindings: []user.RoleBinding{{RoleID: "role-a", TenantID: "acme"}},
+			Attributes:   map[string]string{"department": "eng"},
+		},
+	}
+
+	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(identity.RoleBindings) != 1 || identity.RoleBindings[0] != (auth.RoleBinding{RoleID: "role-a", TenantID: "acme"}) {
+		t.Fatalf("identity.RoleBindings = %+v, want [{role-a acme}]", identity.RoleBindings)
+	}
+	if identity.Attributes["department"] != "eng" {
+		t.Fatalf("identity.Attributes[department] = %q, want eng", identity.Attributes["department"])
+	}
+	if identity.Metadata != nil {
+		t.Fatalf("identity.Metadata = %v, want nil: Attributes must never write into Metadata", identity.Metadata)
+	}
+}
+
+// TestAuthenticate_UserEnrichment_NoRoleBindingsOrAttributesLeavesThemAbsent
+// asserts a bare user (neither field set) does not manufacture an empty,
+// non-nil RoleBindings slice or a non-nil Attributes map.
+func TestAuthenticate_UserEnrichment_NoRoleBindingsOrAttributesLeavesThemAbsent(t *testing.T) {
+	id := &auth.Identity{Subject: "charlie", TenantID: "t1"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+	users := &mockUserServicer{
+		user: &user.User{ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive},
+	}
+
+	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if identity.RoleBindings != nil {
+		t.Errorf("identity.RoleBindings = %v, want nil", identity.RoleBindings)
+	}
+	if identity.Attributes != nil {
+		t.Errorf("identity.Attributes = %v, want nil", identity.Attributes)
+	}
+	if identity.Metadata != nil {
+		t.Errorf("identity.Metadata = %v, want nil", identity.Metadata)
+	}
+}
+
+// TestAuthenticate_UserEnrichment_StoreIsTheOnlySourceOfBindings asserts
+// store-backed withdrawal fails closed: RoleBindings and Attributes an
+// identity carried in from its authenticator never survive finalizeIdentity
+// when a user store is configured — whether the record now holds none, does
+// not exist, or cannot be read because its tenant is sealed.
+func TestAuthenticate_UserEnrichment_StoreIsTheOnlySourceOfBindings(t *testing.T) {
+	tests := []struct {
+		name  string
+		users *mockUserServicer
+	}{
+		{
+			name:  "record holds none",
+			users: &mockUserServicer{user: &user.User{ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive}},
+		},
+		{
+			name:  "record not found",
+			users: &mockUserServicer{err: &user.UserNotFoundError{ID: 1}},
+		},
+		{
+			name:  "tenant sealed",
+			users: &mockUserServicer{err: tenant.ErrTenantSealed},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := &auth.Identity{
+				Subject:      "charlie",
+				TenantID:     "t1",
+				RoleBindings: []auth.RoleBinding{{RoleID: "stale-role", TenantID: "acme"}},
+				Attributes:   map[string]string{"department": "stale"},
+			}
+			authn := &mockAuthenticator{name: "mtls", identity: id}
+			m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(tt.users))
+
+			_, identity, err := m.authenticate(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if identity.RoleBindings != nil {
+				t.Errorf("identity.RoleBindings = %+v, want nil", identity.RoleBindings)
+			}
+			if identity.Attributes != nil {
+				t.Errorf("identity.Attributes = %+v, want nil", identity.Attributes)
+			}
+		})
+	}
+}
+
+// TestAuthenticate_UserEnrichment_AttributesDoNotAliasTheRecord asserts the
+// identity's Attributes is a copy, so a later mutation of the record's map
+// cannot change an identity already issued.
+func TestAuthenticate_UserEnrichment_AttributesDoNotAliasTheRecord(t *testing.T) {
+	rec := &user.User{
+		ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive,
+		Attributes: map[string]string{"department": "eng"},
+	}
+	authn := &mockAuthenticator{name: "mtls", identity: &auth.Identity{Subject: "charlie", TenantID: "t1"}}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: rec}))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rec.Attributes["department"] = "changed"
+	if got := identity.Attributes["department"]; got != "eng" {
+		t.Fatalf("identity.Attributes[department] = %q after mutating the record, want eng", got)
+	}
+}
+
 func TestAuthenticate_UserDisabled(t *testing.T) {
 	id := &auth.Identity{Subject: "disabled-user", TenantID: "t1"}
 	authn := &mockAuthenticator{name: "mtls", identity: id}

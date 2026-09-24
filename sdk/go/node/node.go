@@ -2322,21 +2322,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if err != nil {
 		return err
 	}
-	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
-	if err != nil {
-		return &ClientCreateError{Err: err}
-	}
-
-	// Create SDK client.
-	client, err := sdk.NewClient(tp)
-	if err != nil {
-		return &ClientCreateError{Err: err}
-	}
-	if err := client.Connect(ctx); err != nil {
-		_ = client.Close()
-		return &ClientCreateError{Err: err}
-	}
-	n.client.Store(client)
 
 	// Build the canonical RBAC[+ABAC]-authorized, mTLS-authenticated auth
 	// middleware and install it on the multi-protocol server so every
@@ -2349,6 +2334,12 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// never received server.WithAuthMiddleware, even though the
 	// in-process embedded transport (buildEmbeddedOpts, above) already
 	// enforced RBAC via node.Client().RBAC().
+	//
+	// It is built BEFORE the embedded transport, and the same instance is
+	// handed to it (embedded.WithAuthMiddleware), so a gated write on the
+	// in-process transport -- a role assignment -- is authorized by exactly
+	// the middleware the network transports use, and by nothing when auth
+	// is disabled, as they are.
 	//
 	// cfg.Auth.Enabled mirrors the operator's --auth-enabled posture from
 	// the same DaemonConfig re-export qrdbd itself loads; when false, auth
@@ -2386,8 +2377,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// rather than quietly reverting to a default the embedder did not choose.
 	revocationTTL, err := qrdbconfig.ParseRevocationCacheTTL(cfg.Auth.RevocationCacheTTL)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	// The audit failure posture: fail-closed unless the embedder's config says
@@ -2397,8 +2386,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// daemon.
 	auditFailure, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	// The mTLS enrolment posture: "enrolled" unless the embedder's config says
@@ -2409,15 +2396,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (the owner's refuse-to-boot ruling, go-qrdb#517).
 	bindingPolicy, err := auth.ParseMTLSBindingPolicy(cfg.Auth.MTLSBindingPolicy)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
 		if verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout); verr != nil {
-			_ = client.Close()
-			n.client.Store(nil)
 			return &AuthMiddlewareWiringError{Err: verr}
 		}
 	}
@@ -2442,10 +2425,28 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		PeerAttestation:    n.peerAttestation,
 	})
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
+
+	if authMW != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithAuthMiddleware(authMW))
+	}
+
+	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
+	if err != nil {
+		return &ClientCreateError{Err: err}
+	}
+
+	// Create SDK client.
+	client, err := sdk.NewClient(tp)
+	if err != nil {
+		return &ClientCreateError{Err: err}
+	}
+	if err := client.Connect(ctx); err != nil {
+		_ = client.Close()
+		return &ClientCreateError{Err: err}
+	}
+	n.client.Store(client)
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
@@ -2867,6 +2868,21 @@ func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, calle
 	}
 	if svcNode.User != nil {
 		opts = append(opts, server.WithUserService(svcNode.User))
+	}
+	// StoreResolver and UserAuthFactor travel together (lifecycle.Node's own
+	// invariant: UserAuthFactor is non-nil exactly when StoreResolver is). The
+	// resolver lets Server.ensureUserAuthFactorService build the tenant-routed
+	// service itself, but WithUserAuthFactorService below wires the SAME
+	// instance this node already built, so every SDK-managed transport (REST,
+	// gRPC, QUIC, Unix, MCP) computes Factors metadata and MFA state from the
+	// identical enrollment records the embedded transport and this node's own
+	// login ceremony already read from — one source of truth, not a second
+	// one constructed lazily per server.
+	if svcNode.StoreResolver != nil {
+		opts = append(opts, server.WithTenantStoreResolver(svcNode.StoreResolver))
+	}
+	if svcNode.UserAuthFactor != nil {
+		opts = append(opts, server.WithUserAuthFactorService(svcNode.UserAuthFactor))
 	}
 	if svcNode.Role != nil {
 		opts = append(opts, server.WithRoleService(svcNode.Role))

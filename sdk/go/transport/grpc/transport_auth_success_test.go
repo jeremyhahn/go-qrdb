@@ -52,7 +52,7 @@ func (f *fakeUserServicer) CreateUser(_ context.Context, req *user.CreateUserReq
 }
 
 func (f *fakeUserServicer) GetUser(_ context.Context, id uint64) (*user.User, error) {
-	return &user.User{ID: id, Username: "alice", Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: id, Username: "alice", TenantID: "t1", Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
@@ -104,7 +104,7 @@ func (f *fakeRoleServicer) CreateRole(_ context.Context, req *role.CreateRoleReq
 }
 
 func (f *fakeRoleServicer) GetRole(_ context.Context, id string) (*role.Role, error) {
-	return &role.Role{ID: id, Name: "admin", CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &role.Role{ID: id, Name: "admin", TenantID: "t1", CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeRoleServicer) GetRoleByName(_ context.Context, _, name string) (*role.Role, error) {

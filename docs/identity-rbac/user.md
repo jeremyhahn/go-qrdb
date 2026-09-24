@@ -129,8 +129,12 @@ everything is already current and changes nothing.
 - **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant.
 
 They add up. This is how somebody can be tenant-admin for one customer without
-being an admin of the whole system — **once the authorizer consults tenant
-bindings, which it does not yet do; see the note below.**
+being an admin of the whole system — a binding counts whenever the request
+acts on the tenant it names, and nowhere else. A request that names a user or
+a role acts on the tenant that user or role belongs to; a per-tenant barrier
+operation acts on the tenant it names; everything else — including managing
+a tenant's own record, quotas and entitlements — acts on your own. This holds
+on REST, gRPC, the unix socket, QUIC and MCP.
 
 ```bash
 qrdb users update "$USER" --role-binding "$ROLE:acme"
@@ -142,22 +146,36 @@ one" verb. `qrdb users update "$USER" --clear-role-bindings` removes every
 tenant-scoped binding, and `--clear-attributes` does the same for ABAC
 attributes.
 
-**Known limitation.** A tenant-scoped role binding is stored and shows up in
-`qrdb users get`, but does not currently grant anything: request
-authorization only consults `roleIDs`. Setting one records intent for a
-future release, not a working grant today. The same holds for `--attribute`:
-the value is stored and visible, but no policy currently reads it.
+Setting `--role-binding`, `--clear-role-bindings`, `--attribute`, or
+`--clear-attributes` requires the operator's identity to hold `roles:assign`
+— the same permission required to assign a role directly — in addition to
+the `users:update` permission the plain update needs. A `--role-binding`
+naming a tenant requires `roles:assign` in THAT tenant too: granting a role
+in tenant `acme` from an identity that only administers tenant `contoso`
+is refused even if the operator can otherwise update the target account. The
+named role must exist and belong to the binding's tenant (or be one of the
+system tenant's built-in roles, which every tenant may use); a role that
+does not exist, or belongs to some other tenant, is refused before anything
+is written.
+
+An attribute set with `--attribute` is visible to ABAC policies as
+`subject.user_attrs.<name>` (or the match key `user_attrs.<name>`), never as
+a certificate or token attribute: setting `--attribute organization=acme`
+cannot satisfy a policy that trusts the organization in the caller's
+certificate. See [../auth/abac.md](../auth/abac.md).
 
 ## Seeing whether someone has a second factor
 
 `qrdb users get "$USER"` prints `MFAEnabled`, and `MFAMethods` when it is
-true — computed from the account's enrolled factors, never something you set
-directly. **Known limitation:** nothing in this release's enrollment paths
-currently populates the record these fields read, so on a real deployment
-today `MFAEnabled` reads `false` for every account regardless of what it has
-enrolled through [../auth-factors/user.md](../auth-factors/user.md). A
-`Factor:` line, when one is present, shows the factor's id and type — never
-its credential material, which never leaves the server on any interface.
+true — computed at read time from the account's real enrolled factors
+(never a stored field you set directly, and never something a role-
+assignment write can forge). A `Factor:` line, when one is present, shows the
+factor's id and type — never its credential material, which never leaves the
+server on any interface. Enroll or remove a factor through
+[../auth-factors/user.md](../auth-factors/user.md); this account's `MFAEnabled`
+reflects that enrollment immediately, on every transport. If the factor
+records cannot be read at that moment, the command fails with an
+"unavailable" error rather than showing `MFAEnabled: false`; retry it.
 
 ## Moving a fleet to required certificate enrolment
 

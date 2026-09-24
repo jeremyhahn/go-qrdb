@@ -1441,9 +1441,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if req.Attributes != nil {
 		existing.Attributes = req.Attributes
 	}
-	if req.Factors != nil {
-		existing.Factors = req.Factors
-	}
 	if req.AuthMethods != nil {
 		existing.AuthMethods = authMethods
 	}
@@ -2145,7 +2142,6 @@ func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
-		req.Factors == nil &&
 		req.AuthMethods == nil
 }
 
@@ -2223,7 +2219,6 @@ func lastAuthOnly(req *UpdateUserRequest) bool {
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
-		req.Factors == nil &&
 		req.AuthMethods == nil
 }
 

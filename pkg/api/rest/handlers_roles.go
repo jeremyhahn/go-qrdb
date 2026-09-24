@@ -350,7 +350,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 	// Check if role is already assigned.
 	for _, rid := range u.RoleIDs {
 		if rid == req.RoleID {
-			writeJSON(w, userToResponse(u))
+			s.writeUserJSON(ctx, w, http.StatusOK, u)
 			return
 		}
 	}
@@ -365,7 +365,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, userToResponse(updated))
+	s.writeUserJSON(ctx, w, http.StatusOK, updated)
 }
 
 // handleUnassignRole handles POST /roles/unassign -- removes a role from
@@ -412,7 +412,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, userToResponse(updated))
+	s.writeUserJSON(ctx, w, http.StatusOK, updated)
 }
 
 // handleListPermissions handles GET /permissions -- returns all registered

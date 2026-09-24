@@ -411,10 +411,10 @@ func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 		Roles:    []string{"admin"},
 	})
 
-	if err := srv.authorize(ctx, "totally.Unknown"); err == nil {
+	if err := srv.authorize(ctx, "totally.Unknown", nil); err == nil {
 		t.Error("unknown method must be denied (default-deny)")
 	}
-	if err := srv.authorize(ctx, "barrier.UnsealShare"); err == nil {
+	if err := srv.authorize(ctx, "barrier.UnsealShare", nil); err == nil {
 		t.Error("dead alias barrier.UnsealShare must be denied (default-deny)")
 	}
 	if authz.calls != 0 {
@@ -423,7 +423,7 @@ func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 
 	// A few known methods spanning permission families resolve and authorize.
 	for _, method := range []string{"kv.Put", "admin.Health", "tenant.UpdateEntitlements", "audit.Query"} {
-		if err := srv.authorize(ctx, method); err != nil {
+		if err := srv.authorize(ctx, method, nil); err != nil {
 			t.Errorf("registered method %q: unexpected authorize error: %v", method, err)
 		}
 	}

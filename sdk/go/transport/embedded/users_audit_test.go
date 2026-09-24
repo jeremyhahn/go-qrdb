@@ -42,7 +42,7 @@ func TestUserAudit_CreateUser_AcceptsTenantAndRoles(t *testing.T) {
 			return testUser(), nil
 		},
 	}
-	tr := newAuthTransport(t, WithUserService(mock))
+	tr := newAuthTransport(t, WithUserService(mock), WithRoleService(tenantRoleServicer("acme")))
 
 	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "bob",

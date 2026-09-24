@@ -810,7 +810,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			return
 		}
 
-		if authErr := s.authorize(ctx, method); authErr != nil {
+		if authErr := s.authorize(ctx, method, payload); authErr != nil {
 			// The status follows the CLASS of the failure, not the call site.
 			// Hard-coding PermissionDenied told a caller whose request this
 			// node merely could not RECORD that it was not permitted, and

@@ -149,6 +149,14 @@ func (m *mockRoleSvc) CreateRole(ctx context.Context, req *role.CreateRoleReques
 	return &role.Role{ID: "r1", Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions}, nil
 }
 
+// tenantRoleSvc answers GetRole with a role owned by tenantID, so a
+// role-assignment write naming it passes validation.
+func tenantRoleSvc(tenantID string) *mockRoleSvc {
+	return &mockRoleSvc{getFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: tenantID}, nil
+	}}
+}
+
 func (m *mockRoleSvc) GetRole(ctx context.Context, id string) (*role.Role, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, id)
@@ -283,7 +291,7 @@ func startAuthServer(t *testing.T, opts ...unixserver.ServerOption) (*Transport,
 
 func TestUnixRT_CreateUser(t *testing.T) {
 	usvc := &mockUserSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc), unixserver.WithRoleService(tenantRoleSvc("t1")))
 	defer cleanup()
 
 	got, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
@@ -356,7 +364,7 @@ func TestUnixRT_GetUserByUsername(t *testing.T) {
 
 func TestUnixRT_UpdateUser(t *testing.T) {
 	usvc := &mockUserSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc), unixserver.WithRoleService(tenantRoleSvc("")))
 	defer cleanup()
 
 	got, err := tr.UpdateUser(context.Background(), &transport.UpdateUserRequest{

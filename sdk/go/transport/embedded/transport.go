@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -133,6 +134,13 @@ type Transport struct {
 	// unused and the transport does not implement transport.SQLProvider).
 	sqlOnce     sync.Once
 	sqlSvcCache service.SQLServicer
+
+	// authMW is the AuthMiddleware the node's network transports enforce
+	// with, installed by WithAuthMiddleware so this transport's gated
+	// writes are authorized by the same instance. Nil -- the default, and
+	// what sdk/go/node installs when auth is disabled -- authorizes
+	// nothing, exactly as a network transport with no AuthMiddleware.
+	authMW *authmw.AuthMiddleware
 
 	// Phase 3 auth/identity wiring. All optional; SDK accessors return
 	// typed Missing*Error values when the corresponding service is not

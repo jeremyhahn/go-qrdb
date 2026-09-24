@@ -54,8 +54,11 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 // the given QUIC method, resolving the required permission from the
 // registration-site methodPerms registry (DEFAULT-DENY for unregistered
 // methods).
-func (s *Server) authorize(ctx context.Context, method string) error {
-	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method); err != nil {
+//
+// payload is the frame's request payload: the permission is authorized
+// against the tenant the payload names (see authmw.Target).
+func (s *Server) authorize(ctx context.Context, method string, payload []byte) error {
+	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method, payload); err != nil {
 		// Err carries the middleware's own typed error. Without it the
 		// wrapper ERASED the distinction between "you may not" and "this node
 		// could not answer" -- errors.As could see nothing through it, so the

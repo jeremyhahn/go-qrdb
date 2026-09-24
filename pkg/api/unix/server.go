@@ -504,6 +504,12 @@ func (s *Server) Start() error {
 		grpcpkg.DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
+		// The same per-method target table TCP gRPC registers: this listener
+		// serves the same services, so a method is authorized against the
+		// same tenant on both.
+		if err := s.authMW.RegisterGRPCTargets(grpcpkg.IdentityTargets()); err != nil {
+			return err
+		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
 	if s.authMW != nil && s.soGate != nil {
@@ -559,6 +565,14 @@ func (s *Server) Start() error {
 	var regOpts []grpcpkg.RegisterOption
 	if s.userSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterUserService(s.userSvc))
+	}
+	// WithRegisterUserAuthFactorService wires the SAME instance the dedicated
+	// UserAuthFactorService RPCs below are registered with into the shared
+	// qrdbServiceServer's GetUser/ListUsers/UpdateUser projection, so Factors
+	// metadata and the derived MFA state are computed from the real
+	// enrollment records on this transport too, not silently empty.
+	if s.userAuthFactorSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterUserAuthFactorService(s.userAuthFactorSvc))
 	}
 	if s.roleSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRoleService(s.roleSvc))
@@ -662,13 +676,12 @@ func (s *Server) Start() error {
 		grpcpkg.RegisterAuthFactorService(s.server, s.authFactorSvc)
 	}
 
-	// Register UserAuthFactorService (M14) alongside QRDBService when
-	// configured. RegisterUserAuthFactorService itself no-ops on a nil
-	// service, but the guard here keeps this call site consistent with the
-	// AuthFactorService one above.
-	if s.userAuthFactorSvc != nil {
-		grpcpkg.RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc, s.userSvc)
-	}
+	// UserAuthFactorService (M14) is registered by RegisterService above, via
+	// the WithRegisterUserAuthFactorService regOpt: that same call also wires
+	// s.userAuthFactorSvc into the shared qrdbServiceServer's GetUser/
+	// ListUsers/UpdateUser projection, so a second, direct
+	// RegisterUserAuthFactorService call here would register the
+	// qrdb.v1.UserAuthFactorService proto service on s.server twice.
 
 	// Register TenantBarrierService alongside QRDBService when configured.
 	// The same TenantServicer can be passed to both WithTenantService (for

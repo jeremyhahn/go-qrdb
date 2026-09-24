@@ -595,7 +595,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(ragTools(s.ragSvc)...)
 	}
 	if s.userSvc != nil {
-		s.addTools(userTools(s.userSvc)...)
+		s.addTools(userTools(s.userSvc, s.userAuthFactorSvc, s.authMW, s.roleSvc)...)
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
 		s.addTools(roleTools(s.roleSvc, s.userSvc)...)
@@ -670,6 +670,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.sqlSvc != nil {
 		s.addTools(sqlTools(s.sqlSvc)...)
 	}
+
+	// Declare, for every built-in tool that acts on a named user, role or
+	// tenant, how its arguments name it (see targets.go).
+	s.registerTargets()
 
 	// Register module tools last so they layer on top of the built-in tool
 	// sets on the same real mcp-go server. A module that implements

@@ -221,3 +221,143 @@ func TestUserNotFoundError_IsTheSDKTransportType(t *testing.T) {
 		t.Errorf("Lookup = %q", viaTransport.Lookup)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// EmailExistsError
+// ---------------------------------------------------------------------------
+
+func TestEmailExistsError_Message(t *testing.T) {
+	err := &EmailExistsError{Email: "a@example.com", TenantID: "acme"}
+	want := "user: email already exists: a@example.com in tenant acme"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SystemTenantRequiredError
+// ---------------------------------------------------------------------------
+
+func TestSystemTenantRequiredError_Message(t *testing.T) {
+	err := &SystemTenantRequiredError{TenantID: "acme"}
+	want := "user: system flag requires the system tenant, got: acme"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SystemUserAlreadyExistsError
+// ---------------------------------------------------------------------------
+
+func TestSystemUserAlreadyExistsError_MessageWithID(t *testing.T) {
+	err := &SystemUserAlreadyExistsError{ExistingID: 7}
+	want := "user: a system user already exists: 7"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestSystemUserAlreadyExistsError_MessageUnresolved(t *testing.T) {
+	err := &SystemUserAlreadyExistsError{}
+	want := "user: a system user already exists"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CertBindingNotFoundError
+// ---------------------------------------------------------------------------
+
+func TestCertBindingNotFoundError_Message(t *testing.T) {
+	err := &CertBindingNotFoundError{UserID: 3, Thumbprint: "AAAA"}
+	want := "user: cert thumbprint AAAA is not bound to user 3"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IndexCompensationError
+// ---------------------------------------------------------------------------
+
+func TestIndexCompensationError_Message(t *testing.T) {
+	cause := errors.New("write failed")
+	err := &IndexCompensationError{
+		Op:       "update",
+		UserID:   5,
+		Cause:    cause,
+		Failures: []error{errors.New("f1"), errors.New("f2")},
+	}
+	want := "user: update failed for id 5 and index rollback was incomplete (2 cleanup failure(s)): write failed"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is(err, cause) = false, want true via Unwrap")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HandleReclaimedError
+// ---------------------------------------------------------------------------
+
+func TestHandleReclaimedError_Message(t *testing.T) {
+	err := &HandleReclaimedError{Key: "username/bob"}
+	want := "user: handle username/bob was reclaimed before rollback could restore it"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ConcurrentUpdateError
+// ---------------------------------------------------------------------------
+
+func TestConcurrentUpdateError_Message(t *testing.T) {
+	err := &ConcurrentUpdateError{ID: 9}
+	want := "user: concurrent update to user 9; re-read and retry"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CommitOutcomeUnknownError
+// ---------------------------------------------------------------------------
+
+func TestCommitOutcomeUnknownError_MessageWithErr(t *testing.T) {
+	inner := errors.New("timeout")
+	err := &CommitOutcomeUnknownError{ID: 4, Err: inner}
+	want := "user: commit outcome unknown for user 4; re-read and reconcile before retrying: timeout"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is(err, inner) = false, want true via Unwrap")
+	}
+}
+
+func TestCommitOutcomeUnknownError_MessageNoErr(t *testing.T) {
+	err := &CommitOutcomeUnknownError{ID: 4}
+	want := "user: commit outcome unknown for user 4; re-read and reconcile before retrying"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if err.Unwrap() != nil {
+		t.Fatal("Unwrap() with no Err should return nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IDEncodingError
+// ---------------------------------------------------------------------------
+
+func TestIDEncodingError_Message(t *testing.T) {
+	err := &IDEncodingError{Length: 3}
+	want := "user: malformed id index value: expected 8 bytes, got 3"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
