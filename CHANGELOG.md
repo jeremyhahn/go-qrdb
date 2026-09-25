@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.20.6-alpha] - 2026-09-25
+
+### Fixed
+
+- A node started with `seal.enabled: false` logs one explicit warning that data at rest is
+  plaintext. The warning keys on the configuration decision, not on a missing barrier.
+- `enable-encryption` on a seal-disabled node no longer panics the daemon; a concurrent
+  second migration request is refused with `seal.ErrMigrationInProgress` (409 /
+  `FAILED_PRECONDITION`) instead of tearing down the data plane.
+- `enable-encryption` is registered on every transport (REST, gRPC, QUIC, MCP, Unix,
+  embedded) and refuses with one typed error where it is unavailable. The embedded, QUIC
+  and MCP SDK clients now forward it instead of returning `NotImplementedError`.
+
 ### Fixed
 
 - **Enable-encryption reaches the node on every SDK transport.** The embedded
