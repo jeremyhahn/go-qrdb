@@ -1204,6 +1204,10 @@ func mapHTTPError(err error) int {
 	// the one sentinel, which is the whole point of the shared identity.
 	case errors.Is(err, storage.ErrStorageClosed):
 		return http.StatusServiceUnavailable
+	// A system-scope encryption migration is rebuilding the data plane; the
+	// service is back once it finishes, so retryable like a closed store.
+	case errors.As(err, new(*service.DataPlaneRecyclingError)):
+		return http.StatusServiceUnavailable
 	// A request the protocol cannot encode was never proposed, so it is a
 	// client error and not an infrastructure one. Reported as 500 it fires
 	// an operational alert and invites a retry of an input that can never

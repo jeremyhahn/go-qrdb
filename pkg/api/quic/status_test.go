@@ -387,6 +387,24 @@ var conditions = []conditionRow{
 	{"MVCC backend required", &service.MVCCBackendRequiredError{Err: errors.New("pebble")}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"watch replay unsupported", watch.ErrStartRevisionUnsupported, wire.StatusUnimplemented, codes.Unimplemented},
 
+	// --- the enable-encryption migration family (go-qrdb#550) ---------------
+	// QUIC answered every one of these StatusError while gRPC classified
+	// them; the rows check the live gRPC answer, so the two cannot drift.
+	{"migration target invalid", seal.ErrMigrationInvalidTarget, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration mechanism invalid", seal.ErrMigrationInvalidMechanism, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration availability invalid", seal.ErrMigrationInvalidAvailability, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"shamir threshold invalid", seal.ErrShamirThresholdInvalid, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration source is not none", seal.ErrMigrationSourceNotNone, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"migration already in progress", seal.ErrMigrationInProgress, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"shared-barrier tenant cannot migrate", service.ErrSharedBarrierImmutable, wire.StatusPermissionDenied, codes.PermissionDenied},
+	{"node cannot migrate", service.ErrMigrationProviderUnavailable, wire.StatusUnimplemented, codes.Unimplemented},
+	{"data plane recycling", &service.DataPlaneRecyclingError{Service: "tenant"}, wire.StatusUnavailable, codes.Unavailable},
+	// Not a barrier condition: an unrelated error that merely carries a
+	// migration sentinel's text. The table matches by identity (errors.Is),
+	// so it must not claim this -- it stays the generic fault on both
+	// transports.
+	{"look-alike of a migration error", errors.New(seal.ErrMigrationInProgress.Error()), wire.StatusError, codes.Internal},
+
 	// --- the rest of the ported table -------------------------------------
 	//
 	// Every remaining condition pkg/api/quic classifies, so no clause in the

@@ -389,12 +389,28 @@ type nodeSealSubsystem struct {
 	barrier         *seal.StorageBarrier
 	credCoreSvc     *credentials.CredentialService
 	barrierRegistry *seal.BarrierRegistry
-	sealStore       *pebbleStorage.PebbleStorage
-	sealDataDir     string
+	// sealStore is typed as the interface Node.sealStore holds, not as the
+	// concrete store buildNodeSealSubsystem constructs: adoptSealSubsystem
+	// copies it across, and copying a nil CONCRETE pointer into an interface
+	// field would produce a non-nil interface wrapping a nil receiver -- the
+	// exact shape Node.sealStore's nil checks exist to rule out.
+	sealStore   seal.LegacyStorage
+	sealDataDir string
 	// volumePool is non-nil when the config declares at least one volume pool.
 	// It is closed during node shutdown after the per-tenant registry is
 	// drained, mirroring the daemon's shutdown ordering.
 	volumePool *qrdbpool.VolumePoolSubsystem
+}
+
+// adoptSealSubsystem installs sub's seal-layer objects on n. Both node
+// builders go through it, so there is one assignment of each field and in
+// particular one place where the seal store crosses into Node.sealStore.
+func (n *Node) adoptSealSubsystem(sub *nodeSealSubsystem) {
+	n.barrier.Store(sub.barrier)
+	n.barrierRegistry.Store(sub.barrierRegistry)
+	n.sealStore = sub.sealStore
+	n.credCoreSvc = sub.credCoreSvc
+	n.volumePool = sub.volumePool
 }
 
 // close releases the seal store and the volume-pool state store (in that
@@ -540,9 +556,20 @@ type Node struct {
 	// pebbleDB is the main data-plane pebble instance; nil for memory/file
 	// backends and for sealed nodes before Unseal completes.
 	pebbleDB *pebble.DB
-	// sealStore is the dedicated PebbleDB for the seal sub-store; it must
-	// outlive the barrier and the data-plane PebbleDB.
-	sealStore       *pebbleStorage.PebbleStorage
+	// sealStore is the dedicated store backing the seal sub-store; it must
+	// outlive the barrier and the data-plane PebbleDB. Typed as
+	// seal.LegacyStorage -- the interface seal.NewStorageAdapter already
+	// consumes -- rather than the concrete *pebbleStorage.PebbleStorage every
+	// current construction path happens to produce it with: a field typed as
+	// a concrete pointer lets a genuinely-absent seal store be assigned as a
+	// TYPED nil (a nil *pebbleStorage.PebbleStorage boxed into a NON-nil
+	// interface at the NewStorageAdapter call site), so `!= nil` checks lie
+	// and the read reaches a nil-receiver method on the concrete type
+	// instead of refusing cleanly. Declaring the field as the interface
+	// itself means a genuinely-absent seal store is nil at the type the
+	// field actually holds, so canonicalRootKeyStrategy's nil check (see its
+	// doc comment) means what it says.
+	sealStore       seal.LegacyStorage
 	barrier         atomic.Pointer[seal.StorageBarrier]
 	barrierRegistry atomic.Pointer[seal.BarrierRegistry]
 	// volumePool is non-nil when the config declares at least one volume pool.
@@ -1467,11 +1494,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		if err != nil {
 			return nil, err
 		}
-		n.barrier.Store(sub.barrier)
-		n.barrierRegistry.Store(sub.barrierRegistry)
-		n.sealStore = sub.sealStore
-		n.credCoreSvc = sub.credCoreSvc
-		n.volumePool = sub.volumePool
+		n.adoptSealSubsystem(sub)
 
 		// Build the sealed-window service graph (barrier + ceremony +
 		// credential only) so they are accessible even before full boot.
@@ -1634,11 +1657,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		if err != nil {
 			return nil, err
 		}
-		n.barrier.Store(sub.barrier)
-		n.barrierRegistry.Store(sub.barrierRegistry)
-		n.sealStore = sub.sealStore
-		n.credCoreSvc = sub.credCoreSvc
-		n.volumePool = sub.volumePool
+		n.adoptSealSubsystem(sub)
 
 		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
 			DataDir:           dataDir,

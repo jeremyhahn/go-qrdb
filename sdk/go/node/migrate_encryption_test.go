@@ -69,6 +69,94 @@ func (c *nodeCaptureDist) Shares() []string {
 	return append([]string(nil), c.shares...)
 }
 
+// noSealStoreNode boots a real standalone node and then re-adopts its seal
+// subsystem through adoptSealSubsystem -- the one path both node builders
+// install it by -- with the seal store absent, simulating a backend that
+// cannot hold one. Every construction path in this package builds the barrier
+// registry and the seal store together in buildNodeSealSubsystem, so a node
+// with a registry and no store cannot currently be produced through the public
+// API; going through adoptSealSubsystem rather than assigning n.sealStore
+// directly is what makes this exercise the shape the field's type exists to
+// prevent. If nodeSealSubsystem.sealStore were a concrete pointer again, its
+// nil would arrive in n.sealStore as a non-nil interface, the precondition
+// check below would fail, and without it the refusals under test would
+// dereference a nil receiver instead.
+func noSealStoreNode(t *testing.T) *Node {
+	t.Helper()
+	ctx := context.Background()
+
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	store := n.sealStore
+	require.NotNil(t, store, "precondition: a normal boot has a seal store")
+	// The node no longer owns the store once it is re-adopted without one, so
+	// the test closes it -- after the node, which it must outlive.
+	t.Cleanup(func() {
+		_ = n.Close()
+		_ = store.Close()
+	})
+
+	n.adoptSealSubsystem(&nodeSealSubsystem{
+		barrier:         n.barrier.Load(),
+		credCoreSvc:     n.credCoreSvc,
+		barrierRegistry: n.barrierRegistry.Load(),
+		volumePool:      n.volumePool,
+	})
+	// Compared with == rather than require.Nil, which reports a typed nil
+	// inside a non-nil interface as nil and so cannot see the defect.
+	require.True(t, n.sealStore == nil, "an absent seal store must reach Node.sealStore as a nil interface, got %T", n.sealStore)
+	return n
+}
+
+// TestCanonicalRootKeyStrategy_NoSealStore_RefusesTyped is the go-qrdb#550
+// regression test for the nil-seal-store segfault: canonicalRootKeyStrategy
+// used to hand n.sealStore straight to seal.NewStorageAdapter without a nil
+// check, and passing a nil *pebbleStorage.PebbleStorage into that
+// interface-typed parameter produces a NON-nil seal.LegacyStorage wrapping a
+// nil receiver -- the read then panicked inside the concrete backend instead
+// of ever reaching a nil check. It now refuses with the same typed
+// *MigrationNotSupportedError the rest of this package uses for "cannot
+// migrate here", and does not panic.
+func TestCanonicalRootKeyStrategy_NoSealStore_RefusesTyped(t *testing.T) {
+	n := noSealStoreNode(t)
+
+	_, err := canonicalRootKeyStrategy(context.Background(), n)
+
+	var notSupported *MigrationNotSupportedError
+	require.ErrorAs(t, err, &notSupported)
+	require.Contains(t, notSupported.Reason, "seal store")
+	// The refusal every transport maps to 501 / Unimplemented.
+	require.ErrorIs(t, err, service.ErrMigrationProviderUnavailable)
+}
+
+// TestNode_EnableEncryption_NoSealStore_RefusesTyped pins the same refusal at
+// the entry point a real caller reaches: nodeSystemMigrator.EnableEncryption
+// refuses upfront, before Quiesce ever tears the data plane down, rather than
+// only failing once canonicalRootKeyStrategy is reached deep inside a
+// migration already in progress.
+func TestNode_EnableEncryption_NoSealStore_RefusesTyped(t *testing.T) {
+	n := noSealStoreNode(t)
+
+	err := n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, seal.MigrationOptions{})
+
+	var notSupported *MigrationNotSupportedError
+	require.ErrorAs(t, err, &notSupported)
+	require.Contains(t, notSupported.Reason, "seal store")
+	// The refusal every transport maps to 501 / Unimplemented.
+	require.ErrorIs(t, err, service.ErrMigrationProviderUnavailable)
+}
+
 // TestNode_EnableEncryption_SystemNoneToPassphrase boots a real standalone node
 // with a none-strategy system barrier (pebble backend), writes data, then
 // enables encryption in process (online, no restart) and verifies every record

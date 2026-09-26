@@ -35,7 +35,25 @@ mapped to `501` / `Unimplemented` — never a plain route-not-found `404` or a
 transport-specific error type differs (REST returns its usual
 `ServiceNotImplementedError`-shaped body, gRPC/Unix `codes.Unimplemented`,
 QUIC/MCP their own `ServiceNotConfiguredError`/`ToolError`-wrapped
-`service.ErrMigrationProviderUnavailable`). REST previously gated route
+`service.ErrMigrationProviderUnavailable`).
+
+A migrator that **is** wired but finds this node cannot migrate — no seal
+store to persist the migrated root key in, not yet unsealed, or boot
+parameters not retained — refuses with an error that matches the same
+`service.ErrMigrationProviderUnavailable` through `errors.Is`, and every
+transport answers it identically: `501` on REST, `Unimplemented` on gRPC and
+Unix, `StatusUnimplemented` on QUIC, `UNIMPLEMENTED` on MCP. It refuses before
+anything is torn down.
+
+Every enable-encryption error has the same classification on every transport.
+QUIC answers each one with the status the gRPC row names — `StatusInvalidArgument`
+for an invalid target, mechanism, availability or Shamir threshold,
+`StatusFailedPrecondition` for a source that is not `none` or a migration
+already in progress, `StatusPermissionDenied` for a shared-barrier tenant —
+rather than its generic `StatusError`. A tenant-scope request that arrives
+while a system-scope migration has the data plane torn down gets
+`service.DataPlaneRecyclingError`: `503` / `Unavailable`, retry once the
+system migration finishes. REST previously gated route
 *registration itself* on a barrier service also being present, which made a
 seal-disabled node with the migrator configured 404 instead of returning that
 typed refusal — the one transport that behaved differently for the exact same
@@ -194,6 +212,8 @@ that is deliberate, since it is how an operator finds out what to do next.
 | CA operation while sealed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | No encryption migrator wired (standalone, or a composer that never configured one) | `501` | `UNIMPLEMENTED` |
+| Migrator wired, but this node cannot migrate (no seal store, not yet unsealed, boot parameters not retained) | `501` | `UNIMPLEMENTED` — `ErrMigrationProviderUnavailable` |
+| Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |
 
 The complete HTTP status mapping table is in
 [seal/README.md](../seal/README.md#barrier-http-status-mapping) if that file is

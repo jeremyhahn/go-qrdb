@@ -211,6 +211,23 @@ func (e *ModuleMethodResponseTypeError) Error() string {
 	return "quic: projected method " + e.Method + ": response is not a proto.Message"
 }
 
+// migrationStatuses is the wire status of each enable-encryption migration
+// sentinel. A slice, not a map, because two entries could match one wrapped
+// error and the first must win deterministically.
+var migrationStatuses = []struct {
+	err    error
+	status uint16
+}{
+	{seal.ErrMigrationInvalidTarget, wire.StatusInvalidArgument},
+	{seal.ErrMigrationInvalidMechanism, wire.StatusInvalidArgument},
+	{seal.ErrMigrationInvalidAvailability, wire.StatusInvalidArgument},
+	{seal.ErrShamirThresholdInvalid, wire.StatusInvalidArgument},
+	{seal.ErrMigrationSourceNotNone, wire.StatusFailedPrecondition},
+	{seal.ErrMigrationInProgress, wire.StatusFailedPrecondition},
+	{service.ErrSharedBarrierImmutable, wire.StatusPermissionDenied},
+	{service.ErrMigrationProviderUnavailable, wire.StatusUnimplemented},
+}
+
 // mapServiceError translates a service-layer error into a wire status code
 // and error message payload. Returns StatusOK with nil payload when err is nil.
 //
@@ -636,6 +653,32 @@ func mapServiceError(err error) (uint16, []byte) {
 	var snc *ServiceNotConfiguredError
 	if errors.As(err, &snc) {
 		return wire.StatusUnimplemented, msg
+	}
+
+	// The enable-encryption migration family, answered exactly as gRPC's
+	// mapBarrierCeremonyError answers it (and so unix and MCP, which classify
+	// through it): a refused target or option is the caller's input, a
+	// barrier not on "none" or already migrating is the system's state, a
+	// shared-barrier tenant has no authority, and a node that cannot migrate
+	// at all -- including a WIRED migrator that declines, whose node form
+	// (sdk/go/node's MigrationNotSupportedError) matches the sentinel through
+	// errors.Is -- is Unimplemented, as ServiceNotConfiguredError above is for
+	// a migrator that is not wired at all.
+	//
+	// Placement: beside ServiceNotConfiguredError, whose unwired-migrator
+	// refusal this completes. Only the enable-encryption path produces these
+	// sentinels, and it never wraps them in the data-plane types the clauses
+	// above match, so the position changes no answer. It matches by identity
+	// (errors.Is), never by message text.
+	for _, m := range migrationStatuses {
+		if errors.Is(err, m.err) {
+			return m.status, msg
+		}
+	}
+
+	var dpr *service.DataPlaneRecyclingError
+	if errors.As(err, &dpr) {
+		return wire.StatusUnavailable, msg
 	}
 
 	var ccnc *CeremonyCANotConfiguredError

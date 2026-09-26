@@ -262,6 +262,19 @@ A tenant on the **shared** system barrier cannot change its encryption; the
 server rejects the request. `system-barrier` and `none` are the two valid
 enable-encryption source strategies.
 
+The data-plane backend does not decide whether a node can migrate: the migrated
+root key is written to the node's **seal store**, a dedicated store the seal
+subsystem opens beside the data plane whatever that backend is, so a node on
+the memory backend migrates exactly as one on Pebble does. A node that cannot
+migrate at all — seal not enabled, not yet unsealed, no seal store, or (for
+the embedded node) boot parameters not retained — refuses **before** it tears
+anything down, with the same refusal every transport gives when no migrator is
+wired: `service.ErrMigrationProviderUnavailable`, `501` / `Unimplemented`. The
+embedded node's `MigrationNotSupportedError` carries the reason and matches
+that sentinel through `errors.Is`. A failure after the node has accepted the
+migration is a different error, `MigrationReopenError`, and is not reported as
+"not available".
+
 > **Correction to `seal/README.md`.** That document states the strategy is fixed
 > at initialization and that moving off `none` is "a planned backup/restore
 > migration into a freshly-keyed instance". `barrier enable-encryption` has
@@ -280,6 +293,8 @@ enable-encryption source strategies.
 | Any PIN with `--barrier-strategy=none` | `PINsNotAllowedError` | **yes** |
 | CA operation while sealed | `CAKeyNotAvailableError` | **yes** |
 | `enable-encryption` on a tenant using the shared system barrier | rejected | **yes** |
+| `enable-encryption` on a node that cannot migrate (see above) | refused before any teardown, `ErrMigrationProviderUnavailable` | **yes** |
+| tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
 | Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
 
 ## Permission model

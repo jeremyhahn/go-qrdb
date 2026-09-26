@@ -186,6 +186,11 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 
+	var dpr *service.DataPlaneRecyclingError
+	if errors.As(err, &dpr) {
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
 	var rce *service.RevisionCompactedError
 	if errors.As(err, &rce) {
 		return status.Error(codes.OutOfRange, err.Error())

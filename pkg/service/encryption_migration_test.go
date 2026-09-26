@@ -258,3 +258,22 @@ func readStore(t *testing.T, dir string, enc *atrest.Encryptor) map[string]strin
 	}
 	return out
 }
+
+func TestDataPlaneRecyclingError_NamesTheService(t *testing.T) {
+	tests := []struct {
+		service string
+		want    string
+	}{
+		{service: "tenant", want: "service: tenant service unavailable during data-plane recycle"},
+		{service: "kv", want: "service: kv service unavailable during data-plane recycle"},
+	}
+	for _, tt := range tests {
+		err := error(&DataPlaneRecyclingError{Service: tt.service})
+		if got := err.Error(); got != tt.want {
+			t.Errorf("Error() = %q, want %q", got, tt.want)
+		}
+		if errors.Is(err, ErrMigrationProviderUnavailable) {
+			t.Errorf("a recycling error must not match ErrMigrationProviderUnavailable")
+		}
+	}
+}

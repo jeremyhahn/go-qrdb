@@ -142,7 +142,7 @@ are not reconstructed here — their history is in the git log.
   (`user.EmailExistsError`) with `StatusAlreadyExists`, as REST and gRPC already did, instead
   of the generic `StatusError`. A failed rollback wrapping any of the three stays
   `StatusDataLoss`.
-- **Three production faults in the enable-encryption migration path are fixed.**
+- **Four production faults in the enable-encryption migration path are fixed.**
   `sdk/go/node`'s `Node.Close` could segfault when it ran concurrently with a
   still-in-flight system-scope encryption migration; it now blocks on the
   same lock the migration holds for its entire recycle, so Close always
@@ -156,7 +156,22 @@ are not reconstructed here — their history is in the git log.
   waiting out its grace period behind them. The recycle could then fail to
   restart the QUIC listener with "address already in use", leaving a
   migrated node without one; the listener now releases its UDP port before
-  its stop returns.
+  its stop returns. A node with no seal store could segfault the same way
+  on a nil concrete storage handle passed through an interface parameter;
+  the seal store is now held as `seal.LegacyStorage` end to end, and a node
+  without one refuses before tearing anything down.
+- **Enable-encryption errors are classified the same way on every transport.**
+  `sdk/go/node`'s `MigrationNotSupportedError` matches
+  `service.ErrMigrationProviderUnavailable` through `errors.Is`, so REST
+  answers `501` and gRPC, unix, QUIC and MCP `Unimplemented`; REST and gRPC
+  previously answered it as an internal error. QUIC now answers every
+  migration error (invalid target or option, source not `none`, migration
+  in progress, shared-barrier tenant) with the status gRPC gives it instead
+  of its generic `StatusError`. A tenant-scope request arriving while a
+  system-scope migration is rebuilding the data plane gets the new
+  `service.DataPlaneRecyclingError`, `503` / `Unavailable` (retry),
+  instead of a refusal, and a failure inside a migration the node accepted is
+  the new `MigrationReopenError`, not a refusal.
 
 ### Changed
 
