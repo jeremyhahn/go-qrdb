@@ -213,18 +213,18 @@ func TestCertRecordToProto_Valid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapAuthServiceError tests
+// mapServiceError tests
 // ---------------------------------------------------------------------------
 
 func TestMapAuthServiceError_Nil(t *testing.T) {
-	err := mapAuthServiceError(nil)
+	err := mapServiceError(nil)
 	if err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
 
 func TestMapAuthServiceError_UserNotFoundError(t *testing.T) {
-	err := mapAuthServiceError(&user.UserNotFoundError{ID: 1})
+	err := mapServiceError(&user.UserNotFoundError{ID: 1})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -238,7 +238,7 @@ func TestMapAuthServiceError_UserNotFoundError(t *testing.T) {
 // wraps ConcurrentUpdateError, so a mapper checking that first reports Aborted
 // — telling the client to retry when secondary state may be inconsistent.
 func TestMapAuthServiceError_IndexCompensationOutranksItsCause(t *testing.T) {
-	err := mapAuthServiceError(&user.IndexCompensationError{
+	err := mapServiceError(&user.IndexCompensationError{
 		Op: "update", UserID: 7,
 		Cause:    &user.ConcurrentUpdateError{ID: 7},
 		Failures: []error{errors.New("restore failed")},
@@ -265,7 +265,7 @@ func TestMapAuthServiceError_IndexCompensationOutranksADuplicateHandle(t *testin
 		{"user id", &user.UserIDExistsError{ID: 7}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := mapAuthServiceError(&user.IndexCompensationError{
+			err := mapServiceError(&user.IndexCompensationError{
 				Op: "create", UserID: 7,
 				Cause:    tc.cause,
 				Failures: []error{errors.New("release failed")},
@@ -278,21 +278,21 @@ func TestMapAuthServiceError_IndexCompensationOutranksADuplicateHandle(t *testin
 }
 
 func TestMapAuthServiceError_ConcurrentUpdateIsAborted(t *testing.T) {
-	err := mapAuthServiceError(&user.ConcurrentUpdateError{ID: 7})
+	err := mapServiceError(&user.ConcurrentUpdateError{ID: 7})
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("got %v, want Aborted", status.Code(err))
 	}
 }
 
 func TestMapAuthServiceError_EmailExistsError(t *testing.T) {
-	err := mapAuthServiceError(&user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"})
+	err := mapServiceError(&user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("got %v, want AlreadyExists", status.Code(err))
 	}
 }
 
 func TestMapAuthServiceError_UsernameExistsError(t *testing.T) {
-	err := mapAuthServiceError(&user.UsernameExistsError{Username: "alice"})
+	err := mapServiceError(&user.UsernameExistsError{Username: "alice"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %s", st.Code())
@@ -304,7 +304,7 @@ func TestMapAuthServiceError_UsernameExistsError(t *testing.T) {
 // claim or primary record, and this must classify AlreadyExists the same
 // way a taken username does, not fall through to Internal.
 func TestMapAuthServiceError_UserIDExistsError(t *testing.T) {
-	err := mapAuthServiceError(&user.UserIDExistsError{ID: 42, TenantID: "t1"})
+	err := mapServiceError(&user.UserIDExistsError{ID: 42, TenantID: "t1"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %s", st.Code())
@@ -334,7 +334,7 @@ func TestGRPC_CreateUser_UserIDExistsError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_UserDisabledError(t *testing.T) {
-	err := mapAuthServiceError(&user.UserDisabledError{ID: 1})
+	err := mapServiceError(&user.UserDisabledError{ID: 1})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
@@ -345,7 +345,7 @@ func TestMapAuthServiceError_UserDisabledError(t *testing.T) {
 // AlreadyExists: a reserved system role name is refused whether or not any role
 // holds it, so it is a malformed request rather than a collision (go-qrdb#17).
 func TestMapAuthServiceError_ReservedRoleNameError(t *testing.T) {
-	err := mapAuthServiceError(&role.ReservedRoleNameError{Name: "so", TenantID: "t1", Detail: "wrong id"})
+	err := mapServiceError(&role.ReservedRoleNameError{Name: "so", TenantID: "t1", Detail: "wrong id"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -353,15 +353,15 @@ func TestMapAuthServiceError_ReservedRoleNameError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_SystemUserImmutableError(t *testing.T) {
-	err := mapAuthServiceError(&user.SystemUserImmutableError{ID: 1})
+	err := mapServiceError(&user.SystemUserImmutableError{ID: 1})
 	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
+	if st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %s", st.Code())
 	}
 }
 
 func TestMapAuthServiceError_UserValidationError(t *testing.T) {
-	err := mapAuthServiceError(&user.ValidationError{Field: "username", Reason: "required"})
+	err := mapServiceError(&user.ValidationError{Field: "username", Reason: "required"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -369,7 +369,7 @@ func TestMapAuthServiceError_UserValidationError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_UserStoreError(t *testing.T) {
-	err := mapAuthServiceError(&user.StoreError{Op: "put", Err: errors.New("disk")})
+	err := mapServiceError(&user.StoreError{Op: "put", Err: errors.New("disk")})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -377,7 +377,7 @@ func TestMapAuthServiceError_UserStoreError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_RoleNotFoundError(t *testing.T) {
-	err := mapAuthServiceError(&role.RoleNotFoundError{ID: "r1"})
+	err := mapServiceError(&role.RoleNotFoundError{ID: "r1"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -385,7 +385,7 @@ func TestMapAuthServiceError_RoleNotFoundError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_RoleNameExistsError(t *testing.T) {
-	err := mapAuthServiceError(&role.RoleNameExistsError{Name: "admin"})
+	err := mapServiceError(&role.RoleNameExistsError{Name: "admin"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %s", st.Code())
@@ -398,16 +398,16 @@ func TestMapAuthServiceError_SystemRoleImmutableError(t *testing.T) {
 	// delete path could return this error and only in theory, since no seeded
 	// role ever carried System: true.
 	for _, op := range []string{"", "deleted", "renamed", "re-permissioned"} {
-		err := mapAuthServiceError(&role.SystemRoleImmutableError{ID: "r1", Op: op})
+		err := mapServiceError(&role.SystemRoleImmutableError{ID: "r1", Op: op})
 		st, _ := status.FromError(err)
-		if st.Code() != codes.FailedPrecondition {
-			t.Fatalf("op %q: expected FailedPrecondition, got %s", op, st.Code())
+		if st.Code() != codes.PermissionDenied {
+			t.Fatalf("op %q: expected PermissionDenied, got %s", op, st.Code())
 		}
 	}
 }
 
 func TestMapAuthServiceError_RoleValidationError(t *testing.T) {
-	err := mapAuthServiceError(&role.ValidationError{Field: "name", Reason: "empty"})
+	err := mapServiceError(&role.ValidationError{Field: "name", Reason: "empty"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -415,7 +415,7 @@ func TestMapAuthServiceError_RoleValidationError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_InvalidPermissionError(t *testing.T) {
-	err := mapAuthServiceError(&role.InvalidPermissionError{Permission: "bad:perm"})
+	err := mapServiceError(&role.InvalidPermissionError{Permission: "bad:perm"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -423,7 +423,7 @@ func TestMapAuthServiceError_InvalidPermissionError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_RoleStoreError(t *testing.T) {
-	err := mapAuthServiceError(&role.StoreError{Op: "get", Err: errors.New("disk")})
+	err := mapServiceError(&role.StoreError{Op: "get", Err: errors.New("disk")})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -431,7 +431,7 @@ func TestMapAuthServiceError_RoleStoreError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertNotFoundError(t *testing.T) {
-	err := mapAuthServiceError(&cert.CertNotFoundError{Serial: "ABC"})
+	err := mapServiceError(&cert.CertNotFoundError{Serial: "ABC"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -439,7 +439,7 @@ func TestMapAuthServiceError_CertNotFoundError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertRevokedError(t *testing.T) {
-	err := mapAuthServiceError(&cert.CertRevokedError{Serial: "ABC"})
+	err := mapServiceError(&cert.CertRevokedError{Serial: "ABC"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
@@ -447,7 +447,7 @@ func TestMapAuthServiceError_CertRevokedError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertGenerateError(t *testing.T) {
-	err := mapAuthServiceError(&cert.CertGenerateError{Err: errors.New("gen")})
+	err := mapServiceError(&cert.CertGenerateError{Err: errors.New("gen")})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -455,7 +455,7 @@ func TestMapAuthServiceError_CertGenerateError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertExportError(t *testing.T) {
-	err := mapAuthServiceError(&cert.CertExportError{Err: errors.New("export")})
+	err := mapServiceError(&cert.CertExportError{Err: errors.New("export")})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -463,7 +463,7 @@ func TestMapAuthServiceError_CertExportError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CAKeyNotAvailableError(t *testing.T) {
-	err := mapAuthServiceError(&cert.CAKeyNotAvailableError{})
+	err := mapServiceError(&cert.CAKeyNotAvailableError{})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unavailable {
 		t.Fatalf("expected Unavailable, got %s", st.Code())
@@ -471,7 +471,7 @@ func TestMapAuthServiceError_CAKeyNotAvailableError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_BarrierSealedError(t *testing.T) {
-	err := mapAuthServiceError(&cert.BarrierSealedError{})
+	err := mapServiceError(&cert.BarrierSealedError{})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unavailable {
 		t.Fatalf("expected Unavailable, got %s", st.Code())
@@ -479,7 +479,7 @@ func TestMapAuthServiceError_BarrierSealedError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertValidationError(t *testing.T) {
-	err := mapAuthServiceError(&cert.ValidationError{Field: "cn", Reason: "empty"})
+	err := mapServiceError(&cert.ValidationError{Field: "cn", Reason: "empty"})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -487,7 +487,7 @@ func TestMapAuthServiceError_CertValidationError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_CertStoreError(t *testing.T) {
-	err := mapAuthServiceError(&cert.StoreError{Op: "put", Err: errors.New("disk")})
+	err := mapServiceError(&cert.StoreError{Op: "put", Err: errors.New("disk")})
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -495,7 +495,7 @@ func TestMapAuthServiceError_CertStoreError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_UnknownError(t *testing.T) {
-	err := mapAuthServiceError(errors.New("unknown error"))
+	err := mapServiceError(errors.New("unknown error"))
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())
@@ -1867,12 +1867,12 @@ func TestUserProtoMessages_GroupIDsAreReserved(t *testing.T) {
 // codes: an undefined state is the caller's mistake, a disconnected transition
 // is a precondition on the record.
 func TestMapAuthServiceError_LifecycleErrors(t *testing.T) {
-	invalid := mapAuthServiceError(&user.InvalidLifecycleError{Value: "quarantined", Op: "create"})
+	invalid := mapServiceError(&user.InvalidLifecycleError{Value: "quarantined", Op: "create"})
 	if got := status.Code(invalid); got != codes.InvalidArgument {
 		t.Errorf("InvalidLifecycleError: got %v, want %v", got, codes.InvalidArgument)
 	}
 
-	refused := mapAuthServiceError(&user.LifecycleTransitionError{
+	refused := mapServiceError(&user.LifecycleTransitionError{
 		ID: 7, From: user.LifecycleDeleting, To: user.LifecycleActive,
 	})
 	if got := status.Code(refused); got != codes.FailedPrecondition {

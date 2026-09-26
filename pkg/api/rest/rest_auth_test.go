@@ -2487,9 +2487,9 @@ func TestMapUserError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapUserError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapUserError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}
@@ -2555,9 +2555,9 @@ func TestMapRoleError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapRoleError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapRoleError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}
@@ -2618,9 +2618,9 @@ func TestMapCertError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapCertError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapCertError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}

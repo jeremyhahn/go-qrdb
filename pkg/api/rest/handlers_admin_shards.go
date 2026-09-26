@@ -85,7 +85,7 @@ func (s *Server) handleStartShard(w http.ResponseWriter, r *http.Request) {
 		Members:   req.Members,
 		Join:      req.Join,
 	}); err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (s *Server) handleGetTopology(w http.ResponseWriter, r *http.Request) {
 
 	topo, err := s.adminSvc.GetTopology(ctx)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -172,7 +172,7 @@ func (s *Server) handleStopShard(w http.ResponseWriter, r *http.Request, idStr s
 	defer cancel()
 
 	if err := s.adminSvc.StopShard(ctx, shardID); err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -192,7 +192,7 @@ func (s *Server) handleGetShardState(w http.ResponseWriter, r *http.Request, idS
 
 	state, err := s.adminSvc.GetShardState(ctx, shardID)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 

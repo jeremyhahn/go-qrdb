@@ -143,12 +143,11 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 		},
 		{
 			name: "refusal on the request's merits",
-			err:  &service.SMNotConfiguredError{Message: "lease ttl must be positive"},
-			want: wire.CodeInternal,
-			why: "NOT CodeUnimplemented. This family also covers an invalid TTL and a " +
-				"unique-index violation, so typing it as a capability refusal would " +
-				"tell a caller this node cannot do leases when it had passed a bad TTL " +
-				"— the conflation that forced REST's named exclusion in go-qrdb#126",
+			err:  &service.CommandRejectedError{Message: "lease ttl must be positive"},
+			want: wire.CodeInvalidArgument,
+			why: "NOT CodeUnimplemented: the node can do leases, the caller passed a " +
+				"bad TTL. Before go-qrdb#557 this shared one type with the capability " +
+				"refusal's siblings, which forced REST's named exclusion in go-qrdb#126",
 		},
 		{
 			name: "not leader",
@@ -199,7 +198,7 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			why: "the ceremony-time auth-factor tenant refusal (go-qrdb#464): a request " +
 				"naming a tenant other than the caller's context is the caller's input " +
 				"being wrong, not a tool execution fault, and this transport takes the " +
-				"classification from pkg/api/grpc's mapAuthFactorGRPCError rather than " +
+				"classification from pkg/api/errclass's auth-factor rows rather than " +
 				"owning a clause of its own",
 		},
 		{
@@ -239,7 +238,7 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyToolError(tc.err); got != tc.want {
+			if got := ServiceErrorCode(tc.err); got != tc.want {
 				t.Errorf("classified %s, want %s. %s", got, tc.want, tc.why)
 			}
 		})
@@ -263,7 +262,7 @@ func TestClassifyToolError_ModuleStatusIsTakenVerbatim(t *testing.T) {
 	} {
 		t.Run(tc.code.String(), func(t *testing.T) {
 			err := status.Error(tc.code, "from a module")
-			if got := classifyToolError(err); got != tc.want {
+			if got := ServiceErrorCode(err); got != tc.want {
 				t.Errorf("a module's %s classified %s, want %s", tc.code, got, tc.want)
 			}
 		})
@@ -277,7 +276,7 @@ func TestClassifyToolError_ModuleStatusIsTakenVerbatim(t *testing.T) {
 // answer for "nothing here can classify this".
 func TestClassifyToolError_ModuleCodeOutsideTheSetFallsThrough(t *testing.T) {
 	err := status.Error(codes.Code(99), "a code gRPC does not define")
-	if got := classifyToolError(err); got != wire.CodeInternal {
+	if got := ServiceErrorCode(err); got != wire.CodeInternal {
 		t.Errorf("classified %s, want INTERNAL", got)
 	}
 }

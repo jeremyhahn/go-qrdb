@@ -101,27 +101,57 @@ Absent a database, the server's default (`system`) is used.
 
 ## Common status mapping
 
-| Condition | REST | gRPC / Unix | QUIC | MCP |
-|---|---|---|---|---|
-| Success | 200 | `OK` | `StatusOK` (0) | no error envelope |
-| Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) | `INVALID_ARGUMENT` (−32012) |
-| Unauthenticated | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) | `UNAUTHENTICATED` (−32001) |
-| Missing permission | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) | `PERMISSION_DENIED` (−32003) |
-| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) | — (no verb axis) |
-| Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) | `NOT_FOUND` (−32004) |
-| Conflict | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) | `ALREADY_EXISTS` (−32013) |
-| Precondition | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
-| Quota exceeded, rate limited | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
-| Concurrency conflict | 409 | `ABORTED` | `StatusAborted` (11) | `ABORTED` (−32015) |
-| Revision below the compaction floor | 400 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
-| Work stopped | 499 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
-| Persisted state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
-| Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
-| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
-| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
-| Deadline exceeded at the origin | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
-| Origin could not classify | 500 | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
-| Unclassified server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
+**Every transport answers one error the same way**, because none of them
+decides what kind of failure an error is. That decision is made once, by the
+classification table in `pkg/api/errclass`, which maps each typed error to a
+**class**; each wire transport then owns one total table from class to its own
+code. The embedded transport returns the typed error itself.
+
+| Class | Condition | REST | gRPC / Unix | QUIC | MCP |
+|---|---|---|---|---|---|
+| — | Success | 200 | `OK` | `StatusOK` (0) | no error envelope |
+| `InvalidArgument` | Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) | `INVALID_ARGUMENT` (−32012) |
+| `Unauthenticated` | Credential missing or does not verify | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) | `UNAUTHENTICATED` (−32001) |
+| `PermissionDenied` | Missing permission; an operation no caller may perform | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) | `PERMISSION_DENIED` (−32003) |
+| — | Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) | — (no verb axis) |
+| `NotFound` | Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) | `NOT_FOUND` (−32004) |
+| `AlreadyExists` | Name or identity taken | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) | `ALREADY_EXISTS` (−32013) |
+| `Aborted` | Concurrency conflict, held lock | 409 | `ABORTED` | `StatusAborted` (11) | `ABORTED` (−32015) |
+| `FailedPrecondition` | Resource not in a state this operation starts from | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `Gone` | Revoked or expired factor or challenge | 410 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `PreconditionFailed` | Consistency requirement unmet; PIN or strategy never set | 412 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `Unprocessable` | Feature not enabled or ceremony not configured here | 422 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `ResourceExhausted` | Quota exceeded, rate limited, PIN locked out | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
+| `TooLarge` | Body, payload, key or import over its bound | 413 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
+| `OutOfRange` | Revision below the compaction floor | 416 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
+| `Canceled` | Work stopped (`context.Canceled`, a canceled watch) | 500 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
+| `DataLoss` | Persisted or secondary state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
+| `Unavailable` | Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
+| `Unimplemented` | Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| — | Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| `DeadlineExceeded` | The caller's deadline passed before the operation completed (`context.DeadlineExceeded`), or a module's origin said so | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
+| — | A module's origin could not classify | — | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
+| `Internal`, or unclassified | Server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
+
+Four classes exist because HTTP draws a distinction a client acts on that gRPC
+does not: a body too large to send (413) is not a quota to wait out (429), and
+a revoked factor (410), an unmet precondition (412) and an unconfigured feature
+(422) each ask the caller to do something different. They share a gRPC code,
+and QUIC and MCP render that code. `Canceled` and `DataLoss` have no HTTP
+status of their own and answer 500. The row without a class is reachable
+only through a projected capability module, which answers in gRPC's vocabulary
+directly.
+
+**One table, and a test that drives every transport.** A typed error gets its
+class from exactly one row of `pkg/api/errclass`, and a transport's own refusal
+types (a REST body-size refusal, a "service not configured" refusal) declare
+their class beside the type. `TestEveryTransportAgreesOnEveryCondition` feeds
+every row of the table through the real REST, gRPC, QUIC and MCP mappings and
+fails when any two disagree in meaning, whichever side moved. Before this, REST
+and gRPC ran twelve and nine per-family ladders respectively and QUIC ran a
+third of its own: a backup checksum mismatch was 409 over REST and `INTERNAL`
+over gRPC, and QUIC answered `StatusError` for most of the identity, tenant,
+credential, ceremony and auth-factor families.
 
 ### The QUIC status vocabulary
 
@@ -269,10 +299,11 @@ Four things follow from the decision:
   meaning two things depending on which server answered.
 
 - **The server owns no classification clauses of its own.** A tool failure is
-  classified by the same per-family mappers the gRPC transport runs, and the
-  MCP layer only renders the resulting gRPC code through a seventeen-row
-  correspondence table. A condition cannot mean one thing over gRPC and another
-  over MCP, and a new condition needs one clause in one place.
+  classified by `pkg/api/errclass`, the table every transport renders, and
+  reaches the MCP layer as the gRPC code the gRPC transport gives that class;
+  the MCP layer only renders it through a seventeen-row correspondence table.
+  A condition cannot mean one thing over gRPC and another over MCP, and a new
+  condition needs one row in one table.
 
 **Argument refusals carry no code yet**, and that is a stated gap rather than
 an oversight. A tool that refuses before it reaches the service layer —

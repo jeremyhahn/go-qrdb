@@ -149,7 +149,7 @@ func authzToolError(err error) *mcpgo.CallToolResult {
 	// PermissionDenied is the fallback for a failure the classifier does not
 	// recognise, matching the wording below and the fallback gRPC's
 	// authorization interceptor passes.
-	code := classifyToolError(authmw.GRPCError(err, codes.PermissionDenied))
+	code := ServiceErrorCode(authmw.GRPCError(err, codes.PermissionDenied))
 
 	if authmw.ClassifyAuthError(err).Retryable() {
 		return toolErrorResult("", code, "authorization unavailable, retry: "+err.Error())

@@ -161,10 +161,10 @@ func TestREST_AddAllowsOrdinaryMetadata(t *testing.T) {
 // later edit to the switch cannot quietly send this to the 500 arm it would
 // have fallen through to before #234.
 func TestMapUserAuthFactorError_ReservedMetadata(t *testing.T) {
-	got := mapUserAuthFactorError(&auth.ReservedMetadataKeyError{
+	got := mapHTTPError(&auth.ReservedMetadataKeyError{
 		Key: "attest_level", Prefix: auth.ReservedMetadataPrefix,
 	})
 	if got != http.StatusBadRequest {
-		t.Fatalf("mapUserAuthFactorError = %d, want %d", got, http.StatusBadRequest)
+		t.Fatalf("mapHTTPError = %d, want %d", got, http.StatusBadRequest)
 	}
 }

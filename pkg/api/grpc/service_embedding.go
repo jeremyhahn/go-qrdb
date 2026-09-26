@@ -17,9 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -55,7 +52,7 @@ func embeddingUsageToProto(u *service.UsageInfo) *pb.EmbeddingUsage {
 // Embed generates embedding vectors for one or more texts.
 func (s *qrdbServiceServer) Embed(ctx context.Context, req *pb.EmbedRequest) (*pb.EmbedResponse, error) {
 	if s.embeddingSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "embedding"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "embedding"})
 	}
 	resp, err := s.embeddingSvc.Embed(ctx, &service.EmbedRequest{
 		Texts:    req.GetTexts(),
@@ -76,7 +73,7 @@ func (s *qrdbServiceServer) Embed(ctx context.Context, req *pb.EmbedRequest) (*p
 // BatchEmbed embeds a large set of texts in provider sub-batches.
 func (s *qrdbServiceServer) BatchEmbed(ctx context.Context, req *pb.BatchEmbedRequest) (*pb.BatchEmbedResponse, error) {
 	if s.embeddingSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "embedding"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "embedding"})
 	}
 	resp, err := s.embeddingSvc.BatchEmbed(ctx, &service.BatchEmbedRequest{
 		Texts:     req.GetTexts(),
@@ -97,7 +94,7 @@ func (s *qrdbServiceServer) BatchEmbed(ctx context.Context, req *pb.BatchEmbedRe
 // ListEmbeddingModels returns the embedding models available from a provider.
 func (s *qrdbServiceServer) ListEmbeddingModels(ctx context.Context, req *pb.ListEmbeddingModelsRequest) (*pb.ListEmbeddingModelsResponse, error) {
 	if s.embeddingSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "embedding"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "embedding"})
 	}
 	resp, err := s.embeddingSvc.ListModels(ctx, &service.ListEmbeddingModelsRequest{
 		Provider: req.GetProvider(),

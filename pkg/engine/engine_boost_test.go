@@ -511,9 +511,9 @@ func TestMVCCEngine_HandleBatch_UniqueViolation(t *testing.T) {
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batch2}}, r2); err != nil {
 		t.Fatalf("batch unique violation: %v", err)
 	}
-	// Violation encoded as app error (non-fatal).
-	if len(r2[0].Data) == 0 {
-		t.Log("batch unique violation resulted in zero-length Data (no app-error encoding)")
+	// Violation encoded as a non-fatal conflict refusal (go-qrdb#557).
+	if _, kind, ok := protocol.DecodeAppErrorKind(r2[0].Data); !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("batch unique violation: ok=%v kind=%d; want an AppErrorConflict refusal", ok, kind)
 	}
 }
 

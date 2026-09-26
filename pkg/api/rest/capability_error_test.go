@@ -28,10 +28,11 @@ import (
 // 500 until this mapping was added — reintroducing on REST the exact
 // healthy-node-as-server-fault behaviour the split was made to remove.
 //
-// Both types are asserted together because the failure mode was one of them
-// losing its mapping while the other kept it, which is invisible if only one is
-// tested.
-func TestMapHTTPError_CapabilityAndSubsystemRefusalsAreNotImplemented(t *testing.T) {
+// Only the capability refusal answers 501. A closed subsystem is 503 and the
+// refusals decided on the request's merits (an invalid lease TTL, a
+// unique-index violation) are 4xx: go-qrdb#557 gave each its own type, and
+// they are pinned below.
+func TestMapHTTPError_CapabilityRefusalsAreNotImplemented(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -49,10 +50,6 @@ func TestMapHTTPError_CapabilityAndSubsystemRefusalsAreNotImplemented(t *testing
 			err: fmt.Errorf("kv: %w",
 				&service.CapabilityUnsupportedError{Message: "statemachine: unknown opcode: 66"}),
 		},
-		{
-			name: "subsystem refusal — the pre-existing type keeps its mapping",
-			err:  &service.SMNotConfiguredError{Message: "statemachine: lease not configured"},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mapHTTPError(tc.err); got != http.StatusNotImplemented {
@@ -60,6 +57,27 @@ func TestMapHTTPError_CapabilityAndSubsystemRefusalsAreNotImplemented(t *testing
 					"does not implement the operation must not be reported as a server "+
 					"fault: a client retrying on 5xx would retry something that can "+
 					"never succeed", got, http.StatusNotImplemented)
+			}
+		})
+	}
+}
+
+// The refusals that are neither a capability nor a fault: the caller's input
+// or a transient state of the node. Each must keep its own status rather than
+// fall into 501 with the capability refusal they once shared a type with.
+func TestMapHTTPError_NonCapabilityRefusalsKeepTheirStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"invalid input is a bad request", &service.CommandRejectedError{Message: "lease: invalid ttl"}, http.StatusBadRequest},
+		{"a collision is a conflict", &service.CommandConflictError{Message: "unique index violation: email"}, http.StatusConflict},
+		{"a closed subsystem is unavailable", &service.SubsystemClosedError{Message: "lease: lessor closed"}, http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapHTTPError(tc.err); got != tc.want {
+				t.Errorf("mapHTTPError(%T) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}

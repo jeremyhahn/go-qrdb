@@ -76,7 +76,7 @@ func createNamespaceThroughRaft(t *testing.T, svc VectorService) error {
 // Result.Data. The caller must be told, not congratulated.
 func TestVectorProposeToRaft_SurfacesAnEncodedRefusal(t *testing.T) {
 	refusal := (&statemachine.InvalidOpcodeError{Op: 0xFE}).Error()
-	svc := newRaftVectorServiceForResult(t, sm.Result{Data: protocol.EncodeAppError(refusal)})
+	svc := newRaftVectorServiceForResult(t, sm.Result{Data: protocol.EncodeCapabilityError(refusal)})
 
 	err := createNamespaceThroughRaft(t, svc)
 	if err == nil {
@@ -110,7 +110,7 @@ func TestVectorProposeToRaft_AcceptsAnAppliedResult(t *testing.T) {
 // natural mistake, it carries a perfectly readable refusal, and a plain type
 // assertion silently declines to look at it.
 func TestVectorProposeToRaft_RefusesAnUnreadableResult(t *testing.T) {
-	refusal := sm.Result{Data: protocol.EncodeAppError("statemachine: mvcc not configured")}
+	refusal := sm.Result{Data: protocol.EncodeCapabilityError("statemachine: mvcc not configured")}
 
 	for _, tc := range []struct {
 		name   string

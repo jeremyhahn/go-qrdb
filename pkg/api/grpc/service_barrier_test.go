@@ -399,8 +399,8 @@ func TestBarrierShareClaimBegin_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -430,8 +430,8 @@ func TestBarrierShareClaimComplete_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -623,8 +623,8 @@ func TestBarrierRecoveryShareClaimBegin_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -654,8 +654,8 @@ func TestBarrierRecoveryShareClaimComplete_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -672,7 +672,7 @@ func TestBarrierRecoveryShareClaimComplete_NilService(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapBarrierCeremonyError — covers every sentinel.
+// mapServiceError — covers every sentinel.
 // ---------------------------------------------------------------------------
 
 func TestMapBarrierCeremonyError_AllBranches(t *testing.T) {
@@ -697,7 +697,7 @@ func TestMapBarrierCeremonyError_AllBranches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapBarrierCeremonyError(tc.err)
+			got := mapServiceError(tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Errorf("expected nil for nil input, got %v", got)

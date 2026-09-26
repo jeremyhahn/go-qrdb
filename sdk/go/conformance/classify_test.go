@@ -102,55 +102,26 @@ func TestClassifyRefusal(t *testing.T) {
 	}
 }
 
-// TestClassifyRefusal_NamedExclusion pins the go-qrdb#126 exclusion at both
-// edges: what it lets through, and — more importantly — what it still rejects.
-//
-// An exclusion that quietly accepted any error on the excused verb would be a
-// hole in the gate rather than a documented limit, so the wedge and
-// authorization cases are asserted against the EXCUSED path too. Those are the
-// failures the refusal cells exist to catch, and neither is a 501.
-func TestClassifyRefusal_NamedExclusion(t *testing.T) {
-	notImplemented := func(msg string) error {
-		return &transport.RequestError{
-			Method:     "ExecuteTransaction",
-			StatusCode: http.StatusNotImplemented,
-			Err:        errors.New(msg),
-		}
+// TestClassifyRefusal_UntypedFiveOhOneIsRejected pins the retirement of the
+// go-qrdb#126 exclusion: an untyped 501 is no longer accepted from any
+// transport, because the REST client now types every 501. If a transport ever
+// stops typing it again, the refusal cells fail rather than excuse it.
+func TestClassifyRefusal_UntypedFiveOhOneIsRejected(t *testing.T) {
+	untyped := &transport.RequestError{
+		Method:     "ExecuteTransaction",
+		StatusCode: http.StatusNotImplemented,
+		Err:        errors.New("service: statemachine: mvcc not configured"),
 	}
-
-	// Without the exclusion, REST's untyped 501 is correctly rejected: that is
-	// the behaviour every other verb and transport is still held to.
-	if reason := classifyRefusalWith(notImplemented("service: statemachine: mvcc not configured"), false); reason == nil {
-		t.Error("an untyped 501 was accepted WITHOUT the exclusion; the exclusion would then " +
-			"be doing nothing and every transport would have silently lost its typed-refusal gate")
+	if reason := classifyRefusal(untyped); reason == nil {
+		t.Error("an untyped 501 was accepted; the typed-refusal gate would be doing nothing")
 	}
-
-	// With it, the same error is accepted — this is the whole exclusion.
-	if reason := classifyRefusalWith(notImplemented("service: statemachine: mvcc not configured"), true); reason != nil {
-		t.Errorf("the excused verb's 501 was rejected: %v", reason)
+	typed := &transport.RequestError{
+		Method:     "ExecuteTransaction",
+		StatusCode: http.StatusNotImplemented,
+		Err:        &transport.CapabilityUnsupportedError{Message: "service: statemachine: mvcc not configured"},
 	}
-
-	rejectedEvenWhenExcused := []struct {
-		name string
-		err  error
-	}{
-		{"a WEDGED cell — the go-qrdb#129 failure mode", context.DeadlineExceeded},
-		{"an authorization failure", &transport.RequestError{
-			Method: "ExecuteTransaction", StatusCode: http.StatusForbidden,
-			Err: errors.New("kv:put denied")}},
-		{"a server fault", &transport.RequestError{
-			Method: "ExecuteTransaction", StatusCode: http.StatusInternalServerError,
-			Err: errors.New("service: propose failed")}},
-		{"a 501 that names nothing missing", notImplemented("something went wrong")},
-		{"no error at all", nil},
-	}
-	for _, tc := range rejectedEvenWhenExcused {
-		t.Run("still-rejects/"+tc.name, func(t *testing.T) {
-			if reason := classifyRefusalWith(tc.err, true); reason == nil {
-				t.Errorf("the exclusion accepted %v; it must excuse only the MISSING TYPE, "+
-					"never the difference between a refusal and a fault", tc.err)
-			}
-		})
+	if reason := classifyRefusal(typed); reason != nil {
+		t.Errorf("the REST client's typed 501 was rejected: %v", reason)
 	}
 }
 

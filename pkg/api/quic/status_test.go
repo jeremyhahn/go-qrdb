@@ -204,38 +204,15 @@ func TestModuleStatus_ExplicitUnknownIsNotStatusError(t *testing.T) {
 // today. pkg/api/grpc does not import pkg/api/quic, so there is no cycle, and
 // pkg/api/mcp already reaches the classifier the same way.
 //
-// Still open, and still an architecture change rather than this table's to
-// make: the two mappers remain two implementations that must agree, instead of
-// one shared classifier. What is different is that disagreement is now caught
-// here instead of by a consumer.
+// Since go-qrdb#557 both transports render one shared classification
+// (pkg/api/errclass), so every row here — this package's own refusal types
+// included — is checked live; pkg/api/errclass's parity test drives every row
+// of that table through every transport.
 type conditionRow struct {
 	name     string
 	err      error
 	want     uint16
 	grpcCode codes.Code
-}
-
-// transportLocalConditions names the rows whose error TYPE is declared in this
-// package and has no counterpart VALUE on the gRPC side: a malformed frame, a
-// payload that will not decode, a service this transport was not configured
-// with. gRPC answers the same CONDITION through its own types, so grpcCode
-// stays the parity claim and stays worth recording — but it cannot be checked
-// by running this error value through gRPC's classifiers, because that value
-// never reaches them.
-//
-// Keyed by row name, with the reason, rather than by a fifth struct field: the
-// rows are unkeyed composite literals, so a new field would have to be spelled
-// out on all fifty of them to mark five.
-//
-// This set is deliberately small and is not a waiver. An entry says "gRPC
-// cannot be asked about this VALUE", never "these two transports need not
-// agree". If a type here ever gains a gRPC counterpart, delete the entry.
-var transportLocalConditions = map[string]string{
-	"frame payload malformed":         "InvalidArgumentError is a framing fault; gRPC's codec rejects the equivalent before a handler runs",
-	"request payload will not decode": "UnmarshalError wraps this transport's own proto decode",
-	"service not configured":          "ServiceNotConfiguredError is this server's wiring check",
-	"ceremony CA not configured":      "CeremonyCANotConfiguredError is this server's wiring check",
-	"share claim needs a client cert": "ClientCertRequiredError is raised from the QUIC peer-certificate path",
 }
 
 // grpcAnswer reports the code the gRPC stack answers for err, resolved in the
@@ -443,14 +420,14 @@ var conditions = []conditionRow{
 	{"restore scope too large", &service.RestoreScopeTooLargeError{Limit: 10, Scope: "prefix"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"restore prefix unbounded", &service.RestoreUnboundedPrefixError{Prefix: ""}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"ceremony CA not configured", &CeremonyCANotConfiguredError{}, wire.StatusUnimplemented, codes.Unimplemented},
-	{"share claim needs a client cert", &ClientCertRequiredError{}, wire.StatusPermissionDenied, codes.PermissionDenied},
+	{"share claim needs a client cert", &ClientCertRequiredError{}, wire.StatusUnauthenticated, codes.Unauthenticated},
 	{"request payload will not decode", &UnmarshalError{Err: errors.New("proto")}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"tenant supplied is not the caller's", &tenant.CrossTenantDeniedError{
 		IdentityTenantID: "a", RequestedTenantID: "b", Op: "users.list",
 	}, wire.StatusPermissionDenied, codes.PermissionDenied},
 
 	// --- the ceremony-time auth-factor surface (pkg/authfactors) ---------
-	// Each row is one arm of pkg/api/grpc.mapAuthFactorGRPCError; the live
+	// Each row is one of pkg/api/errclass's auth-factor rows; the live
 	// parity check below holds QUIC to the class gRPC actually answers. A
 	// malformed, unknown, consumed or reclaimed challenge id all surface as
 	// EnrollmentNotFoundError.
@@ -496,52 +473,16 @@ func TestMapServiceError_EveryCondition(t *testing.T) {
 			// against the code recorded beside the row. Without this, a change
 			// to pkg/api/grpc's mapper leaves this table asserting agreement
 			// with an answer that transport no longer gives.
-			if _, local := transportLocalConditions[row.name]; !local {
-				if live := grpcAnswer(row.err); live != row.grpcCode {
-					t.Errorf("the gRPC stack answers codes.%s for this condition, but the "+
-						"row records codes.%s. gRPC moved and this table did not: either "+
-						"the row is stale or the transports have genuinely diverged",
-						live, row.grpcCode)
-				}
+			if live := grpcAnswer(row.err); live != row.grpcCode {
+				t.Errorf("the gRPC stack answers codes.%s for this condition, but the "+
+					"row records codes.%s. gRPC moved and this table did not: either "+
+					"the row is stale or the transports have genuinely diverged",
+					live, row.grpcCode)
 			}
 			if len(payload) == 0 {
 				t.Error("the payload must carry the server's reason")
 			}
 		})
-	}
-}
-
-// TestTransportLocalConditions_IsHonest keeps the exclusion list from becoming
-// a silent waiver, which is the failure mode of every hand-maintained skip set.
-//
-// Two claims, and the second is the one that matters. First, every name in the
-// set must match a row — a typo, or a row renamed without touching the set,
-// would otherwise exclude nothing while reading as though it excluded
-// something. Second, every excluded row must ACTUALLY be unclassifiable by the
-// gRPC stack: grpcAnswer must fall through to codes.Internal. That is what
-// makes the entry necessary rather than convenient, and it is self-repairing —
-// if one of these types ever gains a gRPC counterpart, this test fails and
-// tells you to delete the entry instead of leaving a row permanently unchecked.
-func TestTransportLocalConditions_IsHonest(t *testing.T) {
-	byName := make(map[string]conditionRow, len(conditions))
-	for _, row := range conditions {
-		byName[row.name] = row
-	}
-	for name, reason := range transportLocalConditions {
-		row, ok := byName[name]
-		if !ok {
-			t.Errorf("%q is excluded from the live parity check but matches no row: "+
-				"the set excludes nothing and reads as though it excludes something", name)
-			continue
-		}
-		if reason == "" {
-			t.Errorf("%q is excluded with no reason recorded", name)
-		}
-		if live := grpcAnswer(row.err); live != codes.Internal {
-			t.Errorf("%q is excluded from the live parity check, but the gRPC stack "+
-				"classifies it as codes.%s — it is no longer transport-local, so "+
-				"delete the entry and let the row be checked", name, live)
-		}
 	}
 }
 
@@ -600,88 +541,6 @@ func TestMapServiceError_UnclassifiedStaysStatusError(t *testing.T) {
 		}
 		if len(payload) == 0 {
 			t.Errorf("%T: the payload must carry the reason", err)
-		}
-	}
-}
-
-// TestPinStatus_CoversEverySentinel: a PIN error pkg/pin adds without a row in
-// pinStatusBySentinel falls through to StatusError, which is the state QUIC's
-// barrier-PIN handlers were in before go-qrdb#437 — a locked-out PIN and a
-// disk fault as the same frame.
-func TestPinStatus_CoversEverySentinel(t *testing.T) {
-	sentinels := []error{
-		pin.ErrPINNotSet, pin.ErrPINLocked, pin.ErrPINInvalid,
-		pin.ErrSOPINRequired, pin.ErrPINTooShort, pin.ErrPINAlreadySet,
-		pin.ErrInvalidCurrentPIN, pin.ErrStateCorrupted, pin.ErrStrategyNotSet,
-	}
-	if len(pinStatusBySentinel) != len(sentinels) {
-		t.Errorf("pinStatusBySentinel has %d rows for %d sentinels",
-			len(pinStatusBySentinel), len(sentinels))
-	}
-	for _, sentinel := range sentinels {
-		st, ok := pinStatus(sentinel)
-		if !ok {
-			t.Errorf("%v has no status", sentinel)
-			continue
-		}
-		if st == wire.StatusError {
-			t.Errorf("%v classified as the generic StatusError", sentinel)
-		}
-	}
-}
-
-// TestPinStatus_ClassifiesThroughAWrapper: the handlers return the backend's
-// error wrapped, so a mapping that only matched a bare sentinel would be inert
-// in production.
-func TestPinStatus_ClassifiesThroughAWrapper(t *testing.T) {
-	wrapped := &HandlerError{Method: "barrier.Unseal", Err: pin.ErrPINLocked}
-	st, payload := mapServiceError(wrapped)
-	if st != wire.StatusResourceExhausted {
-		t.Fatalf("status = %s, want StatusResourceExhausted", wire.StatusName(st))
-	}
-	if len(payload) == 0 {
-		t.Error("the payload must carry the reason")
-	}
-}
-
-// TestPinStatus_IgnoresUnrelatedErrors.
-func TestPinStatus_IgnoresUnrelatedErrors(t *testing.T) {
-	if st, ok := pinStatus(errors.New("not a PIN error")); ok {
-		t.Fatalf("classified as %s", wire.StatusName(st))
-	}
-	if st, ok := pinStatus(nil); ok {
-		t.Fatalf("nil classified as %s", wire.StatusName(st))
-	}
-}
-
-// TestRestoreGuardStatus_IgnoresUnrelatedErrors keeps the split-out family
-// from claiming errors it does not own.
-func TestRestoreGuardStatus_IgnoresUnrelatedErrors(t *testing.T) {
-	if st, ok := restoreGuardStatus(errors.New("unrelated")); ok {
-		t.Fatalf("classified as %s", wire.StatusName(st))
-	}
-	if st, ok := restoreGuardStatus(&service.KeyNotFoundError{Key: "k"}); ok {
-		t.Fatalf("a key-not-found was claimed by the restore guards as %s", wire.StatusName(st))
-	}
-}
-
-// TestRestoreGuardStatus_ClassifiesItsFamily.
-func TestRestoreGuardStatus_ClassifiesItsFamily(t *testing.T) {
-	for _, tc := range []struct {
-		err  error
-		want uint16
-	}{
-		{&service.RestoreNilRequestError{}, wire.StatusInvalidArgument},
-		{&service.RestoreScopeEmptyError{}, wire.StatusInvalidArgument},
-		{&service.RestoreApplyError{Key: "k", Err: errors.New("disk")}, wire.StatusError},
-	} {
-		st, ok := restoreGuardStatus(tc.err)
-		if !ok {
-			t.Errorf("%T was not classified", tc.err)
-			continue
-		}
-		if st != tc.want {
-			t.Errorf("%T: status = %s, want %s", tc.err, wire.StatusName(st), wire.StatusName(tc.want))
 		}
 	}
 }

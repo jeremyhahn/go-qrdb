@@ -19,8 +19,6 @@ import (
 	"encoding/base64"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -38,10 +36,10 @@ import (
 // are forwarded so callers can supply credentials on the call itself.
 func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 	if s.ceremonyCA == nil {
-		return nil, status.Error(codes.Unimplemented, (&CeremonyCANotConfiguredError{}).Error())
+		return nil, mapServiceError(&CeremonyCANotConfiguredError{})
 	}
 
 	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, &service.CeremonyInitializeOptions{
@@ -69,7 +67,7 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 // CeremonyStatus returns the current ceremony state and SPKI pin.
 func (s *qrdbServiceServer) CeremonyStatus(ctx context.Context, _ *emptypb.Empty) (*pb.CeremonyStatusResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	info, err := s.ceremonySvc.CeremonyStatus(ctx)
@@ -87,7 +85,7 @@ func (s *qrdbServiceServer) CeremonyStatus(ctx context.Context, _ *emptypb.Empty
 // officer, returning a challenge nonce and its expiration.
 func (s *qrdbServiceServer) CeremonyClaimCertBegin(ctx context.Context, req *pb.CeremonyClaimCertBeginRequest) (*pb.CeremonyClaimCertBeginResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	challenge, err := s.ceremonySvc.CeremonyBeginClaimCert(ctx, req.GetUsername())
@@ -105,12 +103,12 @@ func (s *qrdbServiceServer) CeremonyClaimCertBegin(ctx context.Context, req *pb.
 // verifying the officer's nonce signature and returning the issued certificate.
 func (s *qrdbServiceServer) CeremonyClaimCertComplete(ctx context.Context, req *pb.CeremonyClaimCertCompleteRequest) (*pb.CeremonyClaimCertCompleteResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	sig, err := base64.StdEncoding.DecodeString(req.GetSignature())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, (&SignatureDecodeError{Err: err}).Error())
+		return nil, mapServiceError(&SignatureDecodeError{Err: err})
 	}
 
 	result, err := s.ceremonySvc.CeremonyCompleteClaimCert(ctx, req.GetUsername(), req.GetNonceHex(), sig)
@@ -130,12 +128,12 @@ func (s *qrdbServiceServer) CeremonyClaimCertComplete(ctx context.Context, req *
 // match the thumbprint recorded for the officer at enrollment.
 func (s *qrdbServiceServer) CeremonyBeginClaimShare(ctx context.Context, req *pb.CeremonyBeginClaimShareRequest) (*pb.CeremonyBeginClaimShareResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	challenge, err := s.ceremonySvc.CeremonyBeginClaimShare(ctx, req.GetUsername(), thumbprint)
@@ -155,12 +153,12 @@ func (s *qrdbServiceServer) CeremonyBeginClaimShare(ctx context.Context, req *pb
 // exactly once.
 func (s *qrdbServiceServer) CeremonyCompleteClaimShare(ctx context.Context, req *pb.CeremonyCompleteClaimShareRequest) (*pb.CeremonyCompleteClaimShareResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	result, err := s.ceremonySvc.CeremonyCompleteClaimShare(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
@@ -179,7 +177,7 @@ func (s *qrdbServiceServer) CeremonyCompleteClaimShare(ctx context.Context, req 
 // or PubKeyPEM (admin-asserted trust) MUST be supplied, but not both.
 func (s *qrdbServiceServer) CeremonyEnrollExternalOfficer(ctx context.Context, req *pb.CeremonyEnrollExternalOfficerRequest) (*pb.CeremonyEnrollExternalOfficerResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	resp, err := s.ceremonySvc.CeremonyEnrollExternalOfficer(ctx, &service.CeremonyEnrollExternalOfficerRequest{
@@ -203,7 +201,7 @@ func (s *qrdbServiceServer) CeremonyEnrollExternalOfficer(ctx context.Context, r
 // returning the issued certificate.
 func (s *qrdbServiceServer) CeremonySignCSR(ctx context.Context, req *pb.CeremonySignCSRRequest) (*pb.CeremonySignCSRResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 
 	result, err := s.ceremonySvc.CeremonySignCSR(ctx, req.GetUsername(), req.GetSoPin(), req.GetCsrPem(), req.GetRole())

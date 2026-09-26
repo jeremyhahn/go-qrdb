@@ -505,7 +505,7 @@ func (s *Server) handleUpdateDatabaseEtcd(w http.ResponseWriter, r *http.Request
 
 	if s.onEtcdUpdated != nil && cfg.Enabled {
 		if err := s.onEtcdUpdated(name, cfg); err != nil {
-			writeErrorJSON(w, http.StatusInternalServerError, err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 	}

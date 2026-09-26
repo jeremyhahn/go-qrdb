@@ -17,13 +17,11 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -135,7 +133,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Pending:              req.Pending,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -181,7 +179,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.userSvc.ListUsers(ctx, listReq)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -281,7 +279,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		if seg, found := strings.CutSuffix(rest, "/enable"); found && seg != "" {
 			id, err := parseUserID(seg)
 			if err != nil {
-				writeErrorJSON(w, http.StatusBadRequest, err)
+				writeErrorJSON(w, mapHTTPError(err), err)
 				return
 			}
 			s.handleEnableUser(w, r, id)
@@ -290,7 +288,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		if seg, found := strings.CutSuffix(rest, "/disable"); found && seg != "" {
 			id, err := parseUserID(seg)
 			if err != nil {
-				writeErrorJSON(w, http.StatusBadRequest, err)
+				writeErrorJSON(w, mapHTTPError(err), err)
 				return
 			}
 			s.handleDisableUser(w, r, id)
@@ -299,7 +297,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		if seg, found := strings.CutSuffix(rest, "/cert-bindings"); found && seg != "" {
 			id, err := parseUserID(seg)
 			if err != nil {
-				writeErrorJSON(w, http.StatusBadRequest, err)
+				writeErrorJSON(w, mapHTTPError(err), err)
 				return
 			}
 			s.handleAddCertBinding(w, r, id)
@@ -322,7 +320,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		if idSeg, thumbprint, found := strings.Cut(rest, "/cert-bindings/"); found {
 			id, err := parseUserID(idSeg)
 			if err != nil {
-				writeErrorJSON(w, http.StatusBadRequest, err)
+				writeErrorJSON(w, mapHTTPError(err), err)
 				return
 			}
 			if thumbprint == "" {
@@ -337,7 +335,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	// The remaining path is the user ID (no suffix).
 	id, err := parseUserID(rest)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -368,7 +366,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id uint64
 
 	u, err := s.userSvc.GetUser(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -387,7 +385,7 @@ func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request,
 
 	u, err := s.userSvc.GetUserByUsername(ctx, tenantID, username)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -409,7 +407,7 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 
 	var req lookupUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 	if req.Email == "" {
@@ -419,7 +417,7 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 
 	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -435,7 +433,7 @@ func (s *Server) handleGetUserByCertThumbprint(w http.ResponseWriter, r *http.Re
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -463,7 +461,7 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 
 	u, err := s.userSvc.AddCertBinding(ctx, userID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -480,7 +478,7 @@ func (s *Server) handleRemoveCertBinding(w http.ResponseWriter, r *http.Request,
 
 	u, err := s.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -519,7 +517,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 
 	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -532,7 +530,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id uin
 	defer cancel()
 
 	if err := s.userSvc.DeleteUser(ctx, id); err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -545,7 +543,7 @@ func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id uin
 	defer cancel()
 
 	if err := s.userSvc.EnableUser(ctx, id); err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -558,7 +556,7 @@ func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id ui
 	defer cancel()
 
 	if err := s.userSvc.DisableUser(ctx, id); err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -594,119 +592,6 @@ func userToResponse(u *user.User) *userResponse {
 		CertBindings: user.WireCertBindings(u.CertBindings),
 		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
-	}
-}
-
-// mapUserError maps user domain errors to the appropriate HTTP status code.
-func mapUserError(err error) int {
-	var ve *user.ValidationError
-	var unf *user.UserNotFoundError
-	var ue *user.UsernameExistsError
-	var uide *user.UserIDExistsError
-	var ee *user.EmailExistsError
-	var ice *user.IndexCompensationError
-	var cu *user.ConcurrentUpdateError
-	var cou *user.CommitOutcomeUnknownError
-	var si *user.SystemUserImmutableError
-	var il *user.InvalidLifecycleError
-	var lt *user.LifecycleTransitionError
-	var cbnf *user.CertBindingNotFoundError
-	var cbc *user.CertBindingConflictError
-	var se *user.StoreError
-	var xt *tenant.CrossTenantDeniedError
-
-	switch {
-	case errors.As(err, &xt):
-		// A normal tenant caller supplied a target tenant other than its own.
-		// The IAM routing layer refuses to act on a client-supplied tenant —
-		// fail closed with 403, matching the tenant-isolation posture.
-		return http.StatusForbidden
-	case errors.Is(err, tenant.ErrTenantSealed):
-		// A barrier-isolated tenant's IAM store resolved to a SEALED barrier.
-		// The StoreResolver fails closed rather than leaking the operation
-		// through the shared system store — surface 503, matching the
-		// BarrierSealedError data-plane mapping.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &ice):
-		// CHECKED BEFORE EVERY CASE THAT COULD BE ITS CAUSE, which is the whole
-		// point of where this arm sits. IndexCompensationError Unwraps to its
-		// cause so existing matching keeps working — so whichever cause-arm is
-		// listed above it wins instead, and the caller is told the cause while
-		// the far more serious fact, that rollback FAILED and a login index is
-		// inconsistent, is dropped.
-		//
-		// It sat below the duplicate-handle arms because when only UpdateUser
-		// and DeleteUser produced this error its causes were the concurrency
-		// errors below. CreateUser now produces it too, and its cause can be a
-		// UsernameExists/EmailExists conflict: a create that could not release
-		// the username it had already claimed would have been reported as an
-		// ordinary 409, leaving that username permanently unclaimable and
-		// resolving to nothing, with no signal to anyone. The cause set of a
-		// wrapper error grows silently — position this arm above all of them.
-		return http.StatusInternalServerError
-	case errors.As(err, &ve):
-		return http.StatusBadRequest
-	case errors.As(err, &unf):
-		return http.StatusNotFound
-	case errors.As(err, &cbnf):
-		// A withdrawal naming a binding the account does not hold. 404 on the
-		// binding sub-resource, the same answer a DELETE of any absent resource
-		// gets — and deliberately NOT a 204, because a vacuous success would
-		// tell an operator who mistyped the thumbprint that a live key had been
-		// withdrawn.
-		return http.StatusNotFound
-	case errors.As(err, &ue):
-		return http.StatusConflict
-	case errors.As(err, &uide):
-		// A store-generated user id collided with an existing identity claim
-		// or primary record (go-qrdb#555) — the same client-correctable
-		// conflict a taken username or email is, not a server fault.
-		return http.StatusConflict
-	case errors.As(err, &ee):
-		// A taken email is a client-correctable conflict, exactly as a taken
-		// username is. Without this case it fell through to the StoreError arm
-		// and was reported as 500 — a server fault for a condition the caller
-		// can fix, and one that hides the real reason.
-		return http.StatusConflict
-	case errors.As(err, &cbc):
-		// A thumbprint already bound to ANOTHER user in the tenant. The store
-		// refuses to rebind it because doing so silently would let the caller
-		// take over that user's mTLS identity — one of the more
-		// security-relevant answers it gives, and without this arm it was
-		// reported as 500. 409 like the other taken handles; the message
-		// names the user that holds the thumbprint, which is the one fact an
-		// operator investigating a failed enrolment needs (go-qrdb#536).
-		return http.StatusConflict
-	case errors.As(err, &cu):
-		// Lost a concurrent update: nothing is wrong, the caller's view is
-		// stale. Conflict tells it to re-read and retry; 500 would tell it the
-		// server is broken.
-		return http.StatusConflict
-	case errors.As(err, &cou):
-		// The commit outcome is UNKNOWN. Distinct from both a conflict and a
-		// failure: the caller must reconcile before retrying, because a blind
-		// retry could double-apply. 503 says "ask again", not "it failed".
-		return http.StatusServiceUnavailable
-	case errors.As(err, &il):
-		// A state that is undefined, or defined but not permitted where it was
-		// used. The caller sent something wrong and the error names the allowed
-		// set, so this is a 400 — the same class as any other bad field.
-		return http.StatusBadRequest
-	case errors.As(err, &lt):
-		// The state is valid, the CALLER is not wrong about it, and the record
-		// simply is not somewhere this move can start from — the account is
-		// already being deleted, or was never activated. That is a precondition
-		// on the resource, not a malformed request, so it is 409 rather than
-		// 400. Without this arm the commonest instance, an EnableUser racing a
-		// delete, was reported as 500: a server fault for a refusal the server
-		// made on purpose, and one a client could never learn to expect.
-		return http.StatusConflict
-	case errors.As(err, &si):
-		return http.StatusForbidden
-	case errors.As(err, &se):
-		return http.StatusInternalServerError
-	default:
-		return http.StatusInternalServerError
 	}
 }
 

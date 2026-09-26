@@ -279,7 +279,7 @@ func TestHandleAuthFactorChallenge_SealedAfterResolve(t *testing.T) {
 	if !errors.Is(err, seal.ErrSealed) {
 		t.Fatalf("handler error = %v, want it to carry seal.ErrSealed", err)
 	}
-	if got := classifyToolError(err); got != wire.CodeUnavailable {
+	if got := ServiceErrorCode(err); got != wire.CodeUnavailable {
 		t.Errorf("classified %s, want %s", got, wire.CodeUnavailable)
 	}
 }

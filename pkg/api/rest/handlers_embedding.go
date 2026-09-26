@@ -16,7 +16,6 @@ package rest
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -104,7 +103,7 @@ func (s *Server) handleEmbedText(w http.ResponseWriter, r *http.Request) {
 		Provider: req.Provider,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapEmbeddingHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -148,7 +147,7 @@ func (s *Server) handleBatchEmbed(w http.ResponseWriter, r *http.Request) {
 		BatchSize: req.BatchSize,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapEmbeddingHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -179,7 +178,7 @@ func (s *Server) handleListEmbeddingModels(w http.ResponseWriter, r *http.Reques
 		Provider: provider,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapEmbeddingHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -192,28 +191,4 @@ func (s *Server) handleListEmbeddingModels(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	writeJSON(w, listModelsResponse{Models: models})
-}
-
-// mapEmbeddingHTTPError maps embedding service errors to HTTP status codes.
-func mapEmbeddingHTTPError(err error) int {
-	var (
-		providerNotFound     *service.EmbeddingProviderNotFoundError
-		providerRegistration *service.EmbeddingProviderRegistrationError
-		batchTooLarge        *service.EmbeddingBatchTooLargeError
-		dimensionMismatch    *service.EmbeddingDimensionMismatchError
-		serviceClosed        *service.EmbeddingServiceClosedError
-	)
-	// Registration failures wrap their cause (often a not-found), so the
-	// wrapper is matched before anything it might wrap.
-	switch {
-	case errors.As(err, &providerRegistration):
-		return http.StatusConflict
-	case errors.As(err, &providerNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &batchTooLarge), errors.As(err, &dimensionMismatch):
-		return http.StatusBadRequest
-	case errors.As(err, &serviceClosed):
-		return http.StatusServiceUnavailable
-	}
-	return http.StatusInternalServerError
 }

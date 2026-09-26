@@ -69,8 +69,8 @@ func TestRaftRefusedOpcodeLeavesTheShardReadable(t *testing.T) {
 		t.Fatalf("SyncPropose of an unknown opcode returned %v; the refusal must "+
 			"travel in the result payload, not halt the state machine", err)
 	}
-	msg, capability, ok := protocol.DecodeAppErrorKind(result.Data)
-	if !ok || !capability {
+	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
+	if !ok || kind != protocol.AppErrorCapability {
 		t.Fatalf("refused proposal result %q is not an encoded capability error; the "+
 			"proposer would read the refusal as an ordinary result", result.Data)
 	}

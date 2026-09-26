@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -204,7 +203,7 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType, opts...)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -226,7 +225,7 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tenants, err := s.tenantSvc.ListTenants(ctx)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	if s.authMW != nil {
@@ -409,7 +408,7 @@ func (s *Server) authorizeTenantUpdate(ctx context.Context, w http.ResponseWrite
 // admits.
 func (s *Server) authorizeTenantRequest(w http.ResponseWriter, id string, decide func(*authmw.AuthMiddleware) error) bool {
 	if err := tenant.ValidateTenantIDShape(id); err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return false
 	}
 	if s.authMW == nil {
@@ -431,7 +430,7 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id stri
 	}
 	info, err := s.tenantSvc.GetTenant(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -446,7 +445,7 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if err := s.tenantSvc.DeleteTenant(ctx, id); err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -478,7 +477,7 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	// tenant.IsolationChangeWiring).
 	info, err := s.tenantSvc.UpdateTenant(ctx, id, patch)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -520,7 +519,7 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 	}
 	info, err := s.tenantSvc.UpdateQuotas(ctx, id, q)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -552,7 +551,7 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 	}
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, id, e)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -650,7 +649,7 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 	}
 	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -694,7 +693,7 @@ func (s *Server) handleTenantBarrierUnsealShare(w http.ResponseWriter, r *http.R
 
 	progress, err := s.tenantSvc.TenantBarrierUnsealShare(ctx, id, req.Share)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -724,7 +723,7 @@ func (s *Server) handleTenantBarrierUnseal(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.tenantSvc.TenantBarrierUnseal(ctx, id, req.Key); err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -742,7 +741,7 @@ func (s *Server) handleTenantBarrierSeal(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err := s.tenantSvc.TenantBarrierSeal(ctx, id); err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -765,7 +764,7 @@ func (s *Server) handleTenantBarrierStatus(w http.ResponseWriter, r *http.Reques
 	}
 	status, err := s.tenantSvc.TenantBarrierStatus(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -830,7 +829,7 @@ func (s *Server) handleTenantBarrierOfficerRegister(w http.ResponseWriter, r *ht
 		AuthenticatorRef:  req.AuthenticatorRef,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -854,7 +853,7 @@ func (s *Server) handleTenantBarrierOfficerList(w http.ResponseWriter, r *http.R
 
 	officers, err := s.tenantSvc.TenantBarrierOfficerList(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -877,7 +876,7 @@ func (s *Server) handleTenantBarrierOfficerClaimStatus(w http.ResponseWriter, r 
 
 	officers, err := s.tenantSvc.TenantBarrierOfficerClaimStatus(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -902,13 +901,13 @@ func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *ht
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	challenge, err := s.tenantSvc.TenantBarrierShareClaimBegin(ctx, id, username, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -933,7 +932,7 @@ func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r 
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -959,7 +958,7 @@ func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r 
 
 	result, err := s.tenantSvc.TenantBarrierShareClaimComplete(ctx, id, username, req.NonceHex, sigBytes, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -999,7 +998,7 @@ func (s *Server) handleTenantBarrierSealVote(w http.ResponseWriter, r *http.Requ
 
 	progress, err := s.tenantSvc.TenantBarrierShamirSealVote(ctx, id, req.Share)
 	if err != nil {
-		writeErrorJSON(w, mapTenantError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -1031,93 +1030,4 @@ func tenantOfficerStatusesToResponse(officers []*ceremony.OfficerStatus) []map[s
 		out[i] = m
 	}
 	return out
-}
-
-// mapTenantError maps tenant domain errors to the appropriate HTTP status code.
-func mapTenantError(err error) int {
-	var se *tenant.StoreError
-	var be *tenant.BarrierError
-	var ite *tenant.InvalidTenantIDError
-	var itce *tenant.InvalidTenantIDCharError
-	var ise *tenant.InvalidStrategyError
-	var tse *tenant.TenantScopeError
-	var idre *tenant.InvalidDataRootError
-	var dne *tenant.DataRootNotEmptyError
-	var dite *tenant.DataRootIsolationTypeError
-	var tde *tenant.TenantDeletedError
-	var thd *tenant.TenantHasDatabasesError
-	var rte *tenant.ReservedTenantIDError
-	var tdpe *tenant.TenantDataProbeError
-
-	switch {
-	case errors.As(err, &tse):
-		return http.StatusForbidden
-	case errors.Is(err, tenant.ErrEmptyDataRoot):
-		return http.StatusBadRequest
-	case errors.As(err, &idre):
-		return http.StatusBadRequest
-	case errors.As(err, &dite):
-		return http.StatusBadRequest
-	case errors.As(err, &dne):
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrEmptyTenantID):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyTenantName):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyPassphrase):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyShare):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrNilQuotas):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrNilEntitlements):
-		return http.StatusBadRequest
-	case errors.As(err, &ise):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrBarrierIsolationUnavailable):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, tenant.ErrBarrierNotEnabled):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, tenant.ErrTenantAlreadyExists):
-		return http.StatusConflict
-	case errors.As(err, &tde):
-		// A deleted tenant id is retired permanently, so the id is not
-		// available -- the same answer ErrTenantAlreadyExists gives, for the
-		// same reason. 410 Gone would describe the deleted TENANT; what the
-		// caller asked for is the ID, and the conflict is with the deletion.
-		return http.StatusConflict
-	case errors.As(err, &thd):
-		// The tenant still owns databases. A precondition the caller can
-		// satisfy by dropping them, which the error names.
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrTenantHasData):
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrTenantDataUnverifiable):
-		// The node could not confirm the tenant is empty, so it refused the
-		// isolation change rather than risk orphaning data.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &tdpe):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, tenant.ErrTenantNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &ite):
-		return http.StatusBadRequest
-	case errors.As(err, &itce):
-		// An id carrying a path separator or control byte cannot name a
-		// tenant. It fell through to 500 before.
-		return http.StatusBadRequest
-	case errors.As(err, &rte):
-		// A reserved id is not the caller's to name, on create or on delete.
-		// It fell through to 500 before, which reported a client error as a
-		// server fault.
-		return http.StatusBadRequest
-	case errors.As(err, &se):
-		return http.StatusInternalServerError
-	case errors.As(err, &be):
-		return http.StatusInternalServerError
-	default:
-		return http.StatusInternalServerError
-	}
 }

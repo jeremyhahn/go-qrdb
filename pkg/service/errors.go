@@ -23,62 +23,118 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
-// SMNotConfiguredError is returned when a proposal succeeds at the Raft level
-// but the state machine encodes an application error into result.Data instead
-// of returning a fatal Update error (which would halt lastApplied and stall
-// every read and write on the group). The encoded outcome is a deterministic,
-// non-fatal consequence of valid client input — a target subsystem that is not
-// configured on this SM (lease, timeseries), an invalid lease TTL, or a
-// unique-index violation. This surfaces that outcome to the API layer as a
-// typed error.
-type SMNotConfiguredError struct {
-	// Message is the error string the SM encoded into result.Data.
+// The state machine refused a committed command by encoding the refusal into
+// result.Data rather than failing the apply (which would halt lastApplied and
+// stall every read and write on the group). protocol.AppErrorKind says what
+// kind of refusal it is, and each kind has its own typed error below, so a
+// caller — and every transport — can tell an absent subsystem from a bad TTL
+// from a taken key without reading message text (go-qrdb#141, go-qrdb#557).
+//
+// Every one of them reports ErrNotStored: the entry committed and changed
+// nothing.
+
+// refusalErrors maps each refusal kind to its typed error. A map rather than a
+// switch: the kinds are values, the dispatch is a lookup, and a kind added to
+// protocol without a row here is caught by TestCheckResultError_EveryKind.
+var refusalErrors = map[protocol.AppErrorKind]func(msg string) error{
+	protocol.AppErrorCapability:  func(msg string) error { return &CapabilityUnsupportedError{Message: msg} },
+	protocol.AppErrorInvalid:     func(msg string) error { return &CommandRejectedError{Message: msg} },
+	protocol.AppErrorConflict:    func(msg string) error { return &CommandConflictError{Message: msg} },
+	protocol.AppErrorUnavailable: func(msg string) error { return &SubsystemClosedError{Message: msg} },
+	protocol.AppErrorFault:       func(msg string) error { return &ApplyFaultError{Message: msg} },
+	protocol.AppErrorCorrupt:     func(msg string) error { return &CommandCorruptError{Message: msg} },
+}
+
+// checkResultError inspects result.Data for a state-machine-encoded application
+// error (see protocol.EncodeAppError) and returns the typed error for its
+// kind. The discriminated prefix is required so ordinary result payloads —
+// notably the one-byte transaction success flag — are never misread as errors.
+func checkResultError(result sm.Result) error {
+	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
+	if !ok {
+		return nil
+	}
+	return refusalErrors[kind](msg)
+}
+
+// CommandRejectedError reports a command the state machine understood and
+// refused on its merits: an invalid lease TTL, a malformed time-series point.
+// The request is the caller's to fix.
+type CommandRejectedError struct {
+	// Message is the refusal the state machine encoded into result.Data.
 	Message string
 }
 
 // Error returns a human-readable description.
-func (e *SMNotConfiguredError) Error() string {
-	return "service: " + e.Message
+func (e *CommandRejectedError) Error() string { return "service: " + e.Message }
+
+// Is reports the ErrNotStored marker: the command changed nothing.
+func (e *CommandRejectedError) Is(target error) bool { return target == ErrNotStored }
+
+// CommandConflictError reports a command that would have violated a
+// uniqueness constraint: a unique-index value or a lease ID already taken.
+type CommandConflictError struct {
+	// Message is the refusal the state machine encoded into result.Data.
+	Message string
 }
 
-// Is reports the ErrNotStored marker.
-//
-// The entry committed, but the state machine encoded a refusal into its result
-// instead of applying the command — a subsystem it was not built with, an
-// invalid lease TTL, a unique-index violation. The command reached consensus
-// and changed nothing.
-func (e *SMNotConfiguredError) Is(target error) bool {
-	return target == ErrNotStored
+// Error returns a human-readable description.
+func (e *CommandConflictError) Error() string { return "service: " + e.Message }
+
+// Is reports the ErrNotStored marker: the command changed nothing.
+func (e *CommandConflictError) Is(target error) bool { return target == ErrNotStored }
+
+// SubsystemClosedError reports a command that reached a subsystem already
+// closed on this replica (a closed lessor or time-series store). Retry once
+// the node is serving again.
+type SubsystemClosedError struct {
+	// Message is the refusal the state machine encoded into result.Data.
+	Message string
 }
 
-// checkResultError inspects result.Data for a state-machine-encoded application
-// error (see protocol.EncodeAppError). The discriminated prefix is required so
-// ordinary result payloads — notably the one-byte transaction success flag —
-// are never misread as errors. Returns a non-nil SMNotConfiguredError only when
-// the payload carries the application-error prefix.
-func checkResultError(result sm.Result) error {
-	msg, capability, ok := protocol.DecodeAppErrorKind(result.Data)
-	if !ok {
-		return nil
-	}
-	if capability {
-		return &CapabilityUnsupportedError{Message: msg}
-	}
-	return &SMNotConfiguredError{Message: msg}
+// Error returns a human-readable description.
+func (e *SubsystemClosedError) Error() string { return "service: " + e.Message }
+
+// Is reports the ErrNotStored marker: the command changed nothing.
+func (e *SubsystemClosedError) Is(target error) bool { return target == ErrNotStored }
+
+// ApplyFaultError reports a subsystem that failed while applying a command,
+// for a reason the request did not cause.
+type ApplyFaultError struct {
+	// Message is the refusal the state machine encoded into result.Data.
+	Message string
 }
+
+// Error returns a human-readable description.
+func (e *ApplyFaultError) Error() string { return "service: " + e.Message }
+
+// Is reports the ErrNotStored marker: the command changed nothing.
+func (e *ApplyFaultError) Is(target error) bool { return target == ErrNotStored }
+
+// CommandCorruptError reports a committed command the state machine could not
+// decode: the log holds bytes no writer of this version produced. A retry of
+// the same request is not the remedy.
+type CommandCorruptError struct {
+	// Message is the refusal the state machine encoded into result.Data.
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *CommandCorruptError) Error() string { return "service: " + e.Message }
+
+// Is reports the ErrNotStored marker: the command changed nothing.
+func (e *CommandCorruptError) Is(target error) bool { return target == ErrNotStored }
 
 // CapabilityUnsupportedError reports that the state machine serving this
 // request was not built to perform the operation: an opcode it has no handler
 // for, or a subsystem it was constructed without.
 //
-// It is deliberately distinct from SMNotConfiguredError, which also covers
-// outcomes that were understood and refused on their merits — a unique-index
-// violation, an invalid lease TTL. Those are client errors about the REQUEST;
-// this one is about the NODE, and a caller wanting to fall back to a different
-// verb needs to tell them apart without reading message text (go-qrdb#141).
-//
-// It embeds SMNotConfiguredError's marker semantics: the entry committed and
-// changed nothing.
+// It is deliberately distinct from CommandRejectedError and
+// CommandConflictError, which report outcomes refused on their merits — an
+// invalid lease TTL, a unique-index violation. Those are client errors about
+// the REQUEST; this one is about the NODE, and a caller wanting to fall back to
+// a different verb needs to tell them apart without reading message text
+// (go-qrdb#141). The entry committed and changed nothing.
 type CapabilityUnsupportedError struct {
 	// Message is the error string the state machine encoded into result.Data.
 	Message string
@@ -89,8 +145,8 @@ func (e *CapabilityUnsupportedError) Error() string {
 	return "service: " + e.Message
 }
 
-// Is reports the ErrNotStored marker, for the same reason
-// SMNotConfiguredError does: the command reached consensus and stored nothing.
+// Is reports the ErrNotStored marker: the command reached consensus and stored
+// nothing.
 func (e *CapabilityUnsupportedError) Is(target error) bool {
 	return target == ErrNotStored
 }

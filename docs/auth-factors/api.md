@@ -83,14 +83,10 @@ against the one the call's context already resolved to:
 
 The embedded transport returns the typed `AuthFactorTenantMismatchError`
 (`sdk.AuthFactorTenantMismatchError`) directly. Every wire transport
-classifies the same underlying condition to its own vocabulary's "caller's
-input is wrong" code, but not identically: gRPC's `mapAuthFactorGRPCError`
-carries the one clause this condition needs, and MCP's `classifyToolError`
-*renders* that same clause via `pkg/api/grpc.ServiceErrorCode` rather than
-owning one of its own — but QUIC does NOT render gRPC's classifier. QUIC's
-`mapServiceError` independently reimplements the same per-condition ladder,
-row for row, as its own doc comment states, and carries its own matching
-clause for this condition (see
+classifies it through the one classification table every transport renders
+(`pkg/api/errclass`), which classes it `InvalidArgument`; each transport's
+row above is that class in its own vocabulary, so no transport carries a
+clause of its own for it (see
 [engineering.md](engineering.md#the-custodian-surface-is-routed-too)).
 
 A resolved tenant that is sealed classifies the same way, on every verb that

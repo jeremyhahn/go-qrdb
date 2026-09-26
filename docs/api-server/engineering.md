@@ -199,6 +199,38 @@ over the same services, not a seventh transport.
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
 | Raft-only capability in standalone mode | `requires mode: raft` — REST 501, gRPC/QUIC `Unimplemented` | **yes** |
 
+### Error classification
+
+What kind of failure a typed error is, is decided once, by `pkg/api/errclass`:
+
+- `errclass.Classify(err) Class` walks an ordered, first-match-wins table.
+  Rows are one line each — `as(&service.KeyNotFoundError{}, NotFound)` for a type,
+  `is(tenant.ErrTenantNotFound, NotFound)` for a sentinel — grouped into one
+  block per family, so adding a condition is a one-line change to one block.
+- The table is ordered in three bands. **Dominant** rows win however deeply
+  their condition is wrapped: a transport type's own declared class
+  (`errclass.Classed`), the authentication classifier, a closed store, a sealed
+  tenant, a cross-tenant refusal, a failed index rollback. **Family** blocks
+  hold the leaf conditions. **Generic** wrappers (`ProposeError`,
+  `ReadError`, the store errors) come last, so they only classify what nothing
+  more specific recognised.
+- A transport's own refusal types implement `errclass.Classed` beside the
+  transport's projection table, because `pkg/api/errclass` cannot import the
+  transports.
+- Each transport owns one map from class to its code — `httpStatusByClass`
+  (REST), `grpcCodeByClass` (gRPC, the unix socket, and through it MCP),
+  `wireStatusByClass` (QUIC) — and each is asserted TOTAL over `errclass.All()`.
+- QUIC (`quic.ServiceErrorStatus`) and MCP (`mcp.ServiceErrorCode`) consult
+  the table FIRST, and a projected module's own gRPC status only for an error
+  the table leaves unclassified — the same order on both — so a module can
+  never shadow qrdb's own classification.
+
+Tests that guard it: `TestRules_AreNotShadowed` (every row's sample, wrapped,
+must be answered by that row and not an earlier one),
+`TestRules_EverySampleIsClaimedByItsOwnRow`, `TestRules_NamesAreUnique`, a
+discovery floor on the row count, and `TestEveryTransportAgreesOnEveryCondition`,
+which drives every row through the real REST, gRPC, QUIC and MCP mappings.
+
 ## Configuration
 
 Transport enablement is per protocol in the daemon config; see

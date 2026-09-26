@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 
@@ -174,7 +173,7 @@ func (s *Server) handleGenerateCert(w http.ResponseWriter, r *http.Request) {
 
 	bundle, err := s.certProv.GenerateClientCert(ctx, genReq)
 	if err != nil {
-		writeErrorJSON(w, mapCertError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -220,7 +219,7 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 		req.Passphrase,
 	)
 	if err != nil {
-		writeErrorJSON(w, mapCertError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -261,7 +260,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.certProv.RevokeCert(ctx, req.Serial)
 	if err != nil {
-		writeErrorJSON(w, mapCertError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -293,7 +292,7 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 
 	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {
-		writeErrorJSON(w, mapCertError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -323,38 +322,5 @@ func certRecordToResponse(rec *cert.CertRecord) *certRecordResponse {
 		IssuedAt:  rec.IssuedAt.Format(time.RFC3339),
 		ExpiresAt: rec.ExpiresAt.Format(time.RFC3339),
 		Revoked:   rec.Revoked,
-	}
-}
-
-// mapCertError maps cert domain errors to the appropriate HTTP status code.
-func mapCertError(err error) int {
-	var ve *cert.ValidationError
-	var cnf *cert.CertNotFoundError
-	var cr *cert.CertRevokedError
-	var bs *cert.BarrierSealedError
-	var ca *cert.CAKeyNotAvailableError
-	var se *cert.StoreError
-	var ge *cert.CertGenerateError
-	var ee *cert.CertExportError
-
-	switch {
-	case errors.As(err, &ve):
-		return http.StatusBadRequest
-	case errors.As(err, &cnf):
-		return http.StatusNotFound
-	case errors.As(err, &cr):
-		return http.StatusConflict
-	case errors.As(err, &bs):
-		return http.StatusServiceUnavailable
-	case errors.As(err, &ca):
-		return http.StatusServiceUnavailable
-	case errors.As(err, &ge):
-		return http.StatusInternalServerError
-	case errors.As(err, &ee):
-		return http.StatusInternalServerError
-	case errors.As(err, &se):
-		return http.StatusInternalServerError
-	default:
-		return http.StatusInternalServerError
 	}
 }

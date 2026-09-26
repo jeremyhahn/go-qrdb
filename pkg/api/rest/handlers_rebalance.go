@@ -125,7 +125,7 @@ func (s *Server) handleRebalanceShardStats(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 	stats, err := s.rebalanceSvc.GetShardStats(ctx, shardID)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -161,7 +161,7 @@ func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
 		TargetBalance: req.TargetBalance,
 	})
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -224,7 +224,7 @@ func (s *Server) handleImbalanceReport(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	report, err := s.rebalanceSvc.GetImbalanceReport(ctx)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 

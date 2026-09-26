@@ -750,7 +750,7 @@ func TestUserAuthFactorToRecord_Full(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapUserAuthFactorError – all error codes
+// mapHTTPError – all error codes
 // ---------------------------------------------------------------------------
 
 func TestMapUserAuthFactorError_AllCodes(t *testing.T) {
@@ -771,9 +771,9 @@ func TestMapUserAuthFactorError_AllCodes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapUserAuthFactorError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.want {
-				t.Errorf("mapUserAuthFactorError(%v) = %d, want %d", tc.err, got, tc.want)
+				t.Errorf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -1168,11 +1168,11 @@ func TestTenantToResponse_Nil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantError – ErrEmptyPassphrase branch
+// mapHTTPError – ErrEmptyPassphrase branch
 // ---------------------------------------------------------------------------
 
 func TestMapTenantError_EmptyPassphrase(t *testing.T) {
-	got := mapTenantError(tenant.ErrEmptyPassphrase)
+	got := mapHTTPError(tenant.ErrEmptyPassphrase)
 	if got != http.StatusBadRequest {
 		t.Fatalf("got %d, want %d", got, http.StatusBadRequest)
 	}

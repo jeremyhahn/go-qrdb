@@ -14,65 +14,81 @@
 
 package protocol
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
-// A capability refusal and a constraint violation both travel as encoded
-// application errors, and until go-qrdb#141 nothing distinguished them: the
-// service layer produced one type for both, so a caller could not tell "this
-// node was not built to do that" from "your request was understood and
-// refused". These pin the discrimination and, just as importantly, that adding
-// it did not disturb the existing encoding.
-func TestEncodeCapabilityError_IsDistinguishableFromAGenericAppError(t *testing.T) {
-	const msg = "statemachine: unknown opcode: 67"
+// allKinds is every AppErrorKind, written out: a list derived from the
+// marker map under test would assert nothing about a kind missing from it.
+var allKinds = []AppErrorKind{
+	AppErrorCorrupt, AppErrorCapability, AppErrorInvalid,
+	AppErrorConflict, AppErrorUnavailable, AppErrorFault,
+}
 
-	capData := EncodeCapabilityError(msg)
-	gotMsg, capability, ok := DecodeAppErrorKind(capData)
-	if !ok {
-		t.Fatal("a capability error did not decode as an application error; checkResultError " +
-			"recognises one ONLY by the shared prefix, so an unprefixed payload is read as " +
-			"an ordinary result and the refusal disappears")
+// Every kind round-trips: the refusal decodes as an application error, keeps
+// its kind, and keeps its message with the marker stripped. Until go-qrdb#141
+// nothing distinguished a capability refusal from a constraint violation, and
+// until go-qrdb#557 nothing distinguished the rest from one another.
+func TestAppErrorKind_EveryKindRoundTrips(t *testing.T) {
+	const msg = "statemachine: refused"
+	for _, kind := range allKinds {
+		gotMsg, gotKind, ok := DecodeAppErrorKind(EncodeAppError(kind, msg))
+		if !ok {
+			t.Fatalf("kind %d did not decode as an application error; checkResultError "+
+				"would read the refusal as an ordinary result", kind)
+		}
+		if gotKind != kind {
+			t.Errorf("kind %d decoded as kind %d", kind, gotKind)
+		}
+		if gotMsg != msg {
+			t.Errorf("kind %d: message = %q, want %q — the marker must not leak into the text", kind, gotMsg, msg)
+		}
 	}
-	if !capability {
-		t.Error("capability flag = false for EncodeCapabilityError")
-	}
-	if gotMsg != msg {
-		t.Errorf("message = %q, want %q — the marker must not leak into the text", gotMsg, msg)
-	}
-
-	genMsg, capability, ok := DecodeAppErrorKind(EncodeAppError(msg))
-	if !ok {
-		t.Fatal("a generic application error did not decode")
-	}
-	if capability {
-		t.Error("capability flag = true for EncodeAppError; a unique-index violation would " +
-			"be reported to the caller as an absent capability")
-	}
-	if genMsg != msg {
-		t.Errorf("generic message = %q, want %q", genMsg, msg)
+	if len(appErrorMarkers) != len(allKinds) {
+		t.Errorf("appErrorMarkers has %d rows for %d kinds", len(appErrorMarkers), len(allKinds))
 	}
 }
 
-// DecodeAppError is the pre-existing entry point and has many callers. It must
-// keep returning the same text for both kinds, or adding the marker would
-// change every message that flows through the capability path.
-func TestDecodeAppError_StripsTheCapabilityMarker(t *testing.T) {
+// No marker may be a prefix of another, or one kind would decode as another
+// depending on map iteration order.
+func TestAppErrorMarkers_NoMarkerPrefixesAnother(t *testing.T) {
+	for a, ma := range appErrorMarkers {
+		for b, mb := range appErrorMarkers {
+			if a != b && bytes.HasPrefix(ma, mb) {
+				t.Errorf("marker for kind %d starts with the marker for kind %d", a, b)
+			}
+		}
+	}
+}
+
+// EncodeCapabilityError is AppErrorCapability by name.
+func TestEncodeCapabilityError_IsTheCapabilityKind(t *testing.T) {
+	const msg = "statemachine: unknown opcode: 67"
+	if !bytes.Equal(EncodeCapabilityError(msg), EncodeAppError(AppErrorCapability, msg)) {
+		t.Error("EncodeCapabilityError and EncodeAppError(AppErrorCapability) disagree")
+	}
+}
+
+// DecodeAppError keeps returning the bare text, whichever kind wrote it.
+func TestDecodeAppError_StripsTheMarker(t *testing.T) {
 	const msg = "statemachine: mvcc not configured"
-	for _, tc := range []struct {
-		name string
-		data []byte
-	}{
-		{"generic", EncodeAppError(msg)},
-		{"capability", EncodeCapabilityError(msg)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := DecodeAppError(tc.data)
-			if !ok {
-				t.Fatal("did not decode as an application error")
-			}
-			if got != msg {
-				t.Errorf("message = %q, want %q", got, msg)
-			}
-		})
+	for _, kind := range allKinds {
+		got, ok := DecodeAppError(EncodeAppError(kind, msg))
+		if !ok || got != msg {
+			t.Errorf("kind %d: DecodeAppError = %q, %v; want %q, true", kind, got, ok, msg)
+		}
+	}
+}
+
+// A payload carrying the prefix and no marker this code writes is still an
+// error — reading it as a result would report a refusal as success — and it
+// is classified as corrupt, because no writer of this version produced it.
+func TestDecodeAppErrorKind_UnmarkedPayloadIsCorrupt(t *testing.T) {
+	data := append(append([]byte{}, appErrorPrefix...), "legacy refusal"...)
+	msg, kind, ok := DecodeAppErrorKind(data)
+	if !ok || kind != AppErrorCorrupt || msg != "legacy refusal" {
+		t.Fatalf("DecodeAppErrorKind = %q, %d, %v; want \"legacy refusal\", corrupt, true", msg, kind, ok)
 	}
 }
 

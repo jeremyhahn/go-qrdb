@@ -67,6 +67,60 @@ are not reconstructed here — their history is in the git log.
   `UPDATE` or `DELETE` whose statement resolved the table before a concurrent DDL
   committed fails with 1213 / 40001 instead of maintaining the wrong set of indexes, so a
   new index can no longer miss rows written while it was created.
+- **One error classification for every transport.** `pkg/api/errclass` decides what kind of
+  failure a typed error is; REST, gRPC (and through it Unix and MCP) and QUIC each render that
+  class through one total table of their own. The twelve REST and nine gRPC per-family
+  mappers and QUIC's own ladder are deleted, and `TestEveryTransportAgreesOnEveryCondition`
+  drives every row of the table through every transport's real mapping. New exported views:
+  `rest.ServiceErrorStatus`, `quic.ServiceErrorStatus`, `mcp.ServiceErrorCode`, alongside the
+  existing `grpc.ServiceErrorCode`.
+- Rows where the transports disagreed now have one answer everywhere (breaking):
+  - a system user or role's immutability is 403 / `PERMISSION_DENIED` (gRPC said
+    `FAILED_PRECONDITION`), as the identity contract documents;
+  - a credential version that is expired or never existed is 404 / `NOT_FOUND` (REST said
+    410, gRPC said `FAILED_PRECONDITION` for expired), as the credentials contract documents;
+  - removing the last auth factor is 409 / `FAILED_PRECONDITION` (gRPC said
+    `ALREADY_EXISTS`), as the auth-factors contract documents;
+  - a share claim with no verified client certificate is 401 / `UNAUTHENTICATED` on every
+    transport (gRPC said `INVALID_ARGUMENT` from the barrier and tenant-barrier handlers and
+    `INTERNAL` from its mapper, QUIC said `PERMISSION_DENIED`);
+  - `credentials.ErrInvalidStrategy` and `ErrNilBarrier` are internal faults (gRPC said
+    `FAILED_PRECONDITION`).
+- Conditions no transport classified, and every transport therefore answered as an internal
+  fault, now have a class: a duplicate embedding provider is 409 / `ALREADY_EXISTS`; a
+  database barrier operation with no barrier manager is 501 / `UNIMPLEMENTED`; an
+  unresolvable reclaim store (reported over whatever its resolver said), a leader transfer
+  that did not finish and a shard snapshot export that timed out are 503 / `UNAVAILABLE`; a
+  factor migration that left records behind is 409 / `FAILED_PRECONDITION`.
+- The REST status, peers, capabilities, shard start/stop/state, topology and rebalance
+  handlers answer a service error with its class's status rather than a fixed 500, and a
+  malformed `POST /users/lookup` body is a `ReadBodyError` like every other handler's. A
+  build gate now fails a REST handler that pairs a fixed status with an error it received.
+- **A state machine's refusal keeps its kind** (breaking). `service.SMNotConfiguredError`, the
+  one type every non-capability refusal shared, is removed: REST answered it 501 and gRPC and
+  QUIC `INTERNAL`, and neither was true of all of it. The encoded result now carries a
+  `protocol.AppErrorKind`, and each kind has its own type: an absent subsystem (no lessor, no
+  time-series store, create/mod-revision compares on a non-MVCC backend, a transaction on a
+  server with no transaction servicer) is `CapabilityUnsupportedError` (501 /
+  `UNIMPLEMENTED`), whose message names the missing subsystem (`statemachine: lease not
+  configured`, `statemachine: timeseries not configured`) where it said `engine: not open` or
+  `pebbledb: store not open` of a store that was open (`engine.NotOpenError`, whose only
+  producers those refusals were, is removed); an invalid TTL or time-series point is `CommandRejectedError` (400 /
+  `INVALID_ARGUMENT`); a unique-index or lease-ID collision is `CommandConflictError` (409 /
+  `ALREADY_EXISTS`); a closed lessor or time-series store is `SubsystemClosedError` (503 /
+  `UNAVAILABLE`); an undecodable committed command is `CommandCorruptError` (500 /
+  `DATA_LOSS`); any other subsystem failure is `ApplyFaultError` (500 / `INTERNAL`).
+  `protocol.EncodeAppError` takes the kind.
+- A caller's own deadline or cancellation (`context.DeadlineExceeded`, `context.Canceled`) is
+  classified as such on every transport — 504 / `DEADLINE_EXCEEDED` and `CANCELED` — rather than
+  as an internal fault of whatever wrapper carried it.
+- **The Go SDK's REST client types every 501** as `transport.CapabilityUnsupportedError`
+  (inside the `RequestError` that keeps the status), not only the guarded verbs', so the
+  go-qrdb#126 exclusion in the conformance matrix is retired: every transport is held to the
+  typed capability refusal.
+- MCP consults a projected module's own gRPC status only for an error the table does not
+  classify, the same order QUIC uses, so a module status can no longer shadow qrdb's own
+  classification.
 
 ### Fixed
 
@@ -89,6 +143,31 @@ are not reconstructed here — their history is in the git log.
   leaves with no columns. Before, the index kept those stale entries or leaked them. A
   `UNIQUE` index narrowed onto repeating values now fails the `ALTER` and leaves the table
   unchanged.
+- QUIC answers precisely for every family its ladder never listed — identity, tenants,
+  credentials, PINs outside the barrier handlers, auth factors, ceremonies, migrations,
+  backup, collections, embedding, RAG, SQL, databases, quotas and placement — instead of
+  `StatusError`. Because the Go SDK's QUIC transport rebuilds `transport.KeyNotFoundError`
+  from `StatusNotFound`, a missing tenant, credential, factor, officer or backup now surfaces
+  to an SDK-over-QUIC caller as `KeyNotFoundError` where it used to be a generic request
+  error.
+- The relational catalog (tables, views, sequences), typed-entity, paging and SQL-privilege
+  errors are classified on every transport: their request guards answer 400 /
+  `INVALID_ARGUMENT`, missing objects 404, taken names 409 / `ALREADY_EXISTS`, lost
+  compare-and-swaps 409 / `ABORTED`, a table mid-rewrite 503, and catalog corruption 500 /
+  `DATA_LOSS`; `service.SubsystemNotConfiguredError` is 501 / `UNIMPLEMENTED`. All of them
+  answered 500 / `INTERNAL`.
+- gRPC, Unix and MCP classify the backup, embedding, RAG, SQL, database, quota and placement
+  families, `seal`'s already-initialized/not-initialized/already-unsealed/invalid-credential
+  refusals and `authfactors.ErrHardwareUnavailable`, which fell to `INTERNAL`; REST
+  classifies credential re-submission (409), a disabled user record (409), a draining node
+  (503) and an invalid ceremony authenticator type (400), which fell to 500. Authentication
+  and authorization refusals that reach a service mapper answer 401/403/429/503 on every
+  transport, as QUIC's already did.
+- gRPC handlers no longer build a status from an error's own text: 161 inline
+  `status.Error(code, err.Error())` sites render through the one mapper, and a build gate
+  (`test/buildgates/error_mapping_test.go`) fails the next one. The gRPC transport's own
+  decode refusals (metadata, vector ID, TTL, document, signature, timestamp) declare their
+  class.
 
 ## [0.21.3-alpha] - 2026-09-30
 

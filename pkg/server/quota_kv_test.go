@@ -515,7 +515,7 @@ func TestQuotaKVService_DefinitivelyRejectedWriteReleasesReservation(t *testing.
 		"entity type validation": &service.EntityEmptyTypeError{},
 		"encode failure":         &service.EncodeRequestError{Err: errors.New("too long")},
 		"not leader":             &service.NotLeaderError{ShardID: 1, LeaderID: 2},
-		"subsystem absent":       &service.SMNotConfiguredError{Message: "mvcc"},
+		"subsystem absent":       &service.CapabilityUnsupportedError{Message: "mvcc"},
 		// Taken FROM the service rather than written out here. The earlier
 		// version of this case injected kvstore.ErrAtomicWriteUnsupported,
 		// which is a different sentinel from the database-package one the

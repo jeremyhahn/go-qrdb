@@ -182,7 +182,7 @@ func (s *Server) handleLockStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if l == nil {
 		notFound := &lock.LockNotFoundError{Key: key}
-		writeErrorJSON(w, http.StatusNotFound, notFound)
+		writeErrorJSON(w, mapHTTPError(notFound), notFound)
 		return
 	}
 

@@ -15,42 +15,8 @@
 package grpc
 
 import (
-	"errors"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 )
-
-// pinErrorCodes maps PIN sentinel errors to gRPC status codes for the
-// barrier handlers' SO PIN / User PIN gate. Unknown PIN errors fall
-// through to codes.Internal via mapPINError.
-var pinErrorCodes = map[error]codes.Code{
-	pin.ErrPINNotSet:         codes.FailedPrecondition,
-	pin.ErrPINLocked:         codes.ResourceExhausted,
-	pin.ErrPINInvalid:        codes.Unauthenticated,
-	pin.ErrSOPINRequired:     codes.Unauthenticated,
-	pin.ErrPINTooShort:       codes.InvalidArgument,
-	pin.ErrPINAlreadySet:     codes.AlreadyExists,
-	pin.ErrInvalidCurrentPIN: codes.Unauthenticated,
-	pin.ErrStateCorrupted:    codes.DataLoss,
-	pin.ErrStrategyNotSet:    codes.FailedPrecondition,
-}
-
-// mapPINError converts a PIN error from pin.PINBackend into a gRPC status
-// error using pinErrorCodes. Unknown errors map to codes.Internal.
-func mapPINError(err error) error {
-	if err == nil {
-		return nil
-	}
-	for sentinel, code := range pinErrorCodes {
-		if errors.Is(err, sentinel) {
-			return status.Error(code, err.Error())
-		}
-	}
-	return status.Error(codes.Internal, err.Error())
-}
 
 // applyBarrierInitializePINs forwards SO PIN / User PIN supplied on the
 // initialize request to the configured pin.PINBackend. When no backend

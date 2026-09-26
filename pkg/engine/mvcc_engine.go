@@ -554,23 +554,14 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Application-error helpers
-//
 // A Raft state machine must never return a Go error from Update() for an
 // outcome that is a deterministic consequence of valid client input (e.g. a
 // unique-index violation, an invalid lease TTL, or an operation against a
 // subsystem not configured on this SM): doing so halts lastApplied and stalls
-// the whole group. Such outcomes are encoded into sm.Result.Data via
-// protocol.EncodeAppError and surfaced to the client by the service layer
-// (service.checkResultError). Only genuine non-deterministic faults (decode of
-// a committed entry, storage IO) are returned as Go errors.
-// ---------------------------------------------------------------------------
-
-// appErrResult builds a non-fatal application-error result payload.
-func appErrResult(msg string) sm.Result {
-	return sm.Result{Data: protocol.EncodeAppError(msg)}
-}
+// the whole group. Such outcomes are encoded into sm.Result.Data with their
+// KIND (protocol.AppErrorKind) — statemachine.CapabilityResult for an absent
+// subsystem, statemachine.RefusalResult for a subsystem's own refusal — and
+// surfaced to the client as a typed error by service.checkResultError.
 
 // decodedOpSupported reports whether executeDecodedOpWithNotify can execute
 // op. It is the single definition of that set, so the pre-flight check below
@@ -615,7 +606,7 @@ func validateDecodedOps(ops []protocol.DecodedOp) error {
 func asAppErrResult(err error) (sm.Result, bool, error) {
 	var uce *UniqueConstraintError
 	if errors.As(err, &uce) {
-		return appErrResult(uce.Error()), true, nil
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
 	}
 	return sm.Result{}, false, err
 }
@@ -1301,7 +1292,7 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 	if lr == nil {
 		// Lease subsystem not configured on this SM: surface as a non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	info, err := lr.Grant(ttl)
@@ -1309,7 +1300,7 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 		// Invalid TTL (and similar input-shaped grant failures) are
 		// deterministic application errors, not corruption: surface via the
 		// result payload rather than stalling consensus.
-		return appErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
@@ -1327,7 +1318,7 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 	}
 
 	if lr == nil {
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	keys, err := lr.Revoke(leaseID)
@@ -1381,7 +1372,7 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 	}
 
 	if lr == nil {
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	_, err = lr.KeepAlive(leaseID)
@@ -1539,7 +1530,7 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Bat
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1559,7 +1550,7 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storag
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWriteBatch(payload)
@@ -1589,7 +1580,7 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storag
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1615,7 +1606,7 @@ func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ stor
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSDeleteSeries(payload)
@@ -1646,7 +1637,7 @@ func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, _ stor
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSSetRetention(payload)

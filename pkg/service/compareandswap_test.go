@@ -148,7 +148,7 @@ func TestServices_CompareAndSwap(t *testing.T) {
 						// a swap that never happened as merely "not swapped".
 						return sm.Result{
 							Value: protocol.ResultSwapped,
-							Data:  protocol.EncodeAppError("subsystem not configured"),
+							Data:  protocol.EncodeCapabilityError("subsystem not configured"),
 						}, nil
 					},
 				}
@@ -157,9 +157,9 @@ func TestServices_CompareAndSwap(t *testing.T) {
 				if err == nil {
 					t.Fatal("an encoded application error was swallowed")
 				}
-				var notConfigured *SMNotConfiguredError
+				var notConfigured *CapabilityUnsupportedError
 				if !stderrors.As(err, &notConfigured) {
-					t.Fatalf("error is %T (%v), want *SMNotConfiguredError", err, err)
+					t.Fatalf("error is %T (%v), want *CapabilityUnsupportedError", err, err)
 				}
 				if swapped {
 					t.Error("an application error reported a completed swap")

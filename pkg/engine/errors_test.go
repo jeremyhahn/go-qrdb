@@ -19,29 +19,6 @@ import (
 	"testing"
 )
 
-func TestNotOpenError_Error(t *testing.T) {
-	err := &NotOpenError{}
-	if got := err.Error(); got != "engine: not open" {
-		t.Errorf("Error() = %q, want %q", got, "engine: not open")
-	}
-}
-
-func TestNotOpenError_ErrorsAs(t *testing.T) {
-	var target *NotOpenError
-	err := error(&NotOpenError{})
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *NotOpenError")
-	}
-}
-
-func TestNotOpenError_ErrorsIs(t *testing.T) {
-	err := error(&NotOpenError{})
-	var otherErr *UnsupportedOperationError
-	if errors.As(err, &otherErr) {
-		t.Error("errors.As should not match *UnsupportedOperationError for *NotOpenError")
-	}
-}
-
 func TestUnsupportedOperationError_Error(t *testing.T) {
 	err := &UnsupportedOperationError{Op: 0xab}
 	if got := err.Error(); got != "engine: unsupported operation: 0xab" {
@@ -69,9 +46,9 @@ func TestUnsupportedOperationError_ErrorsAs(t *testing.T) {
 
 func TestUnsupportedOperationError_ErrorsIs(t *testing.T) {
 	err := error(&UnsupportedOperationError{Op: 0x42})
-	var otherErr *NotOpenError
+	var otherErr *InvalidQueryError
 	if errors.As(err, &otherErr) {
-		t.Error("errors.As should not match *NotOpenError for *UnsupportedOperationError")
+		t.Error("errors.As should not match *InvalidQueryError for *UnsupportedOperationError")
 	}
 }
 

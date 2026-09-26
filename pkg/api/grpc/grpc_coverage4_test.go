@@ -951,7 +951,7 @@ func TestBarrier_RootToken_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMapPINError_Nil(t *testing.T) {
-	if mapPINError(nil) != nil {
+	if mapServiceError(nil) != nil {
 		t.Fatal("expected nil for nil input")
 	}
 }
@@ -973,13 +973,13 @@ func TestMapPINError_AllSentinels(t *testing.T) {
 		{errors.New("unknown PIN error"), codes.Internal},
 	}
 	for _, tc := range tests {
-		got := mapPINError(tc.err)
+		got := mapServiceError(tc.err)
 		st, ok := status.FromError(got)
 		if !ok {
-			t.Fatalf("mapPINError(%v) not a gRPC status", tc.err)
+			t.Fatalf("mapServiceError(%v) not a gRPC status", tc.err)
 		}
 		if st.Code() != tc.want {
-			t.Errorf("mapPINError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
+			t.Errorf("mapServiceError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
 		}
 	}
 }

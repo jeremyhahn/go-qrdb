@@ -26,7 +26,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -159,7 +158,7 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		Permissions: perms,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -205,7 +204,7 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.roleSvc.ListRoles(ctx, listReq)
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -268,7 +267,7 @@ func (s *Server) handleGetRole(w http.ResponseWriter, r *http.Request, id string
 
 	rl, err := s.roleSvc.GetRole(ctx, id)
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -294,7 +293,7 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id str
 		Permissions: perms,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -307,7 +306,7 @@ func (s *Server) handleDeleteRole(w http.ResponseWriter, r *http.Request, id str
 	defer cancel()
 
 	if err := s.roleSvc.DeleteRole(ctx, id); err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -337,14 +336,14 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 
 	// Validate that the role exists.
 	if _, err := s.roleSvc.GetRole(ctx, req.RoleID); err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	// Get the user and add the role.
 	u, err := s.userSvc.GetUser(ctx, req.UserID)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -362,7 +361,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		RoleIDs: roleIDs,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -393,7 +392,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 	// Get the user and remove the role.
 	u, err := s.userSvc.GetUser(ctx, req.UserID)
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -409,7 +408,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 		RoleIDs: roleIDs,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapUserError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -452,7 +451,7 @@ func (s *Server) handleGetRoleByName(w http.ResponseWriter, r *http.Request) {
 
 	rl, err := s.roleSvc.GetRoleByName(ctx, q.Get("tenant_id"), name)
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -473,7 +472,7 @@ func (s *Server) handleResolvePermissions(w http.ResponseWriter, r *http.Request
 
 	perms, err := s.roleSvc.ResolvePermissions(ctx, req.RoleIDs)
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -508,7 +507,7 @@ func (s *Server) handleReconcileRoles(w http.ResponseWriter, r *http.Request) {
 
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
 	if err != nil {
-		writeErrorJSON(w, mapRoleError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -584,58 +583,4 @@ func stringsToPermissions(ss []string) []permission.Permission {
 		perms[i] = permission.Permission(s)
 	}
 	return perms
-}
-
-// mapRoleError maps role domain errors to the appropriate HTTP status code.
-func mapRoleError(err error) int {
-	var ve *role.ValidationError
-	var rnf *role.RoleNotFoundError
-	var rne *role.RoleNameExistsError
-	var rie *role.RoleIDExistsError
-	var rrn *role.ReservedRoleNameError
-	var sri *role.SystemRoleImmutableError
-	var se *role.StoreError
-	var ip *role.InvalidPermissionError
-	var xt *tenant.CrossTenantDeniedError
-
-	switch {
-	case errors.As(err, &xt):
-		// A normal tenant caller supplied a target tenant other than its own.
-		// The IAM routing layer refuses to act on a client-supplied tenant —
-		// fail closed with 403, matching the tenant-isolation posture.
-		return http.StatusForbidden
-	case errors.Is(err, tenant.ErrTenantSealed):
-		// A barrier-isolated tenant's IAM store resolved to a SEALED barrier.
-		// The StoreResolver fails closed rather than leaking the operation
-		// through the shared system store — surface 503, matching the
-		// BarrierSealedError data-plane mapping.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &ve):
-		return http.StatusBadRequest
-	case errors.As(err, &rnf):
-		return http.StatusNotFound
-	case errors.As(err, &rrn):
-		// A create under a canonical system role name that is not the
-		// canonical role itself. 400, NOT 409: the name is reserved whether or
-		// not anything holds it, so this is a malformed request rather than a
-		// collision — and conflating it with RoleNameExistsError would tell
-		// the caller to pick another name when the real remedy is to stop
-		// trying to mint a built-in.
-		return http.StatusBadRequest
-	case errors.As(err, &rne):
-		return http.StatusConflict
-	case errors.As(err, &rie):
-		// A caller-supplied role ID that is already in use — including by
-		// another tenant, which the identity-index claim refuses. Same 409 as
-		// a name clash; the error deliberately does not say where it lives.
-		return http.StatusConflict
-	case errors.As(err, &sri):
-		return http.StatusForbidden
-	case errors.As(err, &ip):
-		return http.StatusBadRequest
-	case errors.As(err, &se):
-		return http.StatusInternalServerError
-	default:
-		return http.StatusInternalServerError
-	}
 }

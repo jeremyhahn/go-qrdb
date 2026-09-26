@@ -172,7 +172,7 @@ func fakePEMCert() string {
 }
 
 // ---------------------------------------------------------------------------
-// mapBarrierCeremonyHTTPError — exhaustive table test
+// mapHTTPError — exhaustive table test
 // ---------------------------------------------------------------------------
 
 func TestMapBarrierCeremonyHTTPError(t *testing.T) {
@@ -202,9 +202,9 @@ func TestMapBarrierCeremonyHTTPError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapBarrierCeremonyHTTPError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.wantCode {
-				t.Fatalf("mapBarrierCeremonyHTTPError(%v) = %d, want %d", tc.err, got, tc.wantCode)
+				t.Fatalf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.wantCode)
 			}
 		})
 	}

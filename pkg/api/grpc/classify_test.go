@@ -21,19 +21,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
-// classifierFixtures is one representative error per family, and it is the
-// input to both tests below.
-//
-// It is deliberately not exhaustive — the family mappers have their own tests
-// for that — but it must contain at least one error from EVERY classifier in
-// serviceErrorClassifiers, because the disagreement test is only as good as
-// the errors it feeds in.
+// classifierFixtures is one representative error per family. It is
+// deliberately not exhaustive: every row of the classification table is fed
+// through every transport by the parity test in pkg/api/errclass.
 var classifierFixtures = []struct {
 	name string
 	err  error
@@ -53,12 +50,9 @@ var classifierFixtures = []struct {
 	{"nothing typed it", errors.New("a bare error"), codes.Internal},
 }
 
-// TestServiceErrorCode_ClassifiesEveryFamily asserts the chained classifier
-// reaches errors no single family mapper knows about.
-//
-// This is the property MCP depends on: its tool-handler middleware is
-// family-agnostic by design, so it asks ServiceErrorCode and has to get the
-// answer a per-family gRPC service would have given.
+// TestServiceErrorCode_ClassifiesEveryFamily asserts one mapping answers for
+// every family. MCP's tool-handler middleware is family-agnostic by design, so
+// it depends on exactly this.
 func TestServiceErrorCode_ClassifiesEveryFamily(t *testing.T) {
 	for _, tc := range classifierFixtures {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,59 +69,59 @@ func TestServiceErrorCode_NilIsOK(t *testing.T) {
 	}
 }
 
-// TestServiceErrorCode_AgreesWithTheFamilyMapper pins that consulting every
-// classifier does not change the answer a gRPC service gets from its own.
-//
-// A divergence here is the thing that would make MCP and gRPC report one
-// condition as two, which is precisely what go-qrdb#438 chose this design to
-// avoid.
-func TestServiceErrorCode_AgreesWithTheFamilyMapper(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		err    error
-		mapper func(error) error
-	}{
-		{"data plane", &service.KeyNotFoundError{Key: "k"}, mapServiceError},
-		{"data plane", &service.CapabilityUnsupportedError{Message: "x"}, mapServiceError},
-		{"identity", &user.UserNotFoundError{ID: 1}, mapAuthServiceError},
-		{"identity", &user.UsernameExistsError{}, mapAuthServiceError},
-		{"identity", &user.UserIDExistsError{}, mapAuthServiceError},
-		{"identity", &role.RoleNotFoundError{ID: "r"}, mapAuthServiceError},
-	} {
-		t.Run(tc.name+": "+tc.err.Error(), func(t *testing.T) {
-			want := status.Code(tc.mapper(tc.err))
-			if got := ServiceErrorCode(tc.err); got != want {
-				t.Errorf("chained classifier said %s, the family mapper said %s", got, want)
+// TestMapServiceError_CarriesServiceErrorCode pins that the status error every
+// gRPC service returns carries exactly the code ServiceErrorCode reports — the
+// code MCP renders — and the error's own message.
+func TestMapServiceError_CarriesServiceErrorCode(t *testing.T) {
+	for _, tc := range classifierFixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			st, ok := status.FromError(mapServiceError(tc.err))
+			if !ok {
+				t.Fatalf("mapServiceError(%v) is not a gRPC status error", tc.err)
+			}
+			if st.Code() != ServiceErrorCode(tc.err) {
+				t.Errorf("status code %s, ServiceErrorCode %s", st.Code(), ServiceErrorCode(tc.err))
+			}
+			if st.Message() != tc.err.Error() {
+				t.Errorf("status message %q, want %q", st.Message(), tc.err.Error())
 			}
 		})
 	}
 }
 
-// TestServiceErrorCode_NoFamilyDisagrees is the test ServiceErrorCode's doc
-// comment names as the guard on its ordering.
-//
-// The chain takes the FIRST classifier that answers something other than
-// Internal, so the order only matters for an error two families both classify
-// — and then only if they classify it DIFFERENTLY. No fixture does today. If
-// one ever does, the ordering stops being a formality and this is where that
-// surfaces, rather than in a transport reporting a condition its sibling
-// reports another way.
-func TestServiceErrorCode_NoFamilyDisagrees(t *testing.T) {
-	for _, tc := range classifierFixtures {
-		t.Run(tc.name, func(t *testing.T) {
-			var claimants []codes.Code
-			for _, classify := range serviceErrorClassifiers {
-				if code := status.Code(classify(tc.err)); code != codes.Internal {
-					claimants = append(claimants, code)
-				}
-			}
-			for _, c := range claimants {
-				if c != claimants[0] {
-					t.Fatalf("two family classifiers disagree about %v: %s and %s. The "+
-						"chain's order has become load-bearing; decide which family owns "+
-						"this error rather than letting position decide", tc.err, claimants[0], c)
-				}
-			}
-		})
+func TestMapServiceError_NilIsNil(t *testing.T) {
+	if err := mapServiceError(nil); err != nil {
+		t.Errorf("mapServiceError(nil) = %v, want nil", err)
+	}
+}
+
+// TestGRPCCodeByClass_IsTotal fails for a class with no row. A missing row
+// reads as codes.OK, the zero value — a failure reported as a success.
+func TestGRPCCodeByClass_IsTotal(t *testing.T) {
+	for _, c := range errclass.All() {
+		if _, ok := grpcCodeByClass[c]; !ok {
+			t.Errorf("class %s has no gRPC code", c)
+		}
+	}
+	if len(grpcCodeByClass) != len(errclass.All()) {
+		t.Errorf("grpcCodeByClass has %d rows for %d classes", len(grpcCodeByClass), len(errclass.All()))
+	}
+}
+
+// TestLocalErrorsDeclareTheirClass drives this package's own refusals through
+// the real mapping: they live here, so the table in pkg/api/errclass cannot
+// list them, and each one's class is declared beside grpcCodeByClass instead.
+func TestLocalErrorsDeclareTheirClass(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want codes.Code
+	}{
+		{&ServiceNotConfiguredError{Service: "backup"}, codes.Unimplemented},
+		{&CeremonyCANotConfiguredError{}, codes.Unimplemented},
+		{&ClientCertRequiredError{}, codes.Unauthenticated},
+	} {
+		if got := ServiceErrorCode(tc.err); got != tc.want {
+			t.Errorf("ServiceErrorCode(%T) = %s, want %s", tc.err, got, tc.want)
+		}
 	}
 }

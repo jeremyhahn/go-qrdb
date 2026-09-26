@@ -47,7 +47,7 @@ func TestHandleBarrierEnableEncryption_MCP_MigratorRefusalIsUnimplemented(t *tes
 	if err == nil {
 		t.Fatal("expected the migrator's refusal")
 	}
-	if got := classifyToolError(err); got != wire.CodeUnimplemented {
+	if got := ServiceErrorCode(err); got != wire.CodeUnimplemented {
 		t.Fatalf("code = %v, want CodeUnimplemented", got)
 	}
 }
@@ -64,7 +64,7 @@ func TestHandleBarrierEnableEncryption_MCP_DataPlaneRecyclingIsUnavailable(t *te
 	if err == nil {
 		t.Fatal("expected the migrator's error")
 	}
-	if got := classifyToolError(err); got != wire.CodeUnavailable {
+	if got := ServiceErrorCode(err); got != wire.CodeUnavailable {
 		t.Fatalf("code = %v, want CodeUnavailable", got)
 	}
 }

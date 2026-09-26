@@ -301,9 +301,9 @@ func TestHandleKVCompareAndSwap_UnmarshalError(t *testing.T) {
 // indistinguishable over QUIC from a server fault, so a client could not
 // degrade gracefully the way its gRPC twin could against the identical
 // condition — go-qrdb#141 had reached gRPC and REST but never here. The
-// sibling service.SMNotConfiguredError deliberately does NOT map this way: it
-// also covers refusals decided on the request's merits, which are client
-// errors and must not be reported as "this node cannot do that".
+// refusals decided on the request's merits have their own types since
+// go-qrdb#557 (service.CommandRejectedError, CommandConflictError) and must
+// not be reported as "this node cannot do that"; the second half pins that.
 func TestMapServiceError_CapabilityRefusalIsUnimplemented(t *testing.T) {
 	status, payload := mapServiceError(&service.CapabilityUnsupportedError{
 		Message: "statemachine: unknown opcode: 66",
@@ -316,11 +316,13 @@ func TestMapServiceError_CapabilityRefusalIsUnimplemented(t *testing.T) {
 			"WHAT is missing is little better than an untyped one", payload)
 	}
 
-	// The sibling stays on the generic error status.
-	status, _ = mapServiceError(&service.SMNotConfiguredError{Message: "lease: invalid ttl"})
-	if status != wire.StatusError {
-		t.Errorf("SMNotConfiguredError status = %d, want StatusError (%d); it covers refusals "+
-			"decided on the REQUEST's merits, which are not capability refusals",
-			status, wire.StatusError)
+	// A refusal decided on the REQUEST's merits is NOT a capability refusal:
+	// the caller's input is wrong, and since go-qrdb#557 it has a type of its
+	// own that says so.
+	status, _ = mapServiceError(&service.CommandRejectedError{Message: "lease: invalid ttl"})
+	if status != wire.StatusInvalidArgument {
+		t.Errorf("CommandRejectedError status = %d, want StatusInvalidArgument (%d); it is a "+
+			"refusal decided on the REQUEST's merits, not a capability refusal",
+			status, wire.StatusInvalidArgument)
 	}
 }

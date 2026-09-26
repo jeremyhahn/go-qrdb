@@ -187,7 +187,7 @@ func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Re
 			// silently dropping the write — or returning a Go error, which
 			// would stall consensus.
 			decErr := &CommandDecodeError{KVErr: err, ExtErr: extErr}
-			results[i] = sm.Result{Data: protocol.EncodeAppError(decErr.Error())}
+			results[i] = sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorCorrupt, decErr.Error())}
 			continue
 		}
 
@@ -568,7 +568,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	for _, dc := range txn.Compares {
 		if service.CompareTarget(dc.Target) == service.CompareCreateRevision ||
 			service.CompareTarget(dc.Target) == service.CompareModRevision {
-			return appErrResult("transaction: create_revision/mod_revision compares require an " +
+			return statemachine.CapabilityResult("transaction: create_revision/mod_revision compares require an " +
 				"MVCC state machine; this node runs a non-MVCC (file/objstore) backend. " +
 				"Compare on value or version instead."), nil
 		}

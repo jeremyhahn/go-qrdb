@@ -16,15 +16,11 @@ package rest
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -121,7 +117,7 @@ func (s *Server) handleAuthFactorEnroll(w http.ResponseWriter, r *http.Request) 
 
 	enrollment, err := s.authFactorSvc.EnrollFactor(r.Context(), factor, req.UserID, params)
 	if err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -147,7 +143,7 @@ func (s *Server) handleAuthFactorChallenge(w http.ResponseWriter, r *http.Reques
 
 	challenge, err := s.authFactorSvc.ChallengeFactor(r.Context(), enrollmentID)
 	if err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -194,7 +190,7 @@ func (s *Server) handleAuthFactorVerify(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.authFactorSvc.VerifyFactor(r.Context(), "", req.ChallengeID, resp); err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -217,7 +213,7 @@ func (s *Server) handleAuthFactorList(w http.ResponseWriter, r *http.Request) {
 
 	enrollments, err := s.authFactorSvc.ListFactors(r.Context(), subject)
 	if err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -249,7 +245,7 @@ func (s *Server) handleAuthFactorRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.authFactorSvc.RevokeFactor(r.Context(), id); err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -300,53 +296,6 @@ func enrollmentToEntry(e *authfactors.Enrollment) *enrollmentEntry {
 		entry.RevokedAt = e.RevokedAt.Format(time.RFC3339)
 	}
 	return entry
-}
-
-// mapAuthFactorError maps auth factor errors to HTTP status codes.
-func mapAuthFactorError(err error) int {
-	if err == nil {
-		return http.StatusOK
-	}
-	var (
-		enrollmentNotFound  *authfactors.EnrollmentNotFoundError
-		enrollmentRevoked   *authfactors.EnrollmentRevokedError
-		enrollmentInvalid   *authfactors.EnrollmentInvalidError
-		challengeExpired    *authfactors.ChallengeExpiredError
-		verificationFailed  *authfactors.VerificationFailedError
-		factorNotFound      *authfactors.FactorNotFoundError
-		hardwareUnavailable *authfactors.HardwareUnavailableError
-		tenantMismatch      *service.AuthFactorTenantMismatchError
-	)
-	switch {
-	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
-		return http.StatusGone
-	case errors.As(err, &enrollmentInvalid), errors.As(err, &tenantMismatch):
-		return http.StatusBadRequest
-	case errors.As(err, &verificationFailed):
-		return http.StatusUnauthorized
-	case errors.As(err, &hardwareUnavailable), errors.Is(err, authfactors.ErrHardwareUnavailable):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, authfactors.ErrFactorDisabled):
-		return http.StatusNotImplemented
-	case errors.Is(err, tenant.ErrTenantSealed), errors.Is(err, seal.ErrSealed):
-		// A barrier-isolated tenant's routed store resolved to a SEALED
-		// barrier -- the same condition every other tenant-routed surface
-		// (IAM, data-plane) maps to 503, matching pkg/api/rest/handlers.go
-		// and handlers_users.go/handlers_roles.go. AuthFactorListReadError
-		// wraps this unchanged, so errors.Is reaches it there too: a caller
-		// retries after the tenant's barrier is unsealed rather than being
-		// told the server itself is broken. seal.ErrSealed covers the
-		// narrower race where the barrier seals AFTER Resolve already
-		// returned a store but BEFORE this call's own Get/Put ran against it
-		// -- the live per-call seal check tenantSharedKVStore performs, not
-		// a cached decision -- which surfaces that sentinel unwrapped rather
-		// than tenant.ErrTenantSealed.
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
-	}
 }
 
 // handleAuthFactorByPath dispatches auth factor requests that carry a path

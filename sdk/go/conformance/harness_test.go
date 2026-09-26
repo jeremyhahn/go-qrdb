@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -700,65 +699,22 @@ func grpcStatusOf(err error) (*status.Status, bool) {
 	return nil, false
 }
 
-// assertCapabilityRefusal requires that err is specifically a refusal for lack
-// of the capability, and not merely some error.
-//
-// `err != nil` is not good enough here, and the reason is sharp: every call in
-// this suite carries a bounded context, so a cell whose shard WEDGED — the
-// exact go-qrdb#129 regression these cells exist to pin — returns
-// DeadlineExceeded. A test that accepted any non-nil error would score that as
-// "refused as required" and go green on the defect it was written to catch.
-// The same goes for an authorization failure, a lost connection, or a
-// not-leader error: all are non-nil, none is a refusal.
-//
-// So the wrong classes are rejected by type or status code, and the refusal
-// itself must carry the state machine's own account of what is missing. That
-// last check is a string match, which is worth being honest about: this
-// refusal has no distinct Go type and no distinct gRPC code today. It travels
-// as an application error encoded into sm.Result.Data, surfaces embedded as a
-// generic RequestError, and maps to codes.Internal over gRPC — a capability
-// refusal presented as an internal server fault, which a client cannot
-// distinguish from a real one. Matching the message is therefore matching the
-// only contract that currently exists; go-qrdb#141 tracks giving it a typed
-// one, and this helper is where that would be tightened.
 // classifyRefusal reports why err is NOT a capability refusal, or nil when it
 // is one. Split out from the assertion so the classification itself is
 // directly testable — an assertion helper that only ever calls t.Errorf cannot
 // be shown to reject anything, which is the same shape of gap it exists to
 // close.
+//
+// It holds EVERY transport to the typed refusal. REST used to be excused on
+// /tx (the go-qrdb#126 named exclusion): the server answered 501 both for an
+// absent capability and for a catch-all "refused on its merits" type, so a
+// REST client could not promote a 501 to transport.CapabilityUnsupportedError
+// without telling a caller that passed a bad TTL "this node cannot do leases".
+// go-qrdb#557 gave the merits refusals types of their own (400, 409), leaving
+// 501 meaning the capability refusal alone, and the REST client now types
+// every 501 — so the exclusion is retired rather than kept as a dormant
+// allowance.
 func classifyRefusal(err error) error {
-	return classifyRefusalWith(err, false)
-}
-
-// classifyRefusalWith is classifyRefusal with the go-qrdb#126 NAMED EXCLUSION
-// applied when untypedStatus501OK is set.
-//
-// REST cannot type this particular refusal today, and the reason is specific
-// rather than an oversight. The REST server maps BOTH
-// service.CapabilityUnsupportedError and its sibling
-// service.SMNotConfiguredError to 501 (pkg/api/rest.mapHTTPError), and that
-// sibling covers refusals decided on the REQUEST's merits — an invalid lease
-// TTL, a unique-index violation. So a REST client that promoted every 501 to
-// transport.CapabilityUnsupportedError would tell a caller "this node cannot
-// do leases" when the caller had simply passed a bad TTL, which is a worse
-// error than no type at all.
-//
-// The guarded verbs escape this because their endpoints are unambiguous: a 501
-// from /kv/put-if-absent, /kv/compare-and-delete or /kv/compare-and-swap can
-// only be the capability refusal, so the REST transport classifies it at the
-// call site — the same per-endpoint idiom REST already uses to type a lease
-// 404. /tx is not unambiguous in that way, and typing it needs either a
-// discriminator on the REST error body or a server-side split of the two
-// error families. Both are wider than go-qrdb#124/#125/#126 and belong with
-// the go-qrdb#169 error-typing sweep, which owns that surface.
-//
-// The exclusion is deliberately NARROW: it is granted per verb, not per
-// transport, so a REST guarded verb that stopped carrying its typed refusal
-// still fails this gate. And it keeps every property that makes the refusal
-// cells worth having — a wedged cell still returns DeadlineExceeded and an
-// authorization failure still returns 401/403, neither of which is 501 — so
-// the go-qrdb#129 regression these cells pin is still caught.
-func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	if err == nil {
 		return errors.New("no error at all; a silent success tells the caller it arbitrated " +
 			"a race that was never arbitrated")
@@ -801,26 +757,13 @@ func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	// transports, so the gate asserts identity rather than prose — which also
 	// means a refusal that changes its wording no longer silently stops being
 	// recognised.
-	message := ""
 	var unsupported *transport.CapabilityUnsupportedError
-	switch {
-	case errors.As(err, &unsupported):
-		message = unsupported.Message
-	case untypedStatus501OK:
-		// The named exclusion. Only a REST 501 qualifies, and it still has to
-		// name what is missing below.
-		var reqErr *transport.RequestError
-		if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotImplemented {
-			return fmt.Errorf("%w is neither a transport.CapabilityUnsupportedError nor the "+
-				"501 this verb is excused to return; only one of those proves this cell "+
-				"lacks the verb rather than having hit an unrelated fault", err)
-		}
-		message = reqErr.Error()
-	default:
+	if !errors.As(err, &unsupported) {
 		return fmt.Errorf("%w is not a transport.CapabilityUnsupportedError; only a typed "+
 			"capability refusal proves this cell lacks the verb rather than having hit an "+
 			"unrelated fault", err)
 	}
+	message := unsupported.Message
 
 	// The message still has to say what is absent. A typed refusal carrying no
 	// account of WHICH capability is missing is not much better than an
@@ -834,18 +777,23 @@ func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	return nil
 }
 
-func assertCapabilityRefusal(t *testing.T, verb string, err error, untypedStatus501OK bool) {
+// assertCapabilityRefusal requires that err is specifically a refusal for lack
+// of the capability, and not merely some error.
+//
+// `err != nil` is not good enough here, and the reason is sharp: every call in
+// this suite carries a bounded context, so a cell whose shard WEDGED — the
+// exact go-qrdb#129 regression these cells exist to pin — returns
+// DeadlineExceeded. A test that accepted any non-nil error would score that as
+// "refused as required" and go green on the defect it was written to catch.
+// The same goes for an authorization failure, a lost connection, or a
+// not-leader error: all are non-nil, none is a refusal. classifyRefusal
+// rejects those, requires transport.CapabilityUnsupportedError on every
+// transport, and requires the refusal to name what is missing.
+func assertCapabilityRefusal(t *testing.T, verb string, err error) {
 	t.Helper()
-	if reason := classifyRefusalWith(err, untypedStatus501OK); reason != nil {
+	if reason := classifyRefusal(err); reason != nil {
 		t.Errorf("%s: %v", verb, reason)
 		return
-	}
-	if untypedStatus501OK {
-		var unsupported *transport.CapabilityUnsupportedError
-		if !errors.As(err, &unsupported) {
-			t.Logf("%s refused as required, UNTYPED under the go-qrdb#126 named exclusion: %v", verb, err)
-			return
-		}
 	}
 	t.Logf("%s refused as required: %v", verb, err)
 }

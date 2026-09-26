@@ -440,7 +440,8 @@ and it migrates ONCE, before it answers anything.
   to read it back off.
 - **A record that cannot be placed is REFUSED**, named in
   `*FactorMigrationRefusedError`, logged, and left exactly where it is. It is
-  never placed in a guessed tenant.
+  never placed in a guessed tenant. A caller that receives the error over a
+  transport sees 409 / `FAILED_PRECONDITION`: the run is not finished.
 - **A refusal is per record and the run completes.** One record must never
   decide the fate of the others, or of every other TENANT: a refused record
   resolves for nobody — the fail-closed outcome — while everything placeable is

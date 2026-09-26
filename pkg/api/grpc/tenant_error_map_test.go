@@ -26,7 +26,7 @@ import (
 )
 
 // This file carries NO build constraint, deliberately: service_tenant.go,
-// where mapTenantError lives, carries none either, and a test narrower than
+// where mapServiceError lives, carries none either, and a test narrower than
 // the code it covers stops covering it under every tag set it excludes. The
 // package's other tenant test file is constrained on six feature tags, which
 // is the right scope for the fixtures it holds and the wrong scope for a
@@ -68,8 +68,8 @@ func TestMapTenantError_TeardownRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := status.Code(mapTenantError(tc.err)); got != tc.want {
-				t.Errorf("mapTenantError(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := status.Code(mapServiceError(tc.err)); got != tc.want {
+				t.Errorf("mapServiceError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

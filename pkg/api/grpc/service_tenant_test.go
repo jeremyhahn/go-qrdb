@@ -623,7 +623,7 @@ func TestGRPC_TenantUpdateQuotas_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantError
+// mapServiceError
 // ---------------------------------------------------------------------------
 
 func TestMapTenantError_SentinelErrors(t *testing.T) {
@@ -651,7 +651,7 @@ func TestMapTenantError_SentinelErrors(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTenantError(tc.err)
+			got := mapServiceError(tc.err)
 			st, ok := status.FromError(got)
 			if !ok {
 				t.Fatalf("expected gRPC status error, got %T", got)

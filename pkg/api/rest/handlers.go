@@ -35,16 +35,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
-	"github.com/jeremyhahn/go-qrdb/pkg/lock"
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/quota"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // apiRequestTimeout bounds every KV, admin, cert, role, and user endpoint so
@@ -187,7 +180,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	info, err := s.adminSvc.Status(ctx)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -211,7 +204,7 @@ func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
 
 	info, err := s.adminSvc.Peers(ctx)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -281,7 +274,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 	caps, err := s.adminSvc.Capabilities(ctx)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -1035,7 +1028,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 func writeProposeFailure(w http.ResponseWriter, err error) {
 	var encodeErr *service.EncodeRequestError
 	if errors.As(err, &encodeErr) {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	// A write that met a closed store is the node going away under the
@@ -1086,397 +1079,6 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 		slog.Error("rest: JSON encode error", "error", encErr)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Error mapping
-// ---------------------------------------------------------------------------
-
-// mapHTTPError maps service-layer errors to the appropriate HTTP status code.
-// Returns 500 Internal Server Error for unrecognized errors.
-func mapHTTPError(err error) int {
-	var knf *service.KeyNotFoundError
-	var rce *service.RevisionCompactedError
-	var rnf *service.RevisionNotFoundError
-	var tc *service.TransactionConflictError
-	var wc *service.WatchCanceledError
-	var lnf *service.LeaseNotFoundError
-	var le *service.LeaseExpiredError
-	var lex *service.LeaseExistsError
-	var be *service.BatchError
-	var inf *service.IndexNotFoundError
-	var ie *service.IndexExistsError
-	var tse *service.TimeSeriesError
-	var ce *service.ConsistencyError
-	var nle *service.NotLeaderError
-	var vnf *service.VectorNotFoundError
-	var nsnf *service.NamespaceNotFoundError
-	var nse *service.NamespaceExistsError
-	var dme *service.DimensionMismatchError
-	var ive *service.InvalidVectorError
-	var iif *service.ImportInvalidFormatError
-	var ivm *service.ImportInvalidValueModeError
-	var imk *service.ImportMissingKeyFieldError
-	var imv *service.ImportMissingValueFieldError
-	var ipe *service.ImportParseError
-	var iae *service.ImportArchiveError
-	var ita *service.ImportTransactionAbortedError
-	var iite *service.ImportInputTooLargeError
-	var iaete *service.ImportArchiveExpandedTooLargeError
-	var itme *service.ImportTooManyEntriesError
-	var itmr *service.ImportTooManyRowsError
-	var ipte *service.ImportProposalTooLargeError
-	var dbae *database.AlreadyExistsError
-	var dbnf *database.NotFoundError
-	var dbine *database.InvalidNameError
-	var dbiene *database.InvalidEngineError
-	var dbibe *database.InvalidBackendError
-	var cae *service.CollectionAlreadyExistsError
-	var cnf *service.CollectionNotFoundError
-	var cen *service.CollectionEmptyNameError
-	var ced *service.CollectionEmptyDatabaseError
-	var cis *service.CollectionInvalidIDStrategyError
-	var cmf *service.CollectionMissingFieldHashError
-	var cdnf *service.CollectionDocumentNotFoundError
-	var cde *service.CollectionDocumentExistsError
-	var cedc *service.CollectionEmptyDocumentError
-	var cidi *service.CollectionInvalidDocumentIDError
-	var cme *service.CollectionMetadataError
-	var lhe *lock.LockHeldError
-	var nlhe *lock.NotLockHolderError
-	var lnfe *lock.LockNotFoundError
-	var ragdnf *service.RAGDocumentNotFoundError
-	var ragclosed *service.RAGServiceClosedError
-	var tnf *TenantNotFoundError
-	var dnf *DatabaseNotFoundError
-	var bse *BarrierSealedError
-	var ibu *IsolationBackendUnavailableError
-	var smnc *service.SMNotConfiguredError
-	var cue *service.CapabilityUnsupportedError
-	var qee *quota.ExceededError
-	var qent *quota.EntitlementError
-	var sqleq *service.SQLEmptyQueryError
-	var sqled *service.SQLEmptyDatabaseError
-	var sqlex *service.SQLExecutionError
-	var itce *tenant.InvalidTenantIDCharError
-	var irt *service.InvalidRaftTopologyError
-	var rdu *service.RaftDistributedUnavailableError
-	var tqee *tenant.QuotaExceededError
-	var infe *placement.InsufficientNodesError
-	var rfe *service.ReplicaFloorError
-	var ndre *service.NotDedicatedRaftDatabaseError
-	var slte *service.ShardLeaderTimeoutError
-	var utoe *service.UnsupportedTransactionOpError
-	var cso *service.CompactSystemOnlyError
-	var tade *database.TenantAccessDeniedError
-	var mbr *service.MVCCBackendRequiredError
-	var rtl *RequestTooLargeError
-	var ptl *PayloadTooLargeError
-	var ktl *KeyTooLargeError
-	var rike *service.RestoreInternalKeyError
-	var rciu *service.RestoreChangeIndexUnavailableError
-	var rnre *service.RestoreNilRequestError
-	var rrie *service.RestoreRevisionInvalidError
-	var rrfe *service.RestoreRevisionFutureError
-	var rsee *service.RestoreScopeEmptyError
-	var rsae *service.RestoreScopeAmbiguousError
-	var reke *service.RestoreEmptyKeyError
-	var rste *service.RestoreScopeTooLargeError
-	var rupe *service.RestoreUnboundedPrefixError
-	var rae *service.RestoreApplyError
-
-	var sni *ServiceNotImplementedError
-	var ere *service.EncodeRequestError
-
-	switch {
-	case errors.As(err, &sni):
-		return http.StatusNotImplemented
-	// A table created by v0.20.0 through v0.21.0 predates the current key
-	// layout and is refused until it is dropped and re-created
-	// (go-qrdb#547): 412, the precondition the operator must restore. Near
-	// the top so no wrapper's arm below claims it as a 500.
-	case service.IsTableLayoutUnsupported(err):
-		return http.StatusPreconditionFailed
-	// A statement that outlived the table resolution it planned against --
-	// the table truncated, or its definition changed, underneath it
-	// (go-qrdb#547): 409, a conflict with the table's current state that
-	// re-issuing the request resolves.
-	case service.IsTableResolutionStale(err):
-		return http.StatusConflict
-	// A closed store is the node going away underneath the request, not a
-	// broken server: 503 says "try another node or try again", which is true,
-	// where 500 says "this request is poison", which is not (go-qrdb#371).
-	//
-	// It sits at the TOP of the table because the condition arrives wrapped —
-	// in a BatchError, a ReadError, a ProposeError, a TimeSeriesError — and
-	// every one of those wrappers has an errors.As arm further down that would
-	// claim it first and answer 500. That is how the first cut of this rule
-	// reached only the write path.
-	//
-	// It is matched with errors.Is, not errors.As: every producer unwraps to
-	// the one sentinel, which is the whole point of the shared identity.
-	case errors.Is(err, storage.ErrStorageClosed):
-		return http.StatusServiceUnavailable
-	// A system-scope encryption migration is rebuilding the data plane; the
-	// service is back once it finishes, so retryable like a closed store.
-	case errors.As(err, new(*service.DataPlaneRecyclingError)):
-		return http.StatusServiceUnavailable
-	// A request the protocol cannot encode was never proposed, so it is a
-	// client error and not an infrastructure one. Reported as 500 it fires
-	// an operational alert and invites a retry of an input that can never
-	// succeed (go-qrdb#52).
-	case errors.As(err, &ere):
-		return http.StatusBadRequest
-	case errors.As(err, &knf):
-		return http.StatusNotFound
-	case errors.As(err, &rce):
-		return http.StatusRequestedRangeNotSatisfiable
-	case errors.As(err, &rnf):
-		return http.StatusNotFound
-	case errors.As(err, &tc):
-		return http.StatusConflict
-	case errors.As(err, &wc):
-		return http.StatusInternalServerError
-	case errors.As(err, &lnf):
-		return http.StatusNotFound
-	case errors.As(err, &le):
-		return http.StatusNotFound
-	case errors.As(err, &lex):
-		return http.StatusConflict
-	case errors.As(err, &be):
-		return http.StatusInternalServerError
-	case errors.As(err, &inf):
-		return http.StatusNotFound
-	case errors.As(err, &ie):
-		return http.StatusConflict
-	case errors.As(err, &tse):
-		return http.StatusInternalServerError
-	case errors.As(err, &ce):
-		return http.StatusPreconditionFailed
-	case errors.As(err, &nle):
-		return http.StatusServiceUnavailable
-	case errors.As(err, &vnf):
-		return http.StatusNotFound
-	case errors.As(err, &nsnf):
-		return http.StatusNotFound
-	case errors.As(err, &nse):
-		return http.StatusConflict
-	case errors.As(err, &dme):
-		return http.StatusBadRequest
-	case errors.As(err, &ive):
-		return http.StatusBadRequest
-	case errors.As(err, &iif):
-		return http.StatusBadRequest
-	case errors.As(err, &ivm):
-		return http.StatusBadRequest
-	case errors.As(err, &imk):
-		return http.StatusBadRequest
-	case errors.As(err, &imv):
-		return http.StatusBadRequest
-	case errors.As(err, &ipe):
-		return http.StatusBadRequest
-	case errors.As(err, &iae):
-		return http.StatusBadRequest
-	case errors.As(err, &ita):
-		return http.StatusConflict
-	case errors.As(err, &iite):
-		return http.StatusRequestEntityTooLarge
-	case errors.As(err, &iaete):
-		return http.StatusRequestEntityTooLarge
-	case errors.As(err, &itme):
-		return http.StatusBadRequest
-	case errors.As(err, &itmr):
-		return http.StatusBadRequest
-	case errors.As(err, &ipte):
-		return http.StatusRequestEntityTooLarge
-	case errors.As(err, &dbae):
-		return http.StatusConflict
-	case errors.As(err, &dbnf):
-		return http.StatusNotFound
-	case errors.As(err, &dbine):
-		return http.StatusBadRequest
-	case errors.As(err, &dbiene):
-		return http.StatusBadRequest
-	case errors.As(err, &dbibe):
-		return http.StatusBadRequest
-	case errors.As(err, &cae):
-		return http.StatusConflict
-	case errors.As(err, &cnf):
-		return http.StatusNotFound
-	case errors.As(err, &cen):
-		return http.StatusBadRequest
-	case errors.As(err, &ced):
-		return http.StatusBadRequest
-	case errors.As(err, &cis):
-		return http.StatusBadRequest
-	case errors.As(err, &cmf):
-		return http.StatusBadRequest
-	case errors.As(err, &cdnf):
-		return http.StatusNotFound
-	// 409, like the collection-already-exists case above and unlike the 400s
-	// around it: the request is well-formed and the caller may retry it
-	// against a different id or delete the document first.
-	case errors.As(err, &cde):
-		return http.StatusConflict
-	case errors.As(err, &cedc):
-		return http.StatusBadRequest
-	case errors.As(err, &cidi):
-		return http.StatusBadRequest
-	case errors.As(err, &cme):
-		return http.StatusInternalServerError
-	case errors.As(err, &lhe):
-		return http.StatusConflict
-	case errors.As(err, &nlhe):
-		return http.StatusForbidden
-	case errors.As(err, &lnfe):
-		return http.StatusNotFound
-	case errors.As(err, &ragdnf):
-		return http.StatusNotFound
-	case errors.As(err, &ragclosed):
-		return http.StatusServiceUnavailable
-	case errors.As(err, &tnf):
-		return http.StatusNotFound
-	case errors.As(err, &dnf):
-		return http.StatusNotFound
-	case errors.As(err, &bse):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, tenant.ErrTenantSealed), errors.Is(err, seal.ErrSealed):
-		// A barrier-isolated tenant's IAM (user/role) store resolved to a
-		// SEALED barrier. The StoreResolver fails closed rather than leaking
-		// the operation through the shared system store — surface 503 so the
-		// caller retries after the tenant's barrier is unsealed, matching the
-		// BarrierSealedError data-plane mapping. tenant.ErrTenantSealed is
-		// what Resolve itself returns when the barrier is ALREADY sealed;
-		// seal.ErrSealed is what the resolved store's own Get/Put return when
-		// the barrier seals AFTER Resolve succeeded but before the store
-		// operation runs — a live check on every call, not a cached
-		// decision (go-qrdb#464 round 6) — and reaches here unwrapped from
-		// tenantSharedKVStore's Encrypt/Decrypt.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &ibu):
-		// Required isolation backend not wired — fail closed as 503 rather than
-		// silently serving the tenant from the shared store.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &qee):
-		// Numeric quota exceeded — surface as 429 Too Many Requests.
-		return http.StatusTooManyRequests
-	case errors.As(err, &qent):
-		// Feature entitlement denied — surface as 403 Forbidden.
-		return http.StatusForbidden
-	case errors.As(err, &rtl), errors.As(err, &ptl), errors.As(err, &ktl):
-		// The body exceeded the endpoint's byte bound. 413, not 400: the
-		// request was well-formed enough to read, and the caller can act on it
-		// by sending less.
-		return http.StatusRequestEntityTooLarge
-	case errors.As(err, &smnc), errors.As(err, &cue):
-		// SM subsystem not configured, or a capability this state machine was
-		// not built with — surface as 501 Not Implemented so clients know the
-		// operation is not supported by this server instance.
-		//
-		// Both types are listed because go-qrdb#141 split them: capability
-		// refusals moved to CapabilityUnsupportedError so gRPC could answer
-		// Unimplemented instead of Internal. Mapping only the old type here
-		// would have quietly demoted every REST capability refusal from 501 to
-		// 500 — reintroducing on REST exactly the healthy-node-as-server-fault
-		// behaviour that split was made to remove.
-		return http.StatusNotImplemented
-	case errors.As(err, &sqleq), errors.As(err, &sqled), errors.As(err, &sqlex):
-		// SQL validation and engine failures are client errors — the
-		// query (or its target database selector) is malformed.
-		return http.StatusBadRequest
-	case errors.As(err, &itce):
-		// Forbidden tenant-scope character (e.g. '/' or '\') in the
-		// x-qrdb-tenant header is a malformed request, not a server fault.
-		return http.StatusBadRequest
-	case errors.As(err, &irt):
-		// Internally incoherent raft topology request (e.g. cluster mode
-		// "none" on a dedicated-raft backend) is a malformed request.
-		return http.StatusBadRequest
-	case errors.As(err, &rdu):
-		// Distributed raft topology requested but the placement subsystem is
-		// not wired on this node — fail closed as 503 rather than silently
-		// collapsing to a single local replica.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &tqee):
-		// Tenant-wide replica-usage reservation lost a concurrency race —
-		// surface as 429 Too Many Requests, same as quota.ExceededError.
-		return http.StatusTooManyRequests
-	case errors.As(err, &infe):
-		// Tenant is within its own quota but the cluster has no free node —
-		// a distinct failure from quota-exceeded; 503 so a retry after
-		// cluster capacity changes can succeed (unlike a 429 retry against
-		// the same tenant quota, which never would).
-		return http.StatusServiceUnavailable
-	case errors.As(err, &rfe):
-		// Requested replica count is out of range (< 1) — malformed request.
-		return http.StatusBadRequest
-	case errors.As(err, &ndre):
-		// Target database has no dedicated-raft placement to scale.
-		return http.StatusBadRequest
-	case errors.As(err, &slte):
-		// The dedicated shard's leader was not stable within the wait bound
-		// (e.g. an in-flight election) — transient; 503 so the caller retries
-		// once the group settles rather than seeing an opaque 500.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &utoe):
-		// A transaction branch (success/failure ops) contained a read
-		// (Get/Range) or other unsupported op type — malformed request.
-		return http.StatusBadRequest
-	case errors.As(err, &cso):
-		// A non-system tenant attempted a store-global MVCC compaction — the
-		// service layer fails closed. 403, matching the ScopeCross authz gate.
-		return http.StatusForbidden
-	case errors.As(err, &tade):
-		// A caller targeted a per-database control operation (seal/unseal/
-		// barrier-status, drop) on a database owned by a different tenant. The
-		// service layer fails closed independently of transport RBAC. 403.
-		return http.StatusForbidden
-	case errors.Is(err, watch.ErrCompacted):
-		// A watch requested a start revision at or below the compacted floor
-		// — the intervening history is gone. Same status family as
-		// service.RevisionCompactedError.
-		return http.StatusRequestedRangeNotSatisfiable
-	case errors.Is(err, watch.ErrStartRevisionUnsupported):
-		// A watch requested a start revision against a store with no change
-		// history attached (a non-MVCC store) — replay is impossible.
-		return http.StatusNotImplemented
-	case errors.As(err, &mbr):
-		// The shard's state machine keeps no MVCC revision history (the
-		// default raft.sm_type is "pebble", not "mvcc") — 501 so the caller
-		// learns the operation is unavailable on this deployment, not merely
-		// that this one call failed.
-		return http.StatusNotImplemented
-	case errors.As(err, &rike):
-		// A restore scope reached the internal key namespace — refused as an
-		// authority the caller does not have, not a malformed request.
-		return http.StatusForbidden
-	case errors.As(err, &rciu):
-		// A prefix-scoped restore needs the durable revision index and this
-		// backend maintains none — same family as MVCCBackendRequiredError.
-		return http.StatusNotImplemented
-	case errors.As(err, &rnre), errors.As(err, &rrie), errors.As(err, &rrfe),
-		errors.As(err, &rsee), errors.As(err, &rsae), errors.As(err, &reke),
-		errors.As(err, &rste), errors.As(err, &rupe):
-		// Request-shape guards: nil/malformed request, invalid or future
-		// revision, ambiguous/empty/too-large/unbounded scope.
-		return http.StatusBadRequest
-	case errors.As(err, &rae):
-		// A write in an already-validated plan failed part way through.
-		return http.StatusInternalServerError
-	default:
-		// Allow build-tagged packages to extend the error mapping.
-		if ragErrorMapperFn != nil {
-			if code, ok := ragErrorMapperFn(err); ok {
-				return code
-			}
-		}
-		return http.StatusInternalServerError
-	}
-}
-
-// ragErrorMapperFn is optionally populated by a build-tagged init() to map
-// RAG-specific typed errors to HTTP status codes without creating a build
-// dependency on qrdb_vector types in this file.
-var ragErrorMapperFn func(err error) (int, bool)
 
 // ---------------------------------------------------------------------------
 // KeyValue JSON response

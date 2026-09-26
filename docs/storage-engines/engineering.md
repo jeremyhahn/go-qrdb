@@ -224,10 +224,10 @@ backend-specific messages. A closed store is reported to an operator as a
 `503`/`Unavailable` — a node going away, not a fault — and is matched in code
 with `sdk.IsStorageClosed`, never by comparing the message.
 
-**The classification is per-condition, not per-verb.** On REST it lives in
-`mapHTTPError`, the one table every endpoint consults, at the top of the switch
-so the wrapper arms below it (`ReadError`, `ProposeError`, `BatchError`) cannot
-claim it first; on gRPC it lives in `mapServiceError` for the same reason. A
+**The classification is per-condition, not per-verb.** It lives in
+`pkg/api/errclass`, the one table every transport renders, among the rows that
+win however deeply the condition is wrapped, so the wrapper rows
+(`ReadError`, `ProposeError`, `BatchError`) cannot claim it first. A
 `GET` meeting a dying node and a `PUT` meeting one are the same fact and get
 the same status. Volume pool composition is visible through
 `VolumePool.BackendCount` and `LocalPaths`.

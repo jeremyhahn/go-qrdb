@@ -172,14 +172,10 @@ func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, ne
 // transports all hand it transport.CapabilityUnsupportedError for the same
 // server-side condition (go-qrdb#141); REST must not be the one that does not.
 //
-// The narrowness is deliberate and is a KNOWN LIMIT: every other REST method
-// still flattens its 501, so this fixes the guarded plane rather than the
-// transport. Widening it belongs with the go-qrdb#169 error-typing sweep,
-// which owns that surface and the tests that currently pin the flattened
-// shape (transport_success_coverage_test.go's RestoreToRevision case).
-//
-// It also classifies 404/405, which is the version-skew half of the same
-// contract — see the switch below.
+// Every other REST method types its 501 the same way, through
+// decodeErrorResponse (go-qrdb#557); what this path adds is the 404/405
+// classification, the version-skew half of the same contract — see the
+// switch below.
 func (t *Transport) guardedPost(ctx context.Context, method, path string, payload, dest any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {

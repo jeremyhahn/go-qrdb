@@ -243,9 +243,12 @@ func TestStandaloneGate_RefusalIsUnimplementedOnEveryClassifier(t *testing.T) {
 	if !strings.Contains(err.Error(), StandaloneModeHint) {
 		t.Fatalf("the hint %q did not survive: %q", StandaloneModeHint, err.Error())
 	}
-	// And a rest-typed refusal would NOT have: this is the regression the
-	// service-layer type closes, pinned so nobody reintroduces the REST type.
-	if got := grpcapi.ServiceErrorCode(&rest.ServiceNotImplementedError{Service: "mvcc", Hint: StandaloneModeHint}); got == codes.Unimplemented {
-		t.Fatal("the shared classifier now recognises the REST type; this test's premise moved — re-read go-qrdb#473 before relaxing it")
+	// The premise #473 closed from the service side is now closed from the
+	// transport side too: since go-qrdb#557 every transport classifies through
+	// pkg/api/errclass, and the REST type declares its own class there, so even
+	// a reintroduced REST-typed refusal would reach a gRPC caller as
+	// Unimplemented rather than as a server fault.
+	if got := grpcapi.ServiceErrorCode(&rest.ServiceNotImplementedError{Service: "mvcc", Hint: StandaloneModeHint}); got != codes.Unimplemented {
+		t.Fatalf("the shared classifier answers %s for the REST refusal type, want Unimplemented", got)
 	}
 }

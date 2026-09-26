@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -115,7 +113,7 @@ func (s *qrdbServiceServer) InsertDocument(ctx context.Context, req *pb.InsertDo
 
 	var doc map[string]interface{}
 	if err := json.Unmarshal([]byte(req.GetDocument()), &doc); err != nil {
-		return nil, status.Error(codes.InvalidArgument, (&DocumentUnmarshalError{Err: err}).Error())
+		return nil, mapServiceError(&DocumentUnmarshalError{Err: err})
 	}
 
 	resp, err := collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
@@ -148,7 +146,7 @@ func (s *qrdbServiceServer) GetDocument(ctx context.Context, req *pb.GetDocument
 
 	docJSON, err := json.Marshal(resp.Document)
 	if err != nil {
-		return nil, status.Error(codes.Internal, (&DocumentMarshalError{Err: err}).Error())
+		return nil, mapServiceError(&DocumentMarshalError{Err: err})
 	}
 
 	return &pb.DocumentResponse{
@@ -166,7 +164,7 @@ func (s *qrdbServiceServer) UpdateDocument(ctx context.Context, req *pb.UpdateDo
 
 	var doc map[string]interface{}
 	if err := json.Unmarshal([]byte(req.GetDocument()), &doc); err != nil {
-		return nil, status.Error(codes.InvalidArgument, (&DocumentUnmarshalError{Err: err}).Error())
+		return nil, mapServiceError(&DocumentUnmarshalError{Err: err})
 	}
 
 	if _, err := collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
@@ -220,7 +218,7 @@ func (s *qrdbServiceServer) ListDocuments(ctx context.Context, req *pb.ListDocum
 	for i, d := range resp.Documents {
 		docJSON, marshalErr := json.Marshal(d.Document)
 		if marshalErr != nil {
-			return nil, status.Error(codes.Internal, (&DocumentMarshalError{Err: marshalErr}).Error())
+			return nil, mapServiceError(&DocumentMarshalError{Err: marshalErr})
 		}
 		pbDocs[i] = &pb.DocumentResponse{
 			Id:       d.ID,

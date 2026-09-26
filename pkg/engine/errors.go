@@ -16,14 +16,6 @@ package engine
 
 import "github.com/jeremyhahn/go-qrdb/pkg/protocol"
 
-// NotOpenError is returned when an engine operation is attempted before
-// the engine has been initialized.
-type NotOpenError struct{}
-
-func (e *NotOpenError) Error() string {
-	return "engine: not open"
-}
-
 // UnsupportedOperationError is returned when an engine receives an opcode
 // it cannot handle.
 type UnsupportedOperationError struct {

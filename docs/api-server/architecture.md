@@ -86,9 +86,11 @@ module whose surface is entirely streaming leaves this hook a no-op.
 **The MCP transport carries a module's tools too**, through `RegisterMCP`, and
 a module typically implements them over the code that serves its gRPC surface —
 so it answers in gRPC's vocabulary there as well. That is why the MCP error
-vocabulary is also one code per gRPC status code, and why the MCP server takes
-a module's gRPC status verbatim instead of running it through a classifier that
-knows only qrdb's own error types.
+vocabulary is also one code per gRPC status code. The MCP server consults the
+shared classification table first and honours a module's gRPC status only for
+an error the table leaves unclassified — the same order the QUIC server uses —
+so the two projections of a module's answer cannot disagree, and a module can
+never shadow qrdb's own classification of one of its errors.
 
 **This projection is what decided the QUIC status vocabulary.** A projected
 method's handler is the module's own generated gRPC code, so it answers with a
@@ -208,12 +210,26 @@ neither owns a verb neither registered. See
   nil `data` field and gives a handler no way to influence either, so the
   spec-correct channel is the only channel.
 - **A third ~80-clause error classifier, in `pkg/api/mcp`.** Rejected. Two such
-  ladders already exist and must agree with nothing forcing them to; a third
-  compounds that. The MCP server instead consults the gRPC transport's
-  per-family classifiers and renders the code they return, so it owns no
-  condition clauses and has nothing to drift. Whether the classification
-  eventually moves to a transport-neutral home is a separate, open question;
-  this keeps that move cheap rather than pre-empting it.
+  ladders already existed and had to agree with nothing forcing them to; a
+  third would have compounded that. The MCP server renders the gRPC code
+  instead, so it owns no condition clauses and has nothing to drift.
+- **One classifier per transport, kept in agreement by tests.** Rejected, and
+  replaced by a transport-neutral table. REST ran twelve per-family status
+  ladders, gRPC nine, QUIC one of its own, and they had drifted: the same
+  error meant different things on different transports, and QUIC had no
+  clause at all for most families. `pkg/api/errclass` now owns what kind of
+  failure every typed error is, as an ordered table of one-line rows; each
+  transport owns only a total map from that class to its own code. This is the
+  shape the authentication classifier (`middleware.ClassifyAuthError`) had
+  already proved, and that classifier stays the owner of the auth failures:
+  the table delegates to it, because its classes also drive control flow a wire
+  class cannot express.
+- **Classes that are exactly gRPC's seventeen codes.** Rejected: HTTP draws
+  distinctions a client acts on that gRPC does not (413 against 429; 410, 412
+  and 422 against 409), and collapsing them would have changed REST answers
+  that were chosen deliberately. A class is a meaning; each transport's
+  projection is a function of the class alone, which is what makes "one error,
+  one meaning" a property of the table.
 - **Stamping a code on every MCP tool error, including the argument refusals.**
   Rejected for now. Those refusals are built from string literals at some four
   hundred call sites, and the only way to code them centrally is to infer a

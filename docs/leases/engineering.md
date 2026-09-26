@@ -91,7 +91,8 @@ the transport boundary, never by string.
 |---|---|---|
 | Lease ID not found (expired, revoked, or never existed) | not-found | yes |
 | Attaching a write to an unknown lease | the write is **refused** | **yes** — a key silently written without its lease would never expire |
-| `ttl <= 0` on grant | invalid-argument | yes |
+| `ttl <= 0` on grant | invalid-argument (`service.CommandRejectedError`, encoded by the state machine as an `AppErrorInvalid` refusal) | yes |
+| Grant, revoke or keep-alive on a state machine built without a lessor | unimplemented (`service.CapabilityUnsupportedError`) | yes |
 | Missing `lease:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
 | Keep-alive against an already-expired lease | not-found; the keys are already gone | **yes** |

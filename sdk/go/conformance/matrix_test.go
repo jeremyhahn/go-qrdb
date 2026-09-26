@@ -16,7 +16,6 @@ package conformance
 
 import (
 	"errors"
-	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -499,16 +498,8 @@ func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
 	refusals := []struct {
 		verb string
 		call func() error
-
-		// untypedOn names the transports on which this verb's refusal is
-		// excused from carrying transport.CapabilityUnsupportedError, and is
-		// empty for every verb that has no excuse. See classifyRefusalWith for
-		// why /tx over REST is the one entry here, and why the exclusion is
-		// granted per VERB rather than per transport: the REST guarded verbs
-		// carry the typed refusal and are still held to it.
-		untypedOn []transportKind
 	}{
-		{verb: "ExecuteTransaction", untypedOn: []transportKind{restTransport}, call: func() error {
+		{verb: "ExecuteTransaction", call: func() error {
 			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
 				Compares:   []transport.Compare{valueEquals("before", "1")},
 				SuccessOps: []transport.Op{put("txn/x", "x")},
@@ -525,7 +516,7 @@ func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
 		// pin — returns DeadlineExceeded on its bounded context and would be
 		// scored as "refused as required", so the gate would go green on the
 		// very defect it was written to catch.
-		assertCapabilityRefusal(t, r.verb, r.call(), slices.Contains(r.untypedOn, c.transport))
+		assertCapabilityRefusal(t, r.verb, r.call())
 	}
 
 	// The load-bearing assertion. A wedged shard fails these because the

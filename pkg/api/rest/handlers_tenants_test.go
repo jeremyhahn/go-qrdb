@@ -909,7 +909,7 @@ func TestHandleTenantByID_MissingID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantError coverage
+// mapHTTPError coverage
 // ---------------------------------------------------------------------------
 
 func TestMapTenantError_AllCodes(t *testing.T) {
@@ -937,9 +937,9 @@ func TestMapTenantError_AllCodes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTenantError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.want {
-				t.Fatalf("mapTenantError(%v) = %d, want %d", tc.err, got, tc.want)
+				t.Fatalf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -1025,9 +1025,9 @@ func TestHandleUpdateTenant_ServiceNil(t *testing.T) {
 }
 
 func TestMapTenantError_HasData(t *testing.T) {
-	got := mapTenantError(tenant.ErrTenantHasData)
+	got := mapHTTPError(tenant.ErrTenantHasData)
 	if got != http.StatusConflict {
-		t.Fatalf("mapTenantError(ErrTenantHasData) = %d, want %d", got, http.StatusConflict)
+		t.Fatalf("mapHTTPError(ErrTenantHasData) = %d, want %d", got, http.StatusConflict)
 	}
 }
 
@@ -1969,7 +1969,7 @@ func TestHandleTenantBarrierSealVote_ServiceError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	// SealVote service errors route through mapTenantError (non-standard errors → 500).
+	// SealVote service errors route through mapHTTPError (non-standard errors → 500).
 	if rec.Code == http.StatusOK {
 		t.Fatalf("expected non-200 status on seal vote service error, got %d", rec.Code)
 	}
@@ -2015,8 +2015,8 @@ func TestMapTenantError_TeardownRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mapTenantError(tc.err); got != tc.want {
-				t.Errorf("mapTenantError(%v) = %d, want %d", tc.err, got, tc.want)
+			if got := mapHTTPError(tc.err); got != tc.want {
+				t.Errorf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}

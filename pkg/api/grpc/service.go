@@ -509,7 +509,7 @@ func (s *qrdbServiceServer) Health(ctx context.Context, _ *emptypb.Empty) (*pb.H
 // Status returns detailed node status information.
 func (s *qrdbServiceServer) Status(ctx context.Context, _ *emptypb.Empty) (*pb.StatusResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	info, err := s.adminSvc.Status(ctx)
 	if err != nil {
@@ -528,7 +528,7 @@ func (s *qrdbServiceServer) Status(ctx context.Context, _ *emptypb.Empty) (*pb.S
 // Peers returns the peer list for all loaded shards.
 func (s *qrdbServiceServer) Peers(ctx context.Context, _ *emptypb.Empty) (*pb.PeersResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	info, err := s.adminSvc.Peers(ctx)
 	if err != nil {
@@ -558,7 +558,7 @@ func (s *qrdbServiceServer) Peers(ctx context.Context, _ *emptypb.Empty) (*pb.Pe
 // AddMember adds a new node to a shard.
 func (s *qrdbServiceServer) AddMember(ctx context.Context, req *pb.AddMemberRequest) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	if err := s.adminSvc.AddMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress()); err != nil {
 		return nil, mapServiceError(err)
@@ -569,7 +569,7 @@ func (s *qrdbServiceServer) AddMember(ctx context.Context, req *pb.AddMemberRequ
 // RemoveMember removes a node from a shard.
 func (s *qrdbServiceServer) RemoveMember(ctx context.Context, req *pb.RemoveMemberRequest) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	if err := s.adminSvc.RemoveMember(ctx, req.GetShardId(), req.GetReplicaId()); err != nil {
 		return nil, mapServiceError(err)
@@ -580,7 +580,7 @@ func (s *qrdbServiceServer) RemoveMember(ctx context.Context, req *pb.RemoveMemb
 // RequestSnapshot triggers a snapshot for the given shard.
 func (s *qrdbServiceServer) RequestSnapshot(ctx context.Context, req *pb.RequestSnapshotMessage) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	if err := s.adminSvc.RequestSnapshot(ctx, req.GetShardId()); err != nil {
 		return nil, mapServiceError(err)
@@ -591,7 +591,7 @@ func (s *qrdbServiceServer) RequestSnapshot(ctx context.Context, req *pb.Request
 // Drain transitions the node into drain mode.
 func (s *qrdbServiceServer) Drain(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	if err := s.adminSvc.Drain(ctx); err != nil {
 		return nil, mapServiceError(err)
@@ -602,7 +602,7 @@ func (s *qrdbServiceServer) Drain(ctx context.Context, _ *emptypb.Empty) (*empty
 // Capabilities returns the compile-time feature set of the node.
 func (s *qrdbServiceServer) Capabilities(ctx context.Context, _ *pb.CapabilitiesRequest) (*pb.CapabilitiesResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	caps, err := s.adminSvc.Capabilities(ctx)
 	if err != nil {
@@ -634,7 +634,7 @@ func (s *qrdbServiceServer) Capabilities(ctx context.Context, _ *pb.Capabilities
 // StartShard initializes and starts a Raft group for the given shard.
 func (s *qrdbServiceServer) StartShard(ctx context.Context, req *pb.StartShardRequest) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	svcReq := &service.StartShardRequest{
 		ShardID:   req.GetShardId(),
@@ -651,7 +651,7 @@ func (s *qrdbServiceServer) StartShard(ctx context.Context, req *pb.StartShardRe
 // StopShard stops the Raft group for the given shard.
 func (s *qrdbServiceServer) StopShard(ctx context.Context, req *pb.StopShardRequest) (*emptypb.Empty, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	if err := s.adminSvc.StopShard(ctx, req.GetShardId()); err != nil {
 		return nil, mapServiceError(err)
@@ -662,7 +662,7 @@ func (s *qrdbServiceServer) StopShard(ctx context.Context, req *pb.StopShardRequ
 // GetShardState returns the Raft state for a shard.
 func (s *qrdbServiceServer) GetShardState(ctx context.Context, req *pb.GetShardStateRequest) (*pb.ShardStateResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	resp, err := s.adminSvc.GetShardState(ctx, req.GetShardId())
 	if err != nil {
@@ -680,7 +680,7 @@ func (s *qrdbServiceServer) GetShardState(ctx context.Context, req *pb.GetShardS
 // GetTopology returns the full cluster topology.
 func (s *qrdbServiceServer) GetTopology(ctx context.Context, _ *emptypb.Empty) (*pb.TopologyResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
 	resp, err := s.adminSvc.GetTopology(ctx)
 	if err != nil {
@@ -1021,7 +1021,7 @@ func (s *qrdbServiceServer) Watch(req *pb.WatchRequest, stream grpc.ServerStream
 	for {
 		select {
 		case <-ctx.Done():
-			return status.Error(codes.Canceled, ctx.Err().Error())
+			return mapServiceError(ctx.Err())
 		case resp, ok := <-w.Events():
 			if !ok {
 				// Channel closed. Check for watcher error.

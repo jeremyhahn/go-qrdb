@@ -99,11 +99,11 @@ func (m *mockAuthFactorService) RevokeFactor(ctx context.Context, enrollmentID s
 }
 
 // ---------------------------------------------------------------------------
-// mapAuthFactorGRPCError
+// mapServiceError
 // ---------------------------------------------------------------------------
 
 func TestMapAuthFactorGRPCError_Nil(t *testing.T) {
-	if got := mapAuthFactorGRPCError(nil); got != nil {
+	if got := mapServiceError(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
@@ -187,7 +187,7 @@ func TestMapAuthFactorGRPCError_AllTypes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapAuthFactorGRPCError(tc.err)
+			got := mapServiceError(tc.err)
 			st, ok := status.FromError(got)
 			if !ok {
 				t.Fatalf("expected gRPC status error, got %T", got)

@@ -842,8 +842,8 @@ func TestTenantBarrier_ShareClaimBegin_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -884,8 +884,8 @@ func TestTenantBarrier_ShareClaimComplete_NoPeerCert(t *testing.T) {
 		t.Fatal("expected error without peer cert")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -958,7 +958,7 @@ func TestTenantBarrier_ShamirSealVote_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantBarrierCeremonyError — covers all sentinel paths.
+// mapServiceError — covers all sentinel paths.
 // ---------------------------------------------------------------------------
 
 func TestMapTenantBarrierCeremonyError_AllBranches(t *testing.T) {
@@ -982,7 +982,7 @@ func TestMapTenantBarrierCeremonyError_AllBranches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTenantBarrierCeremonyError(tc.err)
+			got := mapServiceError(tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Errorf("expected nil, got %v", got)

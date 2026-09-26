@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -37,7 +36,7 @@ import (
 // TenantCreate creates a new tenant via the tenant service.
 func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCreateRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal())}
@@ -47,7 +46,7 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 
 	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()), opts...)
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return tenantToProto(info), nil
@@ -56,7 +55,7 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 // TenantGet retrieves a tenant by ID.
 func (s *qrdbServiceServer) TenantGet(ctx context.Context, req *pb.TenantGetRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsRead); err != nil {
@@ -65,7 +64,7 @@ func (s *qrdbServiceServer) TenantGet(ctx context.Context, req *pb.TenantGetRequ
 
 	info, err := s.tenantSvc.GetTenant(ctx, req.GetId())
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return tenantToProto(info), nil
@@ -75,12 +74,12 @@ func (s *qrdbServiceServer) TenantGet(ctx context.Context, req *pb.TenantGetRequ
 // tenants:list:cross, and for the caller's own tenant only to anyone else.
 func (s *qrdbServiceServer) TenantList(ctx context.Context, _ *emptypb.Empty) (*pb.TenantListResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	tenants, err := s.tenantSvc.ListTenants(ctx)
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 	// Every tenant to a tenants:list:cross holder, the caller's own to anyone
 	// else (authmw.FilterTenantList).
@@ -101,7 +100,7 @@ func (s *qrdbServiceServer) TenantList(ctx context.Context, _ *emptypb.Empty) (*
 // TenantUpdate applies a partial update to an existing tenant.
 func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpdateRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	patch := tenant.TenantPatch{
@@ -115,7 +114,7 @@ func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpda
 
 	info, err := s.tenantSvc.UpdateTenant(ctx, req.GetId(), patch)
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return tenantToProto(info), nil
@@ -124,7 +123,7 @@ func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpda
 // TenantDelete removes a tenant and its metadata.
 func (s *qrdbServiceServer) TenantDelete(ctx context.Context, req *pb.TenantDeleteRequest) (*emptypb.Empty, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsDelete); err != nil {
@@ -132,7 +131,7 @@ func (s *qrdbServiceServer) TenantDelete(ctx context.Context, req *pb.TenantDele
 	}
 
 	if err := s.tenantSvc.DeleteTenant(ctx, req.GetId()); err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &emptypb.Empty{}, nil
@@ -141,7 +140,7 @@ func (s *qrdbServiceServer) TenantDelete(ctx context.Context, req *pb.TenantDele
 // TenantUpdateQuotas sets the resource quotas for an existing tenant.
 func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.TenantUpdateQuotasRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	pbQ := req.GetQuotas()
@@ -174,7 +173,7 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return tenantToProto(info), nil
@@ -183,7 +182,7 @@ func (s *qrdbServiceServer) TenantUpdateQuotas(ctx context.Context, req *pb.Tena
 // TenantUpdateEntitlements sets the feature entitlements for an existing tenant.
 func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *pb.TenantUpdateEntitlementsRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
 	pbE := req.GetEntitlements()
@@ -206,7 +205,7 @@ func (s *qrdbServiceServer) TenantUpdateEntitlements(ctx context.Context, req *p
 
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
 	if err != nil {
-		return nil, mapTenantError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return tenantToProto(info), nil
@@ -282,88 +281,6 @@ func quotaToProto(q *quota.Quotas) *pb.TenantQuotas {
 // Tenant error mapping
 // ---------------------------------------------------------------------------
 
-// mapTenantError converts tenant domain errors to gRPC status errors.
-func mapTenantError(err error) error {
-	var se *tenant.StoreError
-	var be *tenant.BarrierError
-	var ite *tenant.InvalidTenantIDError
-	var itce *tenant.InvalidTenantIDCharError
-	var ise *tenant.InvalidStrategyError
-	var tse *tenant.TenantScopeError
-	var idre *tenant.InvalidDataRootError
-	var dne *tenant.DataRootNotEmptyError
-	var dite *tenant.DataRootIsolationTypeError
-	var tde *tenant.TenantDeletedError
-	var thd *tenant.TenantHasDatabasesError
-	var rte *tenant.ReservedTenantIDError
-	var tdpe *tenant.TenantDataProbeError
-
-	switch {
-	case errors.As(err, &tse):
-		return status.Error(codes.PermissionDenied, err.Error())
-	case errors.Is(err, tenant.ErrEmptyDataRoot):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &idre):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &dite):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &dne):
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, tenant.ErrEmptyTenantID):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrEmptyTenantName):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrEmptyPassphrase):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrEmptyShare):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrNilQuotas):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrNilEntitlements):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &ise):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, tenant.ErrBarrierIsolationUnavailable):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, tenant.ErrBarrierNotEnabled):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, tenant.ErrTenantAlreadyExists):
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.As(err, &tde):
-		// A deleted tenant id is retired permanently: the id is taken, in
-		// exactly the sense ErrTenantAlreadyExists means it is taken.
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.As(err, &thd):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, tenant.ErrTenantHasData):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, tenant.ErrTenantDataUnverifiable), errors.As(err, &tdpe):
-		// The node could not confirm the tenant is empty, so it refused the
-		// isolation change rather than risk orphaning data.
-		return status.Error(codes.Unavailable, err.Error())
-	case errors.Is(err, tenant.ErrTenantNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.As(err, &ite):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &itce):
-		// An id carrying a path separator or control byte cannot name a
-		// tenant. It fell through to Internal before.
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &rte):
-		// A reserved id is not the caller's to name, on create or on delete.
-		// It fell through to Internal before.
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &se):
-		return status.Error(codes.Internal, err.Error())
-	case errors.As(err, &be):
-		return status.Error(codes.Internal, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
-	}
-}
-
 // authorizeTenantTarget re-checks perm against the tenant the REQUEST names
 // (authmw.AuthorizeTenantTarget). The interceptor checked it against the
 // caller's own tenant only, which would let a tenant-local Admin read,
@@ -388,7 +305,7 @@ func (s *qrdbServiceServer) authorizeTenantUpdate(ctx context.Context, tenantID 
 // middleware. With no auth middleware the authorization step admits.
 func (s *qrdbServiceServer) authorizeTenantRequest(tenantID string, decide func(*authmw.AuthMiddleware) error) error {
 	if err := tenant.ValidateTenantIDShape(tenantID); err != nil {
-		return mapTenantError(err)
+		return mapServiceError(err)
 	}
 	if s.authMW == nil {
 		return nil

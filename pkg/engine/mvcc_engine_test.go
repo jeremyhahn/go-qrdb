@@ -1017,8 +1017,9 @@ func TestMVCCEngine_LeaseGrantNoLessor(t *testing.T) {
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload in result with no lessor")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("grant with no lessor: ok=%v kind=%d; want AppErrorCapability — the state "+
+			"machine was built without leases (go-qrdb#557)", ok, kind)
 	}
 }
 
@@ -1938,8 +1939,8 @@ func TestMVCCEngine_Update_TSWriteNoTS(t *testing.T) {
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TS write without TS configured")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("TS write without TS: ok=%v kind=%d; want AppErrorCapability", ok, kind)
 	}
 }
 

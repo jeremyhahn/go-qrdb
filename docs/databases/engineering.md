@@ -191,7 +191,7 @@ Deliberately finer than one grant per verb:
 | etcd enabled on a non-`kv`/non-`raft` database | rejected at configuration time | **yes** |
 | Unseal with a wrong secret | refused; the database stays sealed | **yes** |
 | Operating on a sealed database | refused | **yes** |
-| The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError`; the drop fails and nothing is removed | **yes** |
+| The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError` (503 / `UNAVAILABLE`, whatever the resolver reported); the drop fails and nothing is removed | **yes** |
 | A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and nothing is removed | **yes** |
 | A drop is already in flight for the database | `database.DropInProgressError` | **yes** |
 | Missing any `databases:*` permission | permission denied | **yes** |

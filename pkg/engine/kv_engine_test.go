@@ -1138,9 +1138,13 @@ func TestKVEngine_Update_UndecodableByBothProtocols(t *testing.T) {
 	if results[0].Value == 1 {
 		t.Fatal("undecodable command must not be reported as success (Value:1)")
 	}
-	msg, ok := protocol.DecodeAppError(results[0].Data)
+	msg, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
 	if !ok {
 		t.Fatalf("expected an application-error result, got %+v", results[0])
+	}
+	if kind != protocol.AppErrorCorrupt {
+		t.Errorf("kind = %d, want AppErrorCorrupt: the committed bytes are not what any "+
+			"writer of this version produced (go-qrdb#557)", kind)
 	}
 	if msg == "" {
 		t.Error("expected a non-empty application-error message")

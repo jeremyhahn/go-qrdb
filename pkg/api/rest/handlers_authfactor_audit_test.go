@@ -93,80 +93,80 @@ func (s *stubAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page,
 func (s *stubAuditLogger) Close() error { return nil }
 
 // ---------------------------------------------------------------------------
-// mapAuthFactorError
+// mapHTTPError
 // ---------------------------------------------------------------------------
 
 func TestMapAuthFactorError_NilReturnsOK(t *testing.T) {
-	if code := mapAuthFactorError(nil); code != http.StatusOK {
-		t.Errorf("mapAuthFactorError(nil) = %d, want %d", code, http.StatusOK)
+	if code := mapHTTPError(nil); code != http.StatusOK {
+		t.Errorf("mapHTTPError(nil) = %d, want %d", code, http.StatusOK)
 	}
 }
 
 func TestMapAuthFactorError_EnrollmentNotFound(t *testing.T) {
 	err := &authfactors.EnrollmentNotFoundError{EnrollmentID: "e1"}
-	if code := mapAuthFactorError(err); code != http.StatusNotFound {
+	if code := mapHTTPError(err); code != http.StatusNotFound {
 		t.Errorf("EnrollmentNotFoundError = %d, want 404", code)
 	}
 }
 
 func TestMapAuthFactorError_EnrollmentRevoked(t *testing.T) {
 	err := &authfactors.EnrollmentRevokedError{EnrollmentID: "e1"}
-	if code := mapAuthFactorError(err); code != http.StatusGone {
+	if code := mapHTTPError(err); code != http.StatusGone {
 		t.Errorf("EnrollmentRevokedError = %d, want 410", code)
 	}
 }
 
 func TestMapAuthFactorError_EnrollmentInvalid(t *testing.T) {
 	err := &authfactors.EnrollmentInvalidError{Reason: "bad"}
-	if code := mapAuthFactorError(err); code != http.StatusBadRequest {
+	if code := mapHTTPError(err); code != http.StatusBadRequest {
 		t.Errorf("EnrollmentInvalidError = %d, want 400", code)
 	}
 }
 
 func TestMapAuthFactorError_ChallengeExpired(t *testing.T) {
 	err := &authfactors.ChallengeExpiredError{ChallengeID: "c1"}
-	if code := mapAuthFactorError(err); code != http.StatusGone {
+	if code := mapHTTPError(err); code != http.StatusGone {
 		t.Errorf("ChallengeExpiredError = %d, want 410", code)
 	}
 }
 
 func TestMapAuthFactorError_VerificationFailed(t *testing.T) {
 	err := &authfactors.VerificationFailedError{Reason: "mismatch"}
-	if code := mapAuthFactorError(err); code != http.StatusUnauthorized {
+	if code := mapHTTPError(err); code != http.StatusUnauthorized {
 		t.Errorf("VerificationFailedError = %d, want 401", code)
 	}
 }
 
 func TestMapAuthFactorError_FactorNotFound(t *testing.T) {
 	err := &authfactors.FactorNotFoundError{Name: "totp"}
-	if code := mapAuthFactorError(err); code != http.StatusNotFound {
+	if code := mapHTTPError(err); code != http.StatusNotFound {
 		t.Errorf("FactorNotFoundError = %d, want 404", code)
 	}
 }
 
 func TestMapAuthFactorError_HardwareUnavailable(t *testing.T) {
 	err := &authfactors.HardwareUnavailableError{Factor: "yubikey", Reason: "no reader"}
-	if code := mapAuthFactorError(err); code != http.StatusServiceUnavailable {
+	if code := mapHTTPError(err); code != http.StatusServiceUnavailable {
 		t.Errorf("HardwareUnavailableError = %d, want 503", code)
 	}
 }
 
 func TestMapAuthFactorError_ErrFactorDisabled(t *testing.T) {
-	if code := mapAuthFactorError(authfactors.ErrFactorDisabled); code != http.StatusNotImplemented {
+	if code := mapHTTPError(authfactors.ErrFactorDisabled); code != http.StatusNotImplemented {
 		t.Errorf("ErrFactorDisabled = %d, want 501", code)
 	}
 }
 
 func TestMapAuthFactorError_ErrTenantSealed(t *testing.T) {
-	if code := mapAuthFactorError(tenant.ErrTenantSealed); code != http.StatusServiceUnavailable {
-		t.Errorf("mapAuthFactorError(ErrTenantSealed) = %d, want %d", code, http.StatusServiceUnavailable)
+	if code := mapHTTPError(tenant.ErrTenantSealed); code != http.StatusServiceUnavailable {
+		t.Errorf("mapHTTPError(ErrTenantSealed) = %d, want %d", code, http.StatusServiceUnavailable)
 	}
 }
 
 func TestMapAuthFactorError_ListReadErrorWrappingErrTenantSealed(t *testing.T) {
 	err := &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: tenant.ErrTenantSealed}
-	if code := mapAuthFactorError(err); code != http.StatusServiceUnavailable {
-		t.Errorf("mapAuthFactorError(AuthFactorListReadError{ErrTenantSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
+	if code := mapHTTPError(err); code != http.StatusServiceUnavailable {
+		t.Errorf("mapHTTPError(AuthFactorListReadError{ErrTenantSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -176,8 +176,8 @@ func TestMapAuthFactorError_ListReadErrorWrappingErrTenantSealed(t *testing.T) {
 // tenant.ErrTenantSealed (what Resolve itself returns for an ALREADY-sealed
 // tenant) that the mapper had not recognized (go-qrdb#464 round 6).
 func TestMapAuthFactorError_ErrSealed(t *testing.T) {
-	if code := mapAuthFactorError(seal.ErrSealed); code != http.StatusServiceUnavailable {
-		t.Errorf("mapAuthFactorError(seal.ErrSealed) = %d, want %d", code, http.StatusServiceUnavailable)
+	if code := mapHTTPError(seal.ErrSealed); code != http.StatusServiceUnavailable {
+		t.Errorf("mapHTTPError(seal.ErrSealed) = %d, want %d", code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -186,8 +186,8 @@ func TestMapAuthFactorError_ErrSealed(t *testing.T) {
 // AuthFactorListReadError exactly as tenant.ErrTenantSealed already is.
 func TestMapAuthFactorError_ListReadErrorWrappingErrSealed(t *testing.T) {
 	err := &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
-	if code := mapAuthFactorError(err); code != http.StatusServiceUnavailable {
-		t.Errorf("mapAuthFactorError(AuthFactorListReadError{ErrSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
+	if code := mapHTTPError(err); code != http.StatusServiceUnavailable {
+		t.Errorf("mapHTTPError(AuthFactorListReadError{ErrSealed}) = %d, want %d", code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestAuthFactorHandlers_SealedAfterResolve(t *testing.T) {
 }
 
 func TestMapAuthFactorError_ErrHardwareUnavailable(t *testing.T) {
-	if code := mapAuthFactorError(authfactors.ErrHardwareUnavailable); code != http.StatusServiceUnavailable {
+	if code := mapHTTPError(authfactors.ErrHardwareUnavailable); code != http.StatusServiceUnavailable {
 		t.Errorf("ErrHardwareUnavailable = %d, want 503", code)
 	}
 }
@@ -569,10 +569,10 @@ func TestHandleAuthFactorList_ServiceError(t *testing.T) {
 
 // TestHandleAuthFactorList_SealedTenant covers a review finding:
 // handleAuthFactorList wrote http.StatusInternalServerError directly rather
-// than going through mapAuthFactorError like every other handler in this
+// than going through mapHTTPError like every other handler in this
 // file, so a sealed tenant's ListFactors call — including the
 // AuthFactorListReadError wrap a List/Get race produces — got 500 at THIS
-// call site even though mapAuthFactorError's own unit tests (which call the
+// call site even though mapHTTPError's own unit tests (which call the
 // mapper directly, not the handler) already asserted 503. This drives the
 // real handler function, not the mapper, so it would have caught the
 // mismatch.
@@ -592,7 +592,7 @@ func TestHandleAuthFactorList_SealedTenant(t *testing.T) {
 // same call site for the wrapped form ListFactors actually returns when the
 // seal is discovered mid-scan (a List succeeds, then a per-record Get racing
 // the seal fails): AuthFactorListReadError.Unwrap() must still classify to
-// 503 through this handler, not just through mapAuthFactorError in isolation.
+// 503 through this handler, not just through mapHTTPError in isolation.
 func TestHandleAuthFactorList_SealedTenantWrappedInListReadError(t *testing.T) {
 	svc := &stubAuthFactorSvc{
 		listErr: &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: tenant.ErrTenantSealed},
