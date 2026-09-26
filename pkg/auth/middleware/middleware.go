@@ -53,6 +53,11 @@ type AuthMiddleware struct {
 	// operator lever, auth.audit_failure_policy, governs both assertions.
 	auditFailure audit.FailurePolicy
 
+	// peerAttestation, when non-nil, is the attested-caller gate
+	// (go-qrdb#278): for its gated permissions, a request RBAC granted is
+	// admitted only when the peer's measured state is currently acceptable.
+	peerAttestation *PeerAttestationGate
+
 	// bindingPolicy is the fleet-wide mTLS enrolment posture
 	// (auth.mtls_binding_policy, go-qrdb#517). Its zero value is
 	// auth.MTLSBindingEnrolled -- the behaviour before the setting existed.
@@ -526,6 +531,17 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	err := m.decide(ctx, identity, perm)
 	if errors.Is(err, errUnauditedUnauthenticated) {
 		return auth.ErrUnauthenticated
+	}
+	if err == nil {
+		// The attested-caller gate runs only on a request the decision
+		// GRANTED -- through RBAC, the IdentityGated sentinel or the sealed
+		// tenant's admin:health allowance: it is a second condition on
+		// admission, never a substitute for the first, and a request already
+		// refused costs no verification. It is not part of decide because it
+		// has side effects on a refusal (its own log line and audit record),
+		// and it is a property of the caller's connection, not of the tenant a
+		// request names, so AuthorizeTenantTarget's re-check does not repeat it.
+		err = m.checkPeerAttestation(ctx, identity, perm)
 	}
 	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
 		return auditErr

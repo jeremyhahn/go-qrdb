@@ -95,17 +95,21 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// -- a tenant whose IAM is encrypted behind the barrier it is trying to
 	// unseal -- and go-qrdb#460 split it into its own class precisely so this
 	// check cannot drift back onto the wide one that used to contain both.
-	if isAuditFailure(rbacErr) {
-		return rbacErr
-	}
-
+	//
+	// The same holds for an attested-caller refusal (go-qrdb#278): RBAC
+	// GRANTED that request and the peer's measured state refused it, so it is
+	// the opposite of the denial this window substitutes for. Treating it as
+	// one would let an unattested peer through the gate by way of the
+	// bootstrap window.
+	//
 	// A RATE-LIMIT REFUSAL IS NOT AN RBAC VERDICT EITHER. The limiter runs
 	// before RBAC is consulted, so a *RateLimitedError says nothing about
 	// whether the caller holds the grant -- and treating it as a denial let
 	// the fallback below issue the grant anyway, which made the policy on
 	// this permission unenforceable for exactly the callers the window
-	// admits. The limiter's answer is final.
-	if isRateLimited(rbacErr) {
+	// admits. The limiter's answer is final. isGateRefusal is the one predicate
+	// for all three.
+	if isGateRefusal(rbacErr) {
 		return rbacErr
 	}
 
@@ -132,7 +136,7 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// authorization decision on this surface. If it cannot be recorded, the
 	// configured audit failure policy decides, exactly as it does for every
 	// other grant (see auditDecision).
-	return m.auditDecision(ctx, caller, permission.TenantBarrierInit, nil)
+	return m.grantBootstrapFallback(ctx, caller, permission.TenantBarrierInit)
 }
 
 // AuthorizeTenantBarrierSealedOp authorizes the tenant barrier operations
@@ -153,14 +157,9 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 	// AuthorizeTenantBarrierInit for why this precedes every other check, and
 	// why it is AuthFailureAuditUnavailable specifically rather than
 	// AuthFailureUnavailable (which carries the sealed-tenant signal this
-	// fallback acts on).
-	if isAuditFailure(rbacErr) {
-		return rbacErr
-	}
-
-	// Nor is a rate-limit refusal: the sealed window must not grant past the
-	// limiter -- see AuthorizeTenantBarrierInit.
-	if isRateLimited(rbacErr) {
+	// fallback acts on). An attested-caller refusal is not one either, nor is
+	// a rate-limit refusal: the sealed window must not grant past the limiter.
+	if isGateRefusal(rbacErr) {
 		return rbacErr
 	}
 
@@ -176,7 +175,26 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 	// too so the audit trail shows the request was ultimately allowed. It is
 	// propagated for the same reason as in AuthorizeTenantBarrierInit: this is
 	// a grant RBAC refused.
-	return m.auditDecision(ctx, caller, perm, nil)
+	return m.grantBootstrapFallback(ctx, caller, perm)
+}
+
+// grantBootstrapFallback is the one way either bootstrap window GRANTS.
+//
+// A window replaces the RBAC decision that structurally cannot be made; it
+// does not replace the attested-caller gate (go-qrdb#278), which is a second
+// condition on admission and never depended on RBAC. On the sealed-window
+// path the gate had not even run -- authorize() answers a sealed identity's
+// request with the sealed-tenant refusal before reaching it -- so a grant
+// issued here without it would admit an unattested peer to a gated
+// operation. The gate therefore runs on every fallback grant, and its
+// refusal is recorded as the decision's outcome exactly as authorize()
+// records it.
+func (m *AuthMiddleware) grantBootstrapFallback(ctx context.Context, caller *auth.Identity, perm permission.Permission) error {
+	gerr := m.checkPeerAttestation(ctx, caller, perm)
+	if auditErr := m.auditDecision(ctx, caller, perm, gerr); auditErr != nil {
+		return auditErr
+	}
+	return gerr
 }
 
 // isAuditFailure reports whether err is the middleware refusing because it
@@ -209,4 +227,20 @@ func isAuditFailure(err error) bool {
 func isRateLimited(err error) bool {
 	var rl *RateLimitedError
 	return errors.As(err, &rl)
+}
+
+// isGateRefusal reports whether err is a refusal that is NOT an RBAC verdict:
+// the middleware could not record the decision (isAuditFailure), the caller
+// is over its rate limit (isRateLimited: authorize returns a
+// *RateLimitedError before RBAC is consulted at all), or the attested-caller
+// gate refused a request RBAC had granted. None of them may be read as "RBAC
+// said no", which is the only thing the bootstrap fallbacks exist to act on --
+// a window that opened on a rate-limit refusal would let a throttled caller
+// straight through the throttle.
+func isGateRefusal(err error) bool {
+	if isAuditFailure(err) || isRateLimited(err) {
+		return true
+	}
+	var refused *PeerAttestationRefusedError
+	return errors.As(err, &refused)
 }

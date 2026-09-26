@@ -11,36 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-### Changed
-
-- **A module can no longer silently take over a REST route.** Built-in routes
-  used to yield to a module that claimed the same method and pattern — and so
-  did a second module claiming the first one's route. Every REST route now has
-  exactly one owner: a second claim fails server construction with
-  `rest.RouteCollisionError` naming both claimants. The guard lives in qrdb,
-  where the live router is, so a host mounting a module needs no copy of the
-  built-in route table. **Breaking** for a module that relied on overriding a
-  built-in: move its routes under its own prefix. A host that re-registers
-  qrdb's built-in routes from its own modules — one known downstream host
-  re-registers 22 of them — now fails construction with
-  `RouteCollisionError` on upgrade and must drop those registrations.
-- **Route identity follows chi.** `middleware.RESTRouteKey` erases path-parameter
-  names and keeps regexp constraints, so `/a/{id}` and `/a/{deviceID}` are one
-  route to the registry as they are to chi.
-- **Direct router registrations are recorded.** A module route registered on
-  `HTTPRegistrar`'s embedded router that collides with a permission-recorded
-  route fails construction with `rest.DirectRouteCollisionError`, and
-  registering after `RegisterHTTP` returns panics with
-  `apimodule.RegistrationClosedError`. **Breaking**: a module may no longer
-  call `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the
-  registrar's router — each serves requests no registration describes — and
-  gets `apimodule.UnsupportedRouterMethodError`; serve a subtree as
-  `Handle(method, "/prefix/*", perm, h)`. An unmatched request under a module's
-  route prefix is refused with 404 instead of reaching the router's fallback.
-  New: `apimodule.RouteClaim`, `apimodule.UnsupportedRouterMethodError`,
-  `HTTPRegistrar.DirectRoutes`, `HTTPRegistrar.Freeze`,
-  `RESTRouteRegistry.RegisterModulePrefix`/`UnderModulePrefix`.
-
 ### Added
 
 - **Pre-bound listeners for the embedded server** (#374).
@@ -194,6 +164,24 @@ are not reconstructed here — their history is in the git log.
   `firstboot.Dependencies.MTLSBindingPolicy`, `firstboot.VerifyAdminCertBinding`,
   `firstboot.VerifyAdminCertBindingWithin`, `node.(*Node).FirstBoot`,
   `bootstrap.SystemConfig.MTLSBindingPolicy`, and their `sdk/go` re-exports.
+- **Attested-caller gate.** For the permissions a composer names, a request
+  that authenticated and that RBAC granted is admitted only when the injected
+  `auth.PeerAttestationVerifier` reports the peer on the connection as
+  currently attested: fresh evidence (the gate enforces its own
+  `MaxEvidenceAge`), for that peer's certificate, that passed. Every other
+  outcome — no evidence, stale or future-dated evidence, evidence for another
+  peer, a rejected state, a verifier error, no peer certificate, a forwarded
+  (on-behalf) identity — refuses,
+  and a refusal is audited as its own `auth.peer_attestation` record with the
+  reason and whether it is a security event. One option gates REST, gRPC,
+  unix, QUIC and MCP, and the tenant-barrier bootstrap windows are gated too;
+  the embedded transport has no peer and is not gated.
+  qrdb owns only the seam: the verifier is go-xkms's. New:
+  `auth.PeerAttestationVerifier`, `middleware.NewPeerAttestationGate`,
+  `middleware.WithPeerAttestationGate`,
+  `wiring.AuthMiddlewareConfig.PeerAttestation`,
+  `node.WithPeerAttestationGate`, and `sdk/go` re-exports. Docs:
+  `docs/attested-caller/`.
 
 ### Changed — BREAKING
 

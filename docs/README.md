@@ -91,6 +91,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
 | [audit](audit/) | compliance-grade audit logging and query |
 | [rate-limit](rate-limit/) | per-permission request throttling, enforced identically across every transport |
+| [attested-caller](attested-caller/) | the attested-caller gate: admit a gated operation only from a peer whose measured state is currently acceptable |
 | [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers |
 
 ### Interfaces
@@ -101,9 +102,10 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 36 currently-implemented features have a `docs/<feature>/` folder with all
+**All 37 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
-[coordination](coordination/) added 2026-09-10). The portfolio view is derived,
+[coordination](coordination/) added 2026-09-10;
+[attested-caller](attested-caller/) added 2026-09-25). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 
 The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)

@@ -102,6 +102,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -145,6 +146,17 @@ func WithAuthenticators(authenticators ...auth.Authenticator) NodeOption {
 	return func(o *nodeOptions) {
 		o.extraAuthenticators = append(o.extraAuthenticators, authenticators...)
 	}
+}
+
+// WithPeerAttestationGate installs the attested-caller gate on the node's
+// network transports (REST, gRPC, unix, QUIC, MCP): for the gate's
+// permissions, a request RBAC granted is admitted only when the gate's
+// verifier reports the peer on the connection as currently attested
+// (go-qrdb#278). qrdb owns only this seam; the verifier is go-xkms's. Build
+// the gate with middleware.NewPeerAttestationGate (sdk.NewPeerAttestationGate).
+// The in-process embedded transport has no peer and is not gated.
+func WithPeerAttestationGate(gate *middleware.PeerAttestationGate) NodeOption {
+	return func(o *nodeOptions) { o.peerAttestation = gate }
 }
 
 // WithAuthorizerWrapper decorates the node's fully built RBAC[+ABAC]
@@ -204,6 +216,10 @@ type nodeOptions struct {
 	// authorizerWrapper decorates the node's fully built RBAC[+ABAC]
 	// authorizer with embedder-supplied logic. See WithAuthorizerWrapper.
 	authorizerWrapper func(inner auth.Authorizer) auth.Authorizer
+
+	// peerAttestation is the attested-caller gate installed on every network
+	// transport's auth middleware. See WithPeerAttestationGate.
+	peerAttestation *middleware.PeerAttestationGate
 
 	// sessionIssuer mints/resolves/revokes the opaque bearer tokens issued
 	// by the unified-login ceremony. When non-nil it is forwarded to the
@@ -628,6 +644,10 @@ type Node struct {
 	// wireClientAndServer (authenticator chain).
 	extraAuthenticators []auth.Authenticator
 	authorizerWrapper   func(inner auth.Authorizer) auth.Authorizer
+
+	// peerAttestation carries WithPeerAttestationGate from the node
+	// constructor to wireClientAndServer.
+	peerAttestation *middleware.PeerAttestationGate
 
 	// authorizer is the composed RBAC[+ABAC] auth.Authorizer built by
 	// decorateABAC in buildEmbeddedOpts (nil when svcNode.Role is nil, i.e.
@@ -1643,6 +1663,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		abacLiveReload:            nOpts.abacLiveReload,
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
+		peerAttestation:           nOpts.peerAttestation,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -1815,6 +1836,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		abacLiveReload:            nOpts.abacLiveReload,
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
+		peerAttestation:           nOpts.peerAttestation,
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -2366,6 +2388,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		CertProvider:       svcNode.CertProv,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
+		PeerAttestation:    n.peerAttestation,
 	})
 	if err != nil {
 		_ = client.Close()

@@ -138,8 +138,9 @@ func (c AuthFailureClass) Retryable() bool {
 }
 
 // authFailureRules is the ORDERED classification chain, first-match-wins.
-// Below the audit.GateError rule (moved to the front for a reason of its own,
-// see its comment), the remaining order reproduces, exactly, the sequence
+// Below the audit.GateError and PeerAttestationRefusedError rules (placed at
+// the front for reasons of their own, see their comments), the remaining
+// order reproduces, exactly, the sequence
 // mapHTTPAuthError and mapGRPCAuthError each used to spell out separately --
 // so neither changes behaviour for any error either already recognised.
 //
@@ -181,6 +182,26 @@ var authFailureRules = []struct {
 	{"audit.GateError", func(err error) (AuthFailureClass, bool) {
 		var e *audit.GateError
 		return AuthFailureAuditUnavailable, errors.As(err, &e)
+	}},
+	// The peer is authenticated and authorized; its measured state is not
+	// acceptable, so the answer is "forbidden". The one exception is a
+	// verifier that could not decide: that is a statement about this node,
+	// not the peer, and retrying may succeed. It is still a refusal.
+	//
+	// This rule sits directly below the audit rule and ABOVE every rule that
+	// could match the wrapped Err: a verifier error is the verifier's own
+	// type -- an injected implementation this package does not control -- and
+	// errors.As walks the whole chain, so a later position would classify the
+	// refusal by whatever that type happens to be.
+	{"PeerAttestationRefusedError", func(err error) (AuthFailureClass, bool) {
+		var e *PeerAttestationRefusedError
+		if !errors.As(err, &e) {
+			return AuthFailureUnknown, false
+		}
+		if e.Reason == PeerAttestationVerifierError {
+			return AuthFailureUnavailable, true
+		}
+		return AuthFailureUnauthorized, true
 	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError

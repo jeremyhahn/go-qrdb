@@ -223,6 +223,60 @@ func (e *CertBindingRequiredError) Error() string {
 		"; enrol it with users:add_cert_binding, or set the policy to \"enrolled\")"
 }
 
+// PeerAttestationConfigError is returned by NewPeerAttestationGate for a
+// policy that does not describe a gate (go-qrdb#278).
+type PeerAttestationConfigError struct {
+	Reason string
+}
+
+// Error names what is missing.
+func (e *PeerAttestationConfigError) Error() string {
+	return "auth/middleware: invalid peer attestation gate: " + e.Reason
+}
+
+// PeerAttestationRefusedError is returned by authorize when the
+// attested-caller gate refuses a request (go-qrdb#278): the peer is who it
+// claims to be and RBAC granted the operation, but its measured state is not
+// currently acceptable -- or could not be shown to be.
+//
+// It is not an authentication failure and must not read as one. Reason is the
+// stable refusal class; SecurityRelevant is true only when the evidence was
+// present and wrong (or presented for a different peer, or dated in the
+// future), never for absent or stale evidence. A verifier error classifies as
+// unavailable (retryable, 503); every other refusal as forbidden (403).
+type PeerAttestationRefusedError struct {
+	Subject          string
+	TenantID         string
+	Permission       permission.Permission
+	Reason           PeerAttestationReason
+	SecurityRelevant bool
+
+	// Detail is the verifier's own account of the failed checks, when it gave
+	// one.
+	Detail string
+
+	// Err is the underlying failure, when there was one.
+	Err error
+}
+
+// Error names the caller, the operation and the reason.
+func (e *PeerAttestationRefusedError) Error() string {
+	msg := "auth/middleware: peer " + e.Subject + " in tenant " + e.TenantID +
+		" is not attested for " + e.Permission.String() + ": " + string(e.Reason)
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying failure.
+func (e *PeerAttestationRefusedError) Unwrap() error {
+	return e.Err
+}
+
 // RateLimitedError is returned by authorize (go-qrdb#201) when the caller has
 // exceeded the Policy declared for the permission it is invoking. It carries
 // enough for a transport to answer a caller that can act on the refusal: the

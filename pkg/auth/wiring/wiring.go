@@ -233,6 +233,14 @@ type AuthMiddlewareConfig struct {
 	// to boot when firstboot.VerifyAdminCertBinding fails (go-qrdb#517).
 	MTLSBindingPolicy auth.MTLSBindingPolicy
 
+	// PeerAttestation, when non-nil, installs the attested-caller gate
+	// (middleware.WithPeerAttestationGate, go-qrdb#278): for its gated
+	// permissions a request is admitted only when the injected verifier
+	// reports the peer on the connection as currently attested. Build it with
+	// middleware.NewPeerAttestationGate, which refuses an incomplete policy.
+	// Nil -- the default -- gates nothing.
+	PeerAttestation *middleware.PeerAttestationGate
+
 	// RateLimitPolicies declares, per permission, the request-throttling
 	// Policy go-qrdb#201's centralized rate limiter enforces
 	// (middleware.WithRateLimitPolicies). Nil -- the default -- declares no
@@ -364,6 +372,7 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		// gate wired separately or a revoked cluster node keeps forwarding.
 		middleware.WithRevocationChecker(revocation),
 		middleware.WithMTLSBindingPolicy(cfg.MTLSBindingPolicy),
+		middleware.WithPeerAttestationGate(cfg.PeerAttestation),
 	}
 	for _, a := range cfg.ExtraAuthenticators {
 		if a == nil {
