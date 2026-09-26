@@ -70,32 +70,6 @@ func (e *DimensionError) Is(target error) bool {
 	return target == ErrDimensionMismatch
 }
 
-// CodebookNotTrainedError indicates a PQ sub-quantizer codebook has not been trained.
-type CodebookNotTrainedError struct {
-	SubQuantizer int
-}
-
-// Error implements the error interface.
-func (e *CodebookNotTrainedError) Error() string {
-	return "codebook not trained for sub-quantizer " + strconv.Itoa(e.SubQuantizer)
-}
-
-// Is supports error comparison via errors.Is with ErrNotTrained.
-func (e *CodebookNotTrainedError) Is(target error) bool {
-	return target == ErrNotTrained
-}
-
-// PrecisionMismatchError indicates an unexpected quantization type was encountered.
-type PrecisionMismatchError struct {
-	Expected QuantizationType
-	Got      QuantizationType
-}
-
-// Error implements the error interface.
-func (e *PrecisionMismatchError) Error() string {
-	return "precision mismatch: expected " + e.Expected.String() + ", got " + e.Got.String()
-}
-
 // EmptyVectorSetError indicates an operation was attempted on an empty vector set.
 type EmptyVectorSetError struct {
 	Op string
@@ -114,16 +88,6 @@ type InvalidConfigError struct {
 // Error implements the error interface.
 func (e *InvalidConfigError) Error() string {
 	return "invalid quantization config: " + e.Message
-}
-
-// KMeansConvergenceError indicates k-means failed to converge within the iteration limit.
-type KMeansConvergenceError struct {
-	MaxIterations int
-}
-
-// Error implements the error interface.
-func (e *KMeansConvergenceError) Error() string {
-	return "k-means did not converge within " + strconv.Itoa(e.MaxIterations) + " iterations"
 }
 
 // InsufficientVectorsError indicates too few vectors for the requested operation.

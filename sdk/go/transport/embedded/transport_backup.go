@@ -223,11 +223,6 @@ func translateBackupError(err error) error {
 		return &transport.BackupRestoreError{BackupID: bre.BackupID, Err: bre.Err}
 	}
 
-	var bve *service.BackupVerifyError
-	if errors.As(err, &bve) {
-		return &transport.BackupVerifyError{BackupID: bve.BackupID, Err: bve.Err}
-	}
-
 	var bcm *service.BackupChecksumMismatchError
 	if errors.As(err, &bcm) {
 		return &transport.BackupChecksumMismatchError{Expected: bcm.Expected, Actual: bcm.Actual}

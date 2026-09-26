@@ -45,14 +45,6 @@ func TestImportArchiveError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestBarrierNotConfiguredError_Error(t *testing.T) {
-	e := &BarrierNotConfiguredError{}
-	want := "service: barrier service not configured"
-	if e.Error() != want {
-		t.Fatalf("got %q, want %q", e.Error(), want)
-	}
-}
-
 func TestBarrierManagerNotConfiguredError_Error(t *testing.T) {
 	e := &BarrierManagerNotConfiguredError{}
 	want := "service: database barrier manager not configured"

@@ -107,25 +107,6 @@ func TestImportMissingValueFieldError_Message(t *testing.T) {
 	}
 }
 
-func TestImportRowError_Message(t *testing.T) {
-	err := &ImportRowError{Row: 7, Key: "mykey", Message: "value missing"}
-	want := "service: import row 7 failed: value missing"
-	if err.Error() != want {
-		t.Fatalf("got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestImportRowError_ErrorsAs(t *testing.T) {
-	var err error = &ImportRowError{Row: 3, Key: "k", Message: "bad field"}
-	var target *ImportRowError
-	if !errors.As(err, &target) {
-		t.Fatal("expected errors.As to match *ImportRowError")
-	}
-	if target.Row != 3 {
-		t.Fatalf("expected Row=3, got %d", target.Row)
-	}
-}
-
 func TestImportParseError_Message(t *testing.T) {
 	inner := errors.New("unexpected EOF")
 	err := &ImportParseError{Err: inner}
@@ -179,22 +160,6 @@ func TestImportArchiveError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestBarrierNotConfiguredError_Message(t *testing.T) {
-	err := &BarrierNotConfiguredError{}
-	want := "service: barrier service not configured"
-	if err.Error() != want {
-		t.Fatalf("got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestBarrierNotConfiguredError_ErrorsAs(t *testing.T) {
-	var err error = &BarrierNotConfiguredError{}
-	var target *BarrierNotConfiguredError
-	if !errors.As(err, &target) {
-		t.Fatal("expected errors.As to match *BarrierNotConfiguredError")
-	}
-}
-
 func TestBarrierManagerNotConfiguredError_Message(t *testing.T) {
 	err := &BarrierManagerNotConfiguredError{}
 	want := "service: database barrier manager not configured"
@@ -208,23 +173,6 @@ func TestBarrierManagerNotConfiguredError_ErrorsAs(t *testing.T) {
 	var target *BarrierManagerNotConfiguredError
 	if !errors.As(err, &target) {
 		t.Fatal("expected errors.As to match *BarrierManagerNotConfiguredError")
-	}
-}
-
-func TestCodecEncodeError_Message(t *testing.T) {
-	inner := errors.New("marshal failed")
-	err := &CodecEncodeError{Op: "put", Err: inner}
-	want := "service: codec encode failed for put: marshal failed"
-	if err.Error() != want {
-		t.Fatalf("got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestCodecEncodeError_Unwrap_Extended(t *testing.T) {
-	inner := errors.New("inner-ext")
-	err := &CodecEncodeError{Op: "op-ext", Err: inner}
-	if !errors.Is(err, inner) {
-		t.Fatal("expected errors.Is to find inner via Unwrap")
 	}
 }
 

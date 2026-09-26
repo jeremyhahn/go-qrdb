@@ -75,7 +75,6 @@ func sqlStateFor(err error) (codes.Code, bool) {
 
 // sqlStateForLevel classifies one level of the error chain.
 func sqlStateForLevel(err error) (codes.Code, bool) {
-	var duplicate *provider.DuplicateKeyError
 	var mysqlErr *mysql.SQLError
 	switch {
 	case errors.As(err, &mysqlErr) && mysqlErr.Num == provider.ErrCodeTableLayoutUnsupported:
@@ -97,8 +96,7 @@ func sqlStateForLevel(err error) (codes.Code, bool) {
 		return codes.SerializationFailure, true
 	case sql.ErrUniqueKeyViolation.Is(err),
 		sql.ErrPrimaryKeyViolation.Is(err),
-		sql.ErrDuplicateEntry.Is(err),
-		errors.As(err, &duplicate):
+		sql.ErrDuplicateEntry.Is(err):
 		return codes.UniqueViolation, true
 	case sql.ErrForeignKeyChildViolation.Is(err),
 		sql.ErrForeignKeyParentViolation.Is(err):

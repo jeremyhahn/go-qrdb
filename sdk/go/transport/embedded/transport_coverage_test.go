@@ -2615,14 +2615,6 @@ func TestEmbeddedTranslateBackupError(t *testing.T) {
 			t.Fatalf("got %T", got)
 		}
 	})
-	t.Run("VerifyError", func(t *testing.T) {
-		inner := errors.New("inner")
-		got := translateBackupError(&service.BackupVerifyError{BackupID: "b1", Err: inner})
-		var want *transport.BackupVerifyError
-		if !errors.As(got, &want) {
-			t.Fatalf("got %T", got)
-		}
-	})
 	t.Run("ChecksumMismatch", func(t *testing.T) {
 		got := translateBackupError(&service.BackupChecksumMismatchError{Expected: "a", Actual: "b"})
 		var want *transport.BackupChecksumMismatchError

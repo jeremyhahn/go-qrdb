@@ -266,7 +266,7 @@ func TestRebalanceService_CreateRebalancePlan_MaxMoves(t *testing.T) {
 // CreateRebalancePlan: error cases
 // ---------------------------------------------------------------------------
 
-func TestRebalanceService_CreateRebalancePlan_ImbalanceReportError(t *testing.T) {
+func TestRebalanceService_CreateRebalancePlan_SkipsAShardWhoseStaleReadIsNotAMap(t *testing.T) {
 	host := &mockHost{
 		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 			return &quicraft.NodeHostInfo{
@@ -694,16 +694,6 @@ func TestRebalanceErrors_RebalanceExecuteError(t *testing.T) {
 		t.Fatalf("unexpected error message: %s", err.Error())
 	}
 	if err.Unwrap().Error() != "exec failed" {
-		t.Fatal("Unwrap did not return underlying error")
-	}
-}
-
-func TestRebalanceErrors_ImbalanceReportError(t *testing.T) {
-	err := &ImbalanceReportError{Err: errors.New("report failed")}
-	if err.Error() != "service: get imbalance report failed: report failed" {
-		t.Fatalf("unexpected error message: %s", err.Error())
-	}
-	if err.Unwrap().Error() != "report failed" {
 		t.Fatal("Unwrap did not return underlying error")
 	}
 }

@@ -40,25 +40,6 @@ func TestAlreadyRegisteredError_ErrorsAs(t *testing.T) {
 	}
 }
 
-func TestNotRegisteredError_Error(t *testing.T) {
-	e := &entity.NotRegisteredError{EntityType: "orders"}
-	want := "entity: not registered: orders"
-	if got := e.Error(); got != want {
-		t.Errorf("NotRegisteredError.Error() = %q, want %q", got, want)
-	}
-}
-
-func TestNotRegisteredError_ErrorsAs(t *testing.T) {
-	e := &entity.NotRegisteredError{EntityType: "invoices"}
-	var target *entity.NotRegisteredError
-	if !errors.As(e, &target) {
-		t.Fatal("errors.As should match *NotRegisteredError")
-	}
-	if target.EntityType != "invoices" {
-		t.Errorf("EntityType = %q, want %q", target.EntityType, "invoices")
-	}
-}
-
 func TestInvalidRegistrationError_Error(t *testing.T) {
 	tests := []struct {
 		name string
@@ -106,19 +87,11 @@ func TestInvalidRegistrationError_ErrorsAs(t *testing.T) {
 
 func TestErrorTypes_NotInterchangeable(t *testing.T) {
 	already := &entity.AlreadyRegisteredError{EntityType: "x"}
-	notReg := &entity.NotRegisteredError{EntityType: "x"}
 	invalid := &entity.InvalidRegistrationError{Field: "f", Reason: "r"}
 
 	var a *entity.AlreadyRegisteredError
-	var n *entity.NotRegisteredError
 	var iv *entity.InvalidRegistrationError
 
-	if errors.As(notReg, &a) {
-		t.Error("NotRegisteredError should not match AlreadyRegisteredError")
-	}
-	if errors.As(already, &n) {
-		t.Error("AlreadyRegisteredError should not match NotRegisteredError")
-	}
 	if errors.As(already, &iv) {
 		t.Error("AlreadyRegisteredError should not match InvalidRegistrationError")
 	}

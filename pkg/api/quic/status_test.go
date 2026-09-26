@@ -23,6 +23,7 @@ package quic
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -533,7 +534,7 @@ func TestMapServiceError_UnclassifiedStaysStatusError(t *testing.T) {
 	for _, err := range []error{
 		errors.New("some service failure"),
 		&MarshalError{Err: errors.New("proto")},
-		&HandlerError{Method: "kv.Put", Err: errors.New("boom")},
+		fmt.Errorf("kv.Put: %w", errors.New("boom")),
 	} {
 		st, payload := mapServiceError(err)
 		if st != wire.StatusError {

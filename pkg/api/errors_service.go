@@ -671,52 +671,6 @@ func NewNoAvailableBackendError(op string, cause error) *dberrors.QRDBError {
 	}
 }
 
-// SentinelError is a simple error type for sentinel (package-level) error values.
-type SentinelError struct {
-	Message string
-}
-
-// Error implements the error interface.
-func (e *SentinelError) Error() string {
-	return e.Message
-}
-
-// GRPCMessageError wraps a gRPC status message as a typed error.
-type GRPCMessageError struct {
-	Message string
-}
-
-// Error implements the error interface.
-func (e *GRPCMessageError) Error() string {
-	return e.Message
-}
-
-// WrappedMessageError provides a typed wrapper for error messages that wrap an underlying error.
-type WrappedMessageError struct {
-	Message string
-	Cause   error
-}
-
-// Error implements the error interface.
-func (e *WrappedMessageError) Error() string {
-	return e.Message + ": " + e.Cause.Error()
-}
-
-// Unwrap returns the underlying cause for errors.Is and errors.As support.
-func (e *WrappedMessageError) Unwrap() error {
-	return e.Cause
-}
-
-// MessageError provides a typed wrapper for simple error messages.
-type MessageError struct {
-	Message string
-}
-
-// Error implements the error interface.
-func (e *MessageError) Error() string {
-	return e.Message
-}
-
 // =============================================================================
 // Additional Service Layer Error Types
 // =============================================================================

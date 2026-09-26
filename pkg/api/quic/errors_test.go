@@ -16,6 +16,7 @@ package quic
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -65,75 +66,6 @@ func TestStartError_ErrorsAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AcceptError
-// ---------------------------------------------------------------------------
-
-func TestAcceptError_Error(t *testing.T) {
-	inner := errors.New("connection reset by peer")
-	ae := &AcceptError{Err: inner}
-	msg := ae.Error()
-	if !strings.Contains(msg, "quic: failed to accept connection") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "connection reset by peer") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-}
-
-func TestAcceptError_Unwrap(t *testing.T) {
-	inner := errors.New("timeout")
-	ae := &AcceptError{Err: inner}
-	if ae.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestAcceptError_ErrorsAs(t *testing.T) {
-	inner := errors.New("closed")
-	ae := &AcceptError{Err: inner}
-	var target *AcceptError
-	if !errors.As(ae, &target) {
-		t.Fatal("errors.As failed to match *AcceptError")
-	}
-	if errors.Unwrap(ae) != inner {
-		t.Fatal("errors.Unwrap did not return the underlying error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// StreamError
-// ---------------------------------------------------------------------------
-
-func TestStreamError_Error(t *testing.T) {
-	inner := errors.New("stream closed")
-	se := &StreamError{Err: inner}
-	msg := se.Error()
-	if !strings.Contains(msg, "quic: stream error") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "stream closed") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-}
-
-func TestStreamError_Unwrap(t *testing.T) {
-	inner := errors.New("read deadline exceeded")
-	se := &StreamError{Err: inner}
-	if se.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestStreamError_ErrorsAs(t *testing.T) {
-	inner := errors.New("reset")
-	se := &StreamError{Err: inner}
-	var target *StreamError
-	if !errors.As(se, &target) {
-		t.Fatal("errors.As failed to match *StreamError")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // DispatchError
 // ---------------------------------------------------------------------------
 
@@ -163,45 +95,6 @@ func TestDispatchError_NoUnwrap(t *testing.T) {
 	var unwrapper interface{ Unwrap() error }
 	if errors.As(de, &unwrapper) {
 		t.Fatal("DispatchError should not implement Unwrap")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// HandlerError
-// ---------------------------------------------------------------------------
-
-func TestHandlerError_Error_ContainsMethod(t *testing.T) {
-	inner := errors.New("service unavailable")
-	he := &HandlerError{Method: "kv.Put", Err: inner}
-	msg := he.Error()
-	if !strings.Contains(msg, "kv.Put") {
-		t.Fatalf("expected method name in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "service unavailable") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "quic: handler error for") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-}
-
-func TestHandlerError_Unwrap(t *testing.T) {
-	inner := errors.New("not leader")
-	he := &HandlerError{Method: "admin.Status", Err: inner}
-	if he.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestHandlerError_ErrorsAs(t *testing.T) {
-	inner := errors.New("timeout")
-	he := &HandlerError{Method: "kv.Get", Err: inner}
-	var target *HandlerError
-	if !errors.As(he, &target) {
-		t.Fatal("errors.As failed to match *HandlerError")
-	}
-	if target.Method != "kv.Get" {
-		t.Fatalf("expected method 'kv.Get', got %q", target.Method)
 	}
 }
 
@@ -491,7 +384,7 @@ func TestMapServiceError_AuthFactorTenantMismatch(t *testing.T) {
 // this ladder is tested against a wrapped instance.
 func TestMapServiceError_WrappedAuthFactorTenantMismatch(t *testing.T) {
 	inner := &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
-	wrapped := &HandlerError{Method: "authfactor.Enroll", Err: inner}
+	wrapped := fmt.Errorf("authfactor.Enroll: %w", inner)
 	statusCode, _ := mapServiceError(wrapped)
 	if statusCode != wire.StatusInvalidArgument {
 		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
@@ -595,7 +488,7 @@ func TestMapServiceError_UnknownError(t *testing.T) {
 
 func TestMapServiceError_WrappedKeyNotFoundError(t *testing.T) {
 	inner := &service.KeyNotFoundError{Key: "wrapped-key"}
-	err := &HandlerError{Method: "kv.Get", Err: inner}
+	err := fmt.Errorf("kv.Get: %w", inner)
 	// mapServiceError uses errors.As which follows the Unwrap chain.
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusNotFound {
@@ -608,7 +501,7 @@ func TestMapServiceError_WrappedKeyNotFoundError(t *testing.T) {
 
 func TestMapServiceError_WrappedNotLeaderError(t *testing.T) {
 	inner := &service.NotLeaderError{ShardID: 5, LeaderID: 3, LeaderAddress: "10.0.0.3:6000"}
-	err := &HandlerError{Method: "kv.Put", Err: inner}
+	err := fmt.Errorf("kv.Put: %w", inner)
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusUnavailable {
 		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
@@ -647,7 +540,7 @@ func TestMapServiceError_BarrierSealedError(t *testing.T) {
 // for the other wrapped-error test cases in this file.
 func TestMapServiceError_WrappedBarrierSealedError(t *testing.T) {
 	inner := &service.BarrierSealedError{TenantID: "tenant-2"}
-	err := &HandlerError{Method: "kv.Get", Err: inner}
+	err := fmt.Errorf("kv.Get: %w", inner)
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusUnavailable {
 		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)

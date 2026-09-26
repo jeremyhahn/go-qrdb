@@ -48,7 +48,6 @@ func TestSQLStateFor(t *testing.T) {
 		{"unique key violation", sql.ErrUniqueKeyViolation.New(), codes.UniqueViolation, true},
 		{"primary key violation", sql.ErrPrimaryKeyViolation.New(), codes.UniqueViolation, true},
 		{"duplicate entry", sql.ErrDuplicateEntry.New("uni_cities_name"), codes.UniqueViolation, true},
-		{"provider duplicate key", &provider.DuplicateKeyError{Key: "k"}, codes.UniqueViolation, true},
 		{"fk child violation", sql.ErrForeignKeyChildViolation.New("fk", "t", "p", "k"), codes.ForeignKeyViolation, true},
 		{"fk parent violation", sql.ErrForeignKeyParentViolation.New("fk", "t", "p", "k"), codes.ForeignKeyViolation, true},
 		{"check violation", sql.ErrCheckConstraintViolated.New("chk"), codes.CheckViolation, true},

@@ -30,10 +30,3 @@ func TestInvalidConfigError_Error(t *testing.T) {
 	e := &InvalidConfigError{Reason: "chunk_size must be positive"}
 	assert.Contains(t, e.Error(), "chunk_size must be positive")
 }
-
-func TestChunkTooSmallError_Error(t *testing.T) {
-	e := &ChunkTooSmallError{Size: 3, MinSize: 10}
-	msg := e.Error()
-	assert.Contains(t, msg, "3")
-	assert.Contains(t, msg, "10")
-}

@@ -42,16 +42,6 @@ func (e *FileError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *FileError) Unwrap() error { return e.Err }
 
-// ConfigError is returned when the audit configuration is invalid.
-type ConfigError struct {
-	Detail string
-}
-
-// Error returns a human-readable description of the configuration error.
-func (e *ConfigError) Error() string {
-	return "audit: invalid config: " + e.Detail
-}
-
 // ChainBrokenError is returned by VerifyChain when a hash-chain link is broken
 // WITHIN one file. Index is the zero-based position of the first mismatching
 // event, counting every line the file holds.
@@ -146,17 +136,6 @@ func (e *ConcurrentRotationError) Error() string {
 	return "audit: could not verify " + e.Path + ": the trail rotated during each of " +
 		itoa(e.Attempts) + " attempts, so no consistent view was obtained. " +
 		"Nothing is known to be wrong with it; re-run the verification."
-}
-
-// FileLockedError is returned when the audit file cannot be opened because
-// another process holds an exclusive lock.
-type FileLockedError struct {
-	Path string
-}
-
-// Error returns a human-readable description of the lock conflict.
-func (e *FileLockedError) Error() string {
-	return "audit: file locked: " + e.Path
 }
 
 // RetentionError is returned when the retention pruning scan fails.

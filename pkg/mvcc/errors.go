@@ -122,17 +122,6 @@ func (e *CompactionError) Unwrap() error {
 	return e.Err
 }
 
-// TransactionConflictError is returned when a transaction's compare
-// preconditions fail.
-type TransactionConflictError struct {
-	Key string
-}
-
-// Error returns a human-readable description of the conflict.
-func (e *TransactionConflictError) Error() string {
-	return "mvcc: transaction conflict on key: " + e.Key
-}
-
 // UnsupportedSortTargetError is returned when a range query requests a
 // service.SortTarget value outside the set of targets the store knows how
 // to sort by.

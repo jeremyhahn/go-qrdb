@@ -97,34 +97,3 @@ func TestGPUMemoryError_ZeroValues(t *testing.T) {
 		t.Errorf("expected prefix in message, got: %s", msg)
 	}
 }
-
-func TestGPUKernelError(t *testing.T) {
-	cause := errors.New("invalid launch configuration")
-	err := &GPUKernelError{
-		Kernel: "vector_search",
-		Err:    cause,
-	}
-
-	msg := err.Error()
-	if !strings.Contains(msg, "vector_search") {
-		t.Errorf("expected kernel name in message, got: %s", msg)
-	}
-	if !strings.Contains(msg, "invalid launch configuration") {
-		t.Errorf("expected cause in message, got: %s", msg)
-	}
-
-	if !errors.Is(err, cause) {
-		t.Error("GPUKernelError should unwrap to cause")
-	}
-}
-
-func TestGPUKernelError_Unwrap(t *testing.T) {
-	cause := errors.New("segfault")
-	err := &GPUKernelError{
-		Kernel: "distance_compute",
-		Err:    cause,
-	}
-	if err.Unwrap() != cause {
-		t.Error("Unwrap should return the underlying cause")
-	}
-}

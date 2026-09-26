@@ -16,6 +16,7 @@ package quic
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -55,7 +56,7 @@ func TestServiceErrorStatus_ReachesFamiliesTheOldLadderNeverListed(t *testing.T)
 		{&user.ValidationError{Field: "email", Reason: "bad"}, wire.StatusInvalidArgument},
 		{&user.ConcurrentUpdateError{}, wire.StatusAborted},
 		{tenant.ErrTenantNotFound, wire.StatusNotFound},
-		{&HandlerError{Method: "barrier.Unseal", Err: pin.ErrPINLocked}, wire.StatusResourceExhausted},
+		{fmt.Errorf("barrier.Unseal: %w", pin.ErrPINLocked), wire.StatusResourceExhausted},
 		{pin.ErrStateCorrupted, wire.StatusDataLoss},
 		{&service.RestoreScopeEmptyError{}, wire.StatusInvalidArgument},
 		{&service.RestoreApplyError{Key: "k", Err: errors.New("disk")}, wire.StatusError},

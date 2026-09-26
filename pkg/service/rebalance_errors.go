@@ -62,21 +62,6 @@ func (e *RebalanceExecuteError) Unwrap() error {
 	return e.Err
 }
 
-// ImbalanceReportError is returned when generating an imbalance report fails.
-type ImbalanceReportError struct {
-	Err error
-}
-
-// Error returns a human-readable description of the imbalance report failure.
-func (e *ImbalanceReportError) Error() string {
-	return "service: get imbalance report failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *ImbalanceReportError) Unwrap() error {
-	return e.Err
-}
-
 // RebalanceMoveError is returned when a single dedicated-tenant shard MOVE
 // fails during ExecuteRebalance. It carries the shard, the tenant whose group
 // was being moved, the name of the step that failed, and the underlying cause.

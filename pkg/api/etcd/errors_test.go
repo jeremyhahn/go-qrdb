@@ -60,36 +60,6 @@ func TestStartError(t *testing.T) {
 	})
 }
 
-func TestKeyNotFoundError(t *testing.T) {
-	t.Run("Error", func(t *testing.T) {
-		e := &KeyNotFoundError{Key: "/registry/pods"}
-		want := "etcd: key not found: /registry/pods"
-		if got := e.Error(); got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("EmptyKey", func(t *testing.T) {
-		e := &KeyNotFoundError{Key: ""}
-		want := "etcd: key not found: "
-		if got := e.Error(); got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("ErrorsAs", func(t *testing.T) {
-		e := &KeyNotFoundError{Key: "mykey"}
-		wrapped := fmt.Errorf("outer: %w", e)
-		var target *KeyNotFoundError
-		if !errors.As(wrapped, &target) {
-			t.Fatal("errors.As failed to find *KeyNotFoundError in chain")
-		}
-		if target.Key != "mykey" {
-			t.Errorf("Key = %q, want %q", target.Key, "mykey")
-		}
-	})
-}
-
 func TestInvalidRequestError(t *testing.T) {
 	t.Run("Error", func(t *testing.T) {
 		e := &InvalidRequestError{Detail: "missing key"}
@@ -116,32 +86,6 @@ func TestInvalidRequestError(t *testing.T) {
 		}
 		if target.Detail != "bad range" {
 			t.Errorf("Detail = %q, want %q", target.Detail, "bad range")
-		}
-	})
-}
-
-func TestAuthNotEnabledError(t *testing.T) {
-	t.Run("Error", func(t *testing.T) {
-		e := &AuthNotEnabledError{}
-		want := "etcd: authentication is not enabled"
-		if got := e.Error(); got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("ErrorsAs", func(t *testing.T) {
-		e := &AuthNotEnabledError{}
-		wrapped := fmt.Errorf("auth check: %w", e)
-		var target *AuthNotEnabledError
-		if !errors.As(wrapped, &target) {
-			t.Fatal("errors.As failed to find *AuthNotEnabledError in chain")
-		}
-	})
-
-	t.Run("ImplementsErrorInterface", func(t *testing.T) {
-		var err error = &AuthNotEnabledError{}
-		if err.Error() != "etcd: authentication is not enabled" {
-			t.Errorf("unexpected message: %s", err.Error())
 		}
 	})
 }

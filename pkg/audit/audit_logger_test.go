@@ -324,13 +324,6 @@ func TestRetentionError_Error(t *testing.T) {
 	}
 }
 
-func TestErrFileLocked_Error(t *testing.T) {
-	err := &FileLockedError{Path: "/tmp/audit.ndjson"}
-	if !strings.Contains(err.Error(), "/tmp/audit.ndjson") {
-		t.Fatalf("unexpected error message: %s", err.Error())
-	}
-}
-
 func TestRetentionError_Unwrap(t *testing.T) {
 	inner := &FileError{Path: "/x", Err: nil}
 	re := &RetentionError{Err: inner}

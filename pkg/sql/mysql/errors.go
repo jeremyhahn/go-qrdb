@@ -39,24 +39,6 @@ func (e *ServerStartError) Unwrap() error {
 	return e.Err
 }
 
-// SessionBuildError is returned when building a SQL session fails.
-type SessionBuildError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *SessionBuildError) Error() string {
-	if e.Err != nil {
-		return "sql/mysql: session build failed: " + e.Err.Error()
-	}
-	return "sql/mysql: session build failed"
-}
-
-// Unwrap returns the underlying error.
-func (e *SessionBuildError) Unwrap() error {
-	return e.Err
-}
-
 // AuthenticationError is returned when mTLS authentication fails for a
 // MySQL connection.
 type AuthenticationError struct {

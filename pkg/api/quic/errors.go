@@ -30,36 +30,6 @@ func (e *StartError) Unwrap() error {
 	return e.Err
 }
 
-// AcceptError is returned when accepting a QUIC connection fails.
-type AcceptError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *AcceptError) Error() string {
-	return "quic: failed to accept connection: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *AcceptError) Unwrap() error {
-	return e.Err
-}
-
-// StreamError is returned when accepting or handling a QUIC stream fails.
-type StreamError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *StreamError) Error() string {
-	return "quic: stream error: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *StreamError) Unwrap() error {
-	return e.Err
-}
-
 // DispatchError is returned when a method cannot be dispatched.
 type DispatchError struct {
 	Method string
@@ -68,22 +38,6 @@ type DispatchError struct {
 // Error returns a human-readable description.
 func (e *DispatchError) Error() string {
 	return "quic: unknown method: " + e.Method
-}
-
-// HandlerError is returned when a handler fails during execution.
-type HandlerError struct {
-	Method string
-	Err    error
-}
-
-// Error returns a human-readable description.
-func (e *HandlerError) Error() string {
-	return "quic: handler error for " + e.Method + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *HandlerError) Unwrap() error {
-	return e.Err
 }
 
 // ServiceNotConfiguredError is returned when a handler is invoked for a

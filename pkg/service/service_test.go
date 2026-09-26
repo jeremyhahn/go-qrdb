@@ -1891,42 +1891,6 @@ func TestKVService_PutGetStaleRoundTripsRawBytes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Codec error type tests
-// ---------------------------------------------------------------------------
-
-func TestCodecEncodeError_ErrorString(t *testing.T) {
-	err := &CodecEncodeError{Op: "put", Err: errors.New("marshal failed")}
-	want := "service: codec encode failed for put: marshal failed"
-	if err.Error() != want {
-		t.Errorf("got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestCodecEncodeError_Unwrap(t *testing.T) {
-	inner := errors.New("inner")
-	err := &CodecEncodeError{Op: "put", Err: inner}
-	if err.Unwrap() != inner {
-		t.Error("Unwrap did not return the inner error")
-	}
-}
-
-func TestCodecDecodeError_ErrorString(t *testing.T) {
-	err := &CodecDecodeError{Op: "get", Err: errors.New("unmarshal failed")}
-	want := "service: codec decode failed for get: unmarshal failed"
-	if err.Error() != want {
-		t.Errorf("got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestCodecDecodeError_Unwrap(t *testing.T) {
-	inner := errors.New("inner")
-	err := &CodecDecodeError{Op: "get", Err: inner}
-	if err.Unwrap() != inner {
-		t.Error("Unwrap did not return the inner error")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // AdminService shard management tests
 // ---------------------------------------------------------------------------
 
@@ -2343,19 +2307,6 @@ func TestShardStateError_ErrorAndUnwrap(t *testing.T) {
 	err := &ShardStateError{ShardID: 99, Err: inner}
 
 	want := "service: get shard state 99 failed: shard unavailable"
-	if err.Error() != want {
-		t.Errorf("got %q, want %q", err.Error(), want)
-	}
-	if err.Unwrap() != inner {
-		t.Error("Unwrap did not return the inner error")
-	}
-}
-
-func TestTopologyError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("host not ready")
-	err := &TopologyError{Err: inner}
-
-	want := "service: get topology failed: host not ready"
 	if err.Error() != want {
 		t.Errorf("got %q, want %q", err.Error(), want)
 	}

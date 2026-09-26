@@ -28,16 +28,6 @@ func (e *StartError) Error() string {
 // Unwrap returns the underlying error.
 func (e *StartError) Unwrap() error { return e.Err }
 
-// KeyNotFoundError is returned when an etcd Range finds no keys.
-type KeyNotFoundError struct {
-	Key string
-}
-
-// Error returns a human-readable description.
-func (e *KeyNotFoundError) Error() string {
-	return "etcd: key not found: " + e.Key
-}
-
 // InvalidRequestError is returned when an etcd request is malformed.
 type InvalidRequestError struct {
 	Detail string
@@ -46,12 +36,4 @@ type InvalidRequestError struct {
 // Error returns a human-readable description.
 func (e *InvalidRequestError) Error() string {
 	return "etcd: invalid request: " + e.Detail
-}
-
-// AuthNotEnabledError is returned for all Auth service RPCs.
-type AuthNotEnabledError struct{}
-
-// Error returns a human-readable description.
-func (e *AuthNotEnabledError) Error() string {
-	return "etcd: authentication is not enabled"
 }

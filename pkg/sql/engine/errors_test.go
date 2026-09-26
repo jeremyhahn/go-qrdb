@@ -15,54 +15,10 @@
 package engine
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
-
-func TestTranslationError_Error(t *testing.T) {
-	err := &TranslationError{
-		Query:  "SELECT * FROM t WHERE id::int = 1",
-		Reason: "unsupported cast chain",
-	}
-	expected := "sql/engine: translation failed for query: SELECT * FROM t WHERE id::int = 1: unsupported cast chain"
-	assert.Equal(t, expected, err.Error())
-}
-
-func TestTranslationError_ImplementsError(t *testing.T) {
-	var err error = &TranslationError{Query: "q", Reason: "r"}
-	assert.NotNil(t, err)
-	assert.Contains(t, err.Error(), "translation failed")
-}
-
-func TestQueryExecutionError_Error(t *testing.T) {
-	underlying := errors.New("table not found")
-	err := &QueryExecutionError{
-		Query: "SELECT * FROM missing",
-		Err:   underlying,
-	}
-	expected := "sql/engine: query execution failed: SELECT * FROM missing: table not found"
-	assert.Equal(t, expected, err.Error())
-}
-
-func TestQueryExecutionError_Unwrap(t *testing.T) {
-	underlying := errors.New("connection refused")
-	err := &QueryExecutionError{
-		Query: "INSERT INTO t VALUES (1)",
-		Err:   underlying,
-	}
-	assert.True(t, errors.Is(err, underlying))
-	assert.Equal(t, underlying, err.Unwrap())
-}
-
-func TestQueryExecutionError_ErrorsAs(t *testing.T) {
-	underlying := errors.New("timeout")
-	err := &QueryExecutionError{Query: "q", Err: underlying}
-	var target *QueryExecutionError
-	assert.True(t, errors.As(err, &target))
-	assert.Equal(t, "q", target.Query)
-}
 
 func TestUnsupportedSyntaxError_Error(t *testing.T) {
 	err := &UnsupportedSyntaxError{Feature: "LATERAL JOIN"}

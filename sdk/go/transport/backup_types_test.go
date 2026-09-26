@@ -333,11 +333,6 @@ func TestBackupTransportErrors_Messages(t *testing.T) {
 			expected: "transport: backup restore failed for x: transport: backup not found: x",
 		},
 		{
-			name:     "BackupVerifyError",
-			err:      &BackupVerifyError{BackupID: "y", Err: &BackupNotFoundError{ID: "y"}},
-			expected: "transport: backup verification failed for y: transport: backup not found: y",
-		},
-		{
 			name:     "BackupEmptyDestinationError",
 			err:      &BackupEmptyDestinationError{},
 			expected: "transport: backup destination must not be empty",

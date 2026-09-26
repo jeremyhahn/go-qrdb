@@ -37,29 +37,6 @@ func (e *DatabaseNotFoundError) Error() string {
 	return "provider: database not found: " + e.Name
 }
 
-// TableNotFoundError is returned when a requested table does not exist
-// within the specified database.
-type TableNotFoundError struct {
-	Database string
-	Table    string
-}
-
-// Error returns a human-readable description.
-func (e *TableNotFoundError) Error() string {
-	return "provider: table not found: " + e.Database + "." + e.Table
-}
-
-// DuplicateKeyError is returned when an insert would violate a primary
-// key uniqueness constraint.
-type DuplicateKeyError struct {
-	Key string
-}
-
-// Error returns a human-readable description.
-func (e *DuplicateKeyError) Error() string {
-	return "provider: duplicate key: " + e.Key
-}
-
 // InvalidKeyError is returned when a key value cannot be used as a KV
 // store key (e.g., empty string or wrong type).
 type InvalidKeyError struct {

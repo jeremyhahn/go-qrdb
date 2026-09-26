@@ -537,7 +537,7 @@ func TestTransportRebalance_GetImbalanceReport_NilService(t *testing.T) {
 func TestTransportRebalance_GetImbalanceReport_ServiceError(t *testing.T) {
 	svc := &mockRebalanceService{
 		getImbalanceReportFn: func(_ context.Context) (*service.ImbalanceReportResult, error) {
-			return nil, &service.ImbalanceReportError{Err: errors.New("report failed")}
+			return nil, errors.New("report failed")
 		},
 	}
 	tr := newRebalanceTransportWith(t, svc)

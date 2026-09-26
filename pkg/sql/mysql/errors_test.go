@@ -53,34 +53,6 @@ func TestServerStartError_Unwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SessionBuildError
-// ---------------------------------------------------------------------------
-
-func TestSessionBuildError(t *testing.T) {
-	cause := errors.New("context canceled")
-	err := &SessionBuildError{Err: cause}
-
-	assert.Equal(t, "sql/mysql: session build failed: context canceled", err.Error())
-	assert.Equal(t, cause, err.Unwrap())
-}
-
-func TestSessionBuildError_NilErr(t *testing.T) {
-	err := &SessionBuildError{}
-
-	assert.Equal(t, "sql/mysql: session build failed", err.Error())
-	assert.Nil(t, err.Unwrap())
-}
-
-func TestSessionBuildError_Unwrap(t *testing.T) {
-	cause := errors.New("bad session")
-	err := &SessionBuildError{Err: cause}
-
-	var target *SessionBuildError
-	require.True(t, errors.As(err, &target))
-	assert.True(t, errors.Is(err, cause))
-}
-
-// ---------------------------------------------------------------------------
 // AuthenticationError
 // ---------------------------------------------------------------------------
 
@@ -118,7 +90,6 @@ func TestErrorsImplementErrorInterface(t *testing.T) {
 		err  error
 	}{
 		{"ServerStartError", &ServerStartError{Err: errors.New("x")}},
-		{"SessionBuildError", &SessionBuildError{Err: errors.New("x")}},
 		{"AuthenticationError", &AuthenticationError{Err: errors.New("x")}},
 	}
 	for _, tt := range tests {

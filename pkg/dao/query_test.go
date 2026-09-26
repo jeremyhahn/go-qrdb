@@ -328,22 +328,6 @@ func TestFilterOpToPlannerUnknown(t *testing.T) {
 	}
 }
 
-func TestQueryErrorMessage(t *testing.T) {
-	err := &QueryError{Op: "execute", Err: errors.New("timeout")}
-	got := err.Error()
-	if got != "dao: query execute failed: timeout" {
-		t.Errorf("Error() = %q", got)
-	}
-}
-
-func TestQueryErrorUnwrap(t *testing.T) {
-	inner := errors.New("inner")
-	err := &QueryError{Op: "test", Err: inner}
-	if errors.Unwrap(err) != inner {
-		t.Error("Unwrap() did not return inner error")
-	}
-}
-
 func TestFindWithJSONFieldNames(t *testing.T) {
 	d := newTestQueryDAO(t)
 	ctx := context.Background()

@@ -402,21 +402,6 @@ func (e *ShardStateError) Unwrap() error {
 	return e.Err
 }
 
-// TopologyError is returned when querying the cluster topology fails.
-type TopologyError struct {
-	Err error
-}
-
-// Error returns a human-readable description of the topology query failure.
-func (e *TopologyError) Error() string {
-	return "service: get topology failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *TopologyError) Unwrap() error {
-	return e.Err
-}
-
 // NoStateMachineFactoryError is returned when StartShard is called but no
 // state machine factory has been configured on the AdminService.
 type NoStateMachineFactoryError struct{}
@@ -756,18 +741,6 @@ func (e *ImportMissingValueFieldError) Error() string {
 	return "service: import valueField is required when valueMode is 'field'"
 }
 
-// ImportRowError represents a failure during import of a specific row.
-type ImportRowError struct {
-	Row     int
-	Key     string
-	Message string
-}
-
-// Error returns a human-readable description.
-func (e *ImportRowError) Error() string {
-	return "service: import row " + strconv.Itoa(e.Row) + " failed: " + e.Message
-}
-
 // ImportParseError is returned when the input file cannot be parsed.
 type ImportParseError struct {
 	Err error
@@ -884,15 +857,6 @@ func (e *ImportProposalTooLargeError) Error() string {
 // ---------------------------------------------------------------------------
 // Barrier errors
 // ---------------------------------------------------------------------------
-
-// BarrierNotConfiguredError is returned when a barrier operation is
-// attempted but no barrier has been configured on the service.
-type BarrierNotConfiguredError struct{}
-
-// Error returns a human-readable description.
-func (e *BarrierNotConfiguredError) Error() string {
-	return "service: barrier service not configured"
-}
 
 // ErrCeremonyNotConfigured is returned when a Security Officer operation is
 // attempted but no CeremonyService has been wired into the BarrierService.
@@ -1042,37 +1006,3 @@ func (e *CompactSystemOnlyError) Error() string {
 // ---------------------------------------------------------------------------
 // Codec errors
 // ---------------------------------------------------------------------------
-
-// CodecEncodeError is returned when the codec manager fails to encode a
-// value for storage.
-type CodecEncodeError struct {
-	Op  string
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *CodecEncodeError) Error() string {
-	return "service: codec encode failed for " + e.Op + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CodecEncodeError) Unwrap() error {
-	return e.Err
-}
-
-// CodecDecodeError is returned when the codec manager fails to decode or
-// transcode a value from storage.
-type CodecDecodeError struct {
-	Op  string
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *CodecDecodeError) Error() string {
-	return "service: codec decode failed for " + e.Op + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CodecDecodeError) Unwrap() error {
-	return e.Err
-}

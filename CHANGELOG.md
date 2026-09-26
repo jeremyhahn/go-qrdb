@@ -122,6 +122,18 @@ are not reconstructed here — their history is in the git log.
   classify, the same order QUIC uses, so a module status can no longer shadow qrdb's own
   classification.
 
+### Removed
+
+- 46 exported error types that no code path returned, each with a passing test that could
+  only observe its own `Error()` string (go-qrdb#243), across `pkg/api`, `pkg/api/etcd`,
+  `pkg/api/quic`, `pkg/audit`, `pkg/dao`, `pkg/entity`, `pkg/lease`, `pkg/mvcc`,
+  `pkg/planner`, `pkg/rag`, `pkg/routing`, `pkg/service`, `pkg/sql/*`,
+  `pkg/storage/partition` and `pkg/vector/*`, plus two SDK types nothing produced:
+  `transport.BackupVerifyError`, which only an unreachable embedded-transport arm returned
+  (backup verification reports a failed check in its result, never as an error), and
+  `transport.ImbalanceReportError`, which no transport constructed. A caller matching one with `errors.As` had
+  written a branch that could never be taken.
+
 ### Fixed
 
 - `DROP TABLE` deletes a table's `TRUNCATE` generation counter in the same transaction as

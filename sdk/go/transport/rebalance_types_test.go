@@ -297,17 +297,6 @@ func TestRebalanceExecuteError_Message(t *testing.T) {
 	}
 }
 
-func TestImbalanceReportError_Message(t *testing.T) {
-	inner := &RequestError{Method: "report"}
-	err := &ImbalanceReportError{Err: inner}
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("expected Unwrap to return inner error")
-	}
-}
-
 func TestNilRebalancePlanError_Message(t *testing.T) {
 	err := &NilRebalancePlanError{}
 	expected := "transport: rebalance plan must not be nil"

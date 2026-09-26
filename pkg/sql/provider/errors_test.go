@@ -32,26 +32,6 @@ func TestDatabaseNotFoundError_EmptyName(t *testing.T) {
 	assert.Equal(t, "provider: database not found: ", err.Error())
 }
 
-func TestTableNotFoundError(t *testing.T) {
-	err := &TableNotFoundError{Database: "qrdb", Table: "users"}
-	assert.Equal(t, "provider: table not found: qrdb.users", err.Error())
-}
-
-func TestTableNotFoundError_EmptyFields(t *testing.T) {
-	err := &TableNotFoundError{Database: "", Table: ""}
-	assert.Equal(t, "provider: table not found: .", err.Error())
-}
-
-func TestDuplicateKeyError(t *testing.T) {
-	err := &DuplicateKeyError{Key: "foo"}
-	assert.Equal(t, "provider: duplicate key: foo", err.Error())
-}
-
-func TestDuplicateKeyError_EmptyKey(t *testing.T) {
-	err := &DuplicateKeyError{Key: ""}
-	assert.Equal(t, "provider: duplicate key: ", err.Error())
-}
-
 func TestInvalidKeyError(t *testing.T) {
 	err := &InvalidKeyError{Key: "bad\x00key"}
 	assert.Equal(t, "provider: invalid key: bad\x00key", err.Error())
@@ -143,8 +123,6 @@ func TestErrorsImplementErrorInterface(t *testing.T) {
 		err  error
 	}{
 		{"DatabaseNotFoundError", &DatabaseNotFoundError{Name: "db"}},
-		{"TableNotFoundError", &TableNotFoundError{Database: "db", Table: "t"}},
-		{"DuplicateKeyError", &DuplicateKeyError{Key: "k"}},
 		{"InvalidKeyError", &InvalidKeyError{Key: "k"}},
 		{"InvalidValueError", &InvalidValueError{Reason: "r"}},
 		{"CreateDatabaseError", &CreateDatabaseError{Name: "db", Err: errors.New("e")}},

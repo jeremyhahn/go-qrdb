@@ -25,17 +25,6 @@ func (e *AlreadyRegisteredError) Error() string {
 	return "entity: already registered with different type: " + e.EntityType
 }
 
-// NotRegisteredError is returned when a lookup finds no registration
-// for the requested entity type.
-type NotRegisteredError struct {
-	EntityType string
-}
-
-// Error implements the error interface.
-func (e *NotRegisteredError) Error() string {
-	return "entity: not registered: " + e.EntityType
-}
-
 // InvalidRegistrationError is returned when a Registration is missing
 // required fields.
 type InvalidRegistrationError struct {

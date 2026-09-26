@@ -13,12 +13,3 @@
 // limitations under the License.
 
 package routing
-
-// EmptyShardListError is returned when a routing operation is attempted
-// with no shards configured. The default constructors prevent this
-// condition, but the error exists for defensive use in future extensions.
-type EmptyShardListError struct{}
-
-func (e *EmptyShardListError) Error() string {
-	return "routing: shard list is empty"
-}
