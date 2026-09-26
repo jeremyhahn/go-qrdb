@@ -1144,7 +1144,7 @@ func TestInitialize_TenantExistsAdminMissingCreatesAdmin(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
-	store := newMemKVStore()
+	store := kvstore.NewMemoryKVStore()
 	tenantSvc, err := tenant.NewKVTenantService(store, slog.Default())
 	if err != nil {
 		t.Fatalf("NewKVTenantService: %v", err)
@@ -1175,78 +1175,6 @@ func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
 		t.Errorf("got.ID = %q, want %q", got.ID, tenant.SystemTenantID)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Integration helper: in-memory kvstore.KVStore
-// ---------------------------------------------------------------------------
-
-type memKVStore struct {
-	data map[string][]byte
-}
-
-func newMemKVStore() *memKVStore { return &memKVStore{data: make(map[string][]byte)} }
-
-func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
-	cp := make([]byte, len(value))
-	copy(cp, value)
-	m.data[key] = cp
-	return nil
-}
-
-func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
-	v, ok := m.data[key]
-	if !ok {
-		return nil, nil
-	}
-	cp := make([]byte, len(v))
-	copy(cp, v)
-	return cp, nil
-}
-
-func (m *memKVStore) Delete(_ context.Context, key string) error { delete(m.data, key); return nil }
-
-func (m *memKVStore) List(_ context.Context, prefix string) ([]string, error) {
-	var keys []string
-	for k := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			keys = append(keys, k)
-		}
-	}
-	return keys, nil
-}
-
-func (m *memKVStore) Exists(_ context.Context, key string) (bool, error) {
-	_, ok := m.data[key]
-	return ok, nil
-}
-
-func (m *memKVStore) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
-	for k, v := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			if err := fn(k, v); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (m *memKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error { return nil }
-func (m *memKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-// Compile-time interface assertion.
-var _ kvstore.KVStore = (*memKVStore)(nil)
 
 // ---------------------------------------------------------------------------
 // Error type string methods

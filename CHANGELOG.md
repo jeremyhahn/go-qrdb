@@ -462,6 +462,19 @@ are not reconstructed here — their history is in the git log.
   `sdk/go/node` node was never given the tenant service, so every
   `TenantClient` verb answered "TenantServicer must not be nil" while the same
   verbs worked on every network transport of the same node.
+- **Creating a tenant is atomic against deleting it** (#484). `CreateTenant`'s
+  tombstone check was a read and its metadata write a plain put, so a delete
+  landing between them left a live tenant record, and for `volume`/`raft` a
+  barrier restored on every restart, under a permanently retired id. The
+  record is now committed through the new `kvstore.FencedCreator`
+  capability (`PutIfAllAbsent`): written only while the record and the
+  tombstone are both absent, in one transaction on the replicated store. A
+  create that loses to a retirement destroys the barrier it provisioned; two
+  concurrent creates of one id have exactly one winner. A metadata store
+  without the capability is refused with `tenant.ErrTenantStoreNotAtomic`
+  before anything is provisioned. `seal.MemoryBackend`, `seal.StorageAdapter`,
+  `seal.StorageBarrier` and `kvstore.MemoryKVStore` implement it; the
+  seal-disabled tenant service now runs over a transaction-backed adapter.
 
 ## [0.21.3-alpha] - 2026-09-30
 

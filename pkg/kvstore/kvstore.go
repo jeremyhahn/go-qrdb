@@ -372,3 +372,36 @@ type AtomicKVStore interface {
 	// replica decides identically from the same log position.
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
 }
+
+// FencedCreator is the optional capability of creating a key only while it
+// AND a set of other keys -- its fences -- are all absent, decided as one
+// atomic step.
+//
+// It exists for a create that another operation retires through a DIFFERENT
+// key. A tenant id is retired by a tombstone written beside, not over, the
+// tenant's metadata record; PutIfAbsent on the metadata key alone cannot see
+// the tombstone, and checking the tombstone first and then PutIfAbsent-ing
+// leaves the window between the two open: a delete that writes the tombstone
+// and removes the metadata inside it lets the create commit a live record for
+// an id retired forever (go-qrdb#484). Evaluating every absence and the write
+// together is the only thing that closes it.
+//
+// It is a separate interface, discovered by type assertion like AtomicKVStore
+// and GuardedBatchKVStore, and deliberately NOT embedding KVStore: both
+// kvstore.KVStore and seal.StorageBackend implementations carry it, and a
+// caller that needs it asserts for it and fails closed when it is absent. A
+// store that offered it by reading each fence and then writing would be
+// reporting an atomicity it does not have.
+type FencedCreator interface {
+	// PutIfAllAbsent stores value under key only when key and every key in
+	// fences are absent. It reports created=true when this call wrote the
+	// key, and created=false with a nil error when any of them was present
+	// -- in which case the store is unchanged. A non-nil error means the
+	// outcome is unknown and the caller must not assume either way.
+	//
+	// Atomicity is per consistency domain, exactly as for PutIfAbsent: a
+	// single-process store evaluates every absence and the write under one
+	// lock, and a replicated store evaluates them inside its state machine so
+	// every replica decides identically from the same log position.
+	PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (created bool, err error)
+}

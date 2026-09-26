@@ -560,9 +560,16 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if err := validateReservedTenantID(ctx, id); err != nil {
 		return nil, err
 	}
+	// The metadata commit below must be atomic against the tombstone; a store
+	// that cannot do that is refused before anything is provisioned.
+	fenced, err := fencedCreatorOf(s.store)
+	if err != nil {
+		return nil, err
+	}
 	// A deleted id is retired, not released. This runs BEFORE every other
 	// check and before any registration side effect, so a resurrection
-	// attempt costs one read and changes nothing. See tombstone.go.
+	// attempt costs one read and changes nothing. It is a fast refusal only:
+	// the guarantee is the fenced commit at the end. See tombstone.go.
 	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
 		return nil, err
 	}
@@ -607,9 +614,10 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		}
 	}
 
-	// Check for existing tenant metadata.
+	// Check for existing tenant metadata. Like the tombstone check this is a
+	// fast refusal before provisioning; the fenced commit decides.
 	key := metadataPrefix + id
-	_, err := s.store.Get(ctx, key)
+	_, err = s.store.Get(ctx, key)
 	if err == nil {
 		return nil, ErrTenantAlreadyExists
 	}
@@ -728,10 +736,12 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
 
-	if err := s.store.Put(ctx, key, data); err != nil {
-		// Roll back barrier registration on storage failure.
-		_ = s.registry.UnregisterTenant(id)
-		return nil, &StoreError{Op: "put", Err: err}
+	// Commit the record only while it AND the tombstone are absent, in one
+	// atomic step. This, not the reads above, is what keeps a create racing a
+	// delete of the same id from committing a live tenant under a retired id.
+	if err := commitCreate(ctx, fenced, s.store.Get, id, data); err != nil {
+		s.rollbackRegistration(ctx, id, isolationType, err)
+		return nil, err
 	}
 
 	s.logger.Info("tenant created",
@@ -772,6 +782,37 @@ func (s *TenantService) volumeRegisterError(ctx context.Context, id, op string, 
 // retiredResidueRemedy is the remedy a DataRootOverlapError names when the
 // conflicting path is a retired tenant's unreclaimed residue.
 const retiredResidueRemedy = "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it"
+
+// rollbackRegistration undoes the barrier this create provisioned when its
+// metadata commit did not land. A prefix tenant provisioned nothing.
+//
+// What "undo" means depends on why the commit failed, and getting it wrong in
+// either direction is a defect:
+//
+//   - The id was RETIRED under this create (*TenantDeletedError). Everything
+//     provisioned for it is destroyed, durable records included: the boot path
+//     restores a volume or raft tenant's barrier from its tenant-root record,
+//     so merely unregistering would bring a retired id's barrier back on every
+//     restart. Destroying is safe because a retired id has no rightful owner.
+//   - Any other failure -- another create won the id, or the outcome is
+//     unknown -- only forgets the in-memory registration. The durable records
+//     may now belong to the create that won, and destroying them would take
+//     that tenant's barrier with them.
+func (s *TenantService) rollbackRegistration(ctx context.Context, id string, isolationType IsolationType, cause error) {
+	if isolationType != IsolationBarrier && isolationType != IsolationVolume && isolationType != IsolationRaft {
+		return
+	}
+	var retired *TenantDeletedError
+	if errors.As(cause, &retired) {
+		if err := s.registry.DestroyTenant(ctx, id); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+			s.logger.Warn("tenant create lost to a delete; retired id's barrier residue not fully destroyed",
+				slog.String("tenant_id", id),
+				slog.String("error", err.Error()))
+		}
+		return
+	}
+	_ = s.registry.UnregisterTenant(id)
+}
 
 // checkDataRootOverlap rejects an operator-supplied dedicated DataRoot that
 // overlaps a reserved storage location. It composes the three overlap sources

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -141,6 +142,49 @@ func checkTombstone(ctx context.Context, read tombstoneReader, tenantID string) 
 		ts = &Tombstone{ID: tenantID}
 	}
 	return &TenantDeletedError{TenantID: tenantID, DeletedAt: ts.DeletedAt}
+}
+
+// fencedCreatorOf returns store's atomic fenced-create capability, or
+// ErrTenantStoreNotAtomic when it has none. CreateTenant asks before any side
+// effect, so a store that cannot honour the guarantee refuses a create that
+// has changed nothing.
+func fencedCreatorOf(store any) (kvstore.FencedCreator, error) {
+	fenced, ok := store.(kvstore.FencedCreator)
+	if !ok {
+		return nil, ErrTenantStoreNotAtomic
+	}
+	return fenced, nil
+}
+
+// commitCreate writes a new tenant's metadata record only while that record
+// AND the tenant's tombstone are both absent, decided in one atomic step.
+//
+// This is what serializes a create against a delete of the same id. The
+// earlier tombstone check is only a fast refusal: it is a read, and a delete
+// that writes the tombstone and removes the metadata after it would let the
+// create's later write commit a live record for an id retired forever --
+// metadata beside a tombstone, a barrier that comes back on every restart,
+// and a tenant nothing can resolve (go-qrdb#484). With both absences and the
+// write decided together, every interleaving ends in exactly one outcome:
+// the create lands before the tombstone (and a delete that follows it removes
+// it like any other tenant) or it is refused.
+//
+// A refusal is reported as the fence that held: *TenantDeletedError when the
+// tombstone exists, ErrTenantAlreadyExists when another create won the id.
+// The store is unchanged in both cases. A store error is an UNKNOWN outcome
+// and is reported as *StoreError{Op: "put"}.
+func commitCreate(ctx context.Context, fenced kvstore.FencedCreator, read tombstoneReader, id string, record []byte) error {
+	created, err := fenced.PutIfAllAbsent(ctx, metadataPrefix+id, record, tombstoneKey(id))
+	if err != nil {
+		return &StoreError{Op: "put", Err: err}
+	}
+	if created {
+		return nil
+	}
+	if err := checkTombstone(ctx, read, id); err != nil {
+		return err
+	}
+	return ErrTenantAlreadyExists
 }
 
 // isAbsent reports whether err means "this key does not exist".

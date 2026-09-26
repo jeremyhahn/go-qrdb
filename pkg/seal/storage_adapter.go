@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // LegacyStorage is the interface for storage backends that use []byte keys
@@ -43,7 +45,10 @@ type StorageAdapter struct {
 }
 
 // Compile-time interface check.
-var _ StorageBackend = (*StorageAdapter)(nil)
+var (
+	_ StorageBackend        = (*StorageAdapter)(nil)
+	_ kvstore.FencedCreator = (*StorageAdapter)(nil)
+)
 
 // NewStorageAdapter creates a StorageBackend adapter from a LegacyStorage.
 func NewStorageAdapter(s LegacyStorage) StorageBackend {
@@ -81,6 +86,28 @@ func (a *StorageAdapter) PutIfAbsent(_ context.Context, key string, data []byte)
 	}
 	if exists {
 		return false, nil
+	}
+	if err := a.inner.Set([]byte(key), data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PutIfAllAbsent stores the value under key only when key and every fence key
+// are absent, under the same mutex that makes PutIfAbsent indivisible. See
+// kvstore.FencedCreator.
+func (a *StorageAdapter) PutIfAllAbsent(_ context.Context, key string, data []byte, fences ...string) (bool, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	for _, k := range append([]string{key}, fences...) {
+		exists, err := a.inner.Exists([]byte(k))
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
 	}
 	if err := a.inner.Set([]byte(key), data); err != nil {
 		return false, err

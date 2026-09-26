@@ -81,6 +81,40 @@ func (b kvSealBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 	return resp.Succeeded, nil
 }
 
+// PutIfAllAbsent stores data under key only while key and every fence key are
+// absent, as ONE transaction on the consensus plane; see putIfAllAbsent.
+func (b kvSealBackend) PutIfAllAbsent(ctx context.Context, key string, data []byte, fences ...string) (bool, error) {
+	return putIfAllAbsent(ctx, b.tx, key, data, fences)
+}
+
+// putIfAllAbsent is kvstore.FencedCreator on the transaction plane: one
+// "version == 0" compare per key -- the created key and each fence -- guarding
+// a single put. Every compare and the put are evaluated inside the state
+// machine in one revision, so no writer on any node can land between the
+// absence checks and the write, and every replica decides identically.
+func putIfAllAbsent(ctx context.Context, tx service.TransactionServicer, key string, data []byte, fences []string) (bool, error) {
+	if tx == nil {
+		return false, ErrNoTransactionService
+	}
+	compares := make([]service.Compare, 0, len(fences)+1)
+	for _, k := range append([]string{key}, fences...) {
+		compares = append(compares, service.Compare{
+			Key:     []byte(k),
+			Target:  service.CompareVersion,
+			Result:  service.CompareEqual,
+			Version: 0, // version 0 ⇒ the key is absent
+		})
+	}
+	resp, err := tx.Execute(ctx, compares,
+		[]service.Op{{Type: service.OpPut, Key: []byte(key), Value: data}},
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
 // CompareAndDelete removes key only when its stored value still equals
 // expected, expressed as the transaction service's own compare-and-execute:
 // the comparison runs inside the state machine, which is the cross-node
@@ -206,6 +240,33 @@ type kvStoreAdapter struct {
 // engine has a native compare-and-set on every backend, so refusing here
 // would be a lie in the opposite direction.
 var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
+
+// fencedKVStoreAdapter is kvStoreAdapter plus the transaction plane, which is
+// what lets it offer kvstore.FencedCreator. It is a DISTINCT type rather than
+// a field on kvStoreAdapter so a store built without a transaction servicer
+// does not satisfy the capability at all: a capability present in the method
+// set and absent in fact is the failure capability assertions exist to catch.
+//
+// The seal-disabled tenant service is built over it, so creating a tenant
+// commits its metadata only while the tenant's tombstone is also absent,
+// exactly as the seal-enabled service does through kvSealBackend.
+type fencedKVStoreAdapter struct {
+	*kvStoreAdapter
+	tx service.TransactionServicer
+}
+
+// Compile-time proofs of the capabilities the fenced adapter offers.
+var (
+	_ kvstore.AtomicKVStore = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator = kvSealBackend{}
+)
+
+// PutIfAllAbsent stores value under key only while key and every fence key
+// are absent, as one transaction; see putIfAllAbsent.
+func (a *fencedKVStoreAdapter) PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (bool, error) {
+	return putIfAllAbsent(ctx, a.tx, key, value, fences)
+}
 
 // PutIfAbsent atomically stores value under key only when key is absent,
 // delegating to the KV service's own primitive. Every engine implements that

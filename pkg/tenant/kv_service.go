@@ -95,9 +95,16 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 	if err := validateReservedTenantID(ctx, id); err != nil {
 		return nil, err
 	}
+	// The commit below must be atomic against the tombstone; see
+	// TenantService.CreateTenant.
+	fenced, err := fencedCreatorOf(s.store)
+	if err != nil {
+		return nil, err
+	}
 	// A deleted id is retired, not released. kvstore.KVStore reports an
 	// absent key as (nil, nil) rather than an error, which checkTombstone
-	// handles; see tombstone.go.
+	// handles; see tombstone.go. A fast refusal only -- the fenced commit
+	// decides.
 	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
 		return nil, err
 	}
@@ -134,8 +141,8 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
 
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
+	if err := commitCreate(ctx, fenced, s.store.Get, id, data); err != nil {
+		return nil, err
 	}
 
 	s.logger.Info("tenant created",

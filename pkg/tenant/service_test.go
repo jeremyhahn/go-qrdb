@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -61,6 +62,21 @@ func (f *failingBackend) PutIfAbsent(ctx context.Context, key string, data []byt
 		return false, errStoreFault
 	}
 	return f.inner.PutIfAbsent(ctx, key, data)
+}
+
+// PutIfAllAbsent is the fenced create CreateTenant commits through. It is a
+// write, so failPut applies to it exactly as it does to Put: a double that
+// injected faults into Put but let the fenced create through would stop
+// modelling a store whose writes fail.
+func (f *failingBackend) PutIfAllAbsent(ctx context.Context, key string, data []byte, fences ...string) (bool, error) {
+	if f.failPut {
+		return false, errStoreFault
+	}
+	fenced, ok := f.inner.(kvstore.FencedCreator)
+	if !ok {
+		return false, seal.ErrFencedCreateUnsupported
+	}
+	return fenced.PutIfAllAbsent(ctx, key, data, fences...)
 }
 
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:

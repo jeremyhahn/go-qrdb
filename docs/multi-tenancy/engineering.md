@@ -351,6 +351,31 @@ create path, reachable on the delete path once the guard was hoisted there.
 - **An unreadable store fails the create.** Creating a tenant is the operation
   whose whole safety property is that the id was never used; an unanswerable
   "was it?" must not be read as "no".
+- **A create is atomic against a delete of the same id.** `CreateTenant`
+  commits its metadata record through `kvstore.FencedCreator.PutIfAllAbsent`:
+  the record is written only while the record **and** the tombstone are both
+  absent, decided in one step — a single transaction with a `version == 0`
+  compare per key on the replicated store. The earlier tombstone and duplicate
+  reads are fast refusals before anything is provisioned; they are not the
+  guarantee. Every interleaving of a create and a delete therefore ends in
+  exactly one outcome: the create lands before the tombstone (and the delete,
+  which removes whatever record it finds, removes it), or the create is refused.
+  A retired id never has a live record beside its tombstone.
+- **Two concurrent creates of one id have one winner.** The record key is its
+  own fence, so the loser is refused with `ErrTenantAlreadyExists` and the
+  winner's record is untouched.
+- **A create that loses to a retirement destroys what it provisioned.** A
+  `barrier`, `volume` or `raft` create provisions its barrier before the
+  commit. When the commit is refused with `*TenantDeletedError`, the create
+  calls `BarrierRegistry.DestroyTenant`, removing the durable tenant-root record
+  the boot path restores from — so the retired id's barrier does not return on
+  restart. A create that loses to another create, or whose outcome is unknown,
+  only unregisters its in-memory barrier: the durable records may belong to the
+  winner.
+- **A store without the capability is refused**, with
+  `ErrTenantStoreNotAtomic`, before anything is provisioned — never degraded to
+  a read followed by a write. Both production stores carry it: the replicated
+  seal backend and, on a seal-disabled node, the transaction-backed KV adapter.
 
 ### The three seams
 
@@ -743,6 +768,8 @@ isolation gap.
 | Tombstone store unreadable during create | `*StoreError{Op: "tombstone-check"}` | **yes** |
 | Deleted-tenant reconcile would touch a live tenant's directory | skipped and reported, never removed | **yes** |
 | Deleted-tenant reconcile fails at boot | logged; the boot continues and the verb retries on demand | **n/a** — disk only |
+| Id retired by a delete while the create was in flight | `*TenantDeletedError`; provisioned barrier destroyed, nothing committed | **yes** |
+| Metadata store has no atomic fenced create | `ErrTenantStoreNotAtomic`, before anything is provisioned | **yes** |
 | Tenant DEK shred fails during delete | `*TeardownError` wrapping `*DEKShredError`; the id is already retired | **yes** |
 | Database enumeration fails during delete | `*DatabaseListError`, nothing changed | **yes** |
 | Keyspace reclaim fails during delete | `*TeardownError` wrapping `*KeyspaceReclaimError`; id already retired | **yes** |
@@ -836,6 +863,13 @@ did not.
   leak information about counters to a plan with no access to the tier.
 - **The no-tenant-service path is tested explicitly** so the gap stays visible
   rather than becoming a surprise.
+- **Create/delete races are driven deterministically**
+  (`pkg/tenant/create_delete_race_test.go`): the store double applies the
+  concurrent operation's write through the real store at the moment of the
+  commit and delegates the commit itself, so the outcome is decided by the
+  store under test. A restart is simulated by `RestoreVolumeTenants` after the
+  losing create. Real-goroutine races assert one winner per id and no
+  tombstone beside a live record.
 - **Integration**: the multi-node tenant suites —
   `isolation_raft_cluster_test.go`, `isolation_raft_dedicated_wal_test.go`,
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go` — live in

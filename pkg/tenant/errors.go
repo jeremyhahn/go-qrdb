@@ -40,6 +40,14 @@ var (
 	// that already has metadata stored.
 	ErrTenantAlreadyExists = errors.New("tenant: already exists")
 
+	// ErrTenantStoreNotAtomic is returned by CreateTenant when the tenant
+	// metadata store cannot commit a record conditioned on the tenant's
+	// tombstone being absent in one atomic step (kvstore.FencedCreator). It
+	// is refused before any side effect rather than degraded to a check
+	// followed by a write: that window is how a create racing a delete
+	// committed a live record for a permanently retired id.
+	ErrTenantStoreNotAtomic = errors.New("tenant: metadata store cannot commit a create atomically against the tombstone")
+
 	// ErrEmptyTenantID is returned when an empty tenant ID is provided.
 	ErrEmptyTenantID = errors.New("tenant: empty tenant ID")
 

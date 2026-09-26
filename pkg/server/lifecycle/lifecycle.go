@@ -612,7 +612,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// When the seal subsystem is disabled, wire a KV-backed tenant service
 		// so tenant CRUD operates through Raft consensus. Barrier operations
 		// on this implementation return ErrBarrierNotEnabled.
-		kvTenantSvc, err := tenant.NewKVTenantService(newKVStoreAdapter(n.KV, n.Index), log)
+		// The fenced adapter carries the transaction plane so CreateTenant can
+		// commit a tenant only while its tombstone is absent, atomically.
+		kvTenantSvc, err := tenant.NewKVTenantService(&fencedKVStoreAdapter{kvStoreAdapter: &kvStoreAdapter{svc: n.KV, idx: n.Index}, tx: n.Transaction}, log)
 		if err != nil {
 			return nil, &TenantServiceError{Err: err}
 		}
