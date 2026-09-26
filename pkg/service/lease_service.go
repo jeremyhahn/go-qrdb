@@ -54,7 +54,7 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 
 	// Check for an SM-encoded application error (e.g. lease subsystem not
@@ -81,7 +81,7 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return &ProposeError{Err: resultErr}
@@ -98,7 +98,7 @@ func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, er
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, &ProposeError{Err: resultErr}
@@ -135,20 +135,6 @@ func (s *LeaseService) Leases(ctx context.Context) ([]*Lease, error) {
 		return nil, &unexpectedResultTypeError{}
 	}
 	return leases, nil
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *LeaseService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // translateReadError converts QuicRaft read errors to service-level

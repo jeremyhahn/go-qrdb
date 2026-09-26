@@ -690,9 +690,8 @@ func TestTransactionService_Execute_RejectsUnknownOpType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTransactionService_translateProposeError_NotLeaderError(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       77,
 		LeaderID:      5,
 		LeaderAddress: "192.168.1.5:9100",
@@ -714,10 +713,9 @@ func TestTransactionService_translateProposeError_NotLeaderError(t *testing.T) {
 }
 
 func TestTransactionService_translateProposeError_GenericError(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("timeout")
 
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {
@@ -729,9 +727,8 @@ func TestTransactionService_translateProposeError_GenericError(t *testing.T) {
 }
 
 func TestTransactionService_translateProposeError_NotLeaderUnknownLeader(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      0,
 		LeaderAddress: "",

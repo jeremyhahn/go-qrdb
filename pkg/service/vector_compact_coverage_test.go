@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -121,7 +120,7 @@ func newCoverageVecSvc(t *testing.T, namespace string, dimension uint32, storage
 				UpdatedAt:      time.Now().UnixNano(),
 			}, nil
 		}
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	svc, err := NewVectorService(storage, logger)
@@ -192,9 +191,7 @@ func TestVectorPerformCompaction_JobNotFound(t *testing.T) {
 	err := svc.performCompaction(context.Background(), "nonexistent-op", "compact-ns")
 
 	require.Error(t, err)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorPerformCompaction_StorageCompactError(t *testing.T) {
@@ -219,9 +216,7 @@ func TestVectorPerformCompaction_StorageCompactError(t *testing.T) {
 	err := svc.performCompaction(context.Background(), opID, "compact-ns")
 
 	require.Error(t, err)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 
 	job.mu.RLock()
 	defer job.mu.RUnlock()
@@ -340,9 +335,7 @@ func TestVectorCompactNamespace_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorCompactNamespace_ServiceClosed(t *testing.T) {
@@ -358,9 +351,7 @@ func TestVectorCompactNamespace_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorServiceClosedError](t, err)
 }
 
 func TestVectorCompactNamespace_OtherTenantGetsNotFound(t *testing.T) {
@@ -376,9 +367,7 @@ func TestVectorCompactNamespace_OtherTenantGetsNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorCompactNamespace_SyncStorageError(t *testing.T) {
@@ -395,9 +384,7 @@ func TestVectorCompactNamespace_SyncStorageError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 // =============================================================================
@@ -516,9 +503,7 @@ func TestVectorGetCompactionProgress_ByNamespace_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorGetCompactionProgress_ServiceClosed(t *testing.T) {
@@ -534,9 +519,7 @@ func TestVectorGetCompactionProgress_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorServiceClosedError](t, err)
 }
 
 func TestVectorGetCompactionProgress_OperationIDNotFound(t *testing.T) {
@@ -548,9 +531,7 @@ func TestVectorGetCompactionProgress_OperationIDNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorGetCompactionProgress_InProgressWithPartialBytes(t *testing.T) {
@@ -634,9 +615,7 @@ func TestVectorPerformIndexRebuild_JobNotFound(t *testing.T) {
 	err := svc.performIndexRebuild(context.Background(), "nonexistent-job", "rebuild-ns", nil)
 
 	require.Error(t, err)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorPerformIndexRebuild_ScanError(t *testing.T) {
@@ -661,9 +640,7 @@ func TestVectorPerformIndexRebuild_ScanError(t *testing.T) {
 	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", nil)
 
 	require.Error(t, err)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 
 	job.mu.RLock()
 	defer job.mu.RUnlock()
@@ -802,7 +779,7 @@ func TestVectorRebuildIndex_SyncWithVectors(t *testing.T) {
 				VectorCount: 2,
 			}, nil
 		}
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	storage.scanNamespaceFn = func(ctx context.Context, namespace string, opts *vector.ScanOptions) ([]*vector.VectorValue, error) {
@@ -867,9 +844,7 @@ func TestVectorRebuildIndex_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorRebuildIndex_SyncScanError(t *testing.T) {
@@ -886,9 +861,7 @@ func TestVectorRebuildIndex_SyncScanError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 // =============================================================================
@@ -1033,9 +1006,7 @@ func TestVectorGetRebuildProgress_NotFoundByJobID(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorGetRebuildProgress_NotFoundByNamespace(t *testing.T) {
@@ -1047,9 +1018,7 @@ func TestVectorGetRebuildProgress_NotFoundByNamespace(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorJobNotFoundError](t, err)
 }
 
 func TestVectorGetRebuildProgress_PendingJob(t *testing.T) {
@@ -1141,9 +1110,7 @@ func TestVectorGetIndexStats_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorGetIndexStats_ServiceClosed(t *testing.T) {
@@ -1159,9 +1126,7 @@ func TestVectorGetIndexStats_ServiceClosed(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorServiceClosedError](t, err)
 }
 
 func TestVectorGetIndexStats_NilStats(t *testing.T) {

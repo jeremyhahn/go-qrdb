@@ -461,7 +461,7 @@ func TestVectorService_TenantCreate_WithTenantContext(t *testing.T) {
 		return nil, nil
 	}
 	storage.getNamespaceInfoFn = func(_ context.Context, _ string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 	storage.createNamespaceFn = func(_ context.Context, _ *vector.NamespaceInfo) error {
 		return nil

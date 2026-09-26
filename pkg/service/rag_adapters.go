@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 )
 
@@ -123,8 +122,8 @@ func (a *VectorStoreAdapter) EnsureNamespace(ctx context.Context, name string, d
 		return nil
 	}
 	// AlreadyExists is not an error — namespace was created by a previous call.
-	var qErr *qrdbErrors.QRDBError
-	if errors.As(err, &qErr) && qErr.Code == qrdbErrors.ErrAlreadyExists {
+	var exists *NamespaceExistsError
+	if errors.As(err, &exists) {
 		return nil
 	}
 	return err

@@ -55,7 +55,7 @@ func (s *TimeSeriesService) Write(ctx context.Context, metric string, value floa
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. time-series
 	// subsystem not configured, validation failure) that the SM placed in the
@@ -84,7 +84,7 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. time-series
 	// subsystem not configured, validation failure) that the SM placed in the
@@ -184,7 +184,7 @@ func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) er
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. time-series
 	// subsystem not configured, validation failure) that the SM placed in the
@@ -245,7 +245,7 @@ func (s *TimeSeriesService) DeleteSeries(ctx context.Context, req *DeleteRequest
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. time-series
 	// subsystem not configured, validation failure) that the SM placed in the
@@ -287,7 +287,7 @@ func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionP
 	}
 	result, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return resultErr
@@ -329,20 +329,6 @@ func (s *TimeSeriesService) ListMetricsWithConsistency(ctx context.Context, pref
 		return nil, &unexpectedResultTypeError{}
 	}
 	return metrics, nil
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *TimeSeriesService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // translateReadError converts QuicRaft read errors to service-level

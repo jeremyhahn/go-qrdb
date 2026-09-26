@@ -16,9 +16,7 @@ package service
 
 import (
 	"context"
-	"errors"
 
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -77,7 +75,7 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	// A state-machine-encoded application error (e.g. a unique-index violation
 	// that rejected the transaction without stalling consensus) must be
@@ -100,7 +98,7 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, resultErr
@@ -239,7 +237,7 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 
 	result, proposeErr := s.host.SyncPropose(ctx, shardID, cmd)
 	if proposeErr != nil {
-		return nil, s.translateProposeError(proposeErr)
+		return nil, translateProposeError(proposeErr)
 	}
 	// A state-machine-encoded application error (e.g. a unique-index violation
 	// that rejected the transaction without stalling consensus) must be
@@ -292,20 +290,6 @@ func encodeEntityOps(ops []TransactionEntityOp) ([][]byte, error) {
 		encoded[i] = encodedOp
 	}
 	return encoded, nil
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *TransactionService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // ---------------------------------------------------------------------------

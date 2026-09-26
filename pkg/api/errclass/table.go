@@ -139,13 +139,18 @@ var dataPlaneRules = []rule{
 	is(watch.ErrStartRevisionUnsupported, Unimplemented),
 }
 
-// vectorRules are the vector-service conditions.
+// vectorRules are the vector-service conditions (go-qrdb#331).
 var vectorRules = []rule{
 	as(&service.VectorNotFoundError{}, NotFound),
 	as(&service.NamespaceNotFoundError{}, NotFound),
 	as(&service.NamespaceExistsError{}, AlreadyExists),
 	as(&service.DimensionMismatchError{}, InvalidArgument),
 	as(&service.InvalidVectorError{}, InvalidArgument),
+	as(&service.InvalidNamespaceNameError{}, InvalidArgument),
+	as(&service.VectorJobNotFoundError{}, NotFound),
+	as(&service.VectorServiceClosedError{}, Unavailable),
+	// Strict tenant isolation refuses a request bound to no tenant.
+	as(&service.TenantRequiredError{}, PermissionDenied),
 }
 
 // collectionRules are the document-collection conditions.
@@ -575,6 +580,7 @@ var genericRules = []rule{
 	as(&service.ApplyFaultError{}, Internal),
 	as(&service.TableMetadataError{}, Internal),
 	as(&service.PrivilegeMetadataError{}, Internal),
+	as(&service.VectorOperationError{}, Internal),
 	// A write in an already-validated restore plan failed part way; re-issuing
 	// the identical request is safe.
 	as(&service.RestoreApplyError{}, Internal),

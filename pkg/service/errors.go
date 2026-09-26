@@ -15,9 +15,11 @@
 package service
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -218,6 +220,26 @@ func (e *ProposeError) Unwrap() error {
 // instead.
 func (e *ProposeError) Is(target error) bool {
 	return target == ErrOutcomeUnknown
+}
+
+// translateProposeError converts a QuicRaft proposal error into the service
+// layer's typed vocabulary: a not-leader refusal keeps its routing detail as
+// NotLeaderError, and every other failure is a ProposeError.
+//
+// It is the one translation every proposing service uses. Seven services each
+// used to carry an identical method of their own, and the vector service,
+// which carried none, reported every proposal failure through an untyped code
+// no transport mapped.
+func translateProposeError(err error) error {
+	var nle *quicraft.NotLeaderError
+	if errors.As(err, &nle) {
+		return &NotLeaderError{
+			ShardID:       nle.ShardID,
+			LeaderID:      nle.LeaderID,
+			LeaderAddress: nle.LeaderAddress,
+		}
+	}
+	return &ProposeError{Err: err}
 }
 
 // SubsystemNotConfiguredError is returned when a request reaches a state

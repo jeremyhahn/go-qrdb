@@ -67,7 +67,7 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -86,7 +86,7 @@ func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -144,20 +144,6 @@ func (s *IndexService) ListIndexes(ctx context.Context) ([]string, error) {
 		return nil, &unexpectedResultTypeError{}
 	}
 	return names, nil
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *IndexService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // translateReadError converts QuicRaft read errors to service-level

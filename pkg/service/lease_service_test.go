@@ -613,9 +613,8 @@ func TestLeaseService_Leases_UnexpectedResultType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLeaseService_translateProposeError_NotLeader(t *testing.T) {
-	svc := &LeaseService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      2,
 		LeaderAddress: "192.168.0.2:9100",
@@ -631,10 +630,9 @@ func TestLeaseService_translateProposeError_NotLeader(t *testing.T) {
 }
 
 func TestLeaseService_translateProposeError_GenericError(t *testing.T) {
-	svc := &LeaseService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("generic failure")
 
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {

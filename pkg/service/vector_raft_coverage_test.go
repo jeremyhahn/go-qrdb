@@ -18,10 +18,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -90,9 +88,7 @@ func TestVectorService_ProposeToRaft_RaftError(t *testing.T) {
 	err := vs.proposeToRaft(context.Background(), cmd)
 	require.Error(t, err)
 
-	var dErr *qrdbErrors.QRDBError
-	require.ErrorAs(t, err, &dErr)
-	assert.Equal(t, qrdbErrors.ErrRaft, dErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 // vectorTestError is a test error type for vector tests.

@@ -434,7 +434,7 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. a unique-index
 	// violation that rejected the write without stalling consensus).
@@ -463,7 +463,7 @@ func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -491,7 +491,7 @@ func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected [
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -509,7 +509,7 @@ func (s *KVService) CompareAndSwap(ctx context.Context, key string, expected, ne
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -548,7 +548,7 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -702,7 +702,7 @@ func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, m
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -723,7 +723,7 @@ func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemo
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -985,21 +985,6 @@ func validateEntityWrite(entityType EntityType, id string, data []byte) error {
 // ---------------------------------------------------------------------------
 // Error translation
 // ---------------------------------------------------------------------------
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors. NotLeaderError is mapped to service.NotLeaderError so
-// callers can inspect leader routing information.
-func (s *KVService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
-}
 
 // translateReadError converts QuicRaft read errors to service-level typed
 // errors. KeyNotFoundError and NotLeaderError are mapped to their service

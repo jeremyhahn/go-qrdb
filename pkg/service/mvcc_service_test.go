@@ -1330,8 +1330,7 @@ func TestMVCCKVService_CurrentRevision_UnexpectedType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMVCCKVService_translateProposeError_NotLeader(t *testing.T) {
-	svc := &MVCCKVService{host: &mockHost{}, shardID: 1}
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       42,
 		LeaderID:      7,
 		LeaderAddress: "10.0.0.7:9100",
@@ -1353,9 +1352,8 @@ func TestMVCCKVService_translateProposeError_NotLeader(t *testing.T) {
 }
 
 func TestMVCCKVService_translateProposeError_Generic(t *testing.T) {
-	svc := &MVCCKVService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("some propose error")
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {

@@ -168,6 +168,17 @@ are not reconstructed here — their history is in the git log.
   (`test/buildgates/error_mapping_test.go`) fails the next one. The gRPC transport's own
   decode refusals (metadata, vector ID, TTL, document, signature, timestamp) declare their
   class.
+- **The vector service's errors reach callers as what they are.** `VectorService` reported
+  every failure through the untyped `pkg/errors.QRDBError` code vocabulary, which no transport
+  mapped, so 68 of its 100 error sites answered 500: a missing namespace, a dimension mismatch,
+  a duplicate namespace and a strict-isolation refusal were all "internal server error". It now
+  returns the service's typed errors — `NamespaceNotFoundError`, `VectorNotFoundError`,
+  `NamespaceExistsError`, `DimensionMismatchError`, `InvalidVectorError` (all five declared,
+  mapped and never constructed until now), plus the new `VectorJobNotFoundError`,
+  `VectorServiceClosedError` and `VectorOperationError` — and a storage error is typed by the
+  sentinel storage raised rather than by the call site, so a storage fault during a lookup is
+  no longer reported as "not found". Breaking for any caller that matched `QRDBError.Code` on a
+  vector call; match the types with `errors.As`.
 
 ## [0.21.3-alpha] - 2026-09-30
 

@@ -63,8 +63,9 @@ func (e *DimensionMismatchError) Error() string {
 		", got " + strconv.Itoa(e.Actual)
 }
 
-// InvalidVectorError is returned when vector data is malformed or
-// contains invalid values.
+// InvalidVectorError is returned when a vector-service request is malformed:
+// a required field is missing, a value is out of range, or the vector data
+// itself is invalid. Reason names what is wrong.
 type InvalidVectorError struct {
 	Reason string
 }
@@ -72,6 +73,52 @@ type InvalidVectorError struct {
 // Error returns a human-readable description of the invalid vector.
 func (e *InvalidVectorError) Error() string {
 	return "service: invalid vector: " + e.Reason
+}
+
+// VectorServiceClosedError is returned when an operation is attempted on a
+// vector service that has already been closed, or whose storage has.
+type VectorServiceClosedError struct{}
+
+// Error returns a human-readable description of the closed-service condition.
+func (e *VectorServiceClosedError) Error() string {
+	return "service: vector service is closed"
+}
+
+// VectorJobNotFoundError is returned when a rebuild or compaction job the
+// caller names — by job id, or by the namespace it ran against — does not
+// exist.
+type VectorJobNotFoundError struct {
+	// Job is the kind of job: "rebuild" or "compaction".
+	Job string
+	// ID is the job id, or the namespace when the lookup was by namespace.
+	ID string
+}
+
+// Error returns a human-readable description of the missing job.
+func (e *VectorJobNotFoundError) Error() string {
+	return "service: vector " + e.Job + " job not found: " + e.ID
+}
+
+// VectorOperationError is returned when a vector-storage or index operation
+// fails for a reason that is not the caller's: a storage fault, an index that
+// could not be built or searched. Op names the operation; Err, when set, is
+// the cause.
+type VectorOperationError struct {
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description of the failed operation.
+func (e *VectorOperationError) Error() string {
+	if e.Err == nil {
+		return "service: vector " + e.Op + " failed"
+	}
+	return "service: vector " + e.Op + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *VectorOperationError) Unwrap() error {
+	return e.Err
 }
 
 // TenantRequiredError is returned when strict tenant isolation is enabled and

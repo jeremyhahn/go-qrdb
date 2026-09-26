@@ -203,7 +203,7 @@ func TestValidateCreateNamespaceRequest_ValidInput(t *testing.T) {
 		return nil, nil
 	}
 	store.getNamespaceInfoFn = func(_ context.Context, _ string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 	store.createNamespaceFn = func(_ context.Context, _ *vector.NamespaceInfo) error {
 		return nil

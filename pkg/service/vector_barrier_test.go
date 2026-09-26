@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -84,11 +83,7 @@ func TestVectorStoreAdapter_EnsureNamespace_PropagatesOtherErrors(t *testing.T) 
 	logger := newMockLogger()
 
 	storage.createNamespaceFn = func(ctx context.Context, info *vector.NamespaceInfo) error {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "test",
-			Err:  errors.New("disk full"),
-		}
+		return errors.New("disk full")
 	}
 
 	svc, err := NewVectorService(storage, logger)

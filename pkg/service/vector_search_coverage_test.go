@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -538,9 +537,7 @@ func TestVectorSearchSimilar_IndexSearchError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 func TestVectorSearchSimilar_EmptyIndexReturnsEmptyResults(t *testing.T) {
@@ -586,9 +583,7 @@ func TestVectorSearchSimilar_ClosedService(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorServiceClosedError](t, err)
 }
 
 func TestVectorSearchSimilar_TenantNamespaceIsolation(t *testing.T) {
@@ -740,9 +735,7 @@ func TestVectorSearchByID_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorSearchByID_ZeroID(t *testing.T) {
@@ -765,9 +758,7 @@ func TestVectorSearchByID_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorSearchByID_InvalidK(t *testing.T) {
@@ -790,9 +781,7 @@ func TestVectorSearchByID_InvalidK(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorSearchByID_SourceVectorNotFound(t *testing.T) {
@@ -821,9 +810,7 @@ func TestVectorSearchByID_SourceVectorNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorSearchByID_WithoutExcludeSelf(t *testing.T) {
@@ -897,9 +884,7 @@ func TestVectorSearchByID_TenantNamespaceIsolation(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVectorSearchByID_ExcludeSelfTruncatesResults(t *testing.T) {
