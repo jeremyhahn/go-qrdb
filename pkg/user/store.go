@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,6 +116,14 @@ type kvUserStore struct {
 	identity       tenant.IdentityIndex // optional; nil skips identity-index maintenance
 	atomicIdentity bool                 // set by WithAtomicIdentity; see that option's doc
 
+	// requireAdminBinding is set by WithBootstrapAdminBindingRequired: no
+	// change may leave the bootstrap admin unable to log in by certificate.
+	requireAdminBinding bool
+
+	// logger receives the store's operational warnings. Nil means
+	// slog.Default(); see WithLogger.
+	logger *slog.Logger
+
 	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
 	// retry loop. Zero means "use the production default"; see that
 	// function's doc and WithReconcilePolling for why a test overrides them.
@@ -163,6 +172,23 @@ func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (Use
 		s.reconcileWindow = reconcileTimeout
 	}
 	return s, nil
+}
+
+// WithLogger sets the logger the store writes its operational warnings to --
+// today, the bootstrap admin's near-expiry warning under
+// WithBootstrapAdminBindingRequired. A nil logger means slog.Default().
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *kvUserStore) {
+		s.logger = logger
+	}
+}
+
+// log returns the store's logger, slog.Default() when none was set.
+func (s *kvUserStore) log() *slog.Logger {
+	if s.logger == nil {
+		return slog.Default()
+	}
+	return s.logger
 }
 
 // WithQuotaChecker returns a new kvUserStore with the given quota.Checker
@@ -825,6 +851,9 @@ func (s *kvUserStore) mutateCertBindings(ctx context.Context, op string, userID 
 			return existing, nil
 		}
 
+		// updateUserAt judges the bootstrap-admin guard against base, the same
+		// record this mutator saw, and refreshes the admin's deadline metric
+		// once the change commits.
 		updated, uerr := s.updateUserAt(ctx, &UpdateUserRequest{ID: userID, CertBindings: bindings}, base)
 		if uerr == nil {
 			return updated, nil
@@ -855,6 +884,16 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 	// strings that a canonical-encoding lookup would never match.
 	if !IsValidSPKIThumbprint(thumbprint) {
 		return nil, &ValidationError{Field: "thumbprint", Reason: "must be a base64url-encoded SHA-256 SPKI thumbprint"}
+	}
+	// A binding that has already expired can never authenticate, so enrolling
+	// one is always a mistake. It is also not harmless: AddCertBinding
+	// de-duplicates by thumbprint, so re-binding a LIVE key with a past expiry
+	// silently withdraws it -- a withdrawal that would bypass everything
+	// RemoveCertBinding reports.
+	if notAfterUnix > 0 {
+		if notAfter := time.Unix(notAfterUnix, 0).UTC(); !time.Now().Before(notAfter) {
+			return nil, &CertBindingExpiredError{Thumbprint: thumbprint, NotAfter: notAfter}
+		}
 	}
 
 	return s.mutateCertBindings(ctx, "add_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
@@ -908,7 +947,10 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 // restriction, so the account returns to admitting any certificate whose CN and
 // OU name it (see pkg/auth/middleware.checkCertBinding). That is a real posture
 // change, which is why it is audited with last_binding_removed rather than
-// being left to be discovered.
+// being left to be discovered. (That is the "enrolled" posture. Under
+// "required" an account with no live binding cannot log in at all, and a store
+// built WithBootstrapAdminBindingRequired refuses to leave the bootstrap admin
+// in that state.)
 //
 // It deliberately does NOT validate the thumbprint's shape. IsValidSPKIThumbprint
 // is a write-side gate added after the field existed, so a record written before
@@ -936,6 +978,10 @@ func (s *kvUserStore) RemoveCertBinding(ctx context.Context, userID uint64, thum
 			// mistyped the thumbprint, while the real binding stays live.
 			return nil, false, &CertBindingNotFoundError{UserID: u.ID, Thumbprint: thumbprint}
 		}
+		// Under "required" the bootstrap admin keeps at least one live
+		// binding. updateUserAt enforces it against the record this mutator
+		// saw, so two concurrent withdrawals of the admin's last two keys
+		// cannot both pass: the loser re-reads and is refused.
 		return next, true, nil
 	})
 	if err != nil {
@@ -1040,6 +1086,10 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
 	}
+	// The record as committed, before this request touches it. The fields
+	// below are replaced rather than edited in place, so a shallow copy stays
+	// the committed view.
+	prior := *existing
 
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
@@ -1073,6 +1123,27 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 			ID:   existing.ID,
 			From: existing.Lifecycle,
 			To:   existing.Lifecycle,
+		}
+	}
+
+	// The bootstrap-admin guard, judged on the whole resulting record rather
+	// than per verb: a lifecycle move, a rename, a method-policy change and a
+	// binding change all arrive here, whichever entry point sent them. Like
+	// the checks above it runs before the first index mutation, and against
+	// prior -- the base of the swap below -- so it cannot be raced.
+	if s.requireAdminBinding {
+		next := *existing
+		if req.Username != "" {
+			next.Username = req.Username
+		}
+		if req.AuthMethods != nil {
+			next.AuthMethods = authMethods
+		}
+		if req.CertBindings != nil {
+			next.CertBindings = req.CertBindings
+		}
+		if gerr := s.guardBootstrapAdmin(&prior, &next); gerr != nil {
+			return nil, gerr
 		}
 	}
 
@@ -1514,6 +1585,18 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		"lifecycle_changed": lifecycleChanged,
 	})
 
+	// The bootstrap admin's deadline metric follows every committed change to
+	// the admin, not only the boot check, so an operator who enrols a
+	// replacement -- or withdraws a key -- sees the new deadline at once. A
+	// rename away from the admin (possible only under "enrolled") leaves no
+	// admin to measure.
+	switch {
+	case IsBootstrapAdmin(existing):
+		s.observeBootstrapAdmin(existing)
+	case IsBootstrapAdmin(&prior):
+		s.observeBootstrapAdmin(nil)
+	}
+
 	return existing, nil
 }
 
@@ -1542,6 +1625,12 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	}
 	if existing.System {
 		return &SystemUserImmutableError{ID: id}
+	}
+	// Under "required" a node without its bootstrap admin refuses to boot,
+	// so the admin is not deleted. Checked before markDeleting, which commits
+	// against the version read here: a concurrent change cannot slip past it.
+	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
+		return err
 	}
 
 	// CLAIM the record by marking it deleting, conditionally on the version just
@@ -1751,6 +1840,10 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		"username": existing.Username,
 		"tenantID": existing.TenantID,
 	})
+	// Deleting the admin (possible only under "enrolled") leaves no deadline.
+	if IsBootstrapAdmin(existing) {
+		s.observeBootstrapAdmin(nil)
+	}
 
 	return nil
 }
@@ -1926,7 +2019,14 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	// already marked deleting is refused — the deletion is further along than
 	// the disable, and letting a disable land on top of it would report a
 	// success that changed nothing about the account's fate.
+	prior := *user
 	if err := applyLifecycle(user, LifecycleDisabled); err != nil {
+		return err
+	}
+	// A disabled bootstrap admin cannot log in, so under "required" the
+	// disable is refused -- judged against the version the swap below is
+	// conditioned on.
+	if err := s.guardBootstrapAdmin(&prior, user); err != nil {
 		return err
 	}
 	user.UpdatedAt = time.Now().UTC()

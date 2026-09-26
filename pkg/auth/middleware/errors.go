@@ -184,6 +184,45 @@ func (e *CertBindingNotPermittedError) Error() string {
 		" is not bound to " + e.Username + " in tenant " + e.TenantID
 }
 
+// CertBindingRequiredError is returned under auth.mtls_binding_policy
+// "required" (go-qrdb#517) when a certificate login names an account that has
+// enrolled NO certificate binding, or names no account at all.
+//
+// Like CertBindingNotPermittedError it is an AUTHENTICATION failure: the
+// posture says possession of an enrolled key is the only way a certificate
+// establishes who the caller is, and this caller has no enrolled key to have
+// possessed. Enrolling PresentedThumbprint on the account — or switching the
+// fleet back to "enrolled" — is what turns the refusal into an admission, and
+// the error says so, because the most likely cause is a missed enrolment during
+// a migration rather than an attack.
+type CertBindingRequiredError struct {
+	Username string
+	TenantID string
+
+	// AccountResolved is true when the account exists and has no bindings,
+	// false when the certificate names no account in the user store.
+	AccountResolved bool
+
+	// PresentedThumbprint is the canonical SPKI thumbprint of the refused
+	// certificate, or empty when no peer certificate could be read.
+	PresentedThumbprint string
+}
+
+// Error names the account, why it was refused, and what to enrol.
+func (e *CertBindingRequiredError) Error() string {
+	presented := e.PresentedThumbprint
+	if presented == "" {
+		presented = "<no peer certificate>"
+	}
+	why := " names no account"
+	if e.AccountResolved {
+		why = " has no enrolled certificate binding"
+	}
+	return "auth/middleware: auth.mtls_binding_policy is \"required\" and " + e.Username +
+		" in tenant " + e.TenantID + why + " (presented " + presented +
+		"; enrol it with users:add_cert_binding, or set the policy to \"enrolled\")"
+}
+
 // RateLimitedError is returned by authorize (go-qrdb#201) when the caller has
 // exceeded the Policy declared for the permission it is invoking. It carries
 // enough for a transport to answer a caller that can act on the refusal: the

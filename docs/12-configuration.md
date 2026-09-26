@@ -138,6 +138,10 @@ auth:
   # one setting. "fail-closed" (default) refuses the request; "fail-open"
   # permits it and counts the gap. See the note below before changing it.
   audit_failure_policy: "fail-closed"
+  # Whether EVERY certificate login must present an enrolled key ("required")
+  # or only accounts that enrolled one ("enrolled", the default). "required"
+  # refuses to boot while the bootstrap admin has no certificate binding.
+  mtls_binding_policy: "enrolled"
 
 cors:
   allowed_origins: ["*"]
@@ -592,6 +596,7 @@ Configures authentication and role-based access control (RBAC).
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
 | `spiffe_trust_domain` | string | `""`       | no       | N/A                | SPIFFE trust domain the mTLS authenticator **pins**, and the one the built-in CA mints client-certificate tenant SANs under. See the note below |
+| `mtls_binding_policy` | string | `"enrolled"` | no     | N/A                | **Whether every certificate login must present an enrolled key** (`"required"`) or only accounts that enrolled one are held to it (`"enrolled"`). See the note below |
 
 **Validation rules:**
 
@@ -606,6 +611,10 @@ Configures authentication and role-based access control (RBAC).
 - `spiffe_trust_domain`, when set, must survive being written into a SPIFFE ID
   and parsed back unchanged (no `/`, `?`, `#`, `@` or whitespace). The
   validation error quotes the rejected value (`spiffe.TrustDomainError`).
+- `mtls_binding_policy` must be `"enrolled"`, `"required"`, or empty (empty
+  means `"enrolled"`). An unrecognised value fails configuration validation —
+  and, for a caller that builds its configuration without validating it, the
+  boot — rather than resolving to either posture.
 - `audit_failure_policy` must be `"fail-closed"`, `"fail-open"`, or empty
   (empty means `"fail-closed"`). An unrecognised value fails the boot rather
   than resolving to either posture: guessing fail-closed denies a fleet the
@@ -653,6 +662,17 @@ Configures authentication and role-based access control (RBAC).
   SAN and the tenant is read from the Subject OU. Set the same value on every
   node. See
   [certificate-authority/architecture.md](certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
+- **`mtls_binding_policy: "required"` closes the unenrolled-account hole and is
+  a lockout risk.** Under the default `"enrolled"`, an account that has enrolled
+  a certificate binding admits only that key, and an account that has not
+  admits any certificate from the CA whose CN and tenant name it. `"required"`
+  refuses the second kind — and a certificate that names no account — with 401.
+  The node **refuses to boot** under `"required"` when the bootstrap admin does
+  not hold an unexpired binding, because a node that started would admit nobody
+  able to repair it. Enrol every account (the admin first) under `"enrolled"`,
+  then switch; roll back by setting `"enrolled"`. Set the same value on every
+  node. See [identity-rbac/architecture.md](identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy)
+  and [identity-rbac/user.md](identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.

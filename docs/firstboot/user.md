@@ -91,6 +91,14 @@ mint a second one from its CA and bind that instead.
 them you would end up with a quorum arrangement nobody holds a share in, so it
 fails closed.
 
+**"auth.mtls_binding_policy is "required" but the bootstrap admin … could not
+log in under it".** The fleet requires every certificate login to present an
+enrolled key, and the admin would have none — because first boot has nothing to
+bind it with, or because the admin already exists without a binding. Start with
+`mtls_binding_policy: enrolled`, enrol the admin's certificate
+(`POST /users/{id}/cert-bindings`), then set `required`. See
+[../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
+
 **"conflicting admin cert inputs".** You gave both a CSR and a certificate.
 Signing the CSR would leave your certificate unbound; adopting the certificate
 would discard your CSR. Pick one.

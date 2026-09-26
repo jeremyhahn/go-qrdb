@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -161,6 +162,14 @@ type Infra struct {
 	// the value the authenticator pins. Empty issues certificates exactly as
 	// before, with no SAN.
 	SPIFFETrustDomain string
+
+	// MTLSBindingPolicy is the operator's auth.mtls_binding_policy, as
+	// configured. Under "required" the user service refuses every change that
+	// would leave the bootstrap admin unable to log in by certificate
+	// (user.WithBootstrapAdminBindingRequired), so no transport can lock the
+	// admin out. An unrecognised value fails BuildServices. Empty means
+	// "enrolled".
+	MTLSBindingPolicy string
 
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
@@ -423,7 +432,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
 	}
-	userSvc, err := user.NewStore(authStore, userIDGen)
+	userOpts, err := UserStoreOptions(infra.MTLSBindingPolicy, log)
+	if err != nil {
+		return nil, &UserServiceError{Err: err}
+	}
+	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
 	}
@@ -601,7 +614,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			}
 			n.StoreResolver = resolver
 
-			routedUsers, err := user.NewRoutingService(resolver, userIDGen)
+			routedUsers, err := user.NewRoutingService(resolver, userIDGen, userOpts...)
 			if err != nil {
 				return nil, &UserServiceError{Err: err}
 			}
@@ -649,7 +662,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		n.StoreResolver = resolver
 
-		routedUsers, uerr := user.NewRoutingService(resolver, userIDGen)
+		routedUsers, uerr := user.NewRoutingService(resolver, userIDGen, userOpts...)
 		if uerr != nil {
 			return nil, &UserServiceError{Err: uerr}
 		}
@@ -1037,4 +1050,26 @@ func (n *Node) buildUserAuthFactorService(_ context.Context, resolver tenant.Sto
 	}
 	n.UserAuthFactor = svc
 	return nil
+}
+
+// UserStoreOptions maps the operator's auth.mtls_binding_policy onto the user
+// store options that enforce it at the data layer, with logger as the store's
+// logger. Under "required" the store refuses every change that would leave the
+// bootstrap admin unable to log in by certificate -- deleting, renaming,
+// disabling or suspending it, dropping mtls from its methods, or withdrawing
+// its last live binding (user.WithBootstrapAdminBindingRequired) -- and warns
+// through logger as the admin's last key nears expiry. An unrecognised value is
+// an *auth.InvalidMTLSBindingPolicyError. BuildServices applies it; a composer
+// that builds its own user stores -- the daemon does -- applies the same
+// options through this one function.
+func UserStoreOptions(mtlsBindingPolicy string, logger *slog.Logger) ([]user.Option, error) {
+	policy, err := auth.ParseMTLSBindingPolicy(mtlsBindingPolicy)
+	if err != nil {
+		return nil, err
+	}
+	opts := []user.Option{user.WithLogger(logger)}
+	if policy == auth.MTLSBindingRequired {
+		opts = append(opts, user.WithBootstrapAdminBindingRequired())
+	}
+	return opts, nil
 }

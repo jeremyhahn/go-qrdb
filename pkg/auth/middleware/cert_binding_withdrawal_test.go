@@ -184,10 +184,7 @@ func TestAuthenticate_WithdrawalIsNotRevocationOfTheOtherDirection(t *testing.T)
 	dave := createUser(t, svc, "acme", "dave", nil)
 
 	expired := mintCert(t, "dave", "acme", nil, "")
-	if _, err := svc.AddCertBinding(context.Background(), dave.ID,
-		user.ComputeSPKIThumbprint(expired.cert), 1); err != nil {
-		t.Fatalf("AddCertBinding: %v", err)
-	}
+	holdExpiredBinding(t, svc, dave.ID, expired)
 	unbound := mintCert(t, "dave", "acme", nil, "")
 
 	m := mtlsMiddleware(svc)

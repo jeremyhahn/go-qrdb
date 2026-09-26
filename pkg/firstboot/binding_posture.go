@@ -1,0 +1,210 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package firstboot
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// AdminLookup is the narrow read surface the binding-posture check needs to
+// find the bootstrap admin. qrdb's user.UserServicer satisfies it; an adapter
+// over another IAM stack implements it to let Initialize verify an existing
+// admin under the "required" posture.
+type AdminLookup interface {
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
+}
+
+// VerifyAdminCertBinding reports whether the bootstrap admin (system tenant,
+// "admin") could log in by certificate under auth.mtls_binding_policy
+// "required" (go-qrdb#517): it must exist and hold at least one certificate
+// binding that has not expired at now.
+//
+// A composer that selects "required" calls this at boot, after first-boot has
+// run, and REFUSES TO BOOT on a non-nil error. That is the owner's ruling on
+// the lockout the posture creates: a node that started would admit nobody who
+// could repair it, because the way back in needs a permission that needs a
+// login. A boot failure names the cause while the operator can still change the
+// configuration.
+//
+// Every refusal is an *AdminCertBindingRequiredError naming the account and
+// the reason; a lookup that fails for any reason other than not-found is an
+// *AdminLookupError, which also refuses — the posture cannot be shown to hold.
+func VerifyAdminCertBinding(ctx context.Context, users AdminLookup, now time.Time) error {
+	if users == nil {
+		return adminBindingRefusal(AdminBindingUnverifiable)
+	}
+	u, err := users.GetUserByUsername(ctx, tenant.SystemTenantID, adminUsername)
+	if err != nil {
+		var unf *user.UserNotFoundError
+		if errors.As(err, &unf) {
+			return adminBindingRefusal(AdminBindingMissing)
+		}
+		return &AdminLookupError{Cause: err}
+	}
+	if err := verifyAdminBindings(u, now); err != nil {
+		return err
+	}
+	user.ObserveBootstrapAdminBindings(slog.Default(), u, now)
+	return nil
+}
+
+// VerifyAdminCertBindingWithin is VerifyAdminCertBinding with a bounded wait
+// for a lookup that FAILS (*AdminLookupError): it retries until timeout, then
+// returns the last error. A verdict -- the admin is missing, unbound, or
+// bound -- is returned at once; only "could not read" is worth waiting out.
+//
+// Composers call it at boot with a LINEARIZABLE user store, so on a follower
+// the read waits for the admin's bindings to replicate rather than judging a
+// record that has not caught up with the leader (a binding enrolled on the
+// leader after the admin was created would otherwise read as "no binding"
+// and refuse a boot that should succeed). The retries absorb the window
+// before a freshly started node can serve such a read.
+//
+// The whole wait runs under context.WithDeadline, so a lookup that blocks
+// instead of failing is cut off at the bound too, not only the sleeps between
+// attempts.
+func VerifyAdminCertBindingWithin(ctx context.Context, users AdminLookup, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	dctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	backoff := 50 * time.Millisecond
+	for {
+		err := VerifyAdminCertBinding(dctx, users, time.Now().UTC())
+		var lookup *AdminLookupError
+		if !errors.As(err, &lookup) || !time.Now().Before(deadline) {
+			return err
+		}
+		select {
+		case <-dctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > time.Second {
+			backoff = time.Second
+		}
+	}
+}
+
+// AdminBindingLookupTimeout is the bounded wait composers give
+// VerifyAdminCertBindingWithin at boot. It matches the daemon's
+// admin-replication wait.
+const AdminBindingLookupTimeout = 30 * time.Second
+
+// verifyAdminBindings is the predicate over a resolved admin record: could
+// this account log in by certificate under the "required" posture at now?
+//
+// Holding a live binding is not enough on its own. The authentication path
+// also refuses an account whose lifecycle state does not permit a login
+// (User.CanAuthenticate) and one whose permitted-method policy excludes mTLS
+// (User.AuthMethods), so the boot check refuses them too -- an admin
+// suspended, or restricted to another method, is exactly as locked out as one
+// with no key. The checks are user.AdminLoginBlocker's, the same predicates
+// the user store's guard applies, run in the order the middleware applies them.
+func verifyAdminBindings(u *user.User, now time.Time) error {
+	if u == nil {
+		return adminBindingRefusal(AdminBindingMissing)
+	}
+	blocker := user.AdminLoginBlocker(u, now)
+	if blocker == "" {
+		return nil
+	}
+	if blocker == user.AdminLockoutNoLiveBinding && len(u.CertBindings) > 0 {
+		return adminBindingRefusal(AdminBindingAllExpired)
+	}
+	return adminBindingRefusal(adminBindingReasons[blocker])
+}
+
+// adminBindingReasons maps the shared login predicate onto this package's
+// refusal reasons. No live binding splits by whether any binding exists at all
+// (AdminBindingNone versus AdminBindingAllExpired), which verifyAdminBindings
+// decides.
+var adminBindingReasons = map[user.AdminLockoutReason]AdminCertBindingReason{
+	user.AdminLockoutLifecycle:        AdminBindingCannotAuthenticate,
+	user.AdminLockoutMTLSNotPermitted: AdminBindingMTLSNotPermitted,
+	user.AdminLockoutNoLiveBinding:    AdminBindingNone,
+}
+
+// checkBindingPosture is Initialize's pre-flight under the "required" posture.
+// It runs BEFORE any write, so a configuration that would lock the admin out
+// fails without having created anything:
+//
+//   - The admin already exists: it must already hold a live binding
+//     (verifyAdminBindings), because a re-run issues no certificate.
+//   - It does not: this run creates it, so this run must be able to bind it —
+//     a CertBinder AND an admin certificate path must be wired.
+//
+// Under the default posture it does nothing.
+func checkBindingPosture(ctx context.Context, deps Dependencies) error {
+	if deps.MTLSBindingPolicy != auth.MTLSBindingRequired {
+		return nil
+	}
+	lookup, ok := deps.Users.(AdminLookup)
+	if !ok {
+		return adminBindingRefusal(AdminBindingUnverifiable)
+	}
+	u, err := lookup.GetUserByUsername(ctx, tenant.SystemTenantID, adminUsername)
+	if err == nil {
+		return verifyAdminBindings(u, time.Now().UTC())
+	}
+	var unf *user.UserNotFoundError
+	if !errors.As(err, &unf) {
+		return &AdminLookupError{Cause: err}
+	}
+	if deps.Binder == nil {
+		return adminBindingRefusal(AdminBindingNoBinder)
+	}
+	if !hasAdminCertPath(deps) {
+		return adminBindingRefusal(AdminBindingNoCertPath)
+	}
+	return nil
+}
+
+// verifyRequiredOutcome re-reads the admin after first-boot and applies
+// verifyAdminBindings to what the store now holds. It does nothing under the
+// default posture.
+func verifyRequiredOutcome(ctx context.Context, deps Dependencies) error {
+	if deps.MTLSBindingPolicy != auth.MTLSBindingRequired {
+		return nil
+	}
+	lookup, ok := deps.Users.(AdminLookup)
+	if !ok {
+		return adminBindingRefusal(AdminBindingUnverifiable)
+	}
+	return VerifyAdminCertBinding(ctx, lookup, time.Now().UTC())
+}
+
+// hasAdminCertPath reports whether issueAdminCert would produce a certificate:
+// Path C (an adopted certificate), Path B (a CSR and a Signer), or Path A (a
+// CA). It mirrors issueAdminCert's own switch, which is the definition.
+func hasAdminCertPath(deps Dependencies) bool {
+	return len(deps.AdminCertPEM) > 0 ||
+		(len(deps.AdminCSRPEM) > 0 && deps.Signer != nil) ||
+		deps.CA != nil
+}
+
+func adminBindingRefusal(reason AdminCertBindingReason) error {
+	return &AdminCertBindingRequiredError{
+		TenantID: tenant.SystemTenantID,
+		Username: adminUsername,
+		Reason:   reason,
+	}
+}

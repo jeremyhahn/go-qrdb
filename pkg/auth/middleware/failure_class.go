@@ -227,6 +227,13 @@ var authFailureRules = []struct {
 		var e *CertBindingNotPermittedError
 		return AuthFailureUnauthenticated, errors.As(err, &e)
 	}},
+	// Same reasoning as the rule above: under the "required" binding posture
+	// an account with no enrolled key cannot establish who it is by
+	// certificate, and enrolling the presented key is what makes it work.
+	{"CertBindingRequiredError", func(err error) (AuthFailureClass, bool) {
+		var e *CertBindingRequiredError
+		return AuthFailureUnauthenticated, errors.As(err, &e)
+	}},
 	{"AuthChainError", func(err error) (AuthFailureClass, bool) {
 		var e *AuthChainError
 		return AuthFailureUnauthenticated, errors.As(err, &e)

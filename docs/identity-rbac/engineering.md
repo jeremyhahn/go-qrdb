@@ -122,14 +122,16 @@ decides a login with it:
 
 ```go
 // pkg/auth/middleware/cert_binding.go
-func checkCertBinding(ctx context.Context, u *user.User, method authMethod) error
+func checkCertBinding(ctx context.Context, u *user.User, method authMethod, policy auth.MTLSBindingPolicy) error
+func checkUnresolvedCertLogin(ctx context.Context, identity *auth.Identity, method authMethod, policy auth.MTLSBindingPolicy) error
 ```
 
 It admits in exactly three cases and refuses otherwise:
 
 | Case | Result | Why |
 |---|---|---|
-| `len(u.CertBindings) == 0` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
+| `len(u.CertBindings) == 0`, policy `enrolled` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
+| `len(u.CertBindings) == 0`, policy `required`, cert-bound method | **refuse** | `*CertBindingRequiredError{AccountResolved: true}` — the fleet said every certificate login proves possession |
 | method is not cert-bound (`certBoundMethods`) | admit | a forwarded on-behalf assertion and a capability module's session token present no certificate of the SUBJECT's — the connection's certificate is the forwarder's |
 | `u.MatchesCert(cert)` | admit | possession proved by the handshake |
 | enrolled, cert-bound method, no readable peer certificate | **refuse** | the account has enrolled certificates and this request produced none to compare |
@@ -178,6 +180,30 @@ nobody can remove. A withdrawal that matches nothing returns
 `*CertBindingNotFoundError` (404 / `codes.NotFound`) rather than succeeding
 vacuously, and a withdrawal that empties the set emits an audit event carrying
 `last_binding_removed: true`, because that is the moment the account widens.
+
+`checkUnresolvedCertLogin` covers the subject that resolves to **no account**
+(user store answered not-found, or no user store is wired): it admits under
+`enrolled`, as before, and refuses a cert-bound method under `required` with
+`*CertBindingRequiredError{AccountResolved: false}`. The sealed-tenant branch of
+`finalizeIdentity` returns before either check, deliberately — see the
+architecture's list of what `required` does not reach.
+
+The policy is `auth.MTLSBindingPolicy` (`pkg/auth/binding_policy.go`), zero value
+`MTLSBindingEnrolled`, resolved from configuration by
+`auth.ParseMTLSBindingPolicy` (an unknown spelling is
+`*InvalidMTLSBindingPolicyError`, never a guess) and threaded
+`wiring.AuthMiddlewareConfig.MTLSBindingPolicy` →
+`middleware.WithMTLSBindingPolicy`. The boot refusal is
+`firstboot.VerifyAdminCertBinding(ctx, AdminLookup, now)` →
+`*firstboot.AdminCertBindingRequiredError{Reason}` or `*firstboot.AdminLookupError`;
+`firstboot.Initialize` runs the same predicate before its first write when
+`Dependencies.MTLSBindingPolicy` is `required`, and `bootstrap.SystemConfig`
+forwards the value to it.
+
+`*CertBindingRequiredError` classifies as `AuthFailureUnauthenticated` for the
+same reason as the rule it sits beside: the caller has no enrolled key to have
+possessed, and enrolling the `PresentedThumbprint` it carries is what makes the
+same certificate work.
 
 `*CertBindingNotPermittedError` classifies as `AuthFailureUnauthenticated`
 (401), not `AuthFailureUnauthorized` (403). The contrast with

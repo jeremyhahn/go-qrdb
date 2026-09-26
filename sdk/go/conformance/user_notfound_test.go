@@ -405,6 +405,11 @@ type userClients struct {
 	// node behind it, for suites that act on tenants rather than users.
 	tenants transport.TenantClient
 	node    *node.Node
+
+	// store is the node's own user service, behind every transport. It is for
+	// arranging state no transport can write -- a binding whose expiry has
+	// passed, which enrolment refuses -- never for the calls under test.
+	store user.UserServicer
 }
 
 // bootUserCell brings up a standalone node carrying exactly one listener and
@@ -474,6 +479,7 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 			realUserID: realUserID,
 			tenants:    n.Client().Tenants(),
 			node:       n,
+			store:      n.Services().User,
 		}
 	}
 
@@ -504,6 +510,7 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 		realUserID: realUserID,
 		tenants:    sdkClient.Tenants(),
 		node:       n,
+		store:      n.Services().User,
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -1868,5 +1869,35 @@ func TestBuildTenantStrategy_DefaultCaseReturnsError(t *testing.T) {
 	var want *UnsupportedStrategyError
 	if !errors.As(err, &want) {
 		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}
+
+// TestBootstrapSystem_ForwardsMTLSBindingPolicy pins that the system bootstrap
+// hands auth.mtls_binding_policy to first-boot: under "required" with no
+// CertBinder, first-boot refuses before creating the system tenant, and the
+// refusal reaches the caller wrapped as a FirstBootError.
+func TestBootstrapSystem_ForwardsMTLSBindingPolicy(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	tenants := &fakeTenants{}
+	users := &fakeUsersWithLookup{lookupErr: &user.UserNotFoundError{Lookup: "admin"}}
+
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:          StrategyNone,
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: &fakeRoles{},
+		CA:       &fakeCA{cert: realCertPEM(t), key: []byte("KEY")},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var fbErr *FirstBootError
+	var refusal *firstboot.AdminCertBindingRequiredError
+	if !errors.As(err, &fbErr) || !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a FirstBootError wrapping *firstboot.AdminCertBindingRequiredError", err)
+	}
+	if refusal.Reason != firstboot.AdminBindingNoBinder {
+		t.Fatalf("reason = %q, want %q", refusal.Reason, firstboot.AdminBindingNoBinder)
+	}
+	if len(tenants.createCalls) != 0 || len(users.createCalls) != 0 {
+		t.Fatalf("refused first boot wrote: tenants=%d users=%d", len(tenants.createCalls), len(users.createCalls))
 	}
 }

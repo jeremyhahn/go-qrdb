@@ -125,6 +125,45 @@ are not reconstructed here — their history is in the git log.
   config load with the same round trip. New: `cert.WithTrustDomain`,
   `lifecycle.Infra.SPIFFETrustDomain`, `spiffe.ValidateTrustDomain`,
   `spiffe.TrustDomainError` (carries the rejected value).
+- **`auth.mtls_binding_policy: enrolled | required`.** `enrolled` (the default)
+  is today's behaviour: an account's certificate bindings are enforced once it
+  has one. `required` refuses every certificate login that does not present a
+  key enrolled on the account it names — an account with no bindings, and a
+  certificate naming no account, get 401 with
+  `middleware.CertBindingRequiredError`, which quotes the thumbprint to enrol.
+  Because it is a lockout risk, a node under `required` **refuses to boot**
+  when the bootstrap admin holds no unexpired binding
+  (`firstboot.AdminCertBindingRequiredError`), and `firstboot.Initialize`
+  refuses before writing anything when it could not bind the admin it would
+  create, and verifies the admin it produced. The SDK node refuses to start with
+  an existing unbound admin and runs first boot under its own policy through
+  `Node.FirstBoot` (only that path guarantees no lockout on an embedded node).
+  Every user store under `required` refuses every change that would leave the
+  bootstrap admin unable to log in by certificate -- deleting, renaming,
+  disabling or suspending it, dropping mtls from its methods, or leaving it
+  with no live binding, whichever verb makes it -- with
+  `user.BootstrapAdminLockoutError{Reason}` (409 on REST, FAILED_PRECONDITION
+  on gRPC and QUIC, CodeFailedPrecondition on MCP), judged inside the store's
+  conditional write. The recovery path for an admin locked out by expiry is to
+  switch to `enrolled` and restart. The boot check also refuses an admin whose
+  lifecycle forbids login or whose method policy excludes mtls, through the
+  same predicate (`user.AdminLoginBlocker`). `AddCertBinding` now refuses an
+  expiry that is not in the future, for every account
+  (`user.CertBindingExpiredError`: 400 / INVALID_ARGUMENT). New:
+  `user.WithLogger`; `lifecycle.UserStoreOptions` takes the store's logger.
+  The daemon judges the admin through the linearizable store with a bounded
+  wait, so a follower that has not yet replicated the admin's binding does not
+  refuse to boot. The admin's deadline is exported as
+  `qrdb_auth_admin_cert_binding_not_after_timestamp_seconds`, refreshed on
+  every boot check and every committed change to the admin, with a warning
+  inside 30 days under `required`. An unrecognised value fails configuration validation and the
+  boot. Forwarded on-behalf requests,
+  module session tokens and a sealed tenant's IAM window are not gated, as
+  documented. New: `auth.MTLSBindingPolicy`, `auth.ParseMTLSBindingPolicy`,
+  `middleware.WithMTLSBindingPolicy`, `wiring.AuthMiddlewareConfig.MTLSBindingPolicy`,
+  `firstboot.Dependencies.MTLSBindingPolicy`, `firstboot.VerifyAdminCertBinding`,
+  `firstboot.VerifyAdminCertBindingWithin`, `node.(*Node).FirstBoot`,
+  `bootstrap.SystemConfig.MTLSBindingPolicy`, and their `sdk/go` re-exports.
 
 ### Changed — BREAKING
 

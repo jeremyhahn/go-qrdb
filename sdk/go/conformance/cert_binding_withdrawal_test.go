@@ -16,9 +16,12 @@ package conformance
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -217,8 +220,8 @@ func TestCertBindingWithdrawal_LastBindingEmptiesTheSet(t *testing.T) {
 // second withdrawal returning not-found — because nothing on the wire carried
 // it.
 func TestCertBindings_ListedOnEveryTransport(t *testing.T) {
-	// Already expired when enrolled: the store accepts a past expiry, and it
-	// is the case that decides whether "listed in full" is true.
+	// An expiry that has passed: the case that decides whether "listed in
+	// full" is true.
 	const expiredUnix = 1577836800 // 2020-01-01T00:00:00Z
 
 	for _, tk := range userNotFoundTransports {
@@ -236,16 +239,27 @@ func TestCertBindings_ListedOnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: a new account lists bindings: %+v", tk, fresh.CertBindings)
 			}
 
-			if _, err := c.users.AddCertBinding(ctx, target, retainedThumbprint, 0); err != nil {
+			// The write's own response already carries the set.
+			enrolled, err := c.users.AddCertBinding(ctx, target, retainedThumbprint, 0)
+			if err != nil {
 				t.Fatalf("%s: AddCertBinding(live): %v", tk, err)
 			}
-			// The write's own response already carries the set.
-			enrolled, err := c.users.AddCertBinding(ctx, target, withdrawnThumbprint, expiredUnix)
-			if err != nil {
-				t.Fatalf("%s: AddCertBinding(expired): %v", tk, err)
+			if len(enrolled.CertBindings) != 1 || enrolled.CertBindings[0].Thumbprint != retainedThumbprint {
+				t.Fatalf("%s: AddCertBinding's response lists %+v, want the one binding", tk, enrolled.CertBindings)
 			}
-			if len(enrolled.CertBindings) != 2 {
-				t.Fatalf("%s: AddCertBinding's response lists %d bindings, want 2: %+v", tk, len(enrolled.CertBindings), enrolled.CertBindings)
+			// Enrolling a binding that has already expired is refused on every
+			// transport (go-qrdb#517): it could never authenticate.
+			if _, err := c.users.AddCertBinding(ctx, target, withdrawnThumbprint, expiredUnix); err == nil ||
+				!strings.Contains(err.Error(), "not in the future") {
+				t.Fatalf("%s: AddCertBinding(already expired) = %v, want the refusal", tk, err)
+			}
+			// A binding reaches the expired state by time passing, which no
+			// transport can write; arrange it on the node's own store.
+			if _, err := c.store.UpdateUser(ctx, &user.UpdateUserRequest{ID: target, CertBindings: []user.CertBinding{
+				{Thumbprint: retainedThumbprint, Kind: user.CertBindingSPKIThumbprint},
+				{Thumbprint: withdrawnThumbprint, Kind: user.CertBindingSPKIThumbprint, NotAfter: time.Unix(expiredUnix, 0).UTC()},
+			}}); err != nil {
+				t.Fatalf("%s: arranging an expired binding: %v", tk, err)
 			}
 
 			got, err := c.users.GetUser(ctx, target)

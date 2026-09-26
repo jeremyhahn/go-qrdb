@@ -141,6 +141,21 @@ func enroll(t *testing.T, svc user.UserServicer, userID uint64, ck certKey) {
 	}
 }
 
+// holdExpiredBinding leaves the account holding ck's binding with an expiry
+// one hour in the past -- the state time produces from a live enrolment.
+// AddCertBinding refuses to enrol a binding already expired, so the record is
+// written the way it looks once the expiry has passed.
+func holdExpiredBinding(t *testing.T, svc user.UserServicer, userID uint64, ck certKey) {
+	t.Helper()
+	if _, err := svc.UpdateUser(context.Background(), &user.UpdateUserRequest{ID: userID, CertBindings: []user.CertBinding{{
+		Thumbprint: user.ComputeSPKIThumbprint(ck.cert),
+		Kind:       user.CertBindingSPKIThumbprint,
+		NotAfter:   time.Now().Add(-time.Hour).UTC(),
+	}}}); err != nil {
+		t.Fatalf("UpdateUser(CertBindings): %v", err)
+	}
+}
+
 // mtlsMiddleware wires the REAL mTLS authenticator over the given user store.
 func mtlsMiddleware(svc user.UserServicer) *AuthMiddleware {
 	return New(&mockAuthorizer{},
@@ -296,10 +311,7 @@ func TestAuthenticate_ExpiredBindingDoesNotAdmit(t *testing.T) {
 	svc := newRealUserStore(t)
 	carol := createUser(t, svc, "acme", "carol", nil)
 	retired := mintCert(t, "carol", "acme", nil, "")
-	if _, err := svc.AddCertBinding(context.Background(), carol.ID,
-		user.ComputeSPKIThumbprint(retired.cert), time.Now().Add(-time.Hour).Unix()); err != nil {
-		t.Fatalf("AddCertBinding: %v", err)
-	}
+	holdExpiredBinding(t, svc, carol.ID, retired)
 
 	m := mtlsMiddleware(svc)
 	if _, _, err := m.authenticate(mtlsContext(retired)); err == nil {
@@ -420,7 +432,7 @@ func TestCheckCertBinding_FailsClosedWithoutAPeerCertificate(t *testing.T) {
 	bound.AddCertBinding(user.CertBinding{Thumbprint: user.ComputeSPKIThumbprint(
 		mintCert(t, "alice", "victim", nil, "").cert)})
 
-	err := checkCertBinding(context.Background(), bound, knownMethod(auth.MethodMTLS))
+	err := checkCertBinding(context.Background(), bound, knownMethod(auth.MethodMTLS), auth.MTLSBindingEnrolled)
 	if err == nil {
 		t.Fatal("an enrolled account was admitted with no peer certificate at all")
 	}
@@ -441,7 +453,7 @@ func TestCheckCertBinding_FailsClosedWithoutAPeerCertificate(t *testing.T) {
 // miss proceeds unenriched, and a predicate that refused on nil would turn
 // every unknown subject into a certificate-binding failure.
 func TestCheckCertBinding_NilUserIsNotAnAdmissionDecision(t *testing.T) {
-	if err := checkCertBinding(context.Background(), nil, knownMethod(auth.MethodMTLS)); err != nil {
+	if err := checkCertBinding(context.Background(), nil, knownMethod(auth.MethodMTLS), auth.MTLSBindingRequired); err != nil {
 		t.Fatalf("checkCertBinding(nil user) = %v, want nil", err)
 	}
 }

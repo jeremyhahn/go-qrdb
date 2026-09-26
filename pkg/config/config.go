@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
@@ -895,6 +896,28 @@ type AuthConfig struct {
 	// posture. Default: "fail-closed".
 	AuditFailurePolicy string `yaml:"audit_failure_policy"`
 
+	// MTLSBindingPolicy selects whether a certificate login must present a
+	// certificate enrolled on the account it names (go-qrdb#517).
+	//
+	//   "enrolled" (default, and what an empty value means)
+	//       An account's bindings are enforced only once it has one. An
+	//       account with no bindings authenticates on the certificate's CN and
+	//       tenant alone.
+	//
+	//   "required"
+	//       EVERY certificate login must present a certificate enrolled on the
+	//       account it names. An account with no bindings, and a certificate
+	//       naming no account, are refused (401 / UNAUTHENTICATED).
+	//
+	// "required" is a lockout risk, so the node REFUSES TO BOOT under it when
+	// the bootstrap admin could not log in: it must exist and hold at least
+	// one unexpired certificate binding. Migrate by enrolling every account's
+	// certificate under "enrolled" first; roll back by setting "enrolled".
+	//
+	// An unrecognised value FAILS THE BOOT rather than resolving to either
+	// posture. Default: "enrolled".
+	MTLSBindingPolicy string `yaml:"mtls_binding_policy"`
+
 	// ABAC configures the optional attribute-based access control decorator
 	// layered over the RBAC authorizer. When enabled, YAML policies from
 	// PolicyDir are evaluated before RBAC: an explicit deny overrides an
@@ -1755,6 +1778,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
 		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}
+	}
+	// An unrecognised binding posture must not reach a boot that could guess
+	// at it; reject it with the rest of the configuration.
+	if _, err := auth.ParseMTLSBindingPolicy(c.Auth.MTLSBindingPolicy); err != nil {
+		return &ValidationError{Field: "auth.mtls_binding_policy", Reason: `must be "enrolled", "required" or empty`}
 	}
 	// The trust domain is minted into certificate SANs and pinned by the
 	// authenticator, so it must survive the SPIFFE round trip both apply

@@ -174,8 +174,12 @@ type startFlags struct {
 	// — it decides whether a decision whose audit record could not be written
 	// is refused or permitted.
 	auditFailurePolicy string
-	abacEnabled        bool
-	abacPolicyDir      string
+
+	// mtlsBindingPolicy is the auth.mtls_binding_policy string. Empty means
+	// the default, "enrolled". See qrdbconfig.AuthConfig.MTLSBindingPolicy.
+	mtlsBindingPolicy string
+	abacEnabled       bool
+	abacPolicyDir     string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -645,6 +649,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
+	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
 	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
 	// trust domain above.
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
@@ -1531,6 +1536,7 @@ func runStart(f *startFlags) (err error) {
 				CeremonyCA:                ceremonyCA,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
+				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
@@ -1638,7 +1644,20 @@ func runStart(f *startFlags) (err error) {
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
 
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
+			// Under auth.mtls_binding_policy "required" every user store
+			// refuses any change that would lock the bootstrap admin out of
+			// certificate login (lifecycle.UserStoreOptions).
+			// An unrecognised value aborts here, before any store exists.
+			var userOpts []user.Option
+			if f.authEnabled {
+				opts, perr := lifecycle.UserStoreOptions(f.mtlsBindingPolicy, slog.Default())
+				if perr != nil {
+					_ = shutdownNode(nodeCloser)
+					return &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: perr}
+				}
+				userOpts = opts
+			}
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -1661,7 +1680,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3171,7 +3190,13 @@ type authBootstrapResult struct {
 // the structurally-privileged system tenant. Required (non-nil): tests
 // supply a small in-memory tenant servicer; production startup wires
 // the real one from svcNode.Tenant.
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger) (*mgmtBootstrapResult, error) {
+//
+// userOpts are applied to every user store it builds -- under
+// auth.mtls_binding_policy "required", user.WithBootstrapAdminBindingRequired,
+// so no transport can make a change that leaves the bootstrap admin unable to
+// log in by certificate (delete, rename, disable or suspend it, drop mtls from
+// its methods, or withdraw its last live binding).
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -3270,8 +3295,8 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// over bootStore itself: the claim and every record write this store
 	// makes land in the SAME physical store, by construction, not by
 	// assumption. See role.WithAtomicIdentity / user.WithAtomicIdentity.
-	bootUserSvc, err := user.NewStore(bootStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex), user.WithAtomicIdentity())
+	bootUserSvc, err := user.NewStore(bootStore, userIDGen, append([]user.Option{
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex), user.WithAtomicIdentity()}, userOpts...)...)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
@@ -3327,8 +3352,8 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "system placement index", Err: err}
 	}
-	userSvc, err := user.NewStore(systemStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex), user.WithAtomicIdentity())
+	userSvc, err := user.NewStore(systemStore, userIDGen, append([]user.Option{
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex), user.WithAtomicIdentity()}, userOpts...)...)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
@@ -3368,7 +3393,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if resErr != nil {
 			return nil, &AuthBootstrapError{Step: "store resolver", Err: resErr}
 		}
-		routedUsers, ruErr := user.NewRoutingService(resolver, userIDGen, user.WithAuditLogger(auditLogger))
+		routedUsers, ruErr := user.NewRoutingService(resolver, userIDGen, append([]user.Option{user.WithAuditLogger(auditLogger)}, userOpts...)...)
 		if ruErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed user store", Err: ruErr}
 		}
@@ -3405,7 +3430,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3472,6 +3497,30 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		return nil, &AuthBootstrapError{Step: "auth.audit_failure_policy", Err: err}
 	}
 
+	// The mTLS enrolment posture (go-qrdb#517). An unrecognised value aborts
+	// the boot. Under "required" the boot ALSO aborts when the bootstrap admin
+	// could not log in by certificate -- the owner's ruling on the lockout the
+	// posture creates: a node that started would admit nobody able to repair
+	// it. This daemon's first boot wires no CertBinder, so a fresh node under
+	// "required" stops here; the documented migration enrols the admin under
+	// "enrolled" first.
+	//
+	// The admin is read through the LINEARIZABLE runtime store, not the
+	// StaleRead boot store: first-boot waited for the admin RECORD to
+	// replicate, but a binding enrolled on the leader afterwards may not have
+	// reached this follower yet, and judging the stale record would refuse a
+	// boot that should succeed. A read that cannot be served yet is retried
+	// for a bounded time before it refuses.
+	bindingPolicy, err := auth.ParseMTLSBindingPolicy(mtlsBindingPolicy)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
+	}
+	if bindingPolicy == auth.MTLSBindingRequired {
+		if err := firstboot.VerifyAdminCertBindingWithin(ctx, mgmt.userSvc, adminBindingWait); err != nil {
+			return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
+		}
+	}
+
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
@@ -3491,6 +3540,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// authenticating until it expires.
 		CertProvider:       certProv,
 		RevocationCacheTTL: revocationTTL,
+		MTLSBindingPolicy:  bindingPolicy,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
@@ -3524,6 +3574,11 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		soAuthenticator: soAuthenticator,
 	}, nil
 }
+
+// adminBindingWait bounds the boot-time wait for the bootstrap admin's
+// certificate bindings to be readable (firstboot.VerifyAdminCertBindingWithin).
+// A variable so tests can shorten it; production uses the shared default.
+var adminBindingWait = firstboot.AdminBindingLookupTimeout
 
 // decorateWithABAC wraps the given authorizer with the ABAC policy
 // decorator when ABAC is enabled in the configuration. When disabled it

@@ -111,6 +111,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -558,6 +559,11 @@ type pendingClusteredBoot struct {
 // use-after-close; the node has never promised to survive that and still does
 // not.
 type Node struct {
+	// bindingPolicy is the auth.MTLSBindingPolicy the node's middleware
+	// enforces, recorded when it is wired so Node.FirstBoot holds first-boot
+	// to the same posture.
+	bindingPolicy atomic.Int32
+
 	srv     atomic.Pointer[server.Server]
 	client  atomic.Pointer[sdk.Client]
 	svcNode atomic.Pointer[lifecycle.Node]
@@ -914,6 +920,9 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// the mTLS authenticator pins, so the pin is exercised by the
 		// certificates this node issues (go-qrdb#519).
 		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
+		// Under "required" the user store refuses to withdraw the bootstrap
+		// admin's last live binding (go-qrdb#517).
+		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
@@ -1217,6 +1226,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// the mTLS authenticator pins, so the pin is exercised by the
 		// certificates this node issues (go-qrdb#519).
 		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
+		// Under "required" the user store refuses to withdraw the bootstrap
+		// admin's last live binding (go-qrdb#517).
+		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
 		// DatabaseManager is shared so the shard allocator is not reset
 		// mid-flight and lifecycle does not open a second manager on the same
 		// data directory.
@@ -1722,6 +1734,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		Profile:     &profile,
 		Logger:      log,
 		SealEnabled: cfg.Seal.Enabled,
+		// Under "required" the user store refuses to withdraw the bootstrap
+		// admin's last live binding (go-qrdb#517).
+		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
@@ -1898,6 +1913,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		Profile:     &profile,
 		Logger:      log,
 		SealEnabled: cfg.Seal.Enabled,
+		// Under "required" the user store refuses to withdraw the bootstrap
+		// admin's last live binding (go-qrdb#517).
+		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
 	})
 	if err != nil {
 		_ = host.Close()
@@ -2310,6 +2328,26 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
+	// The mTLS enrolment posture: "enrolled" unless the embedder's config says
+	// otherwise, and an unrecognised value fails the node's start. Under
+	// "required" the node refuses to start when an EXISTING bootstrap admin
+	// could not log in by certificate, and Node.FirstBoot holds first-boot to
+	// the same policy -- so an embedder cannot boot with the admin locked out
+	// (the owner's refuse-to-boot ruling, go-qrdb#517).
+	bindingPolicy, err := auth.ParseMTLSBindingPolicy(cfg.Auth.MTLSBindingPolicy)
+	if err != nil {
+		_ = client.Close()
+		n.client.Store(nil)
+		return &AuthMiddlewareWiringError{Err: err}
+	}
+	n.bindingPolicy.Store(int32(bindingPolicy))
+	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
+		if verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout); verr != nil {
+			_ = client.Close()
+			n.client.Store(nil)
+			return &AuthMiddlewareWiringError{Err: verr}
+		}
+	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -2327,6 +2365,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// certificate keep authenticating until it expires.
 		CertProvider:       svcNode.CertProv,
 		RevocationCacheTTL: revocationTTL,
+		MTLSBindingPolicy:  bindingPolicy,
 	})
 	if err != nil {
 		_ = client.Close()

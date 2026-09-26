@@ -53,6 +53,11 @@ type AuthMiddleware struct {
 	// operator lever, auth.audit_failure_policy, governs both assertions.
 	auditFailure audit.FailurePolicy
 
+	// bindingPolicy is the fleet-wide mTLS enrolment posture
+	// (auth.mtls_binding_policy, go-qrdb#517). Its zero value is
+	// auth.MTLSBindingEnrolled -- the behaviour before the setting existed.
+	bindingPolicy auth.MTLSBindingPolicy
+
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS
 	// authenticator's own revocation check. Nil means revocation is not
@@ -130,6 +135,31 @@ func WithUserServiceFallback(u user.UserServicer) Option {
 	return func(m *AuthMiddleware) {
 		m.usersFallback = u
 	}
+}
+
+// WithMTLSBindingPolicy selects the fleet-wide mTLS enrolment posture
+// (auth.mtls_binding_policy). Under auth.MTLSBindingRequired a certificate
+// login is admitted only by presenting a certificate enrolled on the account it
+// names; an account with no bindings, and a certificate naming no account, are
+// refused with *CertBindingRequiredError. The default, auth.MTLSBindingEnrolled,
+// enforces a binding only on accounts that have one.
+//
+// Selecting "required" is a lockout risk. The composer that selects it must
+// also refuse to boot when the bootstrap admin could not log in under it —
+// firstboot.VerifyAdminCertBinding is that check.
+func WithMTLSBindingPolicy(p auth.MTLSBindingPolicy) Option {
+	return func(m *AuthMiddleware) {
+		m.bindingPolicy = p
+	}
+}
+
+// MTLSBindingPolicy returns the enrolment posture this middleware enforces.
+// A nil middleware (auth disabled) enforces none and answers the default.
+func (m *AuthMiddleware) MTLSBindingPolicy() auth.MTLSBindingPolicy {
+	if m == nil {
+		return auth.MTLSBindingEnrolled
+	}
+	return m.bindingPolicy
 }
 
 // WithRevocationChecker gates the on-behalf forwarding path on certificate
@@ -307,9 +337,15 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				ctx = auth.WithIdentity(ctx, identity)
 				return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 			}
-			// If user not found, proceed with base identity (no enrichment).
+			// If user not found, proceed with base identity (no enrichment) --
+			// unless the binding posture is "required", under which a
+			// certificate naming no account is refused.
 			var unf *user.UserNotFoundError
-			if !errors.As(err, &unf) {
+			if errors.As(err, &unf) {
+				if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+					return ctx, nil, rerr
+				}
+			} else {
 				// Transient store error (Raft not ready, timeout, etc).
 				// Return 503/UNAVAILABLE so clients retry rather than
 				// proceeding without roles (which would cause false 403).
@@ -346,7 +382,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// for what it does and does not enforce -- in particular that an
 			// account with no enrolled bindings authenticates exactly as
 			// before.
-			if cerr := checkCertBinding(ctx, u, method); cerr != nil {
+			if cerr := checkCertBinding(ctx, u, method, m.bindingPolicy); cerr != nil {
 				return ctx, nil, cerr
 			}
 
@@ -379,6 +415,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// Enrich identity with persistent role assignments.
 			identity.Roles = u.RoleIDs
 		}
+	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+		// No user store: no account can be resolved, so under the
+		// "required" posture no certificate login can show an enrolment.
+		return ctx, nil, rerr
 	}
 
 	ctx = auth.WithIdentity(ctx, identity)

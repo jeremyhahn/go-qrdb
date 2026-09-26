@@ -78,15 +78,18 @@ func isCertBoundMethod(method authMethod) bool {
 // It permits the request in three cases, all statements rather than
 // oversights:
 //
-//   - The account has NO cert bindings. An empty binding set states no
-//     restriction — the same statement user.User.AuthMethods makes with an
+//   - The account has NO cert bindings AND the fleet's posture is
+//     auth.MTLSBindingEnrolled (the default). An empty binding set then states
+//     no restriction — the same statement user.User.AuthMethods makes with an
 //     empty policy, and for the same reason: enrolment is an operator act that
 //     predates this gate in every existing deployment, and enforcing an empty
 //     set as "nothing authenticates" would lock out every account nobody has
 //     enrolled yet, including the first-boot admin on a node whose bootstrap
 //     wired no CertBinder. The consequence is stated rather than hidden: an
 //     unenrolled account is exactly as impersonable as it was before, and
-//     enrolling it is what closes it.
+//     enrolling it — or selecting auth.MTLSBindingRequired once everyone is
+//     enrolled — is what closes it. Under MTLSBindingRequired the empty set is
+//     refused with *CertBindingRequiredError (go-qrdb#517).
 //   - The method is not CERT-BOUND. See isCertBoundMethod.
 //   - The presented certificate matches a currently-valid binding. Matching is
 //     user.User.MatchesCert, which is the single mTLS-auth predicate on the
@@ -102,9 +105,20 @@ func isCertBoundMethod(method authMethod) bool {
 // carried on the identity. The identity's Metadata is a map the fallback and
 // on-behalf paths construct themselves, so a thumbprint carried there would be
 // a claim; the TLS state is the fact the authenticator itself read.
-func checkCertBinding(ctx context.Context, u *user.User, method authMethod) error {
-	if u == nil || len(u.CertBindings) == 0 || !isCertBoundMethod(method) {
+func checkCertBinding(ctx context.Context, u *user.User, method authMethod, policy auth.MTLSBindingPolicy) error {
+	if u == nil || !isCertBoundMethod(method) {
 		return nil
+	}
+	if len(u.CertBindings) == 0 {
+		if policy != auth.MTLSBindingRequired {
+			return nil
+		}
+		return &CertBindingRequiredError{
+			Username:            u.Username,
+			TenantID:            u.TenantID,
+			AccountResolved:     true,
+			PresentedThumbprint: presentedThumbprint(ctx),
+		}
 	}
 	cert, err := verifiedPeerCertificate(auth.TLSStateFromContext(ctx))
 	if err != nil || cert == nil {
@@ -118,4 +132,39 @@ func checkCertBinding(ctx context.Context, u *user.User, method authMethod) erro
 		TenantID:            u.TenantID,
 		PresentedThumbprint: user.ComputeSPKIThumbprint(cert),
 	}
+}
+
+// checkUnresolvedCertLogin applies the binding posture to a certificate login
+// whose subject resolves to NO account — the user store answered not-found, or
+// no user store is wired at all.
+//
+// Under auth.MTLSBindingEnrolled it admits, as before: the identity proceeds
+// unenriched with no roles and RBAC default-denies whatever it asks for.
+// Under auth.MTLSBindingRequired it refuses, because "every certificate login
+// presents a certificate enrolled on the account it names" cannot hold for a
+// login that names no account; admitting it would leave the one identity that
+// by definition has no enrolment as the posture's exception.
+//
+// The unobservable-method paths are excluded for the reason isCertBoundMethod
+// gives: the certificate on those connections is not the subject's.
+func checkUnresolvedCertLogin(ctx context.Context, identity *auth.Identity, method authMethod, policy auth.MTLSBindingPolicy) error {
+	if policy != auth.MTLSBindingRequired || identity == nil || !isCertBoundMethod(method) {
+		return nil
+	}
+	return &CertBindingRequiredError{
+		Username:            identity.Subject,
+		TenantID:            identity.TenantID,
+		PresentedThumbprint: presentedThumbprint(ctx),
+	}
+}
+
+// presentedThumbprint is the SPKI thumbprint of the verified peer certificate
+// in ctx, or "" when none can be read. It is carried on a refusal because it is
+// the exact value an operator enrols to turn that refusal into an admission.
+func presentedThumbprint(ctx context.Context) string {
+	cert, err := verifiedPeerCertificate(auth.TLSStateFromContext(ctx))
+	if err != nil || cert == nil {
+		return ""
+	}
+	return user.ComputeSPKIThumbprint(cert)
 }

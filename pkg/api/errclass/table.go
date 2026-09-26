@@ -413,6 +413,13 @@ var identityRules = []rule{
 	// A thumbprint already bound to ANOTHER user: rebinding it silently would
 	// hand the caller that user's mTLS identity (go-qrdb#536).
 	as(&user.CertBindingConflictError{}, AlreadyExists),
+	// A change that would lock the bootstrap admin out under
+	// auth.mtls_binding_policy "required": deleting, renaming, disabling or
+	// suspending it, dropping mtls from its methods, or leaving it with no live
+	// binding. The request is well formed; the account's state forbids it.
+	as(&user.BootstrapAdminLockoutError{}, FailedPrecondition),
+	// An enrolment whose expiry is already past: a bad field value.
+	as(&user.CertBindingExpiredError{}, InvalidArgument),
 	// A lost optimistic-concurrency check: re-read and retry.
 	as(&user.ConcurrentUpdateError{}, Aborted),
 	// The commit may have landed: reconcile, do not assume failure.

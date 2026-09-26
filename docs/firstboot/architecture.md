@@ -72,6 +72,31 @@ This makes admin enrolment the mirror of `EnrollExternalOfficer` — the admin a
 every security officer enrol by the same rule, and an operator who can bring
 their own credential to one role can bring it to the other.
 
+### Under `auth.mtls_binding_policy: required`
+
+When the fleet requires every certificate login to present an enrolled key
+(see [../identity-rbac/](../identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy)),
+an admin without a binding is an admin nobody can log in as — and the way back
+in needs a login. `Initialize` therefore takes the policy
+(`Dependencies.MTLSBindingPolicy`, forwarded by `bootstrap.SystemConfig`) and,
+under `required`, refuses **before its first write**:
+
+- an admin it would **create** with no `Binder`, or with no path above to issue
+  or adopt a certificate — there would be nothing bound;
+- an admin that **already exists** with no unexpired binding — a re-run issues
+  nothing, so nothing would change.
+
+Verifying an existing admin needs a read, so `Users` must also implement
+`AdminLookup`; one that cannot is refused, because the posture cannot be shown
+to hold. After its last step it reads the admin back and checks the outcome
+too, so a component that reported success without producing a binding is
+caught rather than trusted. The SDK node's `Node.FirstBoot` runs this under the
+node's own policy and verifies against the node's store. A composer that skips `Initialize` once the admin exists — the daemon
+does — runs the same predicate at every boot with `VerifyAdminCertBinding` and
+refuses to start on its error. Every refusal is
+`AdminCertBindingRequiredError`, naming the reason and the way back (start with
+`enrolled`, enrol the admin, set `required`).
+
 ### Alternatives rejected
 
 - **Invite tokens for system-level identities.** Rejected: a bearer token that

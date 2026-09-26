@@ -34,6 +34,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -44,7 +45,7 @@ import (
 // first-boot. The admin user is granted exactly one role: Admin@system,
 // which the system-tenant rule in pkg/auth/rbac promotes to cross-tenant
 // authority.
-const adminUsername = "admin"
+const adminUsername = user.BootstrapAdminUsername
 
 // systemTenantDisplayName is the human-readable name persisted alongside
 // the reserved system tenant id.
@@ -232,6 +233,16 @@ type Dependencies struct {
 	// The caller derives this from crypto/fips140.Enabled() ||
 	// config.Auth.SeparationOfDuties — see cmd/qrdbd.
 	SeparationOfDuties bool
+
+	// MTLSBindingPolicy is the fleet's auth.mtls_binding_policy. Under
+	// auth.MTLSBindingRequired, Initialize refuses — before writing anything —
+	// a configuration that would leave the admin unable to log in by
+	// certificate: creating the admin needs a Binder and an admin certificate
+	// path, and an existing admin must already hold a live binding (which
+	// needs Users to implement AdminLookup). The error is
+	// *AdminCertBindingRequiredError. The zero value, MTLSBindingEnrolled,
+	// changes nothing.
+	MTLSBindingPolicy auth.MTLSBindingPolicy
 }
 
 // Initialize runs the always-runs first-boot path. Idempotent: when the
@@ -257,6 +268,9 @@ type Dependencies struct {
 // state machine is layered on top by the daemon at a higher level.
 func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	if err := validateDependencies(deps); err != nil {
+		return nil, err
+	}
+	if err := checkBindingPosture(ctx, deps); err != nil {
 		return nil, err
 	}
 
@@ -322,6 +336,16 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 				slog.Bool("csr_signed", len(deps.AdminCSRPEM) > 0),
 			)
 		}
+	}
+
+	// Under "required", verify the OUTCOME, not only the inputs the
+	// pre-flight checked: a CA that returned an empty certificate, a user
+	// surface that created the admin without returning it, or a Binder that
+	// reported success without binding would each leave an admin nobody can
+	// log in as. The record is read back through the same lookup the
+	// pre-flight used (checkBindingPosture guaranteed it exists).
+	if err := verifyRequiredOutcome(ctx, deps); err != nil {
+		return nil, err
 	}
 
 	logger.Info("first-boot complete",

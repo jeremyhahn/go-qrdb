@@ -8,6 +8,12 @@
 // pkg/firstboot
 func Initialize(ctx context.Context, deps Dependencies) (*Result, error)
 
+// The auth.mtls_binding_policy "required" boot check.
+type AdminLookup interface {
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
+}
+func VerifyAdminCertBinding(ctx context.Context, users AdminLookup, now time.Time) error
+
 // pkg/bootstrap — orchestration entry points
 //   System bootstrap        — system barrier + system tenant + system admin + admin-mTLS
 //   Provision tenant        — control-plane tenant record + tenant-admin enrollment
@@ -175,6 +181,31 @@ a second, unrelated credential bound instead.
 | `MissingAdminCertPoolError` | `AdminCertPEM` without `AdminCertPool` | **yes** — an absent pool is refused, never treated as "trust anything" |
 | `AdminCertRejectedError` | parse failure, expired, or no chain to the pool | **yes** |
 | `NotLeader` | a follower attempted creation | n/a — it waits for replication |
+| `AdminCertBindingRequiredError` | `MTLSBindingPolicy` is `required` and the admin could not log in by certificate: `Reason` is one of `AdminBindingNoBinder`, `AdminBindingNoCertPath`, `AdminBindingNone`, `AdminBindingAllExpired`, `AdminBindingMissing`, `AdminBindingCannotAuthenticate` (lifecycle forbids login), `AdminBindingMTLSNotPermitted` (method policy excludes mtls), `AdminBindingUnverifiable` | **yes** — returned before any write |
+| `AdminLookupError` | the admin could not be read while checking that posture | **yes** — no verdict is not a pass |
+
+Under `required`, `Initialize` also re-reads the admin after it finishes and
+applies the same predicate to what the store holds, so an empty certificate, a
+missing admin record, or a binder that did not bind fails first boot instead of
+reporting success. A passing check sets
+`qrdb_auth_admin_cert_binding_not_after_timestamp_seconds` (Unix time of the
+admin's last live binding's `NotAfter`, `+Inf` when one never expires) and
+warns when that is within `user.AdminBindingExpiryWarning` (30 days); the
+metric and the warning live in `pkg/user` (`user.ObserveBootstrapAdminBindings`)
+because the user store refreshes them on every committed change to the admin.
+The predicate itself is `user.AdminLoginBlocker` — lifecycle, method policy,
+live binding, in the order the middleware applies them — which the user
+store's runtime guard (`user.WithBootstrapAdminBindingRequired`) shares, so
+the boot check and the guard cannot disagree about what "the admin can log in"
+means.
+
+`VerifyAdminCertBindingWithin(ctx, users, timeout)` is the boot-time form. It
+runs under `context.WithDeadline`, so a lookup that blocks is cut off at the
+bound as well, and it retries only a lookup that FAILS (`AdminLookupError`)
+until `timeout`
+(`AdminBindingLookupTimeout`, 30 s), and returns any verdict at once. The
+daemon and the SDK node call it with a linearizable store, so a follower
+waits for the admin's bindings rather than judging a lagging copy.
 
 ## Built-in roles
 

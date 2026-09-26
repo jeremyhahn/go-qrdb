@@ -21,6 +21,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -138,5 +139,67 @@ func TestAddCertBinding_HijackAttemptIsAlreadyExists(t *testing.T) {
 	}
 	if !strings.Contains(st.Message(), "already bound to user 7") {
 		t.Fatalf("message must name the user that holds the thumbprint, got %q", st.Message())
+	}
+}
+
+// TestUserVerbs_BootstrapAdminLockoutIsFailedPrecondition (go-qrdb#517): the
+// store's refusal of a change that would lock the bootstrap admin out is
+// FailedPrecondition on every user verb that can make one, as REST's 409.
+func TestUserVerbs_BootstrapAdminLockoutIsFailedPrecondition(t *testing.T) {
+	lockout := func(reason user.AdminLockoutReason) error {
+		return &user.BootstrapAdminLockoutError{UserID: 1001, Reason: reason}
+	}
+	ctx := context.Background()
+	cases := map[string]func() error{
+		"withdraw the last binding": func() error {
+			s := &qrdbServiceServer{userSvc: &mockUserService{
+				removeCertBindingFn: func(context.Context, uint64, string) (*user.User, error) {
+					return nil, lockout(user.AdminLockoutNoLiveBinding)
+				},
+			}}
+			_, err := s.RemoveCertBinding(ctx, &pb.RemoveCertBindingRequest{UserId: 1001, Thumbprint: "AAAA"})
+			return err
+		},
+		"delete the admin": func() error {
+			s := &qrdbServiceServer{userSvc: &mockUserService{deleteErr: lockout(user.AdminLockoutDelete)}}
+			_, err := s.DeleteUser(ctx, &pb.DeleteUserRequest{Id: 1001})
+			return err
+		},
+		"disable the admin": func() error {
+			s := &qrdbServiceServer{userSvc: &mockUserService{disableErr: lockout(user.AdminLockoutLifecycle)}}
+			_, err := s.DisableUser(ctx, &pb.DisableUserRequest{Id: 1001})
+			return err
+		},
+		"rename the admin": func() error {
+			s := &qrdbServiceServer{userSvc: &mockUserService{updateErr: lockout(user.AdminLockoutRename)}}
+			_, err := s.UpdateUser(ctx, &pb.UpdateUserProtoRequest{Id: 1001, Username: "root"})
+			return err
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			st, _ := status.FromError(call())
+			if st.Code() != codes.FailedPrecondition {
+				t.Fatalf("code = %s, want FailedPrecondition", st.Code())
+			}
+			if !strings.Contains(st.Message(), "bootstrap admin") {
+				t.Fatalf("message %q does not carry the refusal", st.Message())
+			}
+		})
+	}
+}
+
+// TestAddCertBinding_PastExpiryIsInvalidArgument (go-qrdb#517): an enrolment
+// whose expiry has already passed is a bad argument, not an internal fault.
+func TestAddCertBinding_PastExpiryIsInvalidArgument(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, _ uint64, tp string, notAfter int64) (*user.User, error) {
+			return nil, &user.CertBindingExpiredError{Thumbprint: tp, NotAfter: time.Unix(notAfter, 0).UTC()}
+		},
+	}
+	s := &qrdbServiceServer{userSvc: svc}
+	_, err := s.AddCertBinding(context.Background(), &pb.AddCertBindingRequest{UserId: 1001, Thumbprint: "AAAA", NotAfterUnix: 1})
+	if st, _ := status.FromError(err); st.Code() != codes.InvalidArgument {
+		t.Fatalf("code = %s, want InvalidArgument", st.Code())
 	}
 }

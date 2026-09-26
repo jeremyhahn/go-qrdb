@@ -43,6 +43,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -158,6 +159,10 @@ type SystemConfig struct {
 	// SeparationOfDuties selects the first-boot RBAC posture. See
 	// firstboot.Dependencies.SeparationOfDuties.
 	SeparationOfDuties bool
+
+	// MTLSBindingPolicy is the fleet's auth.mtls_binding_policy, forwarded to
+	// first-boot. See firstboot.Dependencies.MTLSBindingPolicy.
+	MTLSBindingPolicy auth.MTLSBindingPolicy
 
 	// AdminCSRPEM, when non-empty, selects the admin-mTLS CSR-sign path
 	// (Path B) for the system admin: the admin's CSR is signed via the
@@ -279,6 +284,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Binder:             deps.Binder,
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,
+		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
 	})
 	if fbErr != nil {
 		return nil, &FirstBootError{Cause: fbErr}

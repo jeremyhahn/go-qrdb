@@ -67,6 +67,11 @@ an account awaiting activation (`pending`), an administrative hold
 
 ### `qrdb users list`
 
+`--output json` carries each account's `cert_bindings`. Under
+`auth.mtls_binding_policy: required` an account whose list is empty cannot log
+in by certificate, so this is the pre-flight before switching — see
+[user.md](user.md#moving-a-fleet-to-required-certificate-enrolment).
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--tenant-id` | string | filter by tenant |

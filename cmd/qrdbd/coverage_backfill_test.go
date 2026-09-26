@@ -133,6 +133,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
+		"",  // mtls binding policy: default (enrolled)
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -169,6 +170,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
+		"",  // mtls binding policy: default (enrolled)
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

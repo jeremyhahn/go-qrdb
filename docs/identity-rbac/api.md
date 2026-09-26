@@ -110,11 +110,42 @@ rotation must not silently unenrol the key being rotated, which is why revoking
 does not drop a matching binding. **Withdrawing the binding is the remediation
 for a compromised key; revoking the certificate is not.**
 
-**Withdrawing an account's LAST binding WIDENS it.** An empty binding set
-states no restriction, so the account returns to admitting any certificate
-whose CN and OU name it — the state every account was in before enrolment. That
-is a real posture change and it is audited as `remove_cert_binding` with
+**Withdrawing an account's LAST binding WIDENS it** under the default
+`auth.mtls_binding_policy: enrolled`. An empty binding set states no
+restriction, so the account returns to admitting any certificate whose CN and
+OU name it — the state every account was in before enrolment. That is a real
+posture change and it is audited as `remove_cert_binding` with
 `last_binding_removed: true`. **Enrol the replacement first, then withdraw.**
+
+Under `required` the store refuses **every change that would leave the
+bootstrap admin (`admin` in the `system` tenant) unable to log in by
+certificate**, with `user.BootstrapAdminLockoutError` naming the `Reason`:
+
+| Change | `Reason` |
+|---|---|
+| Withdrawing its last live binding — through `DELETE …/cert-bindings/{thumbprint}`, or a `PUT /users/{id}` that replaces its bindings with none live | `no_live_binding` |
+| `DELETE /users/{id}` | `delete` |
+| `POST /users/{id}/disable`, or a lifecycle change to `suspended`, `locked`, `disabled` or `deleting` | `lifecycle` |
+| A permitted-method list that omits `mtls` | `mtls_not_permitted` |
+| A new `username` | `rename` |
+
+It is **409** on REST, `FAILED_PRECONDITION` on gRPC (and the Unix socket) and
+QUIC, `CodeFailedPrecondition` on MCP, and the typed error itself on the
+embedded transport. Each is refused only when it would break a requirement the
+admin currently meets, so a change that leaves an already-broken one broken —
+or repairs it — goes through. The check runs inside the guarded write, so two
+concurrent changes that are each safe alone (withdrawing the admin's last two
+keys, one each) cannot both succeed. If the admin is locked out anyway — its
+last key expired — the way back is operational: set
+`auth.mtls_binding_policy: enrolled`, restart, enrol a key, then return to
+`required`.
+
+`POST /users/{id}/cert-bindings` refuses a `not_after_unix` that is not in the
+future with `user.CertBindingExpiredError` — **400** on REST,
+`INVALID_ARGUMENT` on gRPC and QUIC, `CodeInvalidArgument` on MCP — for every
+account and under either policy. Such a binding could never authenticate, and
+because enrolment replaces a binding with the same thumbprint, accepting one
+for a key already bound would silently withdraw that key.
 
 A withdrawal naming a thumbprint the account does not hold is **404**, not a
 vacuous success: an operator who mistypes a thumbprint must not be told a live
