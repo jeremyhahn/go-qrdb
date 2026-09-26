@@ -1134,10 +1134,18 @@ func defaultLogger() *logger.Logger {
 // Standalone helpers (for embedded use without Raft)
 // ---------------------------------------------------------------------------
 
-// PutWithIndexes atomically writes a key/value to storage and updates
-// indexes registered for the key's entity type. Only indexes whose name
-// starts with the entity type prefix are updated, preventing cross-entity
-// index contamination.
+// PutWithIndexes atomically writes a key/value to storage and updates every
+// index whose key scope covers the key.
+//
+// It selects indexes by SCOPE, the same rule the Raft apply path uses
+// (handleKVPut -> UpdateIndexesBatch), and never by parsing the key. It used
+// to take the key's FIRST path segment as its entity type and keep only
+// indexes NAMED "{entityType}." -- which a namespaced key defeats: under a
+// tenant namespace "acme/workitem/1" read as entity type "acme", and the
+// tenant's "acme/workitem.State" index was never maintained (go-qrdb#40). A
+// scope is declared at registration and composed with the namespace the index
+// name carries, so it holds for a bare, a per-tenant and a per-(tenant,
+// database) key alike, with nothing about the layout assumed here.
 func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	prevVal, _ := e.stg.Get(key)
 	var prevKv *qkv.KeyValue
@@ -1145,27 +1153,24 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
 	}
 
-	entityType := entityTypeFromKey(key)
-	filteredIndexes, filteredFields := e.filterIndexes(entityType)
-	filteredCompound, filteredCompoundFields := e.filterCompoundIndexes(entityType)
-
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
 	if err := batch.Set(key, value); err != nil {
 		return err
 	}
-	if err := UpdateIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return err
 	}
-	if err := UpdateCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
+	if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()
 }
 
-// DeleteWithIndexes atomically removes a key and its index entries.
-// Only indexes for the key's entity type are cleaned up.
+// DeleteWithIndexes atomically removes a key and its entries from every index
+// whose key scope covers it; see PutWithIndexes for why the selection is by
+// scope.
 func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 	prevVal, _ := e.stg.Get(key)
 	var prevKv *qkv.KeyValue
@@ -1173,75 +1178,19 @@ func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
 	}
 
-	entityType := entityTypeFromKey(key)
-	filteredIndexes, filteredFields := e.filterIndexes(entityType)
-	filteredCompound, filteredCompoundFields := e.filterCompoundIndexes(entityType)
-
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
 	if err := batch.Delete(key); err != nil {
 		return err
 	}
-	if err := RemoveIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, prevKv); err != nil {
+	if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return err
 	}
-	if err := RemoveCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, prevKv); err != nil {
+	if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()
-}
-
-// entityTypeFromKey extracts the entity type prefix from a key.
-// Keys follow the format "{entityType}/{id}".
-func entityTypeFromKey(key []byte) string {
-	for i, b := range key {
-		if b == '/' {
-			return string(key[:i])
-		}
-	}
-	return string(key)
-}
-
-// filterIndexes returns only the indexes whose names start with the given
-// entity type prefix (e.g., "messages."). When the engine has a database
-// namespace, the prefix includes it (e.g., "mydb.messages.").
-func (e *KVEngine) filterIndexes(entityType string) (map[string]index.Index, map[string]string) {
-	filtered := make(map[string]index.Index)
-	filteredFields := make(map[string]string)
-
-	// Try both prefixed and unprefixed names:
-	// - "entityType." (legacy / no database)
-	// - "database.entityType." (with database namespace)
-	prefixes := []string{entityType + "."}
-	if e.database != "" {
-		prefixes = append(prefixes, e.database+"."+entityType+".")
-	}
-
-	for name, idx := range e.indexes {
-		for _, prefix := range prefixes {
-			if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-				filtered[name] = idx
-				filteredFields[name] = e.indexFields[name]
-				break
-			}
-		}
-	}
-	return filtered, filteredFields
-}
-
-// filterCompoundIndexes returns only compound indexes matching the entity type.
-func (e *KVEngine) filterCompoundIndexes(entityType string) (map[string]*index.CompoundIndex, map[string][]string) {
-	prefix := entityType + "."
-	filtered := make(map[string]*index.CompoundIndex)
-	filteredFields := make(map[string][]string)
-	for name, idx := range e.compoundIndexes {
-		if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-			filtered[name] = idx
-			filteredFields[name] = e.compoundIndexFields[name]
-		}
-	}
-	return filtered, filteredFields
 }
 
 // ---------------------------------------------------------------------------

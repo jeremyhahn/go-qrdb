@@ -30,6 +30,27 @@ are not reconstructed here — their history is in the git log.
   binds and advertises itself — port 0 is refused with a
   `*cluster.RaftPortZeroError`, by the SDK node and by `qrdbd start` alike.
   A zero admin or gRPC port on the SDK node still selects the fixed default.
+- **Shared-prefix tenants have real per-tenant secondary indexes** (#40,
+  priority 1). A DAO over a `StoreResolver`-served store for a `prefix`
+  tenant now answers `QueryByIndex` from an engine-maintained index confined to
+  that tenant, instead of refusing with `kvstore.ErrIndexUnsupported` and
+  planning a full scan. `lifecycle.kvStoreAdapter` hands the engine the
+  caller's absolute key prefix made relative to the namespace the index name
+  carries, so the maintained scope is exactly the prefix the keys carry for a
+  `{tenant}/` store, a `{tenant}/{database}/` namespace and a DAO built
+  `WithDatabase` alike; a name outside its keys' namespace is still refused.
+  `KVEngine.PutWithIndexes`/`DeleteWithIndexes` select indexes by scope, like
+  the Raft apply path, instead of by the key's first path segment. Encrypted
+  tenant stores (`barrier`, `volume`, `raft`) still refuse index operations.
+  **Behaviour change for direct engine users:** an UNSCOPED index — created
+  with neither a namespace in its name nor a declared key prefix — is now
+  maintained by `PutWithIndexes`/`DeleteWithIndexes` for every key, exactly
+  as the Raft apply path has always maintained it. Before, those two helpers
+  updated an index only when its name began with the key's first path segment
+  (`{entityType}.`), so an unscoped index missed writes the Raft path indexed.
+  Indexes registered through `RegisterEntityType` are scoped to
+  `{entityType}/` and are unaffected. To keep an index to one keyspace,
+  declare its key prefix.
 
 ### Changed — BREAKING
 

@@ -156,11 +156,22 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   rather than inferring `{entityType}/`. The inference holds only while the
   entity type is the leading key segment, which namespacing breaks — and a
   store that infers wrongly indexes nothing while reporting success.
-- **Shared-prefix tenants have no engine-backed indexes** (#40 restores them).
-  The engine matches writes to indexes by the first path segment of the key,
-  which a namespace displaces. The store refuses index operations with
-  `kvstore.ErrIndexUnsupported`; `pkg/dao` plans a full scan, so results are
-  correct and only slower. Isolation was chosen over the index.
+- **Shared-prefix tenants have engine-backed, per-tenant indexes.** The
+  namespaced store registers `{tenant}/{entity}.{Field}` with the absolute key
+  prefix `{tenant}/{entity}/`; `lifecycle.kvStoreAdapter` hands the engine
+  that prefix made relative to `engine.IndexNamespace(name)`, so the scope
+  the engine maintains (`engine.ComposeIndexScope`) is exactly the prefix the
+  tenant's keys carry. The same translation serves a `{tenant}/{database}/`
+  namespace and a DAO built `WithDatabase`. A name whose namespace the keys do
+  not live under is refused with `kvstore.ErrIndexUnsupported`.
+- **Index maintenance selects by scope on every path.** The Raft apply path
+  and `KVEngine.PutWithIndexes`/`DeleteWithIndexes` both keep exactly the
+  indexes whose scope covers the key. Nothing parses a key for an entity type:
+  a tenant or database namespace displaces the first path segment, which is why
+  the name-prefix filter that did so was removed.
+- **Encrypted tenant stores still refuse index operations** (`barrier`,
+  `volume`, `raft`); `pkg/dao` plans a full scan. See the architecture
+  document for why this is an open design question rather than a gap.
 
 
 

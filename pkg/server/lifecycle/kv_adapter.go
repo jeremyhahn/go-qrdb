@@ -17,7 +17,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -316,39 +318,43 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		// CaseSensitive is passed through explicitly rather than left zero:
 		// index.IndexConfig names the field for the DEFAULT, so its zero
 		// value is case-INSENSITIVE, which the engine now honours.
+		name := ei.ResolvedName(entityType)
+		// The engine maintains an index for exactly the keys under its SCOPE,
+		// which it composes as engine.IndexNamespace(name) followed by the
+		// key prefix declared at creation (engine.ComposeIndexScope). The
+		// store contract, on the other hand, declares the ABSOLUTE prefix the
+		// caller's keys carry (kvstore.EntityIndex.KeyPrefix): a namespaced
+		// tenant store declares "{tenant}/{entityType}/" and names the index
+		// "{tenant}/{entityType}.{Field}".
+		//
+		// So the prefix handed to the engine is the absolute one made
+		// RELATIVE to whatever namespace the name carries, and the scope the
+		// engine then maintains is precisely the absolute prefix -- for a
+		// shared-prefix tenant, a per-(tenant, database) name, a DAO built
+		// WithDatabase, and a bare entity type alike. Nothing about the
+		// tenant or database is assumed here; both are read off what the
+		// caller declared.
+		//
+		// A name whose namespace the keys do NOT live under is refused: the
+		// engine would maintain the index over a keyspace no write of this
+		// entity type reaches, create it successfully, and answer every query
+		// on it empty with a nil error -- the silent "no records" the store
+		// contract forbids.
+		absolute := ei.ResolvedPrefix(entityType)
+		ns := engine.IndexNamespace(name)
+		if !strings.HasPrefix(absolute, ns) {
+			return kvstore.ErrIndexUnsupported
+		}
 		cfg := index.IndexConfig{
 			Unique:        ei.Unique,
 			Sparse:        ei.Sparse,
 			CaseSensitive: ei.CaseSensitive,
-			// The key prefix this index covers, declared so the engine
-			// maintains it for THIS entity type's keys and nothing else. It
-			// is the same prefix kvstore.MemoryKVStore filters writes by, so
-			// both implementations of the store contract now scope index
-			// maintenance the same way (go-qrdb#410).
-			KeyPrefix: ei.ResolvedPrefix(entityType),
+			// The key prefix this index covers, relative to the name's
+			// namespace; see above (go-qrdb#410, go-qrdb#40).
+			KeyPrefix: absolute[len(ns):],
 		}
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique
-		}
-		// The engine decides which indexes a write maintains by matching the
-		// index NAME against the key's entity type: KVEngine.filterIndexes
-		// accepts "{entityType}." and, when the engine has a database
-		// namespace, "{engineDatabase}.{entityType}.". Nothing else is ever
-		// updated.
-		//
-		// This adapter cannot see the engine's database setting, so it cannot
-		// verify that a caller-qualified name — what a DAO built with
-		// WithDatabase supplies — is one the engine will maintain. Creating
-		// it anyway would succeed, leave the index permanently un-updated,
-		// and answer every query on it empty with a nil error. That is the
-		// exact failure this change exists to remove, so a name this adapter
-		// cannot vouch for is refused and the DAO plans a correct full scan.
-		//
-		// Threading the engine's database scope through so the qualified form
-		// can be honoured is tracked as #38.
-		name := ei.ResolvedName(entityType)
-		if name != entityType+"."+ei.FieldName {
-			return kvstore.ErrIndexUnsupported
 		}
 		if err := a.idx.CreateIndex(ctx, name, ei.JSONFieldName, cfg); err != nil {
 			return &kvstore.IndexRegistrationError{EntityType: entityType, Err: err}

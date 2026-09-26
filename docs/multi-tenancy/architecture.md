@@ -476,22 +476,37 @@ the same duplicate-encoding class as two scoping functions — and is a
 follow-on cleanup, not a correctness issue: the namespace is what enforces
 isolation, the embedded segment merely repeats it.
 
-**Consequence for indexes, and it is a real trade.** The identity store still
-refuses a namespace-qualified index with `kvstore.ErrIndexUnsupported` rather
-than serving an index nobody updates; `pkg/dao` detects the refusal and plans a
-full scan, so **results stay correct and only the access path is slower**.
-Isolation was chosen over the index.
+**Shared-prefix tenants have real, per-tenant, engine-maintained indexes.** A
+DAO over a resolver-served store registers its indexes under
+namespace-qualified names (`acme/workitem.State`) with the absolute key prefix
+the tenant's records carry (`acme/workitem/`). The engine maintains an index
+for exactly the keys under its scope, so one tenant's index can never hold —
+or answer with — another tenant's rows, and a query is answered from the index
+rather than a full scan.
 
-The reason has changed, and only half of it is left. The engine used to decide
-which indexes a write maintains by inferring an entity type from the key's FIRST
-path segment, which under a namespaced key `acme/system/workitem/1` reads as
-`acme` — so a namespace-qualified index could not be maintained at all. The
-engine no longer infers anything: an index carries the key prefix it covers and
-maintenance compares the key against it (#410, see
-[../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate)),
-which is what #40 asked for. What still refuses is `lifecycle.kvStoreAdapter`,
-whose own check accepts only the unqualified name — lifting that is #38/#40 and
-is a change to the identity plane's access paths, not to this boundary.
+It used to be the other way round, and isolation was chosen over the index. The
+engine decided which indexes a write maintains by inferring an entity type from
+the key's FIRST path segment, which under a namespaced key `acme/workitem/1`
+reads as `acme`, so a namespace-qualified index could not be maintained, and
+`lifecycle.kvStoreAdapter` refused every qualified name with
+`kvstore.ErrIndexUnsupported` rather than serve an index nobody updated. Two
+changes removed the reason. The engine no longer infers anything: an index
+carries the key prefix it covers and maintenance compares the key against it,
+on the Raft apply path and on `KVEngine.PutWithIndexes`/`DeleteWithIndexes`
+alike (see
+[../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate)).
+And the adapter translates the caller's absolute key prefix into the scope the
+engine composes — `engine.IndexNamespace(name)` followed by the declared prefix
+— so the scope maintained is exactly the prefix the keys carry, whether the
+store is namespaced at `{tenant}/`, at `{tenant}/{database}/`, or not at all.
+Nothing about the tenant or database is assumed; both are read off what the
+caller declared. A name whose namespace the keys do **not** live under is still
+refused, because the engine would maintain it over a keyspace no write reaches.
+
+This covers the tenants whose resolver-served store is the plaintext shared
+store. The store served to `barrier`, `volume` and `raft` tenants encrypts
+every value under the tenant's DEK and still refuses index operations; see
+"Indexes on encrypted tenant stores" below.
 
 Note the same "entity type is the leading key segment" assumption existed in
 `kvstore.MemoryKVStore` and is why `EntityIndex.KeyPrefix` exists: a store must
@@ -499,6 +514,22 @@ be told which keys an index covers rather than inferring it from the entity
 type. `index.IndexConfig.KeyPrefix` is that same statement one layer down, so
 the Raft-backed engine and the in-memory store now scope index maintenance the
 same way.
+
+### Indexes on encrypted tenant stores
+
+**Not built, and not decided here.** The resolver serves `barrier`, `volume`
+and `raft` tenants a store that encrypts every value under the tenant DEK
+before it reaches the shared system store, and that store refuses every index
+operation with `kvstore.ErrIndexUnsupported`; `pkg/dao` plans a full scan. An
+index over those records would have to put indexed values into index keys in
+the shared store, outside the tenant's barrier.
+
+The tenancy model states that an isolated tenant has everything isolated — its
+own barrier, its own storage location and its own engine configuration — so
+the intended shape is that an isolated tenant's records, and therefore its
+indexes, live in the tenant's own store rather than the shared one. Converging
+the resolver-served records onto that store, and whether any index is offered
+before it happens, are open design questions for the owner.
 
 ## Per-node-independent key design
 

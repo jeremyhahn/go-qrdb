@@ -388,32 +388,6 @@ func TestCheckUniqueViolationsBatch_NonJSONSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.filterIndexes – entity type matching
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_FilterIndexes_EntityType(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	_ = eng.RegisterEntityType("product", []EntityIndex{
-		{FieldName: "by_pname", JSONFieldName: "name"},
-	})
-	_ = eng.RegisterEntityType("order", []EntityIndex{
-		{FieldName: "by_status", JSONFieldName: "status"},
-	})
-
-	// filterIndexes on "product" should only return product indexes.
-	filtered, _ := eng.filterIndexes("product")
-	for name := range filtered {
-		if len(name) < len("product") || name[:len("product")] != "product" {
-			t.Errorf("unexpected index %q for entity type product", name)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // KVEngine.scanAllKVs coverage path
 // ---------------------------------------------------------------------------
 
