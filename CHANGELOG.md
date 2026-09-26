@@ -322,6 +322,15 @@ are not reconstructed here — their history is in the git log.
   every transport answers as retryable — 503 on REST, Unavailable on gRPC,
   unix, QUIC and MCP — where a transport-delivered refusal previously read as
   an internal error.
+- **Raft-backed SDK tests no longer charge node boot to the calls under test**
+  (#418). Each `sdk/go` raft coordination test took its 60s call budget before
+  booting its node, so on a starved host the election consumed it and a lease
+  call failed with `quicraft: timeout` — reproduced under load exactly as the
+  docs-only PR saw it. The budget (`raftCallBudget`) now starts once the node is
+  writable; readiness waits log how long they took and fail as "SLOW, not
+  broken" when a leader accepted the write but the commit starved, apart from
+  "no leader". The placement-reconciler tests wait for the watch subscription
+  and for convergence instead of sleeping 10–30ms and allowing 500ms.
 
 ## [0.21.3-alpha] - 2026-09-30
 

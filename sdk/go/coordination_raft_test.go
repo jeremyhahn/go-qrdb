@@ -80,6 +80,20 @@ type raftNodeOpts struct {
 	serverOpts []server.ServerOption
 }
 
+// raftCallBudget bounds the coordination calls one test makes against its
+// single-replica raft node. It is a FAILURE bound, not a pacing interval: every
+// call returns as soon as consensus answers, so an idle machine never spends
+// it. Each test takes it only AFTER bootRaftNode returns. Taken before, as it
+// used to be, the election and first commit on a loaded host were charged to
+// the calls under test: a docs-only pull request timed out in AcquireLease with
+// `quicraft: timeout` after boot had consumed the budget (go-qrdb#418).
+const raftCallBudget = 60 * time.Second
+
+// raftWritableBound bounds how long a fresh single-replica group may take to
+// elect itself and commit its first write. A failure bound, as above; the time
+// actually taken is logged on every boot.
+const raftWritableBound = 30 * time.Second
+
 func bootRaftNodeOpts(t *testing.T, opts raftNodeOpts) (*sdk.Coordinator, transport.KVClient, *sdk.Client) {
 	t.Helper()
 	n, kv := bootRaftNodeFull(t, opts)
@@ -151,7 +165,7 @@ func bootRaftNodeFull(t *testing.T, opts raftNodeOpts) (*node.Node, transport.KV
 func assertLeaseKeyReaped(t *testing.T, coord *sdk.Coordinator, key string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
 	defer cancel()
 
 	l, err := coord.AcquireLease(ctx, key, 1*time.Second)
@@ -208,32 +222,46 @@ func assertLeaseKeyReaped(t *testing.T, coord *sdk.Coordinator, key string) {
 // assertion. Mirrors the conformance harness helper of the same name.
 func awaitWritable(t *testing.T, kv transport.KVClient) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), raftWritableBound)
 	defer cancel()
-	deadline := time.Now().Add(30 * time.Second)
+	start := time.Now()
 	for {
 		err := kv.Put(ctx, "coordination/readiness", []byte("1"))
 		if err == nil {
+			// Reported so a wait that has quietly grown into most of its bound
+			// is visible before it becomes a failure.
+			t.Logf("raft node writable after %s", time.Since(start).Round(time.Millisecond))
 			return
+		}
+		if errors.Is(err, quicraft.ErrTimeout) {
+			// SLOW, not broken: a leader accepted the proposal (a group with
+			// no leader refuses it at once with NotLeader) and the commit did
+			// not finish inside the bound. That is the host starving the
+			// commit path — CPU or fsync — and says nothing about leases.
+			t.Fatalf("raft node SLOW, not broken: a leader accepted the first write but it "+
+				"did not commit within %s (host starvation of the commit path): %v",
+				raftWritableBound, err)
 		}
 		var notLeader *transport.NotLeaderError
 		if !errors.As(err, &notLeader) && !errors.Is(err, quicraft.ErrReadIndexNotReady) {
-			t.Fatalf("raft node not writable (non-transient): %v", err)
+			t.Fatalf("raft node not writable (non-transient) after %s: %v", time.Since(start).Round(time.Millisecond), err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("raft node never became writable: %v", err)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("raft node elected no leader within %s: every write was refused as not-leader: %v",
+				raftWritableBound, err)
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // TestRaft_LeaseLifecycle exercises acquire → key present → renew → release →
 // Done fires and key gone, against real lease and MVCC services.
 func TestRaft_LeaseLifecycle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	coord, _ := bootRaftNode(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
+	defer cancel()
 
 	l, err := coord.AcquireLease(ctx, "leader/lock", 10*time.Second)
 	if err != nil {
@@ -463,10 +491,14 @@ func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry
 // moment Done closes early; the expiry half then proves the confirming recheck
 // did not cost the loss signal itself.
 func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
+	coord, _ := bootRaftNode(t)
+
+	// Up to maxAttempts attempts of `cycles` renewals each, so this test's
+	// sequence is longer than the others'; the bound is otherwise the same
+	// kind of failure bound as raftCallBudget and starts after boot for the
+	// same reason.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-
-	coord, _ := bootRaftNode(t)
 
 	// Four cycles at 1.5s: each check happens at the moment of maximum time
 	// since the last renewal, which is when an early close is most likely.
@@ -742,10 +774,10 @@ func runSubTTLRenewalCycles(
 // where the error being asserted comes from a real miss against the real
 // Lessor rather than a test double told what to return.
 func TestRaft_LeaseTimeToLive_NotFoundIsRealNotHandcrafted(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	_, _, client := bootRaftNodeOpts(t, raftNodeOpts{sealEnabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
+	defer cancel()
 
 	_, err := client.Lease().LeaseTimeToLive(ctx, 999999999)
 	if err == nil {
@@ -765,10 +797,10 @@ func TestRaft_LeaseTimeToLive_NotFoundIsRealNotHandcrafted(t *testing.T) {
 // LeaseHeldError rather than silently displacing the holder. After the holder
 // releases, the key is acquirable again.
 func TestRaft_LeaseExclusive(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	coord, _ := bootRaftNode(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
+	defer cancel()
 
 	first, err := coord.AcquireLease(ctx, "singleton/leader", 30*time.Second)
 	if err != nil {
@@ -803,10 +835,10 @@ func TestRaft_LeaseExclusive(t *testing.T) {
 // TestRaft_WatchDelivery subscribes to a prefix and asserts that a subsequent
 // Put is delivered as a translated put Event.
 func TestRaft_WatchDelivery(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	coord, _ := bootRaftNode(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), raftCallBudget)
+	defer cancel()
 
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()

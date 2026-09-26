@@ -632,6 +632,16 @@ func awaitWritable(t *testing.T, c cell, kv transport.KVClient) {
 			t.Logf("%s: writable after %s", c.name(), time.Since(start).Round(time.Millisecond))
 			return
 		}
+		if errors.Is(err, quicraft.ErrTimeout) {
+			// SLOW, not broken: a leader accepted the proposal (a group with
+			// no leader refuses it at once with NotLeader) and the commit did
+			// not finish inside callTimeout. Say so here rather than hand the
+			// battery a cell whose every later call would time out for a
+			// reason that has nothing to do with the guarded verbs
+			// (go-qrdb#418).
+			t.Fatalf("%s: SLOW, not broken: a leader accepted the first write but it did not "+
+				"commit within %s (host starvation of the commit path): %v", c.name(), callTimeout, err)
+		}
 		var notLeader *transport.NotLeaderError
 		if !errors.As(err, &notLeader) && !errors.Is(err, quicraft.ErrReadIndexNotReady) {
 			// Not a transient election error. For a typed-refusal cell the
