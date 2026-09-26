@@ -401,9 +401,18 @@ misconfiguration, not a client's wrong verb.
 
 ## Module registration order
 
-Modules register **before** built-ins. A built-in route whose method+pattern a
-module has claimed **yields** to the module and logs at debug level.
-**Module-vs-module duplicates fail construction loudly.**
+Modules register **before** built-ins, and a REST route has exactly one owner:
+a module claiming a built-in's route, or another module's, **fails
+construction** with a panic naming both claimants. Two patterns that differ
+only in a path parameter's name are the same route. A route a module registers
+directly on the embedded router that another registration also claims fails
+construction too, and so does registering after `RegisterHTTP` has returned.
+A module may not call `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use`
+on the registrar's router; it serves a subtree as
+`Handle(method, "/prefix/*", perm, h)`. Namespace module routes under the
+module's own prefix, and keep its first static segment clear of the embedded web
+UI's paths: an unmatched request under a module's route prefix gets 404 rather
+than the web UI, so an overlapping prefix hides those web-UI paths.
 
 ## Versioning
 

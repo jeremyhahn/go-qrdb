@@ -137,9 +137,46 @@ type ModuleAuthFallback interface {
   ONE authorizer renders the decision. Implementations must fail closed. The
   method set intentionally matches `middleware.RESTAuthFallback` so a module
   value satisfies the seam structurally.
-- **Modules register first and built-ins yield.** A built-in route whose
-  method+pattern a module has already claimed logs a debug line and yields.
-  **Module-vs-module duplicates fail construction loudly.**
+- **Modules register first, and every REST route has one owner.**
+  `Server.claimRoute` records the claimant of each route
+  (`authmw.RESTRouteKey`) — `built-in` or `module <name>` — and a second claim
+  panics `*RouteCollisionError` at construction. `RESTRouteRegistry` keys its
+  entries the same way and keeps its own `*RESTRouteCollisionError` as a
+  backstop.
+- **`RESTRouteKey(method, pattern)` erases path-parameter names and keeps
+  regexp constraints**, so the registry agrees with chi about which patterns
+  are one route. `TestChiTreatsRenamedParamsAsOneRoute` measures chi's behaviour
+  rather than assuming it.
+- **Direct registrations are recorded and checked.** `HTTPRegistrar` embeds a
+  recording wrapper over the live router: `Get`/`Post`/…/`Method`/`Handle` and
+  routes on `With`/`Group` inline routers are forwarded and recorded
+  (`DirectRoutes`). After all registration, `assertNoDirectRouteCollisions`
+  panics `*DirectRouteCollisionError` for a recorded route that a
+  permission-recorded registration also covers.
+- **`Mount`, `Route`, `NotFound`, `MethodNotAllowed` and `Use` are refused** on
+  the registrar's router (and on every inline router it hands out) with
+  `*apimodule.UnsupportedRouterMethodError{Method}`. Each serves requests no
+  route registration describes: a mount overwrites every method's handler at
+  its pattern and hides that from `Routes()`; a sub-router's or the router's
+  own `NotFound`/`MethodNotAllowed` answers every unmatched path; `Use` runs
+  ahead of routing for every route on the server, built-ins included. A module
+  serves a subtree by registering it: `Handle(method, "/prefix/*", perm, h)`.
+- **Module subtrees refuse unmatched paths.** Every module route's static prefix
+  before its first parameter or wildcard (`/v1/devices/` for
+  `/v1/devices/{id}`) is recorded (`RESTRouteRegistry.RegisterModulePrefix`),
+  and `RESTMiddleware` answers an unmatched request under one with 404 instead
+  of passing it to the router's fallback — defence in depth under the
+  refusals above. Fully static routes, and routes whose first segment is
+  already dynamic, claim no subtree.
+- **A module's first static path segment must not collide with the web UI's
+  paths.** The embedded web UI is the router's fallback: it answers every path
+  no route matches. A module prefix that overlaps a path the web UI serves
+  (its asset directories, its client-side routes) turns those paths into
+  module-owned 404s. Keep module routes under a prefix of their own — `/v1/<module>/…` —
+  and never under a web-UI top-level path.
+- **`HTTPRegistrar.Freeze` closes registration** when `RegisterHTTP` returns;
+  a later `Handle`, `HandlePublic` or direct registration through the registrar
+  or any router it handed out panics `*apimodule.RegistrationClosedError`.
 - **The permission registry is populated unconditionally**, even for routes that
   are not enabled — so SO dual-factor gating recognizes SO-permissioned paths
   even on servers that do not serve them.
@@ -194,8 +231,11 @@ over the same services, not a seventh transport.
 |---|---|---|
 | Request whose raw path differs from its decoded path (`%2F` and other escapes) | canonicalised to the decoded path by the outermost layer (`canonicalPathMiddleware`) before the sealed-window, auth, SO and routing layers, so all of them resolve one route | **yes** |
 | Route, RPC or tool with no permission declaration | **startup assertion fails** | **yes** |
-| Two modules claiming the same method+pattern | construction fails loudly | **yes** |
-| A module claiming a built-in's method+pattern | the built-in yields, debug-logged | n/a |
+| Two registrations of the same route (module/module or module/built-in, parameter names ignored) | `*RouteCollisionError` panics at construction, naming both | **yes** |
+| A route registered directly on the router that a permission-recorded registration also claims | `*DirectRouteCollisionError` panics at construction | **yes** |
+| A module registering after its `RegisterHTTP` returned | `*apimodule.RegistrationClosedError` panic | **yes** |
+| A module calling `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the registrar's router | `*apimodule.UnsupportedRouterMethodError` panics at construction | **yes** |
+| An unmatched request under a module's route prefix | 404 from the REST middleware; never reaches the router's fallback | **yes** |
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
@@ -243,9 +283,11 @@ follows the run mode ([../run-modes/](../run-modes/)).
 ## Test strategy
 
 - **Unit**: the default-deny startup assertion (a route without a declaration
-  must fail), module-vs-module duplicate detection, built-in yielding to a
-  module, malformed public gRPC method rejection, and the fail-closed MCP tool
-  path.
+  must fail), route-collision detection on the real server (module over a
+  built-in, module over module, a renamed path parameter, a direct router
+  registration over a permission-recorded one, late registration), chi's own
+  renamed-parameter behaviour, malformed public gRPC method rejection, and the
+  fail-closed MCP tool path.
 - **The `ModuleAuthFallback` boundary is a security test**: an identity returned
   by a module must still be enriched from the store and authorized by the host
   authorizer, and a token carrying role claims must not affect the decision.
@@ -257,5 +299,3 @@ follows the run mode ([../run-modes/](../run-modes/)).
 - `GET /metrics` in Prometheus format, gated on a configured gatherer.
 - `GET /health` public, `GET /status` and `GET /capabilities` authenticated —
   see [../clustering/](../clustering/api.md) and [../run-modes/](../run-modes/).
-- Route-yield events are logged at debug level, which is how you confirm a
-  module actually took over a built-in path.

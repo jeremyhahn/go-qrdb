@@ -17,6 +17,7 @@ package middleware
 import (
 	"net/http"
 	"reflect"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -63,6 +64,91 @@ type restRouteEntry struct {
 	kind     RESTRouteKind
 	perm     permission.Permission
 	fallback RESTAuthFallback
+
+	// pattern is the spelling the route was first registered under. The key
+	// the entry is filed under is canonical (see RESTRouteKey), so a
+	// collision is reported with both spellings.
+	pattern string
+}
+
+// RESTRouteKey is the identity of a REST route: its method and its pattern
+// with every path-parameter NAME erased. Two patterns that differ only in what
+// a parameter is called -- "/a/{id}" and "/a/{deviceID}" -- are the same route
+// to chi, which silently replaces the first handler with the second, so they
+// must be the same key here or the collision guard cannot see the collision
+// (go-qrdb#194). A parameter's regular-expression constraint is KEPT, because
+// chi does route on it: "/a/{id:[0-9]+}" and "/a/{id}" are different routes.
+func RESTRouteKey(method, pattern string) string {
+	return method + " " + canonicalRESTPattern(pattern)
+}
+
+// canonicalRESTPattern erases path-parameter names from a chi pattern,
+// keeping any regexp constraint: "{id}" becomes "{}", "{id:[0-9]{3}}" becomes
+// "{:[0-9]{3}}". Braces are matched by depth, as chi matches them, so a
+// quantifier inside a constraint does not end the parameter early. An
+// unterminated brace is left as written; chi rejects such a pattern at
+// registration.
+func canonicalRESTPattern(pattern string) string {
+	var b strings.Builder
+	b.Grow(len(pattern))
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] != '{' {
+			b.WriteByte(pattern[i])
+			continue
+		}
+		end := matchingBrace(pattern, i)
+		if end < 0 {
+			b.WriteString(pattern[i:])
+			break
+		}
+		param := pattern[i+1 : end]
+		b.WriteByte('{')
+		if colon := strings.IndexByte(param, ':'); colon >= 0 {
+			b.WriteString(param[colon:])
+		}
+		b.WriteByte('}')
+		i = end
+	}
+	return b.String()
+}
+
+// matchingBrace returns the index of the '}' closing the '{' at open, or -1.
+func matchingBrace(pattern string, open int) int {
+	depth := 0
+	for j := open; j < len(pattern); j++ {
+		switch pattern[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// RESTRouteCollisionError is the panic value of a REST route registered twice:
+// two registrations whose method and pattern are the same route to chi, even
+// when the patterns spell a parameter differently. It is a construction-time
+// programmer error, the same posture as the default-deny startup assertion:
+// the alternative is chi silently serving whichever handler registered last,
+// under whichever permission registered first.
+type RESTRouteCollisionError struct {
+	Method string
+
+	// Pattern is the spelling of the refused registration; Existing is the
+	// spelling it collided with.
+	Pattern  string
+	Existing string
+}
+
+// Error names both spellings.
+func (e *RESTRouteCollisionError) Error() string {
+	return "middleware: duplicate REST route registration: " + e.Method + " " + e.Pattern +
+		" is the same route as the already-registered " + e.Method + " " + e.Existing +
+		" (module/route collision)"
 }
 
 // RESTRouteRegistry is the single source of truth for REST route
@@ -82,6 +168,10 @@ type restRouteEntry struct {
 type RESTRouteRegistry struct {
 	matcher *chi.Mux
 	entries map[string]restRouteEntry // "METHOD PATTERN" -> entry
+
+	// modulePrefixes are the subtrees capability modules' routes claim; see
+	// UnderModulePrefix.
+	modulePrefixes []string
 }
 
 // NewRESTRouteRegistry creates an empty route registry.
@@ -102,10 +192,12 @@ func restRouteNoop(http.ResponseWriter, *http.Request) {}
 // claiming the same route must fail startup loudly and by name, not
 // silently shadow each other. The panic-at-construction posture matches
 // the default-deny startup assertion.
+//
+// The comparison is on RESTRouteKey, so a renamed path parameter is the
+// duplicate it is to chi.
 func (rr *RESTRouteRegistry) assertNotRegistered(method, pattern string) {
-	if _, exists := rr.entries[method+" "+pattern]; exists {
-		panic("middleware: duplicate REST route registration: " + method + " " + pattern +
-			" is already registered (module/route collision)")
+	if e, exists := rr.entries[RESTRouteKey(method, pattern)]; exists {
+		panic(&RESTRouteCollisionError{Method: method, Pattern: pattern, Existing: e.pattern})
 	}
 }
 
@@ -115,7 +207,7 @@ func (rr *RESTRouteRegistry) assertNotRegistered(method, pattern string) {
 func (rr *RESTRouteRegistry) Register(method, pattern string, perm permission.Permission) {
 	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
-	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRoutePermission, perm: perm}
+	rr.entries[RESTRouteKey(method, pattern)] = restRouteEntry{kind: RESTRoutePermission, perm: perm, pattern: pattern}
 }
 
 // RegisterPublic declares that (method, pattern) is public: no authentication
@@ -125,7 +217,7 @@ func (rr *RESTRouteRegistry) Register(method, pattern string, perm permission.Pe
 func (rr *RESTRouteRegistry) RegisterPublic(method, pattern string) {
 	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
-	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRoutePublic}
+	rr.entries[RESTRouteKey(method, pattern)] = restRouteEntry{kind: RESTRoutePublic, pattern: pattern}
 }
 
 // RegisterAuthenticated declares that (method, pattern) requires an
@@ -133,7 +225,7 @@ func (rr *RESTRouteRegistry) RegisterPublic(method, pattern string) {
 func (rr *RESTRouteRegistry) RegisterAuthenticated(method, pattern string) {
 	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
-	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRouteAuthenticated}
+	rr.entries[RESTRouteKey(method, pattern)] = restRouteEntry{kind: RESTRouteAuthenticated, pattern: pattern}
 }
 
 // Lookup resolves the authorization contract for a concrete request
@@ -149,7 +241,7 @@ func (rr *RESTRouteRegistry) Lookup(method, path string) (permission.Permission,
 	if pattern == "" {
 		return "", 0, false
 	}
-	e, ok := rr.entries[method+" "+pattern]
+	e, ok := rr.entries[RESTRouteKey(method, pattern)]
 	if !ok {
 		return "", 0, false
 	}
@@ -228,8 +320,40 @@ func (rr *RESTRouteRegistry) Covered(method, pattern string) bool {
 	if rr == nil {
 		return false
 	}
-	_, ok := rr.entries[method+" "+pattern]
+	_, ok := rr.entries[RESTRouteKey(method, pattern)]
 	return ok
+}
+
+// RegisterModulePrefix records a subtree a capability module's routes claim
+// ("/v1/devices/" for "/v1/devices/{id}"). An empty prefix is ignored.
+func (rr *RESTRouteRegistry) RegisterModulePrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	for _, p := range rr.modulePrefixes {
+		if p == prefix {
+			return
+		}
+	}
+	rr.modulePrefixes = append(rr.modulePrefixes, prefix)
+}
+
+// UnderModulePrefix reports whether path lies in a subtree a module claimed.
+// RESTMiddleware refuses such a path when no registration matches it, rather
+// than handing it to the router's fallback: defence in depth under the
+// registrar's refusal of NotFound, MethodNotAllowed, Mount, Route and Use
+// (go-qrdb#194), so a module subtree answers only through its registered
+// routes whatever else changes around it.
+func (rr *RESTRouteRegistry) UnderModulePrefix(path string) bool {
+	if rr == nil {
+		return false
+	}
+	for _, p := range rr.modulePrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetFallback attaches a module authentication fallback to an
@@ -238,10 +362,10 @@ func (rr *RESTRouteRegistry) Covered(method, pattern string) bool {
 // fallback to an unregistered route is a programmer error and panics, the
 // same construction-time posture as a route collision.
 func (rr *RESTRouteRegistry) SetFallback(method, pattern string, fb RESTAuthFallback) {
-	key := method + " " + pattern
+	key := RESTRouteKey(method, pattern)
 	e, ok := rr.entries[key]
 	if !ok {
-		panic("middleware: SetFallback on unregistered route: " + key)
+		panic("middleware: SetFallback on unregistered route: " + method + " " + pattern)
 	}
 	e.fallback = fb
 	rr.entries[key] = e
@@ -277,7 +401,7 @@ func (rr *RESTRouteRegistry) FallbackFor(method, path string) RESTAuthFallback {
 	}
 	rctx := chi.NewRouteContext()
 	if pattern := rr.matcher.Find(rctx, method, path); pattern != "" {
-		return rr.entries[method+" "+pattern].fallback
+		return rr.entries[RESTRouteKey(method, pattern)].fallback
 	}
 	return rr.pathFallback(path)
 }
@@ -287,8 +411,8 @@ func (rr *RESTRouteRegistry) FallbackFor(method, path string) RESTAuthFallback {
 // a third probe loop. It returns nil when no registered method on the path
 // carries a fallback, and also when two of them carry DIFFERENT ones.
 //
-// The ambiguous case is real, not hypothetical: entries is keyed
-// method + " " + pattern and the collision guard is keyed the same way, so two
+// The ambiguous case is real, not hypothetical: entries is keyed per METHOD
+// (RESTRouteKey) and the collision guard is keyed the same way, so two
 // modules may split the verbs of one path between them and bring one auth
 // plane each. Which of them owns a verb that neither registered is not a
 // question the registry can answer, so it answers none and the caller keeps
@@ -302,7 +426,7 @@ func (rr *RESTRouteRegistry) pathFallback(path string) RESTAuthFallback {
 		if pattern == "" {
 			continue
 		}
-		fb := rr.entries[m+" "+pattern].fallback
+		fb := rr.entries[RESTRouteKey(m, pattern)].fallback
 		if fb == nil {
 			continue
 		}

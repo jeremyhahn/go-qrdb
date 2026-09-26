@@ -28,30 +28,47 @@ import (
 // middleware) and adds the permission-recording registration the server's own
 // routes use: every module route declares its permission at the registration
 // site, feeding the same authorization registry and the same default-deny
-// startup assertion as the built-in routes. A route registered directly on the
-// embedded chi.Router without Handle/HandlePublic is caught by that assertion
-// at startup — fail-closed, never silently public.
+// startup assertion as the built-in routes.
+//
+// A route registered directly on the embedded chi.Router, bypassing
+// Handle/HandlePublic, is RECORDED (DirectRoutes). One whose pattern no
+// permission covers fails the default-deny assertion at startup; one that
+// collides with a route registered through Handle/HandlePublic, or with a
+// built-in, fails construction too (go-qrdb#194) — chi would otherwise
+// silently serve the direct handler under the other registration's
+// permission. Registration closes when RegisterHTTP returns (Freeze): a
+// module that keeps the registrar or its router and registers later panics
+// with *RegistrationClosedError rather than presenting an unvalidated surface.
 type HTTPRegistrar struct {
 	chi.Router
 
 	route  func(method, pattern string, perm permission.Permission, h http.HandlerFunc)
 	public func(method, pattern string, h http.HandlerFunc)
+	rec    *routeRecorder
 }
 
 // NewHTTPRegistrar builds the registrar the server passes to modules. route and
-// public are the server's own permission-recording registration helpers.
+// public are the server's own permission-recording registration helpers. The
+// embedded router forwards to r and records direct registrations; a nil r
+// leaves it nil.
 func NewHTTPRegistrar(
 	r chi.Router,
 	route func(method, pattern string, perm permission.Permission, h http.HandlerFunc),
 	public func(method, pattern string, h http.HandlerFunc),
 ) *HTTPRegistrar {
-	return &HTTPRegistrar{Router: r, route: route, public: public}
+	rec := &routeRecorder{}
+	h := &HTTPRegistrar{route: route, public: public, rec: rec}
+	if r != nil {
+		h.Router = &recordingRouter{Router: r, rec: rec}
+	}
+	return h
 }
 
 // Handle registers an authorized module route: the handler is served on REST
 // (and, when the HTTP surface is shared, QUIC/HTTP3) and the request must carry
 // an identity authorized for perm.
 func (h *HTTPRegistrar) Handle(method, pattern string, perm permission.Permission, handler http.HandlerFunc) {
+	h.rec.admit(method, pattern)
 	h.route(method, pattern, perm, handler)
 }
 
@@ -59,7 +76,27 @@ func (h *HTTPRegistrar) Handle(method, pattern string, perm permission.Permissio
 // genuine first-contact surfaces (health, trust bootstrap); everything else
 // uses Handle with a permission.
 func (h *HTTPRegistrar) HandlePublic(method, pattern string, handler http.HandlerFunc) {
+	h.rec.admit(method, pattern)
 	h.public(method, pattern, handler)
+}
+
+// DirectRoutes returns the routes registered straight on the embedded router
+// (or on an inline router from its With / Group), bypassing Handle and
+// HandlePublic, in registration order. The server checks each against the
+// routes whose permission was recorded.
+func (h *HTTPRegistrar) DirectRoutes() []RouteClaim {
+	h.rec.mu.Lock()
+	defer h.rec.mu.Unlock()
+	out := make([]RouteClaim, len(h.rec.direct))
+	copy(out, h.rec.direct)
+	return out
+}
+
+// Freeze closes registration. The server calls it when the module's
+// RegisterHTTP returns; every later registration through this registrar or any
+// router it handed out panics with *RegistrationClosedError.
+func (h *HTTPRegistrar) Freeze() {
+	h.rec.closed.Store(true)
 }
 
 // ServiceModule is a capability registered into the unified server. The server

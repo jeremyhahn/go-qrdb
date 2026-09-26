@@ -119,9 +119,17 @@ configured for the deployment (standalone mode) — see
 tool has no permission declaration. This is the default-deny assertion doing its
 job: the failure is at boot instead of an open endpoint in production.
 
-**Two modules collided.** Module-vs-module route duplicates fail construction
-loudly. A module claiming a built-in's path is fine — the built-in yields, and
-it is logged at debug level.
+**The server refused to start naming a route and two owners.** Two
+registrations claim the same REST route — two modules, or a module and a
+built-in endpoint. Nothing is allowed to take over another's route silently, so
+it stops at construction. Parameter names do not distinguish routes:
+`/devices/{id}` and `/devices/{deviceID}` collide. Move the module's routes
+under its own path prefix. If the message says a route was registered
+"directly on the router", the module bypassed `Handle`/`HandlePublic`; register
+it through those. If it names `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or
+`Use`, the module called a router method that would serve requests outside any
+registration; register a subtree as `Handle(method, "/prefix/*", perm, h)`
+instead.
 
 **Everything returns 503.** The barrier is sealed, the node is draining, or this
 node is not the leader and no resolver is configured. `qrdb barrier status` and

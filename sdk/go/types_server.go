@@ -15,7 +15,9 @@
 package sdk
 
 import (
+	restapi "github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
@@ -92,6 +94,35 @@ var WithModule = qrdbserver.WithModule
 // passes to ServiceModule.RegisterHTTP. Exported for module hosts and module
 // tests that need a capture registrar without importing pkg/apimodule.
 var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
+
+// The REST route-ownership guard (go-qrdb#194). The embedded server refuses,
+// at construction, any second claim on a REST route -- a module over a
+// built-in or over another module -- and a module route registered directly on
+// the router that a permission-recorded route also claims. These are the panic
+// values it raises, and the route identity it decides "the same route" by, so
+// a host can recover and report them without importing pkg/api/rest.
+type (
+	// ModuleRouteClaim names one route a module registered directly on the
+	// embedded router (ModuleHTTPRegistrar.DirectRoutes).
+	ModuleRouteClaim = apimodule.RouteClaim
+	// ModuleRegistrationClosedError is the panic of a registration made after
+	// the module's RegisterHTTP returned.
+	ModuleRegistrationClosedError = apimodule.RegistrationClosedError
+	// ModuleUnsupportedRouterMethodError is the panic of a chi.Router method
+	// a module may not call on the registrar's router: Mount, Route,
+	// NotFound, MethodNotAllowed or Use.
+	ModuleUnsupportedRouterMethodError = apimodule.UnsupportedRouterMethodError
+	// RESTRouteCollisionError is the panic of a second claim on a REST route.
+	RESTRouteCollisionError = restapi.RouteCollisionError
+	// RESTDirectRouteCollisionError is the panic of a direct router
+	// registration that a permission-recorded registration also claims.
+	RESTDirectRouteCollisionError = restapi.DirectRouteCollisionError
+)
+
+// RESTRouteKey is the identity of a REST route: method plus pattern with
+// path-parameter names erased and regexp constraints kept -- the identity chi
+// routes by, and the one the collision guard compares.
+var RESTRouteKey = authmw.RESTRouteKey
 
 // WithServerTLS supplies the TLS configuration the embedded server's
 // network transports serve with. qrdb transports are TLS-only: without this

@@ -347,9 +347,31 @@ kernel-assigned port.
   the host enriches and authorizes it.
 - **A malformed public gRPC method name is rejected at registration**, so a typo
   fails startup loudly instead of silently leaving a method auth-gated.
-- **Modules register before built-ins yield**: a built-in route whose
-  method+pattern a module has claimed yields to the module; module-vs-module
-  duplicates fail construction loudly.
+- **A REST route has exactly one owner.** Modules register before the
+  built-ins, and a second claim on a route — a module over a built-in, a module
+  over another module — **fails construction** with `rest.RouteCollisionError`
+  naming both parties. Nothing yields: a built-in used to give way silently to a
+  module that claimed its path, which let any module a host mounted take over a
+  core endpoint unnoticed. "The same route" is chi's notion, not the string's:
+  `/a/{id}` and `/a/{deviceID}` are one route (chi serves whichever registered
+  last), `/a/{id:[0-9]+}` and `/a/{id}` are two.
+- **A module cannot route around its own permission declaration.** A route it
+  registers straight on the embedded `chi.Router` (bypassing `Handle` /
+  `HandlePublic`) is recorded; one that is the same route as a
+  permission-recorded registration fails construction with
+  `rest.DirectRouteCollisionError`, because chi would serve the direct handler
+  under the other registration's permission — a case the default-deny assertion
+  cannot see, since the pattern IS covered. One nothing covers stays the
+  default-deny assertion's refusal. The router methods that serve requests no
+  registration describes — `Mount`, `Route`, `NotFound`, `MethodNotAllowed`,
+  `Use` — are refused outright; a module serves a subtree as
+  `Handle(method, "/prefix/*", perm, h)`, and an unmatched request under a
+  module's route prefix is refused rather than passed to the router's
+  fallback.
+  Registration closes when `RegisterHTTP` returns: a module that keeps the
+  registrar, or any router it handed out, and registers later panics with
+  `apimodule.RegistrationClosedError` instead of presenting a surface nobody
+  validated.
 
 ## What this feature deliberately does not do
 

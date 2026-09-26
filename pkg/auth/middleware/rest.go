@@ -202,6 +202,15 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 						r.URL.Path+" (supported: "+allow+")")
 				return
 			}
+			// Under a subtree a capability module claimed, an unmatched path
+			// is refused rather than passed on: nothing but the module's
+			// registered routes may answer there (go-qrdb#194). 404, because
+			// no route exists -- the caller has already authenticated.
+			if routes.UnderModulePrefix(r.URL.Path) {
+				writeJSONError(w, http.StatusNotFound,
+					"not found: "+r.URL.Path+" matches no registered route under a module-owned prefix")
+				return
+			}
 			// Outside the registered API surface: the embedded web UI /
 			// static assets served as the router's fallback.
 			next.ServeHTTP(w, r.WithContext(ctx))

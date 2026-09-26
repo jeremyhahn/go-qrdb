@@ -173,6 +173,14 @@ type Server struct {
 	// default-deny startup assertion walks the router against it.
 	routePerms *authmw.RESTRouteRegistry
 
+	// routeOwners maps every claimed route (authmw.RESTRouteKey) to who
+	// claimed it -- "built-in" or "module <name>" -- so a collision names
+	// both parties. registeringModule is the module whose RegisterHTTP is
+	// running, empty while the built-in routes register. Both are
+	// construction-time only.
+	routeOwners       map[string]string
+	registeringModule string
+
 	// router is the top-level chi router carrying every route natively:
 	// capability-module routes (ServiceModule.RegisterHTTP) are registered
 	// first, then qrdb's own built-in routes. NotFound falls through to the
@@ -245,8 +253,10 @@ func WithGatherer(g prometheus.Gatherer) ServerOption {
 }
 
 // WithServiceModules registers capability modules whose HTTP routes are attached
-// to the chi router at construction. Module routes take precedence over the
-// built-in dispatch fallback.
+// to the chi router at construction. A module route that is the same route as
+// a built-in or another module's -- including one that differs only in a path
+// parameter's name -- fails construction with *RouteCollisionError; nothing
+// shadows anything silently (go-qrdb#194).
 func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
 	return func(s *Server) {
 		s.modules = mods
@@ -735,6 +745,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// identity for a request on that module's routes (the module's
 	// session-token plane), and the resulting identity flows through the SAME
 	// enrichment and authorizer as an mTLS identity.
+	s.routeOwners = map[string]string{}
+	directRoutes := make(map[string][]apimodule.RouteClaim, len(s.modules))
 	for _, m := range s.modules {
 		routeFn := s.route
 		if fb, ok := m.(apimodule.ModuleAuthFallback); ok {
@@ -743,9 +755,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 				s.routePerms.SetFallback(method, pattern, fb)
 			}
 		}
-		m.RegisterHTTP(apimodule.NewHTTPRegistrar(r, routeFn, s.public))
+		s.registeringModule = m.Name()
+		reg := apimodule.NewHTTPRegistrar(r, routeFn, s.public)
+		m.RegisterHTTP(reg)
+		// Registration is validated once, below; nothing registered later
+		// would be, so later registration is refused outright.
+		reg.Freeze()
+		directRoutes[m.Name()] = reg.DirectRoutes()
 	}
+	s.registeringModule = ""
 	s.registerRoutes()
+	s.assertNoDirectRouteCollisions(directRoutes)
 
 	// Requests matching no route fall through to the embedded web UI when
 	// configured (SPA fallback), otherwise 404.
@@ -1068,15 +1088,7 @@ func (s *Server) route(method, pattern string, perm permission.Permission, h htt
 // router, and SO dual-factor gating recognizes SO-permissioned paths even on
 // servers that do not serve them.
 func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.Permission, h http.HandlerFunc) {
-	// Modules register FIRST and take precedence (the documented contract):
-	// a built-in route whose method+pattern a module already claimed yields
-	// to the module rather than colliding. Module-vs-module duplicates
-	// still fail construction loudly inside the registry.
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.Register(method, pattern, perm)
 	if !enabled {
 		return
@@ -1096,12 +1108,7 @@ func (s *Server) public(method, pattern string, h http.HandlerFunc) {
 // publicIf mirrors routeIf for public routes: the public marker is recorded
 // unconditionally, the router registration is gated on enabled.
 func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFunc) {
-	// Built-ins yield to module registrations (see routeIf).
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.RegisterPublic(method, pattern)
 	if !enabled {
 		return
@@ -1115,18 +1122,124 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 // marker is recorded unconditionally, the router registration is gated on
 // enabled.
 func (s *Server) authenticatedIf(enabled bool, method, pattern string, h http.HandlerFunc) {
-	// Built-ins yield to module registrations (see routeIf).
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.RegisterAuthenticated(method, pattern)
 	if !enabled {
 		return
 	}
 	s.router.Method(method, pattern, h)
 	s.recordStaticRoute(method, pattern, h)
+}
+
+// builtinRouteOwner is the routeOwners value of a route qrdb itself serves.
+const builtinRouteOwner = "built-in"
+
+// routeClaimant names who is registering right now: a module while its
+// RegisterHTTP runs, the built-in surface otherwise.
+func (s *Server) routeClaimant() string {
+	if s.registeringModule == "" {
+		return builtinRouteOwner
+	}
+	return "module " + s.registeringModule
+}
+
+// claimRoute records who owns (method, pattern) and refuses a second claim on
+// the same route with *RouteCollisionError (go-qrdb#194).
+//
+// Modules register first, then the built-ins. A module route that is the same
+// route as a built-in USED to be skipped on the built-in side, which let any
+// module -- including one a downstream host mounts -- silently take over a
+// core endpoint; a second module claiming the first one's route was skipped
+// the same way, contrary to the guard the registry documents. Both now fail
+// construction, naming the two claimants. "The same route" is decided by
+// authmw.RESTRouteKey, so a renamed path parameter is caught as the duplicate
+// chi treats it as.
+//
+// The registry keeps its own duplicate check as a backstop; this one exists
+// to say WHO collided.
+func (s *Server) claimRoute(method, pattern string) {
+	if s.routeOwners == nil {
+		s.routeOwners = map[string]string{}
+	}
+	key := authmw.RESTRouteKey(method, pattern)
+	claimant := s.routeClaimant()
+	if holder, taken := s.routeOwners[key]; taken {
+		panic(&RouteCollisionError{Method: method, Pattern: pattern, Claimant: claimant, Holder: holder})
+	}
+	s.routeOwners[key] = claimant
+	if s.registeringModule != "" {
+		s.routePerms.RegisterModulePrefix(moduleRoutePrefix(pattern))
+	}
+}
+
+// moduleRoutePrefix is the subtree a module route claims: the static segments
+// before its first parameter or wildcard, as "/a/b/". A fully static route
+// claims no subtree (""), and neither does one whose first segment is already
+// dynamic, which would claim the whole server.
+//
+// The REST middleware refuses an unmatched request under a claimed prefix
+// instead of passing it to the router's fallback (go-qrdb#194): a path under a
+// module's subtree that no registration matches is not the web UI's, and
+// nothing else may answer it.
+func moduleRoutePrefix(pattern string) string {
+	segments := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	static := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if strings.ContainsAny(seg, "{*") {
+			if len(static) == 0 {
+				return ""
+			}
+			return "/" + strings.Join(static, "/") + "/"
+		}
+		static = append(static, seg)
+	}
+	return ""
+}
+
+// restCollisionMethods are the methods an AnyMethod direct registration is
+// checked under: chi's Handle claims every one of them.
+var restCollisionMethods = [...]string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodConnect,
+	http.MethodOptions, http.MethodTrace,
+}
+
+// assertNoDirectRouteCollisions refuses a route a module registered straight
+// on the router when the same route was also registered through the
+// permission-recording path -- by a module's Handle/HandlePublic or by a
+// built-in (go-qrdb#194).
+//
+// chi resolves such a pair by silently keeping whichever handler registered
+// last, while the registry covers the pattern with the permission-recorded
+// registration. The default-deny assertion cannot see it -- it asks only
+// whether a pattern is covered, and this one is. The result would be a handler
+// nobody authorized served under a permission somebody else declared, so it
+// fails construction instead. A direct route that NO registration covers is
+// left to the default-deny assertion, which refuses it by name.
+func (s *Server) assertNoDirectRouteCollisions(direct map[string][]apimodule.RouteClaim) {
+	modules := make([]string, 0, len(direct))
+	for name := range direct {
+		modules = append(modules, name)
+	}
+	sort.Strings(modules)
+	for _, name := range modules {
+		for _, claim := range direct[name] {
+			methods := []string{claim.Method}
+			if claim.Method == apimodule.AnyMethod {
+				methods = restCollisionMethods[:]
+			}
+			for _, method := range methods {
+				if s.routePerms.Covered(method, claim.Pattern) {
+					panic(&DirectRouteCollisionError{
+						Module:  name,
+						Method:  method,
+						Pattern: claim.Pattern,
+						Holder:  s.routeOwners[authmw.RESTRouteKey(method, claim.Pattern)],
+					})
+				}
+			}
+		}
+	}
 }
 
 // recordStaticRoute mirrors static registrations into the legacy routes map.
