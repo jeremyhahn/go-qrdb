@@ -143,6 +143,10 @@ type serverOptions struct {
 	// standalone_gate.go).
 	standaloneMode bool
 
+	// tenantMigrationAdmission gates tenant-scope migrations through the
+	// transports; see WithTenantMigrationAdmission.
+	tenantMigrationAdmission TenantMigrationAdmission
+
 	tlsConfig  *tls.Config
 	caCertPool *x509.CertPool
 	gatherer   prometheus.Gatherer
@@ -455,6 +459,13 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 // the migration endpoint on the protocol servers that support it (REST today).
 func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(o *serverOptions) { o.encMigrator = m }
+}
+
+// WithTenantMigrationAdmission sets the admission the transports' scoped
+// router consults before a tenant-scope migration; see
+// TenantMigrationAdmission.
+func WithTenantMigrationAdmission(a TenantMigrationAdmission) ServerOption {
+	return func(o *serverOptions) { o.tenantMigrationAdmission = a }
 }
 
 // WithClusterEncryptionMigrator configures the cluster-coordination migrator the

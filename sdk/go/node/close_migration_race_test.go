@@ -27,7 +27,7 @@ import (
 
 // closeRaceStandaloneConfig returns a minimal none-strategy standalone config
 // with every network protocol disabled, so NewStandaloneNode boots fast and
-// needs no ports -- this suite only cares about migrateMu's ordering, not the
+// needs no ports -- this suite only cares about the lifecycle gate's ordering, not the
 // data plane it guards.
 func closeRaceStandaloneConfig(t *testing.T, dataDir string) *qrdbconfig.Config {
 	t.Helper()
@@ -47,7 +47,7 @@ func closeRaceStandaloneConfig(t *testing.T, dataDir string) *qrdbconfig.Config 
 // TestNode_Close_WaitsForInFlightSystemMigration is the go-qrdb#226
 // shutdown-discipline regression test for the SYSTEM-migration slice of the
 // Close/EnableEncryption race documented on Node's "Accessor concurrency"
-// comment: before Close acquired migrateMu, a system-scope migration still
+// comment: before Close took the lifecycle gate, a system-scope migration still
 // running past its transport handler's accept window (every handler races
 // EnableEncryption against ~750ms and returns "migration_started" if it is
 // still in flight) could have Close nil n.sealStore out from under
@@ -55,9 +55,9 @@ func closeRaceStandaloneConfig(t *testing.T, dataDir string) *qrdbconfig.Config 
 // a nil *pebble.PebbleStorage.
 //
 // This test does not need to drive a real migration to pin that ordering: the
-// property Close now provides is "blocks on migrateMu before doing anything
+// property Close now provides is "blocks on the lifecycle gate before doing anything
 // else", which is exactly what acquiring the SAME mutex a migration holds
-// proves, whoever the holder is. Holding migrateMu directly here -- rather
+// proves, whoever the holder is. Holding the lifecycle gate's slot directly here -- rather
 // than starting a real EnableEncryption call and racing it against a real
 // Close on timing -- makes the test deterministic under -race instead of
 // depending on the migration outstanding the 750ms accept window.
@@ -69,15 +69,15 @@ func TestNode_Close_WaitsForInFlightSystemMigration(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, n.IsSealed(), "none-strategy node boots unsealed")
 
-	// Simulate a system-scope migration already in flight: hold migrateMu the
+	// Simulate a system-scope migration already in flight: hold the lifecycle gate the
 	// way nodeSystemMigrator.EnableEncryption does for its entire recycle, and
 	// release it only after a delay this test can observe Close waiting out.
-	n.migrateMu.Lock()
+	require.NoError(t, n.lifeGate.acquire(ctx))
 	releasedAt := make(chan time.Time, 1)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		releasedAt <- time.Now()
-		n.migrateMu.Unlock()
+		n.lifeGate.release()
 	}()
 
 	closeReturnedAt := make(chan time.Time, 1)
@@ -89,11 +89,11 @@ func TestNode_Close_WaitsForInFlightSystemMigration(t *testing.T) {
 	}()
 
 	// Close must still be blocked well before the simulated migration
-	// releases the lock -- if it is not, Close raced past migrateMu instead
+	// releases the lock -- if it is not, Close raced past the lifecycle gate instead
 	// of waiting for it, which is the exact defect this test exists to catch.
 	select {
 	case <-closeReturnedAt:
-		t.Fatal("Close returned before the in-flight migration released migrateMu")
+		t.Fatal("Close returned before the in-flight migration released the lifecycle gate")
 	case <-time.After(50 * time.Millisecond):
 		// Expected: Close is still waiting.
 	}
@@ -101,12 +101,12 @@ func TestNode_Close_WaitsForInFlightSystemMigration(t *testing.T) {
 	rt := <-releasedAt
 	require.NoError(t, <-closeErr)
 	ct := <-closeReturnedAt
-	require.False(t, ct.Before(rt), "Close returned (%v) before migrateMu was released (%v)", ct, rt)
+	require.False(t, ct.Before(rt), "Close returned (%v) before the lifecycle gate was released (%v)", ct, rt)
 }
 
 // TestNode_Close_ReturnsPromptlyWithNoInFlightMigration is
 // TestNode_Close_WaitsForInFlightSystemMigration's converse: Close must not
-// pay migrateMu's cost when nothing holds it, so the new Lock in Close does
+// pay the lifecycle gate's cost when nothing holds it, so the gate in Close does
 // not turn every ordinary shutdown into a slow one.
 func TestNode_Close_ReturnsPromptlyWithNoInFlightMigration(t *testing.T) {
 	ctx := context.Background()

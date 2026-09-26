@@ -85,21 +85,42 @@ func (e *MigrationReopenError) Unwrap() error {
 //
 // Scope routing is handled by the cached n.encMigrator (a
 // server.scopedEncryptionMigrator built in wireClientAndServer):
-//   - ScopeSystem  → nodeSystemMigrator.EnableEncryption (holds migrateMu)
+//   - ScopeSystem  → nodeSystemMigrator.EnableEncryption (holds the lifecycle gate)
 //   - ScopeTenant  → server.TenantHostRegistry.MigrateEncryption (per-tenant guard)
 //
 // Both the direct in-process call here and the transport handlers on every
 // protocol server flow through the same scoped-router semantics, guaranteeing
 // identical routing, authority, and entitlement checks.
 func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	if n.lifeGate.isClosing() {
+		return ErrNodeClosed
+	}
 	mig := n.encMigrator.Load()
 	if mig == nil {
+		// Close retracts the router, so a nil router read after the check
+		// above may mean a Close that began in between: say so rather than
+		// "not yet booted".
+		if n.lifeGate.isClosing() {
+			return ErrNodeClosed
+		}
 		if n.barrierRegistry.Load() == nil {
 			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
 		}
 		return &MigrationNotSupportedError{Reason: "node not yet fully booted; call Unseal first"}
 	}
 	return (*mig).EnableEncryption(ctx, scope, opts)
+}
+
+// admitTenantMigration is the server.TenantMigrationAdmission for this node:
+// a tenant-scope migration holds the lifecycle gate SHARED — alongside other
+// tenant migrations and a system migration, which keep their own guards — so
+// Close waits for it to finish, and one that arrives after Close has begun is
+// refused with ErrNodeClosed (go-qrdb#226).
+func (n *Node) admitTenantMigration(_ context.Context) (func(), error) {
+	if err := n.lifeGate.enterShared(); err != nil {
+		return nil, err
+	}
+	return n.lifeGate.leaveShared, nil
 }
 
 // nodeEmbeddedMigrator adapts *Node to service.EncryptionMigrator for the
@@ -138,7 +159,7 @@ func (m *nodeEmbeddedMigrator) EnableEncryption(ctx context.Context, scope servi
 var _ service.EncryptionMigrator = (*nodeEmbeddedMigrator)(nil)
 
 // nodeSystemMigrator adapts *Node to service.EncryptionMigrator for the system
-// scope only. It holds n.migrateMu for the entire duration of each system
+// scope only. It holds n.lifecycle for the entire duration of each system
 // migration so the data-plane tear-down and rebuild are serialized. Tenant
 // scope is NOT handled here; the scoped router in n.encMigrator (built by
 // server.NewScopedEncryptionMigrator) intercepts tenant scope and routes it to
@@ -149,15 +170,20 @@ type nodeSystemMigrator struct {
 
 // EnableEncryption handles system-scope migration by building an
 // EncryptionMigrationService over the node's barrier registry and the
-// nodeMigrationProvider, then calling EnableSystemEncryption. The migrateMu
+// nodeMigrationProvider, then calling EnableSystemEncryption. The lifecycle gate
 // lock is held for the entire operation so concurrent system migrations are
 // serialized and the data-plane recycle (tear-down → re-encrypt → rebuild) is
 // atomic from the caller's perspective.
 func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	switch scope.Kind {
 	case service.ScopeSystem:
-		m.node.migrateMu.Lock()
-		defer m.node.migrateMu.Unlock()
+		// The node's lifecycle lock: Close waits for this migration to finish
+		// rather than retracting the barrier underneath it (go-qrdb#226), and a
+		// migration that arrives after Close is refused.
+		if err := m.node.lifeGate.acquire(ctx); err != nil {
+			return err
+		}
+		defer m.node.lifeGate.release()
 
 		barrierRegistry := m.node.barrierRegistry.Load()
 		if barrierRegistry == nil {
@@ -247,7 +273,7 @@ func (r *nodeTenantResolver) GetTenant(ctx context.Context, tenantID string) (*t
 
 // nodeMigrationProvider implements service.BarrierMigrationProvider against a
 // live Node, performing the online in-process data-plane recycle. It is
-// single-flight (the caller holds n.migrateMu), so its per-migration fields are
+// single-flight (the caller holds n.lifecycle), so its per-migration fields are
 // race-free for the duration of one migration.
 type nodeMigrationProvider struct {
 	node *Node

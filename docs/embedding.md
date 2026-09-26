@@ -27,7 +27,9 @@ func (n *Node) KVService() service.KVServicer
 // AdminService returns the node's AdminServicer.
 func (n *Node) AdminService() service.AdminServicer
 
-// Close tears down all resources in reverse order.
+// Close tears down all resources in reverse order. It blocks until an
+// in-flight Unseal boot or system EnableEncryption finishes, and is
+// idempotent; Unseal and EnableEncryption after Close return ErrNodeClosed.
 func (n *Node) Close() error
 ```
 

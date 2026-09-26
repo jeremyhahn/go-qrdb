@@ -70,3 +70,21 @@ func TestBarrierEnableEncryption_DataPlaneRecyclingIsUnavailable(t *testing.T) {
 		t.Fatalf("code = %v, want Unavailable (err=%v)", status.Code(err), err)
 	}
 }
+
+// TestBarrierEnableEncryption_NodeClosedIsUnavailable pins that a migration
+// refused because the node is closing is retryable, not Internal.
+func TestBarrierEnableEncryption_NodeClosedIsUnavailable(t *testing.T) {
+	mig := &captureGRPCMigrator{ch: make(chan grpcMigrateCall, 1), err: service.ErrNodeClosed}
+	client, cleanup := startSQLTestServer(t, WithEncryptionMigrator(mig))
+	defer cleanup()
+
+	_, err := client.BarrierEnableEncryption(context.Background(), &pb.BarrierEnableEncryptionRequest{
+		Strategy: "passphrase", Passphrase: []byte("pw"),
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v, want Unavailable (err=%v)", status.Code(err), err)
+	}
+	if got := ServiceErrorCode(service.ErrNodeClosed); got != codes.Unavailable {
+		t.Fatalf("ServiceErrorCode = %v, want Unavailable", got)
+	}
+}

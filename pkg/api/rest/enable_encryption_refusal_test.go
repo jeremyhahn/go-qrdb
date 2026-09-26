@@ -70,3 +70,21 @@ func TestHandleBarrierEnableEncryption_DataPlaneRecyclingIs503(t *testing.T) {
 		t.Fatalf("mapHTTPError = %d, want 503", got)
 	}
 }
+
+// TestHandleBarrierEnableEncryption_NodeClosedIs503 pins that a migration
+// refused because the node is closing is retryable (503), not a server fault.
+func TestHandleBarrierEnableEncryption_NodeClosedIs503(t *testing.T) {
+	mig := &captureMigrator{ch: make(chan migrateCall, 1), err: service.ErrNodeClosed}
+	srv := newEnableEncTestServer(t, mig)
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
+		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d for a closing node", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := mapHTTPError(service.ErrNodeClosed); got != http.StatusServiceUnavailable {
+		t.Fatalf("mapHTTPError = %d, want 503", got)
+	}
+}

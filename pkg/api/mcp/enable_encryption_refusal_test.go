@@ -68,3 +68,20 @@ func TestHandleBarrierEnableEncryption_MCP_DataPlaneRecyclingIsUnavailable(t *te
 		t.Fatalf("code = %v, want CodeUnavailable", got)
 	}
 }
+
+// TestHandleBarrierEnableEncryption_MCP_NodeClosedIsUnavailable pins that a
+// migration refused because the node is closing is retryable.
+func TestHandleBarrierEnableEncryption_MCP_NodeClosedIsUnavailable(t *testing.T) {
+	mig := &captureMCPMigrator{ch: make(chan mcpMigrateCall, 1), err: service.ErrNodeClosed}
+	req := buildCallToolRequest(t, "qrdb_barrier_enable_encryption", map[string]any{
+		"strategy": "passphrase", "passphrase": "pw",
+	})
+
+	_, err := handleBarrierEnableEncryption(mig)(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected the migrator's error")
+	}
+	if got := ServiceErrorCode(err); got != wire.CodeUnavailable {
+		t.Fatalf("code = %v, want CodeUnavailable", got)
+	}
+}

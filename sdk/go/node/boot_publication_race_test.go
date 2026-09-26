@@ -76,15 +76,10 @@ func pollNodeAccessors(n *Node, accessors []reflect.Method) int {
 }
 
 // assertAllAccessorsNil checks that every no-argument exported accessor reads
-// nil (or false) after Close. That holds only for a caller that did NOT overlap
-// Close with Unseal or a TENANT-scope EnableEncryption — Node has no general
-// lifecycle state, so those two interleavings are undefined (go-qrdb#226) and
-// no test here creates one. A SYSTEM-scope EnableEncryption is excluded from
-// that list: Close now blocks on migrateMu until any in-flight system
-// migration finishes (see Close's doc comment), so overlapping the two no
-// longer produces a race to assert around here. This helper names the
-// offender, so a handle someone forgets to retract fails here rather than
-// becoming a stale handle in a consumer.
+// nil (or false) after Close. Since go-qrdb#226 that holds even for a Close that
+// overlapped Unseal or EnableEncryption — lifecycle_test.go drives those
+// interleavings and asserts it with this helper. It names the offender, so a handle someone forgets to retract fails here rather
+// than becoming a stale handle in a consumer.
 func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 	t.Helper()
 	rv := reflect.ValueOf(n)
@@ -186,10 +181,9 @@ func TestNode_AccessorsRaceFreeDuringUnseal(t *testing.T) {
 // handles the boot published, on a node the embedder already holds, so they are
 // a second writer against the same readers.
 //
-// Scope note: this drives accessor READS against Close. It does not drive a
-// BOOT against Close — Close racing Unseal is an ordering gap Node has no
-// lifecycle state to close, tracked as go-qrdb#226 and deliberately out of
-// scope for #176.
+// Scope note: this drives accessor READS against Close. A BOOT or MIGRATION
+// against Close is the lifecycle contract (go-qrdb#226), driven in
+// lifecycle_test.go.
 func TestNode_AccessorsRaceFreeDuringClose(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := sealedStandaloneConfig(t, dataDir)
@@ -269,8 +263,8 @@ func TestNode_CloseRetractsEveryHandle_Configured(t *testing.T) {
 	assertAllAccessorsNil(t, n, nodeAccessors())
 	assert.Nil(t, n.encMigrator.Load(), "Close must retract the scoped encryption router")
 
-	// And the retraction must degrade to a typed refusal, not a nil panic.
+	// And the retraction must degrade to a typed refusal, not a nil panic: the
+	// closed node says so rather than "not yet booted" (go-qrdb#226).
 	err = n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, seal.MigrationOptions{})
-	var notSupported *MigrationNotSupportedError
-	require.ErrorAs(t, err, &notSupported, "EnableEncryption after Close must return a typed refusal")
+	require.ErrorIs(t, err, ErrNodeClosed, "EnableEncryption after Close must return a typed refusal")
 }

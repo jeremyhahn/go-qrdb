@@ -214,6 +214,7 @@ that is deliberate, since it is how an operator finds out what to do next.
 | No encryption migrator wired (standalone, or a composer that never configured one) | `501` | `UNIMPLEMENTED` |
 | Migrator wired, but this node cannot migrate (no seal store, not yet unsealed, boot parameters not retained) | `501` | `UNIMPLEMENTED` — `ErrMigrationProviderUnavailable` |
 | Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |
+| `enable-encryption` (or unseal) on an embedded node that is closing | `503` | `UNAVAILABLE` — `service.ErrNodeClosed`; retry against another node |
 
 The complete HTTP status mapping table is in
 [seal/README.md](../seal/README.md#barrier-http-status-mapping) if that file is

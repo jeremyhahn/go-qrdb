@@ -78,3 +78,16 @@ func TestHandleBarrierEnableEncryption_DataPlaneRecyclingIsUnavailable(t *testin
 		t.Fatalf("status = %s, want UNAVAILABLE", wire.StatusName(status))
 	}
 }
+
+// TestHandleBarrierEnableEncryption_NodeClosedIsUnavailable pins that a
+// migration refused because the node is closing is retryable.
+func TestHandleBarrierEnableEncryption_NodeClosedIsUnavailable(t *testing.T) {
+	mig := &captureQUICMigrator{ch: make(chan quicMigrateCall, 1), err: service.ErrNodeClosed}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithEncryptionMigrator(mig))
+	payload, _ := proto.Marshal(&pb.BarrierEnableEncryptionRequest{Strategy: "passphrase", Passphrase: []byte("pw")})
+
+	_, err := srv.handleBarrierEnableEncryption(context.Background(), payload)
+	if status, _ := mapServiceError(err); status != wire.StatusUnavailable {
+		t.Fatalf("status = %s, want UNAVAILABLE", wire.StatusName(status))
+	}
+}

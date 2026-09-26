@@ -83,6 +83,10 @@ type TenantServiceResolver interface {
 // (server.New): the daemon wires only the tenant registry, the embedded node
 // wires only the system migrator, and either may wire both.
 type scopedEncryptionMigrator struct {
+	// admitTenant, when set, is consulted before a tenant-scope migration
+	// runs and its release after; see TenantMigrationAdmission.
+	admitTenant TenantMigrationAdmission
+
 	system     service.EncryptionMigrator // system-scope handler; may be nil
 	tenants    *TenantHostRegistry        // IsolationVolume tenant-scope handler; may be nil
 	raft       *RaftBackendFactory        // IsolationRaft tenant-scope handler; may be nil
@@ -93,6 +97,21 @@ type scopedEncryptionMigrator struct {
 
 // Compile-time check.
 var _ service.EncryptionMigrator = (*scopedEncryptionMigrator)(nil)
+
+// TenantMigrationAdmission admits a tenant-scope migration: it returns a
+// release the router calls when the migration returns, or an error that
+// refuses the migration before anything runs. The SDK node supplies one so
+// its Close waits for in-flight tenant migrations and refuses new ones
+// (go-qrdb#226). Tenant migrations admitted together still run concurrently.
+type TenantMigrationAdmission func(ctx context.Context) (release func(), err error)
+
+// ScopedMigratorOption configures NewScopedEncryptionMigrator.
+type ScopedMigratorOption func(*scopedEncryptionMigrator)
+
+// WithTenantAdmission sets the router's TenantMigrationAdmission.
+func WithTenantAdmission(a TenantMigrationAdmission) ScopedMigratorOption {
+	return func(m *scopedEncryptionMigrator) { m.admitTenant = a }
+}
 
 // NewScopedEncryptionMigrator builds the local, in-process scoped encryption
 // migrator — the router that performs the actual recycle (system → systemMig;
@@ -108,6 +127,7 @@ func NewScopedEncryptionMigrator(
 	raft *RaftBackendFactory,
 	barrierReg *seal.BarrierRegistry,
 	tenantSvc TenantServiceResolver,
+	opts ...ScopedMigratorOption,
 ) service.EncryptionMigrator {
 	m := &scopedEncryptionMigrator{
 		system:     system,
@@ -118,6 +138,9 @@ func NewScopedEncryptionMigrator(
 	if tenantSvc != nil {
 		m.tenantSvc = tenantSvc
 		m.isolation = tenantSvc
+	}
+	for _, o := range opts {
+		o(m)
 	}
 	return m
 }
@@ -130,6 +153,13 @@ func (m *scopedEncryptionMigrator) EnableEncryption(ctx context.Context, scope s
 	case service.ScopeTenant:
 		if m.tenants == nil && m.raft == nil {
 			return service.ErrMigrationProviderUnavailable
+		}
+		if m.admitTenant != nil {
+			release, err := m.admitTenant(ctx)
+			if err != nil {
+				return err
+			}
+			defer release()
 		}
 		// Authority: a tenant may only migrate its OWN dedicated barrier. A
 		// tenant without a registered dedicated barrier is on the shared system
@@ -204,10 +234,11 @@ func (s *Server) effectiveEncryptionMigrator() service.EncryptionMigrator {
 		return s.opts.encMigrator
 	}
 	m := &scopedEncryptionMigrator{
-		system:     s.opts.encMigrator,
-		tenants:    s.opts.tenantHosts,
-		raft:       s.opts.raftBackend,
-		barrierReg: s.opts.barrierRegistry,
+		admitTenant: s.opts.tenantMigrationAdmission,
+		system:      s.opts.encMigrator,
+		tenants:     s.opts.tenantHosts,
+		raft:        s.opts.raftBackend,
+		barrierReg:  s.opts.barrierRegistry,
 	}
 	// tenant.TenantServicer satisfies both narrow interfaces; guard the type
 	// assertion so a non-standard servicer simply disables the optional gates.

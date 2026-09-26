@@ -55,15 +55,14 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   stays mandatory.
 - **Every no-argument `*Node` accessor performs a race-free read** from any
   goroutine at any point — a fully constructed value or nil, never a torn one.
-  **`Close` is serialised with a system-scope `EnableEncryption`**: it blocks
-  until the migration finishes. It is **not yet** serialised with `Unseal` or
-  with a tenant-scope migration; callers must not overlap those. See *Node
-  accessor concurrency* below.
+  **`Close` blocks on an in-flight `Unseal` boot or system `EnableEncryption`**
+  and then tears down what it built; a boot or migration that arrives after it
+  is refused with `node.ErrNodeClosed`. See *Node accessor concurrency* below.
 
 ## Node accessor concurrency
 
-Two things are true, and only the first is a guarantee. Keeping them apart is
-the point of this section.
+Two guarantees, with different mechanisms: accessor reads are race-free, and
+`Close` is ordered against the boot and migration that publish what they read.
 
 ### Guaranteed: accessor reads are race-free
 
@@ -84,37 +83,42 @@ Those documented nils are an invitation to hold the node in one goroutine and
 poll it while a second drives `Unseal` — the sealed-window shape every embedder
 uses (`ServeSealedWindow` on one goroutine, the operator's unseal on another).
 
-### `Close` and system-scope migration: serialised
+### Guaranteed: `Close` blocks on an in-flight boot or migration
 
-The owner ruled that `Close` **blocks** rather than racing work in flight.
-For a system-scope `EnableEncryption` that is implemented: the migration holds
-the node's migration lock for its entire recycle — data-plane teardown,
-re-encryption and `Reopen` — and `Close` takes the same lock before it touches
-anything. So:
+The owner's ruling is that **`Close` blocks**. Every data-plane transition runs
+under one lifecycle gate (`Node.lifeGate`, a one-slot semaphore plus a
+closing signal that the first `Close` raises before it waits):
 
-- **`Close` blocks until an in-flight system-scope migration finishes**,
-  including its `Reopen`, which may rebuild the whole data plane first. A
-  `Close` can therefore take as long as that migration takes.
-- **A system-scope migration requested after `Close` has begun** waits for
-  `Close` to return and then fails cleanly on the closed node, rather than
-  rebuilding a data plane after shutdown.
+| Writer | Holds the gate for | After `Close` |
+|---|---|---|
+| `Unseal` | the barrier unseal and the whole boot it completes | returns `node.ErrNodeClosed` |
+| system-scope `EnableEncryption` | tear down, re-key and rebuild | returns `node.ErrNodeClosed` |
+| tenant-scope `EnableEncryption` | the tenant's recycle — held **shared**, alongside other tenant migrations and a system migration | returns `node.ErrNodeClosed` |
+| `Close` | the whole teardown | returns nil (idempotent) |
 
-### NOT yet guaranteed: `Close` with `Unseal` or a tenant-scope migration
+So `Close` is serialised with `Unseal`, with a system-scope migration, and
+with a tenant-scope migration: concurrent with any of them it either waits for
+it and tears down what it built, or runs first and the late call is refused.
+A tenant-scope migration is admitted through `server.TenantMigrationAdmission`
+on the router every transport uses and on the direct `Node.EnableEncryption`
+call; it keeps its per-tenant guard and still runs concurrently with other
+tenants' migrations. The migration can no longer
+reload a barrier `Close` retracted, and nothing is republished after `Close`
+returns. `ErrNodeClosed` is a sentinel so a composer can tell "closed" apart
+from a wrong credential (`*UnsealError`) or an unsupported migration
+(`*MigrationNotSupportedError`). It is `service.ErrNodeClosed`, so a refusal
+delivered over a transport is classified there as retryable against another
+node: 503 on REST, Unavailable on gRPC, unix, QUIC and MCP, and the sentinel
+itself on the embedded transport.
 
-Two interleavings are **not yet serialised**, and callers must not create them
-until they are:
+A boot or migration still **waiting** for the gate when `Close` begins is
+refused, not queued: waiters select on the slot, the closing signal and their
+own context. That is not a courtesy. `Close` stops the servers while it holds
+the slot, a graceful stop waits for in-flight requests, and a transport-borne
+`EnableEncryption` is one — a plain mutex let the two wait on each other.
 
-- **`Close` concurrent with `Unseal`.** `Close` retracts the handles, then the
-  in-flight boot's `Store` calls republish them, and the node looks open again
-  after `Close` returned.
-- **`Close` concurrent with a tenant-scope `EnableEncryption`.** Tenant
-  migrations recycle only that tenant's host and do not take the node's
-  migration lock, so `Close` does not wait for them.
-
-Neither is a torn read — the reads are still atomic — so this is an
-**ordering** gap, not the publication defect the accessors fixed. The same
-"`Close` blocks" ruling covers both, and the work to apply it to them is the
-next change to the node lifecycle.
+`Close` can take as long as what it waits for — a KMS-backed unseal included.
+Accessors never take the gate.
 
 ### Mechanism
 
@@ -128,15 +132,15 @@ pointer holds `*Iface`.
 single-word publication with no invariant spanning two of them, and reads
 outnumber the single write by orders of magnitude — the same reasoning
 `pkg/database`, `pkg/secure` and `pkg/storage/pool` apply to their swappable
-handles. A mutex is what the **lifecycle** gap above will need; it is not what a
-per-handle publication needs.
+handles. The lifecycle lock orders the WRITERS; a per-handle publication needs
+no mutex.
 
-### Retraction, within those limits
+### Retraction
 
-For a caller that does not overlap `Close` with a boot, `Close` retracts every
-handle it published before stopping what backs them, so every accessor reads
-nil afterwards rather than handing out a live-looking handle onto a stopped
-service graph.
+`Close` retracts every handle it published before stopping what backs them, so
+every accessor reads nil afterwards — including after a `Close` that overlapped
+a boot or migration — rather than handing out a live-looking handle onto a
+stopped service graph.
 
 The in-process encryption-migration recycle (`EnableEncryption` →
 `teardownDataPlane`) retracts the handles owned by the service graph it stops —
@@ -150,7 +154,8 @@ The scoped encryption router (`Node.encMigrator`, reached through
 `EnableEncryption`) is the deliberate exception: it is **not** retracted by
 `teardownDataPlane`. Its tenant leg reaches `TenantHostRegistry` and
 `RaftBackendFactory`, which survive a system-scope recycle by design — tenant
-migrations use a per-tenant guard and do not contend on `migrateMu`. Clearing
+migrations hold the lifecycle gate only shared, so they do not wait for a system
+migration. Clearing
 it mid-recycle would turn a concurrent tenant-scope migration, which today
 proceeds independently, into a typed "not yet fully booted" refusal. `Close`
 clears it directly instead, where no rebuild follows.

@@ -85,7 +85,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -509,38 +508,38 @@ type pendingClusteredBoot struct {
 // wireClientAndServer()` under -race, twice, from independent consumer runs,
 // the second reproduced at a clean base.
 //
-// What is NOT guaranteed. Node has no general lifecycle state, so CLOSE IS
-// NOT SYNCHRONISED AGAINST BOOT, and is only PARTIALLY synchronised against
-// MIGRATION:
+// # Lifecycle: Close is ordered against boot and migration
 //
-//   - Close concurrent with Unseal is undefined. Close retracts the handles,
-//     then the in-flight boot's Store calls republish them, and the node looks
-//     open again after Close returned.
-//   - Close concurrent with a SYSTEM-scope EnableEncryption is now
-//     synchronised: both take migrateMu (Close for its whole run, the
-//     migration for its whole recycle), so Close blocks until any in-flight
-//     system migration has fully finished before touching barrier,
-//     barrierRegistry, or sealStore, and a system migration attempted after
-//     Close has begun blocks on the same lock and then fails cleanly once it
-//     observes the now-nilled state. See Close's own doc comment.
-//   - Close concurrent with a TENANT-scope EnableEncryption remains undefined:
-//     that path does not contend on migrateMu (see the field's doc), and races
-//     Close's teardown of tenantHosts the same way it always has.
+// Every data-plane transition runs under one lifecycle gate (lifecycleGate): the
+// boot Unseal completes, a system-scope EnableEncryption (tear down, re-key,
+// rebuild), and Close. The owner's ruling (go-qrdb#226) is that CLOSE BLOCKS on
+// an in-flight boot or migration and then tears down what it built, so:
 //
-// None of these is a torn read — the reads are still atomic — so this is an
-// ordering gap, not the defect #176 fixed. Callers must not overlap Close with
-// Unseal or a tenant-scope EnableEncryption. Closing the Unseal gap (and the
-// tenant-scope one) needs an explicit lifecycle state and a ruling on what
-// Close means for an embedded Node more generally (does it block on an
-// in-flight Unseal, or does Unseal start failing, and with which typed
-// error). That is tracked as go-qrdb#226; only the system-migration slice of
-// it is fixed here.
+//   - Close concurrent with Unseal: either the boot finishes first and Close
+//     tears it all down, or Close runs first and Unseal returns ErrNodeClosed.
+//     No accessor reads non-nil after Close returns.
+//   - Close concurrent with a system EnableEncryption: the migration either
+//     completes and is then torn down, or is refused with ErrNodeClosed. It
+//     never runs against a barrier Close has retracted.
+//   - Close concurrent with a tenant-scope EnableEncryption: the same. A
+//     tenant migration holds the gate SHARED — alongside other tenant
+//     migrations and a system migration, each still serialised by its own
+//     guard — through the transports' router and the direct call alike
+//     (server.TenantMigrationAdmission), and Close waits for every one.
+//   - A boot or migration still WAITING for the gate when Close begins is
+//     refused with ErrNodeClosed, not queued. Close signals before it waits,
+//     which is what keeps a graceful server stop inside Close from waiting on
+//     a request that is itself waiting on Close.
+//   - Close is idempotent: every call after the first returns nil once the
+//     first has finished.
 //
-// Retraction, within those limits. Close retracts every handle it published
-// before stopping what backs them, and teardownDataPlane (the in-process
-// encryption-migration recycle) retracts the ones the stopped service graph
-// owns. So a caller that does NOT overlap Close with a boot sees nil from every
-// accessor afterwards rather than a live-looking handle onto a stopped graph.
+// Close can therefore take as long as the boot or migrations it waits for — a
+// KMS-backed Unseal included.
+//
+// Retraction. Close retracts every handle it published before stopping what
+// backs them, and teardownDataPlane (the in-process encryption-migration
+// recycle) retracts the ones the stopped service graph owns. So every accessor
+// reads nil after Close rather than a live-looking handle onto a stopped graph.
 //
 // The tests enumerate the accessors by REFLECTION over this type rather than by
 // hand, so an accessor added later is covered by construction — a hand-list is
@@ -550,9 +549,8 @@ type pendingClusteredBoot struct {
 // single-word publication with no invariant spanning two of them, and reads
 // outnumber the single write by orders of magnitude — the same reasoning
 // pkg/database, pkg/secure and pkg/storage/pool apply to their swappable
-// handles. A mutex is what the LIFECYCLE gap above will need; it is not what a
-// per-handle publication needs. Interface-typed handles are boxed, so the
-// pointer holds *Iface.
+// handles. Interface-typed handles are boxed, so the pointer holds *Iface. The
+// lifecycle gate above orders the WRITERS; it is never taken by an accessor.
 //
 // Finally, all of this is about ACQUIRING a handle, never about USING one.
 // Calling through a handle you already hold, concurrently with Close, is a
@@ -673,11 +671,17 @@ type Node struct {
 	// keyed barrier without a process restart. Nil for clustered/memory nodes.
 	retainedStandalone *pendingStandaloneBoot
 
-	// migrateMu serializes in-process system-scope encryption migrations so only
-	// one system migration runs at a time (each tears down and rebuilds the data
-	// plane). Per-tenant migrations use the TenantHostRegistry's per-tenant
-	// migrating guard and do not contend on this mutex.
-	migrateMu sync.Mutex
+	// lifeGate serializes every data-plane transition: the boot Unseal
+	// completes, an in-process system-scope encryption migration (which tears
+	// down and rebuilds the data plane), and Close. Close signals closing and
+	// then holds its slot for the whole teardown, so it waits out an in-flight
+	// boot or migration, neither can republish a handle after it, and one
+	// still WAITING is refused with ErrNodeClosed rather than queued
+	// (go-qrdb#226). A tenant-scope migration holds it shared (see
+	// admitTenantMigration): tenant migrations keep their per-tenant guard
+	// and do not wait for each other or for a system migration, but Close
+	// waits for them. No accessor takes it. See lifecycleGate.
+	lifeGate lifecycleGate
 
 	// tenantIsolation records whether WithTenantIsolation() was supplied at
 	// construction. Copied from nodeOptions so completeStandaloneBoot can
@@ -717,7 +721,7 @@ type Node struct {
 	bgCancel context.CancelFunc
 
 	// encMigrator is the scoped encryption migrator built in wireClientAndServer.
-	// It routes system scope to the nodeSystemMigrator (which holds migrateMu)
+	// It routes system scope to the nodeSystemMigrator (which holds the lifecycle gate)
 	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
 	// and the multi-protocol server's transport handlers route through the same
 	// underlying scoped-router semantics.
@@ -778,6 +782,13 @@ func (n *Node) IsSealed() bool {
 // non-nil values. On failure the node remains in the sealed state and the
 // caller may retry.
 func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
+	// The boot publishes the data plane; Close must not interleave with it
+	// (go-qrdb#226). A Close already under way wins, and this call refuses.
+	if err := n.lifeGate.acquire(ctx); err != nil {
+		return err
+	}
+	defer n.lifeGate.release()
+
 	// One snapshot for the whole call. Loading per-use would let a concurrent
 	// Close turn a nil check into a nil dereference two lines later.
 	barrier := n.barrier.Load()
@@ -1353,7 +1364,7 @@ func (n *Node) bindReplicatedVolumePool(svcNode *lifecycle.Node) {
 // encMigrator is deliberately NOT retracted here. It is the scoped router, and
 // its tenant leg reaches TenantHostRegistry and RaftBackendFactory, which
 // SURVIVE a system-scope recycle by design (tenant migrations use a per-tenant
-// guard and do not contend on migrateMu). Clearing it during teardownDataPlane
+// guard and do not contend on the lifecycle gate). Clearing it during teardownDataPlane
 // would turn a concurrent tenant-scope migration — which today proceeds
 // independently of the system migration — into a typed "not yet fully booted"
 // refusal. Close clears it directly instead, where there is no rebuild to come.
@@ -1369,26 +1380,21 @@ func (n *Node) retractDataPlaneServices() {
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
 //
-// Close blocks on an in-flight system-scope migration rather than racing it
-// (the go-qrdb#226 shutdown discipline). nodeSystemMigrator.EnableEncryption
-// holds migrateMu for the ENTIRE recycle — teardownDataPlane, re-encryption,
-// and Reopen — because that sequence touches the same fields Close tears
-// down below (client, srv, services, barrier, sealStore). Before this fix
-// Close raced that goroutine directly: a migration a transport handler had
-// already returned "migration_started" for (the accept-window pattern every
-// handler uses) kept running after the handler's own call returned, and a
-// concurrent Close nilled n.sealStore out from under
-// nodeMigrationProvider.Reopen's canonicalRootKeyStrategy read, segfaulting
-// on a nil *pebble.PebbleStorage. Acquiring migrateMu here — and holding it
-// for the rest of Close via defer — makes Close wait for that migration to
-// fully finish (including its Reopen, which may rebuild the whole data plane
-// again) before touching anything, and blocks a NEW migration from starting
-// once Close has begun: EnableEncryption's first step is the same Lock, so it
-// stalls until Close returns and then fails cleanly on the now-nilled
-// registry/barrier rather than reaching for freed resources. Tenant-scope
-// migrations are unaffected: they never contend on migrateMu (see its field
-// doc), and Close's own teardown of tenantHosts below stops them the same way
-// it always has.
+// Close blocks until an in-flight Unseal boot or system-scope EnableEncryption
+// has finished, and until every in-flight tenant-scope migration has, then
+// tears down whatever they built; see Node's doc comment. It is idempotent: a
+// second Close returns nil.
+//
+// Why it must wait rather than race. A system migration a transport handler
+// has already answered "migration_started" for (the accept-window pattern
+// every handler uses) keeps running after the handler returns, through
+// teardownDataPlane, re-encryption and Reopen — the same fields Close tears
+// down (client, srv, services, barrier, sealStore). Unsynchronised, Close
+// nilled n.sealStore under nodeMigrationProvider.Reopen's
+// canonicalRootKeyStrategy read (go-qrdb#550). Close raises the lifecycle
+// gate's closing signal first, so a boot or migration still WAITING is
+// refused with ErrNodeClosed instead of queueing behind it, and one that
+// arrives after Close has begun is refused the same way.
 //
 // All barriers (system and per-tenant) are sealed before their references
 // are dropped so unsealed DEKs and root keys held in go-enclave enclaves are
@@ -1400,8 +1406,11 @@ func (n *Node) retractDataPlaneServices() {
 // to the binary that owns the process; cmd/qrdbd/start.go's runStart is the
 // reference wiring.
 func (n *Node) Close() error {
-	n.migrateMu.Lock()
-	defer n.migrateMu.Unlock()
+	first := n.lifeGate.beginClose()
+	defer n.lifeGate.release()
+	if !first {
+		return nil
+	}
 
 	var firstErr error
 
@@ -2281,7 +2290,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		allOpts = append(allOpts, server.WithAuthFactorService(*p))
 	}
 
-	// Build the system-scope migrator adapter that holds migrateMu for the
+	// Build the system-scope migrator adapter that holds the lifecycle gate for the
 	// duration of each in-process system data-plane recycle.
 	sysMig := &nodeSystemMigrator{node: n}
 
@@ -2293,6 +2302,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		allOpts = append(allOpts,
 			server.WithEncryptionMigrator(sysMig),
 			server.WithBarrierRegistry(barrierRegistry),
+			// Tenant-scope migrations through every transport are admitted
+			// by the node's lifecycle gate, like the direct call below.
+			server.WithTenantMigrationAdmission(n.admitTenantMigration),
 		)
 	}
 	// Wire the IsolationVolume tenant host registry into every transport so
@@ -2332,7 +2344,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Build and cache the scoped migration router used by Node.EnableEncryption.
 	// This mirrors what the server builds internally via effectiveEncryptionMigrator,
 	// so the direct in-process call and every transport handler share the same
-	// routing semantics (system → sysMig → migrateMu; tenant → tenantHosts).
+	// routing semantics (system → sysMig → lifecycle gate; tenant → tenantHosts).
 	//
 	// The tenant leg is wired with &nodeTenantResolver{node: n}, NOT svcNode.Tenant
 	// directly: this router is kept alive across a system-scope migration's
@@ -2342,7 +2354,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// n.svcNode.Load().Tenant on every call instead, so a concurrent tenant-scope
 	// migration during that window always reaches the currently-live tenant
 	// service rather than the one that existed when this line ran (go-qrdb#222).
-	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, &nodeTenantResolver{node: n})
+	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, &nodeTenantResolver{node: n},
+		server.WithTenantAdmission(n.admitTenantMigration))
 	n.encMigrator.Store(&encMigrator)
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)

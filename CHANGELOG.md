@@ -285,6 +285,23 @@ are not reconstructed here — their history is in the git log.
   with `member identity required`: those paths carry no identity yet. So is
   founding a dedicated database with more than one initial replica, since the
   factory can state only the local replica's identity.
+- **`node.Node.Close` is ordered against `Unseal` and `EnableEncryption`** (#226).
+  Per the owner's ruling, `Close` now blocks on an in-flight boot or
+  system-scope migration and then tears down what it built, so a boot can no
+  longer republish the data plane after `Close` returned and a migration can
+  no longer run against a barrier `Close` retracted. A boot or migration still
+  waiting when `Close` begins is refused rather than queued, so a graceful
+  server stop inside `Close` cannot wait on a transport-delivered
+  `EnableEncryption` that is waiting on `Close`. A tenant-scope migration is
+  admitted shared (`server.TenantMigrationAdmission`), so `Close` waits for it
+  too and refuses a late one; this supersedes the 0.21.0 `migrateMu`, which
+  covered system-scope migrations only. `Close` is idempotent;
+  `Unseal` and `EnableEncryption` on a closed node return the new sentinel
+  `node.ErrNodeClosed` (previously `EnableEncryption` answered a closed node
+  with `*MigrationNotSupportedError`). It is `service.ErrNodeClosed`, which
+  every transport answers as retryable — 503 on REST, Unavailable on gRPC,
+  unix, QUIC and MCP — where a transport-delivered refusal previously read as
+  an internal error.
 
 ## [0.21.3-alpha] - 2026-09-30
 

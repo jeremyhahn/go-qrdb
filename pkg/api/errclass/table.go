@@ -90,6 +90,11 @@ var dominantRules = []rule{
 	// does.
 	as(&service.DataPlaneRecyclingError{}, Unavailable),
 
+	// The node is closing: an Unseal or a migration refused rather than queued
+	// behind Close. Retryable against another node, like a closed store, and
+	// for the same reason it wins through whatever wrapper carried it.
+	is(service.ErrNodeClosed, Unavailable),
+
 	// A normal tenant caller named a tenant other than its own.
 	as(&tenant.CrossTenantDeniedError{}, PermissionDenied),
 

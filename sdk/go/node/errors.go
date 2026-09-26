@@ -14,7 +14,11 @@
 
 package node
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // StorageCreateError indicates that the storage backend could not be created.
 type StorageCreateError struct {
@@ -140,6 +144,13 @@ func (e *UnsealError) Unwrap() error { return e.Err }
 // keyspace, which is the defect, so a node that cannot route offers no login
 // rather than an unrouted one.
 var ErrNoTenantRouting = errors.New("node: no tenant-routed user auth-factor service")
+
+// ErrNodeClosed is returned by Unseal and EnableEncryption on a node that
+// Close has begun or finished tearing down. It lets a caller tell "this node
+// is closed" apart from a credential or migration failure (go-qrdb#226). It is
+// service.ErrNodeClosed itself, so a refusal delivered over a transport is
+// classified as retryable (503 / Unavailable) there too.
+var ErrNodeClosed = service.ErrNodeClosed
 
 // LoginWiringError indicates that the unified-login ceremony could not be
 // wired into the embedded transport — typically because the node lifecycle

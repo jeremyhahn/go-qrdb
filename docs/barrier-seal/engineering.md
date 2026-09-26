@@ -295,6 +295,7 @@ migration is a different error, `MigrationReopenError`, and is not reported as
 | `enable-encryption` on a tenant using the shared system barrier | rejected | **yes** |
 | `enable-encryption` on a node that cannot migrate (see above) | refused before any teardown, `ErrMigrationProviderUnavailable` | **yes** |
 | tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
+| `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
 | Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
 
 ## Permission model

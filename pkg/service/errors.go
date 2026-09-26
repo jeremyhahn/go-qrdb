@@ -858,6 +858,20 @@ func (e *ImportProposalTooLargeError) Error() string {
 // Barrier errors
 // ---------------------------------------------------------------------------
 
+// ErrNodeClosed is returned by an operation that needs a node which Close has
+// begun or finished tearing down — an Unseal, or an encryption migration
+// refused rather than queued behind Close. The node is going away underneath
+// the request, not refusing it, so every transport answers it as retryable:
+// 503 on REST, Unavailable on gRPC, unix, QUIC and MCP. Match it with
+// errors.Is.
+var ErrNodeClosed error = &nodeClosedError{}
+
+// nodeClosedError is the concrete type behind ErrNodeClosed.
+type nodeClosedError struct{}
+
+// Error returns a human-readable description.
+func (e *nodeClosedError) Error() string { return "service: node closed" }
+
 // ErrCeremonyNotConfigured is returned when a Security Officer operation is
 // attempted but no CeremonyService has been wired into the BarrierService.
 // Use NewBarrierServiceWithCeremony to enable officer registration and share
