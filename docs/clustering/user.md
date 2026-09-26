@@ -35,6 +35,24 @@ Bootstrap runs: discover peers → validate addresses → add self → check quo
 start the shard. If discovery finds too few peers, bootstrap fails at the quorum
 check rather than starting a cluster that cannot commit.
 
+### Every node needs the other nodes' identities
+
+A replica accepts Raft traffic only from a member whose **identity** it was
+given. An identity is a hash of the public key in a node's transport
+certificate, so it is collected from the certificates, not from the network:
+
+1. Issue each node its certificate from the cluster CA.
+2. Print each node's identity: `qrdbd node-identity --cert node2-cert.pem`.
+3. Give every node the identities of the others, by replica ID:
+   `raft.member_identities: "2=spki:…,3=spki:…"` (or `--member-identities`).
+   A node's own entry can be left out; it is derived from its certificate.
+
+A founding node must list every member of the initial cluster; a node started
+with `raft.join: true` must list at least one existing member. Renewing a
+certificate on the same key keeps the identity; a new key changes it.
+
+A single-node cluster has no network transport and needs no identities.
+
 ### Adding a node: joining through enrollment is unavailable in this release
 
 **A node started with bootstrap flags refuses to start** in this release:
@@ -203,6 +221,21 @@ including REST.
 **Bootstrap fails at the quorum check.** Discovery did not find enough peers.
 Check the method's inputs: the `raft.peers` list, the DNS SRV record, the
 multicast secret matching on every node, or the token service.
+
+**A node refuses to start: `no node identity in Config.MemberIdentities`.** The
+node was not given the identity of the replica the message names. Add it to
+`raft.member_identities` — see
+[Every node needs the other nodes' identities](#every-node-needs-the-other-nodes-identities).
+
+**A node refuses to start: `member identity for local replica … is configured
+as … but its certificate presents …`.** The entry for the node itself names a
+different key than the certificate it was started with — usually a copy-paste
+from another node, or a certificate reissued on a new key. Remove the local
+entry or correct it.
+
+**`member add` fails with `member identity required`.** Adding a replica to a
+running multi-node cluster needs its identity, which that verb cannot carry
+yet. Name every member when the cluster is formed.
 
 **Multicast finds nothing.** Every node needs the *same* operator-chosen PSK,
 and there is no default. A mismatch looks exactly like "no peers on the

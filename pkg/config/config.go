@@ -343,6 +343,21 @@ type RaftConfig struct {
 	// the format "replicaID=address" (e.g., "1=10.0.0.1:63001,2=10.0.0.2:63001").
 	Peers string `yaml:"peers"`
 
+	// MemberIdentities is a comma-separated list of the Raft member
+	// identities of the OTHER replicas, in the format "replicaID=identity"
+	// (e.g., "2=spki:3f9a…,3=spki:c01d…"). An identity is "spki:" plus the
+	// hex SHA-256 of the replica's certificate SubjectPublicKeyInfo — what
+	// `qrdbd node-identity` prints for a certificate file.
+	//
+	// It is required on every multi-node replica: go-quicraft admits a
+	// member by its identity and by nothing else. A founding replica must
+	// name every member of the initial membership; a joining replica must
+	// name at least one existing member it will accept its bootstrap from.
+	// The local replica's own entry is derived from its certificate and may
+	// be omitted; if present it must match. Ignored for a single-node
+	// cluster, which has no Raft transport.
+	MemberIdentities string `yaml:"member_identities"`
+
 	// Join indicates this node is joining an existing cluster rather
 	// than forming a new one.
 	Join bool `yaml:"join"`

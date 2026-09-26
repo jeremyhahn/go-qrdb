@@ -146,12 +146,22 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
 	}
 	cfgPath := writePeerAdminURLConfig(t, peerAdminURLs)
 
+	// Every certificate is issued before any node starts: each node needs
+	// every peer's member identity (#556).
+	nodeCertPaths := make([]string, 3)
+	nodeKeyPaths := make([]string, 3)
+	for i := range 3 {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+	}
+	memberIDs := memberIdentitiesFlag(t, nodeCertPaths)
+
 	for i := range 3 {
 		dataDir := t.TempDir()
 		dataDirs[i] = dataDir
 
 		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
-		nodeCertPath, nodeKeyPath := ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+		nodeCertPath, nodeKeyPath := nodeCertPaths[i], nodeKeyPaths[i]
 
 		args := []string{
 			"start",
@@ -162,6 +172,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
 			"--sm", smType,
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -571,6 +582,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -649,6 +661,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -775,6 +788,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -830,6 +844,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),

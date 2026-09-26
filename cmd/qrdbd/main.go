@@ -62,6 +62,7 @@ func run() int {
 	rootCmd.AddCommand(newStartCmd())
 	rootCmd.AddCommand(newStatusCmd())
 	rootCmd.AddCommand(newPeersCmd())
+	rootCmd.AddCommand(newNodeIdentityCmd())
 	rootCmd.AddCommand(newVersionCmd())
 
 	if err := rootCmd.Execute(); err != nil {

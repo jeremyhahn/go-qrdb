@@ -64,10 +64,44 @@ func BootstrapShard(ctx context.Context, node ..., opts Options, shardID uint64,
 func BuildDiscovery(...) (...)
 func ParsePeers(...)   (...)
 func IsSingleNode(...) bool
+
+// Raft member identities (see "Member identities" below):
+func MemberIdentityFromCertificate(leaf *x509.Certificate) string
+func MemberIdentityFromPEM(certPEM []byte) (string, error)
+func ValidateMemberIdentity(s string) error
+func ParseMemberIdentities(specs []string) (map[uint64]string, error)
+func ResolveMemberIdentities(specs []string, selfID uint64, selfCertPEM []byte) (map[uint64]string, error)
 ```
 
 `BootstrapShard` runs, in order: **discover → validate addresses → add self →
 check quorum → build member map → `StartShard`.**
+
+### Member identities
+
+go-quicraft (0.13 and later) admits a member of a shard on a host with a
+transport by its node identity alone, and refuses a founding `StartShard` whose
+`Config.MemberIdentities` omits a member, or a joining one that names no anchor.
+Both composers — `sdk/go/node.buildClusteredRaftConfigs` and `qrdbd`'s
+`initializeNode` — build that map with `ResolveMemberIdentities` from
+`raft.member_identities` and the local transport certificate, before the host is
+built.
+
+- The identity is `"spki:" + hex(sha256(leaf.RawSubjectPublicKeyInfo))`, byte
+  for byte what `quicraft.Host.NodeIdentity` reports. go-quicraft does not
+  export its derivation, so `MemberIdentityFromCertificate` restates it; the
+  SDK and daemon formation tests assert the two agree against a live host, so a
+  change on either side fails a test rather than a cluster.
+- The local entry is derived, never trusted from configuration: a configured
+  local entry that differs is `*MemberIdentityMismatchError`.
+- A malformed spec is `*MemberIdentityParseError` (not `id=identity`, replica
+  ID 0, or a replica named twice) or `*MemberIdentityFormatError` (not
+  `spki:` + 64 lower-case hex digits). Both are raised before any directory is
+  created.
+- Coverage — every founder named, an anchor for a joiner — is go-quicraft's
+  rule and is left to `StartShard`, which returns `*quicraft.InvalidMemberError`.
+  Restating it here would be a second copy of the rule to drift.
+- The SDK node wraps each refusal in `*node.ConfigError{Field:
+  "raft.member_identities"}`, which unwraps to the typed cause.
 
 ### Enrollment role — `pkg/clusterenroll`
 
@@ -450,6 +484,10 @@ type ImbalanceReport struct {
 |---|---|---|
 | Standalone mode | `requires mode: raft` | **yes** |
 | Discovery finds no peers | `BootstrapShard` fails at the quorum check | **yes** |
+| Multi-node start with no identity for a member (founder) or no anchor (joiner) | `StartShard` refuses with `*quicraft.InvalidMemberError`; the node does not start | **yes** |
+| Malformed `raft.member_identities`, or a local entry that is not the certificate's | `*MemberIdentityParseError` / `*MemberIdentityFormatError` / `*MemberIdentityMismatchError` before the host is built | **yes** |
+| `AddMember`, rebalance or placement adding a replica on a host with a transport | refused by go-quicraft with `ErrMemberIdentityRequired`: these paths carry no identity yet | **yes** |
+| Founding a dedicated (IsolationRaft) database with more than one initial replica on a host with a transport | refused by go-quicraft with `*quicraft.InvalidMemberError`: the factory can state only the local replica's identity | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
 | Any bootstrap join (bootstrap flags set), this release | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that still dials. | **yes** |
@@ -473,6 +511,7 @@ Discovery lives under the `discovery` block — see
 | `discovery.dynamic_membership` | `--dynamic-membership` | enable the membership manager |
 | `discovery.min_peers` | `--cluster-min-peers` | auto-removal quorum floor (`MinQuorum`) |
 | `raft.peers` | — | `id=address` specs for the `static` method |
+| `raft.member_identities` | `--member-identities` | `id=spki:<hex>` identities of the other replicas; required for a multi-node cluster |
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
 | `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the first node's enrollment listener; **zero means the fixed default 63006, not an ephemeral port** |
 | `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
@@ -487,6 +526,12 @@ and neither opens a listener there — see
   `BootstrapShard`'s six steps including the quorum refusal, and
   `MembershipManager` against the two narrow interfaces (that is what they are
   for).
+- **Formation with member identities is a unit test, not only an integration
+  one.** `TestNewClusteredNode_ThreeReplicasFormAndReplicate` builds three
+  replicas in one process through `NewClusteredNode`, each with its own leaf
+  from one test CA, and asserts they agree on a leader and replicate a write;
+  `TestInitializeNode_MemberIdentitiesFormTheShard` does the daemon's half. Both
+  fail if the resolved identities are not placed on the shard config.
 - **The quorum guard and the idempotence checks are the important tests** —
   they are what stops automatic reconfiguration destroying a cluster.
 - **No `time.Sleep`**: lease expiry and the keepalive are driven through the

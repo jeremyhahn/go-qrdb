@@ -84,6 +84,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -290,6 +291,16 @@ type RaftMTLSConfig = quicraftconfig.MTLSConfig
 // bytes from the operator-supplied certificate files.
 func WithRaftMTLS(mtls *RaftMTLSConfig) NodeOption {
 	return func(o *nodeOptions) { o.raftMTLS = mtls }
+}
+
+// MemberIdentityFromPEM returns the Raft member identity of the node whose
+// transport certificate (the Cert of its RaftMTLSConfig) is certPEM. A
+// multi-node cluster lists every OTHER replica's identity in
+// cfg.Raft.MemberIdentities as "replicaID=identity"; the local replica's own
+// entry is derived from its RaftMTLSConfig and may be omitted. See
+// cluster.MemberIdentityFromPEM, which this delegates to.
+func MemberIdentityFromPEM(certPEM []byte) (string, error) {
+	return cluster.MemberIdentityFromPEM(certPEM)
 }
 
 // WithNoSyncWrites disables fsync on PebbleDB batch commits in the MVCC
@@ -1122,7 +1133,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		return err
 	}
 
-	host, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS)
+	host, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS, n.logger)
 	if err != nil {
 		return &HostCreateError{Err: err}
 	}
@@ -1797,7 +1808,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 
-	host, err := buildClusteredHost(ctx, cfg, members, createFn, nOpts.raftMTLS)
+	host, err := buildClusteredHost(ctx, cfg, members, createFn, nOpts.raftMTLS, n.logger)
 	if err != nil {
 		return nil, &HostCreateError{Err: err}
 	}
@@ -2770,12 +2781,23 @@ func buildClusteredHost(
 	members map[uint64]string,
 	createFn sm.CreateFunc,
 	mtls *quicraftconfig.MTLSConfig,
+	log *slog.Logger,
 ) (*quicraft.Host, error) {
-	hostCfg, shardCfg, hostOpts := buildClusteredRaftConfigs(cfg, members, mtls)
+	hostCfg, shardCfg, hostOpts, err := buildClusteredRaftConfigs(cfg, members, mtls)
+	if err != nil {
+		return nil, err
+	}
 
 	host, err := quicraft.NewHost(hostCfg, hostOpts...)
 	if err != nil {
 		return nil, err
+	}
+	if identity := host.NodeIdentity(); identity != "" {
+		// Safe to log: a hash of a public key. It is the value every other
+		// replica needs in its raft.member_identities for this one.
+		log.Info("raft member identity",
+			slog.Uint64("replica_id", shardCfg.ReplicaID),
+			slog.String("identity", identity))
 	}
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
@@ -2794,11 +2816,17 @@ func buildClusteredHost(
 // no network at all, which is the precondition for both transport-less Raft
 // tunings — see cluster.TransportlessRTTMillisecond and
 // cluster.SingleNodeElectionRTT (go-qrdb#250).
+//
+// A multi-entry members map means the host has a Raft transport, and
+// go-quicraft then admits a member by its node identity and by nothing else
+// (go-qrdb#556). The shard configuration's MemberIdentities is resolved from
+// cfg.Raft.MemberIdentities plus this replica's own identity, derived from the
+// certificate in mtls; see cluster.ResolveMemberIdentities.
 func buildClusteredRaftConfigs(
 	cfg *qrdbconfig.Config,
 	members map[uint64]string,
 	mtls *quicraftconfig.MTLSConfig,
-) (quicraftconfig.HostConfig, quicraftconfig.Config, []quicraft.HostOption) {
+) (quicraftconfig.HostConfig, quicraftconfig.Config, []quicraft.HostOption, error) {
 	dataDir := cfg.Raft.DataDir
 	if dataDir == "" {
 		dataDir = "./data"
@@ -2840,7 +2868,11 @@ func buildClusteredRaftConfigs(
 		NoSyncWAL: os.Getenv("QRDB_NOSYNC_WRITES") == "1",
 	}
 
-	var hostOpts []quicraft.HostOption
+	// The embedded node does not encrypt the Raft log: at-rest encryption of
+	// the state machine is the seal barrier's job (the MVCC store's
+	// encryptor), and go-quicraft >= 0.14 requires that choice to be stated
+	// rather than defaulted.
+	hostOpts := []quicraft.HostOption{quicraft.WithoutEncryption()}
 	transportless := len(members) == 1
 	if transportless {
 		hostOpts = append(hostOpts, quicraft.WithoutTransport())
@@ -2878,7 +2910,31 @@ func buildClusteredRaftConfigs(
 		cluster.ApplyTransportlessShardTuning(&shardCfg)
 	}
 
-	return hostCfg, shardCfg, hostOpts
+	if !transportless {
+		var selfCert []byte
+		if mtls != nil {
+			selfCert = mtls.Cert
+		}
+		identities, err := cluster.ResolveMemberIdentities(
+			splitMemberIdentities(cfg.Raft.MemberIdentities), shardCfg.ReplicaID, selfCert)
+		if err != nil {
+			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
+				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
+		}
+		shardCfg.MemberIdentities = identities
+	}
+
+	return hostCfg, shardCfg, hostOpts, nil
+}
+
+// splitMemberIdentities splits the comma-separated raft.member_identities
+// value into the specifications cluster.ParseMemberIdentities takes. An empty
+// value yields no specifications.
+func splitMemberIdentities(v string) []string {
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }
 
 // buildNodeServerConfig constructs a *qrdbconfig.Config suitable for

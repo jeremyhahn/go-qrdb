@@ -246,6 +246,7 @@ Configures the QuicRaft consensus layer.
 | `raft_address`              | string | `127.0.0.1:63001`   | yes      | `--raft-address`                | Advertised address for Raft peer communication               |
 | `listen_address`            | string | `""`                | no       | `--listen`                      | Bind address for Raft peer communication                     |
 | `peers`                     | string | `1=127.0.0.1:63001` | no       | `--peers`                       | Comma-separated initial cluster members                      |
+| `member_identities`         | string | `""`                | multi-node | `--member-identities`         | Comma-separated `replicaID=spki:<hex>` Raft identities of the other replicas |
 | `join`                      | bool   | `false`             | no       | `--join`                        | Join an existing cluster instead of forming a new one         |
 | `snapshot_entries`          | uint64 | `0`                 | no       | `--snapshot-entries`            | Applied entries between automatic snapshots                  |
 | `compaction_overhead`       | uint64 | `0`                 | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
@@ -283,6 +284,20 @@ The `peers` field uses a comma-separated `replicaID=address` format:
 ```yaml
 peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
 ```
+
+**Member identities format:**
+
+`member_identities` names, by replica ID, the Raft identity of every other
+replica — `spki:` plus the hex SHA-256 of that node's certificate public key,
+as printed by `qrdbd node-identity --cert FILE`:
+
+```yaml
+member_identities: "2=spki:3f9a…,3=spki:c01d…"
+```
+
+A founding node must name every member in `peers`; a joining node at least one
+existing member. The node's own entry is derived from its certificate and may be
+omitted. Ignored for a single-node cluster.
 
 **Notes:**
 
@@ -1006,6 +1021,8 @@ raft:
   raft_address: "10.0.0.1:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "2=spki:<node-2 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1051,6 +1068,8 @@ raft:
   raft_address: "10.0.0.2:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "1=spki:<node-1 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1096,6 +1115,8 @@ raft:
   raft_address: "10.0.0.3:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "1=spki:<node-1 identity>,2=spki:<node-2 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1148,6 +1169,8 @@ raft:
   raft_address: "10.0.0.1:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "2=spki:<node-2 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 50000
   compaction_overhead: 10000
   max_in_mem_log_size: 10485760       # 10 MB per shard

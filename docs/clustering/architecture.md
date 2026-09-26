@@ -98,6 +98,36 @@ same from their own configuration. Helpers `BuildDiscovery`, `ParsePeers`, and
 Configuration lives under the `discovery` block — see
 [12-configuration.md](../12-configuration.md#discovery).
 
+## Member identities
+
+A replica with a Raft transport admits a member by its **node identity** and by
+nothing else. The identity is `spki:` followed by the hex SHA-256 of the
+member's transport-certificate public key, so it survives a certificate renewal
+on the same keypair and changes only with the keypair. An address is routing
+metadata; a certificate from the cluster CA is not, on its own, a claim to any
+replica ID. This is go-quicraft's rule, and go-qrdb supplies the identities it
+needs.
+
+Where each identity comes from:
+
+| Identity | Source |
+|---|---|
+| This replica's own | derived from the certificate it presents (`WithRaftMTLS` for the SDK node, `--tls-cert-file` for `qrdbd`) |
+| Every other replica's | `raft.member_identities` (`--member-identities`), `replicaID=identity` specs the operator collects out of band |
+
+A peer's identity is **never learned from the peer's own connection**: that
+would let any holder of a cluster certificate register itself as any replica,
+which is the attack identities close. The operator reads each node's identity
+from the certificate the CA issued (`qrdbd node-identity --cert FILE`, or
+`node.MemberIdentityFromPEM` in the SDK) before any node starts.
+
+A founding replica must name every member of the initial membership; a joining
+replica must name at least one existing member it will accept its bootstrap
+from. The discovery method is irrelevant: `raft.member_identities` is keyed by
+replica ID and applies to whatever membership discovery produces. A configured
+entry for the local replica that disagrees with its certificate is refused
+before the host is built. A single-node cluster has no transport and needs none.
+
 ## Dynamic membership (opt-in)
 
 `cluster.MembershipManager` reconciles the Raft group as nodes join and leave,
@@ -224,6 +254,10 @@ cadence is `DefaultMembershipPollInterval`.
 
 ## Trust boundaries
 
+- **A Raft member is admitted by its node identity.** Holding a certificate
+  from the cluster CA is not enough to speak for a replica ID; the identity for
+  that ID must have been supplied by the operator (see
+  [Member identities](#member-identities)).
 - **Multicast discovery requires an operator PSK** and authenticates
   announcements with HMAC-SHA256. Without a secret the method does not run.
 - **Membership entries live under `__sys:cluster/members/{nodeID}`**, inside the

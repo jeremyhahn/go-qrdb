@@ -169,6 +169,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 	grpcPorts := allocateTCPPorts(t, 3)
 	mysqlPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
 	c := &sqlCluster{ca: ca}
 	for i := range 3 {
@@ -181,6 +182,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			"--sm", "mvcc",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -189,7 +191,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			"--mysql-port", fmt.Sprintf("%d", mysqlPorts[i]),
 			"--sql-database", sqlClusterDatabase,
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		cmd := startNode(t, bin, args, fmt.Sprintf("[sqlcluster-node%d] ", i+1))
 		c.nodes = append(c.nodes, &sqlClusterNode{

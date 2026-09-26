@@ -42,6 +42,7 @@ file. Without one, only defaults and flags apply.
 | `--raft-address` | `raft.raft_address` |
 | `--listen` | `raft.listen_address` |
 | `--peers` | `raft.peers` |
+| `--member-identities` | `raft.member_identities` |
 | `--join` | `raft.join` |
 | `--snapshot-entries` | `raft.snapshot_entries` |
 | `--compaction-overhead` | `raft.compaction_overhead` |

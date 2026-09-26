@@ -678,6 +678,9 @@ func (m *mockQuicraftBarrier) EncryptWithEpoch(dst, plaintext []byte) ([]byte, u
 func (m *mockQuicraftBarrier) EncryptWithEpochContext(dst, plaintext, contextAAD []byte) ([]byte, uint64, error) {
 	return plaintext, 0, nil
 }
+func (m *mockQuicraftBarrier) EncryptWithEpochPinnedContext(dst, plaintext, contextAAD []byte) ([]byte, uint64, error) {
+	return plaintext, 0, nil
+}
 
 // IsHardwareMode reports false: this double seals nothing itself and
 // delegates to no external encryptor.

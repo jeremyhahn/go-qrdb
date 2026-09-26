@@ -621,7 +621,7 @@ func (b *EmbeddedServerBinding) startRaftNode(cfg *EmbeddedConfig) (*quicraft.Ho
 
 	// Create the host. Single-node embedded mode disables the network
 	// transport since all communication is in-process.
-	host, err := quicraft.NewHost(hostCfg, quicraft.WithoutTransport())
+	host, err := quicraft.NewHost(hostCfg, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
 	if err != nil {
 		return nil, &HostCreateError{Err: err}
 	}

@@ -173,3 +173,75 @@ func (e *MembershipCauseError) Error() string {
 func (e *MembershipCauseError) Unwrap() error {
 	return e.Cause
 }
+
+// MemberIdentityParseError is returned when a member-identity specification is
+// not "replicaID=identity" with a non-zero replica ID, or names a replica a
+// second time.
+type MemberIdentityParseError struct {
+	// Input is the malformed specification.
+	Input string
+}
+
+// Error returns a human-readable description of the parse failure.
+func (e *MemberIdentityParseError) Error() string {
+	return "cluster: invalid member identity " + strconv.Quote(e.Input) +
+		", expected a unique replicaID=spki:<sha256-hex> with a non-zero replica ID"
+}
+
+// MemberIdentityFormatError is returned when an identity is not the
+// "spki:<64 lower-case hex digits>" form go-quicraft produces.
+type MemberIdentityFormatError struct {
+	// Identity is the rejected value.
+	Identity string
+}
+
+// Error returns a human-readable description of the format failure.
+func (e *MemberIdentityFormatError) Error() string {
+	return "cluster: member identity " + strconv.Quote(e.Identity) +
+		" is not of the form spki:<64 lower-case hex digits>"
+}
+
+// MemberIdentityCertificateError is returned when a node identity cannot be
+// derived from certificate material.
+type MemberIdentityCertificateError struct {
+	// Reason describes what was wrong with the material.
+	Reason string
+
+	// Err is the underlying cause, if any.
+	Err error
+}
+
+// Error returns a human-readable description of the derivation failure.
+func (e *MemberIdentityCertificateError) Error() string {
+	msg := "cluster: cannot derive member identity: " + e.Reason
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying cause.
+func (e *MemberIdentityCertificateError) Unwrap() error {
+	return e.Err
+}
+
+// MemberIdentityMismatchError is returned when the configured identity for
+// the local replica is not the identity of the certificate it presents. Every
+// peer would refuse the replica's traffic, so it is refused before start.
+type MemberIdentityMismatchError struct {
+	// ReplicaID is the local replica.
+	ReplicaID uint64
+
+	// Configured is the identity the configuration names for it.
+	Configured string
+
+	// Derived is the identity of the certificate the replica presents.
+	Derived string
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *MemberIdentityMismatchError) Error() string {
+	return "cluster: member identity for local replica " +
+		strconv.FormatUint(e.ReplicaID, 10) + " is configured as " + e.Configured +
+		" but its certificate presents " + e.Derived
+}

@@ -175,6 +175,14 @@ are not reconstructed here — their history is in the git log.
 - MCP consults a projected module's own gRPC status only for an error the table does not
   classify, the same order QUIC uses, so a module status can no longer shadow qrdb's own
   classification.
+- **go-quicraft v0.11.0-alpha → v0.14.1-alpha** (quic-go v0.62.0 → v0.63.0 with
+  it). Two of its breaking changes reach go-qrdb: a Raft member is admitted by
+  its node identity alone (below), and every `NewHost` must state its at-rest
+  encryption. Every host go-qrdb builds now does — `WithBarrier` where the seal
+  barrier encrypts the Raft log as before, `WithoutEncryption` where it did not
+  (a seal-disabled daemon, the embedded SDK node, the desktop binding), so no
+  node changes what it writes. **Wipe dev data directories before upgrading**:
+  go-quicraft changed its WAL chunk and snapshot frame formats in place.
 
 ### Removed
 
@@ -260,6 +268,23 @@ are not reconstructed here — their history is in the git log.
 - **`List` and `Scan` on the `concurrent` and `highperf` state machines never
   see part of a transaction or batch**: they hold every shard's read lock for
   the whole sweep.
+- **Clustered nodes form again on go-quicraft ≥ 0.13** (#556). A node with a
+  Raft transport admits a member by its node identity (`spki:` + SHA-256 of the
+  certificate public key) and by nothing else, and `NewClusteredNode` and
+  `qrdbd start` never supplied one, so a multi-node cluster was refused at
+  `StartShard`. The other replicas' identities are now configured in
+  `raft.member_identities` / `--member-identities` (`replicaID=spki:<hex>`),
+  the node's own is derived from its transport certificate, and a local entry
+  that contradicts the certificate is refused before anything is written.
+  `qrdbd node-identity --cert FILE` and `node.MemberIdentityFromPEM` print a
+  node's identity from its certificate; each node also logs its own at start.
+  A dedicated per-database Raft shard founded on a clustered host states the
+  local replica's identity too.
+  Adding a replica to a RUNNING multi-node cluster (`member add`, rebalance,
+  dynamic membership, placement followers) is still refused by go-quicraft
+  with `member identity required`: those paths carry no identity yet. So is
+  founding a dedicated database with more than one initial replica, since the
+  factory can state only the local replica's identity.
 
 ## [0.21.3-alpha] - 2026-09-30
 

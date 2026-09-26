@@ -102,6 +102,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 				"--sm", "pebble",
 				"--discovery", "static",
 				"--peers", peersFlag,
+				"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 				"--shard-id", "1",
 				"--replica-id", fmt.Sprintf("%d", i+1),
 				"--admin-port", fmt.Sprintf("%d", adminPorts[i]),

@@ -614,6 +614,14 @@ func (f *RaftBackendFactory) startShardAsMember(
 		DataDir:    absDir,
 		IsObserver: isObserver,
 	}
+	// A host with a transport admits a member by its node identity alone
+	// (go-qrdb#556). This replica's own is the one identity the factory can
+	// state without an out-of-band source: it is the identity the shared
+	// host's transport presents. It is "" on a transport-less host, which
+	// needs none.
+	if self := f.host.NodeIdentity(); self != "" && !join {
+		shardCfg.MemberIdentities = map[uint64]string{replicaID: self}
+	}
 	if err := f.host.StartShard(members, join, createFn, shardCfg); err != nil {
 		if registeredWAL != nil {
 			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {

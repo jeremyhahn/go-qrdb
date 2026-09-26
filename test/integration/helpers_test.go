@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -249,6 +250,46 @@ func allocatePorts(t *testing.T, n int) []int {
 		t.Fatalf("allocatePorts: %v", err)
 	}
 	return ports
+}
+
+// memberIdentitiesFlag builds the --member-identities value for a cluster whose
+// replica i+1 presents the certificate at certPaths[i]: "1=spki:…,2=spki:…".
+// It names every replica, the local one included — a node accepts its own
+// entry when it matches its certificate — so every node can take the same
+// value. go-quicraft admits a Raft member by this identity alone (#556).
+func memberIdentitiesFlag(t *testing.T, certPaths []string) string {
+	t.Helper()
+	parts := make([]string, len(certPaths))
+	for i, p := range certPaths {
+		certPEM, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read node certificate %s: %v", p, err)
+		}
+		identity, err := cluster.MemberIdentityFromPEM(certPEM)
+		if err != nil {
+			t.Fatalf("member identity of %s: %v", p, err)
+		}
+		parts[i] = fmt.Sprintf("%d=%s", i+1, identity)
+	}
+	return strings.Join(parts, ",")
+}
+
+// clusterNodeTLS issues n node certificates up front — a node needs every
+// peer's identity before it starts — and returns each node's TLS flags plus the
+// --member-identities value naming all of them.
+func (ca *testCA) clusterNodeTLS(t *testing.T, n int) ([][]string, string) {
+	t.Helper()
+	flags := make([][]string, n)
+	certPaths := make([]string, n)
+	for i := range n {
+		kp := ca.issue(t, t.TempDir(),
+			qrdbdharness.WithSubject("test-node", ""),
+			qrdbdharness.WithServerAuth(),
+		)
+		flags[i] = ca.TLSFlags(kp)
+		certPaths[i] = kp.CertPath
+	}
+	return flags, memberIdentitiesFlag(t, certPaths)
 }
 
 // buildPeersFlag builds the --peers flag value from ports.

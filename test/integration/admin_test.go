@@ -61,6 +61,7 @@ func TestCLI_Start_TableDriven(t *testing.T) {
 			adminPorts := allocateTCPPorts(t, tc.nodes)
 			grpcPorts := allocateTCPPorts(t, tc.nodes)
 			peersFlag := buildPeersFlag(ports)
+			nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 			dataDirs := make([]string, tc.nodes)
 
 			for i := range tc.nodes {
@@ -75,12 +76,13 @@ func TestCLI_Start_TableDriven(t *testing.T) {
 					"--sm", tc.smType,
 					"--discovery", tc.discovery,
 					"--peers", peersFlag,
+					"--member-identities", memberIDs,
 					"--shard-id", "1",
 					"--replica-id", fmt.Sprintf("%d", i+1),
 					"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 					"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 				}
-				args = append(args, ca.tlsFlags(t)...)
+				args = append(args, nodeTLS[i]...)
 
 				prefix := fmt.Sprintf("[node%d] ", i+1)
 				startNode(t, binary, args, prefix)
@@ -164,6 +166,7 @@ func TestCLI_Start_ClusterFormation(t *testing.T) {
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 	dataDirs := make([]string, 3)
 
 	for i := range 3 {
@@ -178,12 +181,13 @@ func TestCLI_Start_ClusterFormation(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
 		startNode(t, binary, args, prefix)
@@ -496,6 +500,7 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 	dataDirs := make([]string, 3)
 
 	for i := range 3 {
@@ -510,12 +515,13 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
 		startNode(t, binary, args, prefix)
@@ -554,6 +560,7 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 	dataDirs := make([]string, 3)
 
 	for i := range 3 {
@@ -568,12 +575,13 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
 		startNode(t, binary, args, prefix)

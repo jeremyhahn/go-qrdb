@@ -48,6 +48,21 @@ and `WatchMembership`. **It adds no wire RPCs** — every method is a compositio
 of the rows above. `WatchMembership` polls at `DefaultMembershipPollInterval`
 rather than streaming, so it works over unary-only REST.
 
+## Forming a cluster from the SDK node
+
+`node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithRaftMTLS(mtls))`
+takes the other replicas' Raft identities in `cfg.Raft.MemberIdentities`
+(`sdk.DaemonRaftConfig.MemberIdentities`), a comma-separated
+`replicaID=spki:<hex>` list; the local entry is derived from `mtls.Cert`.
+`node.MemberIdentityFromPEM(certPEM)` computes a peer's identity from its
+certificate. Every refusal is a `*node.HostCreateError`: it wraps a
+`*node.ConfigError` for `raft.member_identities` (itself unwrapping to the
+`pkg/cluster` error) when the configuration is malformed or contradicts the
+certificate, and `*quicraft.InvalidMemberError` when a member is left out.
+
+`AddReplica` (like `AddMember` on every transport) carries no identity, so on a
+multi-node cluster go-quicraft refuses it with `ErrMemberIdentityRequired`.
+
 ## Schemas
 
 `POST /membership/add`: shard ID, replica ID, Raft address.

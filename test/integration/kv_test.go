@@ -84,6 +84,7 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 	dataDirs := make([]string, 3)
 
 	for i := range 3 {
@@ -98,12 +99,13 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 			"--sm", smType,
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 		args = append(args, extraArgs...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)

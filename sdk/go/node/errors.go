@@ -90,12 +90,17 @@ func (e *HostCreateError) Unwrap() error { return e.Err }
 type ConfigError struct {
 	Field   string
 	Message string
+	// Err is the typed cause, when the refusal came from a lower layer.
+	Err error
 }
 
 // Error returns a human-readable description.
 func (e *ConfigError) Error() string {
 	return "node: config error: " + e.Field + " " + e.Message
 }
+
+// Unwrap returns the typed cause, if any.
+func (e *ConfigError) Unwrap() error { return e.Err }
 
 // ClientCreateError indicates that the embedded SDK client could not be
 // created.

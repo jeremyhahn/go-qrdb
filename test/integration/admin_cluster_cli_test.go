@@ -90,6 +90,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 	grpcPorts := allocateTCPPorts(t, 3)
 	mcpPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
 	dataDirs := make([]string, 3)
 	unixSockets := make([]string, 3)
@@ -116,6 +117,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			"--sm", "mvcc",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -127,7 +129,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
 			"--enable-unix", "--unix-socket-path", unixSockets[i],
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}

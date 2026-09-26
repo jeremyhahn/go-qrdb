@@ -45,7 +45,10 @@ func threeMembers() map[uint64]string {
 }
 
 func TestBuildClusteredRaftConfigs_SingleMemberAppliesTransportlessTunings(t *testing.T) {
-	hostCfg, shardCfg, _ := buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(), nil)
+	hostCfg, shardCfg, _, err := buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(), nil)
+	if err != nil {
+		t.Fatalf("buildClusteredRaftConfigs: %v", err)
+	}
 
 	if hostCfg.RTTMillisecond != cluster.TransportlessRTTMillisecond {
 		t.Errorf("RTTMillisecond = %d, want %d",
@@ -58,10 +61,13 @@ func TestBuildClusteredRaftConfigs_SingleMemberAppliesTransportlessTunings(t *te
 }
 
 func TestBuildClusteredRaftConfigs_MultiMemberKeepsQuicraftDefaults(t *testing.T) {
-	hostCfg, shardCfg, opts := buildClusteredRaftConfigs(tuningTestConfig(t), threeMembers(), nil)
+	hostCfg, shardCfg, opts, err := buildClusteredRaftConfigs(tuningTestConfig(t), threeMembers(), nil)
+	if err != nil {
+		t.Fatalf("buildClusteredRaftConfigs: %v", err)
+	}
 
-	if len(opts) != 0 {
-		t.Fatalf("host options = %d, want 0 (a clustered host keeps its transport)", len(opts))
+	if len(opts) != 1 {
+		t.Fatalf("host options = %d, want 1 (WithoutEncryption only: a clustered host keeps its transport)", len(opts))
 	}
 	// Zero means "let go-quicraft apply its own default". A clustered host has
 	// a real network, and the multi-node lease margin must not be shortened.
@@ -82,7 +88,10 @@ func TestBuildClusteredRaftConfigs_JoinKeepsQuicraftElectionDefault(t *testing.T
 	cfg := tuningTestConfig(t)
 	cfg.Raft.Join = true
 
-	hostCfg, shardCfg, _ := buildClusteredRaftConfigs(cfg, singleMember(), nil)
+	hostCfg, shardCfg, _, err := buildClusteredRaftConfigs(cfg, singleMember(), nil)
+	if err != nil {
+		t.Fatalf("buildClusteredRaftConfigs: %v", err)
+	}
 
 	if shardCfg.ElectionRTT != 0 {
 		t.Errorf("ElectionRTT = %d, want 0 (go-quicraft's default preserved for join)",
@@ -96,10 +105,13 @@ func TestBuildClusteredRaftConfigs_JoinKeepsQuicraftElectionDefault(t *testing.T
 }
 
 func TestBuildClusteredRaftConfigs_SingleMemberPassesQuicraftValidation(t *testing.T) {
-	hostCfg, shardCfg, opts := buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(), nil)
+	hostCfg, shardCfg, opts, err := buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(), nil)
+	if err != nil {
+		t.Fatalf("buildClusteredRaftConfigs: %v", err)
+	}
 
-	if len(opts) == 0 {
-		t.Fatal("host options = 0, want WithoutTransport for a single-member cluster")
+	if len(opts) != 2 {
+		t.Fatalf("host options = %d, want 2 (WithoutEncryption + WithoutTransport) for a single-member cluster", len(opts))
 	}
 
 	hostCfg.TransportConfig.TransportDisabled = true // models WithoutTransport

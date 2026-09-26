@@ -49,6 +49,11 @@ qrdb admin topology --output json
 
 Add a replica to a shard.
 
+On a multi-node cluster this is currently refused by go-quicraft with
+`member identity required`: the verb carries no member identity, and a replica
+is admitted by its identity alone. Form the cluster with every member named in
+`--member-identities` instead.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--shard-id` | uint | shard ID |
@@ -145,8 +150,36 @@ Discovery and bootstrap are `qrdbd` configuration, not client verbs:
 
 | Setting | Flag |
 |---|---|
+| `raft.member_identities` | `--member-identities` |
 | `discovery.dynamic_membership` | `--dynamic-membership` |
 | `discovery.min_peers` | `--cluster-min-peers` |
+
+### `qrdbd node-identity --cert <file>`
+
+Prints the Raft member identity of a node's transport certificate
+(`spki:<sha256-hex>` of its public key). It reads only the certificate, so the
+identities of every node can be collected from the CA's issued certificates
+before any node starts.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--cert` | path | the node's PEM certificate (its `--tls-cert-file`); required |
+
+```bash
+qrdbd node-identity --cert /etc/qrdb/node2-cert.pem
+# spki:3f9a...
+```
+
+Every other replica lists it as `2=spki:3f9a...` in `--member-identities`
+(`raft.member_identities`). A node's own entry may be omitted — it is derived
+from its certificate — and a node also logs its identity at start
+(`raft member identity`).
+
+```bash
+qrdbd start --replica-id 1 --peers 1=node1.db.example.com:63001,2=node2.db.example.com:63001,3=node3.db.example.com:63001 \
+  --member-identities 2=spki:3f9a...,3=spki:c01d... \
+  --tls-ca-file ca.pem --tls-cert-file node1-cert.pem --tls-key-file node1-key.pem
+```
 
 Dynamic membership is **off by default**, leader-only, and quorum-guarded.
 

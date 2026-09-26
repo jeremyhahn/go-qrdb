@@ -107,6 +107,9 @@ type startFlags struct {
 	smStorage       string
 	discoveryMethod string
 	peers           []string
+	// memberIdentities are the "replicaID=spki:<hex>" Raft member identities
+	// of the other replicas (go-qrdb#556). See config.RaftConfig.MemberIdentities.
+	memberIdentities []string
 	// shardID is deprecated. System services always use shard.ShardKV (1).
 	// Kept for backward compatibility with existing YAML configs and CLI scripts.
 	shardID              uint64
@@ -408,6 +411,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.smStorage, "sm-storage", "", "Storage backend for the storage-generic state machines (sm type disk/fast): pebble (default), file, memory")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
 	cmd.Flags().StringSliceVar(&f.peers, "peers", nil, "Static peers, format id=address (e.g., 1=127.0.0.1:63001)")
+	cmd.Flags().StringSliceVar(&f.memberIdentities, "member-identities", nil, "Raft member identities of the other replicas, format id=spki:<hex> (print one with qrdbd node-identity); required for a multi-node cluster")
 	cmd.Flags().Uint64Var(&f.shardID, "shard-id", shard.ShardKV, "Shard ID (deprecated: system services always use the system shard)")
 	cmd.Flags().Uint64Var(&f.replicaID, "replica-id", 1, "Replica ID")
 	cmd.Flags().StringVar(&f.multicastSecret, "multicast-secret", "", "Shared secret (PSK) for multicast authentication; required when --discovery=multicast (no default — the protocol is authenticated-only)")
@@ -526,6 +530,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("peers") && cfg.Raft.Peers != "" {
 		f.peers = strings.Split(cfg.Raft.Peers, ",")
+	}
+	if !cmd.Flags().Changed("member-identities") && cfg.Raft.MemberIdentities != "" {
+		f.memberIdentities = strings.Split(cfg.Raft.MemberIdentities, ",")
 	}
 	if !cmd.Flags().Changed("shard-id") {
 		f.shardID = cfg.Raft.ShardID
@@ -2621,6 +2628,23 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 		}
 	}
 
+	// Resolve the Raft member identities before anything touches the disk: a
+	// host with a transport admits a member by its identity and by nothing
+	// else (go-qrdb#556), and the local entry comes from this node's own
+	// certificate.
+	var memberIdentities map[uint64]string
+	if !isSingleNode(f) {
+		var selfCert []byte
+		if mtlsCfg != nil {
+			selfCert = mtlsCfg.Cert
+		}
+		ids, err := cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
+		if err != nil {
+			return nil, err
+		}
+		memberIdentities = ids
+	}
+
 	// Build host configuration.
 	hostCfg := buildHostConfig(f, mtlsCfg)
 
@@ -2676,6 +2700,11 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			hostOpts = append(hostOpts, quicraft.WithBarrier(f.walBarrier))
 			slog.Info("raft WAL at-rest encryption enabled (system barrier)")
 		}
+	} else {
+		// Seal disabled: the Raft log is stored in plaintext, as every other
+		// byte on this node is. go-quicraft >= 0.14 requires the choice to be
+		// stated rather than defaulted.
+		hostOpts = append(hostOpts, quicraft.WithoutEncryption())
 	}
 
 	// Create the host.
@@ -2683,9 +2712,15 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	if err != nil {
 		return nil, err
 	}
+	if identity := host.NodeIdentity(); identity != "" {
+		// Safe to log: a hash of a public key. It is the value every other
+		// replica needs in its --member-identities for this one.
+		slog.Info("raft member identity", "replica_id", f.replicaID, "identity", identity)
+	}
 
 	// Build shard configuration.
 	shardCfg := buildShardConfig(f)
+	shardCfg.MemberIdentities = memberIdentities
 
 	// A one-shot offline restore takes over shard startup entirely: it
 	// bootstraps the shard, stops it, imports the backup artifact, and

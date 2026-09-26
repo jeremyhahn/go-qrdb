@@ -58,7 +58,7 @@ func newSharedTestHost(t *testing.T) (*quicraft.Host, string) {
 		ListenAddress: sharedHostRaftAddr,
 		DeploymentID:  1,
 	}
-	host, err := quicraft.NewHost(cfg, quicraft.WithoutTransport())
+	host, err := quicraft.NewHost(cfg, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
 	}
