@@ -82,6 +82,7 @@ import (
 	"context"
 	"crypto/fips140"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -591,6 +592,12 @@ type Node struct {
 	// pierce the service.CredentialServicer interface.
 	credCoreSvc *credentials.CredentialService
 	logger      *slog.Logger
+
+	// preboundSockets are the listeners and packet conns the caller handed
+	// over through server.WithRESTListener / WithRESTPacketConn /
+	// WithGRPCListener. Each server lifetime serves on them without closing
+	// them, so a data-plane rebuild keeps its ports; Close closes them.
+	preboundSockets []io.Closer
 
 	// sessionIssuer and loginFactorVerifiers carry the unified-login
 	// ceremony wiring from the node constructor through to
@@ -1439,6 +1446,12 @@ func (n *Node) Close() error {
 	if srv := n.srv.Swap(nil); srv != nil {
 		srv.Stop()
 	}
+	// The node owns the sockets its caller pre-bound across every server
+	// lifetime (a migration rebuilds the server on them), so it — not a
+	// server's Stop — closes them, once no server is left to use them.
+	for _, sock := range n.preboundSockets {
+		_ = sock.Close()
+	}
 	n.retractDataPlaneServices()
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
 		record(svcNode.Stop(context.Background()))
@@ -1529,6 +1542,18 @@ func (n *Node) Close() error {
 // NewStandaloneNode
 // ---------------------------------------------------------------------------
 
+// closePreboundOnError closes the sockets handed over through serverOpts
+// (server.WithRESTListener and friends) when a constructor returns *errp
+// non-nil.
+func closePreboundOnError(errp *error, serverOpts []server.ServerOption) {
+	if *errp == nil {
+		return
+	}
+	for _, sock := range server.PreboundSockets(serverOpts...) {
+		_ = sock.Close()
+	}
+}
+
 // NewStandaloneNode builds a fully initialised standalone QRDB node backed
 // by a LocalBackend (engine-direct, no Raft state machine). The storage
 // backend is selected from cfg.Raft.DataDir and cfg.Databases; a memory
@@ -1554,7 +1579,11 @@ func (n *Node) Close() error {
 //
 // nodeOpts configure node-level behaviour such as the seal passphrase and
 // logger.
-func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
+func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts []server.ServerOption, nodeOpts ...NodeOption) (_ *Node, err error) {
+	// A constructor that fails owns the sockets its caller handed over and
+	// closes them: the caller gave them up, and no Node exists to close them.
+	defer closePreboundOnError(&err, serverOpts)
+
 	if cfg == nil {
 		return nil, &ConfigError{Field: "cfg", Message: "must not be nil"}
 	}
@@ -1570,6 +1599,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	n := &Node{
 		logger:                    log,
+		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		tenantIsolation:           nOpts.tenantIsolation,
@@ -1715,7 +1745,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 // state is returned and Unseal completes the clustered boot.
 //
 // serverOpts are forwarded verbatim to server.New.
-func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[uint64]string, serverOpts []server.ServerOption, nodeOpts ...NodeOption) (*Node, error) {
+func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[uint64]string, serverOpts []server.ServerOption, nodeOpts ...NodeOption) (_ *Node, err error) {
+	// A constructor that fails owns the sockets its caller handed over and
+	// closes them: the caller gave them up, and no Node exists to close them.
+	defer closePreboundOnError(&err, serverOpts)
+
 	if cfg == nil {
 		return nil, &ConfigError{Field: "cfg", Message: "must not be nil"}
 	}
@@ -1734,6 +1768,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 	n := &Node{
 		logger:                    log,
+		preboundSockets:           server.PreboundSockets(serverOpts...),
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		tenantIsolation:           nOpts.tenantIsolation,
@@ -2924,6 +2959,21 @@ func buildClusteredRaftConfigs(
 	}
 
 	if !transportless {
+		// The Raft transport is the one socket an embedder cannot pre-bind:
+		// go-quicraft binds it itself, and every peer dials the advertised
+		// address, so a kernel-assigned port would be advertised as ":0".
+		// Refuse it rather than start a replica no peer can reach
+		// (go-qrdb#374).
+		for _, a := range [...]struct{ field, addr string }{
+			{"raft.raft_address", raftAddress},
+			{"raft.listen_address", listenAddress},
+		} {
+			if err := cluster.CheckRaftTransportPort(a.field, a.addr); err != nil {
+				return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
+					&ConfigError{Field: a.field, Message: err.Error(), Err: err}
+			}
+		}
+
 		var selfCert []byte
 		if mtls != nil {
 			selfCert = mtls.Cert

@@ -137,11 +137,42 @@ members := map[uint64]string{
 cfg.Raft.RaftAddress  = "10.0.0.1:63001"
 cfg.Raft.ListenAddress = "0.0.0.0:63001"
 cfg.Raft.ReplicaID     = 1
+// The Raft identities of the OTHER replicas; this node's own is derived
+// from its certificate. node.MemberIdentityFromPEM(peerCertPEM) computes one.
+cfg.Raft.MemberIdentities = "2=spki:…,3=spki:…"
 
-n, err := node.NewClusteredNode(ctx, cfg, members, nil)
+n, err := node.NewClusteredNode(ctx, cfg, members, nil,
+    node.WithRaftMTLS(&node.RaftMTLSConfig{CACert: caPEM, Cert: certPEM, Key: keyPEM}),
+)
 ```
 
-For multi-node deployments configure mTLS in `cfg.TLS` before calling the builder.
+A multi-node Raft transport requires mTLS material (`WithRaftMTLS`) and the
+member identities: go-quicraft admits a member by its identity alone, and a
+founding node missing one is refused at start. See
+[clustering/architecture.md](clustering/architecture.md#member-identities).
+Its Raft address cannot use port 0.
+
+### Pre-bound listeners
+
+To serve REST and gRPC on kernel-assigned ports without a reservation race,
+bind the sockets and hand them over in `serverOpts`:
+
+```go
+restLn, _ := net.Listen("tcp", "127.0.0.1:0")
+h3, _ := net.ListenPacket("udp", restLn.Addr().String())
+grpcLn, _ := net.Listen("tcp", "127.0.0.1:0")
+
+n, err := node.NewStandaloneNode(ctx, cfg, []server.ServerOption{
+    server.WithRESTListener(restLn),
+    server.WithRESTPacketConn(h3), // optional; must share restLn's host and port
+    server.WithGRPCListener(grpcLn),
+})
+```
+
+The node owns the sockets from then on: every server it builds — including the
+one an in-process encryption migration rebuilds — serves on them, and
+`Node.Close` closes them. See
+[api-server/architecture.md](api-server/architecture.md#pre-bound-sockets).
 
 ---
 

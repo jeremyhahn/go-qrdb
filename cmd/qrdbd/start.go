@@ -2617,6 +2617,16 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			return nil, err
 		}
 	}
+	// A multi-node Raft transport cannot use a kernel-assigned port: it is
+	// advertised to peers as configured (go-qrdb#374).
+	if !isSingleNode(f) {
+		if err := cluster.CheckRaftTransportPort("--raft-address", f.raftAddress); err != nil {
+			return nil, err
+		}
+		if err := cluster.CheckRaftTransportPort("--listen", f.listen); err != nil {
+			return nil, err
+		}
+	}
 
 	// Build mTLS config for transport (nil for single-node).
 	var mtlsCfg *quicraftconfig.MTLSConfig

@@ -238,6 +238,14 @@ type serverOptions struct {
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
+
+	// restListener, restPacketConn and grpcListener are sockets the embedder
+	// pre-bound (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
+	// go-qrdb#374). Each replaces the bind of the corresponding configured
+	// port.
+	restListener   net.Listener
+	restPacketConn net.PacketConn
+	grpcListener   net.Listener
 }
 
 // SealedWindowProbe is the abstraction the sealed-window middleware /
@@ -302,6 +310,49 @@ func WithMCPServerOptions(opts ...mcpapi.ServerOption) ServerOption {
 func WithLeaderForwarding(resolver rest.LeaderAdminResolver) ServerOption {
 	return func(o *serverOptions) {
 		o.resolver = resolver
+	}
+}
+
+// WithRESTListener makes the REST server serve HTTPS on ln, a TCP listener
+// the embedder has already bound, instead of binding server.admin_port. A
+// caller that needs a kernel-assigned port binds ":0", reads the port back
+// from ln.Addr(), and hands the listener over, so the port is never released
+// between reservation and serving (go-qrdb#374).
+//
+// The listener outlives any one Server: Stop ends this Server's use of it
+// without closing it, so successive Servers built from the same options — an
+// embedded node rebuilding its data plane, or a sealed-window server followed
+// by the node's own — serve on the same socket. Whoever builds the Servers
+// closes it when done (see PreboundSockets; the SDK node does so in Close).
+// Start closes it when it refuses to serve, as do the SDK node's
+// constructors when they return an error, and Start refuses it with a
+// *PreboundSocketError when REST is disabled. ln must support SetDeadline,
+// as a *net.TCPListener does.
+//
+// The HTTP/3 socket is still bound by the server, on ln's host and port,
+// unless WithRESTPacketConn supplies it too.
+func WithRESTListener(ln net.Listener) ServerOption {
+	return func(o *serverOptions) {
+		o.restListener = ln
+	}
+}
+
+// WithRESTPacketConn makes the REST server serve HTTP/3 on pc instead of
+// binding a UDP socket beside its TCP listener. It requires WithRESTListener,
+// and pc must be bound on that listener's host and port — the port Alt-Svc
+// advertises — or Start fails. Ownership is WithRESTListener's.
+func WithRESTPacketConn(pc net.PacketConn) ServerOption {
+	return func(o *serverOptions) {
+		o.restPacketConn = pc
+	}
+}
+
+// WithGRPCListener makes the gRPC server serve on ln, a TCP listener the
+// embedder has already bound, instead of binding server.grpc_port. See
+// WithRESTListener for why and for ownership.
+func WithGRPCListener(ln net.Listener) ServerOption {
+	return func(o *serverOptions) {
+		o.grpcListener = ln
 	}
 }
 
@@ -973,6 +1024,21 @@ func (s *Server) ensureUserAuthFactorService() error {
 // fails to start, all previously started servers are rolled back and the
 // error is returned.
 func (s *Server) Start() error {
+	if err := s.start(); err != nil {
+		// A server that refuses to serve does not hand its pre-bound
+		// sockets back half-used: they are closed, as a caller that gave
+		// them up would otherwise leak them.
+		s.closePreboundSockets()
+		return err
+	}
+	return nil
+}
+
+// start is Start without the pre-bound socket cleanup.
+func (s *Server) start() error {
+	if err := s.checkPreboundSockets(); err != nil {
+		return err
+	}
 	if err := s.ensureAuthFactorService(); err != nil {
 		return err
 	}
@@ -1158,6 +1224,16 @@ func (s *Server) startREST() error {
 		return err
 	}
 	restOpts = append(restOpts, rest.WithTLS(tlsCfg))
+	if s.opts.restListener != nil {
+		ln, err := newLifetimeListener("rest", s.opts.restListener)
+		if err != nil {
+			return err
+		}
+		restOpts = append(restOpts, rest.WithListener(ln))
+	}
+	if s.opts.restPacketConn != nil {
+		restOpts = append(restOpts, rest.WithPacketConn(newLifetimePacketConn(s.opts.restPacketConn)))
+	}
 	if s.opts.caCertPool != nil {
 		restOpts = append(restOpts, rest.WithCACertPool(s.opts.caCertPool))
 	}
@@ -1396,6 +1472,13 @@ func (s *Server) startGRPC() error {
 		return err
 	}
 	grpcOpts = append(grpcOpts, grpcapi.WithTLS(tlsCfg))
+	if s.opts.grpcListener != nil {
+		ln, err := newLifetimeListener("grpc", s.opts.grpcListener)
+		if err != nil {
+			return err
+		}
+		grpcOpts = append(grpcOpts, grpcapi.WithListener(ln))
+	}
 	if s.opts.userSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserService(s.opts.userSvc))
 	}

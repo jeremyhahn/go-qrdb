@@ -11,6 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-bound listeners for the embedded server** (#374).
+  `server.WithRESTListener`, `server.WithRESTPacketConn` and
+  `server.WithGRPCListener` (re-exported as `sdk.WithRESTListener`,
+  `sdk.WithRESTPacketConn`, `sdk.WithGRPCListener`) hand the server sockets the
+  embedder already bound, so a kernel-assigned port is never released between
+  reservation and serving — on TCP or on the HTTP/3 UDP side. A handed-over
+  socket outlives any one server, so REST, HTTP/3 and gRPC keep answering on
+  the same port after an in-process encryption migration rebuilds the server;
+  the SDK node closes the sockets in `Node.Close` and when
+  `NewStandaloneNode` / `NewClusteredNode` return an error, and a `Start` that
+  refuses (including for a disabled protocol, `*server.PreboundSocketError`)
+  closes them. A
+  pre-bound HTTP/3 socket is held to the TCP listener's host and port. Where
+  pre-binding is impossible — the multi-node Raft transport, which go-quicraft
+  binds and advertises itself — port 0 is refused with a
+  `*cluster.RaftPortZeroError`, by the SDK node and by `qrdbd start` alike.
+  A zero admin or gRPC port on the SDK node still selects the fixed default.
+
 ### Changed — BREAKING
 
 - **Relational tables created by v0.20.0 through v0.21.0 must be dropped and

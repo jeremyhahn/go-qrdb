@@ -274,6 +274,55 @@ decision honoured on one transport and silently discarded on the other.
 HTTP/3 starts whenever TLS is configured; making it opt-in or independently
 addressable is an open architecture question, not a decided one.
 
+### Pre-bound sockets
+
+An embedder that needs a kernel-assigned port — a test process booting many
+nodes, typically — must not reserve one by listening on `:0`, closing, and
+passing the number: another process can take the port in between, on TCP or
+on the HTTP/3 UDP side. It binds the socket itself and hands the socket over:
+
+| Option | Replaces the bind of |
+|---|---|
+| `server.WithRESTListener(net.Listener)` | `server.admin_port` (TCP) |
+| `server.WithRESTPacketConn(net.PacketConn)` | the HTTP/3 socket beside it (UDP); requires `WithRESTListener` |
+| `server.WithGRPCListener(net.Listener)` | `server.grpc_port` (TCP) |
+
+A handed-over socket **outlives any one server**. An embedded node rebuilds its
+server in process — a system encryption migration tears the data plane down and
+builds a new server from the same options — so each server lifetime serves on a
+wrapper whose close ends that lifetime's use of the socket without closing the
+socket: it wakes the lifetime's blocked `Accept` or datagram read with a past
+deadline, waits for every such call to leave the socket, then clears the
+deadline. The wait matters on the HTTP/3 side: the QUIC stack stops reading a
+socket it did not open by moving the read deadline into the past and never
+moving it back, so without the clear the next lifetime's HTTP/3 server would
+read nothing, and without the wait the ended lifetime's reader could still be
+taking the next lifetime's datagrams. Nor does the ended QUIC stack stop at
+close: a connection it closed keeps a timer that moves the read deadline into
+the past again roughly three probe timeouts later, when the socket already
+belongs to the next lifetime. So once a lifetime has ended, its wrapper's
+deadline setters no longer reach the socket. The next lifetime serves on the
+same port. The socket is really closed by whoever builds the servers once
+it is done with them — the SDK node in `Node.Close`, anyone else through
+`server.PreboundSockets(opts...)` — and by a `Start` that refuses to serve at
+all. `node.NewStandaloneNode` and `node.NewClusteredNode` likewise close the
+sockets when they return an error: the caller has handed them over, and no
+node exists whose `Close` would. `Start` refuses a pre-bound socket for a protocol that is disabled, and a
+listener that cannot take a deadline, with `*server.PreboundSocketError`.
+
+A pre-bound HTTP/3 socket is held to the same containment rule as a bound one,
+and additionally to the TCP listener's port, which is the one Alt-Svc
+advertises (`*rest.ListenerPortMismatchError`).
+
+Where pre-binding is impossible, port 0 is refused instead: the multi-node Raft
+transport is bound by go-quicraft itself and advertised to peers, so
+`raft.raft_address` / `raft.listen_address` with port 0 on a multi-member node
+is refused with `*cluster.RaftPortZeroError` — wrapped in a `*node.ConfigError`
+by the SDK node, and returned directly by `qrdbd start` for `--raft-address` /
+`--listen`, before any directory is created. Without a pre-bound listener, a **zero** admin or gRPC
+port on the SDK node still selects the fixed default (63001 / 63002), not a
+kernel-assigned port.
+
 ## Trust boundaries
 
 - **A bind address holds on every transport or on none.** REST and HTTP/3 serve

@@ -113,10 +113,25 @@ type Server struct {
 	// to the *grpc.Server at construction. Set via WithServiceModules by
 	// the server orchestrator.
 	modules []apimodule.ServiceModule
+
+	// preboundListener is a listener the embedder bound and handed over
+	// (WithListener, go-qrdb#374). When set, Start serves on it instead of
+	// binding addr. The server owns it from Start on.
+	preboundListener net.Listener
 }
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithListener makes Start serve gRPC on ln instead of binding the server's
+// address. The caller binds it — typically on port 0, reading the
+// kernel-assigned port back from ln.Addr() — and hands it over, so the port
+// is never released between reservation and serving (go-qrdb#374). ln must be
+// a plain TCP listener: the server applies its own TLS credentials. The
+// server owns ln from Start on and closes it in Stop.
+func WithListener(ln net.Listener) ServerOption {
+	return func(s *Server) { s.preboundListener = ln }
+}
 
 // WithTLS configures the gRPC server with TLS credentials.
 //
@@ -405,6 +420,7 @@ func (s *Server) Start() error {
 	// A WithTLS config with an explicitly weak MinVersion was rejected at
 	// option-application time; surface it now.
 	if s.tlsErr != nil {
+		s.closePrebound()
 		return s.tlsErr
 	}
 	// The gRPC transport is TLS-only: the mTLS client certificate is the
@@ -414,12 +430,16 @@ func (s *Server) Start() error {
 	// auto-provisions a certificate from the node's CeremonyCA, so a normal
 	// deployment never reaches here.
 	if s.tls == nil {
+		s.closePrebound()
 		return &TLSNotConfiguredError{}
 	}
 
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return &StartError{Addr: s.addr, Err: err}
+	ln := s.preboundListener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", s.addr); err != nil {
+			return &StartError{Addr: s.addr, Err: err}
+		}
 	}
 	s.listener = ln
 
@@ -438,6 +458,8 @@ func (s *Server) Start() error {
 				continue
 			}
 			if err := s.authMW.RegisterPublicGRPCMethods(lister.PublicGRPCMethods()); err != nil {
+				_ = ln.Close()
+				s.listener = nil
 				return err
 			}
 		}
@@ -556,6 +578,15 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+// closePrebound closes a listener handed over by WithListener when Start
+// refuses before serving on it: the server owns it from Start on, so a
+// refusal must not leak it to a caller that has already given it up.
+func (s *Server) closePrebound() {
+	if s.preboundListener != nil {
+		_ = s.preboundListener.Close()
+	}
 }
 
 // Stop gracefully shuts down the gRPC server, allowing in-flight RPCs

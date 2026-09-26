@@ -117,6 +117,35 @@ func (e *ListenerHostMismatchError) Error() string {
 		"; the two transports serve the same handler and must share a bind host"
 }
 
+// ListenerPortMismatchError is returned by Start when a pre-bound HTTP/3
+// socket (WithPacketConn) is not on the TCP listener's port. The TCP side
+// advertises HTTP/3 through Alt-Svc on its own port, so a QUIC socket on any
+// other port would be one no client is told about.
+type ListenerPortMismatchError struct {
+	// TCPPort is the port the TCP listener holds.
+	TCPPort string
+	// UDPPort is the port the pre-bound QUIC socket holds.
+	UDPPort string
+}
+
+// Error returns a human-readable description.
+func (e *ListenerPortMismatchError) Error() string {
+	return "rest: HTTP/3 socket port " + e.UDPPort +
+		" does not match REST listener port " + e.TCPPort +
+		"; Alt-Svc advertises HTTP/3 on the listener's port"
+}
+
+// PacketConnWithoutListenerError is returned by Start when WithPacketConn was
+// given without WithListener: the HTTP/3 socket must sit on the TCP
+// listener's host and port, which a server that binds its own listener
+// cannot promise for a socket bound beforehand.
+type PacketConnWithoutListenerError struct{}
+
+// Error returns a human-readable description.
+func (e *PacketConnWithoutListenerError) Error() string {
+	return "rest: WithPacketConn requires WithListener"
+}
+
 // FetchError is returned when an HTTP request to a REST server endpoint
 // fails during fetching.
 type FetchError struct {

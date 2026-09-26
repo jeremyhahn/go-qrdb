@@ -18,7 +18,13 @@ package node
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +33,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -310,6 +318,87 @@ func TestNode_CloseDuringTransportEnableEncryption(t *testing.T) {
 		t.Fatal("Close did not finish once the in-flight transition released the gate")
 	}
 	assertAllAccessorsNil(t, n, nodeAccessors())
+}
+
+// TestNode_CloseDuringRESTEnableEncryption is the same deadlock shape over a
+// real network transport: a system enable-encryption POSTed to the node's own
+// REST server while a transition holds the gate, and Close called
+// concurrently. Close stops that very server gracefully, so a migration left
+// queued behind Close would hold the request open and Close with it. The
+// request must instead be answered 503 — the node is closing, retry elsewhere —
+// and never 202 "migration_started"; Close must finish once the transition
+// does, and the handed-over listener must be closed with the node.
+func TestNode_CloseDuringRESTEnableEncryption(t *testing.T) {
+	tlsCfg, pool := preboundServerTLS(t)
+	restLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	cfg := sealedStandaloneConfig(t, t.TempDir())
+	cfg.Seal.Strategy = "none"
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Protocols.REST = true
+	// The route's authorization is not what is under test; the ordering of
+	// the migration it starts against Close is.
+	cfg.Auth = qrdbconfig.AuthConfig{Enabled: qrdbconfig.BoolPtr(false)}
+	n, err := NewStandaloneNode(context.Background(), cfg, []server.ServerOption{
+		server.WithTLS(tlsCfg), server.WithRESTListener(restLn),
+	})
+	require.NoError(t, err)
+	addr := n.Server().RESTAddr()
+	require.Equal(t, restLn.Addr().String(), addr)
+
+	require.NoError(t, n.lifeGate.acquire(context.Background()))
+
+	client := &http.Client{
+		Timeout:   closeRefusalBound,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}},
+	}
+	defer client.CloseIdleConnections()
+	type httpResult struct {
+		code int
+		body string
+		err  error
+	}
+	postDone := make(chan httpResult, 1)
+	go func() {
+		passphrase := base64.StdEncoding.EncodeToString([]byte("close-during-rest-migration"))
+		resp, err := client.Post("https://"+addr+"/v1/barrier/enable-encryption", "application/json",
+			strings.NewReader(`{"strategy":"passphrase","passphrase":"`+passphrase+`"}`))
+		if err != nil {
+			postDone <- httpResult{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		postDone <- httpResult{code: resp.StatusCode, body: string(body), err: err}
+	}()
+	// Close must meet a migration already QUEUED on the gate — the shape
+	// that deadlocks a graceful server stop — not one that would arrive after
+	// Close began and be refused at the door.
+	waitForQueuedTransition(t, n)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- n.Close() }()
+
+	select {
+	case r := <-postDone:
+		require.NoError(t, r.err)
+		require.Equal(t, http.StatusServiceUnavailable, r.code,
+			"enable-encryption racing Close must be refused as retryable, got body %q", r.body)
+		require.NotContains(t, r.body, "migration_started")
+	case <-time.After(closeRefusalBound):
+		t.Fatal("enable-encryption over REST was not answered while Close was pending")
+	}
+
+	n.lifeGate.release()
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(closeRefusalBound):
+		t.Fatal("Close did not finish once the in-flight transition released the gate")
+	}
+	assertAllAccessorsNil(t, n, nodeAccessors())
+	_, err = restLn.Accept()
+	require.ErrorIs(t, err, net.ErrClosed, "Close must close the handed-over listener")
 }
 
 // waitForQueuedTransition waits until a transition is blocked on n's gate.

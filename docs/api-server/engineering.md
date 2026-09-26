@@ -33,6 +33,9 @@ var WithFactorRegistry   = qrdbserver.WithFactorRegistry
 var WithCeremonyCA       = qrdbserver.WithCeremonyCA
 var WithModule           = qrdbserver.WithModule
 var WithServerTLS        = qrdbserver.WithTLS
+var WithRESTListener     = qrdbserver.WithRESTListener
+var WithRESTPacketConn   = qrdbserver.WithRESTPacketConn
+var WithGRPCListener     = qrdbserver.WithGRPCListener
 
 type ServiceModule                = apimodule.ServiceModule
 type BaseModule                   = apimodule.BaseModule

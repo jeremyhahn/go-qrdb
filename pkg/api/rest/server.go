@@ -152,6 +152,14 @@ type Server struct {
 	server        *http.Server
 	listener      net.Listener
 
+	// preboundListener and preboundPacketConn are sockets the embedder bound
+	// and handed over (WithListener / WithPacketConn, go-qrdb#374). When set,
+	// Start serves on them instead of binding addr, so a caller that reserved
+	// a kernel-assigned port never releases it before the server holds it.
+	// The server owns them from Start on and closes them in Stop.
+	preboundListener   net.Listener
+	preboundPacketConn net.PacketConn
+
 	// routes is a legacy introspection map of the STATIC (non-templated)
 	// built-in routes, populated as a byproduct of route registration. Routing
 	// is performed natively by the chi router; this map exists only so tests
@@ -253,6 +261,29 @@ func WithLeaderForwarding(resolver LeaderAdminResolver) ServerOption {
 	return func(s *Server) {
 		s.resolver = resolver
 	}
+}
+
+// WithListener makes Start serve HTTPS on ln instead of binding the server's
+// address. The caller binds it — typically on port 0, reading the
+// kernel-assigned port back from ln.Addr() — and hands it over; the port is
+// never released between reservation and serving, which a "listen on :0,
+// close, pass the number" reservation cannot promise (go-qrdb#374). ln must be
+// a plain TCP listener: Start wraps it in TLS. The server owns ln from Start
+// on and closes it in Stop.
+//
+// Without WithPacketConn, the HTTP/3 socket is still bound by Start on the
+// same host and port ln holds. Pass WithPacketConn to pre-bind that too.
+func WithListener(ln net.Listener) ServerOption {
+	return func(s *Server) { s.preboundListener = ln }
+}
+
+// WithPacketConn makes Start serve HTTP/3 on pc instead of binding a UDP
+// socket beside the TCP listener. It requires WithListener, and pc must be
+// bound on the same host and port as that listener, because the Alt-Svc
+// header the TCP side sends advertises HTTP/3 on the TCP listener's port.
+// The server owns pc from Start on and closes it in Stop.
+func WithPacketConn(pc net.PacketConn) ServerOption {
+	return func(s *Server) { s.preboundPacketConn = pc }
 }
 
 // WithTLS configures the server with TLS for HTTP/2 (via ALPN "h2")
@@ -791,6 +822,7 @@ func (s *Server) Start() error {
 	// A WithTLS config with an explicitly weak MinVersion was rejected at
 	// option-application time; surface it now.
 	if s.tlsErr != nil {
+		s.closePrebound()
 		return s.tlsErr
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
@@ -798,12 +830,20 @@ func (s *Server) Start() error {
 	// auto-provisioned from the node CA); a nil here means a direct caller
 	// tried to start the raw server without TLS.
 	if s.tlsConfig == nil {
+		s.closePrebound()
 		return &TLSNotConfiguredError{}
 	}
 
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return &StartError{Addr: s.addr, Err: err}
+	if s.preboundPacketConn != nil && s.preboundListener == nil {
+		s.closePrebound()
+		return &PacketConnWithoutListenerError{}
+	}
+	ln := s.preboundListener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", s.addr); err != nil {
+			return &StartError{Addr: s.addr, Err: err}
+		}
 	}
 
 	// Wrap listener with TLS (always configured; guarded above).
@@ -841,19 +881,28 @@ func (s *Server) Start() error {
 	// REST server unstarted rather than half-started.
 	var h3Conn net.PacketConn
 	if s.tlsConfig != nil {
-		h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
-		pc, h3Err := net.ListenPacket("udp", h3Addr)
-		if h3Err != nil {
-			_ = ln.Close()
-			s.listener = nil
-			return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
+		pc := s.preboundPacketConn
+		if pc == nil {
+			h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
+			var h3Err error
+			if pc, h3Err = net.ListenPacket("udp", h3Addr); h3Err != nil {
+				_ = ln.Close()
+				s.listener = nil
+				return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
+			}
 		}
 		// The kernel, not this process, decides what a bind string
 		// resolves to: a dual-stack or resolver difference between the
 		// TCP and UDP stacks would widen the QUIC surface past what the
 		// TCP listener accepted, which is exactly the #165 exposure and
-		// is invisible from configuration. Refuse to serve it.
-		if mismatch := sameBindHost(ln.Addr(), pc.LocalAddr()); mismatch != nil {
+		// is invisible from configuration. Refuse to serve it. A
+		// pre-bound socket is held to the same rule, and to the same
+		// port, which is the one Alt-Svc advertises.
+		mismatch := sameBindHost(ln.Addr(), pc.LocalAddr())
+		if mismatch == nil && portOfAddr(pc.LocalAddr()) != portOfAddr(ln.Addr()) {
+			mismatch = &ListenerPortMismatchError{TCPPort: portOfAddr(ln.Addr()), UDPPort: portOfAddr(pc.LocalAddr())}
+		}
+		if mismatch != nil {
 			_ = pc.Close()
 			_ = ln.Close()
 			s.listener = nil
@@ -890,6 +939,19 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// closePrebound closes the sockets handed over by WithListener and
+// WithPacketConn when Start refuses before serving on them: the server owns
+// them from Start on, so a refusal must not leak them to a caller that has
+// already given them up.
+func (s *Server) closePrebound() {
+	if s.preboundListener != nil {
+		_ = s.preboundListener.Close()
+	}
+	if s.preboundPacketConn != nil {
+		_ = s.preboundPacketConn.Close()
+	}
 }
 
 // hostOfAddr returns the host portion of a bound listener address. Reading it

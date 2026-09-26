@@ -100,6 +100,20 @@ var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 // TLS with their own certificate material pass it here.
 var WithServerTLS = qrdbserver.WithTLS
 
+// WithRESTListener hands the embedded server a TCP listener the caller already
+// bound, which it serves REST on instead of binding server.admin_port. Bind
+// ":0" and read the port back to get a kernel-assigned port with no window in
+// which another process can take it. The server owns the listener from Start.
+var WithRESTListener = qrdbserver.WithRESTListener
+
+// WithRESTPacketConn hands the embedded server the UDP socket to serve HTTP/3
+// on; it must sit on the WithRESTListener listener's host and port.
+var WithRESTPacketConn = qrdbserver.WithRESTPacketConn
+
+// WithGRPCListener hands the embedded server a TCP listener the caller already
+// bound, which it serves gRPC on instead of binding server.grpc_port.
+var WithGRPCListener = qrdbserver.WithGRPCListener
+
 // ModuleAuthFallback is the optional ServiceModule extension for capability
 // session-token planes: when the unified server's REST middleware finds no
 // qrdb identity on a request targeting the module's routes, it invokes the
