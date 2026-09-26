@@ -32,19 +32,24 @@ type barrierModeChecker interface {
 	CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error
 }
 
-// tenantIsolationResolver is the narrow slice of the tenant service used to
-// route a tenant-scope migration to the mechanism that owns the tenant's at-rest
-// stores: IsolationRaft tenants keep their data in dedicated raft shards on the
-// shared host (RaftBackendFactory); all other dedicated-barrier tenants keep it
-// in a per-tenant volume Host (TenantHostRegistry). Satisfied by
+// TenantLookup is the narrow slice of the tenant service that reads one
+// tenant's metadata. It routes a tenant-scope migration to the mechanism that
+// owns the tenant's at-rest stores -- IsolationRaft tenants keep their data in
+// dedicated raft shards on the shared host (RaftBackendFactory), all other
+// dedicated-barrier tenants in a per-tenant volume Host (TenantHostRegistry) --
+// and it is how TenantHostRegistry finds a tenant's DataRoot. Satisfied by
 // tenant.TenantServicer.
-type tenantIsolationResolver interface {
+//
+// A component that holds a TenantLookup for longer than one lifecycle of the
+// tenant service must be given one that resolves the CURRENT service on every
+// call; see TenantServiceResolver for why a captured handle goes stale.
+type TenantLookup interface {
 	GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
 }
 
 // TenantServiceResolver is the narrow slice of a tenant service
 // NewScopedEncryptionMigrator consults: barrierModeChecker's entitlement gate
-// plus tenantIsolationResolver's routing lookup. tenant.TenantServicer
+// plus TenantLookup's routing lookup. tenant.TenantServicer
 // satisfies it structurally, so a caller that already holds a stable
 // tenant.TenantServicer (the daemon's server.Server, which builds it once and
 // never swaps it) passes it directly.
@@ -65,7 +70,7 @@ type tenantIsolationResolver interface {
 // that defect.
 type TenantServiceResolver interface {
 	barrierModeChecker
-	tenantIsolationResolver
+	TenantLookup
 }
 
 // scopedEncryptionMigrator routes a scoped enable-encryption request to the
@@ -92,7 +97,7 @@ type scopedEncryptionMigrator struct {
 	raft       *RaftBackendFactory        // IsolationRaft tenant-scope handler; may be nil
 	barrierReg *seal.BarrierRegistry      // dedicated-barrier authority check
 	tenantSvc  barrierModeChecker         // barrier-mode entitlement check; may be nil
-	isolation  tenantIsolationResolver    // routes tenant scope by isolation mode; may be nil
+	isolation  TenantLookup               // routes tenant scope by isolation mode; may be nil
 }
 
 // Compile-time check.

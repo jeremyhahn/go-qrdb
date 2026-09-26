@@ -168,20 +168,28 @@ currently live — including the seal-window-only service `Reopen`'s
 Shamir-committed branch builds while waiting on the Security Officer quorum —
 rather than the one that existed when the router was constructed.
 
-A DIFFERENT, still-open instance of the same capture-once shape lives one
-layer over: `TenantHostRegistry` (`n.tenantHosts`), built once by
-`BuildTenantInfra` inside `completeStandaloneBoot` and guarded by
-`n.tenantHosts == nil` so it is never rebuilt on a later system-scope
-recycle, also captures a `*tenant.Service` at that first-boot call — and that
-one is NOT resolved lazily. A tenant-scope migration issued after ANY
-system-scope recycle has completed (not only the Shamir-sealed window above)
-therefore fails `TenantHostRegistry.MigrateEncryption`'s `dataRootOf` lookup
-against the pre-recycle, stopped instance — the identical "storage is
-closed" symptom the router's lazy resolution fixes. This was found, not
-theorized, while writing that fix's regression test
-(`sdk/go/node/migrate_tenant_concurrent_test.go`), and is out of scope
-there: it is a `BuildTenantInfra`/`TenantHostRegistry` defect, not a
-`server.NewScopedEncryptionMigrator` one, and is tracked separately.
+The same rule holds one layer over, for `TenantHostRegistry`
+(`n.tenantHosts`). It is built once by `BuildTenantInfra` inside
+`completeStandaloneBoot`, guarded by `n.tenantHosts == nil` so a later
+system-scope recycle never rebuilds it, and it resolves each tenant's
+`DataRoot` through the `server.TenantLookup` it was built with. The node
+passes the same `nodeTenantResolver`, never `svcNode.Tenant`, so a
+tenant-scope migration issued after a completed system-scope recycle reads the
+live tenant service. It previously captured the first boot's
+`*tenant.Service`, and every such migration failed its `DataRoot` lookup with
+"storage is closed" against the stopped pre-recycle backend.
+
+`server.TenantInfraConfig.TenantLookup` is **required** whenever the
+`IsolationVolume` registry is built; `BuildTenantInfra` refuses a
+configuration without one (`*TenantInfraConfigError`, field `TenantLookup`)
+before any side effect, rather than defaulting to the one-shot `TenantSvc`.
+`TenantSvc` is read only by the boot-time passes inside `BuildTenantInfra`.
+The daemon, whose tenant service is never swapped, passes the service itself as
+the lookup.
+
+`RaftBackendFactory` has no counterpart: it resolves databases through the
+database manager and the replicated placement table, and the clustered boot
+path that builds it performs no in-process system recycle.
 
 ### What none of this promises
 

@@ -124,7 +124,7 @@ func TestReattachVolumeTenants_AutoBuildsHost_SelfStaysSealed(t *testing.T) {
 		t.Fatalf("SealTenant(vauto): %v", err)
 	}
 
-	hostReg := NewTenantHostRegistryFromServicer(reg, svc, reattachTestLogger())
+	hostReg := NewTenantHostRegistryFromLookup(reg, svc, reattachTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
 	if err := reattachVolumeTenants(ctx, svc, reg, hostReg, reattachTestLogger()); err != nil {
@@ -182,7 +182,7 @@ func TestReattachVolumeTenants_AttachError(t *testing.T) {
 		t.Fatalf("SealTenant(vattach-err): %v", err)
 	}
 
-	hostReg := NewTenantHostRegistryFromServicer(reg, svc, reattachTestLogger())
+	hostReg := NewTenantHostRegistryFromLookup(reg, svc, reattachTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
 	rerr := reattachVolumeTenants(ctx, svc, reg, hostReg, reattachTestLogger())

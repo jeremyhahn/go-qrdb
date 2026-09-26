@@ -35,7 +35,7 @@ func migrateTestTenant(t *testing.T, id string) (*seal.BarrierRegistry, *TenantH
 	reg := newVolumePooledRegistryWith(t, seal.NewNoneStrategy())
 	dataRoot, _ := registerVolumeTenant(t, reg, id)
 
-	source := &servicerDataRootSource{svc: &fakeVolumeTenantSvc{
+	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
 		info: &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
 	}}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())

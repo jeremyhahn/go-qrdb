@@ -149,7 +149,7 @@ func TestReattachVolumeTenants_FreshRegistryReRegisters(t *testing.T) {
 		t.Fatal("precondition: rebuilt registry must not know the tenant before reattach")
 	}
 
-	hostReg := NewTenantHostRegistryFromServicer(reg2, fx.svc, reattachTestLogger())
+	hostReg := NewTenantHostRegistryFromLookup(reg2, fx.svc, reattachTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
 	// Mirror the boot sequence: RestoreVolumeTenants re-registers + unseals the

@@ -937,8 +937,13 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			Ctx:        ctx,
 			BarrierReg: barrierRegistry,
 			TenantSvc:  svcNode.Tenant,
-			VolumePool: n.volumePool,
-			Logger:     n.logger,
+			// The registry outlives this svcNode: a system-scope encryption
+			// migration rebuilds the service graph in place and keeps the tenant
+			// Hosts running, so the registry resolves the tenant service live
+			// rather than capturing this one (go-qrdb#383).
+			TenantLookup: &nodeTenantResolver{node: n},
+			VolumePool:   n.volumePool,
+			Logger:       n.logger,
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
@@ -1244,8 +1249,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			Ctx:        ctx,
 			BarrierReg: barrierRegistry,
 			TenantSvc:  svcNode.Tenant,
-			VolumePool: n.volumePool,
-			Logger:     n.logger,
+			// Resolved live for the same reason as the standalone path; see
+			// completeStandaloneBoot (go-qrdb#383).
+			TenantLookup: &nodeTenantResolver{node: n},
+			VolumePool:   n.volumePool,
+			Logger:       n.logger,
 			// Host is the shared quicraft.Host that carries IsolationRaft shards.
 			// Passing it here enables NewRaftBackendFactoryFromManager and
 			// reattachRaftTenants so clustered embedded nodes gain full

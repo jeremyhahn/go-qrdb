@@ -103,6 +103,20 @@ are not reconstructed here — their history is in the git log.
   node no longer reports MVCC, which it never served. Every descriptor —
   the registry's and `store.PebbleDescriptor`/`MVCCDescriptor` — is held to
   what its state machine does by a behaviour test.
+- **`server.NewTenantHostRegistryFromServicer` is renamed
+  `server.NewTenantHostRegistryFromLookup`** and takes a `server.TenantLookup`
+  (any value with `GetTenant(ctx, id) (*tenant.TenantInfo, error)`) instead of
+  a `tenant.TenantServicer` (#383). *Migration:* rename the call. A
+  `tenant.TenantServicer` still satisfies `TenantLookup`, so an argument that
+  is never swapped passes unchanged; a composition that rebuilds its tenant
+  service in place passes a lookup that resolves the current one on each call.
+- **`server.TenantInfraConfig.TenantLookup` is required** whenever
+  `BuildTenantInfra` builds the `IsolationVolume` host registry (`BarrierReg`,
+  `TenantSvc` and `VolumePool` all set) (#383). Without it `BuildTenantInfra`
+  returns `*server.TenantInfraConfigError{Field: "TenantLookup"}` before any
+  side effect. *Migration:* set `TenantLookup` — to the same value as
+  `TenantSvc` if that service is never replaced for the life of the process,
+  otherwise to a lookup that resolves the current service.
 
 ### Changed
 
@@ -347,6 +361,14 @@ are not reconstructed here — their history is in the git log.
   broken" when a leader accepted the write but the commit starved, apart from
   "no leader". The placement-reconciler tests wait for the watch subscription
   and for convergence instead of sleeping 10–30ms and allowing 500ms.
+- **A tenant-scope `enable-encryption` works after a system-scope one** on an
+  embedded node (#383). `TenantHostRegistry` resolved each tenant's `DataRoot`
+  through the first boot's tenant service, which a system-scope migration stops
+  and replaces, so every later tenant-scope migration failed with "storage is
+  closed". The registry now takes a `server.TenantLookup` consulted at use
+  time, and `server.TenantInfraConfig.TenantLookup` is required whenever the
+  `IsolationVolume` registry is built. `NewTenantHostRegistryFromServicer` is
+  renamed `NewTenantHostRegistryFromLookup` and accepts any `TenantLookup`.
 
 ## [0.21.3-alpha] - 2026-09-30
 

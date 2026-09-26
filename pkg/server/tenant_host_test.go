@@ -295,7 +295,7 @@ func TestResolver_RoutesVolumeTenantToTenantHost(t *testing.T) {
 	dataRoot, _ := registerVolumeTenant(t, reg, "vt")
 	ctx := context.Background()
 
-	source := &servicerDataRootSource{svc: &fakeVolumeTenantSvc{
+	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
 		info: &tenant.TenantInfo{ID: "vt", IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
 	}}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())
@@ -360,7 +360,7 @@ func TestTenantHostRegistry_LazyBuildAfterUnseal(t *testing.T) {
 		t.Fatal("self-managed volume barrier must start sealed")
 	}
 
-	source := &servicerDataRootSource{svc: &fakeVolumeTenantSvc{
+	source := &lookupDataRootSource{lookup: &fakeVolumeTenantSvc{
 		info: &tenant.TenantInfo{ID: "lazy", IsolationType: tenant.IsolationVolume, DataRoot: dataRoot},
 	}}
 	hostReg := NewTenantHostRegistry(reg, source, volTestLogger())

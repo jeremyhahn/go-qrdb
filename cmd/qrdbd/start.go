@@ -1708,9 +1708,12 @@ func runStart(f *startFlags) (err error) {
 			// registries opened by the composer are closed on error before it
 			// returns, so only shutdownNode is needed here on failure.
 			ti, err := server.BuildTenantInfra(server.TenantInfraConfig{
-				Ctx:            sigCtx,
-				BarrierReg:     barrierRegistry,
-				TenantSvc:      tenantSvcInst,
+				Ctx:        sigCtx,
+				BarrierReg: barrierRegistry,
+				TenantSvc:  tenantSvcInst,
+				// The daemon builds its tenant service once and never swaps it,
+				// so the service itself is the use-time lookup.
+				TenantLookup:   tenantSvcInst,
 				VolumePool:     volumePool,
 				Logger:         slog.Default(),
 				Host:           host,

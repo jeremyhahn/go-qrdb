@@ -91,6 +91,19 @@ type TenantInfraConfig struct {
 	// VolumePool gate the IsolationVolume host registry build.
 	TenantSvc tenant.TenantServicer
 
+	// TenantLookup is the tenant-metadata lookup the LONG-LIVED registries
+	// consult at use time. TenantSvc is read only by the one-shot boot passes
+	// inside BuildTenantInfra; the TenantHostRegistry built here holds its
+	// lookup for the life of the node, which in a composition that rebuilds
+	// its service graph in place (sdk/go/node's system-scope encryption
+	// migration) is longer than any one tenant service lives. Such a
+	// composition passes a lookup that resolves the CURRENT service on every
+	// call; one whose tenant service is never swapped (the daemon) passes the
+	// service itself. Required whenever the IsolationVolume registry is built;
+	// omitting it returns TenantInfraConfigError rather than silently capturing
+	// TenantSvc (go-qrdb#383).
+	TenantLookup TenantLookup
+
 	// VolumePool is the per-tenant storage subsystem. Its presence (non-nil)
 	// gates the entire IsolationVolume + IsolationRaft build.
 	VolumePool *pool.VolumePoolSubsystem
@@ -150,6 +163,15 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		logger = slog.Default()
 	}
 
+	// Validate the configuration contract before any side effect: the barrier
+	// restore below is not undone by an error return.
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil && cfg.TenantLookup == nil {
+		return nil, &TenantInfraConfigError{
+			Field:   "TenantLookup",
+			Message: "required when the IsolationVolume registry is built; the registry outlives a single tenant service",
+		}
+	}
+
 	// Wire the tenant-barrier crash recoverer BEFORE any barrier is restored:
 	// RegisterVolumeTenant runs it over the tenant's freshly-opened backend so
 	// a migration interrupted in the swap→adopt commit window is rolled
@@ -185,7 +207,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// whose barrier is locally available so persisted data is reachable after
 	// a restart; tenants with no local barrier are deferred to lazy attach.
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil {
-		ti.Hosts = NewTenantHostRegistryFromServicer(cfg.BarrierReg, cfg.TenantSvc, logger)
+		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger)
 		if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
 			_ = ti.Hosts.CloseAll()
 			return nil, err

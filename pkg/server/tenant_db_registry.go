@@ -21,7 +21,6 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TenantHostRegistry lazily builds and caches one per-tenant Raft Host per
@@ -56,7 +55,7 @@ type TenantHostRegistry struct {
 }
 
 // tenantInfoSource is the minimal tenant-metadata lookup the registry needs to
-// resolve a tenant's DataRoot. It is satisfied by tenant.TenantServicer.
+// resolve a tenant's DataRoot. It is satisfied by lookupDataRootSource.
 type tenantInfoSource interface {
 	dataRootOf(ctx context.Context, tenantID string) (string, error)
 }
@@ -77,21 +76,34 @@ func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoS
 	}
 }
 
-// NewTenantHostRegistryFromServicer is the daemon-facing constructor that
-// derives the tenant-metadata source from a tenant.TenantServicer.
-func NewTenantHostRegistryFromServicer(barrierReg *seal.BarrierRegistry, svc tenant.TenantServicer, logger *slog.Logger) *TenantHostRegistry {
-	return NewTenantHostRegistry(barrierReg, &servicerDataRootSource{svc: svc}, logger)
+// NewTenantHostRegistryFromLookup is the composition-facing constructor that
+// derives the tenant-metadata source from a TenantLookup.
+//
+// The registry is long-lived: it outlives any one tenant service in a
+// composition that rebuilds its data plane in place (sdk/go/node recycles the
+// whole service graph on a system-scope encryption migration, and the
+// registry is deliberately kept running through it). lookup is therefore
+// consulted on EVERY DataRoot resolution and never unwrapped into a captured
+// *tenant.Service here; a composition whose tenant service can be swapped must
+// pass a lookup that resolves the current one (go-qrdb#383).
+func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup TenantLookup, logger *slog.Logger) *TenantHostRegistry {
+	var source tenantInfoSource
+	if lookup != nil {
+		source = &lookupDataRootSource{lookup: lookup}
+	}
+	return NewTenantHostRegistry(barrierReg, source, logger)
 }
 
-// servicerDataRootSource adapts a tenant.TenantServicer to the tenantInfoSource
-// interface, resolving a tenant's DataRoot from its persisted metadata.
-type servicerDataRootSource struct {
-	svc tenant.TenantServicer
+// lookupDataRootSource adapts a TenantLookup to the tenantInfoSource
+// interface, resolving a tenant's DataRoot from its persisted metadata at the
+// moment it is asked.
+type lookupDataRootSource struct {
+	lookup TenantLookup
 }
 
 // dataRootOf returns the DataRoot recorded for the tenant, or an error.
-func (s *servicerDataRootSource) dataRootOf(ctx context.Context, tenantID string) (string, error) {
-	info, err := s.svc.GetTenant(ctx, tenantID)
+func (s *lookupDataRootSource) dataRootOf(ctx context.Context, tenantID string) (string, error) {
+	info, err := s.lookup.GetTenant(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
