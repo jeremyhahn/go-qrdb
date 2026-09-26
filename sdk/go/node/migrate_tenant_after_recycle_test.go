@@ -72,6 +72,14 @@ func TestNode_EnableEncryption_TenantScope_AfterSystemRecycle(t *testing.T) {
 	require.NotSame(t, firstTenantSvc, n.Services().Tenant,
 		"the recycle must have replaced the tenant service; otherwise this test does not exercise go-qrdb#383")
 
+	// The rebuilt tenant service must carry the runtime closer too, or its
+	// deleted-tenant reconcile would remove a retired tenant's directories
+	// from under a host the node is still running (go-qrdb#469).
+	rebuilt, ok := n.Services().Tenant.(*tenant.TenantService)
+	require.True(t, ok, "a seal-enabled node runs *tenant.TenantService")
+	require.NotNil(t, rebuilt.TenantRuntimeCloser(),
+		"the system recycle rebuilt the tenant service without re-wiring its runtime closer")
+
 	// The tenant-scope migration after the recycle must reach the LIVE tenant
 	// service for the tenant's DataRoot.
 	err = n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}, seal.MigrationOptions{

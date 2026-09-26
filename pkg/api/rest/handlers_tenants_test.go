@@ -70,6 +70,14 @@ func (m *mockTenantService) GetTenant(ctx context.Context, tenantID string) (*te
 	return nil, nil
 }
 
+func (m *mockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *mockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listTenantsFn != nil {
 		return m.listTenantsFn(ctx)
@@ -1531,6 +1539,14 @@ func (e *extMockTenantService) CreateTenant(ctx context.Context, id, name string
 func (e *extMockTenantService) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.GetTenant(ctx, tenantID)
 }
+func (e *extMockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (e *extMockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (e *extMockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	return e.mockTenantService.ListTenants(ctx)
 }

@@ -90,6 +90,14 @@ func (s *stubTenantServicerForRegistry) CreateTenant(_ context.Context, _, _ str
 func (s *stubTenantServicerForRegistry) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
+func (s *stubTenantServicerForRegistry) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (s *stubTenantServicerForRegistry) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (s *stubTenantServicerForRegistry) ListTenants(_ context.Context) ([]tenant.TenantInfo, error) {
 	return nil, nil
 }

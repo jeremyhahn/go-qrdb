@@ -56,6 +56,14 @@ func (f *fakeTenantServicer) CreateTenant(_ context.Context, id, name string, is
 func (f *fakeTenantServicer) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id}, nil
 }
+func (f *fakeTenantServicer) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (f *fakeTenantServicer) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (f *fakeTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }

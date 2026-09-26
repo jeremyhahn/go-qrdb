@@ -57,6 +57,14 @@ func (m *mockTenantSvc) GetTenant(ctx context.Context, id string) (*tenantpkg.Te
 	}
 	return &tenantpkg.TenantInfo{ID: id, Name: "stub"}, nil
 }
+func (m *mockTenantSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantSvc) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantSvc) ListTenants(ctx context.Context) ([]tenantpkg.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)

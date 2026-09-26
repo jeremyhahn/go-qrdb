@@ -1477,6 +1477,11 @@ func (s *Server) registerRoutes() {
 	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
 	s.route(http.MethodPost, "/v1/tenants", permission.TenantsCreate, s.handleCreateTenant)
 	s.route(http.MethodGet, "/v1/tenants/list", permission.TenantsList, s.handleListTenants)
+	// Retired tenant ids. Both are two static segments below /v1/tenants/, so
+	// they shadow no {id} route: /v1/tenants/deleted still reads the tenant
+	// named "deleted", and no /v1/tenants/{id}/list or /reconcile exists.
+	s.route(http.MethodGet, "/v1/tenants/deleted/list", permission.TenantsListDeleted, s.handleListDeletedTenants)
+	s.route(http.MethodPost, "/v1/tenants/deleted/reconcile", permission.TenantsReconcileDeleted, s.handleReconcileDeletedTenants)
 
 	// Tenant path-param routes, including the per-tenant barrier plane. The
 	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;

@@ -332,6 +332,10 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// Tenants, including the per-tenant barrier plane.
 		{"POST", "/v1/tenants", permission.TenantsCreate},
 		{"GET", "/v1/tenants/list", permission.TenantsList},
+		{"GET", "/v1/tenants/deleted/list", permission.TenantsListDeleted},
+		{"POST", "/v1/tenants/deleted/reconcile", permission.TenantsReconcileDeleted},
+		// A tenant NAMED "deleted" still resolves through the {id} route.
+		{"GET", "/v1/tenants/deleted", permission.TenantsRead},
 		{"GET", "/v1/tenants/t-1", permission.TenantsRead},
 		{"PUT", "/v1/tenants/t-1", permission.TenantsUpdate},
 		{"DELETE", "/v1/tenants/t-1", permission.TenantsDelete},

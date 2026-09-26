@@ -224,6 +224,14 @@ func (m *covMockTenantSvc) GetTenant(ctx context.Context, id string) (*tenant.Te
 func (m *covMockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
 }
+func (m *covMockTenantSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *covMockTenantSvc) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *covMockTenantSvc) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)
@@ -1294,8 +1302,8 @@ func TestCovCeremonyCANotConfiguredError_Error(t *testing.T) {
 func TestCovTenantTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantTools(svc, nil)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("expected 9 tools, got %d", len(tools))
 	}
 }
 

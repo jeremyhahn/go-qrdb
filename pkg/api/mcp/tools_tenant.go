@@ -39,6 +39,63 @@ func tenantTools(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) []serverT
 		{Tool: toolTenantDelete(), Perm: permission.TenantsDelete, Handler: handleTenantDelete(svc, mw)},
 		{Tool: toolTenantUpdateQuotas(), Perm: permission.TenantsSetQuotas, Handler: handleTenantUpdateQuotas(svc, mw)},
 		{Tool: toolTenantUpdateEntitlements(), Perm: permission.TenantsSetEntitlements, Handler: handleTenantUpdateEntitlements(svc, mw)},
+		{Tool: toolTenantListDeleted(), Perm: permission.TenantsListDeleted, Handler: handleTenantListDeleted(svc)},
+		{Tool: toolTenantReconcileDeleted(), Perm: permission.TenantsReconcileDeleted, Handler: handleTenantReconcileDeleted(svc)},
+	}
+}
+
+// toolTenantListDeleted defines the qrdb_tenant_list_deleted tool schema.
+func toolTenantListDeleted() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_list_deleted",
+		mcp.WithDescription("Return one page of retired tenant ids with their deletion records, in ascending id order. A deleted tenant id can never be used again."),
+		mcp.WithNumber("page_size",
+			mcp.Description("Records per page. 0 or absent uses the server default; larger than the server maximum is served at the maximum."),
+		),
+		mcp.WithString("page_token",
+			mcp.Description("The next_page_token of the previous page. Absent for the first page."),
+		),
+	)
+}
+
+// handleTenantListDeleted returns a tool handler that pages through retired
+// tenant ids.
+func handleTenantListDeleted(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		page, err := svc.ListDeletedTenants(ctx, mcp.ParseString(req, "page_token", ""), mcp.ParseInt(req, "page_size", 0))
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_list_deleted", Err: err}
+		}
+		data, jsonErr := json.Marshal(page)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_list_deleted", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolTenantReconcileDeleted defines the qrdb_tenant_reconcile_deleted tool
+// schema.
+func toolTenantReconcileDeleted() mcp.Tool {
+	return mcp.NewTool("qrdb_tenant_reconcile_deleted",
+		mcp.WithDescription("Remove, from the node serving the request, the on-disk residue of every retired tenant id. Never removes a directory a live tenant claims; reports what it reclaimed and what it left in place."),
+	)
+}
+
+// handleTenantReconcileDeleted returns a tool handler that runs the
+// deleted-tenant reconcile on this node.
+func handleTenantReconcileDeleted(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		report, err := svc.ReconcileDeletedTenants(ctx)
+		// A pass that failed only for some ids answers with its report, whose
+		// failed list names them; only a guard failure is a tool error.
+		if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_reconcile_deleted", Err: rerr}
+		}
+		data, jsonErr := json.Marshal(report)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_reconcile_deleted", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 

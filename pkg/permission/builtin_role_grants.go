@@ -187,6 +187,7 @@ func registerAdminGrants() {
 		// ScopeCross (tenant_provisioning_scope.go): only effective for
 		// system-tenant Admin, so a tenant Admin cannot raise its own limits.
 		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
+		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
 		VolumePoolUpdate, VolumePoolDelete,

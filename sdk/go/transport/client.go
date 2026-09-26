@@ -913,6 +913,16 @@ type TenantClient interface {
 	// ListTenants lists all tenants.
 	ListTenants(ctx context.Context) (*ListTenantsResponse, error)
 
+	// ListDeletedTenants returns one page of retired tenant ids with their
+	// deletion records, in ascending id order.
+	ListDeletedTenants(ctx context.Context, req *ListDeletedTenantsRequest) (*ListDeletedTenantsResponse, error)
+
+	// ReconcileDeletedTenants removes, from the node serving the request, the
+	// on-disk residue of every retired tenant id. It never removes a directory
+	// a live tenant claims. It is node-local: in a cluster, run it against
+	// each node.
+	ReconcileDeletedTenants(ctx context.Context) (*ReconcileDeletedTenantsResponse, error)
+
 	// DeleteTenant deletes a tenant.
 	DeleteTenant(ctx context.Context, tenantID string) error
 

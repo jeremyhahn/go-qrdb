@@ -81,6 +81,39 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 	return &transport.ListTenantsResponse{Tenants: tenants}, nil
 }
 
+// ListDeletedTenants returns one page of retired tenant ids via the gRPC
+// TenantListDeleted RPC.
+func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		req = &transport.ListDeletedTenantsRequest{}
+	}
+	resp, err := t.client.TenantListDeleted(ctx, &pb.TenantListDeletedRequest{
+		PageSize:  req.PageSize,
+		PageToken: req.PageToken,
+	})
+	if err != nil {
+		return nil, mapGRPCError("ListDeletedTenants", err)
+	}
+	return tenantconv.ToListDeletedTenantsResponse(resp), nil
+}
+
+// ReconcileDeletedTenants runs the deleted-tenant reconcile on the node
+// serving the request via the gRPC TenantReconcileDeleted RPC.
+func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.TenantReconcileDeleted(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("ReconcileDeletedTenants", err)
+	}
+	out := tenantconv.ToReconcileDeletedTenantsResponse(resp)
+	return out, transport.ReconcileFailure(out, nil)
+}
+
 // DeleteTenant removes a tenant via the gRPC TenantDelete RPC.
 func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 	if t.closed.Load() {

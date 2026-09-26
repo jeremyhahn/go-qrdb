@@ -23,6 +23,7 @@ import (
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
 // BarrierRegistry manages the system barrier and per-tenant barriers.
@@ -65,6 +66,10 @@ type BarrierRegistry struct {
 	// replicated decision; the round-robin cursor that chooses the slot for a
 	// new tenant is likewise replicated (see pool.ReplicatedStateStore).
 	slotStore StorageBackend
+
+	// remover is the filesystem tenant directories are reclaimed through; nil
+	// means the operating system. See WithDirectoryRemover.
+	remover DirectoryRemover
 
 	// migrationRecoverer, when non-nil, reconciles an interrupted encryption
 	// migration recorded in a tenant's journal BEFORE the tenant barrier is
@@ -920,6 +925,17 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID, da
 		r.seedSlotAssignment(ctx, tenantID, filepath.Dir(dataRoot))
 	}
 
+	// A CREATE must not take a directory another tenant's tenant-root record
+	// still names. That record may belong to a deleted tenant this node has
+	// not reclaimed yet (it was down during the delete); the deleted-tenant
+	// reconcile would then read the record and remove the directory -- now
+	// the new tenant's. Refusing here closes that window from the other side.
+	if !mustExist {
+		if err := r.refuseClaimedRoot(ctx, tenantID, dataRoot); err != nil {
+			return "", nil, err
+		}
+	}
+
 	barrierPath := filepath.Join(dataRoot, "barrier")
 	// Re-attach must not silently mint a fresh barrier when the dedicated mount
 	// is absent: the store was created on a prior run, so it MUST already be
@@ -979,6 +995,34 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID, da
 			slog.String("pool", defaultPoolName))
 	}
 	return dataRoot, tb, nil
+}
+
+// refuseClaimedRoot returns *DataRootClaimedError when a tenant-root record
+// for any OTHER tenant names a directory that is, contains or lies inside
+// dataRoot. With the system barrier sealed there are no readable records and
+// nothing to refuse on.
+func (r *BarrierRegistry) refuseClaimedRoot(ctx context.Context, tenantID, dataRoot string) error {
+	if r.system == nil || r.system.IsSealed() {
+		return nil
+	}
+	keys, err := r.system.List(ctx, tenantRootStorePrefix)
+	if err != nil {
+		return &ClaimedRootCheckError{TenantID: tenantID, Err: err}
+	}
+	for _, key := range keys {
+		other := strings.TrimPrefix(key, tenantRootStorePrefix)
+		if other == tenantID || other == "" {
+			continue
+		}
+		rec, found, lerr := r.loadTenantRoot(ctx, other)
+		if lerr != nil {
+			return &ClaimedRootCheckError{TenantID: tenantID, Err: lerr}
+		}
+		if found && rec.DataRoot != "" && validation.PathsOverlap(filepath.Clean(rec.DataRoot), filepath.Clean(dataRoot)) {
+			return &DataRootClaimedError{TenantID: tenantID, DataRoot: dataRoot, ClaimedBy: other}
+		}
+	}
+	return nil
 }
 
 // RegisterTenantDefault creates and registers a tenant barrier with
@@ -1182,11 +1226,14 @@ func (r *BarrierRegistry) UnregisterTenant(tenantID string) error {
 // names it once the records above are gone, so leaving it is a permanent
 // filesystem leak of the deleted tenant's (now key-less) ciphertext.
 //
-// The steps run in the order that survives a crash at any point: close the
-// store, drop the records that would restore it, then remove the bytes. An
-// interrupted call leaves a directory nothing references, which the next call
-// removes -- DestroyTenant is idempotent and an already-destroyed tenant
-// returns ErrTenantNotFound only when it was not registered here at all.
+// The steps run in the order that survives a failure at any point: release
+// the in-memory barrier and close the store, remove the bytes, and only then
+// drop the records that name them. A failed removal therefore leaves the
+// record in place, so the next call knows where the directory is and finishes
+// the job; dropping the records first would orphan an operator-supplied
+// DataRoot that nothing names any more. DestroyTenant is idempotent and an
+// already-destroyed tenant returns ErrTenantNotFound only when it was not
+// registered here at all.
 //
 // A tenant that is registered but has no DataRoot (IsolationBarrier in
 // keyspace mode, or a memory-backed test tenant) skips the filesystem step.
@@ -1205,24 +1252,69 @@ func (r *BarrierRegistry) DestroyTenant(ctx context.Context, tenantID string) er
 		}
 	}
 
+	removeErr := r.ReleaseTenant(ctx, tenantID)
+	if removeErr != nil && !errors.Is(removeErr, ErrTenantNotFound) {
+		return removeErr
+	}
+
+	if hasRoot {
+		root, _ := dataRoot.(string)
+		if root != "" {
+			if err := r.RemoveDataRoot(root); err != nil {
+				return &TenantDataRootRemoveError{TenantID: tenantID, DataRoot: root, Err: err}
+			}
+			if r.logger != nil {
+				r.logger.Info("registry: destroyed tenant data root",
+					slog.String("tenant", tenantID),
+					slog.String("data_root", root))
+			}
+		}
+	}
+
+	if err := r.DropTenantRecords(ctx, tenantID); err != nil {
+		return err
+	}
+	return removeErr
+}
+
+// ReleaseTenant lets go of everything this process holds for tenantID without
+// touching anything durable: it seals and forgets the in-memory barrier and
+// closes the per-tenant store, so the directory under it can be removed
+// without unlinking files from under an open handle.
+//
+// It is the first of the three steps DestroyTenant runs, exposed for a caller
+// that must decide path by path which directories are safe to remove -- the
+// deleted-tenant reconcile. It returns ErrTenantNotFound when the tenant was
+// not registered in memory, having still closed any per-tenant store.
+func (r *BarrierRegistry) ReleaseTenant(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return ErrEmptyTenantID
+	}
 	removeErr := r.RemoveTenant(tenantID)
 	if removeErr != nil && !errors.Is(removeErr, ErrTenantNotFound) {
 		return removeErr
 	}
 	r.tenantDataRoots.Delete(tenantID)
-
-	// Close the per-tenant Pebble before the directory holding it is removed,
-	// so the files are released rather than unlinked from under an open
-	// handle.
 	if _, _, perTenantReg := r.poolResources(); perTenantReg != nil {
 		if err := perTenantReg.Close(ctx, tenantID); err != nil {
 			return &TenantStoreCloseError{TenantID: tenantID, Err: err}
 		}
 	}
+	return removeErr
+}
 
-	// Drop the records the boot path restores from. Both are best-effort in
-	// the sense that a missing key is success, but a live failure is not:
-	// leaving either behind resurrects the barrier at the next restart.
+// DropTenantRecords deletes the two durable records the boot path restores a
+// tenant barrier from: the tenant-root record naming its DataRoot and the
+// volume-pool slot assignment. A missing record is success; a live failure is
+// not, because leaving either behind resurrects the barrier at the next
+// restart.
+//
+// Run it LAST, after the directories the records name have been removed: the
+// record is how a retried reclamation finds a directory whose removal failed.
+func (r *BarrierRegistry) DropTenantRecords(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return ErrEmptyTenantID
+	}
 	if r.system != nil && !r.system.IsSealed() {
 		if err := r.system.Delete(ctx, tenantRootStorePrefix+tenantID); err != nil &&
 			!errors.Is(err, ErrSecretNotFound) {
@@ -1235,22 +1327,91 @@ func (r *BarrierRegistry) DestroyTenant(ctx context.Context, tenantID string) er
 			return &TenantRecordDeleteError{TenantID: tenantID, Record: "slot-assignment", Err: err}
 		}
 	}
+	return nil
+}
 
-	if hasRoot {
-		root, _ := dataRoot.(string)
-		if root != "" {
-			if err := os.RemoveAll(root); err != nil {
-				return &TenantDataRootRemoveError{TenantID: tenantID, DataRoot: root, Err: err}
-			}
-			if r.logger != nil {
-				r.logger.Info("registry: destroyed tenant data root",
-					slog.String("tenant", tenantID),
-					slog.String("data_root", root))
-			}
+// TenantDataRootCandidates returns every local directory that holds, or would
+// hold, tenantID's data on THIS node: the DataRoot it is registered at in this
+// process, the DataRoot its local tenant-root record names, and
+// {poolBase}/{tenantID} under every local volume-pool base. None is checked
+// for existence.
+//
+// Paths are returned AS RECORDED -- never cleaned -- and de-duplicated on
+// their cleaned form. That is deliberate: a recorded "/srv/qrdb/x/.." cleans
+// to "/srv/qrdb", a different and existing directory, so a caller deciding
+// what to remove must validate the path it was given before it cleans
+// anything, and it can only do that if it is given the raw path.
+//
+// It reads, and changes nothing. A caller deciding what to remove must weigh
+// each path itself -- in particular a recorded DataRoot is whatever was
+// recorded, and an operator-supplied one can later be reused by another
+// tenant.
+func (r *BarrierRegistry) TenantDataRootCandidates(ctx context.Context, tenantID string) ([]string, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		key := filepath.Clean(p)
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, p)
+	}
+	if v, ok := r.tenantDataRoots.Load(tenantID); ok {
+		root, _ := v.(string)
+		add(root)
+	}
+	rec, found, err := r.loadTenantRoot(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		add(rec.DataRoot)
+	}
+	bases, err := r.PoolBasePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, base := range bases {
+		if p, cerr := containedTenantPath(base, tenantID); cerr == nil {
+			add(p)
 		}
 	}
+	return out, nil
+}
 
-	return removeErr
+// HasTenantState reports whether this node still holds ANY registry state
+// for tenantID: a barrier registered in memory, a tenant-root record, or a
+// volume-pool slot assignment. A retired id with none of these and no
+// directory on disk has been fully reclaimed here.
+func (r *BarrierRegistry) HasTenantState(ctx context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrEmptyTenantID
+	}
+	if _, ok := r.tenants.Load(tenantID); ok {
+		return true, nil
+	}
+	if r.system != nil && !r.system.IsSealed() {
+		if _, err := r.system.Get(ctx, tenantRootStorePrefix+tenantID); err == nil {
+			return true, nil
+		} else if !errors.Is(err, ErrSecretNotFound) {
+			return false, err
+		}
+	}
+	if slotStore := r.replicatedSlotStore(); slotStore != nil {
+		if _, err := slotStore.Get(ctx, slotAssignmentPrefix+tenantID); err == nil {
+			return true, nil
+		} else if !errors.Is(err, ErrSecretNotFound) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // InitializeTenant initializes the tenant barrier identified by tenantID.

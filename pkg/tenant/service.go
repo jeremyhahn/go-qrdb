@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -195,6 +196,18 @@ type TenantServicer interface {
 	// DeleteTenant removes a tenant from the barrier registry and
 	// deletes its metadata from storage.
 	DeleteTenant(ctx context.Context, tenantID string) error
+
+	// ListDeletedTenants returns one page of retired tenant ids with their
+	// deletion records, in ascending id order: a paged range read over the
+	// tombstone prefix. pageSize 0 means DefaultDeletedTenantsPageSize and
+	// is capped at MaxDeletedTenantsPageSize; pageToken is the previous
+	// page's NextPageToken, or empty for the first page.
+	ListDeletedTenants(ctx context.Context, pageToken string, pageSize int) (*DeletedTenantsPage, error)
+
+	// ReconcileDeletedTenants removes, from THIS node, the on-disk residue of
+	// every retired tenant id, never touching a directory a live tenant
+	// claims. It is node-local by nature: each replica reclaims its own disk.
+	ReconcileDeletedTenants(ctx context.Context) (*ReconcileReport, error)
 
 	// UpdateTenant applies a partial update to an existing tenant.
 	// Changing the IsolationType on a tenant that has data returns
@@ -417,6 +430,15 @@ type TenantService struct {
 	// isolationChangeGuard carries UpdateTenant's data probe; see
 	// isolation_change.go.
 	isolationChangeGuard
+	// runtimeCloser stops what this node runs for a tenant before
+	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
+	runtimeCloser atomic.Pointer[runtimeCloserBox]
+
+	// removeAll removes one reclaimed directory; the registry's
+	// RemoveDataRoot in every composition, which empties a mount point rather
+	// than failing on it. It is a field so a test can make a removal fail and
+	// prove a second pass still finds the directory.
+	removeAll func(path string) error
 
 	logger *slog.Logger
 }
@@ -513,6 +535,7 @@ func NewTenantService(
 		store:            store,
 		registry:         registry,
 		tenantCeremonies: ceremony.NewTenantCeremonyRegistry(),
+		removeAll:        registry.RemoveDataRoot,
 		logger:           logger,
 	}
 	for _, o := range opts {
@@ -638,10 +661,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// RegisterVolumeTenant reuses it instead of allocating from the pool.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
-				return nil, ErrTenantAlreadyExists
-			}
-			return nil, &BarrierError{TenantID: id, Op: "register-volume", Err: regErr}
+			return nil, s.volumeRegisterError(ctx, id, "register-volume", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -672,10 +692,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// allocating from the pool.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
-				return nil, ErrTenantAlreadyExists
-			}
-			return nil, &BarrierError{TenantID: id, Op: "register-raft", Err: regErr}
+			return nil, s.volumeRegisterError(ctx, id, "register-raft", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -724,6 +741,37 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 
 	return info, nil
 }
+
+// volumeRegisterError maps a volume/raft barrier registration failure onto
+// the tenant package's errors. A DataRoot another tenant's record on this node
+// still names is the caller's conflict, reported like any other DataRoot
+// overlap. When that claimant is a RETIRED tenant -- deleted, its residue not
+// yet reclaimed on this node -- the error says so and names the verb that
+// reclaims it, because the operator's remedy is then to reconcile, not to
+// pick another path.
+func (s *TenantService) volumeRegisterError(ctx context.Context, id, op string, regErr error) error {
+	if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+		return ErrTenantAlreadyExists
+	}
+	var claimed *seal.DataRootClaimedError
+	if !errors.As(regErr, &claimed) {
+		return &BarrierError{TenantID: id, Op: op, Err: regErr}
+	}
+	overlap := &DataRootOverlapError{DataRoot: claimed.DataRoot, Conflict: claimed.DataRoot, Kind: "tenant " + claimed.ClaimedBy}
+	_, retired, err := s.deletedAt(ctx, claimed.ClaimedBy)
+	if err != nil {
+		return err
+	}
+	if retired {
+		overlap.Kind = "retired tenant " + claimed.ClaimedBy
+		overlap.Remedy = retiredResidueRemedy
+	}
+	return overlap
+}
+
+// retiredResidueRemedy is the remedy a DataRootOverlapError names when the
+// conflicting path is a retired tenant's unreclaimed residue.
+const retiredResidueRemedy = "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it"
 
 // checkDataRootOverlap rejects an operator-supplied dedicated DataRoot that
 // overlaps a reserved storage location. It composes the three overlap sources

@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
 
 // Compile-time interface assertion.
@@ -105,6 +106,48 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 	}
 
 	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+}
+
+// ListDeletedTenants returns one page of retired tenant ids via the QUIC
+// tenant.ListDeleted handler.
+func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		req = &transport.ListDeletedTenantsRequest{}
+	}
+	payload, err := proto.Marshal(&pb.TenantListDeletedRequest{PageSize: req.PageSize, PageToken: req.PageToken})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	respBytes, err := t.call(ctx, "tenant.ListDeleted", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	var resp pb.TenantListDeletedResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	return tenantconv.ToListDeletedTenantsResponse(&resp), nil
+}
+
+// ReconcileDeletedTenants runs the deleted-tenant reconcile on the node serving
+// the request via the QUIC tenant.ReconcileDeleted handler.
+func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	respBytes, err := t.call(ctx, "tenant.ReconcileDeleted", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: err}
+	}
+	var resp pb.TenantReconcileDeletedResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: err}
+	}
+	out := tenantconv.ToReconcileDeletedTenantsResponse(&resp)
+	return out, transport.ReconcileFailure(out, nil)
 }
 
 // DeleteTenant removes a tenant via the QUIC tenant.Delete handler.

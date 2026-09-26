@@ -1158,6 +1158,14 @@ func (m *mockTenantBarrierOnlySvc) CreateTenant(_ context.Context, id, name stri
 func (m *mockTenantBarrierOnlySvc) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id}, nil
 }
+func (m *mockTenantBarrierOnlySvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantBarrierOnlySvc) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantBarrierOnlySvc) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }

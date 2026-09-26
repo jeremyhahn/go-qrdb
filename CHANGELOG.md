@@ -51,6 +51,66 @@ are not reconstructed here — their history is in the git log.
   Indexes registered through `RegisterEntityType` are scoped to
   `{entityType}/` and are unaffected. To keep an index to one keyspace,
   declare its key prefix.
+- **Retired tenant ids are enumerable** (#470). `ListDeletedTenants` returns a
+  page of deleted tenant ids with their deletion records, in ascending id
+  order — a paged range read over the tombstone prefix, with an opaque page
+  token. It is on every transport: REST `GET /v1/tenants/deleted/list`, gRPC
+  and Unix `TenantListDeleted`, QUIC `tenant.ListDeleted`, MCP
+  `qrdb_tenant_list_deleted`, the embedded client, and
+  `qrdb tenant list-deleted`. New cross-scope permission
+  `tenants:list_deleted`.
+- **Every node reclaims a deleted tenant's directories** (#469). A node that
+  was down during a tenant delete, or held the tenant without hosting a shard,
+  kept its directories and the record that restored its barrier at the next
+  boot. A reconcile pass now runs at boot, before any tenant barrier is
+  restored, and on demand as `ReconcileDeletedTenants` on every transport (REST
+  `POST /v1/tenants/deleted/reconcile`, gRPC and Unix `TenantReconcileDeleted`,
+  QUIC `tenant.ReconcileDeleted`, MCP `qrdb_tenant_reconcile_deleted`, the
+  embedded client) and as `qrdb tenant reconcile-deleted`. The tombstone is its
+  only predicate, and it never removes a directory a live tenant claims; what
+  it leaves is reported with the reason. New cross-scope permission
+  `tenants:reconcile_deleted`, and `seal.BarrierRegistry.ReleaseTenant` /
+  `DropTenantRecords` / `TenantDataRootCandidates`. The live set it guards
+  with is read strictly (an unreadable tenant record aborts the pass) and
+  re-read before each removal; a non-canonical recorded path is never removed;
+  and the records naming a directory are dropped only after it is removed, so
+  a failed removal is finished by the next pass. `DestroyTenant` now removes
+  the `DataRoot` before dropping those records, for the same reason, and
+  registering a `volume`/`raft` tenant at a `DataRoot` another tenant's record
+  on the node still names is refused (`seal.DataRootClaimedError`, surfaced as
+  `tenant.DataRootOverlapError`; when the claimant is a retired tenant the
+  error says so and its new `Remedy` names `qrdb tenant reconcile-deleted`; a
+  failure to read the records to check is `seal.ClaimedRootCheckError`).
+  Recorded paths are judged **as recorded**: `TenantDataRootCandidates` returns
+  them uncleaned (de-duplicated on the cleaned form), so a dotted record such
+  as `/srv/qrdb/x/..` is skipped as `not-canonical` instead of being cleaned
+  into its parent and removed. A directory inside a reserved root is refused
+  unless it lies strictly inside a volume-pool base, so a pool carved out of
+  the data directory stays reclaimable. A `DataRoot` that is a **mount point**
+  is reclaimed: the new `seal.BarrierRegistry.RemoveDataRoot` empties the
+  directory and treats an emptied root refusing rmdir with `EBUSY`/`EXDEV` as
+  reclaimed, instead of failing forever (`DestroyTenant` and the reconcile both
+  use it; the filesystem is injectable through `seal.DirectoryRemover` /
+  `seal.WithDirectoryRemover`). A failure for one retired id no longer stops
+  the pass: per-id failures are collected and returned as
+  `tenant.ResidueReconcileErrors` alongside the report, and only a failure to
+  read the tombstones or the live set aborts. Every skipped path is logged at
+  `WARN`, and an id already fully reclaimed on the node (no directory, and no
+  state per the new `seal.BarrierRegistry.HasTenantState`) is passed over
+  untouched. On the wire, a partly failed pass answers success with its
+  report, whose new `failed` list (`tenant.FailedReclaim`; protobuf
+  `TenantResidueFailure`, field 4 of `TenantReconcileDeletedResponse`) names
+  each failed id; `tenant.ReconcileResponseError` is the one rule every
+  transport applies. The Go SDK returns the response and a
+  `transport.ReconcileDeletedTenantsError` together, and
+  `qrdb tenant reconcile-deleted` prints the report with a `failed` row per id
+  before exiting non-zero.
+- **`tenant.DataRootOverlapError` is a caller error on every transport.** A
+  create whose `DataRoot` overlaps a volume pool, a reserved data root or
+  another tenant's `DataRoot` -- a retired tenant's unreclaimed one included,
+  whose message carries the remedy -- was unmapped and reported as 500 /
+  `INTERNAL`. It is now 409 on REST and `FAILED_PRECONDITION` on gRPC, the
+  Unix socket, QUIC and MCP; the embedded transport returns the typed error.
 
 ### Changed — BREAKING
 
@@ -138,6 +198,14 @@ are not reconstructed here — their history is in the git log.
   side effect. *Migration:* set `TenantLookup` — to the same value as
   `TenantSvc` if that service is never replaced for the life of the process,
   otherwise to a lookup that resolves the current service.
+- **`tenant.TenantServicer` gains two methods**, `ListDeletedTenants(ctx,
+  pageToken string, pageSize int) (*tenant.DeletedTenantsPage, error)` and
+  `ReconcileDeletedTenants(ctx) (*tenant.ReconcileReport, error)` (#470,
+  #469), and `transport.TenantClient` gains `ListDeletedTenants` and
+  `ReconcileDeletedTenants`. *Migration:* a type that implements either
+  interface outside this module must add both methods. A wrapper that embeds
+  the interface inherits them. A test double that models no retirements
+  returns an empty `DeletedTenantsPage` and a zero `ReconcileReport`.
 
 ### Changed
 
@@ -390,6 +458,10 @@ are not reconstructed here — their history is in the git log.
   time, and `server.TenantInfraConfig.TenantLookup` is required whenever the
   `IsolationVolume` registry is built. `NewTenantHostRegistryFromServicer` is
   renamed `NewTenantHostRegistryFromLookup` and accepts any `TenantLookup`.
+- **`node.Client().Tenants()` works.** The embedded client of an
+  `sdk/go/node` node was never given the tenant service, so every
+  `TenantClient` verb answered "TenantServicer must not be nil" while the same
+  verbs worked on every network transport of the same node.
 
 ## [0.21.3-alpha] - 2026-09-30
 

@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -114,6 +115,47 @@ func (s *Server) handleTenantList(ctx context.Context, _ []byte) ([]byte, error)
 	}
 
 	resp, err := proto.Marshal(&pb.TenantListResponse{Tenants: pbTenants})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleTenantListDeleted returns one page of retired tenant ids. The page is
+// encoded by the same conversion the gRPC service uses, so the two wires carry
+// identical records.
+func (s *Server) handleTenantListDeleted(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	var req pb.TenantListDeletedRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	page, err := s.tenantSvc.ListDeletedTenants(ctx, req.GetPageToken(), int(req.GetPageSize()))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := proto.Marshal(grpcapi.DeletedTenantsPageToProto(page))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleTenantReconcileDeleted reclaims, on this node, the residue of retired
+// tenant ids.
+func (s *Server) handleTenantReconcileDeleted(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	report, err := s.tenantSvc.ReconcileDeletedTenants(ctx)
+	// A pass that failed only for some ids answers with its report, whose
+	// failed list names them; only a guard failure is an error status.
+	if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
+		return nil, rerr
+	}
+	resp, err := proto.Marshal(grpcapi.ReconcileReportToProto(report))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

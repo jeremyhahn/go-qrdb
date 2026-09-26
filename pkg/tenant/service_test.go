@@ -113,7 +113,7 @@ func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 // durable, independent per-tenant Pebble at a t-scoped temp directory, so
 // crypto/physical isolation can be exercised against a real seal backend
 // without modifying the host system.
-func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
+func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	system, err := seal.NewBarrier(testLogger(), store, seal.BarrierConfig{
@@ -147,10 +147,11 @@ func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(testLogger(), system,
+	opts := append([]seal.Option{
 		seal.WithVolumePool(mgr, state, "default"),
 		seal.WithPerTenantRegistry(perTenantReg),
-	)
+	}, extra...)
+	reg, err := seal.NewBarrierRegistry(testLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}

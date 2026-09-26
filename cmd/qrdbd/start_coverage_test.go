@@ -543,6 +543,14 @@ func (m *mockTenantServicer) GetTenant(_ context.Context, _ string) (*tenantpkg.
 	return nil, nil
 }
 
+func (m *mockTenantServicer) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantServicer) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }

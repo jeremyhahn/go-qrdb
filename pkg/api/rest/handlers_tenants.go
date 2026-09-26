@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -244,6 +245,55 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		Tenants: resp,
 		Total:   len(resp),
 	})
+}
+
+// handleListDeletedTenants handles GET /v1/tenants/deleted/list -- one page of
+// retired tenant ids. Query parameters: page_size (0 or absent = server
+// default) and page_token (the previous page's next_page_token).
+func (s *Server) handleListDeletedTenants(w http.ResponseWriter, r *http.Request) {
+	if s.tenantSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+	pageSize := 0
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &tenant.InvalidPageRequestError{Field: "page_size", Reason: "not an integer"})
+			return
+		}
+		pageSize = n
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	page, err := s.tenantSvc.ListDeletedTenants(ctx, r.URL.Query().Get("page_token"), pageSize)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, page)
+}
+
+// handleReconcileDeletedTenants handles POST /v1/tenants/deleted/reconcile --
+// reclaim, on THIS node, the on-disk residue of retired tenant ids. It is
+// node-local by nature, so it is never forwarded to the leader: each replica
+// reclaims its own disk.
+func (s *Server) handleReconcileDeletedTenants(w http.ResponseWriter, r *http.Request) {
+	if s.tenantSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
+	defer cancel()
+	report, err := s.tenantSvc.ReconcileDeletedTenants(ctx)
+	// A pass that failed only for some ids answers 200 with its report, whose
+	// failed list names them; only a guard failure is an error status.
+	if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
+		writeErrorJSON(w, mapHTTPError(rerr), rerr)
+		return
+	}
+	writeJSON(w, report)
 }
 
 // handleTenantByID dispatches tenant operations that carry a tenant ID in

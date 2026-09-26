@@ -97,6 +97,83 @@ func (s *qrdbServiceServer) TenantList(ctx context.Context, _ *emptypb.Empty) (*
 	return &pb.TenantListResponse{Tenants: pbTenants}, nil
 }
 
+// TenantListDeleted returns one page of retired tenant ids.
+func (s *qrdbServiceServer) TenantListDeleted(ctx context.Context, req *pb.TenantListDeletedRequest) (*pb.TenantListDeletedResponse, error) {
+	if s.tenantSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
+	}
+	page, err := s.tenantSvc.ListDeletedTenants(ctx, req.GetPageToken(), int(req.GetPageSize()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return DeletedTenantsPageToProto(page), nil
+}
+
+// TenantReconcileDeleted reclaims, on this node, the residue of retired
+// tenant ids.
+func (s *qrdbServiceServer) TenantReconcileDeleted(ctx context.Context, _ *emptypb.Empty) (*pb.TenantReconcileDeletedResponse, error) {
+	if s.tenantSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
+	}
+	report, err := s.tenantSvc.ReconcileDeletedTenants(ctx)
+	// A pass that failed only for some ids answers with its report, whose
+	// failed list names them; only a guard failure is an error status.
+	if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
+		return nil, mapServiceError(rerr)
+	}
+	return ReconcileReportToProto(report), nil
+}
+
+// DeletedTenantsPageToProto converts a page of retired tenant ids to its
+// protobuf form. It is exported because every transport that speaks the
+// qrdb.v1 messages -- gRPC, the Unix socket and QUIC -- encodes the page the
+// same way, and one conversion keeps them from drifting.
+func DeletedTenantsPageToProto(page *tenant.DeletedTenantsPage) *pb.TenantListDeletedResponse {
+	resp := &pb.TenantListDeletedResponse{}
+	if page == nil {
+		return resp
+	}
+	resp.NextPageToken = page.NextPageToken
+	resp.Tenants = make([]*pb.DeletedTenant, len(page.Tombstones))
+	for i := range page.Tombstones {
+		ts := &page.Tombstones[i]
+		dt := &pb.DeletedTenant{
+			Id:            ts.ID,
+			Name:          ts.Name,
+			IsolationType: string(ts.IsolationType),
+			DataRoot:      ts.DataRoot,
+		}
+		if !ts.CreatedAt.IsZero() {
+			dt.CreatedAt = ts.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		if !ts.DeletedAt.IsZero() {
+			dt.DeletedAt = ts.DeletedAt.UTC().Format(time.RFC3339)
+		}
+		resp.Tenants[i] = dt
+	}
+	return resp
+}
+
+// ReconcileReportToProto converts a deleted-tenant reconcile report to its
+// protobuf form; see DeletedTenantsPageToProto for why it is exported.
+func ReconcileReportToProto(report *tenant.ReconcileReport) *pb.TenantReconcileDeletedResponse {
+	resp := &pb.TenantReconcileDeletedResponse{}
+	if report == nil {
+		return resp
+	}
+	resp.Inspected = int32(report.Inspected) //nolint:gosec // bounded by the number of deletions
+	for _, r := range report.Reclaimed {
+		resp.Reclaimed = append(resp.Reclaimed, &pb.TenantResiduePath{TenantId: r.TenantID, Path: r.Path})
+	}
+	for _, s := range report.Skipped {
+		resp.Skipped = append(resp.Skipped, &pb.TenantResiduePath{TenantId: s.TenantID, Path: s.Path, Reason: s.Reason})
+	}
+	for _, f := range report.Failed {
+		resp.Failed = append(resp.Failed, &pb.TenantResidueFailure{TenantId: f.TenantID, Op: f.Op, Path: f.Path, Error: f.Error})
+	}
+	return resp
+}
+
 // TenantUpdate applies a partial update to an existing tenant.
 func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpdateRequest) (*pb.TenantResponse, error) {
 	if s.tenantSvc == nil {

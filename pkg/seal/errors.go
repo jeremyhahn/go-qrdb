@@ -511,10 +511,16 @@ func (e *TenantRecordDeleteError) Error() string {
 func (e *TenantRecordDeleteError) Unwrap() error { return e.Err }
 
 // TenantDataRootRemoveError is returned by DestroyTenant when the tenant's
-// dedicated DataRoot could not be removed from disk. The barrier and its
-// records are already gone at that point, so the tenant is unreachable and
-// its remaining bytes are unreadable -- what is left is a directory to
-// reclaim, which a retry or an operator can finish.
+// dedicated DataRoot could not be removed from disk.
+//
+// State when it is returned: the tenant's in-memory barrier has been released
+// and its per-tenant store closed, but the durable records that name the
+// DataRoot -- the tenant-root record and the slot assignment -- are
+// deliberately still in place. Those records are how a retried DestroyTenant,
+// or the deleted-tenant reconcile, finds the directory again, so re-issuing
+// the call finishes the removal. A DataRoot that is a mount point is not a
+// cause of this error: once its contents are removed, a mount point that
+// refuses its own rmdir counts as reclaimed (see RemoveDataRoot).
 type TenantDataRootRemoveError struct {
 	TenantID string
 	DataRoot string
@@ -528,3 +534,37 @@ func (e *TenantDataRootRemoveError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *TenantDataRootRemoveError) Unwrap() error { return e.Err }
+
+// ClaimedRootCheckError is returned when a volume/raft registration cannot
+// read the tenant-root records it must check its DataRoot against. The
+// registration refuses rather than proceeding as if nothing claimed the
+// directory: an unreadable record may be exactly the claim that matters.
+type ClaimedRootCheckError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the failed check.
+func (e *ClaimedRootCheckError) Error() string {
+	return "qrdb/seal: cannot check whether another tenant claims the data root for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ClaimedRootCheckError) Unwrap() error { return e.Err }
+
+// DataRootClaimedError is returned when a tenant is registered at a DataRoot
+// that another tenant's tenant-root record on this node still names -- for
+// instance a deleted tenant whose residue this node has not reclaimed yet.
+// Taking the directory would hand the new tenant a path the deleted-tenant
+// reconcile is entitled to remove.
+type DataRootClaimedError struct {
+	TenantID  string
+	DataRoot  string
+	ClaimedBy string
+}
+
+// Error returns a human-readable description of the conflict.
+func (e *DataRootClaimedError) Error() string {
+	return "qrdb/seal: data root " + e.DataRoot + " for tenant " + e.TenantID +
+		" is still claimed by tenant " + e.ClaimedBy + "'s record on this node"
+}

@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -37,22 +36,9 @@ import (
 // other error — and the transient persisting past the deadline — is
 // returned to abort boot, preserving fail-closed behavior.
 func listTenantsWhenReady(ctx context.Context, tenantSvc tenant.TenantServicer) ([]tenant.TenantInfo, error) {
-	const (
-		readyDeadline = 15 * time.Second
-		retryInterval = 100 * time.Millisecond
-	)
-	deadline := time.Now().Add(readyDeadline)
-	for {
-		tenants, err := tenantSvc.ListTenants(ctx)
-		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
-			return tenants, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(retryInterval):
-		}
-	}
+	return whenReadIndexReady(ctx, func() ([]tenant.TenantInfo, error) {
+		return tenantSvc.ListTenants(ctx)
+	})
 }
 
 // TenantInfra is the assembled per-tenant isolation stack for one node. All
@@ -194,6 +180,17 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// tenants) unseals each barrier using the node-local DataRoot recorded by
 	// RegisterVolumeTenant on a prior run. Failures are logged and deferred to
 	// the reconciler rather than aborting.
+	//
+	// Retired tenants are reclaimed FIRST: RestoreVolumeTenants restores a
+	// barrier from any tenant-root record it finds, and a node that missed a
+	// delete still holds the retired tenant's record and directories. The
+	// reconcile releases the barrier, removes the directories and then drops
+	// the record -- judged by the tombstone alone, never a missing
+	// placement or tenant record, and never touching a directory a live
+	// tenant claims. Nothing is running yet, so there is no runtime to stop.
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil {
+		reconcileDeletedTenantsAtBoot(cfg.Ctx, cfg.TenantSvc, logger)
+	}
 	if cfg.BarrierReg != nil && cfg.VolumePool != nil {
 		if err := cfg.BarrierReg.RestoreVolumeTenants(cfg.Ctx); err != nil {
 			logger.Warn("start: RestoreVolumeTenants failed; some tenant barriers may be deferred",
@@ -267,6 +264,12 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				WithPromoter(newRaftPromoter(cfg.Host)),
 			)
 		}
+	}
+
+	// The on-demand reconcile must stop a retired tenant's runtimes before it
+	// removes their directories; the runtimes exist from here on.
+	if cfg.TenantSvc != nil && (ti.Hosts != nil || ti.Raft != nil) {
+		WireTenantRuntimeCloser(cfg.TenantSvc, ti.Hosts, ti.Raft)
 	}
 
 	return ti, nil

@@ -124,6 +124,53 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 	return &transport.GetTenantResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
 }
 
+// ListDeletedTenants returns one page of retired tenant ids by calling the
+// qrdb_tenant_list_deleted MCP tool.
+func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		req = &transport.ListDeletedTenantsRequest{}
+	}
+	args := map[string]any{}
+	if req.PageSize != 0 {
+		args["page_size"] = req.PageSize
+	}
+	if req.PageToken != "" {
+		args["page_token"] = req.PageToken
+	}
+	text, err := t.callTool(ctx, "qrdb_tenant_list_deleted", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	out := &transport.ListDeletedTenantsResponse{}
+	if jsonErr := json.Unmarshal([]byte(text), out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	if out.Tenants == nil {
+		out.Tenants = []transport.DeletedTenant{}
+	}
+	return out, nil
+}
+
+// ReconcileDeletedTenants runs the deleted-tenant reconcile on the node serving
+// the request by calling the qrdb_tenant_reconcile_deleted MCP tool.
+func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, "qrdb_tenant_reconcile_deleted", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: err}
+	}
+	out := &transport.ReconcileDeletedTenantsResponse{}
+	if jsonErr := json.Unmarshal([]byte(text), out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return out, transport.ReconcileFailure(out, nil)
+}
+
 // ListTenants returns all tenants by calling the qrdb_tenant_list MCP tool.
 func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
 	if t.closed.Load() {

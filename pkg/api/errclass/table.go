@@ -442,6 +442,13 @@ var identityRules = []rule{
 // tenantRules are the tenant-lifecycle conditions.
 var tenantRules = []rule{
 	as(&tenant.TenantScopeError{}, PermissionDenied),
+	// The requested DataRoot collides with a reserved path or another
+	// tenant's -- a retired one's included, whose message names the reconcile
+	// verb that frees it. A precondition the caller clears by choosing another
+	// path or reconciling.
+	as(&tenant.DataRootOverlapError{}, FailedPrecondition),
+	// A page size or page token the caller supplied that cannot be honoured.
+	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
 	is(tenant.ErrEmptyDataRoot, InvalidArgument),
 	as(&tenant.InvalidDataRootError{}, InvalidArgument),
 	as(&tenant.DataRootIsolationTypeError{}, InvalidArgument),

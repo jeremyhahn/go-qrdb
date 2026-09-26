@@ -71,6 +71,14 @@ func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal
 	return nil
 }
 
+func (m *mockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *mockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)

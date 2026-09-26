@@ -42,6 +42,8 @@ func newTenantCmd() *cobra.Command {
 		newTenantUpdateQuotasCmd(),
 		newTenantSetEntitlementCmd(),
 		newTenantDeleteCmd(),
+		newTenantListDeletedCmd(),
+		newTenantReconcileDeletedCmd(),
 		newTenantBarrierInitCmd(),
 		newTenantBarrierUnsealCmd(),
 		newTenantBarrierSealCmd(),

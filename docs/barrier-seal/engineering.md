@@ -354,17 +354,26 @@ that a node can bring a dedicated-isolation tenant back up after a restart:
 in-memory barrier and leaves both records in place, so a tenant "removed" that
 way is re-registered at the next boot, at the same `DataRoot`, over the same
 on-disk store. `BarrierRegistry.DestroyTenant` is the operation a tenant
-deletion needs: it closes the per-tenant Pebble, removes both records and
-removes the `DataRoot`, **in that order** — the files are released before the
-directory holding them is unlinked.
+deletion needs: it releases the barrier and closes the per-tenant Pebble
+(`ReleaseTenant`), removes the `DataRoot`, and only then removes both records
+(`DropTenantRecords`), **in that order** — the files are released before the
+directory holding them is unlinked, and a removal that fails leaves the
+records, so a re-issue still finds the directory. (This section previously
+listed the records before the directory; the code removes the directory
+first.)
 
-`DestroyTenant` is idempotent. An interrupted call leaves a directory nothing
-references, which a re-issue removes; a tenant that was never registered on
-this node returns `ErrTenantNotFound`, which the tenant teardown treats as
-success. Its failures are typed — `*TenantStoreCloseError`,
-`*TenantRecordDeleteError`, `*TenantDataRootRemoveError` — and each stops the
-sequence rather than being logged, because leaving either record behind
-resurrects the barrier.
+The `DataRoot` is removed by `RemoveDataRoot`, contents first and then the
+root. A dedicated `DataRoot` is often a mount point, whose rmdir fails with
+`EBUSY` or `EXDEV` however empty it is; an emptied root that fails that way
+counts as removed, and the mount is left to the operator. The filesystem is
+reached through `DirectoryRemover` (`WithDirectoryRemover`).
+
+`DestroyTenant` is idempotent; a tenant that was never registered on this node
+returns `ErrTenantNotFound`, which the tenant teardown treats as success. Its
+failures are typed — `*TenantStoreCloseError`, `*TenantRecordDeleteError`,
+`*TenantDataRootRemoveError` — and each stops the sequence rather than being
+logged, because leaving either record behind resurrects the barrier, and
+dropping them before the directory is gone would orphan it.
 
 See [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for
 where it sits in the tenant teardown order.

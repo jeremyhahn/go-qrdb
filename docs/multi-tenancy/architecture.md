@@ -230,6 +230,72 @@ directory over the same store. `BarrierRegistry.DestroyTenant` is the
 operation a deletion needs: it removes both records, closes the per-tenant
 store and removes the `DataRoot`.
 
+### Every node reclaims a deleted tenant's directories
+
+A delete destroys the `DataRoot` on the node that ran it, and the placement
+removal purges dedicated shards on the nodes hosting them at that moment. A
+node that was **down** during the delete, or that held the tenant's barrier
+without hosting a shard, keeps the tenant's directories — and, worse, its
+tenant-root record, from which the next boot would restore the retired
+barrier.
+
+**The reclaim predicate is the tombstone, and nothing else.** A missing
+placement entry or a missing tenant record also describes a tenant that has
+not been placed yet; reclaiming on that signal would destroy a live tenant's
+data. A tombstone describes nothing but a deletion, it is replicated, and it is
+permanent.
+
+The same pass runs in two places:
+
+- **At boot**, before any tenant barrier is restored. For each retired id the
+  node releases the barrier, removes every local directory the registry
+  attributes to the id — its registered `DataRoot`, the one its local record
+  names, and `{poolBase}/{id}` under each local pool base — and then drops the
+  durable records that would have restored the barrier. A failure is logged and does
+  not fail the boot: what is reclaimed is disk, never correctness, because a
+  retired id resolves for nobody whether or not its bytes remain.
+- **On demand**, as the operator verb (`ReconcileDeletedTenants`, on every
+  transport and `qrdb tenant reconcile-deleted`), which additionally stops
+  anything the node still runs for the id — its volume host and dedicated
+  shards — before removing directories. It acts on the node serving the
+  request, never forwarded: each replica reclaims its own disk.
+
+**It never removes a directory a live tenant claims.** The live set is read
+strictly — an unreadable tenant record aborts the pass, because its directory
+is unknown — and re-read right before each removal. A retired id that still
+has a record is skipped whole. A directory that is, contains or lies
+inside one a live tenant claims — on its record or in this node's registry —
+is skipped and reported: an operator-supplied `DataRoot` can be reused by a
+later tenant, and a stale record on a node that missed the delete would
+otherwise name the new tenant's data. A directory that is, or contains, a
+volume-pool base or a reserved root is skipped the same way, as is one inside
+a reserved root that is not also inside a pool base, and so is a recorded
+path that is not absolute and canonical — judged as recorded, before any
+cleaning could turn `x/..` into its parent. Every skip is logged at `WARN`.
+
+**One id's failure does not stop the others.** A removal that fails for one
+retired id is collected and the pass goes on; the pass reports every failure
+together at the end. Only a failure to read the guards themselves — the
+tombstones or the live set — stops it. An id already fully reclaimed on the
+node is passed over without touching anything.
+
+**A mount-point directory is reclaimed.** A dedicated `DataRoot` is often a
+mount point, which cannot itself be removed. The directory is emptied first,
+and an emptied root that refuses its own removal because it is a mount counts
+as reclaimed; the mount is left for the operator.
+
+**The records go last.** The directories are removed before the records that
+name them, so a removal that fails leaves the record and the next pass finds
+the directory again. And a new tenant may not take a directory another
+tenant's record on the node still names, which closes the window from the
+create side; when that record belongs to a retired tenant the refusal says so
+and names the reconcile verb.
+
+Retired ids are also **enumerable** (`ListDeletedTenants`): a paged range read
+over the tombstone prefix, so an operator can ask which ids can never be used
+again, and when each was retired, instead of discovering it by a refused
+create.
+
 ### The identity plane fails closed too
 
 `tenant.StoreResolver.Resolve` deliberately falls through to the shared store
@@ -249,6 +315,13 @@ consults the tombstone and refuses.
 - **Releasing the id after a retention period.** Rejected: "enough time has
   passed" is not evidence that the second `acme` is the same principal as the
   first.
+- **Reclaiming a directory whose tenant has no placement entry.** Rejected: an
+  unplaced live tenant looks the same, and the reclaim would destroy its data.
+  The tombstone is the only predicate.
+- **Reclaiming by the `DataRoot` the tombstone records.** Rejected: it is the
+  deleting node's path, and an operator-supplied path may since belong to a
+  live tenant. The reclaim uses what this node's registry attributes to the id
+  and still checks every path against live tenants.
 
 ## The three governance planes
 

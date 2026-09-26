@@ -970,6 +970,22 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:set_entitlements";
     }
 
+    // TenantListDeleted pages through retired tenant ids with their deletion
+    // records, in ascending id order. A deleted tenant id is retired
+    // permanently; this is how an operator enumerates which ids can never be
+    // used again, and when each was retired.
+    rpc TenantListDeleted(TenantListDeletedRequest) returns (TenantListDeletedResponse) {
+        option (qrdb.v1.permission) = "tenants:list_deleted";
+    }
+
+    // TenantReconcileDeleted removes, from the node serving the request, the
+    // on-disk residue of every retired tenant id -- directories a replica kept
+    // because it was down, or not hosting the tenant, when the tenant was
+    // deleted. It never removes a directory a live tenant claims.
+    rpc TenantReconcileDeleted(google.protobuf.Empty) returns (TenantReconcileDeletedResponse) {
+        option (qrdb.v1.permission) = "tenants:reconcile_deleted";
+    }
+
     // -----------------------------------------------------------------------
     // Credential operations
     // -----------------------------------------------------------------------
@@ -3498,6 +3514,62 @@ message TenantGetRequest {
 // TenantListResponse returns all tenants.
 message TenantListResponse {
     repeated TenantResponse tenants = 1;
+}
+
+// TenantListDeletedRequest pages through retired tenant ids. page_size 0 means
+// the server default; a size above the server maximum is served at the
+// maximum. page_token is the previous response's next_page_token.
+message TenantListDeletedRequest {
+    int32  page_size  = 1;
+    string page_token = 2;
+}
+
+// DeletedTenant is one retired tenant id and its deletion record. Timestamps
+// are RFC 3339; created_at is empty when the record did not carry it.
+message DeletedTenant {
+    string id             = 1;
+    string name           = 2;
+    string isolation_type = 3;
+    string data_root      = 4;
+    string created_at     = 5;
+    string deleted_at     = 6;
+}
+
+// TenantListDeletedResponse is one page of retired tenant ids.
+message TenantListDeletedResponse {
+    repeated DeletedTenant tenants         = 1;
+    string                 next_page_token = 2;
+}
+
+// TenantResiduePath is one directory the deleted-tenant reconcile removed or
+// left in place. reason is set only for a path left in place; path is empty
+// when the whole id was left alone.
+message TenantResiduePath {
+    string tenant_id = 1;
+    string path      = 2;
+    string reason    = 3;
+}
+
+// TenantResidueFailure is one retired id the reconcile could not fully
+// reclaim: the step that failed, the path it failed on (empty when the step
+// is not about one path), and the error's message. The id keeps its records,
+// so the next pass retries it.
+message TenantResidueFailure {
+    string tenant_id = 1;
+    string op        = 2;
+    string path      = 3;
+    string error     = 4;
+}
+
+// TenantReconcileDeletedResponse reports one reconcile pass on one node. A
+// pass that failed for some ids still answers with this response, listing
+// them in failed beside what it did for the rest; only a failure to read the
+// tombstones or the live tenant set is an error status.
+message TenantReconcileDeletedResponse {
+    int32                         inspected = 1;
+    repeated TenantResiduePath    reclaimed = 2;
+    repeated TenantResiduePath    skipped   = 3;
+    repeated TenantResidueFailure failed    = 4;
 }
 
 // TenantUpdateRequest applies a partial update to an existing tenant.

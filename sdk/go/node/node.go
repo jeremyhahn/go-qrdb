@@ -956,6 +956,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			return &TenantInfraError{Err: tiErr}
 		}
 		n.tenantHosts = ti.Hosts
+	} else if n.tenantHosts != nil && svcNode.Tenant != nil {
+		// A system-scope recycle rebuilt the tenant service; the runtimes
+		// survived it. Hand the new service the closer BuildTenantInfra gave
+		// the first one, so its deleted-tenant reconcile still stops a retired
+		// tenant's host before removing its directories.
+		server.WireTenantRuntimeCloser(svcNode.Tenant, n.tenantHosts, n.raftBackend)
 	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, true); err != nil {
@@ -2504,6 +2510,12 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
+	}
+	// The tenant surface was never wired here, so every TenantClient verb on
+	// node.Client() answered "TenantServicer must not be nil" while the same
+	// verbs worked on every network transport of the same node.
+	if svcNode.Tenant != nil {
+		opts = append(opts, embedded.WithTenantService(svcNode.Tenant))
 	}
 	if svcNode.CustodianGroup != nil {
 		opts = append(opts, embedded.WithCustodianGroupService(svcNode.CustodianGroup))

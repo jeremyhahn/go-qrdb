@@ -292,6 +292,8 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"tenant.Create": true, "tenant.Get": true, "tenant.List": true,
 		"tenant.Update": true, "tenant.Delete": true, "tenant.UpdateQuotas": true,
 		"tenant.UpdateEntitlements": true,
+		"tenant.ListDeleted":        true,
+		"tenant.ReconcileDeleted":   true,
 	}
 
 	for method := range srv.handlers {

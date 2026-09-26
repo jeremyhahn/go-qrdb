@@ -49,6 +49,14 @@ func (m *mockTenantBarrierSvc) CreateTenant(_ context.Context, _, _ string, _ te
 func (m *mockTenantBarrierSvc) GetTenant(_ context.Context, _ string) (*tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
+func (m *mockTenantBarrierSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantBarrierSvc) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantBarrierSvc) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
