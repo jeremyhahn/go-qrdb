@@ -25,9 +25,11 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"math/big"
+	"net/url"
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -69,7 +71,8 @@ type ProviderOption func(*providerOptions)
 
 // providerOptions holds the resolved provider configuration.
 type providerOptions struct {
-	defaultTTL time.Duration
+	defaultTTL  time.Duration
+	trustDomain string
 }
 
 // WithDefaultTTL sets the default certificate validity period used when
@@ -77,6 +80,26 @@ type providerOptions struct {
 func WithDefaultTTL(d time.Duration) ProviderOption {
 	return func(o *providerOptions) {
 		o.defaultTTL = d
+	}
+}
+
+// WithTrustDomain makes every client certificate the provider issues carry a
+// tenant-scoped SPIFFE URI SAN under trustDomain
+// (spiffe://<trust-domain>/tenant/<tenantID>/user/<username>), so the
+// authenticator's pinned-trust-domain derivation is the one that resolves the
+// certificate's tenant (go-qrdb#519).
+//
+// It must be the same value the node's mTLS authenticator pins
+// (auth.spiffe_trust_domain): a certificate minted under one trust domain and
+// presented to a node pinned to another is refused, which is the control the
+// pin exists to provide.
+//
+// An empty trustDomain is the default and emits no SAN at all, so a deployment
+// that has not configured a trust domain issues certificates byte-for-byte as
+// it did before; their tenant resolves through the Subject OU fallback.
+func WithTrustDomain(trustDomain string) ProviderOption {
+	return func(o *providerOptions) {
+		o.trustDomain = trustDomain
 	}
 }
 
@@ -92,6 +115,10 @@ type DefaultCertProvider struct {
 	caCertPEM  []byte
 	mu         sync.RWMutex
 	defaultTTL time.Duration
+
+	// trustDomain, when non-empty, is the SPIFFE trust domain every issued
+	// client certificate's tenant SAN is minted under. See WithTrustDomain.
+	trustDomain string
 }
 
 // NewDefaultProvider creates a new DefaultCertProvider. The provider
@@ -105,9 +132,10 @@ func NewDefaultProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier,
 		fn(o)
 	}
 	return &DefaultCertProvider{
-		kvStore:    kvStore,
-		barrier:    barrier,
-		defaultTTL: o.defaultTTL,
+		kvStore:     kvStore,
+		barrier:     barrier,
+		defaultTTL:  o.defaultTTL,
+		trustDomain: o.trustDomain,
 	}
 }
 
@@ -241,8 +269,24 @@ func (p *DefaultCertProvider) Seal() error {
 // GenerateClientCert creates a client certificate signed by the CA.
 // The certificate uses ECDSA P-256, sets CN to req.Username and OU to
 // req.TenantID, and is valid only for client authentication.
+//
+// When the provider was built WithTrustDomain, the certificate also carries
+// the tenant-scoped SPIFFE URI SAN for the same tenant and username, so the
+// authenticator derives its tenant from the pinned SAN rather than the OU.
+// The SAN is checked before anything is signed: a SAN that would not parse
+// back to exactly req.TenantID and req.Username — a path separator in either,
+// or a trust domain that is not a bare host — is refused with
+// *SPIFFEIdentityError, because a certificate whose SAN and OU disagree
+// authenticates as different tenants depending on which node's pin is set.
 func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error) {
 	if err := validateGenerateRequest(req); err != nil {
+		return nil, err
+	}
+
+	// Derived before the CA key is touched, so a refused identity never costs
+	// a signature and a certificate that would be refused is never minted.
+	uris, err := p.clientSPIFFEURIs(req)
+	if err != nil {
 		return nil, err
 	}
 
@@ -286,6 +330,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageClientAuth,
 		},
+		URIs: uris,
 	}
 
 	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientPrivKey.PublicKey, privKey)
@@ -335,6 +380,53 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		KeyPEM:  keyPEM,
 		Serial:  serialHex,
 	}, nil
+}
+
+// clientSPIFFEURIs returns the URI SANs a client certificate for req carries:
+// none when no trust domain is configured, otherwise exactly one tenant-scoped
+// SPIFFE ID of kind user, named for the certificate's CN.
+//
+// The ID is round-tripped through the SAME parser the authenticator applies to
+// a presented certificate (spiffe.ParseID, over the URL as x509 will encode
+// it), and the result must equal what was asked for field by field. That makes
+// "the SAN and the OU agree" a checked property rather than an assumption
+// about how url.URL escapes a path: the OU carries req.TenantID verbatim, so a
+// SAN that parses back to req.TenantID agrees with it by construction, and one
+// that does not is never signed.
+func (p *DefaultCertProvider) clientSPIFFEURIs(req *GenerateRequest) ([]*url.URL, error) {
+	if p.trustDomain == "" {
+		return nil, nil
+	}
+	want := spiffe.ID{
+		TrustDomain: p.trustDomain,
+		TenantID:    req.TenantID,
+		Kind:        spiffe.KindUser,
+		Name:        req.Username,
+	}
+	refuse := func(reason string) error {
+		return &SPIFFEIdentityError{
+			TrustDomain: p.trustDomain,
+			TenantID:    req.TenantID,
+			Username:    req.Username,
+			Reason:      reason,
+		}
+	}
+	encoded := want.String()
+	if encoded == "" {
+		return nil, refuse("the identity is not a valid tenant SPIFFE ID")
+	}
+	u, err := url.Parse(encoded)
+	if err != nil {
+		return nil, refuse("the SPIFFE ID does not parse as a URI")
+	}
+	got, ok, err := spiffe.ParseID(u)
+	if err != nil || !ok {
+		return nil, refuse("the SPIFFE ID does not parse back as a tenant identity")
+	}
+	if got != want {
+		return nil, refuse("the SPIFFE ID parses back to a different identity than the Subject names")
+	}
+	return []*url.URL{u}, nil
 }
 
 // ExportPKCS12 exports a certificate and private key as a PKCS#12 archive.

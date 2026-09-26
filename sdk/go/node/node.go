@@ -910,6 +910,10 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
+		// The CA mints its client certificates under the same trust domain
+		// the mTLS authenticator pins, so the pin is exercised by the
+		// certificates this node issues (go-qrdb#519).
+		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
@@ -1209,6 +1213,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
+		// The CA mints its client certificates under the same trust domain
+		// the mTLS authenticator pins, so the pin is exercised by the
+		// certificates this node issues (go-qrdb#519).
+		SPIFFETrustDomain: pending.cfg.Auth.SPIFFETrustDomain,
 		// DatabaseManager is shared so the shard allocator is not reset
 		// mid-flight and lifecycle does not open a second manager on the same
 		// data directory.

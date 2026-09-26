@@ -184,6 +184,21 @@ type AuthMiddlewareConfig struct {
 - **CN is the username, OU is the tenant.** That mapping is what every
   transport's authentication depends on; changing it changes who every existing
   certificate is.
+- **The SPIFFE tenant SAN is emitted only under a configured trust domain**
+  (`cert.WithTrustDomain`, fed from `auth.spiffe_trust_domain` through
+  `lifecycle.Infra.SPIFFETrustDomain`), with kind `user` and the CN as its name.
+  With no trust domain the certificate carries no SubjectAltName extension.
+- **`GenerateClientCert` never mints a SAN that disagrees with the OU.**
+  `clientSPIFFEURIs` round-trips the ID through `spiffe.ParseID` and requires
+  field-for-field equality before signing; anything else is
+  `*SPIFFEIdentityError` and no certificate or record exists.
+- **The ceremony CA's `SignCSR` refuses a CSR tenant SAN that disagrees with
+  its OU** (`checkTenantSANsAgreeWithOU` → `*ceremony.CSRTenantSANError`).
+  Certificates from CAs outside qrdb are not covered by either check.
+- **`auth.spiffe_trust_domain` is validated at load** with
+  `spiffe.ValidateTrustDomain`, the same round trip. A refusal is a
+  `*spiffe.TrustDomainError` carrying the rejected value and unwrapping to
+  `ErrTrustDomainEmpty` or `ErrTrustDomainInvalid`.
 - **Client certificates carry `ClientAuth` extended key usage only.**
 - **Serial numbers are 128-bit random**, hex-encoded in `CertRecord.Serial`.
 - **CA validity 10 years, default client validity 1 year**; `TTL: 0` means the
@@ -363,6 +378,14 @@ key patterns are the on-disk contract for this feature.
 - **Unit**: issuance (CN/OU mapping, TTL default and override, ClientAuth-only
   key usage, 128-bit serial), export, revoke, `IsRevoked`, list, and the
   `BarrierSealedError` path for **each** mutating operation.
+- **The SPIFFE SAN is tested against the real authenticator over a real
+  verified chain** (`pkg/cert/spiffe_san_test.go`): a certificate minted under a
+  trust domain resolves with `tenant_source=spiffe` on a node pinned to that
+  domain and is refused on a node pinned to another; one minted with no trust
+  domain carries no SubjectAltName and resolves through the OU; a SAN that
+  would not parse back to the Subject's tenant and name is refused with nothing
+  persisted; and a key enrolled without the SAN still matches its binding after
+  re-issue with it.
 - **`CACertPEM()` while sealed is its own test** — it must still work.
 - **Memory tests**: `getCAMaterial()` returning a copy, client key DER wiped
   after encoding.

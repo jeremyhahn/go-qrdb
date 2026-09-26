@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
@@ -829,7 +830,13 @@ type AuthConfig struct {
 	// (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>) and PINS this
 	// trust domain: a SPIFFE SAN under a different trust domain is rejected
 	// (fail-closed). When empty, only the legacy OU-based tenant derivation is
-	// used. Default: "".
+	// used.
+	//
+	// The same value reaches the built-in certificate authority
+	// (cert.WithTrustDomain): when set, every client certificate it mints
+	// carries spiffe://<trust-domain>/tenant/<tenantID>/user/<username>, so the
+	// pin is exercised by this deployment's own certificates rather than only
+	// by externally issued ones (go-qrdb#519). Default: "".
 	SPIFFETrustDomain string `yaml:"spiffe_trust_domain"`
 
 	// ClusterTrustDomain is the operator-pinned trust domain used for
@@ -1748,6 +1755,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
 		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}
+	}
+	// The trust domain is minted into certificate SANs and pinned by the
+	// authenticator, so it must survive the SPIFFE round trip both apply
+	// (go-qrdb#519). A value that does not would make the CA refuse every
+	// certificate at issue time; refuse it at load instead.
+	if c.Auth.SPIFFETrustDomain != "" {
+		if err := spiffe.ValidateTrustDomain(c.Auth.SPIFFETrustDomain); err != nil {
+			return &ValidationError{Field: "auth.spiffe_trust_domain", Reason: "must be a bare host name that round-trips through a SPIFFE ID (" + err.Error() + ")"}
+		}
 	}
 
 	// CORS validation.

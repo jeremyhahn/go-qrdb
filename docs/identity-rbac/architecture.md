@@ -33,8 +33,16 @@ mTLS certificate  →  identity (CN=username, OU=tenant, SPKI thumbprint)
 | Certificate field | User field | Role |
 |---|---|---|
 | Subject CN | `Username` | unique identity within a tenant |
-| Subject OU | `TenantID` | tenant isolation boundary |
+| SPIFFE tenant SAN, trust domain pinned | `TenantID` | tenant isolation boundary, when present |
+| Subject OU | `TenantID` | tenant isolation boundary, when no SAN is present |
 | SHA-256(SubjectPublicKeyInfo), base64url | `CertBindings[].Thumbprint` | **the authoritative mTLS identity** — `User.MatchesCert(cert)` |
+
+**Which tenant derivation a certificate from the built-in CA uses** depends on
+`auth.spiffe_trust_domain`: with a trust domain configured the CA emits the
+tenant-scoped SPIFFE SAN and the pinned derivation resolves it; without one it
+emits no SAN and the OU does. The CA refuses to mint a certificate whose SAN
+would disagree with its OU. See
+[../certificate-authority/](../certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
 
 **The thumbprint is computed over the public key, not the certificate.** A
 renewed certificate for the same key produces the same thumbprint, so bindings

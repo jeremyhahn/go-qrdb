@@ -1530,6 +1530,7 @@ func runStart(f *startFlags) (err error) {
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
+				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,

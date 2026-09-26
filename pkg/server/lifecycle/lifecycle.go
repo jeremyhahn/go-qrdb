@@ -153,6 +153,15 @@ type Infra struct {
 	// it. When nil a fresh ceremony service is constructed.
 	CeremonyCoreSvc *ceremony.CeremonyService
 
+	// SPIFFETrustDomain is the operator-configured SPIFFE trust domain
+	// (auth.spiffe_trust_domain). When non-empty, the certificate provider
+	// mints every client certificate with a tenant-scoped SPIFFE URI SAN under
+	// it (cert.WithTrustDomain), so the mTLS authenticator's pinned
+	// derivation resolves the certificates this node's CA issues. It must be
+	// the value the authenticator pins. Empty issues certificates exactly as
+	// before, with no SAN.
+	SPIFFETrustDomain string
+
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
 	Logger *slog.Logger
@@ -849,7 +858,8 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// CertProvider uses the KV service as its underlying store and the
 		// barrier for transparent encryption of certificate material.
 		certStore := newKVStoreAdapter(n.KV, n.Index)
-		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier)
+		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
+			cert.WithTrustDomain(infra.SPIFFETrustDomain))
 	}
 
 	return nil

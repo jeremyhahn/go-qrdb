@@ -380,7 +380,67 @@ The certificate **is** the identity:
 
 - **CN** → the username.
 - **OU** → the tenant ID.
+- **SPIFFE tenant SAN** → the tenant ID again, under the configured trust
+  domain — present only when `auth.spiffe_trust_domain` is set.
 - The **SPKI thumbprint** is what a user record binds to.
+
+### Which derivation a generated certificate uses
+
+The mTLS authenticator derives a tenant from the tenant-scoped SPIFFE URI SAN
+(`spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>`) when one is present,
+with the configured trust domain **pinned**, and from the first Subject OU
+otherwise. What `GenerateClientCert` emits decides which of the two resolves
+the certificates this CA issues:
+
+| `auth.spiffe_trust_domain` | Certificate carries | Tenant resolves through |
+|---|---|---|
+| unset (the default) | CN and OU only — no SubjectAltName extension at all | the OU fallback |
+| set | CN, OU, and `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` | the pinned SAN |
+
+The first row is byte-for-byte the certificate this CA issued before the SAN
+existed, so a deployment that never configured a trust domain is unaffected.
+The second row is what makes the pin a live control for this CA's own
+certificates: the same certificate presented to a node pinned to a different
+trust domain is refused, fail-closed, and does not fall back to its OU.
+
+**The kind is `user` and the name is the CN.** Every certificate this CA issues
+authenticates as a user-store account named by its CN; node certificates are a
+separate shape (`spiffe://<trust-domain>/node/<id>`) minted by the daemon's
+node-certificate path and never by this one.
+
+**Neither of qrdb's CAs mints a certificate whose SAN and OU disagree.** The
+built-in CA's `GenerateClientCert` and the ceremony CA's `SignCSR` both refuse
+one; a certificate issued by a CA outside qrdb is outside this guarantee, and
+the authenticator's trust-domain pin is what bounds those. For
+`GenerateClientCert` the SAN is built,
+then parsed back with the same parser the authenticator applies to a presented
+certificate, and it must return exactly the tenant, kind and name that were
+asked for — before the CA key is touched. A path separator in the tenant or the
+username, or a trust domain that is not a bare host, fails that and is refused
+with `*SPIFFEIdentityError`; nothing is signed and nothing is recorded. The
+reason is not tidiness: a certificate whose SAN named one tenant and whose OU
+named another would authenticate as different tenants depending on whether the
+node it reached had a pin set.
+
+**The ceremony CA checks what a CSR asks for.** `SignCSR` copies a CSR's URI
+SANs into the certificate it signs, so a tenant SPIFFE SAN in the CSR would
+become a tenant claim that CA vouches for. A malformed tenant SPIFFE ID, or one
+naming a tenant other than the Subject's first OU (or any tenant when the
+Subject has no OU), is refused with `*ceremony.CSRTenantSANError` and nothing is
+signed. Other URIs — node identities, other schemes — are signed as before.
+
+**The trust domain is validated when configuration loads.** A value that does
+not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,
+whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`
+rather than making the CA refuse every certificate at issue time.
+
+**Rotation is unaffected.** A user's binding is over the SubjectPublicKeyInfo,
+which the SAN is not part of, so a key enrolled under a SAN-less certificate
+keeps authenticating when it is re-issued with the SAN added.
+
+**The provider and the authenticator must read the same value.** Both come from
+`auth.spiffe_trust_domain`; a node whose CA minted under one domain while its
+authenticator pinned another would refuse every certificate it issued.
 
 The OU line is why `certs:generate` is gated on the tenant the request names
 rather than on the caller's own: minting a certificate for a tenant is minting

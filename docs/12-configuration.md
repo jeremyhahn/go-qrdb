@@ -591,6 +591,7 @@ Configures authentication and role-based access control (RBAC).
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
+| `spiffe_trust_domain` | string | `""`       | no       | N/A                | SPIFFE trust domain the mTLS authenticator **pins**, and the one the built-in CA mints client-certificate tenant SANs under. See the note below |
 
 **Validation rules:**
 
@@ -602,6 +603,9 @@ Configures authentication and role-based access control (RBAC).
   (e.g. `"30s"`, `"0"`). An unparseable value fails the boot rather than
   reverting to the default: it is a security window, and a value silently
   different from the configured one is worse than a refusal to start.
+- `spiffe_trust_domain`, when set, must survive being written into a SPIFFE ID
+  and parsed back unchanged (no `/`, `?`, `#`, `@` or whitespace). The
+  validation error quotes the rejected value (`spiffe.TrustDomainError`).
 - `audit_failure_policy` must be `"fail-closed"`, `"fail-open"`, or empty
   (empty means `"fail-closed"`). An unrecognised value fails the boot rather
   than resolving to either posture: guessing fail-closed denies a fleet the
@@ -636,6 +640,19 @@ Configures authentication and role-based access control (RBAC).
   respectively. There is deliberately no `auth.so_audit_failure_policy`: two
   keys would let a deployment end up recording one assertion and not the other.
   See [seal/so-dual-factor.md](seal/so-dual-factor.md).
+- **`spiffe_trust_domain` pins tenant derivation and shapes the certificates
+  the built-in CA issues.** When set, the mTLS authenticator derives a
+  caller's tenant from the certificate's tenant-scoped SPIFFE URI SAN
+  (`spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>`) and refuses one
+  under any other trust domain, fail-closed; and the CA adds
+  `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` to every client
+  certificate it mints, so the pin covers this deployment's own certificates.
+  The CA refuses to mint one whose SAN would not parse back to the tenant and
+  username in its Subject (a `/` in either). The value itself must be a bare
+  host name that round-trips through a SPIFFE ID; anything else fails the load. When unset, certificates carry no
+  SAN and the tenant is read from the Subject OU. Set the same value on every
+  node. See
+  [certificate-authority/architecture.md](certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.

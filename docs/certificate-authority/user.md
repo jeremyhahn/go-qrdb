@@ -32,7 +32,14 @@ qrdb --server https://db.example.com --ca-file ca.pem \
 |---|---|
 | CN | your username |
 | OU | your tenant |
+| SPIFFE SAN `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` | your tenant, under the deployment's trust domain — only when `auth.spiffe_trust_domain` is set |
 | SPKI thumbprint | what a user record binds to |
+
+**With a trust domain configured, the SAN is what your login reads the tenant
+from**, and a node pinned to a different trust domain refuses the certificate.
+Without one, certificates carry no SAN and the OU is read instead. A username or
+tenant containing `/` cannot be expressed in the SAN and is refused at issue
+time when a trust domain is set.
 
 **The certificate is the identity.** There is no password, which is why issuing
 one is a privileged act and why revoking one matters.

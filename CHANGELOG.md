@@ -111,6 +111,20 @@ are not reconstructed here — their history is in the git log.
   whose message carries the remedy -- was unmapped and reported as 500 /
   `INTERNAL`. It is now 409 on REST and `FAILED_PRECONDITION` on gRPC, the
   Unix socket, QUIC and MCP; the embedded transport returns the typed error.
+- **Client certificates carry the SPIFFE tenant SAN when a trust domain is
+  configured.** With `auth.spiffe_trust_domain` set, the built-in CA mints
+  `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` into every client
+  certificate, so the authenticator's trust-domain pin is exercised by the
+  deployment's own certificates: they resolve through the pinned SAN, and a node
+  pinned to a different domain refuses them. With no trust domain the
+  certificate is unchanged and carries no SubjectAltName. A certificate whose
+  SAN would not parse back to its Subject's tenant and username is refused with
+  `cert.SPIFFEIdentityError` and nothing is minted, and the ceremony CA's
+  `SignCSR` refuses a CSR whose tenant SPIFFE SAN disagrees with its OU
+  (`ceremony.CSRTenantSANError`). `auth.spiffe_trust_domain` is validated at
+  config load with the same round trip. New: `cert.WithTrustDomain`,
+  `lifecycle.Infra.SPIFFETrustDomain`, `spiffe.ValidateTrustDomain`,
+  `spiffe.TrustDomainError` (carries the rejected value).
 
 ### Changed — BREAKING
 
