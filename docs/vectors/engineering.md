@@ -1,6 +1,13 @@
 # Vector Database — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> Sections headed **Target** are the vector half of the multi-model database
+> program — see [architecture.md](architecture.md) and
+> [../databases/engineering.md](../databases/engineering.md). They are pending
+> owner review and not implemented. OD-n refers to the open decisions in
+> [../databases/architecture.md](../databases/architecture.md).
 
 > **Build-tag gated: `qrdb_vector`** (`WITH_QRDB_VECTOR=1`). GPU paths add
 > `gpu`. Without the tag the CLI verb group and the transport handlers are
@@ -80,9 +87,14 @@ Fixed at creation, immutable thereafter:
 - **Search targets exactly one namespace.** There is no cross-namespace search.
 - **`ef_search` applies to HNSW only** and trades recall against latency; it is
   ignored by `flat` and has no meaning for it.
-- **Shard ID selects the shard**; namespaces and indexes are per shard.
-- **Vector payloads are barrier-encrypted at rest** and tenant-partitioned. A
-  sealed barrier fails vector operations closed.
+- **Shard ID selects nothing** (measured). Namespaces live in one node-local
+  store; see [architecture.md](architecture.md) "Current state". Removed in the
+  target design (OD-14).
+- **Vector payloads are encrypted at rest under the node's encryptor** and
+  partitioned by a `<tenant>/<db>/` name prefix. A sealed node barrier fails
+  vector operations closed; a sealed tenant or database barrier does not
+  (measured). The target design puts them under the database binding's
+  encryptor.
 
 ## Search modes
 
@@ -110,6 +122,8 @@ the search cheaper.
 | Progress polled for an unknown job/operation ID | not-found | yes |
 | Missing `vector:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
+| Target: namespace index still loading after open | `service.VectorIndexWarmingError`, retryable | **yes** — never a partial answer |
+| Target: write after the database's drop fence | the guard refusal | **yes** |
 
 Dimension mismatch fails rather than coercing: a silently padded vector produces
 plausible-looking neighbours that are wrong, which is far worse than an error.
@@ -127,8 +141,14 @@ defined by `pkg/vector/gpu/remote/proto/vector_index.proto`).
 centroids, for both `kmeans++` and `random` initialisation.
 
 - **Zero — the default — seeds from the clock**, and that is the production
-  setting. A fixed seed across a fleet would have every node make the same
-  unlucky choice on the same data; the randomness is doing real work.
+  setting for a caller of the package. A fixed seed across a fleet would have
+  every node make the same unlucky choice on the same data; the randomness is
+  doing real work.
+- **Target: a namespace in a database binding never uses the clock seed.** The
+  engine derives the seed from the namespace and its training generation, so
+  every replica trains the same centroids from the same records (see "Target:
+  determinism" below). Different namespaces still get different draws, which is
+  the property the clock seed was protecting.
 - **A nonzero value makes clustering reproducible** for the same input. Use it
   when a result must be repeatable — a benchmark, or a test measuring recall
   against a threshold.
@@ -425,11 +445,144 @@ input merely harmless.
 
 ## Persistence
 
-Vectors, their metadata and the namespace index are stored through
-`pkg/storage`, per shard, under the barrier. Compaction reclaims space from
-deleted vectors; rebuild reconstructs the ANN index from the stored vectors.
-**Neither is required for correctness of search results** — they are performance
-and space operations.
+Shipped: vectors, their metadata and namespace records are stored in the
+node-local Pebble vector store, under the node's encryptor. ANN indexes are
+in memory only and are not reloaded at startup (see architecture.md "Current
+state"). Compaction reclaims space from deleted vectors; rebuild reconstructs
+the ANN index from the stored vectors.
+
+## Target: the vector engine
+
+### Commands
+
+Every vector write is a command in the extended protocol, proposed to the
+database binding's host and applied by the engine. Opcode numbers are assigned
+in the implementing change and are wire format from then on.
+
+| Command | Applies |
+|---|---|
+| `VectorNamespaceCreate` | namespace record with geometry, index parameters, `seq = 0`, `next_id = 1`, training generation 0 |
+| `VectorNamespaceDelete` | deletes the namespace record, every record, metadata index entry and mutation-log entry under it |
+| `VectorUpsert`, `VectorBatchUpsert` | records, metadata index entries, `seq`, `next_id` for omitted IDs, count and byte totals, mutation-log entries |
+| `VectorDelete`, `VectorBatchDelete` | the same, removing |
+| `VectorUpdateMetadata` | the record's metadata and its index entries; no ANN change |
+| `VectorIndexReconfigure` | new index parameters and training generation; each replica rebuilds its index locally |
+
+Each is wrapped by the guarded-write wrapper carrying the database's drop fence,
+exactly like a KV write. Reads — get, list, the four searches, namespace info,
+index stats — are engine lookups through the host with the request's
+consistency level.
+
+`RebuildIndex` with unchanged parameters is a node-local rebuild on the serving
+node; with changed parameters it proposes `VectorIndexReconfigure`. Rebuild and
+compaction job handles are node-local: the progress call is routed to the node
+that issued the handle, and a handle that node no longer knows (after a restart
+or a leader change) is not-found, after which `GetIndexStats` reports the
+index's state.
+
+### Keys in the database's store
+
+Reserved internal prefixes, covered by the internal-key guard so they never
+appear in KV enumeration:
+
+```
+__vec:ns/<ns>                                     namespace record
+__vec:v/<ns>/<id: 8 bytes big-endian>             vector record: embedding, metadata, version, timestamps
+__vec:md/<ns>/<field> 0x00 <value> 0x00 <id: 8 bytes>  metadata equality index entry
+__vec:ml/<ns>/<seq: 8 bytes big-endian>           mutation-log entry: operation and ID
+```
+
+Namespace names follow DNS-label rules, so they contain no `/` and no zero
+byte. No tenant or database prefix is part of any key: the store belongs to one
+database.
+
+### Apply and the index
+
+1. The handler validates against the namespace record read through the apply
+   batch (dimension, geometry, quotas), and writes every key it changes into the
+   batch. A validation failure is an application-level refusal in the result,
+   not an apply fault, so the log keeps advancing.
+2. The batch commits with the entry.
+3. After the commit, in log order, the engine applies the entry's index effect
+   to the in-memory index: insert, update or delete by ID. An index error here
+   marks the namespace for rebuild; it never fails the committed entry.
+
+The mutation log keeps the last N entries per namespace (N is a node setting
+with a default in the tens of thousands) and is trimmed in apply by sequence,
+so every replica holds the same window.
+
+### Checkpoints
+
+- Path: `<binding data root>/vector-index/<ns>/<seq>.idx`, written to a temporary
+  name, synced, and renamed; older checkpoints for the namespace are removed
+  after the rename.
+- Content: index format version, namespace sequence, index parameters and
+  training generation, the serialized index. Encrypted under the binding's
+  encryptor, because a checkpoint holds every embedding in the namespace.
+- Written on clean close, before a state-machine snapshot, and when the
+  namespace's sequence has advanced by a configured amount since the last
+  checkpoint — off the apply goroutine, under the namespace's index read lock.
+- A `memory` binding writes none. A drop removes them with the store.
+
+### Open
+
+For each namespace record: load the newest checkpoint whose format version is
+current and whose sequence is at least the oldest mutation-log sequence; replay
+the log from the checkpoint's sequence; otherwise rebuild from the records.
+Until a namespace is ready, searches on it return a retryable
+`service.VectorIndexWarmingError` (new); get, list and metadata search work
+from the store immediately.
+
+### Snapshot
+
+The state-machine snapshot of a raft binding appends one optional section per
+namespace: format version, sequence, checkpoint bytes. On restore a section is
+used only when its sequence equals the restored namespace record's; otherwise
+the namespace is rebuilt. The section is optional in both directions, so a
+snapshot without it restores correctly.
+
+### Target: determinism
+
+- Omitted IDs come from `next_id` in the namespace record, in apply.
+- HNSW node level is `floor(-ln(u) * mL)` with `u` derived from a hash of the
+  namespace and the ID, not from a random source.
+- IVF k-means seeds from a hash of the namespace and its training generation.
+- Timestamps in records come from the proposed command, not from the applying
+  replica's clock.
+
+### Target: what is deleted
+
+`vectorstorage.NewPebbleVectorStorage` as the service's store, the vector store
+in `pkg/server/lifecycle`, `shard.ShardVector` and `service.VectorShardID`,
+`statemachine.VectorStateMachine`, `statemachine.VectorConsensusFSM` and their
+factory, `service.WithRaftNode` for vectors, `service.WithStrictTenantIsolation`
+and the service's tenant scoping of namespace names, and the namespaced vector
+wrapper in `pkg/server` for any database with its own store. The vector
+storage schema package is kept only if the engine's record codec reuses it.
+
+### Target: acceptance tests (lane 1B)
+
+1. **Restart keeps search working.** Upsert, restart, search returns the same
+   top-k. This fails against the shipped code, whose startup index is empty.
+2. **The namespace's metric survives restart.** A cosine namespace searched
+   after restart ranks by cosine.
+3. **Replicas agree.** On a three-replica database, upsert through the leader
+   and search with follower reads on each replica: identical top-k.
+4. **Snapshot install.** A replica added after 10,000 upserts serves searches
+   without a rebuild when the snapshot carries a matching checkpoint, and after
+   one when it does not; both give the same results.
+5. **Crash between commit and index update.** Inject the crash; after reopen the
+   vector is searchable.
+6. **The drop fence.** An upsert proposed before a database's drop fence and
+   applied after it is refused, and the store holds no record of it.
+7. **Atomicity.** A batch upsert whose apply batch is forced to fail leaves no
+   record, no metadata entry and no sequence change.
+8. **Every backend.** The vector conformance suite passes on memory, file,
+   pebble, objstore and raft bindings.
+9. **Tenant key.** Records and checkpoints of a barrier, volume or raft tenant's
+   database cannot be read with the node's encryptor; sealing the tenant's
+   barrier fails every vector capability closed.
+10. **Deterministic IDs.** Omitted IDs are identical on every replica.
 
 ## Test strategy
 
@@ -442,6 +595,9 @@ and space operations.
 - **No `time.Sleep`** when waiting on asynchronous rebuild/compaction — progress
   is driven through the job seam.
 - **Integration**: vector parity across transports in the standalone stage.
+- **Target**: the acceptance tests above; placement is asserted by opening the
+  database's own store and probing `__vec:` keys by exact key, never through the
+  vector service.
 
 ## Observability
 

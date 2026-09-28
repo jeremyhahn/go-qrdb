@@ -1,6 +1,12 @@
 # Time Series — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the time-series half of the multi-model database
+> program ([../databases/architecture.md](../databases/architecture.md)); they
+> are pending owner review and not implemented. OD-n refers to that document's
+> open decisions.
 
 > **Build-tag gated: `qrdb_ts`** (`WITH_QRDB_TS=1`). Without it the CLI verb
 > group and transport handlers are compiled out and `pkg/capabilities` does not
@@ -150,7 +156,8 @@ number and the numbering is part of the contract:
 - **Retention is per metric and is a downsampling policy**, not just a delete
   horizon: `duration_ns` bounds age, `resolution_ns` sets downsampled
   resolution, and `aggregation` chooses the function that produces the
-  downsampled value.
+  downsampled value. **Measured: the policy is stored and returned and nothing
+  applies it** — no point is ever expired or downsampled (OD-16).
 - **`TSDeleteSeries` is bounded by its request**: metric, optionally tags,
   optionally a time range. With no range it deletes the whole series.
 - **Time-series keys live under reserved prefixes** (`ts:`, `idx:metric:`,
@@ -187,6 +194,68 @@ Build flag: `WITH_QRDB_TS=1`.
 - Retention policies: `retention:`.
 - **Compatibility**: the composite key encoding and the `AggFunc` numbering are
   both on-disk/on-wire format. Changing either is a breaking change.
+
+## Target: the time-series engine over the storage interface
+
+### Contract
+
+```go
+// Storage is the time-series engine over one database's store. It holds no
+// handle to a storage engine.
+type Storage struct{ /* codec, clock seam for tests only */ }
+
+func (s *Storage) Write(b storage.Batch, r storage.Reader, p DataPoint) error
+func (s *Storage) WriteBatch(b storage.Batch, r storage.Reader, ps []DataPoint) error
+func (s *Storage) DeleteSeries(b storage.Batch, r storage.Reader, req DeleteRequest) error
+func (s *Storage) SetRetentionPolicy(b storage.Batch, metric string, p RetentionPolicy) error
+func (s *Storage) ApplyRetention(b storage.Batch, r storage.Reader, metric string, cutoff time.Time) error
+
+func (s *Storage) Query(r storage.Reader, metric string, start, end time.Time, opts ...TSQueryOption) ([]DataPoint, error)
+func (s *Storage) QueryRich(r storage.Reader, req *QueryRequest) (*QueryResult, error)
+func (s *Storage) Aggregate(r storage.Reader, metric string, start, end time.Time, fn AggFunc, interval time.Duration) ([]AggResult, error)
+func (s *Storage) GetRetentionPolicy(r storage.Reader, metric string) (*RetentionPolicy, error)
+func (s *Storage) ListMetrics(r storage.Reader, prefix string, limit int) ([]string, error)
+```
+
+- Write methods take the apply batch and a reader that sees the batch's own
+  pending writes, so a point written earlier in the same apply is visible to a
+  later one (the metric index is written once, not once per point).
+- `timeseries.New(*pebble.DB)`, `NewWithDir`, `WithBarrier`, `WithEncryptor` and
+  `Storage.DB()` are deleted. Encryption is the binding's, applied by the store.
+- The engine's time-series handlers pass the batch they are given; the
+  engine's `WithMVCCTimeSeries` option takes no Pebble handle.
+- `TSApplyRetention` is a new extended-protocol command (OD-16 A); its opcode is
+  assigned in the implementing change.
+
+### Target: acceptance tests
+
+Lane 1A (storage-generic engine):
+
+1. **In the batch.** A time-series write and a KV write in one entry whose batch
+   commit is forced to fail leave neither the point, nor the metric index entry,
+   nor the tag index entry.
+2. **Every backend.** The time-series conformance suite — write, batch write,
+   `[start, end)` boundaries, tag filters, every `AggFunc`, interval bucketing,
+   `group_by`, percentile, delete with and without a range, retention round
+   trip — passes on memory, file, pebble, objstore and raft bindings.
+3. **No engine import.** A build-gate test that `pkg/timeseries` imports no
+   storage engine package.
+4. **Placement.** On a barrier, volume or raft tenant's database the `ts:` keys
+   are found by exact key in that database's own store and not in any other,
+   and cannot be read with the node's encryptor.
+
+Lane 4C (retention, OD-16 A):
+
+5. **Deterministic sweep.** Three replicas apply the same `TSApplyRetention`
+   and hold byte-identical `ts:` ranges afterwards, with their clocks
+   deliberately skewed.
+6. **Downsampling.** A policy with a resolution replaces expired points by one
+   point per bucket whose value is the policy's aggregation of the bucket.
+7. **Bounded entries.** A metric with more expired points than one entry's
+   bound is fully swept across several commands, and no entry exceeds the
+   bound.
+8. **The drop fence.** A sweep proposed before the database's drop fence and
+   applied after it is refused.
 
 ## Test strategy
 

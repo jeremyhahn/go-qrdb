@@ -1,6 +1,12 @@
 # Vector Database — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" notes describe the vector half of the multi-model database program
+> ([architecture.md](architecture.md)); they are pending owner review and not
+> implemented. OD-n refers to the open decisions in
+> [../databases/architecture.md](../databases/architecture.md).
 
 Command group: `qrdb vector`, with a `namespace` subgroup. **Present only in
 builds carrying the `qrdb_vector` tag** (`make build WITH_QRDB_VECTOR=1`);
@@ -9,6 +15,14 @@ confirm with `qrdb admin capabilities`.
 All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags). Nearly every verb takes
 `--namespace` and an optional `--shard-id`.
+
+**`--shard-id` selects nothing today**, and is removed from every verb in the
+target design (OD-14 A). The root `--database` flag decides which database —
+and therefore which storage — a namespace belongs to:
+
+```bash
+qrdb --database docs-db vector namespace create --namespace docs --dimension 768
+```
 
 ## Namespaces
 

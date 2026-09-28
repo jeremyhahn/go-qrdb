@@ -1,6 +1,12 @@
 # Time Series — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the time-series half of the multi-model database
+> program ([../databases/architecture.md](../databases/architecture.md)); they
+> are pending owner review and not implemented. OD-n refers to that document's
+> open decisions.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. Every capability
@@ -72,7 +78,13 @@ carries `points`, an optional `aggregated_value`, and `grouped_results` when
 ```
 
 `duration_ns` is how long points are kept; `resolution_ns` and `aggregation`
-make retention a downsampling policy rather than a delete horizon.
+make retention a downsampling policy rather than a delete horizon. **Measured:
+the policy is stored and returned but not applied** — see
+[engineering.md](engineering.md) and OD-16.
+
+**Target:** no request or response changes. Every capability is served for
+every database on every backend; today it requires a pebble state machine or a
+pebble standalone node, and elsewhere answers as not configured.
 
 `TSDeleteRequest`: `metric`, optional `tags`, optional `start_ns`/`end_ns`.
 **With no range, the whole series is deleted.**

@@ -16,6 +16,13 @@ limitations under the License.
 
 # Multi-Database Architecture
 
+> **Companion reference, partly superseded.** This document predates the
+> feature folder. Its description of an engine type per database, and of each
+> database's backend deciding where its data lives, does not match the shipped
+> code; [architecture.md](architecture.md) "Current state" records what the code
+> does, and its target design removes the engine type entirely. Where the two
+> disagree, architecture.md is authoritative.
+
 ## Overview
 
 A QRDB **database** is a named, isolated data store. Each database has an

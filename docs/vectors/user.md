@@ -1,6 +1,12 @@
 # Vector Database — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" notes describe the vector half of the multi-model database program
+> ([architecture.md](architecture.md)); they are pending owner review and not
+> implemented. OD-n refers to the open decisions in
+> [../databases/architecture.md](../databases/architecture.md).
 
 Store embeddings and find the ones closest to a query. This feature stores and
 searches vectors; producing them from text is
@@ -115,7 +121,23 @@ qrdb vector rebuild-progress --namespace docs --job-id "$JOB"
 qrdb vector index-stats --namespace docs --output json
 ```
 
+## Where your vectors live
+
+Today, every database's vectors on a server go into one store on that server,
+encrypted with the server's key rather than your tenant's, and on a cluster
+they are not copied to other servers. Vectors are not available at all in
+databases of volume- or raft-isolated tenants.
+
+**Target:** vectors live in the database you name with `--database`, in the
+storage that database chose, under your tenant's key. On a `raft` database they
+are replicated with everything else in it; dropping the database drops them.
+
 ## Troubleshooting
+
+**Similarity search returns nothing after the server restarted.** Today the
+search index is not reloaded at startup. Run `qrdb vector rebuild-index` for
+the namespace and poll `rebuild-progress`. The target design reloads indexes at
+startup and answers "index warming, retry" until one is ready.
 
 **"dimension mismatch" on upsert.** Your vector has a different length from the
 namespace. That is refused rather than padded, because a padded vector produces

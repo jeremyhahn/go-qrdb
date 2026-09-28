@@ -1,6 +1,11 @@
 # Databases — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the multi-model database program in
+> [architecture.md](architecture.md); they are pending owner review and not
+> implemented. OD-n refers to that document's open decisions.
 
 Command group: `qrdb database` (alias `qrdb db`) — create, inspect, list, drop
 and reconfigure databases. All verbs accept the root persistent flags documented
@@ -10,8 +15,8 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--engine` | string | `kv` | `kv \| timeseries` |
-| `--backend` | string | `pebble` | `pebble \| memory \| file \| raft` |
+| `--engine` | string | `kv` | `kv \| timeseries` — **removed in the target design** |
+| `--backend` | string | `pebble` | `pebble \| memory \| file \| raft \| objstore` — see below |
 | `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | 1 | replication factor — **raft backend only** |
@@ -42,6 +47,35 @@ wrap. Both refusals are `409` / `FAILED_PRECONDITION`.
 
 **Reserved names.** `wal` and `nodehost` (in any case) name node state and
 are refused for every database.
+
+Measured: `--backend` is recorded and, for most databases, not where the data
+lives, and `--backend objstore` fails when the store is opened. See
+[architecture.md](architecture.md) "Current state".
+
+### Target: `qrdb database create <name>`
+
+`--engine` is removed; passing it is an unknown-flag error. Every database
+serves every compiled-in engine.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--backend` | string | node `database_defaults.backend` (OD-3) | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
+| `--data-dir` | string | under the tenant's data root | the database's store directory; for volume and raft tenants it must lie under the tenant's root |
+| `--cluster-mode` | string | node default | `local \| distributed` — **raft backend only**, refused otherwise |
+| `--replicas` | int | node default | replication factor — **raft backend only**, refused otherwise |
+| `--raft-state-storage` | string | node default | `pebble \| file \| memory` — the raft state machine's local store (OD-8) |
+| `--barrier-*`, `--etcd*` | | | as above; a barrier is refused on `memory`, etcd is refused on anything but `raft` |
+
+```bash
+qrdb database create app                                   # node default backend
+qrdb database create cache --backend memory
+qrdb database create archive --backend objstore
+qrdb database create billing --backend raft --replicas 3 --cluster-mode distributed
+```
+
+`qrdb database info <name> --output json` reports the resolved `binding` —
+local or raft, owning or replica nodes, whose key encrypts it, and the
+generation.
 
 ## `qrdb database info <name>` / `list`
 
@@ -141,7 +175,9 @@ qrdb database update-etcd --name k8s --enabled --listen-addr :2379
 
 ### `qrdb database update-connection <name>`
 
-For a database backed by a remote node.
+For a database backed by a remote node. Measured: the connection is recorded and
+never used — no remote proxy is constructed. Removed in the target design if
+OD-9 is ruled A.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|

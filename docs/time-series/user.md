@@ -1,6 +1,12 @@
 # Time Series — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the time-series half of the multi-model database
+> program ([../databases/architecture.md](../databases/architecture.md)); they
+> are pending owner review and not implemented. OD-n refers to that document's
+> open decisions.
 
 Store metrics — a name, a value, a nanosecond timestamp, and some tags — and
 query them back by time range, filtered by tag, raw or aggregated.
@@ -122,8 +128,15 @@ timestamp) creates a new series per point. Nothing stops you from doing this,
 so it has to be a discipline. Keep tags to bounded dimensions.
 
 **You want to keep a year of data without keeping every point.** Set a retention
-policy with `resolution_ns` and an `aggregation` — retention downsamples, it is
-not only a delete horizon. There is no CLI verb yet; use the REST call above.
+policy with `resolution_ns` and an `aggregation` — retention is designed to
+downsample, not only to delete. There is no CLI verb yet; use the REST call
+above. **Today the policy is saved but not applied**: no point is removed or
+downsampled yet, so plan storage as if retention were off.
+
+**Time-series calls fail with "not open" or "not configured".** Today time
+series needs the server's pebble storage. On a server using another storage
+backend it is unavailable. The coming multi-model change makes it available in
+every database on every backend.
 
 **You deleted a series and more went than you expected.** `TSDeleteSeries` with
 no time range deletes the whole series. Pass `start_ns`/`end_ns` to bound it.
