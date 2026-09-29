@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -98,6 +99,16 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 		return rbacErr
 	}
 
+	// A RATE-LIMIT REFUSAL IS NOT AN RBAC VERDICT EITHER. The limiter runs
+	// before RBAC is consulted, so a *RateLimitedError says nothing about
+	// whether the caller holds the grant -- and treating it as a denial let
+	// the fallback below issue the grant anyway, which made the policy on
+	// this permission unenforceable for exactly the callers the window
+	// admits. The limiter's answer is final.
+	if isRateLimited(rbacErr) {
+		return rbacErr
+	}
+
 	// The bootstrap windows exist for PER-TENANT barriers only: the system
 	// tenant has no tenant barrier, and the tenant-scoped RBAC rule
 	// (ScopeTenantOnly) denies it deliberately — the fallback must never
@@ -147,6 +158,12 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 		return rbacErr
 	}
 
+	// Nor is a rate-limit refusal: the sealed window must not grant past the
+	// limiter -- see AuthorizeTenantBarrierInit.
+	if isRateLimited(rbacErr) {
+		return rbacErr
+	}
+
 	// Never for the system tenant — see AuthorizeTenantBarrierInit.
 	if tenant.IsSystemTenant(tenantID) {
 		return rbacErr
@@ -183,4 +200,13 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 // construction rather than by vigilance.
 func isAuditFailure(err error) bool {
 	return ClassifyAuthError(err) == AuthFailureAuditUnavailable
+}
+
+// isRateLimited reports whether err is the middleware's rate limiter refusing
+// the request. Like an audit failure it is decided before, and independently
+// of, RBAC, so neither bootstrap fallback may read it as a denial it can
+// override.
+func isRateLimited(err error) bool {
+	var rl *RateLimitedError
+	return errors.As(err, &rl)
 }

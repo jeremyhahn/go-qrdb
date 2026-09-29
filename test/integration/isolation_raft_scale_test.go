@@ -205,6 +205,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
 			"username":  "admin",
+			"email":     "admin@" + scaleFoundationTenantID + ".example.com",
 			"tenant_id": scaleFoundationTenantID,
 			"role_ids":  []string{roleResp.ID},
 		},
@@ -871,7 +872,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	_, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
-			"username": "admin", "tenant_id": restartSurvivalTenantID,
+			"username": "admin", "email": "admin@" + restartSurvivalTenantID + ".example.com", "tenant_id": restartSurvivalTenantID,
 			"role_ids": []string{roleResp.ID},
 		})
 	if uStatus != http.StatusCreated && uStatus != http.StatusOK {

@@ -26886,7 +26886,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"INDEX_HNSW\x10\x00\x12\x0e\n" +
 	"\n" +
 	"INDEX_FLAT\x10\x01\x12\x12\n" +
-	"\x0eINDEX_IVF_FLAT\x10\x022\x83\x9c\x01\n" +
+	"\x0eINDEX_IVF_FLAT\x10\x022\x87\x9c\x01\n" +
 	"\vQRDBService\x12<\n" +
 	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\"\n" +
 	"\xc2\xf3\x18\x06kv:put\x12<\n" +
@@ -27086,8 +27086,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"TenantList\x12\x16.google.protobuf.Empty\x1a\x1b.qrdb.v1.TenantListResponse\"\x10\xc2\xf3\x18\ftenants:list\x12Y\n" +
 	"\fTenantUpdate\x12\x1c.qrdb.v1.TenantUpdateRequest\x1a\x17.qrdb.v1.TenantResponse\"\x12\xc2\xf3\x18\x0etenants:update\x12X\n" +
-	"\fTenantDelete\x12\x1c.qrdb.v1.TenantDeleteRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0etenants:delete\x12e\n" +
-	"\x12TenantUpdateQuotas\x12\".qrdb.v1.TenantUpdateQuotasRequest\x1a\x17.qrdb.v1.TenantResponse\"\x12\xc2\xf3\x18\x0etenants:update\x12{\n" +
+	"\fTenantDelete\x12\x1c.qrdb.v1.TenantDeleteRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0etenants:delete\x12i\n" +
+	"\x12TenantUpdateQuotas\x12\".qrdb.v1.TenantUpdateQuotasRequest\x1a\x17.qrdb.v1.TenantResponse\"\x16\xc2\xf3\x18\x12tenants:set_quotas\x12{\n" +
 	"\x18TenantUpdateEntitlements\x12(.qrdb.v1.TenantUpdateEntitlementsRequest\x1a\x17.qrdb.v1.TenantResponse\"\x1c\xc2\xf3\x18\x18tenants:set_entitlements\x12d\n" +
 	"\x10CredentialSubmit\x12 .qrdb.v1.CredentialSubmitRequest\x1a\x16.google.protobuf.Empty\"\x16\xc2\xf3\x18\x12credentials:submit\x12k\n" +
 	"\x12CredentialStrategy\x12\x16.google.protobuf.Empty\x1a#.qrdb.v1.CredentialStrategyResponse\"\x18\xc2\xf3\x18\x14credentials:strategy\x12d\n" +

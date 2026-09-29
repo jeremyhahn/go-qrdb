@@ -53,6 +53,10 @@ type kvTenantService struct {
 	// is the case that stays READABLE after a delete (go-qrdb#413).
 	teardownSeams
 
+	// isolationChangeGuard carries UpdateTenant's data probe; see
+	// isolation_change.go.
+	isolationChangeGuard
+
 	logger *slog.Logger
 }
 
@@ -160,6 +164,9 @@ func (s *kvTenantService) UpdateTenant(ctx context.Context, tenantID string, pat
 
 	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
 

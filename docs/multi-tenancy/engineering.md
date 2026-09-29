@@ -1,6 +1,6 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 ## Exported surface
 
@@ -429,6 +429,57 @@ questions and are owned by different people.
 
 Provisioning-governance permissions: `tenants:set_isolation`,
 `tenants:set_entitlements`, `databases:create_raft`, `databases:create_volume`.
+
+### Tenant-administration authorization
+
+The per-route permission is checked against the CALLER's tenant, which says
+nothing about the tenant the request names. The second decision lives in one
+place, `pkg/auth/middleware/tenant_admin.go`, and every network transport calls
+it:
+
+| Operation | Decision |
+|---|---|
+| get / delete | `AuthorizeTenantTarget(ctx, id, tenants:read / tenants:delete)` |
+| update | `AuthorizeTenantUpdate(ctx, id, patch)` — `tenants:update`, plus `tenants:set_isolation` when `patch.IsolationType` is set |
+| quotas / entitlements | route permission `tenants:set_quotas` / `tenants:set_entitlements` (cross-scope), re-checked against `id` |
+| create | route permission `tenants:create` (cross-scope) |
+| list | `FilterTenantList` — every tenant with `tenants:list:cross` against `system`, else the caller's own; any refusal other than an RBAC denial is returned, not narrowed |
+
+The four plan permissions are `ScopeCross`
+(`pkg/permission/tenant_provisioning_scope.go`). The built-in Admin role carries
+them in every tenant; the scope rule makes them inert outside `system`.
+
+Each transport validates the id with `tenant.ValidateTenantIDShape` before it
+authorizes, and maps `*tenant.InvalidTenantIDCharError` to 400 /
+`INVALID_ARGUMENT` (MCP classifies through gRPC's mapper).
+
+`rbac.RBACAuthorizer` resolves an identity's role permissions under the
+IDENTITY's tenant, never the request's target: the role store refuses a role
+outside the context tenant, so a `system` operator's first decision against
+another tenant used to fail whenever the permission cache was cold.
+
+`tenants:delete` stays `ScopeSelf` (owner ruling 2026-09-29): a tenant's Admin
+may delete its own tenant.
+
+The list probe (`tenants:list:cross`) is a capability probe, not an access
+decision: it runs decide-only, charging no rate-limit token and writing no
+audit record, so an ordinary tenant-Admin list records no denial and does not
+fail when the audit sink cannot record one.
+
+The "tenant must be empty before an isolation change" precondition lives in
+the tenant service (`pkg/tenant/isolation_change.go`), so every transport
+reaches it. Both tenant services embed the check and ask a
+`tenant.TenantDataProbe` whether the tenant holds data; `service.TenantDataProbe`
+is the implementation (the unfiltered MVCC count where the shard has MVCC, the
+KV list where it does not), and `server.New` wires it over the node's service
+registry through `tenant.IsolationChangeWiring`. No probe, or a probe error,
+fails the change closed. A patch naming the current isolation type changes
+nothing and consults no probe.
+
+Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
+`AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
+next to the audit-failure check: the limiter refuses before RBAC is consulted,
+so its answer is not a denial the window may override.
 
 ### Quotas — `quota.Quotas`
 

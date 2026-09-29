@@ -1,6 +1,6 @@
 # Multi-Tenancy — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.
@@ -548,6 +548,19 @@ restarts through the persistent placement table and per-node replica re-attach.
 - **Provisioning-governance permissions are distinct**:
   `tenants:set_isolation`, `tenants:set_entitlements`,
   `databases:create_raft`, `databases:create_volume`.
+- **A tenant's plan belongs to the platform operator.** `tenants:create`,
+  `tenants:set_quotas`, `tenants:set_entitlements` and `tenants:set_isolation`
+  are cross-scope (`pkg/permission/tenant_provisioning_scope.go`): only a
+  `system`-tenant identity can exercise them, so a tenant's Admin cannot mint
+  tenants or raise its own limits. `tenants:update` stays self-scoped and covers
+  only the display name.
+- **The tenant a request names is authorized, not only the caller's.** Every
+  network transport's entry check authorizes the route's permission against
+  the caller's own tenant; the handler then re-decides against the tenant the
+  request names (`AuthMiddleware.AuthorizeTenantTarget`, `AuthorizeTenantUpdate`)
+  and narrows a list to the caller's own tenant unless it holds
+  `tenants:list:cross` (`AuthMiddleware.FilterTenantList`). The re-check charges
+  no second rate-limit token and records only a refusal.
 - **`AllowedBarrierModes` restricts which seal strategies a tenant may pick**,
   with the built-in default being software strategies plus fail-close on
   hardware.

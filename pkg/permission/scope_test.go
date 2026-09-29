@@ -141,7 +141,6 @@ func TestLookupScope_RegisteredCrossScopePermissions(t *testing.T) {
 // behaviour for tenant-local admins.
 func TestLookupScope_SelfScopePermissionsRemainSelf(t *testing.T) {
 	selfScopePerms := []Permission{
-		TenantsCreate,
 		TenantsRead,
 		TenantsUpdate,
 		TenantsDelete,
@@ -157,6 +156,36 @@ func TestLookupScope_SelfScopePermissionsRemainSelf(t *testing.T) {
 		}
 		if IsCrossScope(p) {
 			t.Errorf("IsCrossScope(%q) = true, want false", p)
+		}
+	}
+}
+
+// TestLookupScope_TenantProvisioningIsCrossScope pins the platform-operator
+// tenant permissions to ScopeCross. As ScopeSelf, a tenant Admin could create
+// tenants and raise its own quotas, entitlements and isolation tier.
+func TestLookupScope_TenantProvisioningIsCrossScope(t *testing.T) {
+	for _, p := range []Permission{
+		TenantsCreate,
+		TenantsSetQuotas,
+		TenantsSetEntitlements,
+		TenantsSetIsolation,
+	} {
+		if got := mustScope(t, p); got != ScopeCross {
+			t.Errorf("LookupScope(%q) = %v, want %v", p, got, ScopeCross)
+		}
+	}
+}
+
+// TestTenantProvisioningPermissions_NotSelfScoped guards the registration
+// order: a permission in both lists would take whichever init() ran last.
+func TestTenantProvisioningPermissions_NotSelfScoped(t *testing.T) {
+	self := make(map[Permission]struct{})
+	for _, p := range selfScopedPermissions() {
+		self[p] = struct{}{}
+	}
+	for _, p := range tenantProvisioningPermissions() {
+		if _, ok := self[p]; ok {
+			t.Errorf("%q is registered both ScopeSelf and ScopeCross", p)
 		}
 	}
 }

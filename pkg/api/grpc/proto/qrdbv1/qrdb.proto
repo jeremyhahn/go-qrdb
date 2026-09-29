@@ -958,9 +958,11 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:delete";
     }
 
-    // TenantUpdateQuotas sets the resource quotas for a tenant.
+    // TenantUpdateQuotas sets the resource quotas for a tenant. Quotas are
+    // the tenant's plan, set by the platform operator only: tenants:set_quotas
+    // is ScopeCross.
     rpc TenantUpdateQuotas(TenantUpdateQuotasRequest) returns (TenantResponse) {
-        option (qrdb.v1.permission) = "tenants:update";
+        option (qrdb.v1.permission) = "tenants:set_quotas";
     }
 
     // TenantUpdateEntitlements sets the feature entitlements for a tenant.

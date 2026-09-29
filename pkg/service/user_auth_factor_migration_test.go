@@ -658,7 +658,15 @@ func TestRoutedServiceRetriesAfterATransientRefusal(t *testing.T) {
 
 	// The tenant becomes reachable. The production resolver reads the tenant's
 	// isolation on every call rather than caching the decision, so changing it
-	// is enough — no double stands in for the transition.
+	// is enough — no double stands in for the transition. The tenant service
+	// refuses an isolation change it cannot verify is safe, so it is told the
+	// tenant holds no tenant-keyspace data -- true here: its only record is
+	// the legacy factor, which lives in the shared keyspace.
+	w, ok := h.tenants.(tenant.IsolationChangeWiring)
+	if !ok {
+		t.Fatal("the tenant service does not accept a data probe")
+	}
+	w.SetTenantDataProbe(noTenantData{})
 	if _, uErr := h.tenants.UpdateTenant(context.Background(), sealed,
 		tenant.TenantPatch{IsolationType: tenant.IsolationPrefix}); uErr != nil {
 		t.Fatalf("UpdateTenant: %v", uErr)
@@ -736,3 +744,8 @@ func TestRefusalClassificationCoversEveryReason(t *testing.T) {
 		t.Error("an error with no refusals reported transient")
 	}
 }
+
+// noTenantData is a tenant.TenantDataProbe reporting every tenant empty.
+type noTenantData struct{}
+
+func (noTenantData) TenantHasData(context.Context, string) (bool, error) { return false, nil }

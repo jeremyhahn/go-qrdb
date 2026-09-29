@@ -118,7 +118,7 @@ func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleN
 
 	if _, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", node.restPort),
-		map[string]interface{}{"username": "admin", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
+		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
 		t.Fatalf("provisionTenantIdentity: create user for tenant %s: status %d", tenantID, uStatus)
 	}

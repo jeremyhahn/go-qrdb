@@ -242,6 +242,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
 			"username":  "admin",
+			"email":     "admin@" + iraftTenantID + ".example.com",
 			"tenant_id": iraftTenantID,
 			"role_ids":  []string{roleResp.ID},
 		},

@@ -733,6 +733,18 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusInvalidArgument, msg
 	}
 
+	// An id that cannot name a tenant at all -- a path separator, a control
+	// byte, a relative path segment -- is the caller's error, matching REST's
+	// 400 and gRPC's InvalidArgument. Both fell through to StatusError before.
+	var ite *tenant.InvalidTenantIDError
+	if errors.As(err, &ite) {
+		return wire.StatusInvalidArgument, msg
+	}
+	var itce *tenant.InvalidTenantIDCharError
+	if errors.As(err, &itce) {
+		return wire.StatusInvalidArgument, msg
+	}
+
 	var tde *tenant.TenantDeletedError
 	if errors.As(err, &tde) {
 		// A deleted tenant id is retired permanently: the id is taken, in
@@ -746,6 +758,20 @@ func mapServiceError(err error) (uint16, []byte) {
 		// The tenant still owns databases: a precondition the caller can
 		// satisfy by dropping the databases the error names.
 		return wire.StatusFailedPrecondition, msg
+	}
+
+	// An isolation type change on a tenant that holds data: the caller
+	// migrates or deletes the data first. Matches gRPC's FailedPrecondition
+	// and REST's 409; it fell through to StatusError before.
+	if errors.Is(err, tenant.ErrTenantHasData) {
+		return wire.StatusFailedPrecondition, msg
+	}
+
+	// The node could not confirm the tenant is empty, so it refused the
+	// isolation change rather than risk orphaning data.
+	var tdpe *tenant.TenantDataProbeError
+	if errors.Is(err, tenant.ErrTenantDataUnverifiable) || errors.As(err, &tdpe) {
+		return wire.StatusUnavailable, msg
 	}
 
 	if errors.Is(err, tenant.ErrTenantSealed) || errors.Is(err, seal.ErrSealed) {

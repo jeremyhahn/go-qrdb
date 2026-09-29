@@ -607,7 +607,9 @@ type QRDBServiceClient interface {
 	TenantUpdate(ctx context.Context, in *TenantUpdateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
 	TenantDelete(ctx context.Context, in *TenantDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// TenantUpdateQuotas sets the resource quotas for a tenant.
+	// TenantUpdateQuotas sets the resource quotas for a tenant. Quotas are
+	// the tenant's plan, set by the platform operator only: tenants:set_quotas
+	// is ScopeCross.
 	TenantUpdateQuotas(ctx context.Context, in *TenantUpdateQuotasRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantUpdateEntitlements sets the feature entitlements for a tenant.
 	TenantUpdateEntitlements(ctx context.Context, in *TenantUpdateEntitlementsRequest, opts ...grpc.CallOption) (*TenantResponse, error)
@@ -3038,7 +3040,9 @@ type QRDBServiceServer interface {
 	TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
 	TenantDelete(context.Context, *TenantDeleteRequest) (*emptypb.Empty, error)
-	// TenantUpdateQuotas sets the resource quotas for a tenant.
+	// TenantUpdateQuotas sets the resource quotas for a tenant. Quotas are
+	// the tenant's plan, set by the platform operator only: tenants:set_quotas
+	// is ScopeCross.
 	TenantUpdateQuotas(context.Context, *TenantUpdateQuotasRequest) (*TenantResponse, error)
 	// TenantUpdateEntitlements sets the feature entitlements for a tenant.
 	TenantUpdateEntitlements(context.Context, *TenantUpdateEntitlementsRequest) (*TenantResponse, error)

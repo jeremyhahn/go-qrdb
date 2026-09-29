@@ -345,7 +345,7 @@ func (s *Server) buildHandlers() {
 	s.handle("tenant.List", permission.TenantsList, s.handleTenantList)
 	s.handle("tenant.Update", permission.TenantsUpdate, s.handleTenantUpdate)
 	s.handle("tenant.Delete", permission.TenantsDelete, s.handleTenantDelete)
-	s.handle("tenant.UpdateQuotas", permission.TenantsUpdate, s.handleTenantUpdateQuotas)
+	s.handle("tenant.UpdateQuotas", permission.TenantsSetQuotas, s.handleTenantUpdateQuotas)
 	s.handle("tenant.UpdateEntitlements", permission.TenantsSetEntitlements, s.handleTenantUpdateEntitlements)
 
 	// Credential management

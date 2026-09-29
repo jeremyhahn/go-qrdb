@@ -21,6 +21,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -72,6 +74,10 @@ func (s *Server) handleTenantGet(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsRead); err != nil {
+		return nil, err
+	}
+
 	info, err := s.tenantSvc.GetTenant(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -84,7 +90,9 @@ func (s *Server) handleTenantGet(ctx context.Context, payload []byte) ([]byte, e
 	return resp, nil
 }
 
-// handleTenantList returns metadata for all registered tenants.
+// handleTenantList returns metadata for every tenant to a caller holding
+// tenants:list:cross, and for the caller's own tenant only to anyone else
+// (authmw.FilterTenantList).
 func (s *Server) handleTenantList(ctx context.Context, _ []byte) ([]byte, error) {
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
@@ -93,6 +101,11 @@ func (s *Server) handleTenantList(ctx context.Context, _ []byte) ([]byte, error)
 	tenants, err := s.tenantSvc.ListTenants(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.authMW != nil {
+		if tenants, err = s.authMW.FilterTenantList(ctx, tenants); err != nil {
+			return nil, err
+		}
 	}
 
 	pbTenants := make([]*pb.TenantResponse, len(tenants))
@@ -123,6 +136,10 @@ func (s *Server) handleTenantUpdate(ctx context.Context, payload []byte) ([]byte
 		IsolationType: tenant.IsolationType(req.GetIsolationType()),
 	}
 
+	if err := s.authorizeTenantUpdate(ctx, req.GetId(), patch); err != nil {
+		return nil, err
+	}
+
 	info, err := s.tenantSvc.UpdateTenant(ctx, req.GetId(), patch)
 	if err != nil {
 		return nil, err
@@ -144,6 +161,10 @@ func (s *Server) handleTenantDelete(ctx context.Context, payload []byte) ([]byte
 	var req pb.TenantDeleteRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsDelete); err != nil {
+		return nil, err
 	}
 
 	if err := s.tenantSvc.DeleteTenant(ctx, req.GetId()); err != nil {
@@ -186,6 +207,10 @@ func (s *Server) handleTenantUpdateQuotas(ctx context.Context, payload []byte) (
 		MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
 		SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
 		MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
+	}
+
+	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetQuotas); err != nil {
+		return nil, err
 	}
 
 	info, err := s.tenantSvc.UpdateQuotas(ctx, req.GetId(), q)
@@ -232,6 +257,10 @@ func (s *Server) handleTenantUpdateEntitlements(ctx context.Context, payload []b
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+	}
+
+	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetEntitlements); err != nil {
+		return nil, err
 	}
 
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, req.GetId(), e)
@@ -290,4 +319,37 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		}
 	}
 	return resp
+}
+
+// authorizeTenantTarget re-checks perm against the tenant the FRAME names
+// (authmw.AuthorizeTenantTarget). The dispatch check authorized it against
+// the caller's own tenant only, which would let a tenant-local Admin read,
+// change or delete any tenant.
+func (s *Server) authorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error {
+	return s.authorizeTenantRequest(tenantID, func(mw *authmw.AuthMiddleware) error {
+		return mw.AuthorizeTenantTarget(ctx, tenantID, perm)
+	})
+}
+
+// authorizeTenantUpdate authorizes patch against the tenant the FRAME names
+// (authmw.AuthorizeTenantUpdate): tenants:update for a rename, plus
+// tenants:set_isolation when the patch changes the isolation tier.
+func (s *Server) authorizeTenantUpdate(ctx context.Context, tenantID string, patch tenant.TenantPatch) error {
+	return s.authorizeTenantRequest(tenantID, func(mw *authmw.AuthMiddleware) error {
+		return mw.AuthorizeTenantUpdate(ctx, tenantID, patch)
+	})
+}
+
+// authorizeTenantRequest refuses an id that cannot name a tenant
+// (tenant.ValidateTenantIDShape, StatusInvalidArgument), then runs decide
+// against the auth middleware. With no auth middleware the authorization step
+// admits.
+func (s *Server) authorizeTenantRequest(tenantID string, decide func(*authmw.AuthMiddleware) error) error {
+	if err := tenant.ValidateTenantIDShape(tenantID); err != nil {
+		return err
+	}
+	if s.authMW == nil {
+		return nil
+	}
+	return decide(s.authMW)
 }

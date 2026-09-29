@@ -30,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -214,7 +213,9 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(tenantToResponse(info))
 }
 
-// handleListTenants handles GET /v1/tenants/list -- returns all tenants.
+// handleListTenants handles GET /v1/tenants/list -- returns every tenant to a
+// caller holding tenants:list:cross, and only the caller's own tenant to
+// anyone else (authmw.FilterTenantList).
 func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	if s.tenantSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
@@ -227,6 +228,12 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
+	}
+	if s.authMW != nil {
+		if tenants, err = s.authMW.FilterTenantList(ctx, tenants); err != nil {
+			writeAuthzErrorJSON(w, err)
+			return
+		}
 	}
 
 	resp := make([]*tenantResponse, len(tenants))
@@ -375,10 +382,53 @@ var tenantMethodHandlers = map[string]tenantMethodHandler{
 	http.MethodPut:    (*Server).handleUpdateTenant,
 }
 
+// authorizeTenantTarget re-checks perm against the tenant the URL names
+// (authmw.AuthorizeTenantTarget); the route middleware checked it against the
+// caller's own tenant only, which would let a tenant-local Admin act on any
+// tenant. It writes the refusal and reports false when the caller may not act
+// on id.
+func (s *Server) authorizeTenantTarget(ctx context.Context, w http.ResponseWriter, id string, perm permission.Permission) bool {
+	return s.authorizeTenantRequest(w, id, func(mw *authmw.AuthMiddleware) error {
+		return mw.AuthorizeTenantTarget(ctx, id, perm)
+	})
+}
+
+// authorizeTenantUpdate authorizes patch against the tenant the URL names
+// (authmw.AuthorizeTenantUpdate): tenants:update for a rename, plus
+// tenants:set_isolation when the patch changes the isolation tier.
+func (s *Server) authorizeTenantUpdate(ctx context.Context, w http.ResponseWriter, id string, patch tenant.TenantPatch) bool {
+	return s.authorizeTenantRequest(w, id, func(mw *authmw.AuthMiddleware) error {
+		return mw.AuthorizeTenantUpdate(ctx, id, patch)
+	})
+}
+
+// authorizeTenantRequest refuses 400 an id that cannot name a tenant
+// (tenant.ValidateTenantIDShape), then runs decide against the auth
+// middleware. It writes the refusal and reports false when either fails. With
+// no auth middleware (unauthenticated deployment) the authorization step
+// admits.
+func (s *Server) authorizeTenantRequest(w http.ResponseWriter, id string, decide func(*authmw.AuthMiddleware) error) bool {
+	if err := tenant.ValidateTenantIDShape(id); err != nil {
+		writeErrorJSON(w, mapTenantError(err), err)
+		return false
+	}
+	if s.authMW == nil {
+		return true
+	}
+	if err := decide(s.authMW); err != nil {
+		writeAuthzErrorJSON(w, err)
+		return false
+	}
+	return true
+}
+
 // handleGetTenant handles GET /v1/tenants/{id} -- retrieves a tenant by ID.
 func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id string) {
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
+	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsRead) {
+		return
+	}
 	info, err := s.tenantSvc.GetTenant(ctx, id)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
@@ -392,6 +442,9 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id stri
 func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request, id string) {
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
+	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsDelete) {
+		return
+	}
 	if err := s.tenantSvc.DeleteTenant(ctx, id); err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -412,40 +465,17 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-
-	// When the caller is changing the isolation type, verify the tenant
-	// has no data. An empty or matching isolation type skips this check.
-	if req.IsolationType != "" {
-		existing, err := s.tenantSvc.GetTenant(ctx, id)
-		if err != nil {
-			writeErrorJSON(w, mapTenantError(err), err)
-			return
-		}
-		if req.IsolationType != existing.EffectiveIsolationType() {
-			// Probe the tenant's KV service for existing data. This precondition
-			// fails CLOSED: if the tenant data plane cannot be reached (degraded
-			// service registry, leader unavailable), the isolation-type change is
-			// rejected rather than allowed to proceed on an unverified — and
-			// possibly data-bearing — tenant, which could orphan its stored data.
-			if s.serviceRegistry != nil {
-				hasData, probeErr := s.tenantHasData(ctx, id)
-				if probeErr != nil {
-					writeErrorJSON(w, http.StatusServiceUnavailable, probeErr)
-					return
-				}
-				if hasData {
-					writeErrorJSON(w, http.StatusConflict, tenant.ErrTenantHasData)
-					return
-				}
-			}
-		}
-	}
-
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: req.IsolationType,
 	}
+	if !s.authorizeTenantUpdate(ctx, w, id, patch) {
+		return
+	}
 
+	// The tenant must hold no data before its isolation type changes; the
+	// tenant service enforces that for every transport (ErrTenantHasData,
+	// tenant.IsolationChangeWiring).
 	info, err := s.tenantSvc.UpdateTenant(ctx, id, patch)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
@@ -453,58 +483,6 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	writeJSON(w, tenantToResponse(info))
-}
-
-// tenantHasData reports whether the tenant holds any stored data at all,
-// which is the precondition for changing its isolation type: flipping
-// isolation on a data-bearing tenant orphans that data in the old
-// namespace.
-//
-// The probe has to see RESERVED keys as well as user keys. Relational
-// tables live under the reserved __tbl:/__idx:/__seq: prefixes, and
-// KVServicer.List deliberately filters those out (see
-// service.FilterInternalKeys) -- so a tenant whose only content is
-// relational tables lists as empty. Probing with List alone is what would
-// let such a tenant flip isolation and orphan every table it owns.
-//
-// MVCCKVServicer.Range is the unfiltered, namespace-confined count, so it
-// is used wherever it exists. Where it does NOT exist the KV list is not a
-// weaker substitute but a complete answer: relational tables require the
-// MVCC state machine (their catalog resolves TransactionServicer and
-// MVCCKVServicer, and DDL against a non-MVCC shard fails with
-// "statemachine: mvcc not configured"), so a shard that cannot serve Range
-// cannot be holding relational data either. Each probe is exact for the
-// engine it runs on; neither is a fallback for the other.
-//
-// Every error is returned to the caller, so the precondition keeps failing
-// CLOSED: an unreachable data plane rejects the isolation change rather
-// than admitting it on an unverified tenant.
-func (s *Server) tenantHasData(ctx context.Context, id string) (bool, error) {
-	// A nil servicer with a nil error is a legitimate registry outcome (a
-	// resolver that has nothing to hand back for this scope), so both are
-	// checked before the call rather than the error alone.
-	if mvccSvc, err := s.serviceRegistry.MVCCService(id, ""); err == nil && mvccSvc != nil {
-		_, count, _, rangeErr := mvccSvc.Range(ctx, nil, nil, service.WithCountOnly())
-		var backendErr *service.MVCCBackendRequiredError
-		if rangeErr == nil {
-			return count > 0, nil
-		}
-		if !errors.As(rangeErr, &backendErr) {
-			return false, rangeErr
-		}
-		// Fall through: this shard has no MVCC backend, so it can hold no
-		// relational data and the KV list below is exact.
-	}
-
-	kvSvc, err := s.serviceRegistry.KVService(id, "")
-	if err != nil {
-		return false, err
-	}
-	keys, err := kvSvc.List(ctx, "")
-	if err != nil {
-		return false, err
-	}
-	return len(keys) > 0, nil
 }
 
 // handleSetTenantQuotas handles POST /v1/tenants/{id}/quotas -- updates the
@@ -537,6 +515,9 @@ func (s *Server) handleSetTenantQuotas(w http.ResponseWriter, r *http.Request, i
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
+	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsSetQuotas) {
+		return
+	}
 	info, err := s.tenantSvc.UpdateQuotas(ctx, id, q)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
@@ -566,6 +547,9 @@ func (s *Server) handleSetTenantEntitlements(w http.ResponseWriter, r *http.Requ
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
+	if !s.authorizeTenantTarget(ctx, w, id, permission.TenantsSetEntitlements) {
+		return
+	}
 	info, err := s.tenantSvc.UpdateEntitlements(ctx, id, e)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
@@ -1054,6 +1038,7 @@ func mapTenantError(err error) int {
 	var se *tenant.StoreError
 	var be *tenant.BarrierError
 	var ite *tenant.InvalidTenantIDError
+	var itce *tenant.InvalidTenantIDCharError
 	var ise *tenant.InvalidStrategyError
 	var tse *tenant.TenantScopeError
 	var idre *tenant.InvalidDataRootError
@@ -1062,6 +1047,7 @@ func mapTenantError(err error) int {
 	var tde *tenant.TenantDeletedError
 	var thd *tenant.TenantHasDatabasesError
 	var rte *tenant.ReservedTenantIDError
+	var tdpe *tenant.TenantDataProbeError
 
 	switch {
 	case errors.As(err, &tse):
@@ -1108,9 +1094,19 @@ func mapTenantError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, tenant.ErrTenantHasData):
 		return http.StatusConflict
+	case errors.Is(err, tenant.ErrTenantDataUnverifiable):
+		// The node could not confirm the tenant is empty, so it refused the
+		// isolation change rather than risk orphaning data.
+		return http.StatusServiceUnavailable
+	case errors.As(err, &tdpe):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, tenant.ErrTenantNotFound):
 		return http.StatusNotFound
 	case errors.As(err, &ite):
+		return http.StatusBadRequest
+	case errors.As(err, &itce):
+		// An id carrying a path separator or control byte cannot name a
+		// tenant. It fell through to 500 before.
 		return http.StatusBadRequest
 	case errors.As(err, &rte):
 		// A reserved id is not the caller's to name, on create or on delete.

@@ -273,16 +273,56 @@ func TestTenantScopeStore_FallbackPrecedence(t *testing.T) {
 		t.Fatalf("ResolveScope(unknown) error = %T (%v), want *UndeclaredScopeError for %q", err, err, unknown)
 	}
 
-	// A per-tenant override beats the global built-in.
-	if err := store.SetScope(ctx, "tenant-a", builtin, ScopeTenantOnly); err != nil {
-		t.Fatalf("SetScope override: %v", err)
+	// A tenant may NOT re-scope a built-in permission. This used to assert
+	// that a per-tenant override beats the built-in, which let a tenant undo
+	// a platform decision such as the cross-scope tenant plan permissions.
+	var override *BuiltInScopeOverrideError
+	if err := store.SetScope(ctx, "tenant-a", builtin, ScopeSelf); !errors.As(err, &override) {
+		t.Fatalf("SetScope(builtin) = %v, want *BuiltInScopeOverrideError", err)
 	}
 	got, err = store.ResolveScope(ctx, "tenant-a", builtin)
-	if err != nil {
-		t.Fatalf("ResolveScope(override): %v", err)
+	if err != nil || got != ScopeCross {
+		t.Fatalf("after a refused override ResolveScope(builtin) = %v, %v; want ScopeCross", got, err)
 	}
-	if got != ScopeTenantOnly {
-		t.Fatalf("override precedence = %v, want ScopeTenantOnly", got)
+}
+
+// TestTenantScopeStore_BuiltInOverrideRefused pins both halves of the rule on
+// a real built-in: SetScope refuses to write the override, and a stored
+// override written before the refusal existed fails closed at resolution.
+func TestTenantScopeStore_BuiltInOverrideRefused(t *testing.T) {
+	store, fr := newTenantScopeStore(t)
+	ctx := context.Background()
+
+	var override *BuiltInScopeOverrideError
+	if err := store.SetScope(ctx, "acme", TenantsSetQuotas, ScopeSelf); !errors.As(err, &override) {
+		t.Fatalf("SetScope(tenants:set_quotas) = %v, want *BuiltInScopeOverrideError", err)
+	}
+	if override.Permission != TenantsSetQuotas || override.TenantID != "acme" {
+		t.Fatalf("override error = %+v", override)
+	}
+
+	kv, err := fr.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := kv.Put(ctx, scopeKey(TenantsSetQuotas), []byte(ScopeSelf.String())); err != nil {
+		t.Fatalf("Put legacy override: %v", err)
+	}
+	if _, err := store.ResolveScope(ctx, "acme", TenantsSetQuotas); !errors.As(err, &override) {
+		t.Fatalf("ResolveScope with a stored built-in override = %v, want *BuiltInScopeOverrideError", err)
+	}
+}
+
+// A caller-defined permission is still definable per tenant.
+func TestTenantScopeStore_CallerDefinedPermissionStillDefinable(t *testing.T) {
+	store, _ := newTenantScopeStore(t)
+	ctx := context.Background()
+	const custom Permission = "billing:export_custom"
+	if err := store.SetScope(ctx, "acme", custom, ScopeTenantOnly); err != nil {
+		t.Fatalf("SetScope(custom): %v", err)
+	}
+	if got, err := store.ResolveScope(ctx, "acme", custom); err != nil || got != ScopeTenantOnly {
+		t.Fatalf("ResolveScope(custom) = %v, %v; want ScopeTenantOnly", got, err)
 	}
 }
 

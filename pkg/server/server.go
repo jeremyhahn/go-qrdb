@@ -772,8 +772,25 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	}
 
 	s.wireVolumeStoreResolver()
+	s.wireTenantDataProbe()
 
 	return s
+}
+
+// wireTenantDataProbe gives the tenant service the data probe its
+// isolation-change precondition consults (tenant.IsolationChangeWiring), over
+// the same service registry the transports resolve tenant data through. It is
+// wired here, once, so every transport -- including the embedded one, which
+// shares this constructor -- reaches the same check. With no registry the
+// probe stays unset and an isolation change fails closed.
+func (s *Server) wireTenantDataProbe() {
+	w, ok := s.opts.tenantSvc.(tenant.IsolationChangeWiring)
+	if !ok {
+		return
+	}
+	if reg := s.transportServiceRegistry(); reg != nil {
+		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
+	}
 }
 
 // wireVolumeStoreResolver completes the DROP DATABASE reclamation seam for

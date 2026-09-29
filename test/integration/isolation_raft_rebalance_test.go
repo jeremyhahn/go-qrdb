@@ -377,6 +377,7 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
 			"username":  "admin",
+			"email":     "admin@" + rebalMoveTenantID + ".example.com",
 			"tenant_id": rebalMoveTenantID,
 			"role_ids":  []string{roleResp.ID},
 		},

@@ -414,6 +414,10 @@ type TenantService struct {
 	// which is the security half of a delete.
 	teardownSeams
 
+	// isolationChangeGuard carries UpdateTenant's data probe; see
+	// isolation_change.go.
+	isolationChangeGuard
+
 	logger *slog.Logger
 }
 
@@ -808,6 +812,9 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 
 	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
 

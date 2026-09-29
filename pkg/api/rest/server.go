@@ -1425,7 +1425,9 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
 	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
 	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsUpdate, s.handleTenantByID)
+	// Quotas and entitlements are the tenant's plan: platform-operator
+	// permissions (ScopeCross), so a tenant Admin cannot raise its own limits.
+	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsSetQuotas, s.handleTenantByID)
 	s.route(http.MethodPatch, "/v1/tenants/{id}/entitlements", permission.TenantsSetEntitlements, s.handleTenantByID)
 	// barrier/status, like barrier/init and barrier/unseal below, is
 	// IdentityGated at the ROUTE level: a self-managed dedicated-isolation

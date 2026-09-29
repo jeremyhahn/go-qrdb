@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
 
 ## Exported surface
 
@@ -274,6 +274,16 @@ GET /api/v1/orchestrator/health
 
 It now sits in `nodeStateScopePermissions()` and is declared `ScopeSelf` by
 name in `self_scope.go`.
+
+**A tenant cannot re-scope a built-in permission.** Per-tenant scope
+definitions (`permission.TenantScopeStore`) exist for caller-defined
+permissions only. `SetScope` refuses any permission that has a built-in scope
+registration with `*BuiltInScopeOverrideError`, and `ResolveScope` fails closed
+with the same error -- so the authorizer denies -- if it finds a stored
+definition of one written before the refusal existed. Otherwise a tenant could
+undo a platform decision such as the cross-scope tenant plan permissions
+(`tenant_provisioning_scope.go`) and widen its own Admin back onto the platform
+operator's surface.
 
 **`secrets:*` is the family-call hazard's mirror image: one member of a
 `ScopeTenantOnly` family that needed a DIFFERENT scope, not a wider one.**

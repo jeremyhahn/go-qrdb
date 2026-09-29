@@ -483,11 +483,38 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 		}
 	}
 
+	err := m.decide(ctx, identity, perm)
+	if errors.Is(err, errUnauditedUnauthenticated) {
+		return auth.ErrUnauthenticated
+	}
+	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+		return auditErr
+	}
+	return err
+}
+
+// errUnauditedUnauthenticated marks decide's one outcome authorize() does not
+// record: an IdentityGated request with no identity at all, refused before
+// there is anything to attribute (the long-standing behaviour of that branch).
+var errUnauditedUnauthenticated = errors.New("auth/middleware: unaudited unauthenticated")
+
+// decide is the authorization decision itself -- the IdentityGated sentinel,
+// the sealed-tenant-IAM answer, and the RBAC/ABAC authorizer -- with NO side
+// effects: it charges no rate-limit token and writes no audit record.
+// authorize() wraps it with both; AuthorizeTenantTarget wraps it with
+// neither on a grant.
+//
+// The permission.IdentityGated sentinel short-circuits the RBAC check:
+// possession of an authenticated identity is the only middleware
+// requirement, and the binding authorization (officer/custodian registry
+// lookup, certificate-thumbprint match, nonce-signature or factor
+// verification) is enforced at the handler layer.
+func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, perm permission.Permission) error {
 	if perm == permission.IdentityGated {
 		if identity == nil {
-			return auth.ErrUnauthenticated
+			return errUnauditedUnauthenticated
 		}
-		return m.auditDecision(ctx, identity, perm, nil)
+		return nil
 	}
 
 	// An identity whose tenant IAM was unreachable because the tenant's
@@ -509,19 +536,45 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	// node liveness only — no tenant data crosses the seal boundary.
 	if identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true" {
 		if perm == permission.AdminHealth {
-			return m.auditDecision(ctx, identity, perm, nil)
+			return nil
 		}
-		err := &StoreUnavailableError{Err: tenant.ErrTenantSealed}
-		if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
-			return auditErr
-		}
-		return err
+		return &StoreUnavailableError{Err: tenant.ErrTenantSealed}
 	}
 
-	resource := permission.Resource(perm)
-	action := permission.Action(perm)
+	return m.authorizer.Authorize(ctx, identity, permission.Resource(perm), permission.Action(perm))
+}
 
-	err := m.authorizer.Authorize(ctx, identity, resource, action)
+// AuthorizeTenantTarget is the handler-level check for an operation whose
+// request names the tenant it reads or changes -- a tenant's own record (get,
+// update, quotas, entitlements, delete) -- or, against the system tenant, the
+// platform-wide tenant operations (AuthorizeTenantCreate, FilterTenantList).
+//
+// The transport's entry check (the gRPC interceptor, the REST route
+// middleware, the QUIC dispatch check, the MCP tool check) authorized the
+// route's permission against the caller's OWN tenant, which says nothing about
+// the tenant the request names: a tenant-local Admin passed it against itself
+// and could then read, change or delete ANY tenant. This re-runs the decision
+// against the named tenant, so ScopeSelf admits a tenant acting on itself and
+// the system-tenant rule admits the platform operator, and nothing else.
+//
+// PRECONDITION: the entry check has already run for this request, which
+// charged its rate-limit token and recorded its grant. This re-check therefore
+// charges no token and records no grant -- doing either again would bill one
+// request twice and write two records for it. A REFUSAL is recorded, because
+// it is new information the entry check's grant did not carry, under the same
+// audit-failure policy authorize() applies.
+//
+// Returns auth.ErrUnauthenticated when no identity is present in ctx.
+func (m *AuthMiddleware) AuthorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error {
+	identity := auth.IdentityFromContext(ctx)
+	if identity == nil {
+		return auth.ErrUnauthenticated
+	}
+	ctx = tenant.WithTenantID(ctx, tenantID)
+	err := m.decide(ctx, identity, perm)
+	if err == nil {
+		return nil
+	}
 	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
 		return auditErr
 	}

@@ -306,7 +306,7 @@ func TestHandleTenantCreate_StoreError(t *testing.T) {
 
 func TestHandleTenantGet_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantGet(svc)
+	handler := handleTenantGet(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -329,7 +329,7 @@ func TestHandleTenantGet_Success(t *testing.T) {
 			UpdatedAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}, nil
 	}
-	handler := handleTenantGet(svc)
+	handler := handleTenantGet(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{"id": "acme"})
 	result, err := handler(context.Background(), req)
@@ -358,7 +358,7 @@ func TestHandleTenantGet_NotFound(t *testing.T) {
 	svc.getFn = func(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantGet(svc)
+	handler := handleTenantGet(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{"id": "missing"})
 	_, err := handler(context.Background(), req)
@@ -383,7 +383,7 @@ func TestHandleTenantList_Success(t *testing.T) {
 			{ID: "t2", Name: "Tenant Two", IsolationType: tenant.IsolationPrefix, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 		}, nil
 	}
-	handler := handleTenantList(svc)
+	handler := handleTenantList(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -412,7 +412,7 @@ func TestHandleTenantList_ServiceError(t *testing.T) {
 	svc.listFn = func(_ context.Context) ([]tenant.TenantInfo, error) {
 		return nil, &tenant.StoreError{Op: "list", Err: errors.New("io error")}
 	}
-	handler := handleTenantList(svc)
+	handler := handleTenantList(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{})
 	_, err := handler(context.Background(), req)
@@ -431,7 +431,7 @@ func TestHandleTenantList_ServiceError(t *testing.T) {
 
 func TestHandleTenantUpdate_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantUpdate(svc)
+	handler := handleTenantUpdate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{"name": "New Name"})
 	result, err := handler(context.Background(), req)
@@ -454,7 +454,7 @@ func TestHandleTenantUpdate_Success(t *testing.T) {
 			UpdatedAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}, nil
 	}
-	handler := handleTenantUpdate(svc)
+	handler := handleTenantUpdate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{
 		"id":   "acme",
@@ -483,7 +483,7 @@ func TestHandleTenantUpdate_HasData(t *testing.T) {
 	svc.updateFn = func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantHasData
 	}
-	handler := handleTenantUpdate(svc)
+	handler := handleTenantUpdate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{
 		"id":             "acme",
@@ -504,7 +504,7 @@ func TestHandleTenantUpdate_NotFound(t *testing.T) {
 	svc.updateFn = func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantUpdate(svc)
+	handler := handleTenantUpdate(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{
 		"id":   "missing",
@@ -526,7 +526,7 @@ func TestHandleTenantUpdate_NotFound(t *testing.T) {
 
 func TestHandleTenantDelete_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantDelete(svc)
+	handler := handleTenantDelete(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -548,7 +548,7 @@ func TestHandleTenantDelete_Success(t *testing.T) {
 		}
 		return nil
 	}
-	handler := handleTenantDelete(svc)
+	handler := handleTenantDelete(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{"id": "acme"})
 	result, err := handler(context.Background(), req)
@@ -573,7 +573,7 @@ func TestHandleTenantDelete_NotFound(t *testing.T) {
 	svc.deleteFn = func(_ context.Context, _ string) error {
 		return tenant.ErrTenantNotFound
 	}
-	handler := handleTenantDelete(svc)
+	handler := handleTenantDelete(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{"id": "missing"})
 	_, err := handler(context.Background(), req)
@@ -592,7 +592,7 @@ func TestHandleTenantDelete_NotFound(t *testing.T) {
 
 func TestHandleTenantUpdateQuotas_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantUpdateQuotas(svc)
+	handler := handleTenantUpdateQuotas(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{
 		"max_databases": 5,
@@ -617,7 +617,7 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 			UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}, nil
 	}
-	handler := handleTenantUpdateQuotas(svc)
+	handler := handleTenantUpdateQuotas(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{
 		"id":            "acme",
@@ -647,7 +647,7 @@ func TestHandleTenantUpdateQuotas_NotFound(t *testing.T) {
 	svc.updateQuotasFn = func(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantUpdateQuotas(svc)
+	handler := handleTenantUpdateQuotas(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{
 		"id":            "missing",
@@ -668,7 +668,7 @@ func TestHandleTenantUpdateQuotas_StoreError(t *testing.T) {
 	svc.updateQuotasFn = func(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 		return nil, &tenant.StoreError{Op: "update", Err: errors.New("io error")}
 	}
-	handler := handleTenantUpdateQuotas(svc)
+	handler := handleTenantUpdateQuotas(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{
 		"id": "acme",

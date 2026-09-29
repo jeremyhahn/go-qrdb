@@ -59,11 +59,11 @@ Admins manage operational keys and certificates but cannot initialize or re-init
 - Generate operational keys (create, rotate)
 - Delete keys they created (not infrastructure keys)
 - Manage certificates (issue, revoke for end-user certs)
-- Manage tenants (create, configure per-tenant isolation)
+- Manage their own tenant (read, rename, delete it; list it). Creating tenants and setting a tenant's plan -- quotas, entitlements, isolation tier -- is reserved to Admin in the `system` tenant (the platform operator); see [Tenant plan permissions](#tenant-plan-permissions-are-platform-operator-only)
 - Perform backups and replication
 - Access audit logs for operational oversight
 
-**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (generate, export, revoke, list, read), `tenants:*` (create, read, update, delete, list, set_isolation, set_entitlements), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable), `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`.
+**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (generate, export, revoke, list, read), `tenants:*` (read, update, delete, list; and, cross-scope, create, set_quotas, set_entitlements, set_isolation, list:cross, create:cross, approve), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable), `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`.
 
 ### Operator
 
@@ -316,11 +316,31 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 | Role | RBAC Permissions | Key Differences |
 |------|------------------|-----------------|
 | SO | `seal:*`, `certs:*`, `roles:*`, `users:*`, `ceremony:*`, `ca:*`, `acme:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:read/write/delete`, `authfactor:enroll/list/revoke`, `keys:create/rotate/delete/list/get/import/export` | Explicitly **denied** every cryptographic operation: `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any action naming a cryptographic primitive. Dual-factor auth. |
-| Admin | `keys:*`, `certs:*`, `tenants:*`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. |
+| Admin | `keys:*`, `certs:*`, `tenants:*` (the plan permissions cross-scope, see below), `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. |
 | Operator | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*`, `mvcc:*`, `transaction:execute`, `batch:execute`, `watch:*`, `lease:*`, `index:*`, `timeseries:*`, `vector:*`, `admin:health`, `admin:status`, `backends:*`, `pin:read`, `piv:read`, `piv:use`, `passwords:*`, `ssh:*`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list` | No key creation/deletion, no SO operations. No wrap/unwrap. No certs operations. No admin/governance verbs. |
 | User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:list`, `keys:get`, `admin:health`, `admin:status` | Minimal: crypto-only. No key creation/deletion/rotation. No administrative operations. |
 | Auditor | `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, orchestrator read-only perms | Read-only everywhere. No seal:status. No write/delete permissions. |
 | Custodian | `barrier:unseal-share` | Single permission. Everything else denied. |
+
+### Tenant plan permissions are platform-operator only
+
+`tenants:create`, `tenants:set_quotas`, `tenants:set_entitlements` and
+`tenants:set_isolation` are **cross-scope** (`ScopeCross`): the RBAC authorizer
+admits them only for an identity in the `system` tenant, whatever tenant the
+request names. The built-in Admin role carries them in every tenant, exactly as
+it carries its other cross-scope grants (`tenants:list:cross`,
+`volumepool:*`, `registrationconfig:*`), and they are inert outside `system`.
+So Admin in the `system` tenant creates tenants and sets their plans, and a
+tenant's own Admin manages everything inside its tenant but cannot create
+tenants, raise its own quotas, grant itself entitlements or change its own
+isolation tier. The SO role's `tenants:create`, `tenants:set_isolation` and
+`tenants:set_entitlements` grants are cross-scope for the same reason.
+
+The quotas routes check `tenants:set_quotas`, not `tenants:update`, and
+`tenants:update` covers only a tenant's display name. `tenants:delete` stays
+self-scoped: a tenant's Admin may delete its own tenant (owner ruling
+2026-09-29). See
+[../multi-tenancy/api.md](../multi-tenancy/api.md#who-may-call-what).
 
 ## Bootstrap and Role Lifecycle
 

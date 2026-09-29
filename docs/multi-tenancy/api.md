@@ -1,6 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Two gRPC services: tenant lifecycle and governance on
 `qrdb.v1.QRDBService`, and the per-tenant barrier on the dedicated
@@ -11,16 +11,76 @@ wire over a UDS.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Tenants()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Create | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create` |
+| Create | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create` (platform operator) |
 | Get | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | `tenants:read` |
-| List | `GET /v1/tenants` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list` |
-| Update | `PATCH /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update` |
+| List | `GET /v1/tenants/list` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list`; the full list needs `tenants:list:cross` |
+| Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation` (platform operator) |
 | Delete | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | `tenants:delete` |
-| Update quotas | `PATCH /v1/tenants/{id}/quotas` | `TenantUpdateQuotas` | `tenant.UpdateQuotas` | `qrdb_tenant_update_quotas` | `UpdateTenantQuotas` | `tenants:update_quotas` |
-| Update entitlements | `PATCH /v1/tenants/{id}/entitlements` | `TenantUpdateEntitlements` | `tenant.UpdateEntitlements` | `qrdb_tenant_update_entitlements` | `UpdateTenantEntitlements` | `tenants:set_entitlements` |
+| Update quotas | `POST /v1/tenants/{id}/quotas` | `TenantUpdateQuotas` | `tenant.UpdateQuotas` | `qrdb_tenant_update_quotas` | `UpdateTenantQuotas` | `tenants:set_quotas` (platform operator) |
+| Update entitlements | `PATCH /v1/tenants/{id}/entitlements` | `TenantUpdateEntitlements` | `tenant.UpdateEntitlements` | `qrdb_tenant_update_entitlements` | `UpdateTenantEntitlements` | `tenants:set_entitlements` (platform operator) |
 
 Provisioning-governance permissions checked in addition where relevant:
 `tenants:set_isolation`, `databases:create_raft`, `databases:create_volume`.
+
+> **Corrected 2026-09-29.** This table previously gave the REST routes as
+> `GET /v1/tenants`, `PATCH /v1/tenants/{id}` and `PATCH /v1/tenants/{id}/quotas`,
+> and the quotas permission as `tenants:update_quotas`. None of those exist. The
+> routes are `GET /v1/tenants/list`, `PUT /v1/tenants/{id}` and
+> `POST /v1/tenants/{id}/quotas`, and quotas are gated by `tenants:set_quotas`
+> (before this release, by `tenants:update`).
+
+## Who may call what
+
+The tenant a request NAMES is not the tenant it runs in, so every network
+transport (REST, gRPC, the Unix socket, QUIC, MCP) makes a second decision
+after its per-route permission check. The built-in Admin role holds
+`tenants:read`, `tenants:update`, `tenants:delete` and `tenants:list` in every
+tenant, and these rules are what keep a tenant's Admin inside its own tenant.
+
+- **A tenant's plan is set by the platform operator only.** Creating a tenant
+  and setting its quotas, its entitlements or its isolation tier need
+  `tenants:create`, `tenants:set_quotas`, `tenants:set_entitlements` and
+  `tenants:set_isolation`. All four are **cross-scope**: only an identity in the
+  `system` tenant can exercise them, whichever tenant the request names. The
+  built-in Admin role carries them in every tenant, as it carries its other
+  cross-scope grants, so only Admin in the `system` tenant can use them. A
+  tenant's Admin cannot raise its own quotas, grant itself entitlements, change
+  its own isolation tier, or create tenants.
+- **Get, update and delete are authorized against the tenant they name.** A
+  tenant's Admin may read, rename and delete its own tenant and no other; the
+  platform operator may act on any tenant. Deleting its own tenant is
+  deliberately within a tenant Admin's reach (owner ruling 2026-09-29):
+  `tenants:delete` stays self-scoped.
+- **Update carries only what a tenant may edit on itself.** `tenants:update`
+  covers the display name. A request that carries `isolation_type` needs
+  `tenants:set_isolation` as well, and is refused whole without it. The check
+  is on the field's presence, not on whether it changes anything: a request
+  naming the tenant's CURRENT isolation type still needs
+  `tenants:set_isolation`, and is then a no-op for the isolation type -- it
+  moves no data and consults no data probe (see below).
+- **Changing the isolation type requires an empty tenant, on every
+  transport.** The tenant service refuses the change with 409 /
+  `FAILED_PRECONDITION` (`ErrTenantHasData`) while the tenant holds any data,
+  relational tables included. When the node cannot verify that the tenant is
+  empty -- the data plane is unreachable, or no data probe is wired -- the
+  change is refused with 503 / `UNAVAILABLE` rather than risk orphaning data.
+  Only REST enforced this before.
+- **List is narrowed, not refused.** A caller holding `tenants:list:cross`
+  (the platform operator) gets every tenant. Anyone else gets only its own
+  tenant, because the full list carries every tenant's configuration,
+  `data_root` included.
+- **A tenant id that cannot name a tenant is refused before anything else.**
+  An id containing `/`, `\` or a control byte, or the relative segments `.` and
+  `..`, is a 400 / `INVALID_ARGUMENT`, on create and on every by-id operation.
+  On REST a `/` in the URL is a path separator, so a by-id route never sees
+  one; it reaches a tenant id only through the create body.
+- **The barrier bootstrap windows do not override the rate limiter.** The
+  trust-on-first-init and sealed-window fallbacks admit a tenant's own identity
+  when RBAC cannot, but a refusal from a rate-limit policy (for example on
+  `tenant_barrier:unseal`) is final: 429 / `RESOURCE_EXHAUSTED`.
+
+The embedded transport (`Client.Tenants()`) runs in the caller's process and is
+not covered by this section.
 
 ## Capability matrix — per-tenant barrier
 
@@ -151,6 +211,10 @@ leaks to a caller with no access to the tier.
 | Delete: DEK shred failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*DEKShredError`; the id is already retired and the tenant no longer resolves, retry to resume |
 | Delete: keyspace reclaim failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*KeyspaceReclaimError`; the id is already retired, retry to resume |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| A tenant's Admin naming another tenant, or setting its own plan | 403 | `PERMISSION_DENIED` |
+| Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError`. Previously 500 / `INTERNAL` on create |
+| Rate-limit policy exhausted, including inside a barrier bootstrap window | 429 | `RESOURCE_EXHAUSTED` |
+| Isolation change while the tenant cannot be verified empty | 503 | `UNAVAILABLE` — `ErrTenantDataUnverifiable` / `*TenantDataProbeError` |
 
 > **Deployment gap, recorded deliberately.** If the data-plane service registry
 > is wired **without** a tenant service — a backward-compatibility path for

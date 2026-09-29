@@ -581,10 +581,22 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		// only cost of the short budget is a marginally-staler read on a blip,
 		// which is safe for replicated role data. Mirrors the auth user-lookup
 		// guard and is the companion to the error-triggered fallback below.
-		primaryCtx := ctx
+		//
+		// Resolved under the IDENTITY's own tenant, never the request's
+		// target -- the same tenant-scoping holdsSystemRole and
+		// effectiveRoles apply, and the only one consistent with the cache
+		// above, which is keyed by the identity's tenant because an
+		// identity's permissions do not depend on what it targets. The
+		// target is bound into ctx by AuthorizeTenant, and the role store
+		// refuses a role outside the context tenant, so a system-tenant
+		// operator's roles resolved under a target tenant's context came
+		// back not-found: its first decision against another tenant failed
+		// whenever the cache was cold.
+		ownCtx := tenant.WithTenantID(ctx, identity.TenantID)
+		primaryCtx := ownCtx
 		var cancel context.CancelFunc
 		if a.rolesFallback != nil {
-			primaryCtx, cancel = context.WithTimeout(ctx, resolveSyncTimeout)
+			primaryCtx, cancel = context.WithTimeout(ownCtx, resolveSyncTimeout)
 		}
 		perms, err := a.roles.ResolvePermissions(primaryCtx, effRoles)
 		if cancel != nil {
@@ -600,7 +612,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			if a.rolesFallback == nil {
 				return &ResolveError{Err: err}
 			}
-			fperms, ferr := a.rolesFallback.ResolvePermissions(ctx, effRoles)
+			fperms, ferr := a.rolesFallback.ResolvePermissions(ownCtx, effRoles)
 			if ferr != nil {
 				return &ResolveError{Err: err}
 			}

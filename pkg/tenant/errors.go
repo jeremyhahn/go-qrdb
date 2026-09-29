@@ -31,6 +31,11 @@ var (
 	// before changing the isolation type.
 	ErrTenantHasData = errors.New("tenant: has data, isolation type cannot be changed")
 
+	// ErrTenantDataUnverifiable is returned when an isolation type change is
+	// requested and no TenantDataProbe is wired to confirm the tenant holds
+	// no data. The precondition fails closed rather than risk orphaning data.
+	ErrTenantDataUnverifiable = errors.New("tenant: cannot verify the tenant holds no data, isolation type cannot be changed")
+
 	// ErrTenantAlreadyExists is returned when attempting to create a tenant
 	// that already has metadata stored.
 	ErrTenantAlreadyExists = errors.New("tenant: already exists")
@@ -447,3 +452,18 @@ func (e *DatabaseListError) Error() string {
 }
 
 func (e *DatabaseListError) Unwrap() error { return e.Err }
+
+// TenantDataProbeError reports that the data probe could not answer whether a
+// tenant holds data, so an isolation type change was refused.
+type TenantDataProbeError struct {
+	TenantID string
+	Err      error
+}
+
+// Error names the tenant and the cause.
+func (e *TenantDataProbeError) Error() string {
+	return "tenant: cannot verify tenant " + e.TenantID + " holds no data: " + e.Err.Error()
+}
+
+// Unwrap returns the probe's error.
+func (e *TenantDataProbeError) Unwrap() error { return e.Err }

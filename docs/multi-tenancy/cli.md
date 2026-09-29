@@ -1,6 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept
@@ -71,9 +71,19 @@ nothing can attach to whatever is left.
 | `--isolation-type` | string | **`barrier \| prefix` only** |
 
 Note the restriction: `update` accepts only `barrier` and `prefix`, and any
-change is refused once the tenant holds data (`ErrTenantHasData`).
+change is refused once the tenant holds data (`ErrTenantHasData`). Changing
+`--isolation-type` also needs `tenants:set_isolation`, which only a
+`system`-tenant identity can exercise; a tenant's Admin can change `--name` on
+its own tenant only.
 
 ## Governance
+
+Everything in this section is the tenant's **plan**, and only the platform
+operator sets it: `set-entitlement` needs `tenants:set_entitlements` and
+`update-quotas` needs `tenants:set_quotas`, both cross-scope, so the caller's
+certificate must be a `system`-tenant identity. So does `tenant create`
+(`tenants:create`). A tenant's Admin is refused 403 even on its own tenant. See
+[api.md](api.md#who-may-call-what).
 
 ### `qrdb tenant set-entitlement <id>`
 

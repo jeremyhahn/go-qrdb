@@ -200,7 +200,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	_, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
-			"username": "admin", "tenant_id": dwTenantID,
+			"username": "admin", "email": "admin@" + dwTenantID + ".example.com", "tenant_id": dwTenantID,
 			"role_ids": []string{roleResp.ID},
 		})
 	if uStatus != http.StatusCreated && uStatus != http.StatusOK {

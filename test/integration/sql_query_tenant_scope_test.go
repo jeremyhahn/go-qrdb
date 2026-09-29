@@ -148,6 +148,7 @@ func provisionTenantWithSQLReader(t *testing.T, adminClient *http.Client, adminP
 
 	adminPostJSON(t, adminClient, adminPort, "/users", map[string]any{
 		"username":  username,
+		"email":     username + "@" + tenantID + ".example.com",
 		"tenant_id": tenantID,
 		"role_ids":  []string{role.ID},
 	}, http.StatusCreated)

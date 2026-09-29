@@ -335,7 +335,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/v1/tenants/t-1", permission.TenantsRead},
 		{"PUT", "/v1/tenants/t-1", permission.TenantsUpdate},
 		{"DELETE", "/v1/tenants/t-1", permission.TenantsDelete},
-		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsUpdate},
+		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsSetQuotas},
 		{"PATCH", "/v1/tenants/t-1/entitlements", permission.TenantsSetEntitlements},
 		// status/init/unseal are IdentityGated at the route: a self-managed
 		// tenant's IAM is encrypted behind the very barrier these operate

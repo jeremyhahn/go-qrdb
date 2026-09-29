@@ -722,6 +722,7 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 			fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
 			map[string]interface{}{
 				"username":  tc.username,
+				"email":     tc.username + "@" + tc.tenantID + ".example.com",
 				"tenant_id": tc.tenantID,
 				"role_ids":  []string{roleResp.ID},
 			},

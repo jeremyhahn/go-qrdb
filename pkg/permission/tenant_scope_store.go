@@ -100,12 +100,19 @@ func NewTenantScopeStore(resolver tenant.StoreResolver) (*TenantScopeStore, erro
 // lands in the tenant's barrier when the tenant is barrier-isolated and in
 // the shared store otherwise. A sealed barrier tenant fails closed
 // (tenant.ErrTenantSealed). The scope must be a defined constant.
+//
+// A permission with a built-in scope registration is refused with
+// *BuiltInScopeOverrideError: per-tenant scopes define caller-defined
+// permissions, they never re-scope the platform's own.
 func (s *TenantScopeStore) SetScope(ctx context.Context, tenantID string, p Permission, scope Scope) error {
 	if p == "" {
 		return &EmptyPermissionError{}
 	}
 	if !scope.Valid() {
 		return &InvalidScopeError{Value: scope.String()}
+	}
+	if hasBuiltInScope(p) {
+		return &BuiltInScopeOverrideError{Permission: p, TenantID: tenantID}
 	}
 	store, err := s.resolver.Resolve(ctx, tenantID)
 	if err != nil {
@@ -190,6 +197,11 @@ func (s *TenantScopeStore) ListScopes(ctx context.Context, tenantID string) (map
 // because doing so could leak a built-in scope onto a tenant whose own
 // (possibly narrower) definition is currently unreadable.
 //
+// A stored definition of a permission that has a built-in scope -- written
+// before SetScope refused them -- is never applied: it fails closed with
+// *BuiltInScopeOverrideError, so the caller denies, rather than either
+// honouring the tenant's re-scope or silently discarding it.
+//
 // Implements ScopeResolver.
 func (s *TenantScopeStore) ResolveScope(ctx context.Context, tenantID string, p Permission) (Scope, error) {
 	scope, ok, err := s.GetScope(ctx, tenantID, p)
@@ -197,10 +209,20 @@ func (s *TenantScopeStore) ResolveScope(ctx context.Context, tenantID string, p 
 		return ScopeSelf, err
 	}
 	if ok {
+		if hasBuiltInScope(p) {
+			return ScopeSelf, &BuiltInScopeOverrideError{Permission: p, TenantID: tenantID}
+		}
 		return scope, nil
 	}
 	// No per-tenant override: fall back to the built-in layer. A permission
 	// registered nowhere is an *UndeclaredScopeError, and the authorizer
 	// denies on it — there is no ScopeSelf default to fall through to.
 	return LookupScope(p)
+}
+
+// hasBuiltInScope reports whether p carries a built-in (process-global) scope
+// registration.
+func hasBuiltInScope(p Permission) bool {
+	_, err := LookupScope(p)
+	return err == nil
 }

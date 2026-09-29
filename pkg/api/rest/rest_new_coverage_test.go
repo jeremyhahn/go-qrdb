@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -1018,38 +1019,25 @@ func TestValidationError_ErrorMethod(t *testing.T) {
 // handleUpdateTenant – isolation-type conflict and serviceRegistry branches
 // ---------------------------------------------------------------------------
 
+// The "tenant must be empty" precondition lives in the tenant service; the
+// handler's job is to surface its refusal as 409. Driven through the real
+// service with the node's data probe over a registry whose KV list has data.
 func TestHandleUpdateTenant_IsolationConflict_WithData(t *testing.T) {
-	// Build a service registry that returns a KV service whose List() has data.
 	kv := &mockKVService{
 		listFn: func(_ context.Context, _ string) ([]string, error) {
 			return []string{"k1"}, nil
 		},
 	}
 	reg := &stubServiceRegistryForTenant{kvSvc: kv}
-	svc := &mockTenantService{
-		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
-			return &tenant.TenantInfo{
-				ID:            id,
-				Name:          "Corp",
-				IsolationType: tenant.IsolationBarrier,
-				CreatedAt:     tenantTime,
-				UpdatedAt:     tenantTime,
-			}, nil
-		},
-		updateTenantFn: func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
-			t.Error("updateTenant should not be called when tenant has data")
-			return nil, nil
-		},
-	}
-	srv := newTenantServer(svc)
-	srv.serviceRegistry = reg
+	svc := probedTenantSvc(t, reg)
+	srv := newTenantServerWithRegistry(svc, reg)
 
-	body := `{"isolation_type":"prefix"}`
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/corp", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusConflict)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 func TestHandleUpdateTenant_IsolationSameType_NoConflict(t *testing.T) {
@@ -1085,9 +1073,10 @@ func TestHandleUpdateTenant_IsolationSameType_NoConflict(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 }
 
+// The handler maps the tenant service's own refusal: an unknown tenant is 404.
 func TestHandleUpdateTenant_IsolationGetError(t *testing.T) {
 	svc := &mockTenantService{
-		getTenantFn: func(_ context.Context, _ string) (*tenant.TenantInfo, error) {
+		updateTenantFn: func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 			return nil, tenant.ErrTenantNotFound
 		},
 	}
@@ -1101,36 +1090,18 @@ func TestHandleUpdateTenant_IsolationGetError(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
+// With no data probe wired the tenant service cannot verify the tenant is
+// empty, so an isolation change fails CLOSED: 503, and nothing changes.
 func TestHandleUpdateTenant_IsolationChangedNoRegistry(t *testing.T) {
-	// Different isolation type, but no service registry — list check skipped,
-	// update proceeds normally.
-	svc := &mockTenantService{
-		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
-			return &tenant.TenantInfo{
-				ID:            id,
-				IsolationType: tenant.IsolationBarrier,
-				CreatedAt:     tenantTime,
-				UpdatedAt:     tenantTime,
-			}, nil
-		},
-		updateTenantFn: func(_ context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
-			return &tenant.TenantInfo{
-				ID:            id,
-				IsolationType: patch.IsolationType,
-				CreatedAt:     tenantTime,
-				UpdatedAt:     tenantTime,
-			}, nil
-		},
-	}
+	svc := authtest.NewTenants(t, "acme")
 	srv := newTenantServer(svc)
-	// No serviceRegistry set.
 
-	body := `{"isolation_type":"prefix"}`
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/corp", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusOK)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // stubServiceRegistryForTenant returns the provided KV service for any

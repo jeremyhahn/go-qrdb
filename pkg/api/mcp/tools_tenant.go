@@ -22,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -29,15 +30,15 @@ import (
 
 // tenantTools returns the MCP tool registrations for tenant lifecycle
 // management: create, get, list, update, delete, and quota management.
-func tenantTools(svc tenant.TenantServicer) []serverTool {
+func tenantTools(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) []serverTool {
 	return []serverTool{
 		{Tool: toolTenantCreate(), Perm: permission.TenantsCreate, Handler: handleTenantCreate(svc)},
-		{Tool: toolTenantGet(), Perm: permission.TenantsRead, Handler: handleTenantGet(svc)},
-		{Tool: toolTenantList(), Perm: permission.TenantsList, Handler: handleTenantList(svc)},
-		{Tool: toolTenantUpdate(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdate(svc)},
-		{Tool: toolTenantDelete(), Perm: permission.TenantsDelete, Handler: handleTenantDelete(svc)},
-		{Tool: toolTenantUpdateQuotas(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdateQuotas(svc)},
-		{Tool: toolTenantUpdateEntitlements(), Perm: permission.TenantsSetEntitlements, Handler: handleTenantUpdateEntitlements(svc)},
+		{Tool: toolTenantGet(), Perm: permission.TenantsRead, Handler: handleTenantGet(svc, mw)},
+		{Tool: toolTenantList(), Perm: permission.TenantsList, Handler: handleTenantList(svc, mw)},
+		{Tool: toolTenantUpdate(), Perm: permission.TenantsUpdate, Handler: handleTenantUpdate(svc, mw)},
+		{Tool: toolTenantDelete(), Perm: permission.TenantsDelete, Handler: handleTenantDelete(svc, mw)},
+		{Tool: toolTenantUpdateQuotas(), Perm: permission.TenantsSetQuotas, Handler: handleTenantUpdateQuotas(svc, mw)},
+		{Tool: toolTenantUpdateEntitlements(), Perm: permission.TenantsSetEntitlements, Handler: handleTenantUpdateEntitlements(svc, mw)},
 	}
 }
 
@@ -112,11 +113,14 @@ func toolTenantGet() mcp.Tool {
 }
 
 // handleTenantGet returns a tool handler that retrieves a tenant by ID.
-func handleTenantGet(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantGet(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		if refusal := tenantTargetRefusal(ctx, "qrdb_tenant_get", mw, id, permission.TenantsRead); refusal != nil {
+			return refusal, nil
 		}
 
 		info, err := svc.GetTenant(ctx, id)
@@ -140,12 +144,18 @@ func toolTenantList() mcp.Tool {
 	)
 }
 
-// handleTenantList returns a tool handler that lists all tenants.
-func handleTenantList(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+// handleTenantList returns a tool handler that lists every tenant to a caller
+// holding tenants:list:cross, and the caller's own tenant only to anyone else.
+func handleTenantList(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenants, err := svc.ListTenants(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_list", Err: err}
+		}
+		if mw != nil {
+			if tenants, err = mw.FilterTenantList(ctx, tenants); err != nil {
+				return authzToolError(err), nil
+			}
 		}
 
 		data, jsonErr := json.Marshal(tenants)
@@ -175,16 +185,20 @@ func toolTenantUpdate() mcp.Tool {
 }
 
 // handleTenantUpdate returns a tool handler that applies a partial update to a tenant.
-func handleTenantUpdate(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
 		}
-
 		patch := tenant.TenantPatch{
 			Name:          mcp.ParseString(req, "name", ""),
 			IsolationType: tenant.IsolationType(mcp.ParseString(req, "isolation_type", "")),
+		}
+		if refusal := tenantRequestRefusal("qrdb_tenant_update", mw, id, func(mw *authmw.AuthMiddleware) error {
+			return mw.AuthorizeTenantUpdate(ctx, id, patch)
+		}); refusal != nil {
+			return refusal, nil
 		}
 
 		info, err := svc.UpdateTenant(ctx, id, patch)
@@ -213,11 +227,14 @@ func toolTenantDelete() mcp.Tool {
 }
 
 // handleTenantDelete returns a tool handler that removes a tenant.
-func handleTenantDelete(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantDelete(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		if refusal := tenantTargetRefusal(ctx, "qrdb_tenant_delete", mw, id, permission.TenantsDelete); refusal != nil {
+			return refusal, nil
 		}
 
 		if err := svc.DeleteTenant(ctx, id); err != nil {
@@ -288,11 +305,14 @@ func toolTenantUpdateQuotas() mcp.Tool {
 }
 
 // handleTenantUpdateQuotas returns a tool handler that sets quotas for a tenant.
-func handleTenantUpdateQuotas(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantUpdateQuotas(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		if refusal := tenantTargetRefusal(ctx, "qrdb_tenant_update_quotas", mw, id, permission.TenantsSetQuotas); refusal != nil {
+			return refusal, nil
 		}
 
 		q := &quota.Quotas{
@@ -359,11 +379,14 @@ func toolTenantUpdateEntitlements() mcp.Tool {
 
 // handleTenantUpdateEntitlements returns a tool handler that sets entitlements
 // for a tenant.
-func handleTenantUpdateEntitlements(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
+func handleTenantUpdateEntitlements(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := mcp.ParseString(req, "id", "")
 		if id == "" {
 			return mcp.NewToolResultError("id is required"), nil
+		}
+		if refusal := tenantTargetRefusal(ctx, "qrdb_tenant_update_entitlements", mw, id, permission.TenantsSetEntitlements); refusal != nil {
+			return refusal, nil
 		}
 
 		var modes []string
@@ -405,4 +428,33 @@ func handleTenantUpdateEntitlements(svc tenant.TenantServicer) mcpserver.ToolHan
 
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// tenantTargetRefusal re-checks perm against the tenant the CALL names
+// (authmw.AuthorizeTenantTarget). The tool check authorized it against the
+// caller's own tenant only, which would let a tenant-local Admin read,
+// change or delete any tenant. It returns the refusal to answer with, or nil
+// when the call may proceed.
+func tenantTargetRefusal(ctx context.Context, tool string, mw *authmw.AuthMiddleware, tenantID string, perm permission.Permission) *mcp.CallToolResult {
+	return tenantRequestRefusal(tool, mw, tenantID, func(mw *authmw.AuthMiddleware) error {
+		return mw.AuthorizeTenantTarget(ctx, tenantID, perm)
+	})
+}
+
+// tenantRequestRefusal refuses an id that cannot name a tenant
+// (tenant.ValidateTenantIDShape, classified InvalidArgument), then runs
+// decide against mw and renders its refusal exactly as the tool-authorization
+// middleware renders one (authzToolError). A nil middleware is the no-auth
+// posture and the authorization step admits.
+func tenantRequestRefusal(tool string, mw *authmw.AuthMiddleware, tenantID string, decide func(*authmw.AuthMiddleware) error) *mcp.CallToolResult {
+	if err := tenant.ValidateTenantIDShape(tenantID); err != nil {
+		return classifiedToolError(tool, err)
+	}
+	if mw == nil {
+		return nil
+	}
+	if err := decide(mw); err != nil {
+		return authzToolError(err)
+	}
+	return nil
 }

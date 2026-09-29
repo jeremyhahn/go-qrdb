@@ -11,6 +11,104 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **A tenant's plan is set by the platform operator only (owner ruling
+  2026-09-29).** `tenants:create`, `tenants:set_quotas`,
+  `tenants:set_entitlements` and `tenants:set_isolation` are now cross-scope
+  (`ScopeCross`, `pkg/permission/tenant_provisioning_scope.go`) instead of
+  self-scoped: only an identity in the `system` tenant can exercise them. A
+  tenant's own Admin keeps managing everything inside its tenant, but can no
+  longer create tenants, raise its own quotas, grant itself entitlements or
+  change its own isolation tier. The built-in Admin role carries all four in
+  every tenant, like its other cross-scope grants, and gains
+  `tenants:set_quotas`; outside `system` they are inert. The SO role's
+  `tenants:create`, `tenants:set_isolation` and `tenants:set_entitlements`
+  grants are cross-scope for the same reason.
+- **The quotas operation checks `tenants:set_quotas`, not `tenants:update`**,
+  on every transport: `POST /v1/tenants/{id}/quotas`, gRPC/Unix
+  `TenantUpdateQuotas` (the `qrdb.v1.permission` proto option), QUIC
+  `tenant.UpdateQuotas` and MCP `qrdb_tenant_update_quotas`. A custom role that
+  granted quotas through `tenants:update` must grant `tenants:set_quotas`.
+- **`tenants:update` covers only the display name.** An update that changes
+  `isolation_type` also needs `tenants:set_isolation` and is refused whole
+  without it.
+- **`tenants:list` returns only the caller's own tenant** unless the caller
+  holds `tenants:list:cross` against the `system` tenant. The
+  `tenants:list:cross` check is a capability probe: it charges no rate-limit
+  token and writes no audit record.
+- **`tenants:delete` stays self-scoped (owner ruling 2026-09-29):** a tenant's
+  Admin may delete its own tenant, and no other.
+- **A tenant can no longer re-scope a built-in permission.**
+  `permission.TenantScopeStore.SetScope` refuses a permission that has a
+  built-in scope with `*BuiltInScopeOverrideError`, and `ResolveScope` fails
+  closed on a stored definition of one. Per-tenant scopes remain available for
+  caller-defined permissions.
+- **Changing a tenant's isolation type is refused unless the tenant is
+  verifiably empty, on every transport.** The check moved from the REST handler
+  into the tenant service (`tenant.IsolationChangeWiring`,
+  `service.TenantDataProbe`, wired by `server.New`). With no data probe wired,
+  or when the probe fails, the change is refused (`ErrTenantDataUnverifiable`,
+  `*TenantDataProbeError`: 503 / `UNAVAILABLE`); an embedder constructing a
+  tenant service directly must wire one with `tenant.WithTenantDataProbe` or
+  `SetTenantDataProbe` to change isolation types. QUIC now answers
+  `ErrTenantHasData` with `StatusFailedPrecondition` instead of the generic
+  error status.
+
+### Security
+
+- **A tenant's Admin could read, change and delete ANY tenant.** Every network
+  transport authorized `tenants:read`, `tenants:update`, `tenants:delete` and
+  the quotas and entitlements operations against the CALLER's tenant, where a
+  tenant-local Admin holds them, and then acted on the tenant the request
+  named. Proven on v0.21.1-alpha with the built-in roles: an `acme` Admin
+  answered 200/204 reading, renaming, re-quota-ing, re-entitling and deleting
+  `globex`. Each handler now re-decides against the tenant the request names
+  (`AuthMiddleware.AuthorizeTenantTarget`, `AuthorizeTenantUpdate`); the
+  re-check charges no second rate-limit token and records only a refusal.
+- **A tenant's Admin could create tenants and raise its own plan.** An `acme`
+  Admin created tenants (201) and set `acme`'s own quotas and entitlements
+  (200). Closed by the cross-scope plan permissions above.
+- **`tenants:list` disclosed every tenant, `data_root` included, to any tenant
+  Admin.** It is narrowed to the caller's own tenant
+  (`AuthMiddleware.FilterTenantList`); a refusal the audit policy could not
+  record still refuses the request rather than answering it.
+- **The barrier bootstrap windows overrode the rate limiter.** The
+  trust-on-first-init and sealed-window fallbacks read a `*RateLimitedError` as
+  an RBAC denial they could override, so a rate-limit policy on
+  `tenant_barrier:init` or `tenant_barrier:unseal` was never enforced for the
+  callers those windows admit (a `Burst: 1` unseal policy admitted every
+  unseal). Both now return the rate-limit refusal immediately, beside the
+  audit-failure check: 429 / `RESOURCE_EXHAUSTED`.
+- **A tenant id containing `/` (or `\`, a control byte, `.` or `..`) is a 400 /
+  `INVALID_ARGUMENT` on every transport**, checked before authorization on
+  every by-id operation. On create it was a 500 / `INTERNAL`
+  (`*tenant.InvalidTenantIDCharError` was unmapped); `tenant.ValidateTenantIDShape`
+  is now exported for the transports.
+- **gRPC, the Unix socket, QUIC, MCP and the embedded transport changed the
+  isolation type of a tenant that held data.** Only REST checked that the
+  tenant was empty first, so a change through any other transport orphaned
+  the tenant's data in its old namespace. The tenant service now enforces it
+  for every transport (see above).
+- **A tenant could re-scope a built-in permission** through its per-tenant
+  scope definitions -- for example back to self-scope for the tenant plan
+  permissions. Refused (see above).
+- **RBAC resolved an identity's permissions under the request's target
+  tenant.** The role store refuses a role outside the context tenant, so a
+  `system` operator's first decision against another tenant failed whenever
+  the permission cache was cold. The network transports masked it only because
+  their entry check, made against the caller's own tenant, warmed the cache
+  first. Permissions are now resolved under the identity's own tenant, as the
+  SO and Owner role checks already were.
+
+### Fixed
+
+- **Integration fixtures that created users without an email.** Since email
+  became the tenant-unique login key, `POST /users` without one is a 400, and
+  the raft-isolation, enable-encryption, tenant CLI, SQL and user/role
+  integration tests failed at fixture setup before reaching what they test.
+  They now pass an email.
+
 ## [0.21.2-alpha] - 2026-09-30
 
 Security hotfix: the cluster CA private key never leaves the node that holds it (/v1/ca/bootstrap and every enrollment method serve the certificate only). Treat existing cluster CA keys as compromised; joining new nodes is unavailable until member-side issuance lands.

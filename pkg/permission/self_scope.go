@@ -296,13 +296,13 @@ func selfScopedPermissions() []Permission {
 		TenantBarrierEnableEncryption,
 
 		// tenants
-		TenantsCreate,
+		//
+		// tenants:create, tenants:set_quotas, tenants:set_entitlements and
+		// tenants:set_isolation are NOT here: they are platform-operator
+		// operations, ScopeCross, declared in tenant_provisioning_scope.go.
 		TenantsDelete,
 		TenantsList,
 		TenantsRead,
-		TenantsSetEntitlements,
-		TenantsSetIsolation,
-		TenantsSetQuotas,
 		TenantsUpdate,
 
 		// timeseries

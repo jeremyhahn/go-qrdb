@@ -148,10 +148,8 @@ func registerAdminGrants() {
 		// Ceremony (status only)
 		CeremonyStatus,
 		// Tenant management (self-scope: act on own tenant)
-		TenantsCreate, TenantsRead, TenantsUpdate,
+		TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		// Tenant provisioning controls: isolation tier and plan entitlements.
-		TenantsSetIsolation, TenantsSetEntitlements,
 		// Per-tenant barrier management (tenant-only scope: a tenant admin
 		// may init/unseal/seal their OWN tenant's barrier; the system tenant
 		// is structurally denied these by the ScopeTenantOnly rule even
@@ -184,6 +182,11 @@ func registerAdminGrants() {
 		AuditRead, AuditQuery,
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
+		// Tenant provisioning — creating a tenant and setting its plan (quotas,
+		// entitlements, isolation tier). Platform-operator operations,
+		// ScopeCross (tenant_provisioning_scope.go): only effective for
+		// system-tenant Admin, so a tenant Admin cannot raise its own limits.
+		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
 		VolumePoolUpdate, VolumePoolDelete,

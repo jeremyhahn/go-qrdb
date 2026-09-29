@@ -1281,10 +1281,12 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 	// avoid precision loss in JS clients.
 	payload := struct {
 		Username string   `json:"username"`
+		Email    string   `json:"email"`
 		TenantID string   `json:"tenant_id"`
 		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "testuser1",
+		Email:    "testuser1@system.example.com",
 		TenantID: "system",
 		RoleIDs:  []string{},
 	}
@@ -1404,10 +1406,12 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	// Create a user to assign the role to.
 	userPayload := struct {
 		Username string   `json:"username"`
+		Email    string   `json:"email"`
 		TenantID string   `json:"tenant_id"`
 		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "roleuser",
+		Email:    "roleuser@system.example.com",
 		TenantID: "system",
 		RoleIDs:  []string{},
 	}

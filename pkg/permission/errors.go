@@ -85,6 +85,23 @@ func (e *EmptyPermissionError) Error() string {
 	return "permission: empty permission name"
 }
 
+// BuiltInScopeOverrideError is returned by TenantScopeStore when a tenant
+// tries to define -- or already holds a stored definition of -- the scope of
+// a permission the platform declares a built-in scope for. Per-tenant scopes
+// exist for caller-defined permissions only. Letting a tenant re-scope a
+// built-in one would let it undo platform decisions such as the cross-scope
+// tenant plan permissions (tenant_provisioning_scope.go), widening its own
+// Admin back onto the platform operator's surface.
+type BuiltInScopeOverrideError struct {
+	Permission Permission
+	TenantID   string
+}
+
+// Error names the permission and the tenant.
+func (e *BuiltInScopeOverrideError) Error() string {
+	return "permission: tenant " + e.TenantID + " may not override the built-in scope of " + string(e.Permission)
+}
+
 // ScopeDecodeError wraps a failure to decode a persisted per-tenant scope
 // definition. It carries the offending permission and the underlying
 // cause. Resolution fails closed when this occurs.

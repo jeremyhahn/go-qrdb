@@ -1,6 +1,6 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Running several customers on one deployment, with as much separation as each
 one needs.
@@ -10,6 +10,13 @@ one needs.
 A reachable server, client certificates, and the `tenants:*` permissions. For
 anything above `prefix` isolation you also need `storage.volume_pools`
 configured on the server.
+
+**Creating tenants and setting their plans is the platform operator's job.**
+`tenant create`, `set-entitlement`, `update-quotas` and any change of isolation
+type need a certificate for an identity in the `system` tenant. A tenant's own
+Admin manages everything inside its tenant, can read, rename and delete it, and sees
+only its own tenant in `tenant list` -- but it cannot create tenants or change
+its own limits. See [api.md](api.md#who-may-call-what).
 
 ## Pick the right rung
 

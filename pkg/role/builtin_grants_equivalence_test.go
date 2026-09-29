@@ -97,9 +97,8 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.SealUnseal, permission.SealSeal, permission.SealStatus,
 	permission.SealRecoverWithKeys,
 	permission.CeremonyStatus,
-	permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
+	permission.TenantsRead, permission.TenantsUpdate,
 	permission.TenantsDelete, permission.TenantsList,
-	permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
 	permission.TenantBarrierInit, permission.TenantBarrierUnseal,
 	permission.TenantBarrierSeal,
 	permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
@@ -114,6 +113,11 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.MVCCRestore,
 	permission.AuditRead, permission.AuditQuery,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
+	// Tenant provisioning, ScopeCross: effective only for system-tenant Admin.
+	// tenants:set_quotas is new to Admin: the quotas routes now check it
+	// rather than tenants:update, and the platform operator must hold it.
+	permission.TenantsCreate, permission.TenantsSetQuotas,
+	permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,

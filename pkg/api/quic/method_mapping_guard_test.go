@@ -260,7 +260,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"tenant.Get":                       permission.TenantsRead,
 	"tenant.List":                      permission.TenantsList,
 	"tenant.Update":                    permission.TenantsUpdate,
-	"tenant.UpdateQuotas":              permission.TenantsUpdate,
+	"tenant.UpdateQuotas":              permission.TenantsSetQuotas,
 	"tenant.UpdateEntitlements":        permission.TenantsSetEntitlements,
 	"tenant.Delete":                    permission.TenantsDelete,
 	"backup.Create":                    permission.BackupCreate,
