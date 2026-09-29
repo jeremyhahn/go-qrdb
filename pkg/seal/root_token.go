@@ -174,7 +174,16 @@ func (b *StorageBarrier) verifyDirectMode(ctx context.Context, secret []byte) ([
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}
-	return rootKey, nil
+	defer rootKey.Destroy()
+	// This method's []byte result forces a copy out of protected memory; its
+	// credential-mode sibling returns an ordinary slice too, and the caller
+	// wipes it as soon as the token is derived. Converting root-token
+	// derivation to a protected key end to end is a separate change.
+	out, err := secure.CopyOut(rootKey)
+	if err != nil {
+		return nil, ErrRootTokenVerificationFailed
+	}
+	return out, nil
 }
 
 // verifyCredentialMode verifies the secret when no ShamirStrategy is

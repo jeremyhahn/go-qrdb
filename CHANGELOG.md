@@ -3244,6 +3244,16 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
 - Listing a collection's documents sorted every key with an insertion sort,
   quadratic in the collection's size; it now uses the standard library's sort.
 
+### Security
+
+- **The barrier root key is decrypted straight into protected memory.**
+  Unwrapping the Shamir-wrapped root key (unseal, root-token verification)
+  now opens the AEAD in place into a `pkg/secure` buffer and hands it to the
+  recovery strategy without an intermediate heap slice; an AEAD that returns
+  memory it allocated itself is refused with the new
+  `seal.UnprotectedDecryptError`. Legacy direct-mode root keys are copied into
+  protected memory as well.
+
 ## [0.21.3-alpha] - 2026-09-30
 
 Security hotfix: tenant isolation on the tenant-administration surface of every network transport (REST, gRPC, Unix socket, QUIC, MCP).

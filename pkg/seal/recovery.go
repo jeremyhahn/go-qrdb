@@ -305,6 +305,19 @@ func newRecoveryStrategy(rootKey []byte, delegate SealingStrategy) (*recoveryStr
 	return &recoveryStrategy{rootKey: sec, delegate: delegate}, nil
 }
 
+// newRecoveryStrategyFromBuffer is newRecoveryStrategy for a root key that is
+// already in protected memory. It CONSUMES rootKey -- sealing it into the
+// strategy's enclave destroys the buffer -- so the key never passes through an
+// ordinary heap slice on the way in, which newRecoveryStrategy's []byte
+// signature cannot promise.
+func newRecoveryStrategyFromBuffer(rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
+	sec, err := secure.NewSecretFromBuffer(rootKey)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Op: "protect recovery key", Cause: err}
+	}
+	return &recoveryStrategy{rootKey: sec, delegate: delegate}, nil
+}
+
 func (r *recoveryStrategy) ID() StrategyID       { return StrategyID("recovery") }
 func (r *recoveryStrategy) Available() bool      { return true }
 func (r *recoveryStrategy) HardwareBacked() bool { return false }

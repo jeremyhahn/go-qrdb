@@ -114,14 +114,15 @@ func TestShamirOption3_SharedUnsealKeyPerNodeRootKeys(t *testing.T) {
 	rkB := wrapUnder(b)
 
 	// The single U unwraps each node's OWN distinct root key.
-	gotA, err := a.resolveDirectSecret(ctx, u)
+	bufA, err := a.resolveDirectSecret(ctx, u)
 	if err != nil {
 		t.Fatalf("resolveDirectSecret(a): %v", err)
 	}
-	gotB, err := b.resolveDirectSecret(ctx, u)
+	bufB, err := b.resolveDirectSecret(ctx, u)
 	if err != nil {
 		t.Fatalf("resolveDirectSecret(b): %v", err)
 	}
+	gotA, gotB := protectedBytes(t, bufA), protectedBytes(t, bufB)
 	if !bytes.Equal(gotA, rkA) || !bytes.Equal(gotB, rkB) {
 		t.Fatal("shared U did not unwrap each node's own root key")
 	}

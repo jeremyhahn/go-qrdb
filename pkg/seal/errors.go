@@ -568,3 +568,15 @@ func (e *DataRootClaimedError) Error() string {
 	return "qrdb/seal: data root " + e.DataRoot + " for tenant " + e.TenantID +
 		" is still claimed by tenant " + e.ClaimedBy + "'s record on this node"
 }
+
+// UnprotectedDecryptError is returned when an AEAD opened the wrapped root key
+// into memory it allocated itself rather than into the protected buffer it was
+// handed. The plaintext is wiped and refused: accepting it would put the
+// barrier root key in ordinary, collectable heap memory, which is the exposure
+// decrypting in place exists to prevent.
+type UnprotectedDecryptError struct{}
+
+// Error returns a human-readable description.
+func (e *UnprotectedDecryptError) Error() string {
+	return "seal: the AEAD did not decrypt the root key in place into protected memory"
+}

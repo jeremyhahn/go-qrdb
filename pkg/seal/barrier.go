@@ -23,7 +23,6 @@ import (
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // stateSealed and stateUnsealed are the two possible states for the barrier.
@@ -472,14 +471,19 @@ func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error 
 
 	// Resolve the reconstructed secret to the root key. In unseal-key mode
 	// the AEAD unwrap doubles as share verification: wrong or rekey-revoked
-	// shares fail here with ErrUnsealKeyMismatch.
+	// shares fail here with ErrUnsealKeyMismatch. The root key arrives in
+	// protected memory and stays there: it is read only under a borrow, and
+	// then handed to the recovery strategy by consuming the buffer, so no
+	// ordinary heap slice ever holds it on this path.
 	rootKey, err := b.resolveDirectSecret(ctx, secret)
 	if err != nil {
 		return err
 	}
-	defer secure.Wipe(rootKey)
+	// Destroy is a no-op once newRecoveryStrategyFromBuffer has consumed the
+	// buffer, and releases it on every earlier return.
+	defer rootKey.Destroy()
 
-	// The SOs have reconstructed the root key in memory (rootKey). The real
+	// The SOs have reconstructed the root key (rootKey). The real
 	// ShamirStrategy can no longer reconstruct it (shares are never persisted),
 	// so we unseal via a recovery strategy that simply hands the EpochBarrier
 	// the in-hand root key. The persisted (key-material-free) envelope supplies
@@ -493,13 +497,15 @@ func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error 
 	if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
 		return ErrCorruptRootKey
 	}
-	if stampErr := b.stampNoneOriginSealedState(rootKey, &sealed); stampErr != nil {
+	if stampErr := rootKey.WithBytes(func(key []byte) error {
+		return b.stampNoneOriginSealedState(key, &sealed)
+	}); stampErr != nil {
 		return stampErr
 	}
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr
 	}
-	recStrat, recErr := newRecoveryStrategy(rootKey, shamirStrat)
+	recStrat, recErr := newRecoveryStrategyFromBuffer(rootKey, shamirStrat)
 	if recErr != nil {
 		return recErr
 	}

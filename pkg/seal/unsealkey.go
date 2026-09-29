@@ -14,6 +14,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // Unseal-key indirection (Vault-style).
@@ -210,7 +212,7 @@ func sealWrapped(aead cipher.AEAD, wireLen int, plaintext, aad []byte) (nonce, c
 // well-formed but does not open under unsealKey is ErrUnsealKeyMismatch, which
 // is the signal resolveDirectSecret turns into "these shares are wrong or were
 // revoked by a prior rekey".
-func (b *StorageBarrier) unwrapRootKey(wrapped *wrappedRootKey, unsealKey []byte) ([]byte, error) {
+func (b *StorageBarrier) unwrapRootKey(wrapped *wrappedRootKey, unsealKey []byte) (*secure.Buffer, error) {
 	if wrapped.Version != wrappedRootKeyVersion ||
 		SymmetricAlgorithm(wrapped.Algorithm) != AlgAES256GCM {
 		return nil, ErrWrappedRootKeyCorrupt
@@ -241,7 +243,7 @@ func (b *StorageBarrier) unwrapRootKey(wrapped *wrappedRootKey, unsealKey []byte
 
 	rootKey, err := openWrapped(aead, wrapped.Nonce, wrapped.Ciphertext, b.wrappedRootKeyAAD())
 	if err != nil {
-		return nil, ErrUnsealKeyMismatch
+		return nil, err
 	}
 	return rootKey, nil
 }
@@ -250,22 +252,55 @@ func (b *StorageBarrier) unwrapRootKey(wrapped *wrappedRootKey, unsealKey []byte
 // (see sealWrapped for why both must be supported). The stored envelope is
 // identical either way, so which branch runs depends only on the AEAD in hand,
 // never on how the blob was written.
-func openWrapped(aead cipher.AEAD, nonce, ciphertext, aad []byte) ([]byte, error) {
-	if aead.NonceSize() > 0 {
-		// Caller-nonce provider: hand it the stored nonce directly.
-		return aead.Open(nil, nonce, ciphertext, aad)
+//
+// The plaintext is the barrier root key, so it is decrypted straight into
+// protected memory: the destination handed to Open is the buffer's own pages,
+// sized exactly, so Open appends in place and no ordinary heap allocation ever
+// holds the key. That is asserted rather than assumed -- an AEAD that returned
+// a slice it allocated itself would put the key on the heap, and that is
+// refused and wiped rather than accepted. The caller owns the buffer and must
+// destroy it.
+//
+// Every authentication failure is ErrUnsealKeyMismatch, as it always was; a
+// protected-memory failure is reported as itself.
+func openWrapped(aead cipher.AEAD, nonce, ciphertext, aad []byte) (*secure.Buffer, error) {
+	input, nonceArg := ciphertext, nonce
+	if aead.NonceSize() == 0 {
+		// Module-nonce provider: rejoin the fields into the
+		// nonce ‖ ciphertext ‖ tag frame it consumes. A fresh buffer, because
+		// appending onto the stored nonce would write past its length into
+		// whatever backs it. The frame is ciphertext, not key material.
+		frame := make([]byte, 0, len(nonce)+len(ciphertext))
+		frame = append(frame, nonce...)
+		frame = append(frame, ciphertext...)
+		input, nonceArg = frame, nil
 	}
 
-	// Module-nonce provider: rejoin the fields into the
-	// nonce ‖ ciphertext ‖ tag frame it consumes. A fresh buffer, because
-	// appending onto the stored nonce would write past its length into
-	// whatever backs it.
-	sealed := make([]byte, 0, len(nonce)+len(ciphertext))
-	sealed = append(sealed, nonce...)
-	sealed = append(sealed, ciphertext...)
-
-	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which reads the nonce from the front of the sealed frame. gosec reads the nil as a hardcoded IV; passing anything else makes Open panic.
-	return aead.Open(nil, nil, sealed, aad)
+	size := len(input) - aead.Overhead()
+	if size <= 0 {
+		return nil, ErrUnsealKeyMismatch
+	}
+	buf, err := secure.NewBuffer(size)
+	if err != nil {
+		return nil, err
+	}
+	openErr := buf.WithBytes(func(dst []byte) error {
+		// #nosec G407 -- nonceArg is nil exactly when this AEAD is cipher.NewGCMWithRandomNonce, which reads the nonce from the front of the sealed frame; gosec reads the nil as a hardcoded IV, and passing anything else makes Open panic.
+		out, err := aead.Open(dst[:0], nonceArg, input, aad)
+		if err != nil {
+			return ErrUnsealKeyMismatch
+		}
+		if len(out) != len(dst) || &out[0] != &dst[0] {
+			secure.Wipe(out)
+			return &UnprotectedDecryptError{}
+		}
+		return nil
+	})
+	if openErr != nil {
+		buf.Destroy()
+		return nil, openErr
+	}
+	return buf, nil
 }
 
 // resolveDirectSecret converts the secret reconstructed from a Shamir share
@@ -275,19 +310,33 @@ func openWrapped(aead cipher.AEAD, nonce, ciphertext, aad []byte) ([]byte, error
 // the blob is loaded and the root key is recovered via authenticated
 // decrypt. A failed decrypt means the shares are wrong or were revoked by a
 // prior rekey (ErrUnsealKeyMismatch). When no blob exists (legacy direct
-// mode), the secret IS the root key and a copy is returned unchanged.
+// mode), the secret IS the root key.
 //
-// The returned slice is a fresh allocation in both modes; the caller must
-// wipe it after use.
-func (b *StorageBarrier) resolveDirectSecret(ctx context.Context, secret []byte) ([]byte, error) {
+// The root key is returned in protected memory in both modes, never an
+// ordinary heap slice: the caller owns the buffer and must destroy it.
+func (b *StorageBarrier) resolveDirectSecret(ctx context.Context, secret []byte) (*secure.Buffer, error) {
 	exists, err := b.base.Exists(ctx, b.wrappedRootKeyPath())
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
-		// Legacy direct mode: the reconstructed secret is the root key.
-		rootKey := make([]byte, len(secret))
-		copy(rootKey, secret)
+		// Legacy direct mode: the reconstructed secret is the root key. It is
+		// copied rather than wrapped in place, because secret belongs to the
+		// caller and NewBufferFromBytes would wipe it.
+		if len(secret) == 0 {
+			return nil, ErrUnsealKeyMismatch
+		}
+		rootKey, err := secure.NewBuffer(len(secret))
+		if err != nil {
+			return nil, err
+		}
+		if err := rootKey.WithBytes(func(dst []byte) error {
+			copy(dst, secret)
+			return nil
+		}); err != nil {
+			rootKey.Destroy()
+			return nil, err
+		}
 		return rootKey, nil
 	}
 

@@ -355,15 +355,8 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	}
 	defer secretBuf.Destroy()
 
-	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
-		// Direct mode: the reconstructed secret is the unseal key (or, on
-		// legacy barriers, the root key itself); unsealDirect resolves it.
-		//secure:unborrowed injected-interface unsealDirect dispatches to a SealingStrategy (go-qrdb#428)
-		if err := b.unsealDirect(ctx, secretBuf.Bytes()); err != nil {
-			return nil, err
-		}
-	} else if err := b.unsealWithSecret(ctx, secretBuf.Bytes()); err != nil { //secure:unborrowed injected-interface unsealWithSecret dispatches to a SealingStrategy (go-qrdb#428)
-		// Credential mode: the reconstructed secret is the password.
+	//secure:unborrowed injected-interface unsealWithKey dispatches to a SealingStrategy (go-qrdb#428)
+	if err := b.unsealWithKey(ctx, secretBuf.Bytes()); err != nil {
 		return nil, err
 	}
 
@@ -382,6 +375,29 @@ func (b *StorageBarrier) unsealWithSecret(ctx context.Context, secret []byte) er
 	}
 	defer creds.Secret.Destroy()
 	return b.Unseal(ctx, creds)
+}
+
+// unsealWithKey unseals the barrier from an already-reconstructed key. It is
+// the single resolution step UnsealWithShare and UnsealWithShares share:
+// directly when a ShamirStrategy is registered (the key is the unseal key, or
+// on legacy barriers the root key itself), or as a credential-mode passphrase
+// otherwise. It is deliberately unexported: the only way to reach it is
+// through this barrier's own quorum accumulator.
+//
+// key is read but never retained: unsealDirect and unsealWithSecret each copy
+// or wrap it into protected memory of their own, and this method does not
+// wipe the caller's buffer, since ownership was never transferred.
+//
+// Returns ErrAlreadyUnsealed if the barrier is already unsealed.
+func (b *StorageBarrier) unsealWithKey(ctx context.Context, key []byte) error {
+	if b.state.Load() == stateUnsealed {
+		return ErrAlreadyUnsealed
+	}
+
+	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
+		return b.unsealDirect(ctx, key)
+	}
+	return b.unsealWithSecret(ctx, key)
 }
 
 // loadOrCreateAccumulator returns the current ShareAccumulator or creates a
@@ -478,12 +494,8 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	}
 	defer secretBuf.Destroy()
 
-	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
-		//secure:unborrowed injected-interface unsealDirect dispatches to a SealingStrategy (go-qrdb#428)
-		return b.unsealDirect(ctx, secretBuf.Bytes())
-	}
-	//secure:unborrowed injected-interface unsealWithSecret dispatches to a SealingStrategy (go-qrdb#428)
-	return b.unsealWithSecret(ctx, secretBuf.Bytes())
+	//secure:unborrowed injected-interface unsealWithKey dispatches to a SealingStrategy (go-qrdb#428)
+	return b.unsealWithKey(ctx, secretBuf.Bytes())
 }
 
 // Compile-time interface checks.

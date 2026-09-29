@@ -155,6 +155,17 @@ longer decrypts the wrapped root key, so stale shares fail with
 root key itself never rotates (the epoch barrier derives per-epoch DEKs from
 it) and no stored data is re-encrypted.
 
+**The unwrapped root key never touches ordinary heap memory.** The AEAD
+decrypts the wrapped blob in place into a `pkg/secure` protected buffer sized
+exactly to the plaintext, and the unseal path hands that buffer to the
+recovery strategy by consuming it (`secure.NewSecretFromBuffer`). An AEAD that
+returns a slice it allocated itself instead of the destination it was given is
+refused with `UnprotectedDecryptError` and its output is wiped. Legacy direct
+mode, where the reconstructed secret is the root key, copies it into a
+protected buffer too. The single resolution step shared by `UnsealWithShare`
+and `UnsealWithShares` is unexported: the only way to it is through the
+barrier's own quorum accumulator.
+
 Ordering is crash-safe: the new shares are distributed *before* the
 re-wrapped blob is persisted. If distribution fails, the old blob — and thus
 the old shares — remain valid and `Rekey` can simply be re-run; there is no

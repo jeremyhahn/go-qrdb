@@ -107,10 +107,11 @@ func TestUnsealKeyInit(t *testing.T) {
 		ctx := context.Background()
 
 		unsealKey := combineShareValues(t, shares[:3], 3, 5)
-		rootKey, err := b.resolveDirectSecret(ctx, unsealKey)
+		rootKeyBuf, err := b.resolveDirectSecret(ctx, unsealKey)
 		if err != nil {
 			t.Fatalf("resolveDirectSecret with valid unseal key: %v", err)
 		}
+		rootKey := protectedBytes(t, rootKeyBuf)
 		masterKey, err := b.GetMasterKey()
 		if err != nil {
 			t.Fatal(err)
@@ -569,10 +570,11 @@ func TestWrappedRootKey_OpensLegacySeparateNonceBlob(t *testing.T) {
 	}
 
 	b := legacyFixtureBarrier()
-	got, err := b.unwrapRootKey(&wrapped, mustHex(t, legacyUnsealKeyHex))
+	gotBuf, err := b.unwrapRootKey(&wrapped, mustHex(t, legacyUnsealKeyHex))
 	if err != nil {
 		t.Fatalf("unwrap legacy blob: %v", err)
 	}
+	got := protectedBytes(t, gotBuf)
 	if want := mustHex(t, legacyRootKeyHex); !bytes.Equal(got, want) {
 		t.Fatalf("recovered root key = %x, want %x", got, want)
 	}
@@ -778,10 +780,11 @@ func TestWrappedRootKey_CallerNonceProvider(t *testing.T) {
 			len(wrapped.Nonce), len(wrapped.Ciphertext), legacyNonceLen)
 	}
 
-	got, err := b.unwrapRootKey(&wrapped, unsealKey)
+	gotBuf, err := b.unwrapRootKey(&wrapped, unsealKey)
 	if err != nil {
 		t.Fatalf("unwrapRootKey through a caller-nonce provider: %v", err)
 	}
+	got := protectedBytes(t, gotBuf)
 	if want := mustHex(t, legacyRootKeyHex); !bytes.Equal(got, want) {
 		t.Fatalf("round-trip root key = %x, want %x", got, want)
 	}
@@ -798,10 +801,11 @@ func TestWrappedRootKey_CallerNonceProvider(t *testing.T) {
 	if err := json.Unmarshal(legacyBlob, &moduleWritten); err != nil {
 		t.Fatalf("unmarshal module-nonce blob: %v", err)
 	}
-	got, err = b.unwrapRootKey(&moduleWritten, unsealKey)
+	gotBuf, err = b.unwrapRootKey(&moduleWritten, unsealKey)
 	if err != nil {
 		t.Fatalf("caller-nonce provider could not open a module-nonce blob: %v", err)
 	}
+	got = protectedBytes(t, gotBuf)
 	if want := mustHex(t, legacyRootKeyHex); !bytes.Equal(got, want) {
 		t.Fatalf("cross-convention root key = %x, want %x", got, want)
 	}

@@ -587,6 +587,136 @@ func TestShamirUnsealWithShares_CombineFails(t *testing.T) {
 	}
 }
 
+// ---------- unsealWithKey tests ----------
+//
+// unsealWithKey is the single implementation UnsealWithShare and
+// UnsealWithShares both call after they finish their own in-process Shamir
+// reconstruction (see combineShareValues in test_distributor_test.go, which
+// reconstructs the same secret those two methods reconstruct internally, so
+// these tests exercise the resolution step in isolation from the
+// accumulator).
+
+// TestShamirUnsealWithKeyInternal_CredentialMode_Success verifies that, with no
+// ShamirStrategy registered, unsealWithKey treats key as a credential-mode
+// passphrase and unseals via the underlying SoftwareStrategy.
+func TestShamirUnsealWithKeyInternal_CredentialMode_Success(t *testing.T) {
+	b, dist := newShamirTestBarrier(t)
+	ctx := context.Background()
+	creds := MustCredentials([]byte("test-password"))
+
+	result, err := b.InitializeShamir(ctx, creds)
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	shares := dist.Shares()
+
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	secret := combineShareValues(t, shares[:result.Threshold], result.Threshold, result.TotalShares)
+
+	if err := b.unsealWithKey(ctx, secret); err != nil {
+		t.Fatalf("unsealWithKey: %v", err)
+	}
+	if b.IsSealed() {
+		t.Error("expected barrier to be unsealed")
+	}
+}
+
+// TestShamirUnsealWithKeyInternal_DirectMode_Success verifies that, with a
+// ShamirStrategy registered, unsealWithKey resolves key as the unseal key (or
+// legacy root key) via unsealDirect rather than treating it as a passphrase.
+func TestShamirUnsealWithKeyInternal_DirectMode_Success(t *testing.T) {
+	b, dist := newShamirTestBarrierDirect(t)
+	ctx := context.Background()
+
+	result, err := b.InitializeShamir(ctx, Credentials{})
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	shares := dist.Shares()
+
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	secret := combineShareValues(t, shares[:result.Threshold], result.Threshold, result.TotalShares)
+
+	if err := b.unsealWithKey(ctx, secret); err != nil {
+		t.Fatalf("unsealWithKey (direct): %v", err)
+	}
+	if b.IsSealed() {
+		t.Error("expected barrier to be unsealed (direct mode)")
+	}
+}
+
+// TestShamirUnsealWithKeyInternal_AlreadyUnsealed verifies unsealWithKey refuses a
+// second unseal rather than silently re-running the strategy dispatch.
+func TestShamirUnsealWithKeyInternal_AlreadyUnsealed(t *testing.T) {
+	b, dist := newShamirTestBarrier(t)
+	ctx := context.Background()
+	creds := MustCredentials([]byte("test-password"))
+
+	result, err := b.InitializeShamir(ctx, creds)
+	if err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	shares := dist.Shares()
+
+	// InitializeShamir leaves the barrier unsealed in credential mode.
+	secret := combineShareValues(t, shares[:result.Threshold], result.Threshold, result.TotalShares)
+
+	err = b.unsealWithKey(ctx, secret)
+	if err != ErrAlreadyUnsealed {
+		t.Errorf("expected ErrAlreadyUnsealed, got %v", err)
+	}
+}
+
+// TestShamirUnsealWithKeyInternal_WrongKeyFails verifies that an incorrect key is
+// rejected by the underlying strategy rather than silently unsealing.
+//
+// This MUST use NewDeferredSoftwareStrategy, not the bound
+// NewSoftwareStrategy newShamirTestBarrier's fixture uses: a bound strategy
+// derives its key from the passphrase given at CONSTRUCTION and ignores the
+// credentials handed to Unseal, so it returns success for ANY key including
+// the wrong one — see the doc warning on NewSoftwareStrategy and
+// TestSoftwareStrategyBindingModes_CredentialSemantics, which pins exactly
+// this distinction after go-qrdb#162.
+func TestShamirUnsealWithKeyInternal_WrongKeyFails(t *testing.T) {
+	store := NewMemoryBackend()
+	strategy := NewDeferredSoftwareStrategy()
+	defer func() { _ = strategy.Close() }()
+	b, err := NewBarrier(testLogger(), store, BarrierConfig{
+		RootKeyPath: "test/root-key",
+		Shamir: &ShamirConfig{
+			Threshold:   3,
+			TotalShares: 5,
+		},
+	}, strategy)
+	if err != nil {
+		t.Fatalf("NewBarrier: %v", err)
+	}
+	dist := newCaptureDistributor()
+	b.SetCeremonyDistributor(dist)
+
+	ctx := context.Background()
+	creds := MustCredentials([]byte("test-password"))
+	if _, err := b.InitializeShamir(ctx, creds); err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	if err := b.unsealWithKey(ctx, []byte("definitely-the-wrong-password")); err == nil {
+		t.Fatal("expected error unsealing with the wrong key")
+	}
+	if !b.IsSealed() {
+		t.Error("expected barrier to remain sealed after a failed unseal")
+	}
+}
+
 // ---------- InitializeShamir request-params-win tests ----------
 
 // TestShamirInitializeShamir_DirectMode_RequestParamsOverride verifies that
