@@ -189,14 +189,14 @@ Deliberately finer than one grant per verb:
 
 | Permission | Gates |
 |---|---|
-| `databases:create` | creating any database |
+| `databases:create` | creating any database — including SQL `CREATE DATABASE`, which creates a database owned by the session's tenant, inside its quota |
 | `databases:create_raft` | **in addition** for a raft-backed database — a dedicated Raft group is privileged provisioning |
 | `databases:create_volume` | **in addition** for a volume-isolated database |
 | `databases:read` | `GetDatabase` |
 | `databases:list` | `ListDatabases` |
 | `databases:update` | all configuration updates: barrier, connection, etcd, protocol, raft |
 | `databases:scale` | changing the replication factor — distinct from `update` because it consumes quota and mutates cluster placement and Raft membership |
-| `databases:delete` | dropping a database |
+| `databases:delete` | dropping a database — including SQL `DROP DATABASE`, which may drop only a database the session's tenant owns |
 | `databases:seal` / `databases:unseal` | barrier custody, gated apart from configuration |
 | `databases:barrier_status` | reading barrier state |
 

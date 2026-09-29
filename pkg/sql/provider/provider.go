@@ -20,9 +20,11 @@ import (
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/pgcatalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -73,6 +75,46 @@ type Provider struct {
 	readOnly      bool                       // true strips write capability from every served table
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
+
+	// databaseSvc is the tenant-scoped database lifecycle CREATE DATABASE
+	// and DROP DATABASE go through -- the same service every API transport
+	// uses, so ownership, quota and entitlement are enforced once. nil
+	// confines the lifecycle to system-tenant sessions (see CreateDatabase).
+	databaseSvc service.DatabaseServicer
+
+	// lifecycleAuthz authorizes CREATE DATABASE (databases:create) and DROP
+	// DATABASE (databases:delete) against the session's tenant. nil confines
+	// the lifecycle to system-tenant sessions, which only exist on a listener
+	// with no authentication configured.
+	lifecycleAuthz DatabaseLifecycleAuthorizer
+}
+
+// DatabaseLifecycleAuthorizer authorizes a database lifecycle statement for
+// the identity carried by ctx against an explicit target tenant. It is
+// satisfied by *middleware.AuthMiddleware, the same authorizer every API
+// transport consults for databases:create and databases:delete.
+type DatabaseLifecycleAuthorizer interface {
+	AuthorizeTenant(ctx context.Context, targetTenantID string, perm permission.Permission) error
+}
+
+// WithDatabaseService returns a functional option that routes CREATE
+// DATABASE and DROP DATABASE through svc's tenant-scoped CreateForTenant and
+// DropForTenant, so a SQL session creates a database its own tenant owns,
+// inside that tenant's quota, and can drop only a database its tenant owns.
+func WithDatabaseService(svc service.DatabaseServicer) func(*Provider) {
+	return func(prov *Provider) {
+		prov.databaseSvc = svc
+	}
+}
+
+// WithLifecycleAuthorizer returns a functional option that checks
+// databases:create and databases:delete for CREATE DATABASE and DROP
+// DATABASE -- the RBAC half of the lifecycle, which the SQL privilege plane
+// defers to by design (see pkg/sql/privilege).
+func WithLifecycleAuthorizer(a DatabaseLifecycleAuthorizer) func(*Provider) {
+	return func(prov *Provider) {
+		prov.lifecycleAuthz = a
+	}
 }
 
 // WithProtocol returns a functional option that sets the protocol filter
@@ -380,26 +422,77 @@ func providerSessionTenantID(ctx *sqle.Context) string {
 	return tenant.SystemTenantID
 }
 
-// CreateDatabase creates a new database via the manager. The database
-// defaults to the KV engine with pebble backend (SQL syntax for engine
-// and backend selection is not yet supported). Returns
+// CreateDatabase creates a new database for the session's tenant. The
+// database defaults to the KV engine with pebble backend (SQL syntax for
+// engine and backend selection is not yet supported). Returns
 // MutableOperationNotSupportedError in legacy single-database mode.
-func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
+//
+// The statement is the API's database create in SQL clothing, and is held to
+// the same rules: the caller needs databases:create, the database is owned by
+// the session's tenant, and the tenant's database quota and entitlements
+// apply -- all enforced by the tenant-scoped DatabaseService, never by a
+// second implementation here. Without that service or an authorizer only a
+// system-tenant session may create, because nothing else could meter or
+// attribute the database.
+func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
 	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "CREATE DATABASE"}
 	}
+	tenantID := providerSessionTenantID(ctx)
+	lctx := p.lifecycleContext(ctx, tenantID)
+	if err := p.authorizeLifecycle(lctx, tenantID, "CREATE DATABASE", permission.DatabasesCreate); err != nil {
+		return &CreateDatabaseError{Name: name, Err: err}
+	}
 	cfg := database.DatabaseConfig{
 		Name:    name,
 		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	}
-	if _, err := p.manager.Create(cfg); err != nil {
+	var err error
+	switch {
+	case p.databaseSvc != nil:
+		_, err = p.databaseSvc.CreateForTenant(lctx, cfg)
+	case tenant.IsSystemTenant(tenantID):
+		_, err = p.manager.Create(cfg)
+	default:
+		err = &DatabaseLifecycleUnavailableError{Operation: "CREATE DATABASE", TenantID: tenantID}
+	}
+	if err != nil {
 		return &CreateDatabaseError{Name: name, Err: err}
 	}
 	return nil
+}
+
+// lifecycleContext returns the context a lifecycle statement runs under: the
+// SQL context's own (so a drop's replicated reclamation stays cancellable),
+// scoped to the session's tenant and carrying the session's authenticated
+// identity for the authorizer.
+func (p *Provider) lifecycleContext(ctx *sqle.Context, tenantID string) context.Context {
+	lctx := tenant.WithTenantID(providerContext(ctx), tenantID)
+	if ctx != nil && ctx.Session != nil {
+		if sess, ok := ctx.Session.(*QRDBSession); ok && sess.Identity() != nil {
+			lctx = auth.WithIdentity(lctx, sess.Identity())
+		}
+	}
+	return lctx
+}
+
+// authorizeLifecycle checks perm for the session's tenant. With no
+// authorizer configured only a system-tenant session passes: that session
+// exists only on a listener with no authentication, where the operator owns
+// every connection, and every other session would otherwise run the
+// statement unchecked.
+func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation string, perm permission.Permission) error {
+	if p.lifecycleAuthz != nil {
+		return p.lifecycleAuthz.AuthorizeTenant(ctx, tenantID, perm)
+	}
+	if tenant.IsSystemTenant(tenantID) {
+		return nil
+	}
+	return &DatabaseLifecycleUnavailableError{Operation: operation, TenantID: tenantID}
 }
 
 // DropDatabase drops an existing database via the manager. Returns
@@ -408,12 +501,13 @@ func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
 // write against pg_catalog that is syntactically reachable at all, since
 // none of its relations implements a write-capability interface.
 //
-// The SQL context's own context.Context is threaded through to the manager,
+// The statement is the API's database drop and is held to the same rules:
+// the caller needs databases:delete, and a non-system session may drop only a
+// database its own tenant owns (DatabaseService.DropForTenant). It used to
+// call database.Manager.Drop by name, so any session could drop any tenant's
+// database. The SQL context's own context.Context is threaded through,
 // because the drop reclaims the database's keys from the shared store and
-// that is a replicated operation. DROP DATABASE over the MySQL and
-// PostgreSQL wire protocols reaches the manager directly rather than through
-// DatabaseServicer, so passing a background context here would leave the one
-// drop path an operator is most likely to use uncancellable.
+// that is a replicated operation that must stay cancellable.
 func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
@@ -421,7 +515,21 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "DROP DATABASE"}
 	}
-	if err := p.manager.Drop(providerContext(ctx), name); err != nil {
+	tenantID := providerSessionTenantID(ctx)
+	lctx := p.lifecycleContext(ctx, tenantID)
+	if err := p.authorizeLifecycle(lctx, tenantID, "DROP DATABASE", permission.DatabasesDelete); err != nil {
+		return &DropDatabaseError{Name: name, Err: err}
+	}
+	var err error
+	switch {
+	case p.databaseSvc != nil:
+		err = p.databaseSvc.DropForTenant(lctx, name)
+	case tenant.IsSystemTenant(tenantID):
+		err = p.manager.Drop(lctx, name)
+	default:
+		err = &DatabaseLifecycleUnavailableError{Operation: "DROP DATABASE", TenantID: tenantID}
+	}
+	if err != nil {
 		return &DropDatabaseError{Name: name, Err: err}
 	}
 	return nil

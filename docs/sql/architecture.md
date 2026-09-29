@@ -150,6 +150,27 @@ SQL is authorized over **two planes with disjoint resources**. Neither consults 
 
 RBAC gates the endpoint and the database lifecycle; privileges govern everything inside a database.
 
+### The database lifecycle over the wire
+
+`CREATE DATABASE` and `DROP DATABASE` over the MySQL and PostgreSQL wire are
+the API's database create and drop, held to exactly the same rules and served
+by the same code — the tenant-scoped `service.DatabaseServicer`:
+
+- `CREATE DATABASE` needs `databases:create` for the session's tenant. The
+  database is **owned by the session's tenant** and counts against that
+  tenant's database quota and entitlements.
+- `DROP DATABASE` needs `databases:delete`, and a non-system session can drop
+  **only a database its own tenant owns**; another tenant's database is refused
+  and left intact.
+
+The privilege plane permits both statements (their target is server-level)
+precisely because RBAC decides them; the provider asks the authorizer, not a
+SQL grant. A listener with no tenant-scoped database service or no authorizer
+refuses both statements to every non-system session
+(`provider.DatabaseLifecycleUnavailableError`) rather than running them
+unmetered and unowned; the system-tenant session of an unauthenticated
+listener keeps the operator's direct path.
+
 ### Table privileges
 
 `GRANT`, `REVOKE`, and `SHOW GRANTS` are real MySQL statements, parsed by the real parser and rewritten by an analyzer post-analyze rule onto QRDB's own per-`(tenant, database)` privilege catalog. QRDB does not implement MySQL's `mysql` grant tables; the `mysql` schema is served as an empty stand-in purely because go-mysql-server's plan builder resolves it while building these statements.

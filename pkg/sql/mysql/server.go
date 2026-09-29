@@ -59,6 +59,9 @@ type Server struct {
 	dbName    string
 	logger    *slog.Logger
 	dbManager *database.Manager
+	// databaseSvc is the tenant-scoped database lifecycle behind CREATE
+	// DATABASE and DROP DATABASE (see WithDatabaseService).
+	databaseSvc service.DatabaseServicer
 	// sealedProbe gates new connections while the storage barrier is
 	// sealed. When nil the gate is disabled (no seal subsystem).
 	sealedProbe sealedWindowProbe
@@ -114,6 +117,17 @@ func WithDatabaseName(name string) ServerOption {
 func WithDatabaseManager(manager *database.Manager) ServerOption {
 	return func(s *Server) {
 		s.dbManager = manager
+	}
+}
+
+// WithDatabaseService routes CREATE DATABASE and DROP DATABASE through the
+// tenant-scoped database service every API transport uses, so a session
+// creates a database its own tenant owns, inside its quota, and drops only
+// its own tenant's databases. Without it only system-tenant sessions may run
+// either statement.
+func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
+	return func(s *Server) {
+		s.databaseSvc = svc
 	}
 }
 
@@ -209,6 +223,12 @@ func (s *Server) Start() error {
 	}
 	if s.registry != nil {
 		svcOpts = append(svcOpts, provider.WithRegistry(s.registry))
+	}
+	if s.databaseSvc != nil {
+		svcOpts = append(svcOpts, provider.WithDatabaseService(s.databaseSvc))
+	}
+	if s.authMW != nil {
+		svcOpts = append(svcOpts, provider.WithLifecycleAuthorizer(s.authMW))
 	}
 
 	var prov *provider.Provider

@@ -43,6 +43,11 @@ are not reconstructed here — their history is in the git log.
   written through an etcd listener before this release is not visible through
   it; export it with the previous binary and re-import it. `Compact` on the
   shared shard is reserved to the system tenant, as on every other transport.
+- **SQL `CREATE DATABASE` / `DROP DATABASE` now require `databases:create` /
+  `databases:delete`**, and a tenant session creates a database its tenant
+  owns (counted against its quota) and can drop only its own. A role that
+  relied on reaching either statement without those grants, or a tenant that
+  relied on dropping a database it does not own, is refused.
 
 ### Security
 
@@ -83,6 +88,19 @@ are not reconstructed here — their history is in the git log.
   `Watch` or `LeaseKeepAlive` stream is authorized when it opens, so one
   already open when its database is sealed or dropped, or its caller loses the
   permission, keeps running until it ends; new RPCs and streams are refused.
+- **SQL `DROP DATABASE` can no longer drop another tenant's database, and SQL
+  `CREATE DATABASE` is owned, metered and authorized (critical).** Over the
+  MySQL and PostgreSQL wire, `DROP DATABASE` called the database manager by
+  name with no ownership check, and the privilege plane deferred the statement
+  to an RBAC check nothing performed, so any tenant could drop any tenant's
+  database; `CREATE DATABASE` created a system-owned database outside the
+  caller's quota. Both statements now go through the tenant-scoped
+  `DatabaseService` (`CreateForTenant` / `DropForTenant`) and check
+  `databases:create` / `databases:delete` for the session's tenant. A listener
+  without that service or an authorizer refuses both to non-system sessions
+  with `provider.DatabaseLifecycleUnavailableError`. New options:
+  `provider.WithDatabaseService`, `provider.WithLifecycleAuthorizer`,
+  `mysql.WithDatabaseService`, `pgsql.WithDatabaseService`.
 
 ### Known limits
 

@@ -46,6 +46,9 @@ func startPgSQL(s *Server) error {
 	if s.opts.dbManager != nil {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseManager(s.opts.dbManager))
 	}
+	if s.opts.databaseSvc != nil {
+		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseService(s.opts.databaseSvc))
+	}
 	if s.config.SQL.DefaultDatabase != "" {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase))
 	}

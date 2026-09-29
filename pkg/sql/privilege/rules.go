@@ -139,7 +139,10 @@ var targetRules = map[string]targetRule{
 
 	// A server-level target. The database lifecycle (CREATE DATABASE, DROP
 	// DATABASE) arrives here, and it belongs to the service RBAC control
-	// plane, not to this one -- see the package doc comment on the seam
+	// plane, not to this one: pkg/sql/provider's CreateDatabase and
+	// DropDatabase check databases:create / databases:delete against the
+	// session's tenant and run through the tenant-scoped DatabaseService,
+	// which enforces ownership and quota -- see the package doc comment on the seam
 	// between the two. Permitting it here defers to RBAC rather than
 	// double-gating it with a grant that cannot be written.
 	ast.AuthTargetType_Global: permitTarget,

@@ -59,6 +59,23 @@ func (e *InvalidValueError) Error() string {
 	return "provider: invalid value: " + e.Reason
 }
 
+// DatabaseLifecycleUnavailableError is returned when a non-system SQL session
+// issues CREATE DATABASE or DROP DATABASE on a provider that has no
+// tenant-scoped database service or no lifecycle authorizer: without them the
+// statement could be neither authorized nor attributed to the session's
+// tenant, so it is refused rather than run as an unmetered, unowned
+// operator action.
+type DatabaseLifecycleUnavailableError struct {
+	Operation string
+	TenantID  string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseLifecycleUnavailableError) Error() string {
+	return "provider: " + e.Operation + " is not available to tenant " + e.TenantID +
+		": no tenant-scoped database lifecycle is configured"
+}
+
 // CreateDatabaseError is returned when a CREATE DATABASE operation fails.
 type CreateDatabaseError struct {
 	Name string
