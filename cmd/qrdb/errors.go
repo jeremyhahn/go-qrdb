@@ -84,12 +84,20 @@ func (e *InvalidArgError) Error() string {
 type DatabaseScopeError struct {
 	Database  string
 	Transport string
+	Err       error
 }
 
 // Error returns a human-readable description.
 func (e *DatabaseScopeError) Error() string {
-	return "qrdb: transport " + e.Transport + " does not support scoping to database " + e.Database
+	msg := "qrdb: transport " + e.Transport + " does not support scoping to database " + e.Database
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
 }
+
+// Unwrap returns the transport's refusal.
+func (e *DatabaseScopeError) Unwrap() error { return e.Err }
 
 // InvalidLeaseIDError is returned when a lease ID argument cannot
 // be parsed as an int64.

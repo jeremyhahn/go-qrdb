@@ -117,7 +117,7 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 // the clone's Connect dials the scoped connection. Scoping to the default
 // ("system") database or the empty string yields an unscoped clone that shares
 // the parent's connection.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	db := transport.NormalizeDatabaseScope(database)
 	clone := &Transport{config: t.config, activeDatabase: db}
 	clone.closed.Store(t.closed.Load())
@@ -147,6 +147,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	clone.conn = t.conn
 	clone.client = t.client
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // New creates a new Unix socket transport with the given options. The

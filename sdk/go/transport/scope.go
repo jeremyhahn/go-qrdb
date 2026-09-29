@@ -53,9 +53,12 @@ func NormalizeDatabaseScope(name string) string {
 // DatabaseScoper is implemented by transports that support per-database
 // request scoping. WithDatabase returns a transport that conveys the given
 // database on its data-plane calls while sharing the underlying connection.
-// An empty database (or "system") yields an unscoped transport.
+// An empty database (or "system") yields an unscoped transport. A transport
+// that cannot confine its data plane to the named database returns a
+// *DatabaseScopeUnsupportedError rather than a transport that would silently
+// serve the default database.
 type DatabaseScoper interface {
-	WithDatabase(database string) Transport
+	WithDatabase(database string) (Transport, error)
 }
 
 // DatabaseUnaryClientInterceptor returns a gRPC unary client interceptor that

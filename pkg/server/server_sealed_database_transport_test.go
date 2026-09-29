@@ -91,7 +91,11 @@ func dialSealedDBTransports(t *testing.T, srv *Server, db string) map[string]tra
 		if !ok {
 			t.Fatalf("%s transport does not implement transport.DatabaseScoper", name)
 		}
-		kv, ok := scoper.WithDatabase(db).(transport.KVClient)
+		scoped, err := scoper.WithDatabase(db)
+		if err != nil {
+			t.Fatalf("%s WithDatabase(%q): %v", name, db, err)
+		}
+		kv, ok := scoped.(transport.KVClient)
 		if !ok {
 			t.Fatalf("%s scoped transport does not implement transport.KVClient", name)
 		}
@@ -142,8 +146,12 @@ func openLegacyVault(t *testing.T) (*database.Manager, *database.Database) {
 //
 // The MySQL and PostgreSQL wire legs are in
 // server_sealed_database_sql_test.go (they need the wire-protocol build
-// tags), and the embedded leg -- a scoped client of an sdk/go/node node -- is
-// in sdk/go/node.
+// tags). The embedded transport resolves a scoped client's every call through
+// the same registry (sdk/go/transport/embedded TestWithDatabase_
+// ResolvesThroughRegistry and TestEmbeddedSQL_SealedDatabaseRefused); an
+// sdk/go/node node composed without a database service registry refuses a
+// scoped client outright (sdk/go/node TestEmbedded_DatabaseScopedWithout
+// RegistryRefuses).
 func TestSealedDatabase_RefusedOnEveryTransport(t *testing.T) {
 	mgr, db := openLegacyVault(t)
 

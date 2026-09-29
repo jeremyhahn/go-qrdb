@@ -38,7 +38,7 @@ Every data-plane capability in every other feature carries a database scope:
 | REST | `X-QRDB-Database` header |
 | gRPC / Unix | `x-qrdb-database` metadata value |
 | QUIC / MCP | equivalent request field |
-| Embedded | `Client.DatabaseScoped(name)` |
+| Embedded | `Client.DatabaseScoped(name)`, resolved through the node's service registry; refused with `transport.DatabaseScopeUnsupportedError` when the embedded transport has none |
 
 Absent, the server's default database (`system`) is used.
 

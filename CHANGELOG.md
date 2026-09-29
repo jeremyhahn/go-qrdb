@@ -63,6 +63,10 @@ are not reconstructed here — their history is in the git log.
 - **`wal` and `nodehost` are no longer valid database names.** Creating one
   fails with `database.ReservedNameError` (`400` / `INVALID_ARGUMENT`). A
   database of either name created before this release still opens.
+- **`Client.DatabaseScoped` returns `(*Client, error)`** and
+  `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
+  transport that cannot scope refuses instead of returning the unscoped
+  client. Scoping to `""` or `system` returns the receiver.
 
 ### Security
 
@@ -156,6 +160,20 @@ are not reconstructed here — their history is in the git log.
   documented status on gRPC, Unix, QUIC and MCP, where they were answered as
   internal errors: not found is `NOT_FOUND`, a taken name `ALREADY_EXISTS`, an
   invalid or reserved name `INVALID_ARGUMENT`.
+- **A database-scoped client is never handed the default database.** Over the
+  embedded transport `Client.DatabaseScoped(name)` returned the unscoped
+  client, so a caller that named database X read and wrote the node's default
+  database. The embedded transport now implements `transport.DatabaseScoper`
+  through the node's per-(tenant, database) service registry
+  (`embedded.WithServiceRegistry`, wired by `sdk/go/node`), resolving each
+  data-plane call -- KV, MVCC, transactions, batches, watches, leases, indexes,
+  time series, vectors, collections, locks, RAG -- as the network transports'
+  server does, so a sealed or dropped database is refused; without a registry,
+  and over any transport that cannot scope, `DatabaseScoped` refuses with
+  `transport.DatabaseScopeUnsupportedError`. Embedded SQL queries resolve
+  through the same registry: they used to read the node's default store under
+  the database's prefix, which served a sealed database's data and, on a scoped
+  transport, prefixed the already-scoped store a second time.
 
 ### Known limits
 
@@ -176,6 +194,11 @@ are not reconstructed here — their history is in the git log.
 - **Database names are still one node-wide namespace.** Another tenant's
   database is answered as missing everywhere except creation: a create naming
   a database another tenant holds fails with `database.AlreadyExistsError`.
+- **An `sdk/go/node` node scopes clients and serves RAG only with a database
+  service registry.** A node composed without `server.WithDatabaseServiceRegistry`
+  refuses every call of a database-scoped embedded client, and its RAG service
+  refuses every call, rather than serve the default store; `qrdbd` and the
+  `node://` driver supply one.
 
 ## [0.23.0-alpha] - 2026-09-30
 

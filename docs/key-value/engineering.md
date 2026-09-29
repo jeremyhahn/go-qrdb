@@ -10,7 +10,7 @@
 func (c *Client) KV() transport.KVClient
 func (c *Client) MVCC() transport.MVCCClient
 func (c *Client) KVStore() KVStore          // kvstore adapter for DAOs
-func (c *Client) DatabaseScoped(name string) *Client
+func (c *Client) DatabaseScoped(name string) (*Client, error)
 func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 ```
 
@@ -116,8 +116,13 @@ sweep becoming an enumeration of the internal keyspace.
   client-supplied tenant field is never trusted.
 - **`DatabaseScoped` returns a new client**, sharing the connection but carrying
   its own immutable scope. Scopes never leak between clients and no global
-  mutable state is involved. On a transport with no per-database support (the
-  embedded transport) the receiver is returned unchanged.
+  mutable state is involved. A caller that names a database is never handed the default one: a transport
+  that cannot confine its data plane to the database refuses with
+  `transport.DatabaseScopeUnsupportedError`. The embedded transport scopes
+  through the node's per-(tenant, database) service registry
+  (`embedded.WithServiceRegistry`, wired by `sdk/go/node`), resolving each
+  data-plane call for the context's tenant as the network transports' server
+  does per request; without a registry it refuses.
 - **Revision monotonicity**: the store's current revision only increases.
   `Compact(r)` discards revisions strictly older than `r`; reads below the
   compaction floor fail closed rather than returning an approximation.

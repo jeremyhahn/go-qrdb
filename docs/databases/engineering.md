@@ -8,7 +8,7 @@
 
 ```go
 func (c *Client) Database() transport.DatabaseClient
-func (c *Client) DatabaseScoped(name string) *Client
+func (c *Client) DatabaseScoped(name string) (*Client, error)
 ```
 
 `sdk/go/transport`:
@@ -134,9 +134,23 @@ path, not the body.
 - **etcd requires `engine: kv` and `backend: raft`**, plus TLS and auth enabled.
   Validation rejects any other combination at configuration time.
 - **`DatabaseScoped` returns a new client** with its own immutable scope, so
-  scopes never leak between clients; scoping to `system` or `""` yields an
-  unscoped client. A transport with no per-database support returns the receiver
-  unchanged.
+  scopes never leak between clients; scoping to `system` or `""` yields the
+  receiver. A caller that names a database is never handed the default one: a transport
+  that cannot confine its data plane to the database refuses with
+  `transport.DatabaseScopeUnsupportedError`. The embedded transport scopes
+  through the node's per-(tenant, database) service registry
+  (`embedded.WithServiceRegistry`, wired by `sdk/go/node` to the running
+  server's registry, which exists only when the composer supplies
+  `server.WithDatabaseServiceRegistry`), resolving each data-plane call for the
+  context's tenant as the network transports' server does per request; without
+  a registry every scoped call is refused. Time-series retention and metric
+  listing, whose service methods take no context, are resolved by the
+  transport for the caller's tenant; the scoped service refuses them rather
+  than guess a tenant. A scoped transport serves exactly the families its
+  unscoped transport serves: on a standalone node, which serves no MVCC,
+  leases or watches, its scoped clients refuse them too. Its SQL query resolves the named database through the
+  same registry, on a scoped and an unscoped transport alike, so it reads the
+  database's own store and a sealed database is refused.
 - **`DropDatabase` deletes all of the database's data and is irreversible.**
   All of it means the keyspace as well as the directory — see
   [architecture.md](architecture.md) "What a drop reclaims" for the shapes and

@@ -2520,6 +2520,10 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 		// behaves the same as through REST/gRPC/Unix/QUIC/MCP instead of
 		// the transport-specific stub it used to be (go-qrdb#558).
 		embedded.WithEncryptionMigrator(&nodeEmbeddedMigrator{node: n}),
+		// Database scoping (Client.DatabaseScoped) resolves through the
+		// running server's per-(tenant, database) registry, the same one the
+		// network transports use; see nodeServiceRegistry.
+		embedded.WithServiceRegistry(&nodeServiceRegistry{node: n}),
 	}
 	// The transaction/CAS family is served in EVERY mode (owner ruling
 	// 2026-08-23, go-qrdb#62). A standalone node is engine-direct and

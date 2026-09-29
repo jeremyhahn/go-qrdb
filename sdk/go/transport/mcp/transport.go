@@ -72,7 +72,7 @@ var _ transport.DatabaseScoper = (*Transport)(nil)
 // while sharing the parent's MCP client connection. Scoping to the empty string
 // or the default "system" database yields an unscoped clone (no database
 // argument is added). It implements transport.DatabaseScoper.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	clone := &Transport{
 		config:    t.config,
 		client:    t.client,
@@ -81,6 +81,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	}
 	clone.closed.Store(t.closed.Load())
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // mcpDataPlaneExactTools is the set of data-plane MCP tool names with no shared

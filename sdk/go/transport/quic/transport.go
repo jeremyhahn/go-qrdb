@@ -67,7 +67,7 @@ var _ transport.DatabaseScoper = (*Transport)(nil)
 // parent's underlying QUIC connection. Scoping to the empty string or the
 // default "system" database yields an unscoped clone (no database is sent). It
 // implements transport.DatabaseScoper.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	clone := &Transport{
 		config:   t.config,
 		conn:     t.conn,
@@ -75,6 +75,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	}
 	clone.closed.Store(t.closed.Load())
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // New creates a new QUIC transport with the given options. The transport
