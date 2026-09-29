@@ -48,6 +48,13 @@ are not reconstructed here — their history is in the git log.
   owns (counted against its quota) and can drop only its own. A role that
   relied on reaching either statement without those grants, or a tenant that
   relied on dropping a database it does not own, is refused.
+- **RAG needs the node's database registry.** It is bound by the server at
+  start; a node without one -- including the embeddable `sdk/go/node` node --
+  refuses RAG with `service.CapabilityUnsupportedError`.
+  `service.NewScopedRAGStore` takes a `*service.RAGBinding`.
+- **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
+  `KVServicer`. RAG documents ingested before this release sit at the store
+  root and are no longer read; re-ingest them.
 
 ### Security
 
@@ -101,6 +108,21 @@ are not reconstructed here — their history is in the git log.
   with `provider.DatabaseLifecycleUnavailableError`. New options:
   `provider.WithDatabaseService`, `provider.WithLifecycleAuthorizer`,
   `mysql.WithDatabaseService`, `pgsql.WithDatabaseService`.
+- **RAG chunk text and document records are confined to the caller's tenant
+  and database (medium).** They were keyed `rag:{namespace}:{document}:{chunk}`
+  in the shared store with no tenant or database, so two tenants using the same
+  namespace and document ID overwrote each other's chunk text, a retrieval
+  returned the other tenant's text for its own vector hits, and listing and
+  deleting reached across tenants; RAG also ignored database seal, ownership,
+  quota and isolation, and its vectors were scoped by tenant only, so a
+  document in one database overwrote another database's vector. Chunk text,
+  document records and vectors are now all resolved through the node's
+  per-(tenant, database) service registry on every call
+  (`service.RAGBinding`, bound by the server at start; `service.ScopedRAGStore`
+  and `service.NewScopedVectorStoreAdapter`), so a sealed database refuses
+  RAG, an unknown or foreign `X-QRDB-Database` is a not-found, and vectors are
+  per database. REST and gRPC/Unix now also bind the request's database as the
+  canonical `tenant.DatabaseFromContext` scope, as QUIC and MCP already did.
 
 ### Known limits
 

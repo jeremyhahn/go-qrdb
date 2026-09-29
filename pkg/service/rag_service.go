@@ -117,7 +117,7 @@ type ragDocumentMeta struct {
 type ragService struct {
 	ingestor  RAGIngestor
 	retriever RAGRetriever
-	kvSvc     KVServicer
+	kvSvc     *ScopedRAGStore
 	closed    atomic.Bool
 }
 
@@ -125,11 +125,13 @@ type ragService struct {
 var _ RAGServicer = (*ragService)(nil)
 
 // NewRAGService constructs a RAGServicer backed by the supplied Ingestor,
-// Retriever, and KVServicer. The KVServicer is used for listing documents.
+// Retriever, and store, which it lists and deletes documents through. The
+// store is the same ScopedRAGStore the Ingestor and Retriever were built over,
+// so every record the service reaches is the caller's (tenant, database).
 func NewRAGService(
 	ingestor RAGIngestor,
 	retriever RAGRetriever,
-	kvSvc KVServicer,
+	kvSvc *ScopedRAGStore,
 	opts ...RAGServiceOption,
 ) RAGServicer {
 	s := &ragService{
@@ -141,6 +143,15 @@ func NewRAGService(
 		opt(s)
 	}
 	return s
+}
+
+var _ RAGRegistryBinder = (*ragService)(nil)
+
+// BindRegistry implements RAGRegistryBinder: it binds the registry the
+// service's store -- and the ingestor and retriever built over the same
+// binding -- resolve every record through.
+func (s *ragService) BindRegistry(reg Registry) {
+	s.kvSvc.binding.Bind(reg)
 }
 
 // IngestDocument validates the request, delegates to the Ingestor, and

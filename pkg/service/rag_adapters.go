@@ -77,14 +77,23 @@ func (a *EmbedProviderAdapter) BatchEmbed(ctx context.Context, req *rag.BatchEmb
 // VectorStoreAdapter
 // ---------------------------------------------------------------------------
 
-// VectorStoreAdapter wraps VectorService so it satisfies rag.VectorStore.
+// VectorStoreAdapter wraps a VectorService so it satisfies rag.VectorStore.
+// Each call obtains the service from resolve.
 type VectorStoreAdapter struct {
-	svc VectorService
+	resolve func(ctx context.Context) (VectorService, error)
 }
 
-// NewVectorStoreAdapter wraps svc as a rag.VectorStore.
+// NewVectorStoreAdapter wraps one fixed svc as a rag.VectorStore.
 func NewVectorStoreAdapter(svc VectorService) *VectorStoreAdapter {
-	return &VectorStoreAdapter{svc: svc}
+	return &VectorStoreAdapter{resolve: func(context.Context) (VectorService, error) { return svc, nil }}
+}
+
+// NewScopedVectorStoreAdapter returns the RAG pipeline's vector store: every
+// call resolves the vector service for the caller's (tenant, database)
+// through binding, so vectors are confined to the caller's database and the
+// database's seal, ownership and isolation apply (see RAGBinding).
+func NewScopedVectorStoreAdapter(binding *RAGBinding) *VectorStoreAdapter {
+	return &VectorStoreAdapter{resolve: binding.Vector}
 }
 
 // Compile-time assertion.
@@ -92,7 +101,11 @@ var _ rag.VectorStore = (*VectorStoreAdapter)(nil)
 
 // UpsertVector implements rag.VectorStore by delegating to the underlying service.
 func (a *VectorStoreAdapter) UpsertVector(ctx context.Context, req *rag.UpsertVecRequest) (*rag.UpsertVecResponse, error) {
-	resp, err := a.svc.UpsertVector(ctx, &UpsertVectorRequest{
+	svc, err := a.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
 		Vector:    req.Vector,
@@ -112,7 +125,11 @@ func (a *VectorStoreAdapter) EnsureNamespace(ctx context.Context, name string, d
 	if metric == "" {
 		metric = "cosine"
 	}
-	_, err := a.svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+	svc, err := a.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
 		Namespace:      name,
 		Dimension:      uint32(dimension), //nolint:gosec // G115: dimension is a small positive int from embedding output
 		DistanceMetric: metric,
@@ -131,7 +148,11 @@ func (a *VectorStoreAdapter) EnsureNamespace(ctx context.Context, name string, d
 
 // SearchSimilar implements rag.VectorStore by delegating to the underlying service.
 func (a *VectorStoreAdapter) SearchSimilar(ctx context.Context, req *rag.SearchVecRequest) (*rag.SearchVecResponse, error) {
-	resp, err := a.svc.SearchSimilar(ctx, &SearchSimilarRequest{
+	svc, err := a.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{
 		Namespace:       req.Namespace,
 		QueryVector:     req.QueryVector,
 		K:               req.K,

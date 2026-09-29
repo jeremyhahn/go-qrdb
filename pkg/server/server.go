@@ -1059,6 +1059,14 @@ func (s *Server) start() error {
 		return err
 	}
 
+	// The RAG pipeline resolves every record through the same
+	// per-(tenant, database) registry the transports use. A node with no
+	// database registry leaves it unbound, and RAG then refuses rather than
+	// serve records outside any database's seal, ownership and isolation.
+	if binder, ok := s.opts.ragSvc.(service.RAGRegistryBinder); ok {
+		binder.BindRegistry(s.transportServiceRegistry())
+	}
+
 	if s.config.Protocols.REST {
 		if err := s.startREST(); err != nil {
 			return err
