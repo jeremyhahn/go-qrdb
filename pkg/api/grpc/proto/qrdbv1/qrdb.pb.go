@@ -6337,12 +6337,17 @@ func (x *PeerInfo) GetIsLeader() bool {
 
 // AddMemberRequest is the request payload for AddMember.
 type AddMemberRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShardId       uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
-	ReplicaId     uint64                 `protobuf:"varint,2,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
-	RaftAddress   string                 `protobuf:"bytes,3,opt,name=raft_address,json=raftAddress,proto3" json:"raft_address,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ShardId     uint64                 `protobuf:"varint,1,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
+	ReplicaId   uint64                 `protobuf:"varint,2,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
+	RaftAddress string                 `protobuf:"bytes,3,opt,name=raft_address,json=raftAddress,proto3" json:"raft_address,omitempty"`
+	// member_identity is the operator-supplied Raft member identity
+	// (spki:<sha256-hex>) of the replica. Empty means "the identity the
+	// cluster has already committed for this replica or its host". Required
+	// for a node no committed membership names yet.
+	MemberIdentity string `protobuf:"bytes,4,opt,name=member_identity,json=memberIdentity,proto3" json:"member_identity,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AddMemberRequest) Reset() {
@@ -6392,6 +6397,13 @@ func (x *AddMemberRequest) GetReplicaId() uint64 {
 func (x *AddMemberRequest) GetRaftAddress() string {
 	if x != nil {
 		return x.RaftAddress
+	}
+	return ""
+}
+
+func (x *AddMemberRequest) GetMemberIdentity() string {
+	if x != nil {
+		return x.MemberIdentity
 	}
 	return ""
 }
@@ -25352,12 +25364,13 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"replica_id\x18\x01 \x01(\x04R\treplicaId\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1b\n" +
-	"\tis_leader\x18\x03 \x01(\bR\bisLeader\"o\n" +
+	"\tis_leader\x18\x03 \x01(\bR\bisLeader\"\x98\x01\n" +
 	"\x10AddMemberRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x02 \x01(\x04R\treplicaId\x12!\n" +
-	"\fraft_address\x18\x03 \x01(\tR\vraftAddress\"O\n" +
+	"\fraft_address\x18\x03 \x01(\tR\vraftAddress\x12'\n" +
+	"\x0fmember_identity\x18\x04 \x01(\tR\x0ememberIdentity\"O\n" +
 	"\x13RemoveMemberRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +

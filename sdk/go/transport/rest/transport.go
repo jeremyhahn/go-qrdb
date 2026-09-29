@@ -546,7 +546,7 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 
 // AddMember adds a new replica to the specified shard. Maps to
 // POST /membership/add.
-func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -555,6 +555,7 @@ func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, ra
 		ShardID:   shardID,
 		ReplicaID: replicaID,
 		Address:   raftAddr,
+		Identity:  identity,
 	}
 
 	return t.postJSON(ctx, "AddMember", "/membership/add", payload)

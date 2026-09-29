@@ -110,11 +110,20 @@ func (b *LocalBackend) SyncRead(ctx context.Context, _ uint64, query interface{}
 	return b.sm.Lookup(ctx, query)
 }
 
-// RequestAddNode returns ClusterOperationError since LocalBackend does
-// not support Raft cluster membership changes.
-func (b *LocalBackend) RequestAddNode(_ context.Context, _, _ uint64, _ string, _ uint64) (*quicraft.RequestState, error) {
+// RequestAddNodeWithIdentity returns ClusterOperationError since
+// LocalBackend does not support Raft cluster membership changes.
+func (b *LocalBackend) RequestAddNodeWithIdentity(_ context.Context, _, _ uint64, _, _ string, _ uint64) (*quicraft.RequestState, error) {
 	return nil, &ClusterOperationError{Op: "AddNode"}
 }
+
+// SyncGetShardMembership returns ClusterOperationError since LocalBackend
+// has no Raft membership.
+func (b *LocalBackend) SyncGetShardMembership(_ context.Context, _ uint64) (*quicraft.Membership, error) {
+	return nil, &ClusterOperationError{Op: "GetShardMembership"}
+}
+
+// NodeIdentity returns "": LocalBackend has no Raft transport.
+func (b *LocalBackend) NodeIdentity() string { return "" }
 
 // RequestRemoveNode returns ClusterOperationError since LocalBackend
 // does not support Raft cluster membership changes.

@@ -191,7 +191,7 @@ func (m *mockAdminSvc) Status(_ context.Context) (*service.StatusInfo, error) {
 func (m *mockAdminSvc) Peers(_ context.Context) (*service.PeersInfo, error) {
 	panic("not implemented")
 }
-func (m *mockAdminSvc) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminSvc) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	panic("not implemented")
 }
 func (m *mockAdminSvc) RemoveMember(_ context.Context, _, _ uint64) error {

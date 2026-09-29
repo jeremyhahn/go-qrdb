@@ -81,20 +81,6 @@ type snapshotExporter interface {
 	ImportSnapshot(ctx context.Context, shardID uint64, r io.Reader, opts ...quicraft.ImportOption) error
 }
 
-// shardMembershipReader is the subset of the Raft host that reports a
-// shard's linearizable voting membership. Satisfied by *quicraft.Host
-// (promoted through raft.HostAdapter) exactly like snapshotExporter above.
-// RestoreShardOnline uses it to enforce the RF=1 guard: an in-place,
-// per-replica snapshot import on a shard with more than one voting replica
-// is silently overwritten by the majority on the next heartbeat/append, so
-// it must never be attempted.
-type shardMembershipReader interface {
-	// SyncGetShardMembership MUST match *quicraft.Host.SyncGetShardMembership's
-	// signature exactly, for the same method-promotion reason documented on
-	// snapshotExporter above.
-	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
-}
-
 // ShardRestarter is implemented by a component that owns a dedicated shard's
 // full lifecycle — its start configuration (voting membership, state-machine
 // factory, on-disk paths, any dedicated WAL registration) as well as its
@@ -359,14 +345,11 @@ func (p *hostShardSnapshotProvider) RestoreShardOnline(ctx context.Context, shar
 		return &OnlineRestoreSystemShardError{ShardID: shardID}
 	}
 
-	reader, ok := p.host.(shardMembershipReader)
-	if !ok {
-		return &OnlineRestoreUnsupportedError{
-			ShardID: shardID,
-			Reason:  "host does not support linearizable membership queries",
-		}
-	}
-	membership, err := reader.SyncGetShardMembership(ctx, shardID)
+	// The RF=1 guard: an in-place, per-replica snapshot import on a shard with
+	// more than one voting replica is silently overwritten by the majority on
+	// the next heartbeat/append, so it must never be attempted. The
+	// membership read is linearizable, and a failed one fails closed.
+	membership, err := p.host.SyncGetShardMembership(ctx, shardID)
 	if err != nil {
 		return &ShardSnapshotError{Op: "membership", ShardID: shardID, Err: err}
 	}

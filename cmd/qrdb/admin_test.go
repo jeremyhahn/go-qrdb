@@ -40,6 +40,8 @@ import (
 // fnAdminService implements service.AdminServicer with configurable
 // function fields, allowing per-test behavior injection.
 type fnAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity       string
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
 	statusFn          func(ctx context.Context) (*service.StatusInfo, error)
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
@@ -62,7 +64,8 @@ func (m *fnAdminService) Peers(ctx context.Context) (*service.PeersInfo, error) 
 	return m.peersFn(ctx)
 }
 
-func (m *fnAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, addr string) error {
+func (m *fnAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, addr, identity string) error {
+	m.addIdentity = identity
 	return m.addMemberFn(ctx, shardID, replicaID, addr)
 }
 
@@ -515,6 +518,33 @@ func TestAdminMemberAdd_Success(t *testing.T) {
 	}
 	if gotAddress != "10.0.0.3:63001" {
 		t.Errorf("address = %q, want %q", gotAddress, "10.0.0.3:63001")
+	}
+}
+
+// TestAdminMemberAdd_Identity pins that --identity reaches the admin service,
+// and that omitting it sends none (the committed identity is used).
+func TestAdminMemberAdd_Identity(t *testing.T) {
+	identity := "spki:" + strings.Repeat("ab", 32)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "with --identity", args: []string{"--identity", identity}, want: identity},
+		{name: "without --identity", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adminSvc := &fnAdminService{
+				addMemberFn: func(context.Context, uint64, uint64, string) error { return nil },
+			}
+			args := append([]string{"member", "add", "10.0.0.4:63001", "--shard-id", "1", "--replica-id", "4"}, tc.args...)
+			if _, err := executeAdminCmd(t, adminSvc, args...); err != nil {
+				t.Fatalf("admin member add: %v", err)
+			}
+			if adminSvc.addIdentity != tc.want {
+				t.Fatalf("identity = %q, want %q", adminSvc.addIdentity, tc.want)
+			}
+		})
 	}
 }
 

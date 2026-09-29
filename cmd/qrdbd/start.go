@@ -1932,7 +1932,7 @@ func runStart(f *startFlags) (err error) {
 			// (RaftHost.RemoveFollowerNode) -- see RebalanceService.moveTenantGroupShard.
 			// raftBackendReg being non-nil implies the shared host is configured for
 			// IsolationRaft tenants. The raftFollowerAdder adapter wraps
-			// host.RequestAddNode/RequestAddObserver/RequestRemoveNode + rs.Result()
+			// host.RequestAddNodeWithIdentity/RequestAddObserverWithIdentity/RequestRemoveNode + rs.Result()
 			// into the narrow service.RaftHost interface; the SAME instance is shared
 			// by both services since it is stateless beyond the host reference.
 			if raftBackendReg != nil {
@@ -3890,19 +3890,26 @@ func handleSIGHUP(reloader *CertReloader, logger *slog.Logger) {
 }
 
 // raftFollowerAdder adapts *quicraft.Host to the service.RaftHost interface.
-// It wraps RequestAddNode + rs.Result() into a single blocking call that
+// It wraps RequestAddNodeWithIdentity + rs.Result() into a single blocking call that
 // returns only an error, shielding DatabaseService from the quicraft import
 // and from RequestState lifecycle management.
 type raftFollowerAdder struct {
 	host *quicraft.Host
 }
 
-// AddFollowerNode calls RequestAddNode on the shared Raft host and blocks
+// AddFollowerNode calls RequestAddNodeWithIdentity on the shared Raft host and blocks
 // until the config change commits or ctx is cancelled. Used ONLY for
 // founding members at create time (service.DatabaseService.CreateForTenant);
 // see AddObserver for scale-up.
+//
+// The replica's host is an existing cluster node, so the identity committed
+// with it is the one go-quicraft already committed for that host.
 func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := a.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
+	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
+	if err != nil {
+		return err
+	}
+	rs, err := a.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
 	if err != nil {
 		return err
 	}
@@ -3915,7 +3922,7 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 	}
 }
 
-// AddObserver calls RequestAddObserver on the shared Raft host and blocks
+// AddObserver calls RequestAddObserverWithIdentity on the shared Raft host and blocks
 // until the config change commits or ctx is cancelled. Used exclusively by
 // DatabaseService.ScaleForTenant's scale-up path (scaleUp) to admit a
 // dynamically added replica as a NON-VOTING observer, so scale-up never
@@ -3923,10 +3930,14 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 // voting quorum (see the elastic-scaling design doc §B.2/§D.4). The
 // observer is later promoted to a full voting member asynchronously by
 // server.TenantShardReconciler's Promoter (see raftPromoter), which reuses
-// RequestAddNode against this same, already-admitted replica ID -- go-quicraft
+// RequestAddNodeWithIdentity against this same, already-admitted replica ID -- go-quicraft
 // treats that as an observer -> voter promotion rather than a fresh add.
 func (a *raftFollowerAdder) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := a.host.RequestAddObserver(ctx, shardID, replicaID, raftAddr, 0)
+	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
+	if err != nil {
+		return err
+	}
+	rs, err := a.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
 	if err != nil {
 		return err
 	}

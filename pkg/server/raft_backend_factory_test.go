@@ -74,6 +74,9 @@ type fakeRaftInfoSource struct {
 		dataDir string
 	}
 	dedicated map[raftShardKey]bool
+	// placements, when set for a key, is the placement entry placementInfo
+	// reports — a multi-replica placement for the founding tests.
+	placements map[raftShardKey]*placement.Placement
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -108,8 +111,9 @@ func (s *fakeRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, 
 
 // placementInfo always returns false: the fake source is meta-derived and does
 // not carry a replicated placement table (same semantics as managerRaftInfoSource).
-func (s *fakeRaftInfoSource) placementInfo(_ string, _ string) (*placement.Placement, bool) {
-	return nil, false
+func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool) {
+	p, ok := s.placements[raftShardKey{tenantID: tenantID, database: db}]
+	return p, ok
 }
 
 func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {

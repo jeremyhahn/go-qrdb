@@ -78,6 +78,18 @@ check quorum → build member map → `StartShard`.**
 
 ### Member identities
 
+Adding a replica is `cluster.IdentityResolver` over go-quicraft's committed
+memberships (`service.ResolveMemberIdentity` for a host): the target shard's
+`Membership.Identities` for a replica it already names, else the system shard's
+identity for the host at the replica's Raft address, else the operator's
+override, else a typed refusal. An override is validated and checked against
+any committed identity. A transport-less host reads nothing and commits none.
+Every add then goes through go-quicraft's `*WithIdentity` API
+(`service.Host.RequestAddNodeWithIdentity`, `RequestAddObserverWithIdentity`);
+the identity-less forms are no longer called anywhere. The dedicated-shard
+factory builds a founder's `MemberIdentities` for every placement replica the
+same way (a joiner keeps whichever anchors resolve).
+
 go-quicraft (0.13 and later) admits a member of a shard on a host with a
 transport by its node identity alone, and refuses a founding `StartShard` whose
 `Config.MemberIdentities` omits a member, or a joining one that names no anchor.
@@ -329,7 +341,7 @@ type AdminClient interface {
 	Health(ctx context.Context) (*HealthResponse, error)
 	Status(ctx context.Context) (*StatusResponse, error)
 	Peers(ctx context.Context) (*PeersResponse, error)
-	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
 	RequestSnapshot(ctx context.Context, shardID uint64) error
 	Drain(ctx context.Context) error
@@ -350,7 +362,7 @@ wire RPCs**:
 cc := client.Cluster()
 members, _ := cc.Members(ctx, shardID)        // filtered from Peers()
 leader, ok, _ := cc.Leader(ctx, shardID)      // from GetShardState()
-_ = cc.AddReplica(ctx, shardID, id, raftAddr) // delegates to AddMember
+_ = cc.AddReplica(ctx, shardID, id, raftAddr, identity) // delegates to AddMember
 _ = cc.RemoveReplica(ctx, shardID, id)        // delegates to RemoveMember
 ch, _ := cc.WatchMembership(ctx, shardID)     // polls, emits deltas
 // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
@@ -486,8 +498,17 @@ type ImbalanceReport struct {
 | Discovery finds no peers | `BootstrapShard` fails at the quorum check | **yes** |
 | Multi-node start with no identity for a member (founder) or no anchor (joiner) | `StartShard` refuses with `*quicraft.InvalidMemberError`; the node does not start | **yes** |
 | Malformed `raft.member_identities`, or a local entry that is not the certificate's | `*MemberIdentityParseError` / `*MemberIdentityFormatError` / `*MemberIdentityMismatchError` before the host is built | **yes** |
-| `AddMember`, rebalance or placement adding a replica on a host with a transport | refused by go-quicraft with `ErrMemberIdentityRequired`: these paths carry no identity yet | **yes** |
-| Founding a dedicated (IsolationRaft) database with more than one initial replica on a host with a transport | refused by go-quicraft with `*quicraft.InvalidMemberError`: the factory can state only the local replica's identity | **yes** |
+| Adding a replica on a brand-new node (no committed membership names it) with no identity supplied | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityUnknownError`, which names the replica and `qrdbd node-identity --cert`; gRPC/MCP `FAILED_PRECONDITION`, QUIC `StatusFailedPrecondition`, REST 412 | **yes** |
+| A supplied identity contradicting the one committed for that replica or host | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityConflictError`; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
+| The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
+| An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| Admin `StartShard` naming a member no committed membership names (founder) | `*service.MemberIdentityError`, coded as for member add; the shard does not start. A joiner leaves the member out and keeps the anchors it can resolve | **yes** |
+| Rebalance move of the system shard | `*service.RebalanceSystemShardMoveError`, logged; the move counts as failed | **yes** |
+| Rebalance move to a host the shard's committed membership already names (voter, observer or witness) | `*service.RebalanceTargetHostsReplicaError`, logged; the move counts as failed. The new replica ID is past every ID the membership has used, removed ones included | **yes** |
+| Rebalance move to a host with no committed identity | `*service.MemberIdentityError`, logged; the move counts as failed | **yes** |
+| Founding a dedicated database whose placement names a host the system shard never committed | `*service.MemberIdentityError` from the factory; the shard does not start | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
 | Any bootstrap join (bootstrap flags set), this release | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that still dials. | **yes** |

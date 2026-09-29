@@ -320,3 +320,102 @@ func putUntilCommitted(ctx context.Context, kv transport.KVClient, key string, v
 		}
 	}
 }
+
+// TestRunningCluster_AddReplica_Identity drives go-qrdb#556's add paths on a
+// real three-replica cluster built through NewClusteredNode:
+//
+//   - a brand-new fourth node joins when the operator supplies its identity
+//     (the override) — the leader commits it with the replica, and the new
+//     replica catches up and serves a write;
+//   - an override that contradicts the identity already committed for a
+//     replica is refused with a typed error;
+//   - a new node with no identity, which no committed membership names, is
+//     refused with a typed error that says how to get one.
+func TestRunningCluster_AddReplica_Identity(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 4)
+	founders := replicas[:3]
+	nodes, err := bootFormationCluster(t, ca, founders, func(self uint64) string {
+		return peerIdentitySpecs(t, self, founders)
+	})
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	leader := awaitAgreedLeader(t, nodes)
+	admin := nodes[leader-1].Client().Admin()
+
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
+
+	t.Run("override contradicting a committed identity is refused", func(t *testing.T) {
+		stranger, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
+		if err != nil {
+			t.Fatalf("MemberIdentityFromPEM: %v", err)
+		}
+		err = admin.AddMember(ctx, shard.ShardKV, 2, replicas[1].addr, stranger)
+		var conflict *cluster.MemberIdentityConflictError
+		if !errors.As(err, &conflict) || conflict.ReplicaID != 2 {
+			t.Fatalf("AddMember = %v, want *cluster.MemberIdentityConflictError for replica 2", err)
+		}
+	})
+
+	t.Run("new node without an identity is refused", func(t *testing.T) {
+		err := admin.AddMember(ctx, shard.ShardKV, 9, "127.0.0.1:9", "")
+		var unknown *cluster.MemberIdentityUnknownError
+		if !errors.As(err, &unknown) || unknown.ReplicaID != 9 {
+			t.Fatalf("AddMember = %v, want *cluster.MemberIdentityUnknownError for replica 9", err)
+		}
+		if !strings.Contains(err.Error(), "qrdbd node-identity --cert") {
+			t.Fatalf("refusal must say how to get the identity: %v", err)
+		}
+	})
+
+	t.Run("fourth replica joins with an operator-supplied identity", func(t *testing.T) {
+		fourth := replicas[3]
+		identity, err := MemberIdentityFromPEM(fourth.cert.CertPEM)
+		if err != nil {
+			t.Fatalf("MemberIdentityFromPEM: %v", err)
+		}
+		if err := admin.AddMember(ctx, shard.ShardKV, fourth.id, fourth.addr, identity); err != nil {
+			t.Fatalf("AddMember(4) with its identity: %v", err)
+		}
+
+		// The joiner names the founders as the replicas it accepts its
+		// bootstrap from.
+		cfg := formationConfig(t, fourth, peerIdentitySpecs(t, fourth.id, replicas))
+		cfg.Raft.Join = true
+		members := make(map[uint64]string, len(replicas))
+		for _, r := range replicas {
+			members[r.id] = r.addr
+		}
+		mtls := &RaftMTLSConfig{CACert: mustReadCAPEM(t, ca), Cert: fourth.cert.CertPEM, Key: fourth.cert.KeyPEM}
+		joiner, err := NewClusteredNode(context.Background(), cfg, members, nil, WithRaftMTLS(mtls))
+		if err != nil {
+			t.Fatalf("NewClusteredNode(joiner): %v", err)
+		}
+		t.Cleanup(func() { _ = joiner.Close() })
+
+		if err := putUntilCommitted(ctx, nodes[leader-1].Client().KV(), "formation/fourth", []byte("joined")); err != nil {
+			t.Fatalf("write through the leader: %v", err)
+		}
+		// The joiner serves the write once it has caught up from the leader.
+		deadline := time.Now().Add(clusterFormationBudget)
+		for {
+			got, err := joiner.Client().KV().Get(ctx, "formation/fourth")
+			if err == nil && string(got) == "joined" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the fourth replica never served the write (last: %q, %v)", got, err)
+			}
+			time.Sleep(clusterPollInterval)
+		}
+
+		m, err := nodes[leader-1].host.(*quicraft.Host).SyncGetShardMembership(ctx, shard.ShardKV)
+		if err != nil {
+			t.Fatalf("SyncGetShardMembership: %v", err)
+		}
+		if m.Identities[fourth.id] != identity {
+			t.Fatalf("committed identity for replica 4 = %q, want %q", m.Identities[fourth.id], identity)
+		}
+	})
+}

@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -215,7 +216,8 @@ func TestE2E_AddMember_HappyPath(t *testing.T) {
 	srv.SetResponder("admin.AddMember", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
-	if err := tr.AddMember(context.Background(), 7, 8, "host:9"); err != nil {
+	identity := "spki:" + strings.Repeat("ab", 32)
+	if err := tr.AddMember(context.Background(), 7, 8, "host:9", identity); err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
 	// Read the marshaled request through the harness's mutex-protected recorder
@@ -229,8 +231,8 @@ func TestE2E_AddMember_HappyPath(t *testing.T) {
 	if err := proto.Unmarshal(rec.Payload, &r); err != nil {
 		t.Fatalf("unmarshal recorded request: %v", err)
 	}
-	if r.GetShardId() != 7 || r.GetReplicaId() != 8 || r.GetRaftAddress() != "host:9" {
-		t.Fatalf("captured = shard:%d rep:%d addr:%q", r.GetShardId(), r.GetReplicaId(), r.GetRaftAddress())
+	if r.GetShardId() != 7 || r.GetReplicaId() != 8 || r.GetRaftAddress() != "host:9" || r.GetMemberIdentity() != identity {
+		t.Fatalf("captured = shard:%d rep:%d addr:%q identity:%q", r.GetShardId(), r.GetReplicaId(), r.GetRaftAddress(), r.GetMemberIdentity())
 	}
 }
 

@@ -250,7 +250,7 @@ func WithLocalNodeID(nodeID string) DatabaseServiceOption {
 
 // WithRaftHost sets the Raft membership-change handle used to invite follower
 // replicas immediately after a dedicated-raft (IsolationRaft) database is
-// placed. When nil, the RequestAddNode step is skipped and the per-node
+// placed. When nil, the RequestAddNodeWithIdentity step is skipped and the per-node
 // TenantShardReconciler converges the follower start on subsequent ticks.
 func WithRaftHost(h RaftHost) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.raftHost = h }
@@ -1542,7 +1542,7 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 // node are serialized via scaleMu so PlaceAdditional's ReplicaID assignment
 // (based on the current placement's max ReplicaID) and selectReplicasToRemove
 // always observe a placement no other in-flight scale call is also mutating.
-// Cross-node races are excluded upstream: RequestAddNode/RequestRemoveNode are
+// Cross-node races are excluded upstream: RequestAddNodeWithIdentity/RequestRemoveNode are
 // hard-rejected on any non-leader node, and non-leader transports forward to
 // the leader rather than serving the request locally.
 // resolveScaleLeader determines whether the local node is the current Raft
@@ -1564,7 +1564,7 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 // today's local-execution behavior), when the local node is confirmed to be
 // the current leader, or when the current leader cannot be determined
 // locally (degrades to local execution so the underlying
-// RequestAddNode/RequestRemoveNode call, which performs its own leader
+// RequestAddNodeWithIdentity/RequestRemoveNode call, which performs its own leader
 // check, surfaces the definitive error). Returns (false, leaderAddr, nil)
 // when another node is the leader (or, when the local node is not even a
 // member of the group, the address of any member): leaderAddr is always a
@@ -1655,7 +1655,7 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 	}
 
 	// A membership change must be issued on the dedicated group's current
-	// Raft leader: go-quicraft rejects RequestAddNode/RequestRemoveNode on
+	// Raft leader: go-quicraft rejects RequestAddNodeWithIdentity/RequestRemoveNode on
 	// any other member, and a node that does not host the shard at all
 	// cannot even ask (quicraft.ErrShardNotFound). Resolve this ONCE, up
 	// front -- before quota reservation -- so a forwarded retry performs
@@ -1746,7 +1746,7 @@ func scaleInfoFromPlacement(db *database.Database, p *placement.Placement) *data
 // pulls the key during its own shard start sequence). A placement-put OR
 // AddObserver failure fails the call and stops processing further replicas:
 // unlike key delivery, nothing else in the system retries a config change
-// that RequestAddObserver itself reported as failed, so silently continuing
+// that RequestAddObserverWithIdentity itself reported as failed, so silently continuing
 // here would return a false success to the caller while the replica never
 // actually joined the group. Only the unconsumed portion of the quota
 // reservation (delta - the number of replicas actually persisted to

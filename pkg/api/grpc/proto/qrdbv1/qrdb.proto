@@ -1975,6 +1975,11 @@ message AddMemberRequest {
     uint64 shard_id = 1;
     uint64 replica_id = 2;
     string raft_address = 3;
+    // member_identity is the operator-supplied Raft member identity
+    // (spki:<sha256-hex>) of the replica. Empty means "the identity the
+    // cluster has already committed for this replica or its host". Required
+    // for a node no committed membership names yet.
+    string member_identity = 4;
 }
 
 // RemoveMemberRequest is the request payload for RemoveMember.

@@ -449,15 +449,16 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 }
 
 // AddMember adds a new replica to the specified shard.
-func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
 	_, err := t.client.AddMember(ctx, &pb.AddMemberRequest{
-		ShardId:     shardID,
-		ReplicaId:   replicaID,
-		RaftAddress: raftAddr,
+		ShardId:        shardID,
+		ReplicaId:      replicaID,
+		RaftAddress:    raftAddr,
+		MemberIdentity: identity,
 	})
 	if err != nil {
 		return mapGRPCError("AddMember", err)

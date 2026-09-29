@@ -164,7 +164,7 @@ func (m *dbTestAdminService) Status(_ context.Context) (*service.StatusInfo, err
 
 func (m *dbTestAdminService) Peers(_ context.Context) (*service.PeersInfo, error) { return nil, nil }
 
-func (m *dbTestAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *dbTestAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 

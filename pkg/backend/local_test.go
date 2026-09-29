@@ -322,7 +322,13 @@ func TestLocalBackend_RequestAddNode(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
 
-	_, err := lb.RequestAddNode(context.Background(), 1, 2, "addr", 0)
+	if lb.NodeIdentity() != "" {
+		t.Fatal("a local backend has no transport and so no node identity")
+	}
+	if _, err := lb.SyncGetShardMembership(context.Background(), 1); err == nil {
+		t.Fatal("a local backend has no Raft membership to read")
+	}
+	_, err := lb.RequestAddNodeWithIdentity(context.Background(), 1, 2, "addr", "", 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -336,7 +342,7 @@ func TestLocalBackend_RequestAddNode_ReturnsNilState(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
 
-	rs, _ := lb.RequestAddNode(context.Background(), 1, 2, "addr", 0)
+	rs, _ := lb.RequestAddNodeWithIdentity(context.Background(), 1, 2, "addr", "", 0)
 	if rs != nil {
 		t.Fatal("expected nil RequestState")
 	}

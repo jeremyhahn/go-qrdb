@@ -142,6 +142,9 @@ type membershipAddRequest struct {
 	ShardID   uint64 `json:"shard_id"`
 	ReplicaID uint64 `json:"replica_id"`
 	Address   string `json:"address"`
+	// Identity is the optional operator-supplied member identity; see
+	// service.AdminServicer.AddMember.
+	Identity string `json:"identity,omitempty"`
 }
 
 // membershipRemoveRequest is the JSON payload for POST /membership/remove.
@@ -660,6 +663,17 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 // Membership and snapshot handlers
 // ---------------------------------------------------------------------------
 
+// membershipChangeStatus is the HTTP status for a failed membership add: the
+// status pkg/api/errclass gives a member-identity refusal when the failure is
+// one, else 500.
+func membershipChangeStatus(err error) int {
+	var mie *service.MemberIdentityError
+	if errors.As(err, &mie) {
+		return mapHTTPError(err)
+	}
+	return http.StatusInternalServerError
+}
+
 // handleMembershipAdd handles POST /membership/add. When the local node is
 // not the shard's Raft leader and leader forwarding is configured, the
 // request is transparently proxied to the leader (see tryForwardWrite),
@@ -681,11 +695,11 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	if err := s.adminSvc.AddMember(ctx, req.ShardID, req.ReplicaID, req.Address); err != nil {
+	if err := s.adminSvc.AddMember(ctx, req.ShardID, req.ReplicaID, req.Address, req.Identity); err != nil {
 		if s.tryForwardWrite(w, r, body, err) {
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "add", Err: err})
+		writeErrorJSON(w, membershipChangeStatus(err), &MembershipError{Op: "add", Err: err})
 		return
 	}
 

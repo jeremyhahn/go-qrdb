@@ -146,9 +146,17 @@ balancer can probe a node without credentials.
 **By hand:**
 
 ```bash
-qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4
+qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4 \
+  --identity "$(qrdbd node-identity --cert node4-cert.pem)"
 qrdb admin member remove 4 --shard-id 1
 ```
+
+A brand-new node needs `--identity` once: the cluster has never committed its
+identity, and cannot learn it safely from the node itself. Start the new node
+with `raft.join: true` and the existing members in its
+`raft.member_identities`. Once it is a member, its identity is committed, and
+every later add of a replica on that node — rebalancing, dedicated databases,
+re-adding it — looks it up without you.
 
 **Automatically.** The membership manager reconciles the Raft group as nodes
 come and go, using leases and watches: each node holds a lease-backed member
@@ -233,9 +241,14 @@ different key than the certificate it was started with — usually a copy-paste
 from another node, or a certificate reissued on a new key. Remove the local
 entry or correct it.
 
-**`member add` fails with `member identity required`.** Adding a replica to a
-running multi-node cluster needs its identity, which that verb cannot carry
-yet. Name every member when the cluster is formed.
+**`member add` says there is no committed member identity for the replica.**
+The node is new to the cluster. Print its identity with
+`qrdbd node-identity --cert <its certificate>` and pass it with `--identity`.
+
+**`member add` says the identity contradicts the committed identity.** The
+cluster already committed a different key for that replica or host — usually a
+copy-paste from another node, or a node reissued on a new key. Check the
+certificate; a node on a new key must be removed and re-added.
 
 **Multicast finds nothing.** Every node needs the *same* operator-chosen PSK,
 and there is no default. A mismatch looks exactly like "no peers on the

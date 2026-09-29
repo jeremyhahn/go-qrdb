@@ -439,6 +439,10 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr)
 		if rOK {
 			members := pInfo.Members()
+			// Every replica the placement names, kept apart from members
+			// (which the join path clears): it is who the founding
+			// identities cover and who a joiner accepts its bootstrap from.
+			peers := pInfo.Members()
 			join := localReplica.State == placement.ReplicaStateObserver
 			// The LOCAL role must agree with the replicated membership for
 			// the whole observer window (go-quicraft checkSelfRole latches a
@@ -457,8 +461,8 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 			if join {
 				members = nil
 			}
-			rs, merr := f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, join, isObserver, members, dedicatedWAL)
+			rs, merr := f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
+				localReplica.ReplicaID, join, isObserver, members, peers, dedicatedWAL)
 			if merr != nil && isObserver && !join && errors.Is(merr, quicraft.ErrNonVotingRoleInMembers) {
 				// An ObserverReady replica with NO persisted shard state: its
 				// prior join bootstrap was wiped (demotion purge racing a
@@ -474,8 +478,8 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 					slog.String("database", db),
 					slog.Uint64("shard_id", shardID),
 					slog.Uint64("replica_id", localReplica.ReplicaID))
-				rs, merr = f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-					localReplica.ReplicaID, true, true, nil, dedicatedWAL)
+				rs, merr = f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
+					localReplica.ReplicaID, true, true, nil, peers, dedicatedWAL)
 			}
 			if merr != nil {
 				return nil, merr
@@ -485,7 +489,7 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		}
 	}
 
-	rs, err := f.startShard(tenantID, db, shardID, dataDir, tb, dedicatedWAL)
+	rs, err := f.startShard(ctx, tenantID, db, shardID, dataDir, tb, dedicatedWAL)
 	if err != nil {
 		return nil, err
 	}
@@ -560,9 +564,9 @@ func (f *RaftBackendFactory) StartedAsObserver(tenantID, db string) bool {
 // startShard starts a single-node dedicated shard using the factory's local
 // replica ID and address. It is the Phase-4b compatibility path: a single local
 // replica bootstrapped with join=false. Caller holds f.mu.
-func (f *RaftBackendFactory) startShard(tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
+func (f *RaftBackendFactory) startShard(ctx context.Context, tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
 	members := map[uint64]string{f.localReplicaID: f.localRaftAddr}
-	return f.startShardAsMember(tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, dedicatedWAL)
+	return f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, members, dedicatedWAL)
 }
 
 // startShardAsMember builds the per-shard subsystems and starts the shard on
@@ -575,6 +579,7 @@ func (f *RaftBackendFactory) startShard(tenantID, db string, shardID uint64, dat
 // Leader shards wait for leadership election before binding services. Joining
 // followers do not wait for leadership — they are not the leader.
 func (f *RaftBackendFactory) startShardAsMember(
+	ctx context.Context,
 	tenantID, db string,
 	shardID uint64,
 	dataDir string,
@@ -583,6 +588,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 	join bool,
 	isObserver bool,
 	members map[uint64]string,
+	peers map[uint64]string,
 	dedicatedWAL bool,
 ) (*raftShard, error) {
 	// quicraftconfig.Config.DataDir must be an absolute path; the volume-pool
@@ -614,14 +620,18 @@ func (f *RaftBackendFactory) startShardAsMember(
 		DataDir:    absDir,
 		IsObserver: isObserver,
 	}
-	// A host with a transport admits a member by its node identity alone
-	// (go-qrdb#556). This replica's own is the one identity the factory can
-	// state without an out-of-band source: it is the identity the shared
-	// host's transport presents. It is "" on a transport-less host, which
-	// needs none.
-	if self := f.host.NodeIdentity(); self != "" && !join {
-		shardCfg.MemberIdentities = map[uint64]string{replicaID: self}
+	// Every peer is placed on an existing cluster node, whose identity the
+	// system shard has already committed.
+	identities, err := service.MemberIdentities(ctx, f.host, shardID, replicaID, join, peers)
+	if err != nil {
+		if registeredWAL != nil {
+			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
+				_ = detached.Close()
+			}
+		}
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "member-identities", Err: err}
 	}
+	shardCfg.MemberIdentities = identities
 	if err := f.host.StartShard(members, join, createFn, shardCfg); err != nil {
 		if registeredWAL != nil {
 			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {

@@ -560,7 +560,7 @@ func (s *qrdbServiceServer) AddMember(ctx context.Context, req *pb.AddMemberRequ
 	if s.adminSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
 	}
-	if err := s.adminSvc.AddMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress()); err != nil {
+	if err := s.adminSvc.AddMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress(), req.GetMemberIdentity()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil

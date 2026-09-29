@@ -18,16 +18,18 @@ import (
 	"context"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // raftPromoter adapts the shared *quicraft.Host to the Promoter interface
 // TenantShardReconciler uses to promote a caught-up (ReplicaStateObserverReady)
-// non-voting observer to a full voting member. It wraps RequestAddNode +
+// non-voting observer to a full voting member. It wraps RequestAddNodeWithIdentity +
 // rs.ResultC() into a single blocking call, mirroring
 // cmd/qrdbd's raftFollowerAdder (the DatabaseService.RaftHost adapter) --
-// PromoteObserver reuses the exact same RequestAddNode config change
+// PromoteObserver reuses the exact same RequestAddNodeWithIdentity config change
 // AddFollowerNode issues for a founding member, because go-quicraft treats
-// RequestAddNode targeting an EXISTING observer's replica ID as an
+// RequestAddNodeWithIdentity targeting an EXISTING observer's replica ID as an
 // observer -> voter promotion rather than a fresh add (see go-quicraft
 // host.go's requestConfigChange pre-registration comment).
 type raftPromoter struct {
@@ -46,13 +48,20 @@ func (p *raftPromoter) LeaderReplicaID(_ context.Context, shardID uint64) (uint6
 	return p.host.GetLeaderID(shardID)
 }
 
-// PromoteObserver calls RequestAddNode on the shared Raft host, targeting an
+// PromoteObserver calls RequestAddNodeWithIdentity on the shared Raft host, targeting an
 // existing observer's replicaID, and blocks until the config change commits
 // or ctx is cancelled. Only the shard's current leader can successfully
 // issue this call; TenantShardReconciler.maybePromoteReadyObservers confirms
 // local leadership via LeaderReplicaID before calling it.
+//
+// The observer is already in the shard's committed membership, so its
+// committed identity is carried into the promotion.
 func (p *raftPromoter) PromoteObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := p.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
+	identity, err := service.ResolveMemberIdentity(ctx, p.host, shardID, replicaID, raftAddr, "")
+	if err != nil {
+		return err
+	}
+	rs, err := p.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
 	if err != nil {
 		return err
 	}

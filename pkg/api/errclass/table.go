@@ -16,6 +16,7 @@ package errclass
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -23,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -56,6 +58,11 @@ var dominantRules = []rule{
 	// the way -- a missing store, a lost leader, a read fault -- so the
 	// refusal wins over the cause it wraps.
 	as(&tenant.TenantDataProbeError{TenantID: "acme", Err: tenant.ErrTenantNotFound}, Unavailable),
+
+	// The identity a membership add needs could not be settled. Its refusal
+	// kind decides the class, not whatever the membership read met on the way
+	// (a lost leader, a missing record), so it wins over the cause it wraps.
+	memberIdentityRule,
 
 	// A relational table written under a key layout that predates table
 	// generations and index incarnations (v0.20.0 through v0.21.0) is refused
@@ -601,6 +608,38 @@ var genericRules = []rule{
 	// either at request time is a server fault, not the caller's.
 	is(credentials.ErrInvalidStrategy, Internal),
 	is(credentials.ErrNilBarrier, Internal),
+}
+
+// memberIdentityClasses is the class of each member-identity refusal kind.
+// A malformed override is the caller's input; an override contradicting a
+// committed identity is a conflict with the membership's current state; a node
+// no committed membership names, with no override, is a precondition the
+// operator restores by supplying its identity; an unreadable membership is
+// retryable.
+var memberIdentityClasses = map[service.MemberIdentityRefusal]Class{
+	service.IdentityInvalid:               InvalidArgument,
+	service.IdentityConflict:              FailedPrecondition,
+	service.IdentityUnknown:               PreconditionFailed,
+	service.IdentityMembershipUnavailable: Unavailable,
+}
+
+// memberIdentityRule recognises a *service.MemberIdentityError and classes it
+// by its transport-neutral refusal kind.
+var memberIdentityRule = rule{
+	name: "service.MemberIdentityError",
+	classify: func(err error) (Class, bool) {
+		var mie *service.MemberIdentityError
+		if !errors.As(err, &mie) {
+			return Unclassified, false
+		}
+		return memberIdentityClasses[mie.Refusal()], true
+	},
+	samples: []error{
+		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MemberIdentityFormatError{Identity: "x"}},
+		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MemberIdentityConflictError{ReplicaID: 2}},
+		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MemberIdentityUnknownError{ReplicaID: 4}},
+		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MembershipReadError{ShardID: 1, Err: service.ErrNodeClosed}},
+	},
 }
 
 // tableLayoutUnsupportedRule recognises service.IsTableLayoutUnsupported: the

@@ -235,7 +235,7 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	}}, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 

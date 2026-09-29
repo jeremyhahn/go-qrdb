@@ -209,6 +209,8 @@ func (m *mockKVService) ListEntities(ctx context.Context, req *service.ListEntit
 // ---------------------------------------------------------------------------
 
 type mockAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity       string
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
 	statusFn          func(ctx context.Context) (*service.StatusInfo, error)
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
@@ -244,7 +246,8 @@ func (m *mockAdminService) Peers(ctx context.Context) (*service.PeersInfo, error
 	return &service.PeersInfo{}, nil
 }
 
-func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	m.addIdentity = identity
 	if m.addMemberFn != nil {
 		return m.addMemberFn(ctx, shardID, replicaID, raftAddr)
 	}

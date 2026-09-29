@@ -28,6 +28,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,6 +217,8 @@ func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _
 }
 
 type mockAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity     atomic.Value
 	healthResult    *service.HealthStatus
 	statusResult    *service.StatusInfo
 	peersResult     *service.PeersInfo
@@ -279,7 +282,8 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	return m.peersResult, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, identity string) error {
+	m.addIdentity.Store(identity)
 	return m.addMemberErr
 }
 
@@ -1014,7 +1018,7 @@ func TestAddMember(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
 
-	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001", "")
 	if err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
@@ -1026,7 +1030,7 @@ func TestAddMember_ServiceError(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), adminSvc)
 	defer cleanup()
 
-	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1041,7 +1045,7 @@ func TestAddMember_OnClosedTransport(t *testing.T) {
 	defer cleanup()
 
 	_ = tr.Close()
-	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001")
+	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001", "")
 	if err == nil {
 		t.Fatal("expected error on closed transport")
 	}
@@ -1805,4 +1809,20 @@ func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, 
 // so the filtered and unfiltered enumerations are the same call.
 func (m *mockKVService) ListAll(a0 context.Context, prefix string) ([]string, error) {
 	return m.List(a0, prefix)
+}
+
+// TestAddMember_CarriesIdentity pins that the operator-supplied member
+// identity reaches the server's admin service over this transport.
+func TestAddMember_CarriesIdentity(t *testing.T) {
+	admin := newMockAdminService()
+	tr, cleanup := connectTransport(t, newMockKVService(), admin)
+	defer cleanup()
+
+	identity := "spki:" + strings.Repeat("ab", 32)
+	if err := tr.AddMember(context.Background(), 1, 4, "127.0.0.4:63001", identity); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if got, _ := admin.addIdentity.Load().(string); got != identity {
+		t.Fatalf("server received identity %q, want %q", got, identity)
+	}
 }

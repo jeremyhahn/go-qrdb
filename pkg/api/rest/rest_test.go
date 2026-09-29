@@ -172,6 +172,8 @@ func (m *mockKVService) ExistsWithConsistency(_ context.Context, _ string, _ con
 
 // mockAdminService implements service.AdminServicer for testing.
 type mockAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity       string
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
 	statusFn          func(ctx context.Context) (*service.StatusInfo, error)
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
@@ -223,7 +225,8 @@ func (m *mockAdminService) Peers(ctx context.Context) (*service.PeersInfo, error
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, addr string) error {
+func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, addr, identity string) error {
+	m.addIdentity = identity
 	if m.addMemberFn != nil {
 		return m.addMemberFn(ctx, shardID, replicaID, addr)
 	}

@@ -49,18 +49,21 @@ qrdb admin topology --output json
 
 Add a replica to a shard.
 
-On a multi-node cluster this is currently refused by go-quicraft with
-`member identity required`: the verb carries no member identity, and a replica
-is admitted by its identity alone. Form the cluster with every member named in
-`--member-identities` instead.
+The replica is committed with its Raft member identity. A node the cluster
+already knows needs nothing more: its identity is read from the committed
+membership. A brand-new node needs `--identity`, printed from its certificate
+by `qrdbd node-identity --cert`; without it the add is refused with a message
+saying so. An `--identity` that contradicts the committed one is refused.
 
 | Flag | Type | Meaning |
 |---|---|---|
 | `--shard-id` | uint | shard ID |
 | `--replica-id` | uint | replica ID |
+| `--identity` | string | the replica's member identity (`spki:<hex>`); required only for a node no committed membership names |
 
 ```bash
-qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4
+qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4 \
+  --identity "$(qrdbd node-identity --cert node4-cert.pem)"
 ```
 
 ## `qrdb admin member remove <replica-id>`

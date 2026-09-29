@@ -82,8 +82,8 @@ type JoinObserver interface {
 // observer replica to full voting membership, and reports which replica
 // currently leads a shard. Satisfied by a thin wrapper over the shared
 // quicraft.Host (see raftPromoter). PromoteObserver is a thin wrapper
-// around the same RequestAddNode config change used to admit a founding
-// follower -- go-quicraft treats RequestAddNode targeting an EXISTING
+// around the same RequestAddNodeWithIdentity config change used to admit a founding
+// follower -- go-quicraft treats RequestAddNodeWithIdentity targeting an EXISTING
 // observer's replica ID as an observer -> voter promotion rather than a
 // fresh add (see go-quicraft host.go's requestConfigChange pre-registration
 // comment). Only the shard's current Raft leader may successfully call
@@ -400,7 +400,7 @@ func (r *TenantShardReconciler) maybePromoteToObserverReady(ctx context.Context,
 // maybePromoteReadyObservers promotes every ReplicaStateObserverReady
 // replica of p to a full voting member (ReplicaStateActive), but ONLY when
 // this node is confirmed to be the shard's current Raft leader — go-quicraft
-// hard-rejects the underlying RequestAddNode config change on any other
+// hard-rejects the underlying RequestAddNodeWithIdentity config change on any other
 // member, so a non-leader attempt would simply fail every tick. It is a
 // no-op when no Promoter is wired, when the local node is not a member of
 // p at all, or when the local node is not (or cannot be confirmed as) the

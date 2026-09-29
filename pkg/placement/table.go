@@ -51,7 +51,7 @@ const (
 	// ReplicaStateObserver is a replica added by PlaceAdditional (scale-up)
 	// that has not yet received its first snapshot. It is admitted into the
 	// Raft group as a NON-VOTING observer (RaftHost.AddObserver /
-	// go-quicraft RequestAddObserver) so its addition never changes the
+	// go-quicraft RequestAddObserverWithIdentity) so its addition never changes the
 	// group's voting quorum size. Its FIRST attach uses join=true. The
 	// reconciler running on the node that hosts this replica transitions it
 	// to ReplicaStateObserverReady once go-quicraft reports the join
@@ -63,7 +63,7 @@ const (
 	// that has caught up (received its first snapshot / left the join
 	// bootstrap window) but has not yet been promoted to a full voting
 	// member. Only the shard's current Raft leader can perform that
-	// promotion (RequestAddNode targeting an existing observer's replica ID
+	// promotion (RequestAddNodeWithIdentity targeting an existing observer's replica ID
 	// promotes it — go-quicraft rejects the config change on any other
 	// node), so the reconciler running on the LEADER node is responsible
 	// for the ObserverReady → Active transition; the reconciler on the
@@ -85,7 +85,7 @@ type Replica struct {
 	NodeID string `json:"node_id"`
 
 	// RaftAddr is the node's Raft network address, fed to StartShard /
-	// RequestAddNode when the replica is materialized.
+	// RequestAddNodeWithIdentity when the replica is materialized.
 	RaftAddr string `json:"raft_addr"`
 
 	// DataRoot is the on-disk root under which this replica keeps its

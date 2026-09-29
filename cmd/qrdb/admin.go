@@ -158,6 +158,7 @@ func newAdminMemberCmd() *cobra.Command {
 func newAdminMemberAddCmd() *cobra.Command {
 	var shardID uint64
 	var replicaID uint64
+	var identity string
 
 	cmd := &cobra.Command{
 		Use:   "add <address>",
@@ -166,7 +167,7 @@ func newAdminMemberAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address := args[0]
 
-			if err := client.Admin().AddMember(cmd.Context(), shardID, replicaID, address); err != nil {
+			if err := client.Admin().AddMember(cmd.Context(), shardID, replicaID, address, identity); err != nil {
 				return err
 			}
 
@@ -177,6 +178,7 @@ func newAdminMemberAddCmd() *cobra.Command {
 
 	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Shard ID")
 	cmd.Flags().Uint64Var(&replicaID, "replica-id", 0, "Replica ID")
+	cmd.Flags().StringVar(&identity, "identity", "", "Raft member identity (spki:<hex>, from qrdbd node-identity --cert); required for a node no committed membership names")
 	_ = cmd.MarkFlagRequired("shard-id")
 	_ = cmd.MarkFlagRequired("replica-id")
 

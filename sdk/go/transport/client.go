@@ -117,8 +117,13 @@ type AdminClient interface {
 	// Peers returns the peer membership for all loaded shards.
 	Peers(ctx context.Context) (*PeersResponse, error)
 
-	// AddMember adds a new replica to the specified shard.
-	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+	// AddMember adds a new replica to the specified shard. identity is the
+	// replica's Raft member identity (spki:<sha256-hex>, as printed by
+	// `qrdbd node-identity --cert`), or "" to use the identity the cluster
+	// has already committed for the replica or its host. A node no
+	// committed membership names needs it; an identity that contradicts a
+	// committed one is refused.
+	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 
 	// RemoveMember removes a replica from the specified shard.
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error

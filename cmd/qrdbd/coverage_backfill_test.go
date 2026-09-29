@@ -961,7 +961,7 @@ func (m *minimalAdminServicer) Status(_ context.Context) (*service.StatusInfo, e
 func (m *minimalAdminServicer) Peers(_ context.Context) (*service.PeersInfo, error) {
 	return &service.PeersInfo{}, nil
 }
-func (m *minimalAdminServicer) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *minimalAdminServicer) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 func (m *minimalAdminServicer) RemoveMember(_ context.Context, _, _ uint64) error { return nil }

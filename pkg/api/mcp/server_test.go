@@ -274,7 +274,7 @@ func (m *mockAdminService) Peers(ctx context.Context) (*service.PeersInfo, error
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, _ string) error {
 	if m.addMemberFn != nil {
 		return m.addMemberFn(ctx, shardID, replicaID, raftAddr)
 	}

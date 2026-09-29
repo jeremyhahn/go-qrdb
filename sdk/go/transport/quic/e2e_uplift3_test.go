@@ -113,7 +113,7 @@ func TestE2E_Transport_AddMember_RPCError(t *testing.T) {
 	srv.SetResponder("admin.AddMember", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("add member failed")
 	})
-	assertQuicRequestError(t, tr.AddMember(context.Background(), 1, 2, "127.0.0.1:5001"))
+	assertQuicRequestError(t, tr.AddMember(context.Background(), 1, 2, "127.0.0.1:5001", ""))
 }
 
 func TestE2E_Transport_RemoveMember_RPCError(t *testing.T) {

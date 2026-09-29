@@ -56,9 +56,8 @@ type mockSnapshotHost struct {
 }
 
 var (
-	_ Host                  = (*mockSnapshotHost)(nil)
-	_ snapshotExporter      = (*mockSnapshotHost)(nil)
-	_ shardMembershipReader = (*mockSnapshotHost)(nil)
+	_ Host             = (*mockSnapshotHost)(nil)
+	_ snapshotExporter = (*mockSnapshotHost)(nil)
 )
 
 func newMockSnapshotHost() *mockSnapshotHost {
@@ -101,10 +100,9 @@ func (m *mockSnapshotHost) SyncGetShardMembership(ctx context.Context, shardID u
 	return &quicraft.Membership{Nodes: map[uint64]string{1: "127.0.0.1:9100"}}, nil
 }
 
-// mockExporterOnlyHost implements snapshotExporter but NOT
-// shardMembershipReader, covering a host that supports snapshot import but
-// not linearizable membership queries (RestoreShardOnline must fail closed
-// rather than skip the RF guard).
+// mockExporterOnlyHost implements snapshotExporter over the plain mockHost,
+// whose membership answer a test controls (membershipErr makes it fail, and
+// RestoreShardOnline must then fail closed rather than skip the RF guard).
 type mockExporterOnlyHost struct {
 	*mockHost
 }
@@ -514,18 +512,22 @@ func TestHostShardSnapshotProvider_RestoreShardOnline_Unsupported_NoSnapshotExpo
 	}
 }
 
-func TestHostShardSnapshotProvider_RestoreShardOnline_NoMembershipReader(t *testing.T) {
+// TestHostShardSnapshotProvider_RestoreShardOnline_MembershipUnreadable pins
+// that the RF=1 guard fails closed: a membership that cannot be read is an
+// error, never a skipped guard.
+func TestHostShardSnapshotProvider_RestoreShardOnline_MembershipUnreadable(t *testing.T) {
 	host := newMockExporterOnlyHost()
+	host.membershipErr = errors.New("no leader")
 	restarter := &fakeShardRestarter{}
 	provider := NewHostShardSnapshotProvider(host, WithShardRestarter(restarter))
 
 	err := provider.(OnlineShardRestorer).RestoreShardOnline(context.Background(), 1000, []byte("data"))
-	var unsup *OnlineRestoreUnsupportedError
-	if !errors.As(err, &unsup) {
-		t.Fatalf("expected OnlineRestoreUnsupportedError, got %T: %v", err, err)
+	var snapErr *ShardSnapshotError
+	if !errors.As(err, &snapErr) || !errors.Is(err, host.membershipErr) {
+		t.Fatalf("expected ShardSnapshotError wrapping the membership failure, got %T: %v", err, err)
 	}
-	if unsup.ShardID != 1000 {
-		t.Fatalf("expected ShardID=1000, got %d", unsup.ShardID)
+	if snapErr.ShardID != 1000 {
+		t.Fatalf("expected ShardID=1000, got %d", snapErr.ShardID)
 	}
 	if restarter.stopCalls.Load() != 0 {
 		t.Fatalf("expected no stop attempt when membership cannot be queried, got %d", restarter.stopCalls.Load())

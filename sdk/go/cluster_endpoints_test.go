@@ -109,7 +109,7 @@ func (f *fakeClusterTransport) Peers(context.Context) (*transport.PeersResponse,
 	return f.peersResp, f.peersErr
 }
 
-func (f *fakeClusterTransport) AddMember(_ context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (f *fakeClusterTransport) AddMember(_ context.Context, shardID, replicaID uint64, raftAddr, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addMemberCalls = append(f.addMemberCalls, addMemberCall{shardID: shardID, replicaID: replicaID, raftAddr: raftAddr})
@@ -567,7 +567,7 @@ func TestClusterClient_AddReplica_Success(t *testing.T) {
 	ft := &fakeClusterTransport{}
 	cc := newFakeClusterClient(t, ft)
 
-	if err := cc.AddReplica(context.Background(), 3, 7, "10.0.0.7:9001"); err != nil {
+	if err := cc.AddReplica(context.Background(), 3, 7, "10.0.0.7:9001", ""); err != nil {
 		t.Fatalf("AddReplica: %v", err)
 	}
 	if len(ft.addMemberCalls) != 1 {
@@ -584,7 +584,7 @@ func TestClusterClient_AddReplica_ErrorPropagates(t *testing.T) {
 	ft := &fakeClusterTransport{addMemberErr: sentinel}
 	cc := newFakeClusterClient(t, ft)
 
-	err := cc.AddReplica(context.Background(), 3, 7, "10.0.0.7:9001")
+	err := cc.AddReplica(context.Background(), 3, 7, "10.0.0.7:9001", "")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("AddReplica error = %v, want sentinel %v", err, sentinel)
 	}
@@ -595,7 +595,7 @@ func TestClusterClient_AddReplica_UnknownShardPropagates(t *testing.T) {
 	ft := &fakeClusterTransport{addMemberErr: sentinel}
 	cc := newFakeClusterClient(t, ft)
 
-	err := cc.AddReplica(context.Background(), 99, 1, "10.0.0.1:9001")
+	err := cc.AddReplica(context.Background(), 99, 1, "10.0.0.1:9001", "")
 	var nfe *sdk.ShardNotFoundError
 	if !errors.As(err, &nfe) {
 		t.Fatalf("AddReplica error = %T (%v), want *ShardNotFoundError", err, err)

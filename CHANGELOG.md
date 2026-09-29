@@ -300,11 +300,27 @@ are not reconstructed here — their history is in the git log.
   node's identity from its certificate; each node also logs its own at start.
   A dedicated per-database Raft shard founded on a clustered host states the
   local replica's identity too.
-  Adding a replica to a RUNNING multi-node cluster (`member add`, rebalance,
-  dynamic membership, placement followers) is still refused by go-quicraft
-  with `member identity required`: those paths carry no identity yet. So is
-  founding a dedicated database with more than one initial replica, since the
-  factory can state only the local replica's identity.
+- **Every add path commits the replica's member identity** (#556). go-quicraft
+  commits identities in the shard membership; go-qrdb now reads them from
+  there (`SyncGetShardMembership`) and calls the `*WithIdentity` APIs: member
+  add, rebalance, dynamic membership, the placement reconciler's followers and
+  promotions, founding a multi-replica dedicated database, and the admin
+  `StartShard` (which builds `MemberIdentities` as the founders do). **Breaking
+  (SDK):** `AdminClient.AddMember`, `AdminServicer.AddMember` and
+  `ClusterClient.AddReplica` take an optional identity, carried on all six
+  transports and by `qrdb admin member add --identity`; `service.Host` swaps
+  `RequestAddNode` for `RequestAddNodeWithIdentity` and gains
+  `SyncGetShardMembership` and `NodeIdentity`. A brand-new node needs the
+  identity supplied once (a typed refusal says how); one that contradicts a
+  committed identity is refused, for the system shard too, and an address the
+  committed membership binds to two identities is refused as ambiguous, as is
+  a replica ID the membership already places at another address. A
+  target shard that exists but cannot be read is a retryable refusal rather
+  than a fallback to the host's identity. Rebalance refuses to move the system
+  shard (`*service.RebalanceSystemShardMoveError` — every host already hosts
+  it) or to add a shard to a host its committed membership already names as a
+  voter, observer or witness, picks a replica ID past every one the membership
+  has used, and logs every refused move with its typed cause.
 - **`node.Node.Close` is ordered against `Unseal` and `EnableEncryption`** (#226).
   Per the owner's ruling, `Close` now blocks on an in-flight boot or
   system-scope migration and then tears down what it built, so a boot can no

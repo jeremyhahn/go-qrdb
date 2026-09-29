@@ -157,7 +157,7 @@ func TestE2E_AddMember_ServerError(t *testing.T) {
 	srv.SetResponder("admin.AddMember", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("bad config")
 	})
-	if err := tr.AddMember(context.Background(), 1, 2, "a:1"); err == nil {
+	if err := tr.AddMember(context.Background(), 1, 2, "a:1", ""); err == nil {
 		t.Fatal("expected server error")
 	}
 }

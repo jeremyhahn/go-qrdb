@@ -91,7 +91,9 @@ func (b *AdminBinding) AddMember(shardID, replicaID uint64, raftAddr string) err
 		b.logger.Error("AddMember failed", "error", err)
 		return err
 	}
-	if err := cl.Admin().AddMember(context.Background(), shardID, replicaID, raftAddr); err != nil {
+	// The desktop binding offers no identity field: it adds replicas whose
+	// identity the cluster has already committed.
+	if err := cl.Admin().AddMember(context.Background(), shardID, replicaID, raftAddr, ""); err != nil {
 		b.logger.Error("AddMember failed", "error", err)
 		return err
 	}

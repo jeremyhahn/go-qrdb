@@ -342,7 +342,7 @@ func TestTransport_AddMember_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.AddMember(ctx, 1, 2, "10.0.0.1:63001")
+	err = tr.AddMember(ctx, 1, 2, "10.0.0.1:63001", "")
 	if err == nil {
 		t.Fatal("AddMember() on closed transport should return error")
 	}

@@ -84,6 +84,9 @@ type AddMemberRequest struct {
 	ShardID   uint64 `json:"shard_id"`
 	ReplicaID uint64 `json:"replica_id"`
 	Address   string `json:"address"`
+	// Identity is the optional operator-supplied Raft member identity; see
+	// AdminClient.AddMember.
+	Identity string `json:"identity,omitempty"`
 }
 
 // RemoveMemberRequest is the JSON payload for removing a shard member.

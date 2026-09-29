@@ -34,6 +34,15 @@ import (
 // delegates to a configurable function field, allowing per-test behavior
 // without rebuilding the mock.
 type mockHost struct {
+	// memberships, membershipErr and nodeIdentity model the committed
+	// memberships and transport identity member-identity resolution reads;
+	// addedIdentities records every identity an add committed.
+	memberships     map[uint64]*quicraft.Membership
+	membershipErr   error
+	nodeIdentity    string
+	addedIdentities []string
+	addedReplicaIDs []uint64
+
 	idFn                  func() string
 	raftAddressFn         func() string
 	shardCountFn          func() int
@@ -120,12 +129,30 @@ func (m *mockHost) SyncRead(ctx context.Context, shardID uint64, query interface
 	return nil, nil
 }
 
-func (m *mockHost) RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string, configChangeIndex uint64) (*quicraft.RequestState, error) {
+func (m *mockHost) RequestAddNodeWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error) {
+	m.addedIdentities = append(m.addedIdentities, identity)
+	m.addedReplicaIDs = append(m.addedReplicaIDs, replicaID)
 	if m.requestAddNodeFn != nil {
 		return m.requestAddNodeFn(ctx, shardID, replicaID, addr)
 	}
 	return nil, nil
 }
+
+// SyncGetShardMembership answers from memberships, keyed by shard; a shard
+// with no entry is an empty membership, as go-quicraft reports a shard that
+// committed no members.
+func (m *mockHost) SyncGetShardMembership(_ context.Context, shardID uint64) (*quicraft.Membership, error) {
+	if m.membershipErr != nil {
+		return nil, m.membershipErr
+	}
+	if mb, ok := m.memberships[shardID]; ok {
+		return mb, nil
+	}
+	return &quicraft.Membership{Identities: map[uint64]string{}}, nil
+}
+
+// NodeIdentity returns nodeIdentity: "" models a transport-less host.
+func (m *mockHost) NodeIdentity() string { return m.nodeIdentity }
 
 func (m *mockHost) RequestRemoveNode(ctx context.Context, shardID, replicaID uint64, configChangeIndex uint64) (*quicraft.RequestState, error) {
 	if m.requestRemoveNodeFn != nil {
@@ -912,7 +939,7 @@ func TestAdminService_AddMember_Success(t *testing.T) {
 	}
 
 	svc := NewAdminService(host)
-	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100", "")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -927,7 +954,7 @@ func TestAdminService_AddMember_RequestError(t *testing.T) {
 	}
 
 	svc := NewAdminService(host)
-	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -953,7 +980,7 @@ func TestAdminService_AddMember_ResultError(t *testing.T) {
 	}
 
 	svc := NewAdminService(host)
-	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1048,7 +1075,7 @@ func TestAdminService_AddMember_NotLeaderError_RequestError(t *testing.T) {
 	}
 
 	svc := NewAdminService(host)
-	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1087,7 +1114,7 @@ func TestAdminService_AddMember_NotLeaderError_ResultError(t *testing.T) {
 	}
 
 	svc := NewAdminService(host)
-	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100", "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
