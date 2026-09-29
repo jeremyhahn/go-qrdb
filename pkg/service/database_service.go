@@ -959,6 +959,16 @@ func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string
 	return s.barrierMgr.BarrierStatus(name)
 }
 
+// isolationBarrierDataPath maps each tenant isolation mode that serves its
+// databases from a tenant-owned store to that store's description. A
+// per-database barrier under one of these modes would wrap a store no request
+// reads, so CreateForTenantWithCredentials refuses it with
+// database.BarrierOffDataPathError.
+var isolationBarrierDataPath = map[tenant.IsolationType]string{
+	tenant.IsolationVolume: database.ServedByVolumeTenantStore,
+	tenant.IsolationRaft:   database.ServedByRaftTenantGroup,
+}
+
 // CreateForTenant creates a new database scoped to the context's tenant
 // and returns its runtime information. Equivalent to
 // CreateForTenantWithCredentials with an empty seal.Credentials -- barrier
@@ -1022,6 +1032,13 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
+		}
+		// A volume- or raft-isolated tenant serves every database from the
+		// tenant's own store, never from the per-database store a barrier
+		// would wrap, so a per-database barrier there protects nothing.
+		// Refused before any quota reservation or store I/O.
+		if servedBy, offPath := isolationBarrierDataPath[info.EffectiveIsolationType()]; offPath && cfg.Barrier != nil && cfg.Barrier.Enabled {
+			return nil, &database.BarrierOffDataPathError{Name: cfg.Name, ServedBy: servedBy}
 		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:

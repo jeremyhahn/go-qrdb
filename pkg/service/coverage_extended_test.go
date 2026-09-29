@@ -30,7 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -510,28 +509,20 @@ func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testin
 // (database.BarrierMigrationNotSupportedError), so the database is created
 // WITH its barrier already active; the update below exercises the one safe
 // transition UpdateBarrier does perform: re-affirming an already-active
-// barrier (refreshing non-secret bookkeeping). A dedicated store is
-// required for any barrier, and since a caller-supplied DataDir is no
-// longer trusted on the tenant-scoped create path, the tenant is resolved
-// via an IsolationVolume TenantInfo with a real DataRoot so the Manager
-// computes a legitimate dedicated DataDir server-side.
+// barrier (refreshing non-secret bookkeeping). A barrier is only accepted on
+// a non-raft store of the database's own, which the tenant-scoped create path
+// never builds from caller input, so the tenant's database is provisioned
+// through the Manager with its owner and DataDir set.
 func TestDatabaseService_UpdateBarrierForTenant_Success(t *testing.T) {
-	base, mgr := newTestDatabaseServiceWithBarrier(t)
-	lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
-		ID:            "tenant-barrier",
-		IsolationType: tenant.IsolationVolume,
-		DataRoot:      t.TempDir(),
-	}}
-	svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
-	if !ok {
-		t.Fatal("NewDatabaseService() did not return *DatabaseService")
-	}
+	svc, mgr := newTestDatabaseServiceWithBarrier(t)
 	ctx := tenantCtx("tenant-barrier")
 
 	cfg := testDBConfig("t-barrier-db")
+	cfg.TenantID = "tenant-barrier"
+	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
-		t.Fatalf("CreateForTenantWithCredentials() error: %v", err)
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
+		t.Fatalf("CreateWithCredentials() error: %v", err)
 	}
 
 	barrierCfg := &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}

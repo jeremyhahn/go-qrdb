@@ -529,7 +529,11 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 	if d.hasTable(lower) {
 		switch lower {
 		case tableName:
-			tbl := NewKVTable(d.kvSvc, d.namespacePrefix(ctx), d.indexSvc)
+			kv, prefix, err := d.kvService(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			tbl := NewKVTable(kv, prefix, d.indexSvc)
 			return d.maybeReadOnly(tbl), true, nil
 		case datapointsTableName:
 			return NewDatapointsTable(), true, nil
@@ -544,7 +548,11 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 
 	// Check entity registry for DAO-registered entity types.
 	if reg, ok := entity.Global().Get(lower); ok {
-		tbl := NewEntityTable(d.kvSvc, d.namespacePrefix(ctx), reg, d.indexSvc)
+		kv, prefix, err := d.kvService(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		tbl := NewEntityTable(kv, prefix, reg, d.indexSvc)
 		return d.maybeReadOnly(tbl), true, nil
 	}
 
@@ -626,6 +634,33 @@ func (d *Database) collectionService(ctx *sqle.Context) (service.CollectionServi
 		return d.collectionSvc, nil
 	}
 	return d.registry.CollectionService(d.sessionTenantID(ctx), d.name)
+}
+
+// kvService returns the KV servicer the kv and entity tables of this session
+// are served from, and the key prefix they apply on top of it.
+//
+// When a registry is configured the servicer is resolved per (session
+// tenant, database) on every table lookup, exactly as collectionService and
+// relationalTable resolve theirs, and the prefix is empty: the registry has
+// already scoped the servicer to the database's keyspace, and resolving it is
+// what applies the database's seal, ownership, quota and isolation routing.
+// Serving these tables from the provider-level d.kvSvc under a composed
+// prefix skipped all four -- a sealed database stayed readable and writable
+// over the MySQL and PostgreSQL wire, and a volume- or raft-isolated tenant's
+// kv table was served from the shared store instead of its own. A refused
+// resolution is returned, never swallowed into "no such table".
+//
+// Without a registry -- the single-tenant, legacy-provider composition -- the
+// provider-level servicer and the composed prefix are used as before.
+func (d *Database) kvService(ctx *sqle.Context) (service.KVServicer, string, error) {
+	if d.registry == nil {
+		return d.kvSvc, d.namespacePrefix(ctx), nil
+	}
+	kv, err := d.registry.KVService(d.sessionTenantID(ctx), d.name)
+	if err != nil {
+		return nil, "", err
+	}
+	return kv, "", nil
 }
 
 // namespacePrefix returns the composite key prefix used to scope KV and

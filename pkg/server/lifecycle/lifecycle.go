@@ -711,6 +711,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
 		}
+		// dbManager.Open warned for the barrier records it can classify
+		// alone; a volume- or raft-isolated tenant's needs the tenant
+		// service, which exists only now.
+		service.WarnBarriersOffDataPath(ctx, dbManager.List(), n.Tenant, log)
 	}
 
 	// infra.SealEnabled is the composer's own seal.enabled config decision,

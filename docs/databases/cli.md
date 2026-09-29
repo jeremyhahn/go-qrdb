@@ -12,10 +12,10 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 |---|---|---|---|
 | `--engine` | string | `kv` | `kv \| timeseries` |
 | `--backend` | string | `pebble` | `pebble \| memory \| file \| raft` |
-| `--data-dir` | string | — | dedicated data directory; **required for a real per-database barrier** |
+| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | 1 | replication factor — **raft backend only** |
-| `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**requires a dedicated store**) |
+| `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
 | `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir` |
 | `--barrier-passphrase` | string | — | passphrase, when strategy is `passphrase` |
 | `--barrier-shamir-threshold` | int | — | quorum threshold, when strategy is `shamir` |
@@ -27,15 +27,18 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 ```bash
 qrdb database create app
 qrdb database create billing --engine kv --backend raft --replicas 3 --cluster-mode distributed
-qrdb database create secure --data-dir /var/lib/qrdb/secure \
+qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
 qrdb database create k8s --engine kv --backend raft --etcd --etcd-listen-addr :2379
 ```
 
-**A barrier needs a dedicated store.** `--barrier-enabled` is accepted only with
-an explicit `--data-dir`, a `--backend raft` database, or a database created for
-an IsolationVolume / IsolationRaft tenant. On a database sharing the default
-store it is **rejected**, not warned about.
+**A barrier must be on the data path.** `--barrier-enabled` is accepted only on
+a non-raft database with an explicit `--data-dir`, which only the system tenant
+can set. It is **rejected**, not warned about, on a database sharing the default
+store (`SharedStoreBarrierUnsupportedError`), on a `--backend raft` database and
+on any database of a volume- or raft-isolated tenant
+(`BarrierOffDataPathError`): each is served from a store the barrier would not
+wrap. Both refusals are `409` / `FAILED_PRECONDITION`.
 
 ## `qrdb database info <name>` / `list`
 

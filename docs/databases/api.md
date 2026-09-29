@@ -80,7 +80,8 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | Success | 200 | `OK` |
 | Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
 | Unknown database | 404 | `NOT_FOUND` — never implicitly created |
-| Barrier enabled on a shared store | 400 | `FAILED_PRECONDITION` |
+| Barrier enabled on a shared store | 409 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; every failed precondition is 409 on REST)* |
+| Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 409 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
 | etcd enabled on a non-`kv` / non-`raft` database | 400 | `FAILED_PRECONDITION` |

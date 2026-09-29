@@ -26,29 +26,25 @@ import (
 )
 
 // newBarrierDBOwnedByTenant builds a DatabaseService with a real barrier
-// manager and creates a barrier-enabled database owned by the given tenant
-// (via the IsolationVolume create path, which computes a legitimate dedicated
-// store server-side). It returns the service and the barrier secret so the
+// manager and a barrier-enabled database owned by the given tenant. The
+// database is the one shape a per-database barrier protects: a non-raft store
+// of its own (an explicit DataDir) under a prefix-isolated tenant, which the
+// request resolver serves from that barrier-wrapped store. The tenant-scoped
+// create path never accepts a caller DataDir, so the fixture creates the
+// record through the Manager with its owner set, as an operator provisioning
+// it would. It returns the service and the barrier secret so the
 // allowed-path tests can drive Seal/Unseal end to end.
 func newBarrierDBOwnedByTenant(t *testing.T, tenantID, dbName string) (*DatabaseService, []byte) {
 	t.Helper()
-	base, mgr := newTestDatabaseServiceWithBarrier(t)
-	lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
-		ID:            tenantID,
-		IsolationType: tenant.IsolationVolume,
-		DataRoot:      t.TempDir(),
-	}}
-	svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
-	if !ok {
-		t.Fatal("NewDatabaseService() did not return *DatabaseService")
-	}
+	svc, mgr := newTestDatabaseServiceWithBarrier(t)
 
 	secret := []byte("s3cret-passphrase")
 	cfg := testDBConfig(dbName)
+	cfg.TenantID = tenantID
+	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	ownerCtx := tenant.WithTenantID(context.Background(), tenantID)
-	if _, err := svc.CreateForTenantWithCredentials(ownerCtx, cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
-		t.Fatalf("setup CreateForTenantWithCredentials(%q) error: %v", tenantID, err)
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
+		t.Fatalf("setup CreateWithCredentials(%q owned by %q) error: %v", dbName, tenantID, err)
 	}
 	return svc, secret
 }

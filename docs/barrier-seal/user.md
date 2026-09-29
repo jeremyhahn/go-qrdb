@@ -133,8 +133,10 @@ qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
                   --so-pin SO123 --user-pin USR123
 ```
 
-**Give one database its own key.** See
-[../databases/user.md](../databases/user.md):
+**Give one database its own key.** Only a non-raft database with its own
+`--data-dir`, created by an operator as the system tenant, accepts one today;
+see [../databases/user.md](../databases/user.md) for why the other shapes are
+refused:
 
 ```bash
 qrdb database barrier-status secure

@@ -51,21 +51,25 @@ part.
 qrdb database scale billing --replicas 5
 ```
 
-**Give a database its own encryption key.** This needs a dedicated store: an
-explicit `--data-dir`, a `--backend raft` database, or a volume/raft-isolated
-tenant.
+**Give a database its own encryption key.** A per-database barrier is accepted
+only where it wraps the store the database is actually served from: a non-raft
+database with an explicit `--data-dir`, created by the system tenant (an
+operator). Anywhere else it is refused, because the data would live somewhere
+the barrier does not reach and sealing it would protect nothing:
+
+- a `--backend raft` database is served from its Raft group;
+- every database of a volume- or raft-isolated tenant is served from that
+  tenant's own store, which the tenant's barrier already encrypts;
+- a non-system tenant's `--data-dir` is ignored, so its databases share the
+  default store.
+
+Until per-database storage bindings land, a non-system tenant therefore cannot
+create a per-database barrier at all; the bindings restore it with a barrier
+that is on the data path for every backend.
 
 ```bash
-qrdb database create secure --data-dir /var/lib/qrdb/secure \
+qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
-```
-
-Or with a Shamir quorum instead of a passphrase:
-
-```bash
-qrdb database create vault --backend raft \
-     --barrier-enabled --barrier-strategy shamir \
-     --barrier-shamir-threshold 3 --barrier-shamir-total 5
 ```
 
 **Seal and unseal it.**
@@ -141,7 +145,8 @@ database with the shape you want and migrate the data — backup and restore
 ([../backup-restore/user.md](../backup-restore/user.md)) is the usual route.
 
 **Everything in one database returns "unavailable" while others work.** That
-database's barrier is sealed. `qrdb database barrier-status <name>` confirms it;
+database is sealed; every engine on every transport refuses it until it is
+unsealed. `qrdb database barrier-status <name>` confirms it;
 `qrdb database unseal <name> --secret ...` opens it.
 
 **Creating a raft database failed with a permission error even though you can

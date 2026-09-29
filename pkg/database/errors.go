@@ -439,6 +439,47 @@ func (e *SharedStoreBarrierUnsupportedError) Error() string {
 		") uses the shared default store"
 }
 
+// BarrierOffDataPathError is returned when a caller asks for a per-database
+// encryption barrier on a database whose data would not be served from the
+// store that barrier wraps. The barrier is only on the data path of a
+// non-raft database with a store of its own under a tenant that serves the
+// database from that store (see DatabaseConfig.BarrierOnDataPath). Anywhere
+// else -- a backend: raft database, whose data lives in a Raft group, or any
+// database of a volume- or raft-isolated tenant, whose data lives in the
+// tenant's own store -- the barrier would wrap an unused store while the data
+// stayed readable and writable, and sealing it would protect nothing. The
+// request fails closed instead of creating that decorative barrier.
+type BarrierOffDataPathError struct {
+	Name string
+	// ServedBy names the store the database's data is actually served from.
+	ServedBy string
+}
+
+// Error returns a human-readable description of the refused request.
+func (e *BarrierOffDataPathError) Error() string {
+	return "database: a per-database barrier would not protect database " +
+		strconv.Quote(e.Name) + ": its data is served from " + e.ServedBy +
+		", not from a store the barrier wraps"
+}
+
+// Barrier data-path descriptions carried by BarrierOffDataPathError.ServedBy.
+const (
+	// ServedByRaftGroup is the data path of a backend: raft database.
+	ServedByRaftGroup = "its raft group"
+	// ServedByVolumeTenantStore is the data path of every database of a
+	// volume-isolated tenant.
+	ServedByVolumeTenantStore = "the volume-isolated tenant's own store"
+	// ServedByRaftTenantGroup is the data path of every database of a
+	// raft-isolated tenant.
+	ServedByRaftTenantGroup = "the raft-isolated tenant's dedicated raft group"
+)
+
+// BarrierOffDataPathWarning is the startup warning logged for a
+// barrier-enabled database record whose barrier does not wrap the store its
+// data is served from: one written before creation refused that shape. The
+// database fails closed while sealed and is unprotected once unsealed.
+const BarrierOffDataPathWarning = "database barrier is not on the data path; the database fails closed while sealed and is unprotected once unsealed"
+
 // UnsupportedBarrierStrategyError is returned when a database barrier is
 // requested with a strategy mode that EnsureBarrier does not yet implement.
 // Only the passphrase (software) strategy is currently supported for

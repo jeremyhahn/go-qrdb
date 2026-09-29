@@ -952,37 +952,55 @@ func TestDatabaseService_CreateForTenantWithCredentials_SystemTenant(t *testing.
 	}
 }
 
-// TestDatabaseService_CreateForTenantWithCredentials_TenantScoped verifies
-// tenant-scoped credentialed create. A caller-supplied DataDir is never
-// trusted on this path (see CreateForTenantWithCredentials); the barrier
-// requires a dedicated store, so the tenant is resolved via an
-// IsolationVolume TenantInfo with a real DataRoot, letting the Manager
-// compute a legitimate dedicated DataDir server-side.
-func TestDatabaseService_CreateForTenantWithCredentials_TenantScoped(t *testing.T) {
-	base, mgr := newTestDatabaseServiceWithBarrier(t)
-	lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
-		ID:            "acme",
-		IsolationType: tenant.IsolationVolume,
-		DataRoot:      t.TempDir(),
-	}}
-	svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
-	if !ok {
-		t.Fatal("NewDatabaseService() did not return *DatabaseService")
+// TestDatabaseService_CreateForTenantWithCredentials_IsolatedTenantBarrierRefused
+// pins SEC-1: a volume- or raft-isolated tenant serves every database from the
+// tenant's own store, never from the per-database store a barrier would wrap.
+// The create used to succeed and leave a decorative barrier whose seal
+// protected nothing; it must now fail closed with the typed refusal and leave
+// no database behind.
+func TestDatabaseService_CreateForTenantWithCredentials_IsolatedTenantBarrierRefused(t *testing.T) {
+	cases := []struct {
+		isolation tenant.IsolationType
+		servedBy  string
+	}{
+		{tenant.IsolationVolume, database.ServedByVolumeTenantStore},
+		{tenant.IsolationRaft, database.ServedByRaftTenantGroup},
 	}
-	ctx := tenant.WithTenantID(context.Background(), "acme")
+	for _, c := range cases {
+		t.Run(string(c.isolation), func(t *testing.T) {
+			base, mgr := newTestDatabaseServiceWithBarrier(t)
+			lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
+				ID:            "acme",
+				IsolationType: c.isolation,
+				DataRoot:      t.TempDir(),
+			}}
+			svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
+			if !ok {
+				t.Fatal("NewDatabaseService() did not return *DatabaseService")
+			}
+			ctx := tenant.WithTenantID(context.Background(), "acme")
 
-	cfg := testDBConfig("cred-tenant-db")
-	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+			cfg := testDBConfig("cred-tenant-db")
+			cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 
-	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret")))
-	if err != nil {
-		t.Fatalf("CreateForTenantWithCredentials(tenant) returned unexpected error: %v", err)
-	}
-	if info.TenantID != "acme" {
-		t.Errorf("TenantID = %q, want %q", info.TenantID, "acme")
-	}
-	if info.Barrier == nil || !info.Barrier.Enabled {
-		t.Fatal("info.Barrier.Enabled = false, want true")
+			_, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.MustCredentials([]byte("s3cret")))
+			var off *database.BarrierOffDataPathError
+			if !errors.As(err, &off) {
+				t.Fatalf("CreateForTenantWithCredentials(%s tenant + barrier) error = %v (%T), want *database.BarrierOffDataPathError", c.isolation, err, err)
+			}
+			if off.ServedBy != c.servedBy {
+				t.Errorf("ServedBy = %q, want %q", off.ServedBy, c.servedBy)
+			}
+			if _, getErr := mgr.Get("cred-tenant-db"); getErr == nil {
+				t.Error("the refused database was left in the catalog")
+			}
+
+			// Without a barrier the same tenant's create still succeeds.
+			cfg.Barrier = nil
+			if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
+				t.Fatalf("CreateForTenant(%s tenant, no barrier) error = %v", c.isolation, err)
+			}
+		})
 	}
 }
 

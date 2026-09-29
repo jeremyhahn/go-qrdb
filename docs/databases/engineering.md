@@ -97,11 +97,24 @@ path, not the body.
 
 ## Invariants
 
-- **A per-database barrier requires a dedicated store.** It is permitted only on
-  a database with an explicit `DataDir`, a dedicated-raft (`backend: raft`)
-  database, or a database created for an IsolationVolume / IsolationRaft tenant.
-  **Enabling one on a database sharing the default store is rejected**, because
-  it would encrypt nothing another database could not already read.
+- **A per-database barrier must be on the data path.** It is permitted only on
+  a non-raft database with an explicit `DataDir`
+  (`DatabaseConfig.BarrierOnDataPath`), and the tenant-scoped create path never
+  takes `DataDir` from the caller, so only the system tenant can create one.
+  Everything else is rejected: a database sharing the default store with
+  `database.SharedStoreBarrierUnsupportedError`; a `backend: raft` database, and
+  any database of an IsolationVolume / IsolationRaft tenant, with
+  `database.BarrierOffDataPathError` naming the store the data is really served
+  from. The volume/raft-tenant refusal is made in
+  `DatabaseService.CreateForTenantWithCredentials` before any quota
+  reservation, because the configuration alone cannot see the tenant's
+  isolation mode. A barrier-enabled record written before the refusal still
+  opens — sealed, with a warning — so it stays fail-closed rather than
+  dropping out of the catalog. `database.Manager.Open` warns for a raft
+  database's record; a volume- or raft-isolated tenant's record is warned for
+  at boot by `service.WarnBarriersOffDataPath` once the tenant service exists,
+  because the manager cannot see tenant isolation. Both log
+  `database.BarrierOffDataPathWarning`.
 - **Engine and backend are creation-time and immutable.** Protocol, etcd, raft
   cluster mode, barrier state, connection and replica count are all updatable;
   engine and backend are not.
@@ -140,7 +153,15 @@ path, not the body.
   Exactly one caller may report success, because the tenant-scoped drop
   releases quota on success.
 - **A sealed database fails reads and writes closed** until unsealed with its
-  secret.
+  secret. The service registry refuses every accessor — KV, MVCC, watch, lease,
+  index, time series, vector, transaction, batch, table, sequence, privilege,
+  lock and collection — with `service.BarrierSealedError{Database: <name>}` for
+  a database the caller owns whose status is `sealed`. Another tenant naming it
+  gets the ordinary not-found answer. **The refusal is enforced per node.** A
+  database's barrier and its `sealed` status live on the node that sealed it,
+  not in replicated state: in a cluster, sealing a database on one node does
+  not seal it on the others, and a node on which it is unsealed keeps serving
+  it. Seal it on every node that serves it.
 - **Every local backend offers the guarded writes; only the remote proxy does
   not.** `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are available on
   a database backed by `memory`, `file` or `pebble` — with or without a
@@ -185,12 +206,13 @@ Deliberately finer than one grant per verb:
 |---|---|---|
 | Database name already exists | `database.AlreadyExistsError` | yes |
 | Unknown database on any operation | not-found | **yes** — never implicitly created |
-| Barrier enabled on a shared store | rejected | **yes** |
+| Barrier enabled on a shared store | `database.SharedStoreBarrierUnsupportedError` | **yes** |
+| Barrier enabled where the data is served from another store (raft backend, volume/raft-isolated tenant) | `database.BarrierOffDataPathError` | **yes** |
 | `--cluster-mode` / `--replicas` on a non-raft backend | invalid-argument | **yes** |
 | `TargetReplicas < 1` | invalid-argument | **yes** |
 | etcd enabled on a non-`kv`/non-`raft` database | rejected at configuration time | **yes** |
 | Unseal with a wrong secret | refused; the database stays sealed | **yes** |
-| Operating on a sealed database | refused | **yes** |
+| Operating on a sealed database | `service.BarrierSealedError` naming the database, on every engine | **yes** |
 | The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError` (503 / `UNAVAILABLE`, whatever the resolver reported); the drop fails and nothing is removed | **yes** |
 | A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and nothing is removed | **yes** |
 | A drop is already in flight for the database | `database.DropInProgressError` | **yes** |

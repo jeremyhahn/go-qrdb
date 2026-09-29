@@ -72,7 +72,7 @@ func NewNamedBackendKVService(name string, backend database.Backend) *BackendKVS
 func (s *BackendKVService) translateSealed(err error) error {
 	var sealed *database.SealedError
 	if errors.As(err, &sealed) {
-		return &BarrierSealedError{TenantID: s.name}
+		return &BarrierSealedError{Database: s.name}
 	}
 	return err
 }

@@ -122,15 +122,22 @@ func (e *DatabaseNotFoundError) Error() string {
 	return "service: database not found: " + e.Database + " (tenant: " + e.TenantID + ")"
 }
 
-// BarrierSealedError is returned when the tenant's active barrier is sealed,
-// preventing data-plane access. Transports map it to their unavailable status
-// (HTTP 503 / gRPC Unavailable).
+// BarrierSealedError is returned when the barrier guarding a data-plane
+// request is sealed: the tenant's barrier, or -- when Database is set -- the
+// addressed database's own barrier. Transports map it to their unavailable
+// status (HTTP 503 / gRPC Unavailable).
 type BarrierSealedError struct {
 	TenantID string
+	// Database names the sealed database when the database's own barrier,
+	// not the tenant's, refused the request. Empty for a sealed tenant.
+	Database string
 }
 
 // Error returns a human-readable description.
 func (e *BarrierSealedError) Error() string {
+	if e.Database != "" {
+		return "service: barrier sealed for database: " + e.Database + " (tenant: " + e.TenantID + ")"
+	}
 	return "service: barrier sealed for tenant: " + e.TenantID
 }
 

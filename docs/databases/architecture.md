@@ -41,11 +41,17 @@ absent, the server's default (`system`) is used.
 ### Alternatives rejected
 
 - **One global configuration.** Rejected on the problem above.
-- **Per-database barrier on a shared store.** **Refused by the code**, not
-  merely discouraged: a barrier is only meaningful when the database has a store
-  of its own (an explicit `--data-dir`, a dedicated-raft database, or an
-  IsolationVolume/IsolationRaft tenant). Enabling one on a database sharing the
-  default store would encrypt nothing that another database could not read.
+- **Per-database barrier off the data path.** **Refused by the code**, not
+  merely discouraged: a barrier is only meaningful when it wraps the store the
+  database is served from. Today that is one shape — a non-raft database with
+  an explicit `--data-dir`, which only the system tenant can set. A database
+  sharing the default store, a `backend: raft` database (served from its Raft
+  group) and every database of a volume- or raft-isolated tenant (served from
+  the tenant's own store) are all refused: the barrier would wrap a store no
+  request reads, and sealing it would leave the data readable and writable.
+  Until per-database storage bindings land, a non-system tenant cannot create a
+  per-database barrier at all; the bindings restore it with a barrier on the
+  data path of every backend.
 - **Recreating a database to change its replication factor.** Rejected:
   `database scale` adds and removes voting replicas in place.
 - **A global etcd facade.** Rejected — see
@@ -154,12 +160,18 @@ satisfy the teardown's contract by accident.
   (`databases:seal`, `databases:unseal`) are custody operations, gated apart
   from configuration.
 - **A sealed database fails closed.** Its data is unreadable until unsealed.
+  The refusal is made where every transport resolves a `(tenant, database)`
+  pair, on every engine, whichever store serves the database — not by the
+  store, because most stores are shared and cannot tell one sealed database
+  from the rest. A database opened from disk with a barrier starts sealed.
+  Sealing is a node's own state, not replicated: a database sealed on one node
+  of a cluster is still served by any node on which it is unsealed.
 
 ## What this feature deliberately does not do
 
 - **No cross-database transaction.** One commit targets one Raft shard — see
   [../sql/](../sql/engineering.md).
-- **No barrier on a shared store.** Refused, not warned about.
+- **No barrier off the data path.** Refused, not warned about.
 - **No engine or backend change after creation.** Those are creation-time
   choices; changing them means a new database and a data migration.
 - **No implicit database creation.** A request naming an unknown database fails.

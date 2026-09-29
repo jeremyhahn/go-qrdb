@@ -537,6 +537,23 @@ func (c *DatabaseConfig) HasDedicatedStore() bool {
 	return c.Backend == BackendRaft || strings.TrimSpace(c.DataDir) != ""
 }
 
+// BarrierOnDataPath reports whether a per-database barrier on this database
+// would wrap the store its data is served from. That holds only for a
+// non-raft database with a store of its own (an explicit DataDir): the
+// Manager wraps that store in a BarrierBackend and the request resolver
+// serves the database from it. A backend: raft database has a dedicated
+// store too (HasDedicatedStore), but its data is served from its Raft group,
+// never from the Backend the Manager opens for it, so a barrier there would
+// wrap an unused placeholder.
+//
+// The configuration alone cannot see the owning tenant's isolation mode. A
+// volume- or raft-isolated tenant serves every database from the tenant's
+// own store, so the service layer refuses a barrier for those tenants on top
+// of this check; see BarrierOffDataPathError.
+func (c *DatabaseConfig) BarrierOnDataPath() bool {
+	return c.Backend != BackendRaft && strings.TrimSpace(c.DataDir) != ""
+}
+
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------

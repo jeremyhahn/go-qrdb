@@ -262,6 +262,10 @@ var databaseRules = []rule{
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
+	// A per-database barrier requested where it would not wrap the store the
+	// database is served from: the request is refused, not failed.
+	as(&database.SharedStoreBarrierUnsupportedError{}, FailedPrecondition),
+	as(&database.BarrierOffDataPathError{}, FailedPrecondition),
 	// A per-database control operation on another tenant's database.
 	as(&database.TenantAccessDeniedError{}, PermissionDenied),
 	// A per-database barrier operation on a node with no barrier manager.

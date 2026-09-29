@@ -11,6 +11,58 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **A per-database barrier is accepted only where it is on the database's data
+  path, so a non-system tenant can no longer create one.** Until this release a
+  barrier was accepted on a `backend: raft` database and on any database of a
+  volume- or raft-isolated tenant, although none of those is served from the
+  store the barrier wraps — the barrier was decorative. Those requests now fail
+  with `database.BarrierOffDataPathError` (`409` / `FAILED_PRECONDITION`). The
+  one remaining shape is a non-raft database with an explicit `--data-dir`,
+  which only the system tenant can set, so until per-database storage bindings
+  land (they restore per-database barriers for every tenant and backend, with
+  the barrier on the data path) tenants cannot have one. A barrier-enabled
+  record already on disk -- a raft database's, or any database's of a volume-
+  or raft-isolated tenant -- still opens, sealed, fails closed until unsealed,
+  and is named in a startup warning.
+- **`service.BarrierSealedError` names the sealed database in `Database`.** A
+  refusal because a database's own barrier is sealed now carries the database
+  in `Database` and reads `barrier sealed for database: <name> (tenant: <id>)`;
+  `TenantID` alone, and the `barrier sealed for tenant: <id>` text, now mean
+  the tenant's barrier. A client that took every `BarrierSealedError` to be the
+  tenant's must check `Database` first.
+
+### Security
+
+- **A sealed database now fails closed on every engine and every transport
+  (critical).** Sealing a per-database barrier set the database's status to
+  `sealed`, but no request path read that status: a database served from the
+  shared system shard, a volume tenant's host or a raft group stayed readable
+  and writable while reported sealed. The service registry every transport
+  resolves through now refuses every accessor for a sealed database the caller
+  owns with `service.BarrierSealedError`, which gains a `Database` field and
+  maps to `503` / `UNAVAILABLE`. Another tenant naming the database still sees
+  not-found.
+- `database.SharedStoreBarrierUnsupportedError` was answered as an internal
+  error (`500` / `INTERNAL`) on every transport, contrary to the documented
+  `FAILED_PRECONDITION`; it and the new `BarrierOffDataPathError` now map to
+  `409` / `FAILED_PRECONDITION` on REST, gRPC, Unix, QUIC and MCP (the
+  unified error table renders a failed precondition as `409` on REST; the
+  documentation said `400`).
+
+### Known limits
+
+- **A database's seal is enforced per node.** Its barrier and its `sealed`
+  status are node-local, not replicated: sealing it on one node of a cluster
+  does not seal it on the others, and a node on which it is unsealed keeps
+  serving it. Seal it on every node that serves it.
+- **A barrier off the data path is only as good as its seal.** A
+  barrier-enabled record written before this release refused that shape (a
+  raft database's, or a volume- or raft-isolated tenant's) fails closed while
+  sealed, and once unsealed its data is served unencrypted from the store the
+  barrier does not wrap.
+
 ## [0.23.0-alpha] - 2026-09-30
 
 Tracks go-quicraft v0.15.0-alpha. BREAKING: wipe each node's Raft WAL directory and re-sync from peers when upgrading.
