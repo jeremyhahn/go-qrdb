@@ -20,7 +20,9 @@ import (
 	"testing"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,14 +66,6 @@ func (c *capturingBarrierSvc) BarrierInitialize(_ context.Context, secret []byte
 func (c *capturingBarrierSvc) BarrierUnseal(_ context.Context, secret []byte) error {
 	c.seen = secret
 	return c.err
-}
-
-func (c *capturingBarrierSvc) BarrierInitializeShamir(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
-	c.seen = secret
-	if c.err != nil {
-		return nil, c.err
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
 }
 
 // assertGRPCWiped fails unless every byte of b is zero. An empty slice is a
@@ -138,45 +132,46 @@ func TestGRPCBarrierUnseal_WipesOnWrongSecret(t *testing.T) {
 	assertGRPCWiped(t, "BarrierUnseal (rejected)", svc.seen)
 }
 
-func TestGRPCBarrierShamirInitialize_WipesDecodedSecret(t *testing.T) {
-	svc := newCapturingBarrierSvc()
-	s := &qrdbServiceServer{barrierSvc: svc}
-
-	if _, err := s.BarrierShamirInitialize(context.Background(),
-		&pb.BarrierShamirInitializeRequest{Secret: []byte("shamir-seed"), Threshold: 2, TotalShares: 3}); err != nil {
-		t.Fatalf("BarrierShamirInitialize: %v", err)
-	}
-	assertGRPCWiped(t, "BarrierInitializeShamir", svc.seen)
+func (c *capturingBarrierSvc) BarrierQuorumSubmit(_ context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
+	c.seen = req.Share
+	return nil, c.err
 }
 
-// TestGRPCBarrierSecretsAreBytes guards the proto field type itself. proto3
-// encodes `string` and `bytes` identically, so a revert to `string` is
-// invisible on the wire and would only surface as an unwipeable Go string in
-// the daemon — exactly the defect this change removes. Assigning a []byte to
-// the generated field is what does not compile if the type reverts; the
-// runtime assertion below is the belt to that brace.
-func TestGRPCBarrierSecretsAreBytes(t *testing.T) {
-	init := &pb.BarrierInitializeRequest{Secret: []byte("x")}
-	unseal := &pb.BarrierUnsealRequest{Secret: []byte("x")}
-	shamir := &pb.BarrierShamirInitializeRequest{Secret: []byte("x")}
-	enable := &pb.BarrierEnableEncryptionRequest{Passphrase: []byte("x")}
-	tenantInit := &pb.TenantBarrierInitRequest{Passphrase: []byte("x")}
+// capturingTenantSvc retains the share a tenant quorum submission carried.
+type capturingTenantSvc struct {
+	tenant.TenantServicer
+	seen []byte
+}
 
-	for name, got := range map[string][]byte{
-		"BarrierInitializeRequest.Secret":           init.GetSecret(),
-		"BarrierUnsealRequest.Secret":               unseal.GetSecret(),
-		"BarrierShamirInitializeRequest.Secret":     shamir.GetSecret(),
-		"BarrierEnableEncryptionRequest.Passphrase": enable.GetPassphrase(),
-		"TenantBarrierInitRequest.Passphrase":       tenantInit.GetPassphrase(),
-	} {
-		if string(got) != "x" {
-			t.Fatalf("%s round-trip = %q, want %q", name, got, "x")
-		}
-		// Mutating through the getter proves the field is a slice the caller
-		// owns, not a copy of an immutable string.
-		got[0] = 0
+var _ tenant.TenantServicer = (*capturingTenantSvc)(nil)
+
+func (c *capturingTenantSvc) TenantBarrierQuorumSubmit(_ context.Context, _ string, sub *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	c.seen = sub.Share
+	return nil, errors.New("factor verification failed")
+}
+
+// TestGRPCBarrierQuorumSubmit_WipesShare proves the decoded share is
+// zeroized when the service refuses the submission without consuming it.
+func TestGRPCBarrierQuorumSubmit_WipesShare(t *testing.T) {
+	svc := newCapturingBarrierSvc()
+	svc.err = errors.New("factor verification failed")
+	s := &qrdbServiceServer{barrierSvc: svc}
+
+	if _, err := s.BarrierQuorumSubmit(context.Background(),
+		&pb.BarrierQuorumSubmitRequest{Domain: "unseal", Op: "unseal", Username: "alice", Share: []byte("share-bytes")}); err == nil {
+		t.Fatal("expected the refusal to surface")
 	}
-	if init.GetSecret()[0] != 0 {
-		t.Fatal("BarrierInitializeRequest.Secret is not wipeable through its getter")
+	assertGRPCWiped(t, "BarrierQuorumSubmit (refused)", svc.seen)
+}
+
+// TestGRPCTenantBarrierQuorumSubmit_WipesShare is the tenant form.
+func TestGRPCTenantBarrierQuorumSubmit_WipesShare(t *testing.T) {
+	svc := &capturingTenantSvc{}
+	s := &tenantBarrierServer{svc: svc}
+
+	if _, err := s.QuorumSubmit(context.Background(),
+		&pb.TenantBarrierQuorumSubmitRequest{TenantId: "acme", Op: "unseal", Username: "alice", Share: []byte("share-bytes")}); err == nil {
+		t.Fatal("expected the refusal to surface")
 	}
+	assertGRPCWiped(t, "TenantBarrierQuorumSubmit (refused)", svc.seen)
 }

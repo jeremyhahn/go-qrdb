@@ -1,6 +1,6 @@
 # Barrier and Seal — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 The barrier is what encrypts your data at rest. Sealed, the database refuses
 every read and write. Unsealed, everything works and the encryption is
@@ -87,30 +87,22 @@ qrdb barrier seal -y
 
 Everything stops. That is the point.
 
-**Set up M-of-N unsealing.** Enrol the officers first, then initialize; the
-shares are sealed to them server side and each claims theirs once. The full
+**Set up M-of-N custody.** Enrol the share holders first, then initialize;
+one envelope is sealed to each holder and each claims theirs once. The full
 custody workflow is [../shamir-custody/user.md](../shamir-custody/user.md).
 
 ```bash
-qrdb barrier init-shamir --passphrase '<seed>' --threshold 3 --total 5
+qrdb barrier init-shamir --threshold 3 --total 5
 ```
 
-**Unseal with shares.**
+**Unseal, seal and rotate with the holders.** A Shamir barrier opens only when
+M holders each submit their share, authenticated; it seals the same way, and
+it is rotated — after a holder leaves, or on a schedule — by a rekey that M
+holders complete. Every earlier share stops working.
 
 ```bash
-qrdb barrier unseal-shares --share aaa --share bbb --share ccc
-qrdb barrier unseal-shares --shares-file /run/shamir.txt
-```
-
-Fewer than the threshold is not an error — the shares accumulate and the
-response tells you how far along you are.
-
-**Rotate the shares** after an officer leaves, or on a schedule. This revokes
-every share previously handed out.
-
-```bash
-qrdb barrier rekey --so-pin SO123
-qrdb barrier rekey --threshold 3 --total 5     # change M/N at the same time
+qrdb barrier quorum submit --op unseal --username alice --envelope alice.env --key alice.key
+qrdb barrier rekey --threshold 3 --so-pin "$SO_PIN"
 ```
 
 **Turn on encryption for a deployment that started with `none`.**

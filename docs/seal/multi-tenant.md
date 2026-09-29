@@ -33,15 +33,15 @@ A per-tenant cryptographic barrier (an `IsolationBarrier` tenant, or `POST /v1/t
 
 Per the platform architecture the **tenant admin chooses the per-tenant barrier strategy** — `none` / `passphrase` / `shamir` (or an injected hardware strategy) — via `POST /v1/tenants/{id}/barrier/init` (`TenantBarrierInitWithStrategy`), defaulting to `passphrase` for back-compat. The passphrase strategy requires a passphrase (no derived fallback).
 
-Per-tenant `shamir` is fully supported and follows the **Security Officer share-distribution model** (see [so-share-distribution-design.md](so-share-distribution-design.md)): share material is never returned from init or rekey. Tenant barriers wrap `StorageBarrier`, so they inherit **unseal-key indirection** (see [shamir.md](shamir.md)): the officers' shares carry a random unseal key that AEAD-wraps the tenant root key (wrapped blob at `tenant/<id>/root-key.wrapped`, path-bound via AEAD associated data), and a tenant rekey cryptographically revokes all prior tenant shares. The flow:
+Per-tenant `shamir` is fully supported and follows the **share-holder model** of [shamir-custody](../shamir-custody/): share material is never returned from init or rekey. Tenant barriers wrap `StorageBarrier`, so they inherit **unseal-key indirection** and the **holder roster**: the tenant's holders' shares carry a random unseal key that AEAD-wraps the tenant root key (wrapped blob at `tenant/<id>/root-key.wrapped`, bound to its path and roster through the AEAD associated data), and a tenant rekey cryptographically revokes all prior tenant shares. The flow:
 
-1. **Register tenant officers.** `POST /v1/tenants/{id}/barrier/officers` (`{username, csr_pem}`) signs each officer's CSR with the tenant ceremony CA and binds the officer to their certificate thumbprint. `GET /v1/tenants/{id}/barrier/officers` lists them; `GET /v1/tenants/{id}/barrier/officers/claim-status` reports per-officer claim state.
-2. **Initialize.** `POST /v1/tenants/{id}/barrier/init` with `strategy: "shamir"` (and `threshold`/`shares`) registers the tenant barrier with an M-of-N `ShamirStrategy`, initializes it, and seals one share per enrolled officer into a `secure.Secret` (go-enclave `SealedEnclave` — AES-256-GCM ciphertext on the ordinary heap at rest; formerly a memguard enclave). The response is **share-free** (`{threshold, total_shares, share_count}`).
-3. **Claim.** Each officer authenticates with their own mTLS certificate and claims their share exactly once: `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` (nonce) → sign → `POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete` (one-time share reveal; the server enclave is destroyed). The claim routes are **identity-gated** (`permission.IdentityGated`, no RBAC grant): the handler matches the presented certificate thumbprint against the **target tenant's** officer registry, so a cross-tenant claim attempt fails 403 even though no tenant-scope PDP check runs.
-4. **Unseal.** A quorum ceremony: submit shares one at a time to `POST /v1/tenants/{id}/barrier/unseal-share` (`{share}`), which reports progress (`{required, submitted, complete, sealed}`) and auto-unseals once the threshold is met. Each tenant barrier owns its own quorum accumulator (shares held in go-enclave locked-memory enclaves, SHA-256 dedup, TTL), so quorum state is isolated per tenant. The existing single-key `POST /v1/tenants/{id}/barrier/unseal` remains for the `passphrase` strategy.
-5. **Seal.** Sealing a Shamir tenant barrier also requires a quorum: single-admin `POST /v1/tenants/{id}/barrier/seal` is rejected with the quorum-required error; M officers each submit `POST /v1/tenants/{id}/barrier/seal-vote` (`{share}`) instead. `none`/`passphrase` tenant barriers seal directly.
+1. **Enrol tenant holders.** `POST /v1/tenants/{id}/barrier/officers` (`{username, role, csr_pem, …}`) has the ceremony CA issue each holder a certificate with a CA-assigned identity in the tenant's SPIFFE holder namespace. `GET /v1/tenants/{id}/barrier/officers` lists them and their claim state.
+2. **Initialize.** `POST /v1/tenants/{id}/barrier/init` with `strategy: "shamir"` (and `threshold`/`shares`, where `shares` equals the enrolled holder count) splits the tenant unseal key and seals one HPKE envelope per holder into a `secure.Secret`. The response is **share-free** (`{threshold, total_shares, share_count}`).
+3. **Claim.** Each holder claims its envelope exactly once over a connection presenting its certificate: `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` (nonce) → sign → `.../claim/complete`. The claim routes are **identity-gated**: the handler matches the presented certificate against the **target tenant's** holder registry, so a cross-tenant claim fails.
+4. **Unseal.** M holders each submit to `POST /v1/tenants/{id}/barrier/quorum/submit` with `op: unseal`, after a challenge from `.../quorum/begin`; each is counted once, authenticated against the tenant roster. Each tenant barrier owns its own quorum rounds, so quorum state is isolated per tenant. The single-credential `POST /v1/tenants/{id}/barrier/unseal` is for the credential strategies and refuses a Shamir barrier.
+5. **Seal.** Sealing a Shamir tenant barrier also requires a quorum: single-admin `POST /v1/tenants/{id}/barrier/seal` is refused, and M holders submit with `op: seal` instead. `none`/`passphrase` tenant barriers seal directly.
 
-`GET /v1/tenants/{id}/barrier/status` reports `shamir_threshold`/`shamir_total` for shamir barriers. The Tenants admin UI offers all three strategies (default `passphrase`), shows the officer claim-status panel after a shamir init (never share bytes), and drives the multi-share unseal ceremony.
+`GET /v1/tenants/{id}/barrier/status` reports `shamir_threshold`/`shamir_total` for shamir barriers. The Tenants admin UI offers all three strategies (default `passphrase`); its Shamir holder screens have not yet moved to the share-holder API, so tenant holders use the CLI (`qrdb tenant barrier-officer …`, `barrier-quorum …`), the SDKs or the desktop application.
 
 Because a cryptographic barrier requires the volume-pool configuration above, the Tenants admin UI defaults new tenants to `prefix` isolation (which needs no pool).
 
@@ -59,7 +59,7 @@ A dedicated-isolation tenant (`IsolationBarrier` or `IsolationVolume`) chooses *
 When `barrier_auto_unseal` is `false` (the default), `CreateTenant` registers the per-tenant barrier but does **not** initialize it — the barrier comes up **sealed**. The tenant admin then drives the barrier lifecycle through the tenant-barrier API:
 
 1. **Initialize** — `POST /v1/tenants/{id}/barrier/init` (`TenantBarrierInitWithStrategy`) with the chosen strategy (`passphrase` default, `none`, `shamir`, or an injected hardware strategy). See [Per-Tenant Seal Strategy Selection](#per-tenant-seal-strategy-selection-2026-06-02).
-2. **Unseal** — `POST /v1/tenants/{id}/barrier/unseal` (single key) or the `unseal-share` quorum flow for Shamir.
+2. **Unseal** — `POST /v1/tenants/{id}/barrier/unseal` (single key) or, for Shamir, the holder quorum (`POST /v1/tenants/{id}/barrier/quorum/submit`).
 
 The per-tenant data Host is built **lazily, only after the barrier is unsealed**. After a daemon restart the barrier comes up sealed again and the tenant's data is unreachable until it is re-unsealed. This is the strongest posture: the infrastructure operator and the system barrier hold no copy of the tenant key, so they cannot read the tenant's data at rest.
 
@@ -287,16 +287,17 @@ implementations. Every transport implements the same methods on `transport.Tenan
 | Method | Purpose |
 |--------|---------|
 | `TenantBarrierInit(ctx, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)` | Initialize a per-tenant barrier. Share-free response: `{Threshold, TotalShares, ShareCount}` for shamir. |
-| `TenantBarrierUnseal(ctx, *TenantBarrierUnsealRequest) error` | Unseal with `Key` or fall back to `Share`. |
-| `TenantBarrierUnsealShare(ctx, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)` | Submit one Shamir share toward the tenant quorum. |
-| `TenantBarrierSeal(ctx, *TenantBarrierSealRequest) error` | Seal a previously-initialized barrier (`none`/`passphrase`; Shamir requires the seal-vote quorum). |
+| `TenantBarrierUnseal(ctx, *TenantBarrierUnsealRequest) error` | Unseal with the barrier credential (`Key`); refused for Shamir. |
+| `TenantBarrierSeal(ctx, *TenantBarrierSealRequest) error` | Seal a previously-initialized barrier (`none`/`passphrase`; Shamir seals through the holder quorum). |
 | `TenantBarrierStatus(ctx, *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)` | Report `Sealed`, `Initialized`, `Strategy`, `HardwareBacked`. |
-| `TenantBarrierOfficerRegister(ctx, *TenantOfficerRegisterRequest) (*OfficerRegisterResponse, error)` | Register a tenant Security Officer (CSR → signed cert + share index). |
-| `TenantBarrierOfficerList(ctx, tenantID) ([]*OfficerStatus, error)` | List registered tenant officers. |
-| `TenantBarrierOfficerClaimStatus(ctx, tenantID) ([]*OfficerStatus, error)` | Per-officer claim status (never share bytes). |
-| `TenantBarrierShareClaimBegin(ctx, *TenantShareClaimBeginRequest) (*ShareClaimBeginResponse, error)` | Issue the officer's claim challenge nonce. |
-| `TenantBarrierShareClaimComplete(ctx, *TenantShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)` | Verify the nonce signature; one-time share reveal. |
-| `TenantBarrierShamirSealVote(ctx, *TenantShamirSealVoteRequest) (*ShamirSealVoteResponse, error)` | Submit a Shamir share as a seal vote toward the tenant seal quorum. |
+| `TenantBarrierOfficerRegister(ctx, *TenantOfficerRegisterRequest) (*OfficerRegisterResponse, error)` | Enrol a tenant share holder (CSR → CA-issued certificate). |
+| `TenantBarrierOfficerList(ctx, tenantID) ([]*OfficerStatus, error)` | List tenant holders and their claim state (never share bytes). |
+| `TenantBarrierShareClaimBegin(ctx, *TenantShareClaimBeginRequest) (*ShareClaimBeginResponse, error)` | Issue the holder's claim nonce. |
+| `TenantBarrierShareClaimComplete(ctx, *TenantShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)` | Verify the nonce signature; deliver the sealed envelope once. |
+| `TenantBarrierQuorumBegin(ctx, *TenantQuorumBeginRequest) (*QuorumChallenge, error)` | Issue a holder's factor challenge. |
+| `TenantBarrierQuorumSubmit(ctx, *TenantQuorumSubmitRequest) (*QuorumOutcome, error)` | Submit a holder's share to the open round. |
+| `TenantBarrierRekeyStart(ctx, *TenantRekeyStartRequest) (*QuorumRound, error)` | Open a quorum-gated rekey round. |
+| `TenantBarrierOfficerRevoke(ctx, *TenantOfficerRevokeRequest) (*QuorumRound, error)` | Revoke a holder through a quorum-gated rekey. |
 
 `TenantBarrierInitRequest` carries an optional `strategy` field (empty = passphrase default):
 
@@ -319,10 +320,10 @@ REST and QUIC JSON encodings therefore carry it as base64.
 
 | Protocol | Server-side | Wire format | Strategy field |
 |----------|-------------|-------------|----------------|
-| **REST** | `POST /v1/tenants/{id}/barrier/{init,unseal,unseal-share,seal,seal-vote}`, `GET /v1/tenants/{id}/barrier/status`, officer routes under `/v1/tenants/{id}/barrier/officers` | JSON | `strategy` in body |
-| **gRPC** | `qrdb.v1.TenantBarrierService/{Init,Unseal,UnsealShare,Seal,Status,OfficerRegister,OfficerList,OfficerClaimStatus,ShareClaimBegin,ShareClaimComplete,ShamirSealVote}` | JSON-over-gRPC | `strategy` in JSON payload |
-| **QUIC** | `tenant.BarrierInit`, `tenant.BarrierUnseal`, `tenant.BarrierUnsealShare`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerClaimStatus`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierShamirSealVote` | JSON | `strategy` in JSON frame |
-| **MCP** | `qrdb_tenant_barrier_init`, `..._unseal`, `..._unseal_share`, `..._seal`, `..._status`, `..._officer_register/officer_list/officer_claim_status`, `..._share_claim_begin/share_claim_complete`, `..._shamir_seal_vote` | JSON-RPC 2.0 | `strategy` tool arg |
+| **REST** | `POST /v1/tenants/{id}/barrier/{init,unseal,seal}`, `GET /v1/tenants/{id}/barrier/status`, holder routes under `/v1/tenants/{id}/barrier/officers`, `/quorum/{begin,submit}`, `/rekey/start` | JSON | `strategy` in body |
+| **gRPC** | `qrdb.v1.TenantBarrierService/{Init,Unseal,Seal,Status,OfficerRegister,OfficerList,ShareClaimBegin,ShareClaimComplete,QuorumBegin,QuorumSubmit,RekeyStart,OfficerRevoke}` | JSON-over-gRPC | `strategy` in JSON payload |
+| **QUIC** | `tenant.BarrierInit`, `tenant.BarrierUnseal`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerRevoke`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierQuorumBegin/QuorumSubmit`, `tenant.BarrierRekeyStart` | JSON | `strategy` in JSON frame |
+| **MCP** | `qrdb_tenant_barrier_init`, `..._unseal`, `..._seal`, `..._status`, `..._officer_register/officer_list/officer_revoke`, `..._share_claim_begin/share_claim_complete`, `..._quorum_begin/quorum_submit`, `..._rekey_start` | JSON-RPC 2.0 | `strategy` tool arg |
 | **Unix** | gRPC-over-UDS reuses `qrdb.v1.TenantBarrierService` | JSON-over-gRPC | `strategy` in JSON payload |
 | **Embedded** | Direct `tenant.TenantServicer` call | Go function call | `req.Strategy` field |
 
@@ -348,5 +349,4 @@ type TenantBarrierStatusResponse struct {
 
 - [../multi-tenancy.md](../multi-tenancy/architecture.md) — isolation ladder, quotas, and entitlements
 - [../scoping.md](../scoping.md) — request-time tenant + database scoping
-- [shamir.md](shamir.md) — Shamir threshold unsealing and unseal-key indirection
-- [so-share-distribution-design.md](so-share-distribution-design.md) — Security Officer share distribution
+- [shamir-custody](../shamir-custody/) — share holders, unseal-key indirection and the authenticated quorum

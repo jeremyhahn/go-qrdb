@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -208,10 +209,12 @@ func TestErrMissingField_Returns(t *testing.T) {
 // handlers_barrier_pin.go — applyBarrierInitializePINs and verifyBarrierSOPIN
 // ---------------------------------------------------------------------------
 
+// TestApplyBarrierInitializePINs_NilBackend proves PINs supplied with no
+// backend are refused, never silently dropped.
 func TestApplyBarrierInitializePINs_NilBackend(t *testing.T) {
-	err := applyBarrierInitializePINs(nil, "sopin", "userpin")
-	if err != nil {
-		t.Fatalf("expected nil with nil backend, got %v", err)
+	err := pin.Provision(nil, "sopin", "userpin")
+	if !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("expected ErrBackendNotConfigured with nil backend, got %v", err)
 	}
 }
 
@@ -226,7 +229,7 @@ func TestApplyBarrierInitializePINs_SetSOPIN(t *testing.T) {
 			return nil
 		},
 	}
-	err := applyBarrierInitializePINs(backend, "sopin123", "")
+	err := pin.Provision(backend, "sopin123", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +243,7 @@ func TestApplyBarrierInitializePINs_SetSOPINError(t *testing.T) {
 	backend := &trackingPINBackend{
 		setSOPINFn: func(_, _ string) error { return svcErr },
 	}
-	err := applyBarrierInitializePINs(backend, "sopin", "")
+	err := pin.Provision(backend, "sopin", "")
 	if !errors.Is(err, svcErr) {
 		t.Fatalf("expected svcErr, got %v", err)
 	}
@@ -257,7 +260,7 @@ func TestApplyBarrierInitializePINs_SetUserPIN(t *testing.T) {
 			return nil
 		},
 	}
-	err := applyBarrierInitializePINs(backend, "", "userpin123")
+	err := pin.Provision(backend, "sopin123", "userpin123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,22 +274,23 @@ func TestApplyBarrierInitializePINs_SetUserPINError(t *testing.T) {
 	backend := &trackingPINBackend{
 		setUserPINFn: func(_, _ string) error { return svcErr },
 	}
-	err := applyBarrierInitializePINs(backend, "", "userpin")
+	err := pin.Provision(backend, "sopin", "userpin")
 	if !errors.Is(err, svcErr) {
 		t.Fatalf("expected svcErr, got %v", err)
 	}
 }
 
+// TestVerifyBarrierSOPIN_NilBackend proves the SO PIN gate fails closed.
 func TestVerifyBarrierSOPIN_NilBackend(t *testing.T) {
-	err := verifyBarrierSOPIN(nil, "sopin")
-	if err != nil {
-		t.Fatalf("expected nil with nil backend, got %v", err)
+	err := pin.RequireSOPIN(nil, "sopin")
+	if !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("expected ErrBackendNotConfigured with nil backend, got %v", err)
 	}
 }
 
 func TestVerifyBarrierSOPIN_SOPINNotSet(t *testing.T) {
 	backend := &trackingPINBackend{sopinSetFn: func() bool { return false }}
-	err := verifyBarrierSOPIN(backend, "sopin")
+	err := pin.RequireSOPIN(backend, "sopin")
 	if err != nil {
 		t.Fatalf("expected nil when sopin not set, got %v", err)
 	}
@@ -304,7 +308,7 @@ func TestVerifyBarrierSOPIN_VerifySOPIN(t *testing.T) {
 			return nil
 		},
 	}
-	err := verifyBarrierSOPIN(backend, "correct")
+	err := pin.RequireSOPIN(backend, "correct")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +323,7 @@ func TestVerifyBarrierSOPIN_VerifySOPINError(t *testing.T) {
 		sopinSetFn:    func() bool { return true },
 		verifySOPINFn: func(_ string) error { return svcErr },
 	}
-	err := verifyBarrierSOPIN(backend, "wrong")
+	err := pin.RequireSOPIN(backend, "wrong")
 	if !errors.Is(err, svcErr) {
 		t.Fatalf("expected svcErr, got %v", err)
 	}

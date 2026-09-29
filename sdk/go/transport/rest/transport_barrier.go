@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -100,8 +101,9 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	return &statusResp, nil
 }
 
-// BarrierInitializeShamir initializes the barrier using Shamir secret sharing
-// and returns the generated key shares. Maps to POST /v1/barrier/shamir/initialize.
+// BarrierInitializeShamir initializes the barrier under Shamir custody and
+// distributes one sealed envelope to each enrolled unseal-key holder.
+// Maps to POST /v1/barrier/shamir/initialize.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -122,55 +124,6 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	}
 
 	return &shamirResp, nil
-}
-
-// BarrierUnsealWithShare submits a single Shamir share toward the unseal
-// threshold. Maps to POST /v1/barrier/shamir/unseal-share.
-func (t *Transport) BarrierUnsealWithShare(ctx context.Context, req *transport.BarrierUnsealShareRequest) (*transport.BarrierUnsealShareResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var shareResp transport.BarrierUnsealShareResponse
-	if err := t.postJSONDecode(ctx, "BarrierUnsealWithShare", "/v1/barrier/shamir/unseal-share", req, &shareResp); err != nil {
-		return nil, err
-	}
-
-	return &shareResp, nil
-}
-
-// BarrierUnsealWithShares submits multiple Shamir shares to unseal the barrier
-// in a single request. Maps to POST /v1/barrier/shamir/unseal-shares (204 No Content).
-func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.BarrierUnsealSharesRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	return t.postJSONDecode(ctx, "BarrierUnsealWithShares", "/v1/barrier/shamir/unseal-shares", req, nil)
-}
-
-// BarrierRekey generates new Shamir shares with the specified threshold and
-// total count, replacing the existing shares. Maps to POST /v1/barrier/rekey.
-func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	// The SO PIN travels in the request's own so_pin field too, which the
-	// server reads; it comes from the PIN bound by transport.WithSOPIN when
-	// the request carries none, exactly as on QUIC.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
-	if err != nil {
-		return nil, err
-	}
-	body := *req
-	body.SOPin = soPIN
-
-	var rekeyResp transport.BarrierRekeyResponse
-	if err := t.postJSONDecode(ctx, "BarrierRekey", "/v1/barrier/rekey", &body, &rekeyResp); err != nil {
-		return nil, err
-	}
-
-	return &rekeyResp, nil
 }
 
 // BarrierEnableEncryption migrates a previously-unencrypted barrier to a keyed
@@ -210,16 +163,6 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	}
 
 	return &keysResp, nil
-}
-
-// BarrierRecoverWithKeys unseals the barrier using recovery keys during
-// disaster recovery. Maps to POST /v1/barrier/recovery/recover (204 No Content).
-func (t *Transport) BarrierRecoverWithKeys(ctx context.Context, req *transport.BarrierRecoverWithKeysRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	return t.postJSONDecode(ctx, "BarrierRecoverWithKeys", "/v1/barrier/recovery/recover", req, nil)
 }
 
 // BarrierDeleteRecoveryKeys deletes all stored recovery keys.
@@ -280,233 +223,127 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 	return &hasKeysResp, nil
 }
 
-// BarrierGenerateRootToken generates a new root token using the provided
-// Shamir shares. Maps to POST /v1/barrier/root-token.
-func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport.BarrierGenerateRootTokenRequest) (*transport.BarrierRootTokenResponse, error) {
+// ---------------------------------------------------------------------------
+// Share holders (Security Officers and key custodians)
+// ---------------------------------------------------------------------------
+
+// holderPost posts payload to path and decodes the reply into dest.
+func (t *Transport) holderPost(ctx context.Context, method, path string, payload, dest any) error {
 	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
+		return &transport.ClosedError{}
 	}
-
-	var tokenResp transport.BarrierRootTokenResponse
-	if err := t.postJSONDecode(ctx, "BarrierGenerateRootToken", "/v1/barrier/root-token", req, &tokenResp); err != nil {
-		return nil, err
-	}
-
-	return &tokenResp, nil
+	return t.postJSONDecode(ctx, method, path, payload, dest)
 }
 
-// officerRegisterWireRequest is the REST wire shape for officer
-// registration requests. csr_pem travels as a plain PEM string — matching
-// the REST handler's contract (pkg/api/rest handlers_barrier.go /
-// handlers_tenants.go) and the TypeScript SDK, both of which treat csr_pem
-// as raw PEM text, never base64. The transport-level
-// transport.OfficerRegisterRequest.CSRPEM is typed []byte for the other
-// transports (gRPC/unix carry it as protobuf bytes, which round-trip
-// unaffected), so encoding/json would otherwise silently base64-encode it
-// here and corrupt every REST-transport officer registration.
-type officerRegisterWireRequest struct {
-	Username          string `json:"username"`
-	CSRPEM            string `json:"csr_pem"`
-	AuthenticatorType string `json:"authenticator_type,omitempty"`
-	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
-}
-
-// officerRegisterWireResponse is the REST wire shape for officer
-// registration responses. cert_pem travels as a plain PEM string for the
-// same reason csr_pem does on the request side.
-type officerRegisterWireResponse struct {
-	CertPEM    string `json:"cert_pem"`
-	ShareIndex int    `json:"share_index"`
-}
-
-// officerRegisterRequestToWire converts the transport-level officer
-// registration request to its REST wire shape.
-func officerRegisterRequestToWire(req *transport.OfficerRegisterRequest) *officerRegisterWireRequest {
-	return &officerRegisterWireRequest{
-		Username:          req.Username,
-		CSRPEM:            string(req.CSRPEM),
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
-	}
-}
-
-// OfficerRegister registers a Security Officer for the system barrier.
+// OfficerRegister enrols a share holder of the unseal key.
 // Maps to POST /v1/barrier/officers.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var wireResp officerRegisterWireResponse
-	if err := t.postJSONDecode(ctx, "OfficerRegister", "/v1/barrier/officers", officerRegisterRequestToWire(req), &wireResp); err != nil {
+	var resp transport.OfficerRegisterResponse
+	if err := t.holderPost(ctx, "OfficerRegister", "/v1/barrier/officers", req, &resp); err != nil {
 		return nil, err
 	}
-
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    []byte(wireResp.CertPEM),
-		ShareIndex: wireResp.ShareIndex,
-	}, nil
+	return &resp, nil
 }
 
-// OfficerList returns all enrolled Security Officers for the system barrier.
-// Maps to GET /v1/barrier/officers.
+// RecoveryOfficerRegister enrols a holder of the recovery key.
+// Maps to POST /v1/barrier/recovery/officers.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	var resp transport.OfficerRegisterResponse
+	if err := t.holderPost(ctx, "RecoveryOfficerRegister", "/v1/barrier/recovery/officers", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// OfficerList lists the unseal key's holders. Maps to GET /v1/barrier/officers.
 func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/barrier/officers", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "OfficerList", Err: err}
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "OfficerList", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("OfficerList", resp)
-	}
-
 	var wire struct {
 		Officers []*transport.OfficerStatus `json:"officers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
-		return nil, &transport.RequestError{Method: "OfficerList", Err: &jsonDecodeError{Err: err}}
+	if err := t.getJSONDecode(ctx, "OfficerList", "/v1/barrier/officers", &wire); err != nil {
+		return nil, err
 	}
-
 	return wire.Officers, nil
 }
 
-// OfficerClaimStatus returns a per-officer claim status snapshot for the
-// system barrier. Maps to GET /v1/barrier/officers/claim-status.
-func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/barrier/officers/claim-status", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: err}
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("OfficerClaimStatus", resp)
-	}
-
-	var wire struct {
-		Officers []*transport.OfficerStatus `json:"officers"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
-		return nil, &transport.RequestError{Method: "OfficerClaimStatus", Err: &jsonDecodeError{Err: err}}
-	}
-
-	return wire.Officers, nil
-}
-
-// ShareClaimBegin issues a challenge nonce to the named Security Officer.
+// ShareClaimBegin issues a claim nonce to an unseal-key holder.
 // Maps to POST /v1/barrier/officers/{username}/claim/begin.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	path := "/v1/barrier/officers/" + req.Username + "/claim/begin"
 	var resp transport.ShareClaimBeginResponse
-	if err := t.postJSONDecode(ctx, "ShareClaimBegin", path, req, &resp); err != nil {
+	if err := t.holderPost(ctx, "ShareClaimBegin", "/v1/barrier/officers/"+url.PathEscape(req.Username)+"/claim/begin", req, &resp); err != nil {
 		return nil, err
 	}
-
 	return &resp, nil
 }
 
-// ShareClaimComplete verifies the Security Officer's nonce signature and
-// returns the system barrier share bytes exactly once.
+// ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 // Maps to POST /v1/barrier/officers/{username}/claim/complete.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	path := "/v1/barrier/officers/" + req.Username + "/claim/complete"
 	var resp transport.ShareClaimCompleteResponse
-	if err := t.postJSONDecode(ctx, "ShareClaimComplete", path, req, &resp); err != nil {
+	if err := t.holderPost(ctx, "ShareClaimComplete", "/v1/barrier/officers/"+url.PathEscape(req.Username)+"/claim/complete", req, &resp); err != nil {
 		return nil, err
 	}
-
 	return &resp, nil
 }
 
-// ShamirSealVote submits a Shamir share as a seal vote for the system barrier.
-// Maps to POST /v1/barrier/shamir/seal-vote.
-func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var resp transport.ShamirSealVoteResponse
-	if err := t.postJSONDecode(ctx, "ShamirSealVote", "/v1/barrier/shamir/seal-vote", req, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
-// RecoveryOfficerRegister registers a Security Officer for recovery key
-// distribution. Maps to POST /v1/barrier/recovery/officers.
-func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var wireResp officerRegisterWireResponse
-	if err := t.postJSONDecode(ctx, "RecoveryOfficerRegister", "/v1/barrier/recovery/officers", officerRegisterRequestToWire(req), &wireResp); err != nil {
-		return nil, err
-	}
-
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    []byte(wireResp.CertPEM),
-		ShareIndex: wireResp.ShareIndex,
-	}, nil
-}
-
-// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
-// officer. Maps to POST /v1/barrier/recovery/officers/{username}/claim/begin.
+// RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
+// Maps to POST /v1/barrier/recovery/officers/{username}/claim/begin.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	path := "/v1/barrier/recovery/officers/" + req.Username + "/claim/begin"
 	var resp transport.ShareClaimBeginResponse
-	if err := t.postJSONDecode(ctx, "RecoveryShareClaimBegin", path, req, &resp); err != nil {
+	if err := t.holderPost(ctx, "RecoveryShareClaimBegin", "/v1/barrier/recovery/officers/"+url.PathEscape(req.Username)+"/claim/begin", req, &resp); err != nil {
 		return nil, err
 	}
-
 	return &resp, nil
 }
 
-// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
-// and returns the recovery share bytes exactly once.
+// RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 // Maps to POST /v1/barrier/recovery/officers/{username}/claim/complete.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	path := "/v1/barrier/recovery/officers/" + req.Username + "/claim/complete"
 	var resp transport.ShareClaimCompleteResponse
-	if err := t.postJSONDecode(ctx, "RecoveryShareClaimComplete", path, req, &resp); err != nil {
+	if err := t.holderPost(ctx, "RecoveryShareClaimComplete", "/v1/barrier/recovery/officers/"+url.PathEscape(req.Username)+"/claim/complete", req, &resp); err != nil {
 		return nil, err
 	}
+	return &resp, nil
+}
 
+// BarrierQuorumBegin issues the factor challenge a holder answers.
+// Maps to POST /v1/barrier/quorum/begin.
+func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	var resp transport.QuorumChallenge
+	if err := t.holderPost(ctx, "BarrierQuorumBegin", "/v1/barrier/quorum/begin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// BarrierQuorumSubmit submits one authenticated holder's share.
+// Maps to POST /v1/barrier/quorum/submit.
+func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	var resp transport.QuorumOutcome
+	if err := t.holderPost(ctx, "BarrierQuorumSubmit", "/v1/barrier/quorum/submit", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// BarrierRekeyStart opens a rekey round. Maps to POST /v1/barrier/rekey/start.
+func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	var resp transport.QuorumRound
+	if err := t.holderPost(ctx, "BarrierRekeyStart", "/v1/barrier/rekey/start", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
+// Maps to POST /v1/barrier/officers/revoke.
+func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	var resp transport.QuorumRound
+	if err := t.holderPost(ctx, "BarrierOfficerRevoke", "/v1/barrier/officers/revoke", req, &resp); err != nil {
+		return nil, err
+	}
 	return &resp, nil
 }

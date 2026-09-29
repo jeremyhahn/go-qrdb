@@ -90,10 +90,10 @@ func IdentityTargets() map[string]authmw.GRPCTargetFunc {
 		pb.QRDBService_UnassignRole_FullMethodName:          targetUserRef,
 		pb.QRDBService_ReconcileBuiltInRoles_FullMethodName: targetTenantField,
 
-		pb.TenantBarrierService_Seal_FullMethodName:               targetTenantField,
-		pb.TenantBarrierService_OfficerRegister_FullMethodName:    targetTenantField,
-		pb.TenantBarrierService_OfficerList_FullMethodName:        targetTenantField,
-		pb.TenantBarrierService_OfficerClaimStatus_FullMethodName: targetTenantField,
-		pb.TenantBarrierService_ShamirSealVote_FullMethodName:     targetTenantField,
+		pb.TenantBarrierService_Seal_FullMethodName:            targetTenantField,
+		pb.TenantBarrierService_OfficerRegister_FullMethodName: targetTenantField,
+		pb.TenantBarrierService_OfficerList_FullMethodName:     targetTenantField,
+		pb.TenantBarrierService_RekeyStart_FullMethodName:      targetTenantField,
+		pb.TenantBarrierService_OfficerRevoke_FullMethodName:   targetTenantField,
 	}
 }

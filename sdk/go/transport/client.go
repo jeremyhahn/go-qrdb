@@ -640,23 +640,11 @@ type BarrierClient interface {
 	// BarrierStatus returns the current state of the cryptographic barrier.
 	BarrierStatus(ctx context.Context) (*BarrierStatusResponse, error)
 
-	// BarrierInitializeShamir initializes the barrier using Shamir secret
-	// sharing. Share material is never returned; Security Officers claim
-	// their individual shares via the OfficerRegister/ShareClaimBegin/
-	// ShareClaimComplete flow.
+	// BarrierInitializeShamir initializes the barrier under Shamir custody
+	// and distributes one sealed share envelope to each holder enrolled in
+	// the unseal domain. Share material is never returned; each holder
+	// claims its own envelope via ShareClaimBegin/ShareClaimComplete.
 	BarrierInitializeShamir(ctx context.Context, req *BarrierInitializeShamirRequest) (*BarrierInitializeShamirResponse, error)
-
-	// BarrierUnsealWithShare submits a single Shamir share toward the
-	// unseal threshold.
-	BarrierUnsealWithShare(ctx context.Context, req *BarrierUnsealShareRequest) (*BarrierUnsealShareResponse, error)
-
-	// BarrierUnsealWithShares submits multiple Shamir shares to unseal
-	// the barrier in a single request.
-	BarrierUnsealWithShares(ctx context.Context, req *BarrierUnsealSharesRequest) error
-
-	// BarrierRekey generates new Shamir shares with the specified
-	// threshold and total count, replacing the existing shares.
-	BarrierRekey(ctx context.Context, req *BarrierRekeyRequest) (*BarrierRekeyResponse, error)
 
 	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
 	// keyed strategy. The migration runs asynchronously on the server (a
@@ -667,12 +655,9 @@ type BarrierClient interface {
 	// has no EncryptionMigrator configured.
 	BarrierEnableEncryption(ctx context.Context, req *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error)
 
-	// BarrierGenerateRecoveryKeys generates recovery keys for disaster
-	// recovery scenarios.
+	// BarrierGenerateRecoveryKeys generates the independent recovery key and
+	// distributes it to the holders enrolled in the recovery domain.
 	BarrierGenerateRecoveryKeys(ctx context.Context, req *BarrierGenerateRecoveryKeysRequest) (*BarrierRecoveryKeysResponse, error)
-
-	// BarrierRecoverWithKeys unseals the barrier using recovery keys.
-	BarrierRecoverWithKeys(ctx context.Context, req *BarrierRecoverWithKeysRequest) error
 
 	// BarrierDeleteRecoveryKeys deletes all stored recovery keys.
 	BarrierDeleteRecoveryKeys(ctx context.Context) error
@@ -681,45 +666,47 @@ type BarrierClient interface {
 	// generated.
 	BarrierHasRecoveryKeys(ctx context.Context) (*BarrierHasRecoveryKeysResponse, error)
 
-	// BarrierGenerateRootToken generates a new root token using the
-	// provided Shamir shares.
-	BarrierGenerateRootToken(ctx context.Context, req *BarrierGenerateRootTokenRequest) (*BarrierRootTokenResponse, error)
-
-	// OfficerRegister registers a Security Officer for the system barrier.
-	// The signed certificate in the response must be delivered to the officer
-	// out of band; it is not stored server-side after this response.
+	// OfficerRegister enrols a share holder (Security Officer or key
+	// custodian) in the unseal domain. The CA-issued certificate in the
+	// response must reach the holder out of band.
 	OfficerRegister(ctx context.Context, req *OfficerRegisterRequest) (*OfficerRegisterResponse, error)
 
-	// OfficerList lists all registered Security Officers for the system barrier.
+	// OfficerList lists the unseal domain's holders and their claim state.
 	OfficerList(ctx context.Context) ([]*OfficerStatus, error)
 
-	// OfficerClaimStatus returns per-officer claim status (no share data).
-	OfficerClaimStatus(ctx context.Context) ([]*OfficerStatus, error)
-
-	// ShareClaimBegin issues a challenge nonce to the named Security Officer.
-	// The officer must sign the nonce with their private key and call
-	// ShareClaimComplete within the nonce TTL.
+	// ShareClaimBegin issues a claim nonce to the named unseal-domain holder,
+	// who must present its certificate on the connection.
 	ShareClaimBegin(ctx context.Context, req *ShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
 
-	// ShareClaimComplete verifies the officer's nonce signature and returns
-	// the share bytes exactly once. The caller must wipe ShareBytes after use.
+	// ShareClaimComplete verifies the holder's nonce signature and delivers
+	// its sealed share envelope exactly once.
 	ShareClaimComplete(ctx context.Context, req *ShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
 
-	// ShamirSealVote submits a Shamir share as a seal vote for a Shamir-
-	// protected system barrier. When the threshold is met the barrier is
-	// sealed automatically.
-	ShamirSealVote(ctx context.Context, req *ShamirSealVoteRequest) (*ShamirSealVoteResponse, error)
-
-	// RecoveryOfficerRegister registers a Security Officer for recovery key
-	// distribution.
+	// RecoveryOfficerRegister enrols a recovery-domain holder.
 	RecoveryOfficerRegister(ctx context.Context, req *OfficerRegisterRequest) (*OfficerRegisterResponse, error)
 
-	// RecoveryShareClaimBegin issues a challenge nonce for a recovery officer.
+	// RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 	RecoveryShareClaimBegin(ctx context.Context, req *ShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
 
-	// RecoveryShareClaimComplete verifies the recovery officer's nonce
-	// signature and returns the recovery share bytes exactly once.
+	// RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 	RecoveryShareClaimComplete(ctx context.Context, req *ShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
+
+	// BarrierQuorumBegin issues the factor challenge a holder answers to
+	// submit a share. It is reachable while the barrier is sealed.
+	BarrierQuorumBegin(ctx context.Context, req *QuorumBeginRequest) (*QuorumChallenge, error)
+
+	// BarrierQuorumSubmit submits one authenticated holder's share toward
+	// the open round for (domain, op): unseal and recover open the barrier,
+	// seal seals it, root-token derives the root token, rekey completes an
+	// open rekey. Each holder counts once per round.
+	BarrierQuorumSubmit(ctx context.Context, req *QuorumSubmitRequest) (*QuorumOutcome, error)
+
+	// BarrierRekeyStart opens a rekey round.
+	BarrierRekeyStart(ctx context.Context, req *RekeyStartRequest) (*QuorumRound, error)
+
+	// BarrierOfficerRevoke revokes a holder through a quorum-gated rekey
+	// that drops it atomically.
+	BarrierOfficerRevoke(ctx context.Context, req *OfficerRevokeRequest) (*QuorumRound, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -736,46 +723,9 @@ type CeremonyClient interface {
 	// CeremonyStatus returns the current ceremony state.
 	CeremonyStatus(ctx context.Context) (*CeremonyStatusResponse, error)
 
-	// CeremonyClaimCertBegin starts a certificate claim challenge for
-	// the named officer.
-	CeremonyClaimCertBegin(ctx context.Context, req *ClaimCertBeginRequest) (*ClaimCertBeginResponse, error)
-
-	// CeremonyClaimCertComplete completes a certificate claim by
-	// submitting the signed nonce.
-	CeremonyClaimCertComplete(ctx context.Context, req *ClaimCertCompleteRequest) (*ClaimCertCompleteResponse, error)
-
-	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
-	// officer who has already claimed their certificate. The caller must
-	// present an mTLS client certificate whose thumbprint matches the
-	// officer's enrolment record; the server derives it from the peer chain.
-	CeremonyBeginClaimShare(ctx context.Context, req *BeginClaimShareRequest) (*BeginClaimShareResponse, error)
-
-	// CeremonyCompleteClaimShare completes the Shamir share claim handshake
-	// by submitting the signed challenge nonce. The share is released exactly
-	// once.
-	CeremonyCompleteClaimShare(ctx context.Context, req *CompleteClaimShareRequest) (*CompleteClaimShareResponse, error)
-
 	// CeremonySignCSR submits a CSR for signing during or after the
 	// ceremony.
 	CeremonySignCSR(ctx context.Context, req *SignCSRInitRequest) (*SignCSRInitResponse, error)
-
-	// CeremonyClaimShareBegin issues a factor challenge for an enrolled
-	// custodian to claim their Shamir share.
-	CeremonyClaimShareBegin(ctx context.Context, req *CeremonyClaimShareBeginRequest) (*CeremonyClaimShareBeginResponse, error)
-
-	// CeremonyClaimShareComplete verifies the custodian's factor response and
-	// returns the custodian metadata confirming share delivery.
-	CeremonyClaimShareComplete(ctx context.Context, req *CeremonyClaimShareCompleteRequest) (*CeremonyCustodianInfo, error)
-
-	// CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
-	// (with factor proof) toward the unseal quorum.
-	CeremonySubmitUnsealShare(ctx context.Context, req *CeremonySubmitUnsealShareRequest) (*CeremonySubmitUnsealShareResponse, error)
-
-	// CeremonyEnrollExternalOfficer enrols an officer whose key material
-	// lives outside go-qrdb. Either CertPEM (validated against the
-	// configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
-	// supplied, but not both.
-	CeremonyEnrollExternalOfficer(ctx context.Context, req *EnrollExternalOfficerRequest) (*EnrollExternalOfficerResponse, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -855,34 +805,6 @@ type SealStoreClient interface {
 }
 
 // ---------------------------------------------------------------------------
-// Custodian group operations
-// ---------------------------------------------------------------------------
-
-// CustodianGroupClient manages custodian groups for Shamir secret sharing.
-type CustodianGroupClient interface {
-	// CreateCustodianGroup creates a new custodian group.
-	CreateCustodianGroup(ctx context.Context, req *CreateCustodianGroupRequest) (*CreateCustodianGroupResponse, error)
-
-	// GetCustodianGroup retrieves a custodian group by ID.
-	GetCustodianGroup(ctx context.Context, groupID string) (*GetCustodianGroupResponse, error)
-
-	// ListCustodianGroups lists all custodian groups.
-	ListCustodianGroups(ctx context.Context) (*ListCustodianGroupsResponse, error)
-
-	// DeleteCustodianGroup deletes a custodian group.
-	DeleteCustodianGroup(ctx context.Context, groupID string) error
-
-	// AddCustodianMember adds a member to a custodian group.
-	AddCustodianMember(ctx context.Context, req *AddCustodianMemberRequest) (*AddCustodianMemberResponse, error)
-
-	// RemoveCustodianMember removes a member from a custodian group.
-	RemoveCustodianMember(ctx context.Context, req *RemoveCustodianMemberRequest) error
-
-	// DistributeShares distributes Shamir shares to custodian group members.
-	DistributeShares(ctx context.Context, req *DistributeSharesRequest) (*DistributeSharesResponse, error)
-}
-
-// ---------------------------------------------------------------------------
 // Tenant operations
 // ---------------------------------------------------------------------------
 
@@ -927,11 +849,6 @@ type TenantClient interface {
 	// TenantBarrierUnseal unseals a per-tenant barrier using a single key.
 	TenantBarrierUnseal(ctx context.Context, req *TenantBarrierUnsealRequest) error
 
-	// TenantBarrierUnsealShare submits a single Shamir share toward a
-	// per-tenant barrier's quorum threshold, automatically unsealing once
-	// enough distinct shares have been submitted.
-	TenantBarrierUnsealShare(ctx context.Context, req *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)
-
 	// TenantBarrierSeal seals a per-tenant barrier, returning it to the
 	// sealed state and refusing further reads/writes until unsealed again.
 	TenantBarrierSeal(ctx context.Context, req *TenantBarrierSealRequest) error
@@ -940,30 +857,33 @@ type TenantClient interface {
 	// active strategy metadata for a per-tenant barrier.
 	TenantBarrierStatus(ctx context.Context, req *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)
 
-	// TenantBarrierOfficerRegister registers a Security Officer for a
-	// specific tenant's barrier.
+	// TenantBarrierOfficerRegister enrols a share holder for a tenant
+	// barrier.
 	TenantBarrierOfficerRegister(ctx context.Context, req *TenantOfficerRegisterRequest) (*OfficerRegisterResponse, error)
 
-	// TenantBarrierOfficerList lists all registered Security Officers for
-	// a specific tenant's barrier.
+	// TenantBarrierOfficerList lists a tenant barrier's holders.
 	TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*OfficerStatus, error)
 
-	// TenantBarrierOfficerClaimStatus returns per-officer claim status for
-	// a specific tenant's barrier (no share data).
-	TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*OfficerStatus, error)
-
-	// TenantBarrierShareClaimBegin issues a challenge nonce for a tenant
-	// barrier Security Officer.
+	// TenantBarrierShareClaimBegin issues a claim nonce to a tenant holder.
 	TenantBarrierShareClaimBegin(ctx context.Context, req *TenantShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
 
-	// TenantBarrierShareClaimComplete verifies the tenant officer's nonce
-	// signature and returns the share bytes exactly once. The caller must
-	// wipe ShareBytes after use.
+	// TenantBarrierShareClaimComplete delivers a tenant holder's sealed
+	// share envelope exactly once.
 	TenantBarrierShareClaimComplete(ctx context.Context, req *TenantShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
 
-	// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for
-	// a Shamir-protected tenant barrier.
-	TenantBarrierShamirSealVote(ctx context.Context, req *TenantShamirSealVoteRequest) (*ShamirSealVoteResponse, error)
+	// TenantBarrierQuorumBegin issues a tenant holder's quorum challenge.
+	TenantBarrierQuorumBegin(ctx context.Context, req *TenantQuorumBeginRequest) (*QuorumChallenge, error)
+
+	// TenantBarrierQuorumSubmit submits one authenticated tenant holder's
+	// share toward the open round for op (unseal, seal or rekey).
+	TenantBarrierQuorumSubmit(ctx context.Context, req *TenantQuorumSubmitRequest) (*QuorumOutcome, error)
+
+	// TenantBarrierRekeyStart opens a rekey round on a tenant barrier.
+	TenantBarrierRekeyStart(ctx context.Context, req *TenantRekeyStartRequest) (*QuorumRound, error)
+
+	// TenantBarrierOfficerRevoke revokes a tenant holder through a
+	// quorum-gated rekey.
+	TenantBarrierOfficerRevoke(ctx context.Context, req *TenantOfficerRevokeRequest) (*QuorumRound, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +917,5 @@ type Client interface {
 	BackupClient
 	RebalanceClient
 	SealStoreClient
-	CustodianGroupClient
 	TenantClient
 }

@@ -17,6 +17,9 @@ package quic
 import (
 	"encoding/json"
 
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
@@ -40,6 +43,27 @@ func payload[T any](get func(*T) authmw.Target) authmw.QUICTargetFunc {
 			return authmw.SelfTarget(), &authmw.TargetBodyInvalidError{Err: err}
 		}
 		return get(&req), nil
+	}
+}
+
+// protoPayload is payload for a method whose frame is a protobuf message:
+// it targets what get reads from the payload unmarshalled into a new T, the
+// handler's own request message, so the route check authorizes the value the
+// handler acts on. An empty payload names the caller's own tenant; one that
+// does not decode is *authmw.TargetBodyInvalidError.
+func protoPayload[T any, PT interface {
+	*T
+	proto.Message
+}](get func(PT) authmw.Target) authmw.QUICTargetFunc {
+	return func(p []byte) (authmw.Target, error) {
+		if len(p) == 0 {
+			return authmw.SelfTarget(), nil
+		}
+		req := PT(new(T))
+		if err := proto.Unmarshal(p, req); err != nil {
+			return authmw.SelfTarget(), &authmw.TargetBodyInvalidError{Err: err}
+		}
+		return get(req), nil
 	}
 }
 
@@ -71,11 +95,20 @@ func identityTargets() map[string]authmw.QUICTargetFunc {
 		"role.Unassign":         payload(func(r *assignRoleWireRequest) authmw.Target { return authmw.UserTarget(r.UserID) }),
 		"role.ReconcileBuiltIn": payload(func(r *reconcileRolesWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
 
-		"tenant.BarrierSeal":               payload(func(r *quicTenantBarrierSealRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
-		"tenant.BarrierOfficerRegister":    payload(func(r *quicTenantOfficerRegisterRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
-		"tenant.BarrierOfficerList":        payload(func(r *quicTenantOfficerListRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
-		"tenant.BarrierOfficerClaimStatus": payload(func(r *quicTenantOfficerListRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
-		"tenant.BarrierShamirSealVote":     payload(func(r *quicTenantSealVoteRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"tenant.BarrierSeal": payload(func(r *quicTenantBarrierSealRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		// The share-holder methods frame protobuf messages.
+		"tenant.BarrierOfficerRegister": protoPayload(func(r *pb.TenantBarrierOfficerRegisterRequest) authmw.Target {
+			return authmw.TenantTarget(r.GetTenantId())
+		}),
+		"tenant.BarrierOfficerList": protoPayload(func(r *pb.TenantBarrierOfficerListRequest) authmw.Target {
+			return authmw.TenantTarget(r.GetTenantId())
+		}),
+		"tenant.BarrierRekeyStart": protoPayload(func(r *pb.TenantBarrierRekeyStartRequest) authmw.Target {
+			return authmw.TenantTarget(r.GetTenantId())
+		}),
+		"tenant.BarrierOfficerRevoke": protoPayload(func(r *pb.TenantBarrierOfficerRevokeRequest) authmw.Target {
+			return authmw.TenantTarget(r.GetTenantId())
+		}),
 	}
 }
 

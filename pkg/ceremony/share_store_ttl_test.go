@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -179,42 +181,42 @@ func TestNewSealedShareStore_NonPositiveTTLSelectsDefault(t *testing.T) {
 }
 
 // TestCeremonyService_ShareTTLFromConfig pins that the configured TTL reaches
-// the system and recovery stores.
+// the unseal and recovery holder stores.
 func TestCeremonyService_ShareTTLFromConfig(t *testing.T) {
-	cfg := defaultConfig()
-	cfg.ShareTTL = 90 * time.Minute
-	svc, err := NewCeremonyService(cfg, unsealedTestBarrier(t), newTestCredentialService(), testLogger())
+	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir(), ShareTTL: 90 * time.Minute},
+		shamirBarrier(t, seal.NewMemoryBackend(), 2, 2), testLogger())
 	require.NoError(t, err)
-
-	assert.Equal(t, 90*time.Minute, svc.shareStore.ttl)
-
-	svc.mu.Lock()
-	require.NoError(t, svc.ensureRecoveryState())
-	svc.mu.Unlock()
-	assert.Equal(t, 90*time.Minute, svc.recoveryShareStore.ttl)
+	assert.Equal(t, 90*time.Minute, svc.system.store.ttl)
+	assert.Equal(t, 90*time.Minute, svc.recovery.store.ttl)
 }
 
-// TestClaimShare_ExpiredShareIsReportedAtBegin drives the officer claim flow:
-// a holder whose share outlived its TTL is told it expired, not that no share
+// TestClaimShare_ExpiredShareIsReportedAtBegin drives the claim flow: a
+// holder whose envelope outlived its TTL is told it expired, not that none
 // was ever distributed, and cannot complete a claim with a nonce issued
 // before the expiry.
 func TestClaimShare_ExpiredShareIsReportedAtBegin(t *testing.T) {
-	svc, officers := setupTwoOfficersWithShares(t)
-	o := officers[0]
 	ctx := context.Background()
-
-	cr, err := svc.BeginClaimShare(ctx, o.username, o.thumbprint)
+	e := newHolderEnv(t, 2, 2)
+	a, b := newHolder(t, "alice", ""), newHolder(t, "bob", "")
+	e.register(seal.DomainUnseal, a, b)
+	_, err := e.barrier.InitializeShamir(ctx, "")
 	require.NoError(t, err)
 
-	svc.shareStore.expire(o.username, heldFor(svc.shareStore, o.username))
+	cr, err := e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
+	require.NoError(t, err)
 
-	_, err = svc.BeginClaimShare(ctx, o.username, o.thumbprint)
+	store := e.svc.system.store
+	store.expire("alice", heldFor(store, "alice"))
+
+	_, err = e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
 	assert.ErrorIs(t, err, ErrShareExpired)
 
-	sig := signNonce(t, o.key, cr.Nonce)
-	_, err = svc.CompleteClaimShare(ctx, o.username, hex.EncodeToString(cr.Nonce), sig, o.thumbprint)
-	assert.ErrorIs(t, err, ErrShareExpired, "a nonce issued before expiry must not reach a wiped share")
+	sig, err := mtls.SignNonce(a.certKey, cr.Nonce)
+	require.NoError(t, err)
+	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", hex.EncodeToString(cr.Nonce), sig, a.thumb)
+	assert.ErrorIs(t, err, ErrShareExpired, "a nonce issued before expiry must not reach a wiped envelope")
 
 	// The other holder is unaffected.
-	_ = doClaimHandshake(t, svc, officers[1])
+	e.claim(seal.DomainUnseal, b)
+	assert.NotEmpty(t, b.envelope)
 }

@@ -25,6 +25,7 @@ import (
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -33,66 +34,28 @@ import (
 // fakeBarrierServicer
 // ===========================================================================
 
-type fakeBarrierServicer struct{}
+type fakeBarrierServicer struct {
+	service.BarrierServicer
+}
 
 var _ service.BarrierServicer = (*fakeBarrierServicer)(nil)
 
 func (f *fakeBarrierServicer) BarrierInitialize(_ context.Context, _ []byte) error { return nil }
 func (f *fakeBarrierServicer) BarrierUnseal(_ context.Context, _ []byte) error     { return nil }
 func (f *fakeBarrierServicer) BarrierSeal(_ context.Context) error                 { return nil }
+func (f *fakeBarrierServicer) BarrierInitializeShamir(_ context.Context, threshold, total int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+	return &service.ShamirInitInfo{ShareCount: total, Threshold: threshold, TotalShares: total}, nil
+}
+func (f *fakeBarrierServicer) BarrierGenerateRecoveryKeys(_ context.Context, threshold int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
+	return &service.RecoveryKeysInfo{ShareCount: threshold + 1, Threshold: threshold, Total: threshold + 1}, nil
+}
 func (f *fakeBarrierServicer) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return &service.BarrierStatusInfo{Sealed: false, Strategy: "passphrase", InitializedAt: time.Unix(1700000000, 0)}, nil
 }
-func (f *fakeBarrierServicer) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, total int) (*service.ShamirInitInfo, error) {
-	return &service.ShamirInitInfo{ShareCount: 2, Threshold: threshold, TotalShares: total}, nil
-}
-func (f *fakeBarrierServicer) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false}, nil
-}
-func (f *fakeBarrierServicer) BarrierUnsealWithShares(_ context.Context, _ []string) error {
-	return nil
-}
 
-func (f *fakeBarrierServicer) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	return &service.ShamirInitInfo{ShareCount: 1, Threshold: threshold, TotalShares: total}, nil
-}
-func (f *fakeBarrierServicer) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-	return &service.RecoveryKeysInfo{ShareCount: 1, Threshold: threshold, Total: total}, nil
-}
-func (f *fakeBarrierServicer) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (f *fakeBarrierServicer) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (f *fakeBarrierServicer) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (f *fakeBarrierServicer) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (f *fakeBarrierServicer) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (f *fakeBarrierServicer) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (f *fakeBarrierServicer) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (f *fakeBarrierServicer) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (f *fakeBarrierServicer) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (f *fakeBarrierServicer) BarrierRecoverWithKeys(_ context.Context, _ []string) error { return nil }
-func (f *fakeBarrierServicer) BarrierDeleteRecoveryKeys(_ context.Context) error          { return nil }
+func (f *fakeBarrierServicer) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
 func (f *fakeBarrierServicer) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return true, nil
-}
-func (f *fakeBarrierServicer) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-	return &service.RootTokenInfo{Token: "tok", CreatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 // startBarrierServer starts a gRPC server with only the barrier servicer wired.
@@ -154,87 +117,5 @@ func TestGRPCBarrier_InitializeShamir_Success(t *testing.T) {
 	}
 	if resp.ShareCount != 2 {
 		t.Fatalf("got ShareCount=%d, want 2", resp.ShareCount)
-	}
-}
-
-func TestGRPCBarrier_UnsealWithShare_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	resp, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{Share: "s1"})
-	if err != nil {
-		t.Fatalf("BarrierUnsealWithShare: %v", err)
-	}
-	if resp.Required != 2 {
-		t.Fatalf("Required = %d", resp.Required)
-	}
-}
-
-func TestGRPCBarrier_UnsealWithShares_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	if err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{Shares: []string{"s1", "s2"}}); err != nil {
-		t.Fatalf("BarrierUnsealWithShares: %v", err)
-	}
-}
-
-func TestGRPCBarrier_Rekey_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 2})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("nil resp")
-	}
-}
-
-func TestGRPCBarrier_GenerateRecoveryKeys_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, Total: 2})
-	if err != nil {
-		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
-	}
-	if resp.ShareCount == 0 && resp.Threshold == 0 {
-		t.Fatal("expected non-empty recovery key response")
-	}
-}
-
-func TestGRPCBarrier_RecoverWithKeys_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	if err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{Keys: []string{"r1"}}); err != nil {
-		t.Fatalf("BarrierRecoverWithKeys: %v", err)
-	}
-}
-
-func TestGRPCBarrier_GenerateRootToken_Success(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	resp, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{Shares: []string{"s1"}})
-	if err != nil {
-		t.Fatalf("BarrierGenerateRootToken: %v", err)
-	}
-	if resp.Token != "tok" {
-		t.Fatalf("Token = %q", resp.Token)
 	}
 }

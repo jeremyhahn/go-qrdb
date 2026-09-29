@@ -155,10 +155,9 @@ and retryable.
 The gate applies only to routes mapped to the permissions in
 `pkg/auth/middleware.SOPermissions`:
 
-- `ceremony:initialize`, `ceremony:enroll-custodian`,
-  `ceremony:revoke-custodian`, `ceremony:sign-csr`
-- `seal:rotate-root-key`, `seal:rekey`, `seal:generate-recovery`,
-  `seal:initialize-shamir`
+- `ceremony:initialize`, `ceremony:sign_csr`
+- `seal:rotate_root_key`, `seal:rekey`, `seal:generate_recovery`,
+  `seal:initialize_shamir`
 
 All other routes pass through untouched, including over plain HTTP —
 the TLS requirement below is scoped to the SO surface only.
@@ -233,7 +232,7 @@ CORS → scope → sealed-window → auth → SO dual-factor → mux
 ```
 
 Interaction with the sealed window: the SO-gated operations that are
-also on the sealed-window allowlist (e.g. `/v1/barrier/rekey`,
+also on the sealed-window allowlist (e.g. `/v1/barrier/shamir/initialize`,
 `/v1/ceremony/initialize`) remain reachable while sealed, and with the
 flag enabled they then require the SO PIN — the sealed-window
 middleware never bypasses the SO gate because it sits further out in

@@ -50,16 +50,6 @@ type mcpTenantBarrierInitResponse struct {
 	TotalShares int    `json:"total_shares,omitempty"`
 }
 
-// mcpTenantBarrierUnsealProgress mirrors the JSON shape returned by the
-// qrdb_tenant_barrier_unseal_share tool.
-type mcpTenantBarrierUnsealProgress struct {
-	TenantID  string `json:"tenant_id"`
-	Required  int    `json:"required"`
-	Submitted int    `json:"submitted"`
-	Complete  bool   `json:"complete"`
-	Sealed    bool   `json:"sealed"`
-}
-
 // mcpTenantBarrierStatus mirrors the tenant.TenantBarrierStatus JSON shape
 // returned by the qrdb_tenant_barrier_status tool.
 type mcpTenantBarrierStatus struct {
@@ -355,38 +345,6 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	}, nil
 }
 
-// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
-// barrier's quorum threshold by calling the qrdb_tenant_barrier_unseal_share
-// MCP tool.
-func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &nilRequestError{Method: "TenantBarrierUnsealShare"}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_unseal_share", map[string]any{
-		"tenant_id": req.TenantID,
-		"share":     req.Share,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: err}
-	}
-
-	var wire mcpTenantBarrierUnsealProgress
-	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-	return &transport.TenantBarrierUnsealProgress{
-		TenantID:  wire.TenantID,
-		Required:  wire.Required,
-		Submitted: wire.Submitted,
-		Complete:  wire.Complete,
-		Sealed:    wire.Sealed,
-	}, nil
-}
-
 // TenantBarrierUnseal unseals a per-tenant barrier by calling the
 // qrdb_tenant_barrier_unseal MCP tool. The Key/Share bytes are base64-encoded
 // for transport over JSON.
@@ -401,14 +359,8 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 	args := map[string]any{
 		"tenant_id": req.TenantID,
 	}
-	// Prefer Key when set; fall back to Share. Both carry per-tenant root
-	// key material on this transport.
-	keyMaterial := req.Key
-	if len(keyMaterial) == 0 {
-		keyMaterial = req.Share
-	}
-	if len(keyMaterial) > 0 {
-		args["key"] = base64.StdEncoding.EncodeToString(keyMaterial)
+	if len(req.Key) > 0 {
+		args["key"] = base64.StdEncoding.EncodeToString(req.Key)
 	}
 
 	if _, err := t.callTool(ctx, "qrdb_tenant_barrier_unseal", args); err != nil {
@@ -471,178 +423,6 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 	}, nil
 }
 
-// TenantBarrierOfficerRegister registers a Security Officer for the named
-// tenant's barrier by calling the qrdb_tenant_barrier_officer_register MCP
-// tool.
-func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil || req.TenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &mcpMissingTenantIDError{}}
-	}
-
-	args := map[string]any{
-		"tenant_id": req.TenantID,
-		"username":  req.Username,
-		"csr_pem":   string(req.CSRPEM),
-	}
-	if req.AuthenticatorType != "" {
-		args["authenticator_type"] = req.AuthenticatorType
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_officer_register", args)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: err}
-	}
-
-	var resp transport.OfficerRegisterResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// TenantBarrierOfficerList returns all enrolled Security Officers for the
-// named tenant's barrier by calling the qrdb_tenant_barrier_officer_list MCP
-// tool.
-func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if tenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: &mcpMissingTenantIDError{}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_officer_list", map[string]any{
-		"tenant_id": tenantID,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: err}
-	}
-
-	var wire struct {
-		Officers []*transport.OfficerStatus `json:"officers"`
-	}
-	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerList", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return wire.Officers, nil
-}
-
-// TenantBarrierOfficerClaimStatus returns a per-officer claim status snapshot
-// for the named tenant's barrier by calling the
-// qrdb_tenant_barrier_officer_claim_status MCP tool.
-func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if tenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: &mcpMissingTenantIDError{}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_officer_claim_status", map[string]any{
-		"tenant_id": tenantID,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: err}
-	}
-
-	var wire struct {
-		Officers []*transport.OfficerStatus `json:"officers"`
-	}
-	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierOfficerClaimStatus", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return wire.Officers, nil
-}
-
-// TenantBarrierShareClaimBegin issues a challenge nonce to the named Security
-// Officer for the tenant barrier share claim handshake by calling the
-// qrdb_tenant_barrier_share_claim_begin MCP tool.
-func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil || req.TenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimBegin", Err: &mcpMissingTenantIDError{}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_share_claim_begin", map[string]any{
-		"tenant_id": req.TenantID,
-		"username":  req.Username,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimBegin", Err: err}
-	}
-
-	var resp transport.ShareClaimBeginResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimBegin", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// TenantBarrierShareClaimComplete verifies the Security Officer's nonce
-// signature and returns the tenant barrier share bytes exactly once by calling
-// the qrdb_tenant_barrier_share_claim_complete MCP tool.
-func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil || req.TenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimComplete", Err: &mcpMissingTenantIDError{}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_share_claim_complete", map[string]any{
-		"tenant_id": req.TenantID,
-		"username":  req.Username,
-		"nonce_hex": req.NonceHex,
-		"signature": req.Signature,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimComplete", Err: err}
-	}
-
-	var resp transport.ShareClaimCompleteResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShareClaimComplete", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for the
-// named tenant's barrier by calling the qrdb_tenant_barrier_shamir_seal_vote
-// MCP tool.
-func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil || req.TenantID == "" {
-		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: &mcpMissingTenantIDError{}}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_tenant_barrier_shamir_seal_vote", map[string]any{
-		"tenant_id": req.TenantID,
-		"share":     req.Share,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: err}
-	}
-
-	var resp transport.ShamirSealVoteResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
@@ -671,4 +451,87 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		}
 	}
 	return info
+}
+
+// ---------------------------------------------------------------------------
+// Tenant barrier share holders
+// ---------------------------------------------------------------------------
+
+// TenantBarrierOfficerRegister enrols a share holder of a tenant barrier.
+func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	var resp transport.OfficerRegisterResponse
+	if err := t.callHolderTool(ctx, "TenantBarrierOfficerRegister", "qrdb_tenant_barrier_officer_register", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierOfficerList lists a tenant barrier's holders.
+func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
+	var wire struct {
+		Officers []*transport.OfficerStatus `json:"officers"`
+	}
+	req := struct {
+		TenantID string `json:"tenant_id"`
+	}{TenantID: tenantID}
+	if err := t.callHolderTool(ctx, "TenantBarrierOfficerList", "qrdb_tenant_barrier_officer_list", req, &wire); err != nil {
+		return nil, err
+	}
+	return wire.Officers, nil
+}
+
+// TenantBarrierShareClaimBegin issues a claim nonce to a tenant holder.
+func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	var resp transport.ShareClaimBeginResponse
+	if err := t.callHolderTool(ctx, "TenantBarrierShareClaimBegin", "qrdb_tenant_barrier_share_claim_begin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierShareClaimComplete delivers a tenant holder's sealed envelope
+// exactly once.
+func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	var resp transport.ShareClaimCompleteResponse
+	if err := t.callHolderTool(ctx, "TenantBarrierShareClaimComplete", "qrdb_tenant_barrier_share_claim_complete", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierQuorumBegin issues a tenant holder's quorum challenge.
+func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport.TenantQuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	var resp transport.QuorumChallenge
+	if err := t.callHolderTool(ctx, "TenantBarrierQuorumBegin", "qrdb_tenant_barrier_quorum_begin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
+func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	var resp transport.QuorumOutcome
+	if err := t.callHolderTool(ctx, "TenantBarrierQuorumSubmit", "qrdb_tenant_barrier_quorum_submit", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierRekeyStart opens a rekey round on a tenant barrier.
+func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.TenantRekeyStartRequest) (*transport.QuorumRound, error) {
+	var resp transport.QuorumRound
+	if err := t.callHolderTool(ctx, "TenantBarrierRekeyStart", "qrdb_tenant_barrier_rekey_start", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierOfficerRevoke revokes a tenant holder through a quorum-gated
+// rekey.
+func (t *Transport) TenantBarrierOfficerRevoke(ctx context.Context, req *transport.TenantOfficerRevokeRequest) (*transport.QuorumRound, error) {
+	var resp transport.QuorumRound
+	if err := t.callHolderTool(ctx, "TenantBarrierOfficerRevoke", "qrdb_tenant_barrier_officer_revoke", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }

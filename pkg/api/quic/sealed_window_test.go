@@ -26,7 +26,8 @@ func TestSealedWindowAllowed_AllowlistedMethods(t *testing.T) {
 	for _, method := range []string{
 		"admin.Health", "admin.Status",
 		"barrier.Status", "barrier.Initialize", "barrier.Unseal",
-		"barrier.ShamirInitialize", "barrier.RootToken",
+		"barrier.ShamirInitialize",
+		"barrier.QuorumBegin", "barrier.QuorumSubmit",
 		"ceremony.Initialize", "ceremony.Status",
 	} {
 		if !sealedWindowAllowed(method) {
@@ -98,9 +99,24 @@ func TestSealedWindowRefusal(t *testing.T) {
 func TestSealedWindowAllowed_NonAllowlistedMethods(t *testing.T) {
 	for _, method := range []string{
 		"kv.Put", "kv.Get", "db.Create", "sql.Query", "user.Create",
+		// Holder administration needs an unsealed barrier.
+		"barrier.RekeyStart", "barrier.OfficerRevoke", "barrier.Seal",
 	} {
 		if sealedWindowAllowed(method) {
 			t.Errorf("expected %q to be rejected while sealed", method)
+		}
+	}
+}
+
+// TestSealedWindowAllowlist_EveryMethodIsDispatchable proves the allowlist
+// names only methods the server actually serves. An allowlisted name with no
+// handler is a hole the sealed window keeps open for nothing, and it hides
+// the real method when a name drifts.
+func TestSealedWindowAllowlist_EveryMethodIsDispatchable(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	for method := range sealedwindow.QUICAllowlist() {
+		if _, ok := srv.handlers[method]; !ok {
+			t.Errorf("sealed-window method %q has no dispatch handler", method)
 		}
 	}
 }

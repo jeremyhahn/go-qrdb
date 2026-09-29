@@ -747,65 +747,6 @@ func connectStubInProcess(t *testing.T, stubs map[string]string) (*Transport, fu
 	return tr, func() { _ = tr.Close() }
 }
 
-// TestCeremonyEnrollExternalOfficer_LiveDecodePath exercises the
-// JSON-decode and response-mapping branch of CeremonyEnrollExternalOfficer
-// using a stub MCP tool.
-func TestCeremonyEnrollExternalOfficer_LiveDecodePath(t *testing.T) {
-	stubs := map[string]string{
-		"qrdb_ceremony_enroll_external_officer": `{"sealed_share":"sealed-blob"}`,
-	}
-
-	tr, cleanup := connectStubInProcess(t, stubs)
-	defer cleanup()
-
-	resp, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{
-		Username:   "officer1",
-		CertPEM:    "cert",
-		ShareIndex: 1,
-		AuthFactor: "mtls",
-		ShareBytes: []byte("plaintext-share"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonyEnrollExternalOfficer: %v", err)
-	}
-	if resp == nil || resp.SealedShare != "sealed-blob" {
-		t.Fatalf("expected SealedShare=sealed-blob, got %+v", resp)
-	}
-}
-
-// TestCeremonyEnrollExternalOfficer_JSONDecodeError exercises the
-// json.Unmarshal failure branch.
-func TestCeremonyEnrollExternalOfficer_JSONDecodeError(t *testing.T) {
-	stubs := map[string]string{
-		"qrdb_ceremony_enroll_external_officer": `not-json`,
-	}
-
-	tr, cleanup := connectStubInProcess(t, stubs)
-	defer cleanup()
-
-	_, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{
-		Username: "officer1",
-	})
-	if err == nil {
-		t.Fatal("expected JSON decode error")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-// TestCeremonyEnrollExternalOfficer_AfterClose covers the closed-state
-// branch which was not exercised by the existing ceremony test suite.
-func TestCeremonyEnrollExternalOfficer_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Stub-driven watchPoll branch coverage
 // ---------------------------------------------------------------------------

@@ -68,9 +68,9 @@ operator already holds was issued by something else (corporate PKI, a card
 vendor), so validating it against the CA this deployment is about to create
 would reject every legitimate input.
 
-This makes admin enrolment the mirror of `EnrollExternalOfficer` — the admin and
-every security officer enrol by the same rule, and an operator who can bring
-their own credential to one role can bring it to the other.
+Share holders (Security Officers and key custodians) do not take this path:
+a holder is always enrolled from a CSR, because the ceremony CA must assign the
+holder's certificate identity. See [../shamir-custody/](../shamir-custody/).
 
 ### Under `auth.mtls_binding_policy: required`
 
@@ -128,7 +128,7 @@ Created deterministically on first init, undeletable, persisted at
 | Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
 | User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
 | Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | `barrier:unseal-share` | Shamir share holder only |
+| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | none | Retained so persisted role references resolve; a share holder's operations are identity-gated |
 
 An admin user for the system tenant is also created:
 

@@ -95,7 +95,9 @@ func TestTenantBarrier_AuditFailure_Is503NotForbidden(t *testing.T) {
 	}{
 		{"init", http.MethodPost, "/v1/tenants/acme/barrier/init"},
 		{"unseal", http.MethodPost, "/v1/tenants/acme/barrier/unseal"},
-		{"unseal-share", http.MethodPost, "/v1/tenants/acme/barrier/unseal-share"},
+		{"quorum-submit", http.MethodPost, "/v1/tenants/acme/barrier/quorum/submit"},
+		{"rekey-start", http.MethodPost, "/v1/tenants/acme/barrier/rekey/start"},
+		{"officer-revoke", http.MethodPost, "/v1/tenants/acme/barrier/officers/revoke"},
 		{"seal", http.MethodPost, "/v1/tenants/acme/barrier/seal"},
 		{"status", http.MethodGet, "/v1/tenants/acme/barrier/status"},
 	} {

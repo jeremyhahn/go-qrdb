@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -64,7 +65,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
@@ -1384,10 +1384,12 @@ func runStart(f *startFlags) (err error) {
 			var sealBarrier *seal.StorageBarrier
 			var credCoreSvc *credentials.CredentialService
 			var barrierRegistry *seal.BarrierRegistry
+			var pinBackend pin.PINBackend
 			if sealSub != nil {
 				sealBarrier = sealSub.SealBarrier
 				credCoreSvc = sealSub.CredCoreSvc
 				barrierRegistry = sealSub.BarrierRegistry
+				pinBackend = sealSub.PINBackend
 			}
 
 			// Construct all services via the shared lifecycle package. Seal-gated
@@ -1489,6 +1491,8 @@ func runStart(f *startFlags) (err error) {
 				CeremonyCoreSvc:           ceremonyCoreSvc,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
+				PINBackend:                pinBackend,
+				HolderTrustDomain:         qrdbconfig.HolderTrustDomain(f.spiffeTrustDomain, f.clusterTrustDomain),
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
@@ -2161,15 +2165,15 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts,
 					server.WithAuthMiddleware(authResult.authMW),
 				)
-				if authResult.custodianSvc != nil {
-					serverOpts = append(serverOpts, server.WithCustodianService(authResult.custodianSvc))
-				}
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 				}
 			}
 			if barrierSvc != nil {
 				serverOpts = append(serverOpts, server.WithBarrierService(barrierSvc))
+			}
+			if pinBackend != nil {
+				serverOpts = append(serverOpts, server.WithPINBackend(pinBackend))
 			}
 			if ceremonySvc != nil {
 				serverOpts = append(serverOpts, server.WithCeremonyService(ceremonySvc))
@@ -3197,7 +3201,6 @@ type mgmtBootstrapResult struct {
 type authBootstrapResult struct {
 	auditLogger     audit.Logger
 	authMW          *middleware.AuthMiddleware
-	custodianSvc    custodian.Servicer
 	soAuthenticator *auth.SOAuthenticator
 }
 
@@ -3571,14 +3574,6 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
 	}
 
-	// Custodian service: persists non-secret custodian metadata under
-	// __sys:custodian/<id>. Shares are never persisted -- they live in
-	// secure.Buffer only during enrollment delivery and unseal submission.
-	custodianSvc, err := custodian.NewService(runtimeStore, complianceAudit, slog.Default())
-	if err != nil {
-		return nil, &AuthBootstrapError{Step: "custodian service", Err: err}
-	}
-
 	// SO authenticator: hash-commits the SO PIN at bootstrap (Argon2id or
 	// PBKDF2-SHA256 depending on GOFIPS140), verifies via constant-time
 	// compare on each SO-permissioned request. PIN itself is never stored.
@@ -3595,7 +3590,6 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	return &authBootstrapResult{
 		auditLogger:     auditLogger,
 		authMW:          authMW,
-		custodianSvc:    custodianSvc,
 		soAuthenticator: soAuthenticator,
 	}, nil
 }

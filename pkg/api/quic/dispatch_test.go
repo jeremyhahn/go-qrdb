@@ -193,36 +193,26 @@ var expectedMethods = []string{
 	"barrier.Seal",
 	"barrier.Status",
 	"barrier.ShamirInitialize",
-	"barrier.ShamirUnsealShare",
-	"barrier.ShamirUnsealShares",
-	"barrier.Rekey",
 	"barrier.EnableEncryption",
 	"barrier.RecoveryGenerate",
-	"barrier.RecoveryRecover",
 	"barrier.RecoveryDelete",
 	"barrier.RecoveryStatus",
-	"barrier.RootToken",
 	"barrier.OfficerRegister",
 	"barrier.OfficerList",
 	"barrier.ShareClaimBegin",
 	"barrier.ShareClaimComplete",
-	"barrier.OfficerClaimStatus",
 	"barrier.RecoveryOfficerRegister",
 	"barrier.RecoveryShareClaimBegin",
 	"barrier.RecoveryShareClaimComplete",
-	"barrier.ShamirSealVote",
+	"barrier.QuorumBegin",
+	"barrier.QuorumSubmit",
+	"barrier.RekeyStart",
+	"barrier.OfficerRevoke",
 
 	// Ceremony (9)
 	"ceremony.Initialize",
 	"ceremony.Status",
-	"ceremony.ClaimCertBegin",
-	"ceremony.ClaimCertComplete",
-	"ceremony.BeginClaimShare",
-	"ceremony.CompleteClaimShare",
 	"ceremony.SignCSR",
-	"ceremony.ClaimShareBegin",
-	"ceremony.ClaimShareComplete",
-	"ceremony.SubmitUnsealShare",
 
 	// Tenant (6)
 	"tenant.Create",
@@ -251,8 +241,12 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 172 = 170 + admin.GetNodeCompaction and admin.SetNodeCompaction, the
-	// platform's node-keyspace compaction policy (docs/key-value).
+	// 162 = 172 - 14 share verbs retired by the unified share-holder quorum
+	// (7 barrier, 7 ceremony; 3 tenant ones sat outside this table) + the 4
+	// barrier quorum/rekey/revoke verbs that replace them. Every share is now
+	// submitted by an authenticated holder through barrier.QuorumSubmit.
+	// The 172 was 170 + admin.GetNodeCompaction and admin.SetNodeCompaction,
+	// the platform's node-keyspace compaction policy (docs/key-value).
 	// 170 = 169 + db.UpdateCompaction, a database's scheduled-compaction
 	// policy (docs/key-value).
 	// 169 = 168 + db.UpdateSQL, a database's SQL concurrency mode
@@ -269,7 +263,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 172
+	const wantCount = 162
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -372,8 +366,8 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"user":     12,
 		"role":     11,
 		"cert":     4,
-		"barrier":  23,
-		"ceremony": 10,
+		"barrier":  20,
+		"ceremony": 3,
 		"tenant":   9,
 		"sql":      1,
 	}

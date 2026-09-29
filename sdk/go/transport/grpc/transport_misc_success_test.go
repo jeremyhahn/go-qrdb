@@ -17,7 +17,6 @@ package grpc
 import (
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"net"
 	"testing"
 	"time"
@@ -29,7 +28,6 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -46,44 +44,12 @@ func (f *fakeCeremonyServicer) CeremonyInitialize(_ context.Context, _ ceremony.
 	return &service.CeremonyInitResult{SPKIPin: "pin", State: "initialized", CACertPEM: []byte("CA")}, nil
 }
 
-func (f *fakeCeremonyServicer) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	return &service.CeremonyChallenge{NonceHex: "dead", ExpiresAt: time.Unix(1700001000, 0)}, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	return &service.CeremonyClaimCertResult{CertPEM: []byte("CERT"), CACertPEM: []byte("CA")}, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"x":1}`)}, nil
-}
-
 func (f *fakeCeremonyServicer) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return &service.CeremonySignCSRResult{CertPEM: []byte("CERT")}, nil
 }
 
 func (f *fakeCeremonyServicer) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin"}, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, nil
-}
-
-func (f *fakeCeremonyServicer) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return &service.CeremonyEnrollExternalOfficerResponse{SealedShare: "sealed"}, nil
 }
 
 // ===========================================================================
@@ -240,54 +206,6 @@ func connectMiscTransport(t *testing.T, addr string) (*Transport, func()) {
 // ===========================================================================
 // Ceremony success
 // ===========================================================================
-
-func TestGRPCCeremony_AllMethods_Success(t *testing.T) {
-	addr, stop := startMiscServer(t)
-	defer stop()
-	tr, cleanup := connectMiscTransport(t, addr)
-	defer cleanup()
-	ctx := context.Background()
-
-	t.Run("Initialize", func(t *testing.T) {
-		if _, err := tr.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); err != nil {
-			t.Fatalf("CeremonyInitialize: %v", err)
-		}
-	})
-	t.Run("Status", func(t *testing.T) {
-		if _, err := tr.CeremonyStatus(ctx); err != nil {
-			t.Fatalf("CeremonyStatus: %v", err)
-		}
-	})
-	t.Run("ClaimCertBegin", func(t *testing.T) {
-		if _, err := tr.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{Username: "alice"}); err != nil {
-			t.Fatalf("CeremonyClaimCertBegin: %v", err)
-		}
-	})
-	t.Run("ClaimCertComplete", func(t *testing.T) {
-		if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{
-			Username:  "alice",
-			NonceHex:  "dead",
-			Signature: base64.StdEncoding.EncodeToString([]byte("sig")),
-		}); err != nil {
-			t.Fatalf("CeremonyClaimCertComplete: %v", err)
-		}
-	})
-	t.Run("ClaimShare", func(t *testing.T) {
-		if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{Username: "alice"}); err == nil {
-			t.Fatal("CeremonyBeginClaimShare: expected refusal without a client certificate")
-		}
-	})
-	t.Run("SignCSR", func(t *testing.T) {
-		if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "alice"}); err != nil {
-			t.Fatalf("CeremonySignCSR: %v", err)
-		}
-	})
-	t.Run("EnrollExternalOfficer", func(t *testing.T) {
-		if _, err := tr.CeremonyEnrollExternalOfficer(ctx, &transport.EnrollExternalOfficerRequest{Username: "alice"}); err != nil {
-			t.Fatalf("CeremonyEnrollExternalOfficer: %v", err)
-		}
-	})
-}
 
 // ===========================================================================
 // Collection success

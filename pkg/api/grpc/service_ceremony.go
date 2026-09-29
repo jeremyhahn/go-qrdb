@@ -16,13 +16,11 @@ package grpc
 
 import (
 	"context"
-	"encoding/base64"
-	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,26 +40,11 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 		return nil, mapServiceError(&CeremonyCANotConfiguredError{})
 	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, &service.CeremonyInitializeOptions{
-		SOPin:                  req.GetSoPin(),
-		UserPin:                req.GetUserPin(),
-		CredentialSealStrategy: req.GetCredentialSealStrategy(),
-		Threshold:              int(req.GetThreshold()),
-		Officers:               ceremonyOfficerConfigsFromPB(req.GetOfficers()),
-		Hostname:               req.GetHostname(),
-		SANs:                   req.GetSans(),
-	})
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, holderpb.CeremonyInitFromPB(req))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-
-	return &pb.CeremonyInitializeResponse{
-		SpkiPin:    result.SPKIPin,
-		CaCertPem:  string(result.CACertPEM),
-		TlsCertPem: string(result.TLSCertPEM),
-		State:      result.State,
-		ShareCount: int32(result.ShareCount),
-	}, nil
+	return holderpb.CeremonyInitToPB(result), nil
 }
 
 // CeremonyStatus returns the current ceremony state and SPKI pin.
@@ -81,122 +64,6 @@ func (s *qrdbServiceServer) CeremonyStatus(ctx context.Context, _ *emptypb.Empty
 	}, nil
 }
 
-// CeremonyClaimCertBegin starts the certificate claim handshake for an
-// officer, returning a challenge nonce and its expiration.
-func (s *qrdbServiceServer) CeremonyClaimCertBegin(ctx context.Context, req *pb.CeremonyClaimCertBeginRequest) (*pb.CeremonyClaimCertBeginResponse, error) {
-	if s.ceremonySvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-
-	challenge, err := s.ceremonySvc.CeremonyBeginClaimCert(ctx, req.GetUsername())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.CeremonyClaimCertBeginResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339Nano),
-	}, nil
-}
-
-// CeremonyClaimCertComplete completes the certificate claim handshake by
-// verifying the officer's nonce signature and returning the issued certificate.
-func (s *qrdbServiceServer) CeremonyClaimCertComplete(ctx context.Context, req *pb.CeremonyClaimCertCompleteRequest) (*pb.CeremonyClaimCertCompleteResponse, error) {
-	if s.ceremonySvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-
-	sig, err := base64.StdEncoding.DecodeString(req.GetSignature())
-	if err != nil {
-		return nil, mapServiceError(&SignatureDecodeError{Err: err})
-	}
-
-	result, err := s.ceremonySvc.CeremonyCompleteClaimCert(ctx, req.GetUsername(), req.GetNonceHex(), sig)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.CeremonyClaimCertCompleteResponse{
-		CertPem:   string(result.CertPEM),
-		CaCertPem: string(result.CACertPEM),
-	}, nil
-}
-
-// CeremonyBeginClaimShare starts the Shamir share claim handshake for the given
-// officer. The caller MUST present an mTLS client certificate: its thumbprint
-// is derived from the verified TLS peer chain (never from the request) and must
-// match the thumbprint recorded for the officer at enrollment.
-func (s *qrdbServiceServer) CeremonyBeginClaimShare(ctx context.Context, req *pb.CeremonyBeginClaimShareRequest) (*pb.CeremonyBeginClaimShareResponse, error) {
-	if s.ceremonySvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	challenge, err := s.ceremonySvc.CeremonyBeginClaimShare(ctx, req.GetUsername(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.CeremonyBeginClaimShareResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
-	}, nil
-}
-
-// CeremonyCompleteClaimShare completes the Shamir share claim handshake. The
-// officer's signature over the challenge nonce and the caller's mTLS
-// certificate thumbprint are both verified before the share is released
-// exactly once.
-func (s *qrdbServiceServer) CeremonyCompleteClaimShare(ctx context.Context, req *pb.CeremonyCompleteClaimShareRequest) (*pb.CeremonyCompleteClaimShareResponse, error) {
-	if s.ceremonySvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	result, err := s.ceremonySvc.CeremonyCompleteClaimShare(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.CeremonyCompleteClaimShareResponse{
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec // share index is a small positive ordinal
-		Share:      string(result.ShareBytes),
-	}, nil
-}
-
-// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
-// outside go-qrdb. Either CertPEM (validated against the configured CA pools)
-// or PubKeyPEM (admin-asserted trust) MUST be supplied, but not both.
-func (s *qrdbServiceServer) CeremonyEnrollExternalOfficer(ctx context.Context, req *pb.CeremonyEnrollExternalOfficerRequest) (*pb.CeremonyEnrollExternalOfficerResponse, error) {
-	if s.ceremonySvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
-	}
-
-	resp, err := s.ceremonySvc.CeremonyEnrollExternalOfficer(ctx, &service.CeremonyEnrollExternalOfficerRequest{
-		Username:   req.GetUsername(),
-		CertPEM:    req.GetCertPem(),
-		PubKeyPEM:  req.GetPubkeyPem(),
-		ShareIndex: int(req.GetShareIndex()),
-		AuthFactor: req.GetAuthFactor(),
-		ShareBytes: req.GetShareBytes(),
-	})
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.CeremonyEnrollExternalOfficerResponse{
-		SealedShare: resp.SealedShare,
-	}, nil
-}
-
 // CeremonySignCSR signs a CSR during the ceremony for an officer or service,
 // returning the issued certificate.
 func (s *qrdbServiceServer) CeremonySignCSR(ctx context.Context, req *pb.CeremonySignCSRRequest) (*pb.CeremonySignCSRResponse, error) {
@@ -212,21 +79,6 @@ func (s *qrdbServiceServer) CeremonySignCSR(ctx context.Context, req *pb.Ceremon
 	return &pb.CeremonySignCSRResponse{
 		CertPem: string(result.CertPEM),
 	}, nil
-}
-
-// ceremonyOfficerConfigsFromPB converts the protobuf officer list to the
-// service-layer type. Returns nil when officers is empty so the service
-// layer's "non-empty overrides the configured value" precedence rule works
-// unchanged.
-func ceremonyOfficerConfigsFromPB(officers []*pb.CeremonyOfficer) []service.CeremonyOfficerConfig {
-	if len(officers) == 0 {
-		return nil
-	}
-	out := make([]service.CeremonyOfficerConfig, len(officers))
-	for i, o := range officers {
-		out[i] = service.CeremonyOfficerConfig{Username: o.GetUsername(), CSRPEM: o.GetCsrPem()}
-	}
-	return out
 }
 
 // ---------------------------------------------------------------------------

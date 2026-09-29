@@ -16,7 +16,6 @@ package embedded
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -122,83 +121,5 @@ func TestEmbedded_BarrierInitialize_PersistsPINs(t *testing.T) {
 	}
 	if !backend.UserPINSet() || backend.storedUserPIN != "u-5678" {
 		t.Fatalf("User PIN not persisted: set=%v stored=%q", backend.UserPINSet(), backend.storedUserPIN)
-	}
-}
-
-// TestEmbedded_BarrierRekey_BadSOPIN verifies that the embedded transport
-// refuses the rekey when the supplied SO PIN does not match the PIN
-// backend's record.
-func TestEmbedded_BarrierRekey_BadSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	svc := &mockBarrierService{}
-	tr, err := New(newMockKVService(), &mockAdminService{},
-		WithBarrierService(svc),
-		WithPINBackend(backend))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	_, err = tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SOPin: "wrong-pin",
-	})
-	if err == nil {
-		t.Fatal("expected error for bad SO PIN, got nil")
-	}
-	if !errors.Is(err, pin.ErrPINInvalid) {
-		t.Fatalf("expected ErrPINInvalid, got %v", err)
-	}
-	if backend.verifyCalls == 0 {
-		t.Fatal("VerifySOPIN was not invoked")
-	}
-}
-
-// TestEmbedded_BarrierRekey_GoodSOPIN verifies that the embedded transport
-// proceeds with the rekey when the supplied SO PIN matches.
-func TestEmbedded_BarrierRekey_GoodSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	svc := &mockBarrierService{}
-	tr, err := New(newMockKVService(), &mockAdminService{},
-		WithBarrierService(svc),
-		WithPINBackend(backend))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SOPin: "correct-pin",
-	})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("nil response after successful rekey")
-	}
-}
-
-// TestEmbedded_BarrierRekey_NoPINBackend verifies the dev-mode flow:
-// when no pin.PINBackend is injected, rekey proceeds without any PIN
-// check.
-func TestEmbedded_BarrierRekey_NoPINBackend(t *testing.T) {
-	svc := &mockBarrierService{}
-	tr, err := New(newMockKVService(), &mockAdminService{},
-		WithBarrierService(svc))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2, Total: 3,
-	})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("nil response in no-PIN-backend mode")
 	}
 }

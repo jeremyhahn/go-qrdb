@@ -25,15 +25,11 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
 // ===========================================================================
@@ -70,21 +66,6 @@ func TestUnixDatabaseBarrier_AfterClose(t *testing.T) {
 // ===========================================================================
 // ClosedError guards — ceremony custodian
 // ===========================================================================
-
-func TestUnixCeremonyCustodian_AfterClose(t *testing.T) {
-	tr := newClosed()
-	var ce *transport.ClosedError
-
-	if _, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimShareBegin: expected ClosedError, got %T: %v", err, err)
-	}
-	if _, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimShareComplete: expected ClosedError, got %T: %v", err, err)
-	}
-	if _, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonySubmitUnsealShare: expected ClosedError, got %T: %v", err, err)
-	}
-}
 
 // ===========================================================================
 // ClosedError guards — credentials CredentialStore / CredentialRetrieve
@@ -124,74 +105,6 @@ func TestUnixAuthCertOps_AfterClose(t *testing.T) {
 // ===========================================================================
 // protoCustodianToInfo — unit tests
 // ===========================================================================
-
-func TestProtoCustodianToInfo_Nil(t *testing.T) {
-	out := protoCustodianToInfo(nil)
-	if out == nil {
-		t.Fatal("expected non-nil result for nil input")
-	}
-	// All fields should be zero.
-	if out.ID != "" || out.Username != "" {
-		t.Errorf("expected empty result, got %+v", out)
-	}
-}
-
-func TestProtoCustodianToInfo_Full(t *testing.T) {
-	now := time.Now().Unix()
-	in := &pb.CeremonyCustodianResponse{
-		Id:                 "cust-1",
-		Username:           "alice",
-		TenantId:           "t1",
-		Method:             "totp",
-		EnrollmentId:       "enroll-1",
-		PublicKeyPem:       "-----BEGIN PUBLIC KEY-----",
-		ShareIndex:         3,
-		EnrolledAtUnix:     now,
-		ShareClaimed:       true,
-		RevokedAtUnix:      now + 100,
-		ShareClaimedAtUnix: now + 50,
-	}
-	out := protoCustodianToInfo(in)
-	if out.ID != "cust-1" {
-		t.Errorf("ID: got %q want cust-1", out.ID)
-	}
-	if out.Username != "alice" {
-		t.Errorf("Username: got %q want alice", out.Username)
-	}
-	if out.TenantID != "t1" {
-		t.Errorf("TenantID: got %q want t1", out.TenantID)
-	}
-	if out.Method != "totp" {
-		t.Errorf("Method: got %q want totp", out.Method)
-	}
-	if out.ShareIndex != 3 {
-		t.Errorf("ShareIndex: got %d want 3", out.ShareIndex)
-	}
-	if !out.ShareClaimed {
-		t.Error("expected ShareClaimed=true")
-	}
-	if out.RevokedAt == nil {
-		t.Error("expected RevokedAt to be set")
-	}
-	if out.ShareClaimedAt == nil {
-		t.Error("expected ShareClaimedAt to be set")
-	}
-}
-
-func TestProtoCustodianToInfo_ZeroOptionals(t *testing.T) {
-	in := &pb.CeremonyCustodianResponse{
-		Id:                 "c1",
-		RevokedAtUnix:      0, // zero means unset
-		ShareClaimedAtUnix: 0,
-	}
-	out := protoCustodianToInfo(in)
-	if out.RevokedAt != nil {
-		t.Errorf("expected nil RevokedAt for zero unix, got %v", out.RevokedAt)
-	}
-	if out.ShareClaimedAt != nil {
-		t.Errorf("expected nil ShareClaimedAt for zero unix, got %v", out.ShareClaimedAt)
-	}
-}
 
 // ===========================================================================
 // Ceremony custodian round-trips (real gRPC server)
@@ -259,59 +172,6 @@ func TestUnixRT_AddCertBinding(t *testing.T) {
 // ===========================================================================
 // Ceremony custodian round-trips
 // ===========================================================================
-
-func TestUnixRT_CeremonyClaimShareBegin(t *testing.T) {
-	svc := &mockCeremonySvc{} // uses existing mock which implements CeremonyClaimShareBegin
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{
-		CustodianID: "cust-1",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShareBegin: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-}
-
-func TestUnixRT_CeremonyClaimShareComplete(t *testing.T) {
-	svc := &mockCeremonySvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{
-		CustodianID:    "cust-1",
-		ChallengeID:    "ch-1",
-		FactorResponse: []byte("response"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShareComplete: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-}
-
-func TestUnixRT_CeremonySubmitUnsealShare(t *testing.T) {
-	svc := &mockCeremonySvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{
-		CustodianID:    "cust-1",
-		ChallengeID:    "ch-1",
-		FactorResponse: []byte("response"),
-		ShareBytes:     []byte("share"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonySubmitUnsealShare: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-}
 
 // ===========================================================================
 // CredentialStore / CredentialRetrieve round-trips
@@ -400,68 +260,9 @@ func TestUnixRT_CredentialRetrieve_ServerError(t *testing.T) {
 // custodianCeremonySvc wraps mockCeremonySvc with non-trivial custodian stubs.
 type custodianCeremonySvc struct {
 	mockCeremonySvc
-	claimBeginFn    func(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error)
-	claimCompleteFn func(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error)
-	submitShareFn   func(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*service.CeremonyUnsealShareResult, error)
-}
-
-func (c *custodianCeremonySvc) CeremonyClaimShareBegin(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error) {
-	if c.claimBeginFn != nil {
-		return c.claimBeginFn(ctx, custodianID)
-	}
-	return &service.CeremonyCustodianChallenge{CustodianID: custodianID, Nonce: []byte("deadbeef")}, nil
-}
-
-func (c *custodianCeremonySvc) CeremonyClaimShareComplete(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error) {
-	if c.claimCompleteFn != nil {
-		return c.claimCompleteFn(ctx, custodianID, challengeID, factorResponse)
-	}
-	return &custodian.Custodian{ID: custodianID, Username: "custodian-user"}, nil
-}
-
-func (c *custodianCeremonySvc) CeremonySubmitUnsealShare(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*service.CeremonyUnsealShareResult, error) {
-	if c.submitShareFn != nil {
-		return c.submitShareFn(ctx, custodianID, challengeID, factorResponse, shareBytes)
-	}
-	return &service.CeremonyUnsealShareResult{Submitted: 1, Required: 3, Unsealed: false}, nil
 }
 
 var _ service.CeremonyServicer = (*custodianCeremonySvc)(nil)
-
-func TestUnixRT_CeremonyClaimShareBegin_WithData(t *testing.T) {
-	svc := &custodianCeremonySvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{
-		CustodianID: "cust-42",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShareBegin: %v", err)
-	}
-	if resp.CustodianID != "cust-42" {
-		t.Errorf("expected CustodianID cust-42, got %q", resp.CustodianID)
-	}
-}
-
-func TestUnixRT_CeremonySubmitUnsealShare_WithData(t *testing.T) {
-	svc := &custodianCeremonySvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{
-		CustodianID:    "cust-42",
-		ChallengeID:    "ch-1",
-		FactorResponse: []byte("response"),
-		ShareBytes:     []byte("share"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonySubmitUnsealShare: %v", err)
-	}
-	if resp.Required != 3 {
-		t.Errorf("expected Required=3, got %d", resp.Required)
-	}
-}
 
 // TestUnixRT_RemoveCertBinding round-trips the withdrawal verb over the unix
 // socket, asserting both arguments reach the service: a thumbprint that did

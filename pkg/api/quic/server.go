@@ -352,8 +352,10 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 }
 
 // WithPINBackend configures the QUIC server with the canonical
-// pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
-// layer on barrier administrative operations.
+// pin.PINBackend that verifies the SO PIN on SO-PIN-gated barrier
+// operations and provisions PINs supplied at initialization. Without one
+// every SO-PIN-gated operation, and every request carrying a PIN to
+// provision, is refused: PIN checks fail closed.
 func WithPINBackend(backend pin.PINBackend) ServerOption {
 	return func(s *Server) { s.pinBackend = backend }
 }

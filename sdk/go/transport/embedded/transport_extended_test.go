@@ -711,34 +711,9 @@ func TestEmbeddedSealStore_WithOptionAssigns(t *testing.T) {
 // ===========================================================================
 
 type mockCustodianGroupService struct {
-	createGroupFn  func(ctx context.Context, id, tenantID, name, purpose string, threshold, total int) (*transport.CustodianGroupInfo, error)
-	getGroupFn     func(ctx context.Context, id string) (*transport.CustodianGroupInfo, error)
-	listGroupsFn   func(ctx context.Context) ([]transport.CustodianGroupInfo, error)
 	deleteGroupFn  func(ctx context.Context, id string) error
-	addMemberFn    func(ctx context.Context, groupID, userID, username, method string) (*transport.CustodianMemberInfo, error)
 	removeMemberFn func(ctx context.Context, groupID, userID string) error
 	distributeFn   func(ctx context.Context, groupID string) (int, error)
-}
-
-func (m *mockCustodianGroupService) CreateGroup(ctx context.Context, id, tenantID, name, purpose string, threshold, total int) (*transport.CustodianGroupInfo, error) {
-	if m.createGroupFn != nil {
-		return m.createGroupFn(ctx, id, tenantID, name, purpose, threshold, total)
-	}
-	return &transport.CustodianGroupInfo{ID: id, TenantID: tenantID, Name: name}, nil
-}
-
-func (m *mockCustodianGroupService) GetGroup(ctx context.Context, id string) (*transport.CustodianGroupInfo, error) {
-	if m.getGroupFn != nil {
-		return m.getGroupFn(ctx, id)
-	}
-	return &transport.CustodianGroupInfo{ID: id}, nil
-}
-
-func (m *mockCustodianGroupService) ListGroups(ctx context.Context) ([]transport.CustodianGroupInfo, error) {
-	if m.listGroupsFn != nil {
-		return m.listGroupsFn(ctx)
-	}
-	return nil, nil
 }
 
 func (m *mockCustodianGroupService) DeleteGroup(ctx context.Context, id string) error {
@@ -746,13 +721,6 @@ func (m *mockCustodianGroupService) DeleteGroup(ctx context.Context, id string) 
 		return m.deleteGroupFn(ctx, id)
 	}
 	return nil
-}
-
-func (m *mockCustodianGroupService) AddMember(ctx context.Context, groupID, userID, username, method string) (*transport.CustodianMemberInfo, error) {
-	if m.addMemberFn != nil {
-		return m.addMemberFn(ctx, groupID, userID, username, method)
-	}
-	return &transport.CustodianMemberInfo{UserID: userID, Username: username, Method: method}, nil
 }
 
 func (m *mockCustodianGroupService) RemoveMember(ctx context.Context, groupID, userID string) error {
@@ -769,321 +737,12 @@ func (m *mockCustodianGroupService) DistributeShares(ctx context.Context, groupI
 	return 0, nil
 }
 
-func TestEmbeddedCustodian_Create(t *testing.T) {
-	var capturedID, capturedTenant string
-	var capturedThreshold, capturedTotal int
-	svc := &mockCustodianGroupService{
-		createGroupFn: func(_ context.Context, id, tenantID, name, _ string, threshold, total int) (*transport.CustodianGroupInfo, error) {
-			capturedID = id
-			capturedTenant = tenantID
-			capturedThreshold = threshold
-			capturedTotal = total
-			return &transport.CustodianGroupInfo{ID: id, TenantID: tenantID, Name: name}, nil
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	resp, err := tr.CreateCustodianGroup(context.Background(), &transport.CreateCustodianGroupRequest{
-		ID:        "g1",
-		TenantID:  "t1",
-		Name:      "ops",
-		Purpose:   "barrier",
-		Threshold: 3,
-		Total:     5,
-	})
-	if err != nil {
-		t.Fatalf("CreateCustodianGroup: %v", err)
-	}
-	if capturedID != "g1" || capturedTenant != "t1" || capturedThreshold != 3 || capturedTotal != 5 {
-		t.Errorf("captured (%q, %q, %d, %d)", capturedID, capturedTenant, capturedThreshold, capturedTotal)
-	}
-	if resp.Group.ID != "g1" {
-		t.Errorf("resp.Group.ID = %q", resp.Group.ID)
-	}
-}
-
-func TestEmbeddedCustodian_Create_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CreateCustodianGroup(context.Background(), &transport.CreateCustodianGroupRequest{})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_Create_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	_, err := tr.CreateCustodianGroup(context.Background(), &transport.CreateCustodianGroupRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_Create_Error(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		createGroupFn: func(context.Context, string, string, string, string, int, int) (*transport.CustodianGroupInfo, error) {
-			return nil, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	_, err := tr.CreateCustodianGroup(context.Background(), &transport.CreateCustodianGroupRequest{})
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
-func TestEmbeddedCustodian_Get(t *testing.T) {
-	tr := newExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	resp, err := tr.GetCustodianGroup(context.Background(), "g1")
-	if err != nil {
-		t.Fatalf("GetCustodianGroup: %v", err)
-	}
-	if resp.Group.ID != "g1" {
-		t.Errorf("Group.ID = %q", resp.Group.ID)
-	}
-}
-
-func TestEmbeddedCustodian_Get_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.GetCustodianGroup(context.Background(), "g1")
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_Get_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	_, err := tr.GetCustodianGroup(context.Background(), "g1")
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_Get_Error(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		getGroupFn: func(context.Context, string) (*transport.CustodianGroupInfo, error) {
-			return nil, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	_, err := tr.GetCustodianGroup(context.Background(), "x")
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
-func TestEmbeddedCustodian_List(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		listGroupsFn: func(context.Context) ([]transport.CustodianGroupInfo, error) {
-			return []transport.CustodianGroupInfo{{ID: "a"}, {ID: "b"}}, nil
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	resp, err := tr.ListCustodianGroups(context.Background())
-	if err != nil {
-		t.Fatalf("ListCustodianGroups: %v", err)
-	}
-	if len(resp.Groups) != 2 {
-		t.Errorf("len = %d, want 2", len(resp.Groups))
-	}
-}
-
-func TestEmbeddedCustodian_List_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.ListCustodianGroups(context.Background())
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_List_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	_, err := tr.ListCustodianGroups(context.Background())
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_List_Error(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		listGroupsFn: func(context.Context) ([]transport.CustodianGroupInfo, error) {
-			return nil, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	_, err := tr.ListCustodianGroups(context.Background())
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
-func TestEmbeddedCustodian_Delete(t *testing.T) {
-	var captured string
-	svc := &mockCustodianGroupService{
-		deleteGroupFn: func(_ context.Context, id string) error {
-			captured = id
-			return nil
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	if err := tr.DeleteCustodianGroup(context.Background(), "g1"); err != nil {
-		t.Fatalf("DeleteCustodianGroup: %v", err)
-	}
-	if captured != "g1" {
-		t.Errorf("captured = %q", captured)
-	}
-}
-
-func TestEmbeddedCustodian_Delete_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.DeleteCustodianGroup(context.Background(), "g1")
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_Delete_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	err := tr.DeleteCustodianGroup(context.Background(), "g1")
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_AddMember(t *testing.T) {
-	tr := newExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	resp, err := tr.AddCustodianMember(context.Background(), &transport.AddCustodianMemberRequest{
-		GroupID:  "g1",
-		UserID:   "u1",
-		Username: "alice",
-		Method:   "email",
-	})
-	if err != nil {
-		t.Fatalf("AddCustodianMember: %v", err)
-	}
-	if resp.Member.UserID != "u1" {
-		t.Errorf("UserID = %q", resp.Member.UserID)
-	}
-}
-
-func TestEmbeddedCustodian_AddMember_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.AddCustodianMember(context.Background(), &transport.AddCustodianMemberRequest{})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_AddMember_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	_, err := tr.AddCustodianMember(context.Background(), &transport.AddCustodianMemberRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_AddMember_Error(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		addMemberFn: func(context.Context, string, string, string, string) (*transport.CustodianMemberInfo, error) {
-			return nil, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	_, err := tr.AddCustodianMember(context.Background(), &transport.AddCustodianMemberRequest{})
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
-func TestEmbeddedCustodian_RemoveMember(t *testing.T) {
-	tr := newExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	err := tr.RemoveCustodianMember(context.Background(), &transport.RemoveCustodianMemberRequest{
-		GroupID: "g1",
-		UserID:  "u1",
-	})
-	if err != nil {
-		t.Fatalf("RemoveCustodianMember: %v", err)
-	}
-}
-
-func TestEmbeddedCustodian_RemoveMember_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.RemoveCustodianMember(context.Background(), &transport.RemoveCustodianMemberRequest{})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_RemoveMember_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	err := tr.RemoveCustodianMember(context.Background(), &transport.RemoveCustodianMemberRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_DistributeShares(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		distributeFn: func(_ context.Context, _ string) (int, error) {
-			return 5, nil
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	resp, err := tr.DistributeShares(context.Background(), &transport.DistributeSharesRequest{GroupID: "g1"})
-	if err != nil {
-		t.Fatalf("DistributeShares: %v", err)
-	}
-	if resp.Distributed != 5 {
-		t.Errorf("Distributed = %d, want 5", resp.Distributed)
-	}
-}
-
-func TestEmbeddedCustodian_DistributeShares_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.DistributeShares(context.Background(), &transport.DistributeSharesRequest{})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_DistributeShares_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCustodianGroupService(&mockCustodianGroupService{}))
-	_, err := tr.DistributeShares(context.Background(), &transport.DistributeSharesRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCustodian_DistributeShares_Error(t *testing.T) {
-	svc := &mockCustodianGroupService{
-		distributeFn: func(context.Context, string) (int, error) {
-			return 0, errSentinel
-		},
-	}
-	tr := newExtTransport(t, WithCustodianGroupService(svc))
-	_, err := tr.DistributeShares(context.Background(), &transport.DistributeSharesRequest{})
-	if !errors.Is(err, errSentinel) {
-		t.Errorf("expected errSentinel, got %v", err)
-	}
-}
-
 // ===========================================================================
 // Tenant transport (was 0%)
 // ===========================================================================
 
 type mockTenantService struct {
+	tenant.TenantServicer
 	createFn        func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
 	getFn           func(ctx context.Context, id string) (*tenant.TenantInfo, error)
 	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
@@ -1163,10 +822,6 @@ func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, i
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
 }
 
-func (m *mockTenantService) TenantBarrierUnsealShare(_ context.Context, id, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{TenantID: id}, nil
-}
-
 func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, id, key)
@@ -1203,17 +858,11 @@ func (m *mockTenantService) TenantBarrierOfficerRegister(_ context.Context, _ st
 func (m *mockTenantService) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
 	return nil, nil
 }
-func (m *mockTenantService) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
 func (m *mockTenantService) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
 	return &ceremony.ChallengeResponse{}, nil
 }
 func (m *mockTenantService) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantService) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 func TestEmbeddedTenant_Create(t *testing.T) {
@@ -1577,27 +1226,6 @@ func TestEmbeddedTenant_BarrierUnseal_Key(t *testing.T) {
 	}
 	if string(capturedKey) != "master-key" {
 		t.Errorf("captured = %q", string(capturedKey))
-	}
-}
-
-func TestEmbeddedTenant_BarrierUnseal_PrefersShare(t *testing.T) {
-	var capturedKey []byte
-	svc := &mockTenantService{
-		barrierUnsealFn: func(_ context.Context, _ string, key []byte) error {
-			capturedKey = key
-			return nil
-		},
-	}
-	tr := newExtTransport(t, WithTenantService(svc))
-	if err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "t1",
-		Key:      []byte("ignored"),
-		Share:    []byte("share"),
-	}); err != nil {
-		t.Fatalf("TenantBarrierUnseal: %v", err)
-	}
-	if string(capturedKey) != "share" {
-		t.Errorf("captured = %q, want share", string(capturedKey))
 	}
 }
 

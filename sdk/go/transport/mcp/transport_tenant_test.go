@@ -37,6 +37,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockTenantSvc struct {
+	tenant.TenantServicer
 	mu sync.Mutex
 
 	// Configurable error injection.
@@ -140,13 +141,6 @@ func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id st
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
 }
 
-func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, id, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastBarrierID = id
-	return &tenant.TenantBarrierUnsealProgress{TenantID: id}, nil
-}
-
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, id string, key []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -196,17 +190,11 @@ func (m *mockTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string
 func (m *mockTenantSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
 	return nil, nil
 }
-func (m *mockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
 func (m *mockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
 	return &ceremony.ChallengeResponse{}, nil
 }
 func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -361,24 +349,6 @@ func TestTenantBarrierUnseal_SuccessWithKey(t *testing.T) {
 	}
 	if string(svc.lastBarrierKey) != string(want) {
 		t.Errorf("expected key %q, got %q", want, svc.lastBarrierKey)
-	}
-}
-
-func TestTenantBarrierUnseal_FallbackToShare(t *testing.T) {
-	svc := newMockTenantSvc()
-	tr, cleanup := connectTenantInProcess(t, svc)
-	defer cleanup()
-
-	want := []byte("shamir-share")
-	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "acme",
-		Share:    want,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(svc.lastBarrierKey) != string(want) {
-		t.Errorf("expected key %q (from Share), got %q", want, svc.lastBarrierKey)
 	}
 }
 

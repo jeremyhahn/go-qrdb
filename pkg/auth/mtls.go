@@ -224,6 +224,11 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	}
 	id.TenantID = tenantID
 	if fromSPIFFE {
+		// A certificate in the SPIFFE holder namespace names a share holder,
+		// never a login identity; RBAC refuses it every permission.
+		if sid, serr := spiffe.TenantFromCert(cert, a.pinnedTrustDomain); serr == nil && sid.Kind == spiffe.KindHolder {
+			id.Metadata[MetaPrincipalKind] = PrincipalShareHolder
+		}
 		id.Metadata["tenant_source"] = "spiffe"
 	} else if tenantID != "" {
 		id.Metadata["tenant_source"] = "ou"

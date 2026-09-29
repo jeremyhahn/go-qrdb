@@ -141,7 +141,8 @@ type DaemonConfigValidationError = config.ValidationError
 // DaemonDatabaseConfigError is returned for invalid per-database configuration.
 type DaemonDatabaseConfigError = config.DatabaseConfigError
 
-// DaemonDefaultShareTTLString is the default Shamir unseal-share time-to-live.
+// DaemonDefaultShareTTLString is the default Shamir share-holder quorum
+// time-to-live.
 const DaemonDefaultShareTTLString = config.DefaultShareTTLString
 
 // Daemon configuration constructors.

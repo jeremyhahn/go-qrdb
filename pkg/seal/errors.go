@@ -107,12 +107,19 @@ var (
 
 	// ErrShamirUnsealRequiresQuorum is returned by the Shamir strategy's
 	// credential-style UnsealRootKey. Shamir shares are NEVER persisted
-	// server-side: they are returned to the Security Officers once at
-	// init/rekey and held only in memory during the unseal quorum. A Shamir
-	// barrier must therefore be unsealed via the share quorum
-	// (UnsealWithShare), not the sealing strategy; there is no disk
-	// auto-unseal path.
-	ErrShamirUnsealRequiresQuorum = errors.New("qrdb/seal: shamir barrier must be unsealed via the share quorum (UnsealWithShare), not the sealing strategy")
+	// server-side in plaintext: each is sealed to its holder and held in
+	// memory only during a quorum round. A Shamir barrier must therefore be
+	// unsealed by a quorum of authenticated share holders (SubmitHolderShare),
+	// not the sealing strategy; there is no disk auto-unseal path.
+	ErrShamirUnsealRequiresQuorum = errors.New("qrdb/seal: shamir barrier must be unsealed by a share-holder quorum, not a credential")
+
+	// ErrShamirInitializeRequiresHolders is returned when a Shamir barrier is
+	// initialized through a credential entry point (Initialize,
+	// InitializeWithStrategy). Those would leave a barrier with no wrapped
+	// key and no roster, which could never be unsealed once sealed. A Shamir
+	// barrier is initialized only by InitializeShamir, over its enrolled
+	// share holders.
+	ErrShamirInitializeRequiresHolders = errors.New("qrdb/seal: a shamir barrier is initialized over its enrolled share holders (InitializeShamir), not with a credential")
 
 	// ErrShamirThresholdInvalid is returned when the Shamir threshold is less
 	// than 2 or greater than the total number of shares.
@@ -129,9 +136,6 @@ var (
 	// ErrShamirQuorumIncomplete is returned when not enough shares have been
 	// provided to meet the reconstruction threshold.
 	ErrShamirQuorumIncomplete = quicraftseal.ErrShamirQuorumIncomplete
-
-	// ErrShamirNoQuorum is returned when no active quorum accumulator exists.
-	ErrShamirNoQuorum = errors.New("qrdb/seal: no active quorum")
 
 	// ErrShamirCombineFailed is returned when the Shamir combine operation
 	// fails to reconstruct the secret from the provided shares.
@@ -174,10 +178,6 @@ var (
 
 	// ErrResealFailed is returned when re-sealing a secret fails.
 	ErrResealFailed = errors.New("qrdb/seal: reseal failed")
-
-	// ErrRecoveryKeysNotFound is returned when recovery key metadata does
-	// not exist in storage.
-	ErrRecoveryKeysNotFound = errors.New("qrdb/seal: recovery keys not found")
 
 	// ErrRootTokenVerificationFailed is returned when the reconstructed
 	// secret from Shamir shares does not produce a valid DEK.
@@ -253,16 +253,13 @@ var (
 	ErrSealStoreBarrierSealed = errors.New("qrdb/seal: sealstore barrier is sealed")
 
 	// ErrShamirBarrierRequiresQuorum is returned when a single-admin seal is
-	// attempted on a Shamir-protected barrier. Use SubmitSealVote instead.
-	ErrShamirBarrierRequiresQuorum = errors.New("seal: shamir barrier requires seal-vote quorum")
+	// attempted on a Shamir-protected barrier. A seal quorum of share holders
+	// (SubmitHolderShare with OpSeal) seals it instead.
+	ErrShamirBarrierRequiresQuorum = errors.New("seal: shamir barrier requires a seal quorum of share holders")
 
 	// ErrCeremonyDistributorNotConfigured is returned when an operation
 	// requires a CeremonyDistributor but none has been set on the barrier.
 	ErrCeremonyDistributorNotConfigured = errors.New("seal: ceremony distributor not configured")
-
-	// ErrSealVoteVerificationFailed is returned when the reconstructed secret
-	// from seal-vote shares does not verify against the barrier's root key.
-	ErrSealVoteVerificationFailed = errors.New("seal: seal vote verification failed")
 
 	// ErrWrappedRootKeyCorrupt is returned when the wrapped root key blob
 	// (the root key AEAD-encrypted under the current unseal key) fails to

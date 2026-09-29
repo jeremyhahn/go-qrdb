@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -43,7 +44,9 @@ import (
 // embeddableBarrierService implements service.BarrierServicer for the
 // embeddability tests. All methods return a well-typed success result by
 // default; per-test overrides are not needed for embeddability validation.
-type embeddableBarrierService struct{}
+type embeddableBarrierService struct {
+	service.BarrierServicer
+}
 
 var _ service.BarrierServicer = (*embeddableBarrierService)(nil)
 
@@ -68,28 +71,8 @@ func (s *embeddableBarrierService) BarrierStatus(_ context.Context) (*service.Ba
 	}, nil
 }
 
-func (s *embeddableBarrierService) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, total int) (*service.ShamirInitInfo, error) {
+func (s *embeddableBarrierService) BarrierInitializeShamir(_ context.Context, threshold, total int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
-}
-
-func (s *embeddableBarrierService) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false}, nil
-}
-
-func (s *embeddableBarrierService) BarrierUnsealWithShares(_ context.Context, _ []string) error {
-	return nil
-}
-
-func (s *embeddableBarrierService) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
-}
-
-func (s *embeddableBarrierService) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
-}
-
-func (s *embeddableBarrierService) BarrierRecoverWithKeys(_ context.Context, _ []string) error {
-	return nil
 }
 
 func (s *embeddableBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) error {
@@ -98,37 +81,6 @@ func (s *embeddableBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) 
 
 func (s *embeddableBarrierService) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return false, nil
-}
-
-func (s *embeddableBarrierService) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-	return &service.RootTokenInfo{Token: "root-token-placeholder", CreatedAt: time.Now()}, nil
-}
-func (s *embeddableBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (s *embeddableBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (s *embeddableBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (s *embeddableBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (s *embeddableBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (s *embeddableBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (s *embeddableBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (s *embeddableBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (s *embeddableBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -203,8 +155,6 @@ func TestEmbeddable_BarrierShamirInitialize_NoKVNoAdmin(t *testing.T) {
 	srv := newBarrierOnlyServer(&embeddableBarrierService{})
 
 	body, _ := json.Marshal(map[string]interface{}{
-		// []byte -> base64, the wire shape of a secret field.
-		"secret":       []byte("my-master-secret"),
 		"threshold":    2,
 		"total_shares": 3,
 	})

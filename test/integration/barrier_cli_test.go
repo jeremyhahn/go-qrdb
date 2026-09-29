@@ -17,8 +17,9 @@
 // barrier_cli_test.go drives the `qrdb barrier` lifecycle commands as a real
 // CLI subprocess against a freshly self-spawned qrdbd node, covering the
 // surface that has NO other integration coverage: init, init-shamir, unseal,
-// seal, rekey, root-token, recovery generate/status/recover/delete, and the
-// Security Officer officer/claim handshake that backs Shamir M-of-N.
+// seal, recovery generate/status/delete, and the share-holder surface that
+// backs Shamir M-of-N — enrolment, the one-time envelope claim, and the
+// authenticated quorum rounds (unseal, seal, root-token, rekey, recover).
 //
 // Daemon boot configuration for an uninitialized barrier
 // --------------------------------------------------------------------------
@@ -56,49 +57,28 @@
 // waitForLeaderViaAdmin / httpPut / httpGet unmodified.
 //
 // Every barrier subcommand is invoked with the daemon's own admin identity
-// (Owner role via pkg/firstboot -- permission.All()) EXCEPT the officer
-// claim-begin/claim-complete handshake, which is deliberately
-// identity-gated by mTLS certificate thumbprint
-// (pkg/ceremony/ceremony_officer.go: ErrCertThumbprintMismatch) rather than
-// RBAC, so those two calls present the claiming officer's own CA-signed
-// certificate instead of the admin certificate.
+// (Owner role via pkg/firstboot -- permission.All()) EXCEPT the share-holder
+// claim and quorum submissions, which are identity-gated: a claim must come
+// over a connection presenting the holder's own CA-issued certificate, and a
+// quorum submission's mtls factor, when the connection carries a
+// certificate, requires it to be the holder's. Those calls therefore present
+// the holder's certificate instead of the admin certificate.
 //
-// Semantic risks / findings surfaced while wiring this file (verified by
-// reading source, not assumed):
+// Semantics exercised here (see docs/shamir-custody/):
 //
-//  1. Share-envelope mismatch: `barrier officer claim-complete` /
-//     `barrier recovery officer claim-complete` return ShareBytes that are
-//     the JSON-marshaled go-quicraft shamir.Share struct
-//     ({"index":N,"threshold":M,"total":T,"value":"..."}), because
-//     pkg/ceremony/ceremony_officer.go's sealSharesToOfficers stores
-//     `json.Marshal(shares[idx])` verbatim and share_store.Claim returns
-//     exactly what was stored. Every consumer of a raw share string
-//     (`barrier unseal-shares`, `barrier shamir-seal-vote`,
-//     `barrier rekey`'s implicit reuse, `barrier root-token`,
-//     `barrier recovery recover`) instead expects only the base64 "value"
-//     field (pkg/seal/shamir.go, root_token.go, seal_vote.go, recovery.go
-//     all do `Value: val` directly with no JSON unwrap). There is no CLI
-//     step that performs this unwrap; claimShare() below does it manually.
-//     A real operator/script driving the CLI end-to-end would hit this same
-//     friction. Flagged here rather than silently patched in product code.
-//  2. `barrier seal` rejects Shamir-protected barriers outright
-//     (seal.ErrShamirBarrierRequiresQuorum from
-//     pkg/service/barrier_service.go's BarrierSeal); only
-//     `barrier shamir-seal-vote`, run to quorum, can seal one. The task
-//     description's "seal -y" step therefore only applies to the
-//     passphrase lifecycle; the Shamir lifecycle uses sealViaVotes().
-//  3. `barrier rekey` requires the barrier to already be UNSEALED
-//     (pkg/seal/rekey.go: "the root key is available in memory") and,
-//     unlike `init-shamir`, has NO zero-value fallback to the boot-time
-//     M/N (pkg/service/barrier_service.go's BarrierRekey passes threshold/
-//     total straight through to Rekey, which rejects threshold<2
-//     unconditionally) -- --threshold/--total must always be supplied
-//     explicitly to `barrier rekey`.
-//  4. `barrier recovery generate`/`status`/`delete` require the barrier to
-//     be UNSEALED; `barrier recovery recover` requires it to be SEALED
-//     (pkg/seal/recovery.go). The recovery flow below generates while
-//     unsealed, then reseals via a fresh Shamir quorum vote before
-//     exercising `recovery recover`.
+//  1. A claim delivers an HPKE envelope sealed to the holder's key, once.
+//     `barrier quorum submit` opens it locally with --key and submits the
+//     share with the mtls factor response; no raw share ever crosses the CLI
+//     boundary.
+//  2. `barrier seal` refuses a Shamir barrier
+//     (seal.ErrShamirBarrierRequiresQuorum); M holders seal it with
+//     `quorum submit --op seal`.
+//  3. `barrier rekey` opens a round that M current holders complete with
+//     `--op rekey`; the new envelopes must then be claimed again, and every
+//     earlier envelope stops working.
+//  4. The recovery key is an independent domain (`--domain recovery`) with
+//     its own holders; `recovery generate` requires the barrier UNSEALED and
+//     `--op recover` requires it SEALED.
 package integration_test
 
 import (
@@ -111,7 +91,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -357,42 +336,76 @@ func barrierHasRecoveryKeys(t *testing.T, cli string, flags []string) bool {
 	return resp.HasKeys
 }
 
-// sealViaVotes submits shares as Shamir quorum seal votes until the barrier
-// transitions to sealed. `barrier seal` unconditionally rejects a
-// Shamir-protected barrier (ErrShamirBarrierRequiresQuorum); this is the
-// only sealing path available to one.
-func sealViaVotes(t *testing.T, cli string, flags []string, shares ...string) {
+// quorumAll submits each holder's claimed envelope to the op's quorum round,
+// in order, and returns the last outcome. `barrier seal` unconditionally
+// rejects a Shamir-protected barrier (ErrShamirBarrierRequiresQuorum); the
+// quorum is the only way to seal, unseal, mint a root token or complete a
+// rekey on one.
+func quorumAll(t *testing.T, cli string, ep endpoint, domain, op string, holders ...*officer) *transport.QuorumOutcome {
 	t.Helper()
-	for i, share := range shares {
-		_, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "shamir-seal-vote", "--share", share)...)
+	var out *transport.QuorumOutcome
+	for _, h := range holders {
+		o, stderr, err := quorumSubmit(t, cli, ep, domain, op, h)
 		if err != nil {
-			t.Fatalf("shamir-seal-vote #%d: %v\nstderr: %s", i+1, err, stderr)
+			t.Fatalf("quorum submit --op %s %s: %v\nstderr: %s", op, h.username, err, stderr)
 		}
+		out = o
 	}
+	return out
 }
 
-// writeSharesFile writes newline-delimited shares to a file under dir for
-// exercising the `--shares-file` variant of `barrier unseal-shares`.
-func writeSharesFile(t *testing.T, dir, name string, shares ...string) string {
+// quorumSubmit submits one holder's claimed envelope to the op's round over
+// the holder's own connection, answering the mtls factor with its key.
+func quorumSubmit(t *testing.T, cli string, ep endpoint, domain, op string, h *officer) (*transport.QuorumOutcome, string, error) {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(strings.Join(shares, "\n")+"\n"), 0o600); err != nil {
-		t.Fatalf("writeSharesFile: %v", err)
+	args := append(h.flags(ep), "--output", "json", "barrier", "quorum", "submit",
+		"--domain", domain, "--op", op, "--username", h.username,
+		"--envelope", h.envelope, "--key", h.keyPath)
+	stdout, stderr, err := runCLISplit(t, cli, args...)
+	if err != nil {
+		return nil, stderr, err
 	}
-	return path
+	var out transport.QuorumOutcome
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("quorum submit %s: decode JSON: %v\noutput: %s", h.username, err, stdout)
+	}
+	return &out, stderr, nil
 }
 
 // ---------------------------------------------------------------------------
 // Security Officer CSR / claim helpers
 // ---------------------------------------------------------------------------
 
-// officer bundles a registered Security Officer's own key material and the
-// server-signed certificate paths used to authenticate the claim handshake.
+// officer bundles a registered share holder's own key material, the
+// CA-issued certificate paths used to authenticate its claim and quorum
+// calls, and the path its latest claimed envelope was written to.
 type officer struct {
 	username string
 	key      *ecdsa.PrivateKey
 	certPath string
 	keyPath  string
+	envelope string
+}
+
+// endpoint names a daemon listener and the CA that verifies it.
+type endpoint struct {
+	serverURL string
+	caFile    string
+}
+
+// endpoint returns the node's REST endpoint.
+func (n *sealNode) endpoint() endpoint {
+	return endpoint{serverURL: n.serverURL, caFile: n.caFile}
+}
+
+// flags returns the CLI global flags that authenticate as the holder
+// against ep.
+func (o *officer) flags(ep endpoint) []string {
+	return []string{
+		"--server", ep.serverURL, "--ca-file", ep.caFile,
+		"--cert-file", o.certPath, "--key-file", o.keyPath,
+		"--timeout", "30s",
+	}
 }
 
 // generateOfficerCSR creates a fresh ECDSA P-256 key pair and a PEM-encoded
@@ -465,13 +478,11 @@ func registerOfficer(t *testing.T, cli, dir string, adminFlags []string, usernam
 	t.Helper()
 	csrPath, key := generateOfficerCSR(t, dir, username)
 
-	args := append(append([]string{}, adminFlags...), "--output", "json", "barrier")
+	args := append(append([]string{}, adminFlags...), "--output", "json", "barrier", "officer", "register",
+		"--username", username, "--csr-file", csrPath)
 	if recovery {
-		args = append(args, "recovery", "officer", "register")
-	} else {
-		args = append(args, "officer", "register")
+		args = append(args, "--domain", "recovery")
 	}
-	args = append(args, "--username", username, "--csr-file", csrPath)
 
 	stdout, stderr, err := runCLISplit(t, cli, args...)
 	if err != nil {
@@ -482,74 +493,26 @@ func registerOfficer(t *testing.T, cli, dir string, adminFlags []string, usernam
 		t.Fatalf("register officer %s: decode JSON: %v\noutput: %s", username, err, stdout)
 	}
 
-	certPath, keyPath := writeOfficerKeyPair(t, dir, username, key, resp.CertPEM)
+	certPath, keyPath := writeOfficerKeyPair(t, dir, username, key, []byte(resp.CertPEM))
 	return &officer{username: username, key: key, certPath: certPath, keyPath: keyPath}
 }
 
-// claimShare performs the officer's mTLS-authenticated claim-begin /
-// claim-complete handshake and returns the reconstructed Shamir share
-// VALUE string, unwrapped from the JSON envelope the ceremony share store
-// persists internally (see finding #1 in the file header). recovery
-// selects the recovery-officer claim routes.
-func claimShare(t *testing.T, cli, dir, serverURL, caFile string, off *officer, recovery bool) string {
+// claimEnvelope claims the holder's sealed envelope over the holder's own
+// mTLS connection and records where it was written. Every other claim
+// consumer opens the envelope with the holder's key; this helper never
+// sees a share.
+func claimEnvelope(t *testing.T, cli, dir string, ep endpoint, off *officer, recovery bool) {
 	t.Helper()
-	officerFlags := []string{
-		"--server", serverURL, "--ca-file", caFile,
-		"--cert-file", off.certPath, "--key-file", off.keyPath,
-		"--timeout", "30s",
-	}
-	sub := []string{"officer"}
+	domain := "unseal"
 	if recovery {
-		sub = []string{"recovery", "officer"}
+		domain = "recovery"
 	}
-
-	beginArgs := append(append([]string{}, officerFlags...), "--output", "json", "barrier")
-	beginArgs = append(beginArgs, sub...)
-	beginArgs = append(beginArgs, "claim-begin", "--username", off.username)
-
-	stdout, stderr, err := runCLISplit(t, cli, beginArgs...)
-	if err != nil {
-		t.Fatalf("claim-begin %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
+	off.envelope = filepath.Join(dir, fmt.Sprintf("%s-%s-%d.env", off.username, domain, time.Now().UnixNano()))
+	args := append(off.flags(ep), "barrier", "officer", "claim", "--domain", domain,
+		"--username", off.username, "--key", off.keyPath, "--out", off.envelope)
+	if stdout, stderr, err := runCLISplit(t, cli, args...); err != nil {
+		t.Fatalf("claim %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
 	}
-	var begin transport.ShareClaimBeginResponse
-	if err := json.Unmarshal([]byte(stdout), &begin); err != nil {
-		t.Fatalf("claim-begin %s: decode JSON: %v\noutput: %s", off.username, err, stdout)
-	}
-
-	nonce, err := hex.DecodeString(begin.NonceHex)
-	if err != nil {
-		t.Fatalf("claim-begin %s: decode nonce hex: %v", off.username, err)
-	}
-	sig := signNonceASN1(t, off.key, nonce)
-	sigPath := filepath.Join(dir, off.username+"-sig.bin")
-	if err := os.WriteFile(sigPath, sig, 0o600); err != nil {
-		t.Fatalf("claim-complete %s: write sig file: %v", off.username, err)
-	}
-
-	completeArgs := append(append([]string{}, officerFlags...), "--output", "json", "barrier")
-	completeArgs = append(completeArgs, sub...)
-	completeArgs = append(completeArgs, "claim-complete",
-		"--username", off.username, "--nonce-hex", begin.NonceHex, "--sig-file", sigPath)
-
-	stdout, stderr, err = runCLISplit(t, cli, completeArgs...)
-	if err != nil {
-		t.Fatalf("claim-complete %s: %v\nstdout:%s\nstderr:%s", off.username, err, stdout, stderr)
-	}
-	var complete transport.ShareClaimCompleteResponse
-	if err := json.Unmarshal([]byte(stdout), &complete); err != nil {
-		t.Fatalf("claim-complete %s: decode JSON: %v\noutput: %s", off.username, err, stdout)
-	}
-
-	var envelope struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(complete.ShareBytes, &envelope); err != nil {
-		t.Fatalf("claim-complete %s: decode share envelope: %v\nraw: %s", off.username, err, complete.ShareBytes)
-	}
-	if envelope.Value == "" {
-		t.Fatalf("claim-complete %s: empty share value in envelope: %s", off.username, complete.ShareBytes)
-	}
-	return envelope.Value
 }
 
 // ---------------------------------------------------------------------------
@@ -656,11 +619,12 @@ func TestBarrierCLI_PassphraseLifecycle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestBarrierCLI_ShamirLifecycle drives a full 2-of-3 Shamir barrier
-// lifecycle over the qrdb CLI: officer enrollment, share-free init-shamir,
-// the mTLS officer claim handshake, quorum seal-vote, unseal-shares (both
-// --share and --shares-file forms), root-token, rekey (with a negative
-// proving the pre-rekey shares are revoked), and the independent recovery
-// key scope (generate/status/recover/delete) with its own officer set.
+// lifecycle over the qrdb CLI: holder enrolment, share-free init-shamir, the
+// one-time envelope claim, and the authenticated quorum for seal, unseal
+// (with a below-threshold round that leaves the barrier sealed), root-token
+// and rekey (with a negative proving the pre-rekey envelopes are revoked),
+// and the independent recovery domain (generate/status/recover/delete) with
+// its own holders.
 func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	binary := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -674,6 +638,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 
 	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
 	flags := node.adminFlags()
+	ep := node.endpoint()
 
 	waitForBarrierReachable(t, cli, flags, 60*time.Second)
 
@@ -682,19 +647,16 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 		t.Fatalf("expected fresh shamir barrier to be sealed pre-init, got: %+v", status)
 	}
 
-	// Officers register while the barrier is still uninitialized/sealed:
-	// pkg/ceremony's registry falls back to an in-memory cache
-	// (registryWritable := !s.barrier.IsSealed()) and the SAME
-	// CeremonyService instance is threaded from the pre-host sealed
-	// listener into the post-unseal boot, so the registrations remain
-	// visible to init-shamir's SealAndDistribute.
+	// Holders enrol while the barrier is still uninitialized/sealed: the
+	// ceremony registry caches records until the barrier is first seen
+	// unsealed, and the SAME ceremony service is threaded from the pre-host
+	// sealed listener into the post-unseal boot.
 	alice := registerOfficer(t, cli, workDir, flags, "alice", false)
 	bob := registerOfficer(t, cli, workDir, flags, "bob", false)
 	registerOfficer(t, cli, workDir, flags, "carol", false)
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "init-shamir",
-		"--passphrase", "unused-in-direct-shamir-mode",
 		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
 		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
 	}
@@ -711,118 +673,99 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
 
-	aliceShare1 := claimShare(t, cli, workDir, node.serverURL, node.caFile, alice, false)
-	bobShare1 := claimShare(t, cli, workDir, node.serverURL, node.caFile, bob, false)
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, bob, false)
+	firstAlice, firstBob := *alice, *bob
 
-	sealViaVotes(t, cli, flags, aliceShare1, bobShare1)
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
 	status = barrierStatus(t, cli, flags)
 	if !status.Sealed {
-		t.Fatal("expected barrier to be sealed after quorum seal-vote")
+		t.Fatal("expected barrier to be sealed after the seal quorum")
 	}
 
-	// Negative: below-threshold shares must fail and leave the barrier sealed.
-	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "unseal-shares", "--share", aliceShare1)...); err == nil {
-		t.Fatal("expected non-zero exit for below-threshold unseal-shares")
+	// A below-threshold round is progress, not an error, and leaves the
+	// barrier sealed.
+	out := quorumAll(t, cli, ep, "unseal", "unseal", alice)
+	if out.Complete || out.Submitted != 1 || out.Required != threshold {
+		t.Fatalf("one of two submissions = %+v, want 1/2 incomplete", out)
 	}
-	status = barrierStatus(t, cli, flags)
-	if !status.Sealed {
-		t.Fatal("insufficient-share unseal-shares must not unseal the barrier")
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatal("a below-threshold round must not unseal the barrier")
+	}
+	// A holder counts once per round.
+	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", alice); err == nil {
+		t.Fatal("a second submission from the same holder was accepted")
+	}
+	if out = quorumAll(t, cli, ep, "unseal", "unseal", bob); !out.Complete {
+		t.Fatalf("second holder's submission = %+v, want complete", out)
+	}
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatal("expected barrier to be unsealed after the unseal quorum")
+	}
+
+	out = quorumAll(t, cli, ep, "unseal", "root-token", alice, bob)
+	if !out.Complete || out.RootToken == "" {
+		t.Fatalf("root-token round = %+v, want a root token", out)
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "unseal-shares", "--share", aliceShare1, "--share", bobShare1)...); err != nil {
-		t.Fatalf("barrier unseal-shares --share: %v\nstderr: %s", err, stderr)
-	}
-	status = barrierStatus(t, cli, flags)
-	if status.Sealed {
-		t.Fatal("expected barrier to be unsealed after quorum unseal-shares")
-	}
-
-	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"--output", "json", "barrier", "root-token", "--share", aliceShare1, "--share", bobShare1)...)
-	if err != nil {
-		t.Fatalf("barrier root-token: %v\nstderr: %s", err, stderr)
-	}
-	var rootToken transport.BarrierRootTokenResponse
-	if err := json.Unmarshal([]byte(stdout), &rootToken); err != nil {
-		t.Fatalf("barrier root-token: decode JSON: %v\noutput: %s", err, stdout)
-	}
-	if rootToken.Token == "" {
-		t.Fatal("expected non-empty root token")
-	}
-
-	// Rekey requires the barrier to be unsealed (it is) and, unlike
-	// init-shamir, has no zero-value fallback -- always pass explicit M/N.
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
+		"barrier", "rekey", "--threshold", strconv.Itoa(threshold))...); err != nil {
 		t.Fatalf("barrier rekey: %v\nstderr: %s", err, stderr)
 	}
-
-	aliceShare2 := claimShare(t, cli, workDir, node.serverURL, node.caFile, alice, false)
-	bobShare2 := claimShare(t, cli, workDir, node.serverURL, node.caFile, bob, false)
-	if aliceShare2 == aliceShare1 || bobShare2 == bobShare1 {
-		t.Fatal("expected rekey to distribute cryptographically fresh shares")
+	if out = quorumAll(t, cli, ep, "unseal", "rekey", alice, bob); !out.Complete {
+		t.Fatalf("rekey round = %+v, want complete", out)
 	}
+	claimEnvelope(t, cli, workDir, ep, alice, false)
+	claimEnvelope(t, cli, workDir, ep, bob, false)
 
-	sealViaVotes(t, cli, flags, aliceShare2, bobShare2)
-	status = barrierStatus(t, cli, flags)
-	if !status.Sealed {
-		t.Fatal("expected barrier to be sealed after the post-rekey quorum seal-vote")
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatal("expected barrier to be sealed after the post-rekey seal quorum")
 	}
 
-	// Negative: the pre-rekey shares are cryptographically revoked.
-	staleFile := writeSharesFile(t, workDir, "stale-shares.txt", aliceShare1, bobShare1)
-	if _, _, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "unseal-shares", "--shares-file", staleFile)...); err == nil {
-		t.Fatal("expected non-zero exit when unsealing with pre-rekey (revoked) shares")
+	// Negative: the pre-rekey envelopes are cryptographically revoked. Each
+	// is still its holder's, so it is admitted, but the quorum it forms
+	// reconstructs a key that no longer opens the barrier.
+	quorumAll(t, cli, ep, "unseal", "unseal", &firstAlice)
+	if _, _, err := quorumSubmit(t, cli, ep, "unseal", "unseal", &firstBob); err == nil {
+		t.Fatal("a quorum of pre-rekey envelopes completed")
 	}
-	status = barrierStatus(t, cli, flags)
-	if !status.Sealed {
-		t.Fatal("revoked shares must not unseal the barrier")
-	}
-
-	freshFile := writeSharesFile(t, workDir, "fresh-shares.txt", aliceShare2, bobShare2)
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "unseal-shares", "--shares-file", freshFile)...); err != nil {
-		t.Fatalf("barrier unseal-shares --shares-file: %v\nstderr: %s", err, stderr)
-	}
-	status = barrierStatus(t, cli, flags)
-	if status.Sealed {
-		t.Fatal("expected barrier to be unsealed via --shares-file")
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatal("revoked envelopes must not unseal the barrier")
 	}
 
-	// Recovery keys: an independent scope from unseal shares, with its own
-	// officer registry. Generate + status while unsealed (both required),
-	// then reseal via the current valid unseal shares before exercising
-	// recover (which requires the barrier to be sealed).
+	quorumAll(t, cli, ep, "unseal", "unseal", alice, bob)
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatal("expected barrier to be unsealed with the post-rekey envelopes")
+	}
+
+	// The recovery key: an independent domain with its own holders.
+	// Generate + status while unsealed, then seal through the unseal-domain
+	// quorum before exercising recover (which requires the barrier sealed).
 	dave := registerOfficer(t, cli, workDir, flags, "dave", true)
 	erin := registerOfficer(t, cli, workDir, flags, "erin", true)
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "recovery", "generate", "--threshold", "2", "--total", "2")...); err != nil {
+		"barrier", "recovery", "generate", "--threshold", "2")...); err != nil {
 		t.Fatalf("barrier recovery generate: %v\nstderr: %s", err, stderr)
 	}
 	if !barrierHasRecoveryKeys(t, cli, flags) {
 		t.Fatal("expected recovery keys to be present after generate")
 	}
 
-	daveShare := claimShare(t, cli, workDir, node.serverURL, node.caFile, dave, true)
-	erinShare := claimShare(t, cli, workDir, node.serverURL, node.caFile, erin, true)
+	claimEnvelope(t, cli, workDir, ep, dave, true)
+	claimEnvelope(t, cli, workDir, ep, erin, true)
 
-	sealViaVotes(t, cli, flags, aliceShare2, bobShare2)
-	status = barrierStatus(t, cli, flags)
-	if !status.Sealed {
-		t.Fatal("expected barrier to be sealed before exercising recovery recover")
+	quorumAll(t, cli, ep, "unseal", "seal", alice, bob)
+	if status = barrierStatus(t, cli, flags); !status.Sealed {
+		t.Fatal("expected barrier to be sealed before exercising recover")
 	}
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "recovery", "recover", "--share", daveShare, "--share", erinShare)...); err != nil {
-		t.Fatalf("barrier recovery recover: %v\nstderr: %s", err, stderr)
+	if out = quorumAll(t, cli, ep, "recovery", "recover", dave, erin); !out.Complete {
+		t.Fatalf("recover round = %+v, want complete", out)
 	}
-	status = barrierStatus(t, cli, flags)
-	if status.Sealed {
-		t.Fatal("expected barrier to be unsealed after recovery recover")
+	if status = barrierStatus(t, cli, flags); status.Sealed {
+		t.Fatal("expected barrier to be unsealed after the recover quorum")
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "recovery", "delete")...); err != nil {

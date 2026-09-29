@@ -278,22 +278,6 @@ func TestTenantBarrierUnseal_Success(t *testing.T) {
 	}
 }
 
-func TestTenantBarrierUnseal_FallsBackToShare(t *testing.T) {
-	rt, srv, _ := newTenantBarrierTestTransport(t)
-
-	want := []byte("share-bytes")
-	err := rt.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "acme",
-		Share:    want,
-	})
-	if err != nil {
-		t.Fatalf("TenantBarrierUnseal: unexpected error: %v", err)
-	}
-	if got := srv.seenUnsealKey(); !bytes.Equal(got, want) {
-		t.Fatalf("server saw key = %q, want %q (Share fallback)", got, want)
-	}
-}
-
 func TestTenantBarrierUnseal_EmptyKeyOK(t *testing.T) {
 	rt, srv, _ := newTenantBarrierTestTransport(t)
 

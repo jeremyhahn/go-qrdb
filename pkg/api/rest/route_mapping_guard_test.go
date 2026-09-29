@@ -41,18 +41,10 @@ package rest
 
 import (
 	"context"
-	"net/http"
 	"strings"
-	"testing"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/prometheus/client_golang/prometheus"
-
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 )
 
 // guardEncMigrator is a minimal no-op service.EncryptionMigrator, wired
@@ -62,57 +54,6 @@ type guardEncMigrator struct{}
 
 func (guardEncMigrator) EnableEncryption(context.Context, service.BarrierScope, seal.MigrationOptions) error {
 	return nil
-}
-
-// guardCACertPEM is a CERTIFICATE block: WithCABootstrap keeps certificate
-// blocks only, so anything else would leave /v1/ca/bootstrap unregistered.
-const guardCACertPEM = "-----BEGIN CERTIFICATE-----\nZ3VhcmQ=\n-----END CERTIFICATE-----\n"
-
-// newFullyWiredGuardServer builds a *Server with every optional service and
-// ServerOption wired so every conditional route registration in
-// registerRoutes fires. It reuses the package's existing test doubles so the
-// guard exercises the same construction surface as the rest of the suite.
-func newFullyWiredGuardServer(t *testing.T) *Server {
-	t.Helper()
-
-	kvSvc := newDefaultKVSvc()
-	adminSvc := newDefaultAdminSvc()
-	dbSvc := &mockDatabaseService{}
-
-	return NewServer(kvSvc, adminSvc, "127.0.0.1:0",
-		WithMVCC(&mockMVCCService{}),
-		WithTransaction(&mockTransactionService{}),
-		WithBatch(&mockBatchService{}),
-		WithWatch(&mockWatchService{}),
-		WithLease(&mockLeaseService{}), // gates /lease/*
-		WithLock(&mockLockService{}),   // gates /lock/*
-		WithIndex(&mockIndexService{}),
-		WithTimeSeries(&mockTimeSeriesService{}),
-		WithVector(&mockVectorService{}),
-		WithEmbedding(&mockEmbeddingService{}),            // gates /v1/embeddings*
-		WithRAG(&mockRAGService{}),                        // gates /v1/rag/*
-		WithDatabaseService(dbSvc),                        // gates /v1/databases*
-		WithCollectionService(&mockCollectionService{}),   // gates /v1/collections*
-		WithSQLService(sqlquery.NewService(kvSvc, dbSvc)), // gates /sql/query, /v1/sql/query
-		WithUserService(&mockUserService{}),               // gates /users, /users/list
-		WithRoleService(&mockRoleService{}),               // gates /roles*
-		WithTenantService(&mockTenantService{}),
-		WithBackupService(&stubBackupService{}),       // gates /v1/backups*
-		WithRebalanceService(&stubRebalanceService{}), // gates /v1/rebalance/*
-		WithAuthFactorService(&stubAuthFactorSvc{}),
-		WithUserAuthFactorService(&mockUserAuthFactorService{}),
-		WithCertProvider(&mockCertProvider{}),             // gates /certs/*
-		WithCABootstrap([]byte(guardCACertPEM)),           // gates /v1/ca/bootstrap
-		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}), // gates /v1/cluster/*
-		WithBarrierService(newExtBarrierSvc()),            // gates /v1/barrier/*
-		WithEncryptionMigrator(guardEncMigrator{}),        // gates /v1/barrier/enable-encryption
-		WithCeremonyService(newCoverageCeremonyService()), // gates /v1/ceremony/*
-		WithCeremonyCA(&coverageCeremonyCA{}),
-		WithCustodianService(&stubCustodianSvc{}),             // gates /v1/ceremony/enroll-custodian etc.
-		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*
-		WithAuditLogger(&stubAuditLogger{}),                   // gates /v1/audit/events
-		WithGatherer(prometheus.NewRegistry()),                // gates /metrics
-	)
 }
 
 // guardProbePath derives a concrete request path from a chi route pattern by

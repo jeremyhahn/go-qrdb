@@ -374,8 +374,8 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 	// barrier is installed; the deferred re-attach below would otherwise
 	// report the shards' expected seal.ErrSealed as a migration FAILURE.
 	// keyedSealed tells that defer to tolerate it — the shards stay detached
-	// until a Security Officer quorum unseals the barrier via
-	// UnsealWithShare(s), at which point the normal Services()/Attach retry
+	// until a share-holder quorum unseals the barrier, at which point the
+	// normal Services()/Attach retry
 	// (request-driven or operator-driven) succeeds.
 	keyedSealed = keyed.IsSealed()
 	// The deferred re-attach reopens every shard under the keyed barrier.

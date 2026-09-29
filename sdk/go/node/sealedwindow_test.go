@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
@@ -105,6 +107,25 @@ func TestServeSealedWindow_ReturnsOnUnseal(t *testing.T) {
 	assert.False(t, n.IsSealed())
 	assert.NotNil(t, n.Server(), "server must be wired after boot completes")
 	require.NoError(t, n.Close())
+}
+
+// TestSealedWindowOptions_CarryThePINBackend proves the sealed-window
+// listener serves the node's PIN backend, as the daemon's does: the node's
+// own seal-store backend by default, the caller's when one is injected.
+func TestSealedWindowOptions_CarryThePINBackend(t *testing.T) {
+	cfg := sealedStandaloneConfig(t, t.TempDir())
+	n, err := NewStandaloneNode(context.Background(), cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	require.True(t, n.IsSealed())
+
+	got := server.ResolveCryptoOptions(n.sealedWindowOptions(nil)...).PINBackend
+	require.NotNil(t, got, "the sealed window must serve a PIN backend")
+	assert.Same(t, n.sealPINBackend, got, "by default the node's own seal-store backend")
+
+	injected := pintest.NewBackend(t)
+	got = server.ResolveCryptoOptions(n.sealedWindowOptions([]server.ServerOption{server.WithPINBackend(injected)})...).PINBackend
+	assert.Same(t, pin.PINBackend(injected), got, "an injected backend wins")
 }
 
 // TestSealedWindowConfig verifies the pending-boot config resolution used

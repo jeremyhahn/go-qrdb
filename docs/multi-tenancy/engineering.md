@@ -12,9 +12,9 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 ```
 
 `TenantBarrierService` is a **dedicated gRPC service**
-(`qrdb.v1.TenantBarrierService`) with `Init`, `Unseal`, `UnsealShare`, `Seal`,
-`Status`, `OfficerRegister`, `OfficerList`, `ShareClaimBegin`,
-`ShareClaimComplete`, `OfficerClaimStatus`, `ShamirSealVote`.
+(`qrdb.v1.TenantBarrierService`) with `Init`, `Unseal`, `Seal`, `Status`,
+`OfficerRegister`, `OfficerList`, `ShareClaimBegin`, `ShareClaimComplete`,
+`QuorumBegin`, `QuorumSubmit`, `RekeyStart`, `OfficerRevoke`.
 
 Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 

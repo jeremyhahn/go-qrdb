@@ -38,29 +38,19 @@ justified as an anonymous verb, and belongs to one of these classes:
 
 - **Liveness**: `health`, `status`, `barrier-status`.
 - **Credential possession**, the Vault model, where holding the unseal
-  credential is the authorization: `barrier-unseal`,
-  `shamir-unseal-share`, `shamir-unseal-shares`,
-  `ceremony-submit-unseal-share`, `recovery-recover`, `root-token`.
+  credential is the authorization: `barrier-unseal`.
 - **First-boot trust on first use**: `barrier-initialize`,
   `shamir-initialize`, `ceremony-initialize`, `officer-register`,
-  `recovery-officer-register`.
+  `recovery-officer-register`. Registration is admitted only while the
+  enrolment ceremony is pre-operational (`PreOperationalOnly`).
 - **Handshakes whose binding authorization the handler enforces**:
-  `share-claim-begin`/`-complete`, `recovery-share-claim-begin`/`-complete`,
-  `ceremony-claim-cert-begin`/`-complete`,
-  `ceremony-officer-share-begin`/`-complete`,
-  `ceremony-claim-share-begin`/`-complete`, and `ceremony-sign-csr`
-  (SO PIN). The first-boot wizard tracks claim progress through
-  `officer-claim-status`, and `ceremony-status` reports the ceremony state.
-  On this listener `officer-claim-status` is **redacted**: each officer's
-  share index, enrolment and claim times and whether a share is pending,
-  with the username, certificate thumbprint and auth factor left empty.
-  That is what the wizard needs, and nothing that names an officer.
-  `service.BarrierService.BarrierOfficerClaimStatus` redacts **by default**:
-  every caller whose context carries no authenticated identity
-  (`auth.IdentityFromContext`) gets the redacted form, and so does any
-  request the listener marked anonymous (`sealedwindow.WithAnonymous`). A
-  regular listener's authenticated caller with `seal:officer_list` gets the
-  full record.
+  `share-claim-begin`/`-complete` and
+  `recovery-share-claim-begin`/`-complete` (the holder's enrolled
+  certificate), `quorum-begin`/`quorum-submit` (the holder's factor proof
+  against the roster the wrapped key is sealed under; every quorum operation
+  -- unseal, seal, root-token, rekey completion, recover -- is a submission,
+  so these are how a sealed node is unsealed), and `ceremony-sign-csr` (SO
+  PIN). `ceremony-status` reports the ceremony state.
 
 The full per-transport names are in `sealedwindow.Table`.
 
@@ -78,11 +68,14 @@ unconditionally. gRPC entries are fully-qualified
 `/qrdb.v1.QRDBService/<Method>` paths, so a method of the same name on
 another service is not admitted.
 
-The Security Officer registration and share-claim routes are
-allowlisted because first-boot Shamir initialization is reachable
-only through the sealed-window listener: officers must be registered
-(and able to claim their shares) before and immediately after
-`InitializeShamir` runs, while the barrier is still sealed.
+The share-holder registration and claim routes are allowlisted because
+first-boot Shamir initialization is reachable only through the
+sealed-window listener: holders must be enrolled (and able to claim their
+envelopes) before and immediately after `InitializeShamir` runs, while the
+barrier is still sealed. The quorum routes are allowlisted because they are
+the only way a sealed Shamir barrier opens. A holder authorizes itself on
+each of them — certificate, nonce signature and factor proof against the
+roster — so being reachable while sealed grants nothing by itself.
 
 ### No request runs across the unseal (`Transition`, `Admission`)
 
@@ -145,30 +138,26 @@ permission denied on every transport.
 Never allowlisted, on any transport:
 
 - **seal** (`/v1/barrier/seal`, `BarrierSeal`, `barrier.Seal`,
-  `qrdb_barrier_seal`) and **Shamir seal-vote** — sealing is only
-  meaningful while the barrier is unsealed, so these are served by the
-  regular (post-unseal) listener.
+  `qrdb_barrier_seal`) — sealing is only meaningful while the barrier is
+  unsealed, so it is served by the regular (post-unseal) listener. (A
+  Shamir barrier seals through `quorum-submit` with op `seal`.)
+- **rekey start and holder revocation** (`BarrierRekeyStart`,
+  `BarrierOfficerRevoke` and their QUIC and MCP forms) — governance
+  operations served post-unseal. On REST, `/v1/barrier/officers/revoke`
+  falls under the `/v1/barrier/officers/` claim prefix and so reaches its
+  handler while sealed; it is still gated by `seal:officer_revoke` and the SO
+  PIN, and a rekey of a sealed barrier is refused with `ErrSealed`.
 - **enable-encryption** — the migration requires an unsealed data
   plane.
-- **Shamir share management** (`barrier.ShamirListShares` /
-  `ShamirDeleteShare` / `ShamirDeleteAllShares`) — post-unseal
-  administration.
-- **custodian enroll/revoke** (`/v1/ceremony/enroll-custodian`,
-  `/v1/ceremony/revoke-custodian`) — SO-gated governance operations
-  served post-unseal.
-- **officer list** (`GET /v1/barrier/officers`, `BarrierOfficerList`,
+- **holder list** (`GET /v1/barrier/officers`, `BarrierOfficerList`,
   `barrier.OfficerList`, `qrdb_barrier_officer_list`). It is served
   post-unseal to authenticated callers.
-- **rekey, recovery-key generate, delete and status**. Each one refuses
-  while the barrier is sealed (`seal.ErrSealed`), so allowlisting them
-  added only an anonymous destructive surface. Nothing is lost by refusing
-  them at the gate.
-- **external officer enrollment** (`/v1/init/enroll-external-officer`,
-  `CeremonyEnrollExternalOfficer`). It is an SO-only administrative
-  enrollment that records caller-supplied trust material, so it is never
-  anonymous.
-- **`/v1/bootstrap/` and `shamir-verify`**. Neither has a route on any
-  transport. A prefix allowlisted over an empty subtree would silently
+- **recovery-key generate, delete and status**. Each one refuses while the
+  barrier is sealed (`seal.ErrSealed`), so allowlisting them added only an
+  anonymous destructive surface. Nothing is lost by refusing them at the
+  gate.
+- **`/v1/bootstrap/`, `/v1/init/` and `shamir-verify`**. None has a route on
+  any transport. A prefix allowlisted over an empty subtree would silently
   exempt whatever is registered there next.
 
 ## MySQL / PostgreSQL wire protocols

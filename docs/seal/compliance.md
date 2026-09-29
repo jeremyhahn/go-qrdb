@@ -58,13 +58,13 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | Requirement ID | Requirement | go-qrdb Capability | Phase | File |
 |---|---|---|---|---|
 | **AS10.03** | Roles, Services, and Authentication | Six-role model (SO, Admin, Operator, User, Auditor, Custodian); SO governance-only; RBAC with explicit deny-lists | 2 | `docs/auth/roles.md`, `pkg/role/`, `pkg/auth/rbac/` |
-| **AS10.05** | Split Knowledge Procedure | Shamir M-of-N threshold unsealing; no single Custodian holds complete root key | 4 | `docs/seal/custodians.md`, `pkg/seal/shamir.go` |
-| **AS10.06** | Dual Authorization Procedure | SO: mTLS + PIN; Custodian: mTLS + challenge-response (signature with private key in HSM) | 4 | `pkg/auth/so_auth.go`, `pkg/ceremony/challenge.go` |
+| **AS10.05** | Split Knowledge Procedure | Shamir M-of-N custody of the unseal key by named share holders (Security Officers and custodians); no single holder, operator or administrator ever holds a key or sees a share | 4 | `docs/shamir-custody/`, `pkg/seal/quorum.go`, `pkg/seal/holders.go` |
+| **AS10.06** | Dual Authorization Procedure | SO governance: mTLS + PIN; every share-gated operation (unseal, seal, root token, rekey, revocation) needs M distinct holders, each authenticated by an enrolled factor against the roster bound to the key | 4 | `pkg/auth/so_auth.go`, `pkg/seal/quorum.go`, `pkg/ceremony/holder_scope.go` |
 | **AS10.09** | Key Zeroization | go-enclave locked pages for material in use and sealed enclaves for material at rest in memory; byte-by-byte wipe on barrier seal; `defer Destroy()` on all secret operations | 1 (inherited from go-quicraft) | `go-enclave`, `pkg/seal/`, `pkg/secure/` |
 | **AS10.10** | Integrity of Key Information | SHA-256 hash-chain on audit entries; every audit event includes hash of previous entry; tamper-evident verification | 6 | `pkg/audit/file_logger.go` |
 | **AS10.11** | Secret Information Integrity | Encrypted audit entries (via barrier); integrity validation via hash-chain; ACL on audit read (Auditor only) | 6 | `pkg/audit/` |
 | **AS10.14** | Cryptographic Parameters | Approved algorithms: AES-256-GCM (FIPS 197), HKDF-SHA256 (NIST SP 800-56A), Argon2id/PBKDF2-SHA256 (FIPS-aware KDF mode), ECDSA P-256 (FIPS 186-4), HMAC-SHA256 | 1, 5 | `pkg/seal/strategy_software.go` |
-| **AS10.19** | Delivery of Key Information | Shamir share delivery via ECDH + AES-256-GCM envelope; share plaintext zeroed server-side; custodian decrypts locally | 4 | `docs/seal/custodians.md`, `pkg/seal/shamir.go` |
+| **AS10.19** | Delivery of Key Information | Each share HPKE-sealed (RFC 9180; P-256/P-384 DHKEM in FIPS mode) to its holder's enrolled key; delivered once to the holder's own mTLS session; server copy wiped; the holder opens it locally | 4 | `docs/shamir-custody/`, `pkg/ceremony/envelope.go`, `pkg/keydelivery/` |
 | **AS10.23** | Access Control | RBAC with six roles; permission-based enforcement at middleware; explicit deny-lists for SO crypto ops | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/rbac.go` |
 | **AS10.27** | Identification and Authentication | mTLS certificates (X.509); SO PIN (via `pkg/pin.PINBackend`); challenge-response via auth factors (PIV, PKCS#11, FIDO2 implementations in go-xkms; software mTLS in qrdb) | 3, 4 | `pkg/cert/`, `pkg/authfactors/` (Factor framework + registry), `pkg/pin/` |
 | **AS10.31** | User Zeroization | User PIN held in locked memory during verification; zeroed after use; barrier rekey wipes old DEK | 1, 5 | `pkg/seal/`, `pkg/secure/`, `go-enclave` |
@@ -79,7 +79,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | **IA-5** | Password Policy | SO PIN not stored (verified against HSM or hash-commit); User PIN configurable length/complexity | 2, 4 | `pkg/auth/so_auth.go`, `pkg/auth/pin_policy.go` |
 | **AU-2** | Audit Events | Structured audit events for barrier, ceremony, RBAC, keys, tenants, users, roles | 6 | `pkg/audit/`, `docs/audit/README.md` |
 | **AU-12** | Audit Generation | Slog integration; every event includes timestamp, actor, tenant, role, resource, action, outcome, attributes | 6 | `pkg/audit/slog_sink.go` |
-| **SI-12** | Information Management | Recovery Keys in offline escrow; Shamir shares encrypted to Custodian; no server-side key persistence post-unseal | 4 | `pkg/seal/recovery.go`, `docs/seal/custodians.md` |
+| **SI-12** | Information Management | An independent recovery key split to its own holders; shares sealed to their holders and never persisted server side | 4 | `pkg/seal/recovery.go`, `docs/shamir-custody/` |
 | **CA-6** | Security Planning | Documented architecture, role model, audit trail, key lifecycle, threat model | 1–6 | `docs/seal/`, `docs/auth/`, `docs/audit/` |
 
 ## PCI-DSS v4 Requirement Matrix
@@ -89,7 +89,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | **3.2** | Key Management Program | Documented key lifecycle (generate, store, rotate, retire, revoke, distribute, escrow) | 1–6 | `docs/seal/`, `pkg/dek/`, `pkg/cert/` |
 | **3.2.1** | Key Generation | Cryptographically secure random (crypto/rand); FIPS 140-3 approved algorithms (AES, ECDSA, HMAC) | 1 | `pkg/seal/barrier.go`, `pkg/cert/` |
 | **3.4.1** | Strong Cryptography | AES-256-GCM (at rest), TLS 1.3 (in flight), ECDSA P-256 / RSA-4096 (certificates) | 1 | `pkg/seal/`, `pkg/cert/` |
-| **3.6.1** | Key Rotation | Root key rotation via rekey (generates new Shamir shares); DEK rotation (configurable); certificate rotation | 5 | `pkg/seal/rekey.go`, `pkg/dek/` |
+| **3.6.1** | Key Rotation | Quorum-gated rekey of the unseal key (new shares, all earlier shares revoked); DEK rotation (configurable); certificate rotation | 5 | `pkg/seal/quorum.go`, `pkg/seal/redistribute.go`, `pkg/dek/` |
 | **3.6.2** | Cryptographic Key Destruction | Secure wipe via go-enclave (unmapped locked pages) and `pkg/secure`; byte-by-byte overwrite for operational keys; recovery keys in offline escrow | 1 | `go-enclave`, `pkg/secure/` |
 | **7.1** | Limit User Access | Role-based access control; six-role model; explicit deny-lists; permission matrix documented | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/` |
 | **10.2.1** | User Access to Cardholder Data | Audit events for all access attempts (successful and failed) | 6 | `pkg/audit/` |
@@ -112,8 +112,8 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | Feature | Phase | Status | Notes |
 |---------|-------|--------|-------|
 | **Separation of Duties (SO governance-only)** | 2 | Shipped | Explicit deny-lists in RBAC; defense-in-depth enforcement |
-| **Shamir M-of-N Unseal** | 4 | Shipped | `pkg/seal/shamir.go` + custodian lifecycle |
-| **Custodian Enrollment & Challenge-Response** | 4 | Shipped | Custodian metadata persisted; share encrypted via ECDH + AES-GCM |
+| **Shamir M-of-N Custody** | 4 | Shipped | `pkg/seal` (roster, quorum) + `pkg/ceremony` (holder engine) |
+| **Share-Holder Enrolment & Authenticated Quorum** | 4 | Shipped | Security Officers and custodians enrolled alike; public records only; shares HPKE-sealed to each holder |
 | **Auth Factor framework (Factor interface + FactorRegistry)** | 3 | Shipped | qrdb owns the `Factor` framework and the software mTLS reference factor. FIDO2, PIV, PKCS#11 factor implementations live in go-xkms and register through `WithFactorRegistry`. |
 | **PKCS#11 Seal Strategy** | 5 | Shipped (in go-xkms) | Hardware seal strategies live in go-xkms and register into qrdb's `seal.StrategyRegistry`. |
 | **FIPS-Aware KDF** | 5 | Shipped | `seal.FIPSEnabled()` — the runtime FIPS module state, then `GOFIPS140` (with `off` honoured as disabled) — selects PBKDF2-SHA256 (NIST SP 800-132); Argon2id otherwise. Both adapters always registered for cross-version unseal. |
@@ -162,7 +162,7 @@ Each phase includes compliance verification:
 - [fips140-mode.md](fips140-mode.md) — The `GODEBUG=fips140=only` CI job, the approved-algorithm remediation, the exemption register, what remains permanently unavailable under strict enforcement, and why the job is measured-clean but not yet a required check
 - [roles.md](../auth/roles.md) — Canonical six-role definitions and SoD constraints
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
-- [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol
+- [shamir-custody](../shamir-custody/) — share holders, envelope delivery and the authenticated quorum
 - [auth-factors.md](../seal/auth-factors.md) — `Factor` framework + `FactorRegistry` (hardware factor implementations ship in go-xkms)
 - [audit/README.md](../audit/architecture.md) — Audit event schema and retrieval API
 - [FIPS 140-3 ISO/IEC 19790](https://csrc.nist.gov/publications/detail/fips/140/3) — Official standard

@@ -93,7 +93,7 @@ func rekeyWithPIN(t *testing.T, tr *Transport) error {
 	t.Helper()
 	ctx, release := sotest.BindPIN(t, soTLSTestPIN)
 	defer release()
-	_, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3})
+	_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2})
 	return err
 }
 

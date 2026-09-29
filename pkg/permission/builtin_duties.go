@@ -111,15 +111,12 @@ func registerGovernanceDuties() {
 		// Barrier / seal lifecycle (SO-exclusive).
 		SealBootstrap, SealUnseal, SealSeal,
 		SealStatus, SealRotateRootKey, SealRekey,
-		SealGenerateRecovery, SealRecoverWithKeys,
+		SealGenerateRecovery,
 		SealInitializeShamir,
-		// Security Officer registry and seal voting (SO-exclusive).
-		SealOfficerRegister, SealOfficerList,
-		SealSubmitSealVote,
+		// Share-holder registry.
+		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		// Shamir ceremony (SO-exclusive).
-		CeremonyInitialize, CeremonyEnrollCustodian,
-		CeremonyRevokeCustodian, CeremonyClaimCert,
-		CeremonySignCSR, CeremonyStatus,
+		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate administration.
 		CertsGenerate, CertsExport, CertsRevoke,
 		CertsList, CertsRead,

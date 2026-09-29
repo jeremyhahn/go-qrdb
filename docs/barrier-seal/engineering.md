@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 ## Exported surface
 
@@ -123,9 +123,10 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   `sdk/go/transport/mcp.secretArg` are the single documented conversion points
   on each side. The residue is one string per call and goes no further.
 
-  The rule does **not** yet reach Shamir share fields or SO/User PINs, which
-  are still text strings on every transport. See
+  The rule does **not** yet reach SO/User PINs, which are still text strings
+  on every transport. See
   [api.md](api.md#known-limitation--share-and-pin-fields-are-still-text-strings).
+  Quorum submissions carry the share as bytes and every transport wipes it.
 
 - **The default registry holds exactly two strategies**: `StrategyPassphrase`
   (via `NewDeferredSoftwareStrategy`, so the passphrase arrives at
@@ -227,9 +228,8 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
-- **`ShareExchangeCoordinator` unseals exactly once** — `CompareAndSwap` on an
-  atomic guards the handler. It is transport-agnostic, uses map-based message
-  dispatch, and contains **no `time.Sleep`** (timer + select).
+- **Nodes never exchange shares.** Custody is per node; a Shamir barrier opens
+  only through its own authenticated holder quorum.
 
 ## Dual-mode operation
 
@@ -310,33 +310,32 @@ migration is a different error, `MigrationReopenError`, and is not reported as
 | `seal:rotate_root_key` | root key rotation | cross |
 | `seal:enable_encryption` | migrating off `none` (node or a named tenant) | cross |
 | `seal:initialize_shamir` | Shamir M-of-N initialization | cross |
-| `seal:generate_recovery` / `seal:recover_with_keys` | recovery key lifecycle | cross |
-| `seal:officer_register` / `seal:officer_list` | Security Officer enrolment (unseal and recovery domains) and listing | cross |
-| `seal:submit_seal_vote` | Shamir seal voting | cross |
-| `barrier:unseal-share` | submitting an unseal share to the node accumulator | cross |
+| `seal:generate_recovery` | recovery key generation and deletion | cross |
+| `seal:officer_register` / `seal:officer_list` | share holder enrolment (unseal and recovery domains) and listing | cross |
+| `seal:officer_revoke` | share holder revocation (a quorum-gated rekey) | cross |
 
 **Cross** is `ScopeCross` (`pkg/permission/node_barrier_scope.go`): only a
 `system`-tenant identity may exercise it. These routes name no tenant, and
 `ScopeSelf` compares the caller's tenant with the request's -- for a request
 naming none, with itself -- so as `ScopeSelf` they admitted any tenant's holder.
-That let a tenant's SO register officers into the node barrier's unseal and
+That let a tenant's SO register holders into the node barrier's unseal and
 recovery domains; since every rekey, revocation and recovery-key generation
-sends a share to every registered officer, M planted officers could
+sends a share to every registered holder, M planted holders could
 reconstruct the node unseal key. The six-transport proof is
 `TestNodeOfficerScope` (REST, gRPC, Unix, QUIC, MCP, and the embedded
 `RBACClient`); the per-permission proof over the real built-in roles is
 `TestNodeBarrier_TenantRoleHoldersAreDenied` in `pkg/auth/rbac`, and
 `TestNodeBarrierRoutes_TenantHolderRefused` in `pkg/api/rest` pins each
-lifecycle route to its permission. `barrier:unseal-share` is cross-scope
-because the node accumulator takes any share it is given and every tenant's
-Custodian role carries the grant: a tenant custodian could poison an
-in-progress node unseal. The boot-time
-sealed-window listener runs no RBAC, so anonymous pre-operational officer
-registration is unaffected
+lifecycle route to its permission. The boot-time sealed-window listener runs
+no RBAC, so anonymous pre-operational holder registration is unaffected
 (`TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization`).
 
-Officer claim endpoints are **identity-gated** rather than permission-gated: the
-claimant proves possession of the registered key by signing a nonce over mTLS.
+Share claims and quorum submissions are **identity-gated** rather than
+permission-gated: a claim proves possession of the enrolled certificate key
+over the holder's own connection, and a submission carries a factor proof
+checked against the roster. Unseal, seal, root token, recovery and rekey
+completion on a Shamir barrier are quorum operations, not permissions. See
+[../shamir-custody/api.md](../shamir-custody/api.md).
 
 ## Configuration
 
@@ -555,7 +554,7 @@ distinguishes them.
 
 - **Unit**: registry defaults and lookup, `ErrNoStrategySpecified`, the alias
   canonicalization, seal/unseal state transitions, PIN dual-control refusals,
-  and `ShareExchangeCoordinator`'s exactly-once unseal under concurrency.
+  and the refusal of credential initialization for a Shamir barrier.
 - **Fake strategies are injected through the same `StrategyRegistry`** used for
   hardware, so integration tests need no hardware coupling. That is the point of
   the seam.

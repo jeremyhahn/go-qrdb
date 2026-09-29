@@ -461,8 +461,12 @@ func TestBootstrapSystem_ShamirAlreadyUnsealed(t *testing.T) {
 		t.Fatalf("NewShamirStrategy: %v", err)
 	}
 	reg := newRegistry(t, shamir)
-	// Simulate the ceremony having initialized+unsealed the barrier already.
-	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
+	// The ceremony has already initialized (and so unsealed) the barrier
+	// over its share holders.
+	system := reg.SystemBarrier()
+	system.SetShamirConfig(&seal.ShamirConfig{Threshold: 2, TotalShares: 3})
+	sealtest.NewCustody("alice", "bob", "carol").Install(system)
+	if _, err := system.InitializeShamir(context.Background(), ""); err != nil {
 		t.Fatalf("pre-initialize shamir barrier: %v", err)
 	}
 	if reg.SystemBarrier().IsSealed() {
@@ -1380,10 +1384,37 @@ func TestInitializeTenantBarrier_ShamirRequiresPreRegistration(t *testing.T) {
 }
 
 // TestInitializeTenantBarrier_UsesPreRegisteredStrategy verifies that when a
-// tenant barrier is already registered (e.g. with an explicit shamir
-// strategy), InitializeTenantBarrier initializes the existing barrier rather
-// than building a new strategy.
+// tenant barrier is already registered, InitializeTenantBarrier initializes
+// the existing barrier rather than building a new strategy.
 func TestInitializeTenantBarrier_UsesPreRegisteredStrategy(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	if _, err := reg.RegisterTenant(context.Background(), "acme", seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "tenant/acme/root-key"}, seal.NewNoneStrategy()); err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	// The barrier is already registered, so no new strategy is built; the
+	// pre-registered barrier is initialized.
+	if err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	}); err != nil {
+		t.Fatalf("InitializeTenantBarrier (pre-registered): %v", err)
+	}
+	tb, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant(acme): %v", err)
+	}
+	if tb.IsSealed() {
+		t.Error("pre-registered tenant barrier still sealed after init")
+	}
+}
+
+// TestInitializeTenantBarrier_RefusesPreRegisteredShamir proves the
+// credential-only self-service call cannot initialize a Shamir tenant
+// barrier: it would leave one with no wrapped key and no holder roster,
+// which could never be unsealed once sealed. A Shamir tenant barrier is
+// initialized over its enrolled holders by the tenant service.
+func TestInitializeTenantBarrier_RefusesPreRegisteredShamir(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
 	shamir, err := seal.NewShamirStrategy(2, 3)
 	if err != nil {
@@ -1393,20 +1424,18 @@ func TestInitializeTenantBarrier_UsesPreRegisteredStrategy(t *testing.T) {
 		seal.BarrierConfig{RootKeyPath: "tenant/acme/root-key"}, shamir); err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
-
-	// Strategy arg is shamir but the barrier is already registered, so no new
-	// strategy is built; the pre-registered shamir barrier is initialized.
-	if err := InitializeTenantBarrier(context.Background(), "acme", StrategyShamir, seal.Credentials{}, Dependencies{
+	err = InitializeTenantBarrier(context.Background(), "acme", StrategyShamir, seal.Credentials{}, Dependencies{
 		Barriers: reg, Logger: discardLogger(),
-	}); err != nil {
-		t.Fatalf("InitializeTenantBarrier (pre-registered shamir): %v", err)
+	})
+	if !errors.Is(err, seal.ErrShamirInitializeRequiresHolders) {
+		t.Fatalf("err = %v, want seal.ErrShamirInitializeRequiresHolders", err)
 	}
 	tb, err := reg.GetTenant("acme")
 	if err != nil {
 		t.Fatalf("GetTenant(acme): %v", err)
 	}
-	if tb.IsSealed() {
-		t.Error("pre-registered tenant barrier still sealed after init")
+	if !tb.IsSealed() {
+		t.Error("a refused Shamir tenant barrier was left unsealed")
 	}
 }
 

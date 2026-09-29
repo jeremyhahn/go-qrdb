@@ -644,8 +644,8 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	// docs/firstboot/architecture.md repeats it as a deliberate non-goal. The
 	// code never enforced either half.
 	//
-	// It matters more than the name guard: rewriting the custodian role's
-	// single barrier:unseal-share grant, or widening Auditor past read-only,
+	// It matters more than the name guard: granting the custodian role
+	// anything, or widening Auditor past read-only,
 	// changes the compliance posture (FIPS 140-3 AS10.03/AS10.06/AS10.10)
 	// while the record still presents as a canonical system role to anything
 	// that inspects it.
@@ -895,8 +895,8 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 //  3. Operator — routine crypto and maintenance
 //  4. User — end-user cryptographic operations
 //  5. Auditor — read-only audit and state visibility
-//  6. Custodian — Shamir share holder; single permission only (a fixed,
-//     minimal set, not registry-derived — see custodianPermissions)
+//  6. Custodian — retained so persisted role references resolve; it grants
+//     nothing (see custodianPermissions)
 func BuiltInRoles(tenantID string) []*Role {
 	if tenantID == "" {
 		tenantID = tenantid.System
@@ -1201,20 +1201,15 @@ func deterministicUUID(tenantID, name string) string {
 	return u.String()
 }
 
-// custodianPermissions returns the permission set for the Custodian built-in role.
-// Custodians hold a single Shamir share and can ONLY submit that share during
-// barrier unseal or tenant barrier operations. All other operations are denied
-// (FIPS 140-3 AS10.06).
+// custodianPermissions returns the permission set for the Custodian built-in
+// role: none. A key custodian is a share holder, and a share holder is not an
+// RBAC principal — it authenticates with its CA-issued holder certificate and
+// an enrolled factor, every holder operation is identity-gated, and RBAC
+// refuses a holder identity everything (FIPS 140-3 AS10.06). The role is kept
+// so persisted role references resolve; role reconciliation strips the
+// retired share permissions it used to carry.
 func custodianPermissions() []permission.Permission {
-	return []permission.Permission{
-		// Node barrier unseal share (ScopeCross: only the system tenant's
-		// Custodian may submit to the node barrier's accumulator).
-		permission.BarrierUnsealShare,
-		// Tenant SO operations (ScopeTenantOnly: a tenant custodian may claim
-		// their share and submit seal votes for their OWN tenant's barrier).
-		permission.TenantBarrierClaimShare,
-		permission.TenantBarrierSealVote,
-	}
+	return []permission.Permission{}
 }
 
 // validatePermissions checks that every permission in the slice is either

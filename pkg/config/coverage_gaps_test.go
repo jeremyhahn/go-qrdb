@@ -541,3 +541,18 @@ func TestItoa_Values(t *testing.T) {
 		}
 	}
 }
+
+// TestHolderTrustDomain pins the precedence of the share-holder SPIFFE trust
+// domain: the configured SPIFFE domain, else the cluster domain, else the
+// default.
+func TestHolderTrustDomain(t *testing.T) {
+	for _, tc := range []struct{ spiffe, cluster, want string }{
+		{"spiffe.example.com", "cluster.example.com", "spiffe.example.com"},
+		{"", "cluster.example.com", "cluster.example.com"},
+		{"", "", DefaultClusterTrustDomain},
+	} {
+		if got := HolderTrustDomain(tc.spiffe, tc.cluster); got != tc.want {
+			t.Errorf("HolderTrustDomain(%q, %q) = %q, want %q", tc.spiffe, tc.cluster, got, tc.want)
+		}
+	}
+}

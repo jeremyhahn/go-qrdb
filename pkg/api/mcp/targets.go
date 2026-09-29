@@ -80,11 +80,11 @@ func identityTargets() map[string]authmw.MCPTargetFunc {
 		"qrdb_role_assign":            argUser("user_id"),
 		"qrdb_role_unassign":          argUser("user_id"),
 
-		"qrdb_tenant_barrier_seal":                 argTenant("tenant_id"),
-		"qrdb_tenant_barrier_officer_register":     argTenant("tenant_id"),
-		"qrdb_tenant_barrier_officer_list":         argTenant("tenant_id"),
-		"qrdb_tenant_barrier_officer_claim_status": argTenant("tenant_id"),
-		"qrdb_tenant_barrier_shamir_seal_vote":     argTenant("tenant_id"),
+		"qrdb_tenant_barrier_seal":             argTenant("tenant_id"),
+		"qrdb_tenant_barrier_officer_register": argTenant("tenant_id"),
+		"qrdb_tenant_barrier_officer_list":     argTenant("tenant_id"),
+		"qrdb_tenant_barrier_rekey_start":      argTenant("tenant_id"),
+		"qrdb_tenant_barrier_officer_revoke":   argTenant("tenant_id"),
 	}
 }
 

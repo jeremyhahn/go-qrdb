@@ -22,6 +22,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv"
 )
 
@@ -244,32 +245,6 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	}, nil
 }
 
-// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
-// barrier's quorum threshold via the Unix gRPC-over-UDS TenantBarrierService.
-func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if req == nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierUnsealShare", Err: &transport.NilRequestError{}}
-	}
-
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).UnsealShare(ctx, &pb.TenantBarrierUnsealShareRequest{
-		TenantId: req.TenantID,
-		Share:    req.Share,
-	})
-	if err != nil {
-		return nil, mapGRPCError("TenantBarrierUnsealShare", err)
-	}
-	return &transport.TenantBarrierUnsealProgress{
-		TenantID:  resp.GetTenantId(),
-		Required:  int(resp.GetRequired()),
-		Submitted: int(resp.GetSubmitted()),
-		Complete:  resp.GetComplete(),
-		Sealed:    resp.GetSealed(),
-	}, nil
-}
-
 // TenantBarrierUnseal unseals the per-tenant barrier using the provided key
 // material via the Unix gRPC-over-UDS TenantBarrierService. The transport
 // request's Key field carries raw key material; Share is forwarded for
@@ -282,13 +257,9 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &transport.NilRequestError{}}
 	}
 
-	key := req.Key
-	if len(key) == 0 {
-		key = req.Share
-	}
 	if _, err := pb.NewTenantBarrierServiceClient(t.conn).Unseal(ctx, &pb.TenantBarrierUnsealRequest{
 		TenantId: req.TenantID,
-		Key:      key,
+		Key:      req.Key,
 	}); err != nil {
 		return mapGRPCError("TenantBarrierUnseal", err)
 	}
@@ -345,11 +316,10 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 }
 
 // ---------------------------------------------------------------------------
-// Tenant barrier officer / share-claim operations
+// Tenant barrier share holders
 // ---------------------------------------------------------------------------
 
-// TenantBarrierOfficerRegister registers a Security Officer for a specific
-// tenant's barrier via the Unix gRPC-over-UDS TenantBarrierService.OfficerRegister.
+// TenantBarrierOfficerRegister enrols a share holder of a tenant barrier.
 func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -357,53 +327,30 @@ func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *trans
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRegister", Err: &transport.NilRequestError{}}
 	}
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerRegister(ctx, &pb.TenantBarrierOfficerRegisterRequest{
-		TenantId:          req.TenantID,
-		Username:          req.Username,
-		CsrPem:            req.CSRPEM,
-		AuthenticatorType: req.AuthenticatorType,
-	})
+	in, err := holderconv.TenantRegisterToPB(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerRegister(ctx, in)
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierOfficerRegister", err)
 	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    resp.GetCertPem(),
-		ShareIndex: int(resp.GetShareIndex()),
-	}, nil
+	return holderconv.TenantRegisterFromPB(resp), nil
 }
 
-// TenantBarrierOfficerList lists all registered Security Officers for a
-// specific tenant's barrier via OfficerList.
+// TenantBarrierOfficerList lists a tenant barrier's holders.
 func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerList(ctx, &pb.TenantBarrierOfficerListRequest{
-		TenantId: tenantID,
-	})
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerList(ctx, &pb.TenantBarrierOfficerListRequest{TenantId: tenantID})
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierOfficerList", err)
 	}
-	return unixProtoToOfficerStatusSlice(resp.GetOfficers()), nil
+	return holderconv.StatusesFromPB(resp.GetOfficers()), nil
 }
 
-// TenantBarrierOfficerClaimStatus returns per-officer claim status for a
-// specific tenant's barrier via OfficerClaimStatus.
-func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerClaimStatus(ctx, &pb.TenantBarrierOfficerClaimStatusRequest{
-		TenantId: tenantID,
-	})
-	if err != nil {
-		return nil, mapGRPCError("TenantBarrierOfficerClaimStatus", err)
-	}
-	return unixProtoToOfficerStatusSlice(resp.GetOfficers()), nil
-}
-
-// TenantBarrierShareClaimBegin issues a challenge nonce for a tenant barrier
-// Security Officer via ShareClaimBegin.
+// TenantBarrierShareClaimBegin issues a claim nonce to a tenant holder.
 func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -418,14 +365,11 @@ func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *trans
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierShareClaimBegin", err)
 	}
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  resp.GetNonceHex(),
-		ExpiresAt: time.Unix(resp.GetExpires(), 0),
-	}, nil
+	return &transport.ShareClaimBeginResponse{NonceHex: resp.GetNonceHex(), ExpiresAt: time.Unix(resp.GetExpires(), 0)}, nil
 }
 
-// TenantBarrierShareClaimComplete verifies the tenant barrier officer's nonce
-// signature and returns the share bytes exactly once via ShareClaimComplete.
+// TenantBarrierShareClaimComplete delivers a tenant holder's sealed envelope
+// exactly once.
 func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -442,30 +386,66 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 	if err != nil {
 		return nil, mapGRPCError("TenantBarrierShareClaimComplete", err)
 	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareBytes: resp.GetShareBytes(),
-	}, nil
+	return &transport.ShareClaimCompleteResponse{ShareIndex: int(resp.GetShareIndex()), Envelope: resp.GetEnvelope()}, nil
 }
 
-// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for a
-// specific tenant's barrier via ShamirSealVote.
-func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
+// TenantBarrierQuorumBegin issues a tenant holder's quorum challenge.
+func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport.TenantQuorumBeginRequest) (*transport.QuorumChallenge, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "TenantBarrierShamirSealVote", Err: &transport.NilRequestError{}}
+		return nil, &transport.RequestError{Method: "TenantBarrierQuorumBegin", Err: &transport.NilRequestError{}}
 	}
-	resp, err := pb.NewTenantBarrierServiceClient(t.conn).ShamirSealVote(ctx, &pb.TenantBarrierShamirSealVoteRequest{
-		TenantId:   req.TenantID,
-		ShareValue: req.Share,
-	})
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).QuorumBegin(ctx, holderconv.TenantBeginToPB(req))
 	if err != nil {
-		return nil, mapGRPCError("TenantBarrierShamirSealVote", err)
+		return nil, mapGRPCError("TenantBarrierQuorumBegin", err)
 	}
-	return &transport.ShamirSealVoteResponse{
-		Required:  int(resp.GetRequired()),
-		Submitted: int(resp.GetSubmitted()),
-		Complete:  resp.GetComplete(),
-	}, nil
+	return holderconv.ChallengeFromPB(resp), nil
+}
+
+// TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
+func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierQuorumSubmit", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).QuorumSubmit(ctx, holderconv.TenantSubmitToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierQuorumSubmit", err)
+	}
+	return holderconv.OutcomeFromPB(resp), nil
+}
+
+// TenantBarrierRekeyStart opens a rekey round on a tenant barrier.
+func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.TenantRekeyStartRequest) (*transport.QuorumRound, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierRekeyStart", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).RekeyStart(ctx, holderconv.TenantRekeyToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierRekeyStart", err)
+	}
+	return holderconv.RoundFromPB(resp), nil
+}
+
+// TenantBarrierOfficerRevoke revokes a tenant holder through a quorum-gated
+// rekey.
+func (t *Transport) TenantBarrierOfficerRevoke(ctx context.Context, req *transport.TenantOfficerRevokeRequest) (*transport.QuorumRound, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierOfficerRevoke", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).OfficerRevoke(ctx, holderconv.TenantRevokeToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierOfficerRevoke", err)
+	}
+	return holderconv.RoundFromPB(resp), nil
 }

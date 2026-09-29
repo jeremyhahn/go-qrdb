@@ -20,9 +20,6 @@ import (
 	"context"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 )
@@ -114,60 +111,5 @@ func TestGRPC_BarrierInitialize_PersistsPINs(t *testing.T) {
 	}
 	if !backend.UserPINSet() || backend.storedUserPIN != "u-5678" {
 		t.Fatalf("User PIN not persisted: set=%v stored=%q", backend.UserPINSet(), backend.storedUserPIN)
-	}
-}
-
-// TestGRPC_BarrierRekey_BadSOPIN verifies that the BarrierRekey gRPC
-// handler returns Unauthenticated when the supplied SO PIN does not
-// match the PIN backend's record.
-func TestGRPC_BarrierRekey_BadSOPIN(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc),
-		WithPINBackend(backend))
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "wrong-pin",
-	})
-	if err == nil {
-		t.Fatal("expected error for bad SO PIN, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-	if backend.verifyCalls == 0 {
-		t.Fatal("VerifySOPIN was not invoked")
-	}
-}
-
-// TestGRPC_BarrierRekey_GoodSOPIN verifies that the BarrierRekey gRPC
-// handler proceeds to the barrier service when the SO PIN matches.
-func TestGRPC_BarrierRekey_GoodSOPIN(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc),
-		WithPINBackend(backend))
-	defer cleanup()
-
-	resp, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "correct-pin",
-	})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("nil response after successful rekey")
 	}
 }

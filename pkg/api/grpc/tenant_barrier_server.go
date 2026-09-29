@@ -17,21 +17,19 @@ package grpc
 import (
 	"context"
 	"encoding/hex"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -112,23 +110,6 @@ func (s *tenantBarrierServer) authorizeTenantBarrierSealedOp(ctx context.Context
 	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
 }
 
-// peerCertThumbprintTenant extracts the mTLS leaf certificate thumbprint from
-// the gRPC peer context for the tenant barrier server.
-func peerCertThumbprintTenant(ctx context.Context) (string, error) {
-	p, ok := grpcpeer.FromContext(ctx)
-	if !ok {
-		return "", &ClientCertRequiredError{}
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return "", &ClientCertRequiredError{}
-	}
-	if len(tlsInfo.State.PeerCertificates) == 0 {
-		return "", &ClientCertRequiredError{}
-	}
-	return ceremony.CertThumbprint(tlsInfo.State.PeerCertificates[0].Raw), nil
-}
-
 // RegisterTenantBarrierService registers the per-tenant barrier service on the
 // given gRPC server. When svc is nil the service is not registered, so callers
 // that have no tenant servicer wired in can safely invoke this helper. The
@@ -193,34 +174,6 @@ func (s *tenantBarrierServer) Unseal(ctx context.Context, req *pb.TenantBarrierU
 	return &emptypb.Empty{}, nil
 }
 
-// UnsealShare submits a single Shamir share toward the tenant barrier's quorum
-// threshold and returns the quorum progress.
-func (s *tenantBarrierServer) UnsealShare(ctx context.Context, req *pb.TenantBarrierUnsealShareRequest) (*pb.TenantBarrierUnsealProgress, error) {
-	if s.svc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
-	}
-	if req.GetTenantId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
-	}
-	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
-		return nil, authzError(err)
-	}
-	prog, err := s.svc.TenantBarrierUnsealShare(ctx, req.GetTenantId(), req.GetShare())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-	if prog == nil {
-		return nil, status.Error(codes.Internal, "tenant barrier unseal-share: nil response")
-	}
-	return &pb.TenantBarrierUnsealProgress{
-		TenantId:  prog.TenantID,
-		Required:  int32(prog.Required),  //nolint:gosec
-		Submitted: int32(prog.Submitted), //nolint:gosec
-		Complete:  prog.Complete,
-		Sealed:    prog.Sealed,
-	}, nil
-}
-
 // Seal seals a per-tenant barrier.
 func (s *tenantBarrierServer) Seal(ctx context.Context, req *pb.TenantBarrierSealRequest) (*emptypb.Empty, error) {
 	if s.svc == nil {
@@ -283,20 +236,17 @@ func (s *tenantBarrierServer) OfficerRegister(ctx context.Context, req *pb.Tenan
 		return nil, authzError(err)
 	}
 
-	svcReq := &ceremony.RegisterOfficerRequest{
-		Username:          req.GetUsername(),
-		CSRPEM:            req.GetCsrPem(),
-		AuthenticatorType: ceremony.AuthenticatorType(req.GetAuthenticatorType()),
+	regReq, err := holderpb.TenantRegisterFromPB(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	result, err := s.svc.TenantBarrierOfficerRegister(ctx, req.GetTenantId(), svcReq)
+	svcReq := service.HolderRegistration(ctx, regReq)
+	result, err := s.svc.TenantBarrierOfficerRegister(ctx, req.GetTenantId(), &svcReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	return &pb.TenantBarrierOfficerRegisterResponse{
-		CertPem:    result.CertPEM,
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec
-	}, nil
+	return holderpb.TenantRegisterToPB(result), nil
 }
 
 // OfficerList lists all registered Security Officers for the named tenant's barrier.
@@ -317,7 +267,7 @@ func (s *tenantBarrierServer) OfficerList(ctx context.Context, req *pb.TenantBar
 	}
 
 	return &pb.TenantBarrierOfficerListResponse{
-		Officers: tenantOfficerStatusesToProto(officers),
+		Officers: holderpb.StatusesToPB(officers),
 	}, nil
 }
 
@@ -337,7 +287,7 @@ func (s *tenantBarrierServer) ShareClaimBegin(ctx context.Context, req *pb.Tenan
 		return nil, authzError(err)
 	}
 
-	thumbprint, err := peerCertThumbprintTenant(ctx)
+	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -367,7 +317,7 @@ func (s *tenantBarrierServer) ShareClaimComplete(ctx context.Context, req *pb.Te
 		return nil, authzError(err)
 	}
 
-	thumbprint, err := peerCertThumbprintTenant(ctx)
+	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -378,55 +328,8 @@ func (s *tenantBarrierServer) ShareClaimComplete(ctx context.Context, req *pb.Te
 	}
 
 	return &pb.TenantBarrierShareClaimCompleteResponse{
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// OfficerClaimStatus returns per-officer claim status for the named tenant's
-// barrier. The response contains only public metadata — no share bytes.
-func (s *tenantBarrierServer) OfficerClaimStatus(ctx context.Context, req *pb.TenantBarrierOfficerClaimStatusRequest) (*pb.TenantBarrierOfficerClaimStatusResponse, error) {
-	if s.svc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
-	}
-	if req.GetTenantId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
-	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierOfficerList); err != nil {
-		return nil, authzError(err)
-	}
-
-	officers, err := s.svc.TenantBarrierOfficerClaimStatus(ctx, req.GetTenantId())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.TenantBarrierOfficerClaimStatusResponse{
-		Officers: tenantOfficerStatusesToProto(officers),
-	}, nil
-}
-
-// ShamirSealVote submits a Shamir share as a seal vote for the named tenant's
-// barrier. When the threshold is reached the tenant barrier is sealed.
-func (s *tenantBarrierServer) ShamirSealVote(ctx context.Context, req *pb.TenantBarrierShamirSealVoteRequest) (*pb.TenantBarrierShamirSealVoteResponse, error) {
-	if s.svc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
-	}
-	if req.GetTenantId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
-	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierSealVote); err != nil {
-		return nil, authzError(err)
-	}
-
-	progress, err := s.svc.TenantBarrierShamirSealVote(ctx, req.GetTenantId(), req.GetShareValue())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.TenantBarrierShamirSealVoteResponse{
-		Required:  int32(progress.Required),  //nolint:gosec
-		Submitted: int32(progress.Submitted), //nolint:gosec
-		Complete:  progress.Complete,
+		ShareIndex: int32(result.ShareIndex), //nolint:gosec
+		Envelope:   result.Envelope,
 	}, nil
 }
 
@@ -434,24 +337,78 @@ func (s *tenantBarrierServer) ShamirSealVote(ctx context.Context, req *pb.Tenant
 // Error mapping helpers for tenant barrier ceremony operations
 // ---------------------------------------------------------------------------
 
-// tenantOfficerStatusesToProto converts ceremony OfficerStatus slices to
-// proto OfficerStatus messages.
-func tenantOfficerStatusesToProto(officers []*ceremony.OfficerStatus) []*pb.OfficerStatus {
-	out := make([]*pb.OfficerStatus, len(officers))
-	for i, o := range officers {
-		var claimedAt string
-		if !o.ClaimedAt.IsZero() {
-			claimedAt = o.ClaimedAt.Format(time.RFC3339)
-		}
-		out[i] = &pb.OfficerStatus{
-			Username:       o.Username,
-			CertThumbprint: o.CertThumbprint,
-			ShareIndex:     int32(o.ShareIndex), //nolint:gosec
-			AuthFactor:     o.AuthFactor,
-			EnrolledAt:     o.EnrolledAt.Format(time.RFC3339),
-			ClaimedAt:      claimedAt,
-			SharePending:   o.SharePending,
-		}
+// QuorumBegin issues a quorum challenge to a tenant share holder. It is
+// identity-gated: the factor proof at submission is the authorization, and
+// the tenant service confines the caller to its own tenant.
+func (s *tenantBarrierServer) QuorumBegin(ctx context.Context, req *pb.TenantBarrierQuorumBeginRequest) (*pb.BarrierQuorumChallenge, error) {
+	if s.svc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
 	}
-	return out
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.IdentityGated); err != nil {
+		return nil, authzError(err)
+	}
+	ch, err := s.svc.TenantBarrierQuorumBegin(ctx, req.GetTenantId(), seal.QuorumOp(req.GetOp()), req.GetUsername(), req.GetFactor())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return holderpb.ChallengeToPB(ch), nil
+}
+
+// QuorumSubmit submits one authenticated tenant holder's share.
+func (s *tenantBarrierServer) QuorumSubmit(ctx context.Context, req *pb.TenantBarrierQuorumSubmitRequest) (*pb.BarrierQuorumOutcome, error) {
+	// The decoded share is this handler's to destroy on every path.
+	defer secure.Wipe(req.GetShare())
+	if s.svc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+	}
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.IdentityGated); err != nil {
+		return nil, authzError(err)
+	}
+	out, err := s.svc.TenantBarrierQuorumSubmit(ctx, req.GetTenantId(), holderpb.TenantSubmitFromPB(req, optionalPeerThumbprint(ctx)))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return holderpb.OutcomeToPB(service.QuorumOutcomeFrom(out)), nil
+}
+
+// RekeyStart opens a rekey round on the tenant barrier.
+func (s *tenantBarrierServer) RekeyStart(ctx context.Context, req *pb.TenantBarrierRekeyStartRequest) (*pb.BarrierQuorumRound, error) {
+	if s.svc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+	}
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierRekey); err != nil {
+		return nil, authzError(err)
+	}
+	round, err := s.svc.TenantBarrierRekeyStart(ctx, req.GetTenantId(), int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return holderpb.RoundToPB(round), nil
+}
+
+// OfficerRevoke revokes a tenant holder through a quorum-gated rekey.
+func (s *tenantBarrierServer) OfficerRevoke(ctx context.Context, req *pb.TenantBarrierOfficerRevokeRequest) (*pb.BarrierQuorumRound, error) {
+	if s.svc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+	}
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierOfficerRevoke); err != nil {
+		return nil, authzError(err)
+	}
+	round, err := s.svc.TenantBarrierOfficerRevoke(ctx, req.GetTenantId(), req.GetUsername(), int(req.GetThreshold()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return holderpb.RoundToPB(round), nil
 }

@@ -35,23 +35,24 @@ import (
 // mockTenantService implements tenant.TenantServicer with configurable
 // function fields for per-test behavior injection.
 type mockTenantService struct {
-	createFn             func(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error)
-	getFn                func(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
-	listFn               func(ctx context.Context) ([]tenant.TenantInfo, error)
-	deleteFn             func(ctx context.Context, tenantID string) error
-	updateFn             func(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
-	barrierInitFn        func(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) error
-	barrierUnsealFn      func(ctx context.Context, tenantID string, key []byte) error
-	barrierUnsealShareFn func(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error)
-	barrierStatusFn      func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
-	barrierSealFn        func(ctx context.Context, tenantID string) error
+	createFn        func(ctx context.Context, id, name string, isolationType tenant.IsolationType) (*tenant.TenantInfo, error)
+	getFn           func(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
+	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
+	deleteFn        func(ctx context.Context, tenantID string) error
+	updateFn        func(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
+	barrierInitFn   func(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) error
+	barrierUnsealFn func(ctx context.Context, tenantID string, key []byte) error
+	barrierStatusFn func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
+	barrierSealFn   func(ctx context.Context, tenantID string) error
 
 	officerRegisterFn    func(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error)
 	officerListFn        func(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
-	officerClaimStatusFn func(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
 	shareClaimBeginFn    func(ctx context.Context, tenantID, username, thumbprint string) (*ceremony.ChallengeResponse, error)
 	shareClaimCompleteFn func(ctx context.Context, tenantID, username, nonceHex string, signature []byte, thumbprint string) (*ceremony.ShareClaimResult, error)
-	shamirSealVoteFn     func(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error)
+	quorumBeginFn        func(ctx context.Context, tenantID string, op seal.QuorumOp, username, factor string) (*ceremony.QuorumChallenge, error)
+	quorumSubmitFn       func(ctx context.Context, tenantID string, sub *seal.HolderSubmission) (*seal.QuorumOutcome, error)
+	rekeyStartFn         func(ctx context.Context, tenantID string, threshold int, policy seal.FactorPolicy) (*seal.QuorumRoundInfo, error)
+	officerRevokeFn      func(ctx context.Context, tenantID, username string, threshold int) (*seal.QuorumRoundInfo, error)
 }
 
 func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
@@ -121,13 +122,6 @@ func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, t
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
-func (m *mockTenantService) TenantBarrierUnsealShare(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error) {
-	if m.barrierUnsealShareFn != nil {
-		return m.barrierUnsealShareFn(ctx, tenantID, share)
-	}
-	return &tenant.TenantBarrierUnsealProgress{TenantID: tenantID, Required: 3, Submitted: 1, Sealed: true}, nil
-}
-
 func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, tenantID, key)
@@ -169,12 +163,6 @@ func (m *mockTenantService) TenantBarrierOfficerList(ctx context.Context, tenant
 	}
 	return nil, nil
 }
-func (m *mockTenantService) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
-	if m.officerClaimStatusFn != nil {
-		return m.officerClaimStatusFn(ctx, tenantID)
-	}
-	return nil, nil
-}
 func (m *mockTenantService) TenantBarrierShareClaimBegin(ctx context.Context, tenantID, username, thumbprint string) (*ceremony.ChallengeResponse, error) {
 	if m.shareClaimBeginFn != nil {
 		return m.shareClaimBeginFn(ctx, tenantID, username, thumbprint)
@@ -187,11 +175,33 @@ func (m *mockTenantService) TenantBarrierShareClaimComplete(ctx context.Context,
 	}
 	return &ceremony.ShareClaimResult{}, nil
 }
-func (m *mockTenantService) TenantBarrierShamirSealVote(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error) {
-	if m.shamirSealVoteFn != nil {
-		return m.shamirSealVoteFn(ctx, tenantID, share)
+
+// errTenantHolderUnset answers a holder method the test did not configure.
+var errTenantHolderUnset = errors.New("mockTenantService: holder method not configured by this test")
+
+func (m *mockTenantService) TenantBarrierQuorumBegin(ctx context.Context, tenantID string, op seal.QuorumOp, username, factor string) (*ceremony.QuorumChallenge, error) {
+	if m.quorumBeginFn != nil {
+		return m.quorumBeginFn(ctx, tenantID, op, username, factor)
 	}
-	return &tenant.TenantBarrierUnsealProgress{}, nil
+	return nil, errTenantHolderUnset
+}
+func (m *mockTenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID string, sub *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	if m.quorumSubmitFn != nil {
+		return m.quorumSubmitFn(ctx, tenantID, sub)
+	}
+	return nil, errTenantHolderUnset
+}
+func (m *mockTenantService) TenantBarrierRekeyStart(ctx context.Context, tenantID string, threshold int, policy seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
+	if m.rekeyStartFn != nil {
+		return m.rekeyStartFn(ctx, tenantID, threshold, policy)
+	}
+	return nil, errTenantHolderUnset
+}
+func (m *mockTenantService) TenantBarrierOfficerRevoke(ctx context.Context, tenantID, username string, threshold int) (*seal.QuorumRoundInfo, error) {
+	if m.officerRevokeFn != nil {
+		return m.officerRevokeFn(ctx, tenantID, username, threshold)
+	}
+	return nil, errTenantHolderUnset
 }
 
 // CheckBarrierMode lives HERE, with the rest of the method set. It used to sit
@@ -474,112 +484,6 @@ func TestTenantBinding_BarrierUnseal_NotConnected(t *testing.T) {
 	err := b.BarrierUnseal(&transport.TenantBarrierUnsealRequest{TenantID: "tenant-001", Key: []byte("key")})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TenantBinding.BarrierUnsealShare tests
-// ---------------------------------------------------------------------------
-
-func TestTenantBinding_BarrierUnsealShare_Success(t *testing.T) {
-	svc := &mockTenantService{
-		barrierUnsealShareFn: func(_ context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error) {
-			if share != "share-1" {
-				t.Fatalf("expected share share-1, got %s", share)
-			}
-			return &tenant.TenantBarrierUnsealProgress{
-				TenantID:  tenantID,
-				Required:  3,
-				Submitted: 2,
-				Complete:  false,
-				Sealed:    true,
-			}, nil
-		},
-	}
-	b := newTestTenantBinding(t, svc)
-
-	progress, err := b.BarrierUnsealShare(&transport.TenantBarrierUnsealShareRequest{
-		TenantID: "tenant-001",
-		Share:    "share-1",
-	})
-	if err != nil {
-		t.Fatalf("BarrierUnsealShare: %v", err)
-	}
-	if progress.TenantID != "tenant-001" {
-		t.Fatalf("expected tenant tenant-001, got %s", progress.TenantID)
-	}
-	if progress.Required != 3 || progress.Submitted != 2 {
-		t.Fatalf("expected progress 2/3, got %d/%d", progress.Submitted, progress.Required)
-	}
-	if progress.Complete {
-		t.Fatal("expected quorum incomplete")
-	}
-	if !progress.Sealed {
-		t.Fatal("expected barrier still sealed")
-	}
-}
-
-func TestTenantBinding_BarrierUnsealShare_QuorumComplete(t *testing.T) {
-	svc := &mockTenantService{
-		barrierUnsealShareFn: func(_ context.Context, tenantID, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-			return &tenant.TenantBarrierUnsealProgress{
-				TenantID:  tenantID,
-				Required:  3,
-				Submitted: 3,
-				Complete:  true,
-				Sealed:    false,
-			}, nil
-		},
-	}
-	b := newTestTenantBinding(t, svc)
-
-	progress, err := b.BarrierUnsealShare(&transport.TenantBarrierUnsealShareRequest{
-		TenantID: "tenant-001",
-		Share:    "share-3",
-	})
-	if err != nil {
-		t.Fatalf("BarrierUnsealShare: %v", err)
-	}
-	if !progress.Complete {
-		t.Fatal("expected quorum complete")
-	}
-	if progress.Sealed {
-		t.Fatal("expected barrier unsealed after quorum")
-	}
-}
-
-func TestTenantBinding_BarrierUnsealShare_ServiceError(t *testing.T) {
-	svc := &mockTenantService{
-		barrierUnsealShareFn: func(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-			return nil, &tenant.BarrierError{TenantID: "tenant-001", Op: "unseal-share", Err: errors.New("invalid share")}
-		},
-	}
-	b := newTestTenantBinding(t, svc)
-
-	_, err := b.BarrierUnsealShare(&transport.TenantBarrierUnsealShareRequest{
-		TenantID: "tenant-001",
-		Share:    "bogus",
-	})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var barrierErr *tenant.BarrierError
-	if !errors.As(err, &barrierErr) {
-		t.Fatalf("expected BarrierError, got %T: %v", err, err)
-	}
-}
-
-func TestTenantBinding_BarrierUnsealShare_NotConnected(t *testing.T) {
-	conn := NewConnectionBinding(testLogger(t))
-	b := NewTenantBinding(testLogger(t), conn)
-
-	_, err := b.BarrierUnsealShare(&transport.TenantBarrierUnsealShareRequest{TenantID: "tenant-001", Share: "s"})
-	if err == nil {
-		t.Fatal("expected NotConnectedError")
-	}
-	var notConn *NotConnectedError
-	if !errors.As(err, &notConn) {
-		t.Fatalf("expected NotConnectedError, got %T: %v", err, err)
 	}
 }
 

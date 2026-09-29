@@ -25,8 +25,8 @@ type BarrierConfig struct {
 	AuditLogger AuditLogger
 
 	// Shamir configures optional Shamir secret sharing for barrier operations.
-	// When set, InitializeShamir and UnsealWithShare/UnsealWithShares methods
-	// become available.
+	// When set, InitializeShamir and the share-holder quorum
+	// (SubmitHolderShare) become available.
 	Shamir *ShamirConfig
 
 	// DeploymentID identifies the deployment for future EpochBarrier

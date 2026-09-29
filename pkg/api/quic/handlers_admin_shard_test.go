@@ -366,16 +366,6 @@ func TestWithDatabaseService_SetsField(t *testing.T) {
 	}
 }
 
-func TestWithBarrierService_SetsField(t *testing.T) {
-	barrierSvc := &mockBarrierService{}
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
-		WithBarrierService(barrierSvc),
-	)
-	if srv.barrierSvc != barrierSvc {
-		t.Fatal("expected barrierSvc to be set")
-	}
-}
-
 func TestWithCeremonyService_SetsField(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{}
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",

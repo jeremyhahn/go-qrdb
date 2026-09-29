@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -91,8 +92,8 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 	// Drive the SYSTEM barrier through a genuine 2-of-3 Shamir migration.
 	// nodeMigrationProvider.Reopen's Shamir-committed branch returns sealed,
 	// pending Security Officer quorum -- the worst-case window under test.
-	dist := &nodeCaptureDist{}
-	n.barrier.Load().SetCeremonyDistributor(dist)
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(n.barrier.Load())
 	sysOpts := seal.MigrationOptions{
 		TargetStrategy:  seal.StrategyShamir,
 		Mechanism:       seal.MechanismSwap,
@@ -151,11 +152,12 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 	// TestNode_EnableEncryption_TenantScope_AfterSystemRecycle (go-qrdb#383):
 	// TenantHostRegistry's DataRoot lookup used to capture the first boot's
 	// tenant service, the same shape this test pins for the router.
-	shares := dist.Shares()
-	require.Len(t, shares, 3, "migration must distribute real Shamir shares")
-	_, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[0])
-	require.NoError(t, uerr)
-	progress, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[1])
+	//
+	// The reopened barrier is re-composed with the node's own ceremony
+	// service as its custody; put the test's custody back so its holders can
+	// answer.
+	custody.Install(n.barrier.Load())
+	progress, uerr := custody.Quorum(ctx, n.barrier.Load(), seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
 	require.NoError(t, uerr)
 	require.True(t, progress.Complete)
 	require.NoError(t, n.Unseal(ctx, seal.Credentials{}))

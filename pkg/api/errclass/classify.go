@@ -145,6 +145,7 @@ var rules = slices.Concat(
 	backupRules,
 	identityRules,
 	tenantRules,
+	holderRules,
 	credentialRules,
 	dekRules,
 	pinRules,

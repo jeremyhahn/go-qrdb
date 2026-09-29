@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -41,11 +42,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeTenantServicer struct {
-	initFn        func(ctx context.Context, id, passphrase string, threshold, shares int) error
-	unsealFn      func(ctx context.Context, id string, key []byte) error
-	unsealShareFn func(ctx context.Context, id, share string) (*tenantpkg.TenantBarrierUnsealProgress, error)
-	sealFn        func(ctx context.Context, id string) error
-	statusFn      func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
+	tenant.TenantServicer
+	initFn   func(ctx context.Context, id, passphrase string, threshold, shares int) error
+	unsealFn func(ctx context.Context, id string, key []byte) error
+	sealFn   func(ctx context.Context, id string) error
+	statusFn func(ctx context.Context, id string) (*tenantpkg.TenantBarrierStatus, error)
 }
 
 var _ tenantpkg.TenantServicer = (*fakeTenantServicer)(nil)
@@ -106,12 +107,6 @@ func (f *fakeTenantServicer) TenantBarrierUnseal(ctx context.Context, id string,
 	}
 	return nil
 }
-func (f *fakeTenantServicer) TenantBarrierUnsealShare(ctx context.Context, id, share string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	if f.unsealShareFn != nil {
-		return f.unsealShareFn(ctx, id, share)
-	}
-	return &tenantpkg.TenantBarrierUnsealProgress{TenantID: id}, nil
-}
 func (f *fakeTenantServicer) TenantBarrierSeal(ctx context.Context, id string) error {
 	if f.sealFn != nil {
 		return f.sealFn(ctx, id)
@@ -140,17 +135,11 @@ func (f *fakeTenantServicer) TenantBarrierOfficerRegister(_ context.Context, _ s
 func (f *fakeTenantServicer) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
 	return nil, nil
 }
-func (f *fakeTenantServicer) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
 func (f *fakeTenantServicer) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
 	return &ceremony.ChallengeResponse{}, nil
 }
 func (f *fakeTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (f *fakeTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -293,32 +282,6 @@ func TestTransport_TenantBarrierUnseal_Success_Key(t *testing.T) {
 	got := seen.Load()
 	if got == nil || string(*got) != "the-key" {
 		t.Errorf("expected server to receive 'the-key', got %v", got)
-	}
-}
-
-func TestTransport_TenantBarrierUnseal_Success_FallbackShare(t *testing.T) {
-	var seen atomic.Pointer[[]byte]
-	svc := &fakeTenantServicer{
-		unsealFn: func(_ context.Context, _ string, key []byte) error {
-			b := append([]byte(nil), key...)
-			seen.Store(&b)
-			return nil
-		},
-	}
-	addr, stop := startTenantBarrierServer(t, svc)
-	defer stop()
-	tr, cleanup := connectBareTransport(t, addr)
-	defer cleanup()
-
-	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "acme", Share: []byte("share-fallback"),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got := seen.Load()
-	if got == nil || string(*got) != "share-fallback" {
-		t.Errorf("expected server to receive 'share-fallback', got %v", got)
 	}
 }
 

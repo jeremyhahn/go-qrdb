@@ -57,28 +57,6 @@ func TestMCP_UsageInfoToTransport_NonNil(t *testing.T) {
 // Note: extractTextContent is not exported, so this tests it directly.
 
 // ---------------------------------------------------------------------------
-// CeremonySubmitUnsealShare optional paths (80.0%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_CeremonyCustodian_SubmitUnsealShare_WithFactorResponse(t *testing.T) {
-	tr, cleanup := connectCeremonyInProcess(t, newMockCeremonySvc())
-	defer cleanup()
-
-	// Test with factor response (covers the optional FactorResponse path)
-	resp, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{
-		CustodianID:    "officer-1",
-		ChallengeID:    "chal-1",
-		ShareBytes:     []byte{0xAB, 0xCD},
-		FactorResponse: []byte{0x01, 0x02, 0x03},
-	})
-	if err != nil {
-		t.Logf("CeremonySubmitUnsealShare: %v", err)
-	} else {
-		t.Logf("CeremonySubmitUnsealShare response: %+v", resp)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ExecuteRebalance optional paths (80.0%) - with moves
 // ---------------------------------------------------------------------------
 

@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -188,63 +187,22 @@ func (s *stubMCPDBWithBarrier) DatabaseBarrierStatus(_ context.Context, name str
 // ---------------------------------------------------------------------------
 
 type stubMCPCeremonySvc struct {
-	claimShareBeginFn    func(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error)
-	claimShareCompleteFn func(ctx context.Context, custodianID, challengeID string, factorResp []byte) (*custodian.Custodian, error)
-	submitUnsealShareFn  func(ctx context.Context, custodianID, challengeID string, factorResp, shareBytes []byte) (*service.CeremonyUnsealShareResult, error)
 }
 
 var _ service.CeremonyServicer = (*stubMCPCeremonySvc)(nil)
 
 func newStubMCPCeremonySvc() *stubMCPCeremonySvc {
-	return &stubMCPCeremonySvc{
-		claimShareBeginFn: func(_ context.Context, id string) (*service.CeremonyCustodianChallenge, error) {
-			return &service.CeremonyCustodianChallenge{
-				CustodianID: id,
-				Nonce:       []byte("test-nonce"),
-				ExpiresAt:   time.Now().Add(time.Minute),
-			}, nil
-		},
-		claimShareCompleteFn: func(_ context.Context, id, _ string, _ []byte) (*custodian.Custodian, error) {
-			return &custodian.Custodian{ID: id}, nil
-		},
-		submitUnsealShareFn: func(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-			return &service.CeremonyUnsealShareResult{Submitted: 1, Required: 3, Unsealed: false}, nil
-		},
-	}
+	return &stubMCPCeremonySvc{}
 }
 
 // CeremonyInitialize — not used in custodian tests.
 func (s *stubMCPCeremonySvc) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	return nil, nil
 }
-func (s *stubMCPCeremonySvc) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	return nil, nil
-}
-func (s *stubMCPCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	return nil, nil
-}
-func (s *stubMCPCeremonySvc) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	return nil, nil
-}
-func (s *stubMCPCeremonySvc) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	return nil, nil
-}
 func (s *stubMCPCeremonySvc) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return nil, nil
 }
 func (s *stubMCPCeremonySvc) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
-	return nil, nil
-}
-func (s *stubMCPCeremonySvc) CeremonyClaimShareBegin(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error) {
-	return s.claimShareBeginFn(ctx, custodianID)
-}
-func (s *stubMCPCeremonySvc) CeremonyClaimShareComplete(ctx context.Context, custodianID, challengeID string, factorResp []byte) (*custodian.Custodian, error) {
-	return s.claimShareCompleteFn(ctx, custodianID, challengeID, factorResp)
-}
-func (s *stubMCPCeremonySvc) CeremonySubmitUnsealShare(ctx context.Context, custodianID, challengeID string, factorResp, shareBytes []byte) (*service.CeremonyUnsealShareResult, error) {
-	return s.submitUnsealShareFn(ctx, custodianID, challengeID, factorResp, shareBytes)
-}
-func (s *stubMCPCeremonySvc) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
 	return nil, nil
 }
 
@@ -1070,249 +1028,6 @@ func TestHandleCredentialRetrieve_ServiceError(t *testing.T) {
 	}
 	handler := handleCredentialRetrieve(svc)
 	req := buildCallToolRequest(t, "qrdb_credential_retrieve", map[string]any{"name": "k"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service failure")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// decodeOptionalBase64
-// ---------------------------------------------------------------------------
-
-func TestDecodeOptionalBase64_Empty(t *testing.T) {
-	req := buildCallToolRequest(t, "test", map[string]any{})
-	b, err := decodeOptionalBase64(req, "key")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if b != nil {
-		t.Errorf("expected nil, got %v", b)
-	}
-}
-
-func TestDecodeOptionalBase64_ValidBase64(t *testing.T) {
-	enc := base64.StdEncoding.EncodeToString([]byte("hello"))
-	req := buildCallToolRequest(t, "test", map[string]any{"key": enc})
-	b, err := decodeOptionalBase64(req, "key")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(b) != "hello" {
-		t.Errorf("decoded = %q, want hello", string(b))
-	}
-}
-
-func TestDecodeOptionalBase64_InvalidBase64(t *testing.T) {
-	req := buildCallToolRequest(t, "test", map[string]any{"key": "!!!not-base64!!!"})
-	_, err := decodeOptionalBase64(req, "key")
-	if err == nil {
-		t.Fatal("expected error for invalid base64")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonyClaimShareBegin
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonyClaimShareBegin_MissingCustodianID(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonyClaimShareBegin(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_begin", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for missing custodian_id")
-	}
-}
-
-func TestHandleCeremonyClaimShareBegin_Success(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonyClaimShareBegin(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_begin", map[string]any{
-		"custodian_id": "cust-1",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", resultText(t, result))
-	}
-}
-
-func TestHandleCeremonyClaimShareBegin_ServiceError(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	svc.claimShareBeginFn = func(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-		return nil, errors.New("not enrolled")
-	}
-	handler := handleCeremonyClaimShareBegin(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_begin", map[string]any{
-		"custodian_id": "cust-1",
-	})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service failure")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonyClaimShareComplete
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonyClaimShareComplete_MissingFields(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonyClaimShareComplete(svc)
-	// Missing challenge_id.
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_complete", map[string]any{
-		"custodian_id": "c1",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for missing challenge_id")
-	}
-}
-
-func TestHandleCeremonyClaimShareComplete_BadFactorResponse(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonyClaimShareComplete(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_complete", map[string]any{
-		"custodian_id":    "c1",
-		"challenge_id":    "ch1",
-		"factor_response": "!!!not-base64!!!",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for bad factor_response")
-	}
-}
-
-func TestHandleCeremonyClaimShareComplete_Success(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonyClaimShareComplete(svc)
-	factorResp := base64.StdEncoding.EncodeToString([]byte("sig"))
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_complete", map[string]any{
-		"custodian_id":    "c1",
-		"challenge_id":    "ch1",
-		"factor_response": factorResp,
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", resultText(t, result))
-	}
-}
-
-func TestHandleCeremonyClaimShareComplete_ServiceError(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	svc.claimShareCompleteFn = func(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-		return nil, errors.New("invalid challenge")
-	}
-	handler := handleCeremonyClaimShareComplete(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share_complete", map[string]any{
-		"custodian_id": "c1",
-		"challenge_id": "ch1",
-	})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service failure")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonySubmitUnsealShare
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonySubmitUnsealShare_MissingCustodianID(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonySubmitUnsealShare(svc)
-	share := base64.StdEncoding.EncodeToString([]byte("sharedata"))
-	req := buildCallToolRequest(t, "qrdb_ceremony_submit_unseal_share", map[string]any{
-		"share": share,
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for missing custodian_id")
-	}
-}
-
-func TestHandleCeremonySubmitUnsealShare_MissingShare(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonySubmitUnsealShare(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_submit_unseal_share", map[string]any{
-		"custodian_id": "c1",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for missing share")
-	}
-}
-
-func TestHandleCeremonySubmitUnsealShare_BadFactorResponse(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonySubmitUnsealShare(svc)
-	share := base64.StdEncoding.EncodeToString([]byte("sharedata"))
-	req := buildCallToolRequest(t, "qrdb_ceremony_submit_unseal_share", map[string]any{
-		"custodian_id":    "c1",
-		"share":           share,
-		"factor_response": "!!!not-base64!!!",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for bad factor_response")
-	}
-}
-
-func TestHandleCeremonySubmitUnsealShare_Success(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	handler := handleCeremonySubmitUnsealShare(svc)
-	share := base64.StdEncoding.EncodeToString([]byte("sharedata"))
-	factorResp := base64.StdEncoding.EncodeToString([]byte("sig"))
-	req := buildCallToolRequest(t, "qrdb_ceremony_submit_unseal_share", map[string]any{
-		"custodian_id":    "c1",
-		"challenge_id":    "ch1",
-		"share":           share,
-		"factor_response": factorResp,
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", resultText(t, result))
-	}
-}
-
-func TestHandleCeremonySubmitUnsealShare_ServiceError(t *testing.T) {
-	svc := newStubMCPCeremonySvc()
-	svc.submitUnsealShareFn = func(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-		return nil, errors.New("share rejected")
-	}
-	handler := handleCeremonySubmitUnsealShare(svc)
-	share := base64.StdEncoding.EncodeToString([]byte("sharedata"))
-	req := buildCallToolRequest(t, "qrdb_ceremony_submit_unseal_share", map[string]any{
-		"custodian_id": "c1",
-		"share":        share,
-	})
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error from service failure")

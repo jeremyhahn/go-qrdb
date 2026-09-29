@@ -16,16 +16,17 @@ package mcp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ceremonyTools returns the MCP tool registrations for initialization
@@ -35,14 +36,7 @@ func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []serve
 	return []serverTool{
 		{Tool: toolCeremonyInitialize(), Perm: permission.CeremonyInitialize, Handler: handleCeremonyInitialize(svc, ca)},
 		{Tool: toolCeremonyStatus(), Perm: permission.CeremonyStatus, Handler: handleCeremonyStatus(svc)},
-		{Tool: toolCeremonyClaimCertBegin(), Perm: permission.CeremonyClaimCert, Handler: handleCeremonyClaimCertBegin(svc)},
-		{Tool: toolCeremonyClaimCertComplete(), Perm: permission.CeremonyClaimCert, Handler: handleCeremonyClaimCertComplete(svc)},
-		{Tool: toolCeremonyBeginClaimShare(), Perm: permission.IdentityGated, Handler: handleCeremonyBeginClaimShare(svc)},
-		{Tool: toolCeremonyCompleteClaimShare(), Perm: permission.IdentityGated, Handler: handleCeremonyCompleteClaimShare(svc)},
 		{Tool: toolCeremonySignCSR(), Perm: permission.CeremonySignCSR, Handler: handleCeremonySignCSR(svc)},
-		{Tool: toolCeremonyClaimShareBegin(), Perm: permission.IdentityGated, Handler: handleCeremonyClaimShareBegin(svc)},
-		{Tool: toolCeremonyClaimShareComplete(), Perm: permission.IdentityGated, Handler: handleCeremonyClaimShareComplete(svc)},
-		{Tool: toolCeremonySubmitUnsealShare(), Perm: permission.BarrierUnsealShare, Handler: handleCeremonySubmitUnsealShare(svc)},
 	}
 }
 
@@ -62,8 +56,11 @@ func toolCeremonyInitialize() mcp.Tool {
 		mcp.WithNumber("threshold",
 			mcp.Description("The M-of-N Shamir threshold. Requires officers to be non-empty; takes precedence over server configuration when non-zero."),
 		),
+		mcp.WithString("policy",
+			mcp.Description("Factor policy of the initial share set: designated (default) or any-enrolled."),
+		),
 		mcp.WithString("officers",
-			mcp.Description("Officer configurations for M-of-N enrollment, JSON-encoded: an array of {\"username\":..., \"csr_pem\":...} objects, e.g. '[{\"username\":\"alice\",\"csr_pem\":\"...\"}]'. Takes precedence over server configuration when non-empty."),
+			mcp.Description("Initial share holders, JSON-encoded: an array of {\"username\":..., \"role\":\"so\"|\"custodian\", \"csr_pem\":...} objects, e.g. '[{\"username\":\"alice\",\"role\":\"so\",\"csr_pem\":\"...\"}]'. Takes precedence over server configuration when non-empty."),
 		),
 		mcp.WithString("hostname",
 			mcp.Description("The primary hostname for TLS certificate generation. Takes precedence over server configuration when provided."),
@@ -81,93 +78,16 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 		if ca == nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: ErrCeremonyCANotConfigured}
 		}
-		opts := &service.CeremonyInitializeOptions{
-			SOPin:                  mcp.ParseString(req, "so_pin", ""),
-			UserPin:                mcp.ParseString(req, "user_pin", ""),
-			CredentialSealStrategy: mcp.ParseString(req, "credential_seal_strategy", ""),
-			Threshold:              mcp.ParseInt(req, "threshold", 0),
-			Officers:               parseCeremonyOfficers(req, "officers"),
-			Hostname:               mcp.ParseString(req, "hostname", ""),
-			SANs:                   parseStringArray(req, "sans"),
+		var in transport.CeremonyInitializeRequest
+		if err := wire.DecodeArgs(req.GetArguments(), &in, wire.CeremonyJSONFields...); err != nil {
+			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-		result, err := svc.CeremonyInitialize(ctx, ca, opts)
+		result, err := svc.CeremonyInitialize(ctx, ca, holderwire.CeremonyInitFrom(&in))
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-
-		data, jsonErr := json.Marshal(ceremonyInitToWireResponse(result))
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
+		return holderResult("qrdb_ceremony_initialize", holderwire.CeremonyInitTo(result))
 	}
-}
-
-// ceremonyInitToWireResponse maps a service.CeremonyInitResult (PascalCase
-// Go field names, no json tags) to the canonical snake_case wire shape every
-// other transport produces -- REST's handlers_ceremony.go
-// ceremonyInitToResponse and the SDK's transport.CeremonyInitializeResponse
-// json tags. Marshaling *result directly (the prior behavior) emitted
-// "SPKIPin"/"CACertPEM"/... keys that sdk/go/transport/mcp/transport_ceremony.go's
-// CeremonyInitialize could never decode (json.Unmarshal's case-insensitive
-// fallback only matches the STRUCT TAG case-insensitively, not an unrelated
-// snake_case name), silently zeroing every field of the CLI's `qrdb init`
-// response over MCP alone.
-func ceremonyInitToWireResponse(r *service.CeremonyInitResult) map[string]interface{} {
-	return map[string]interface{}{
-		"spki_pin":     r.SPKIPin,
-		"ca_cert_pem":  string(r.CACertPEM),
-		"tls_cert_pem": string(r.TLSCertPEM),
-		"state":        r.State,
-		"share_count":  r.ShareCount,
-	}
-}
-
-// parseStringArray reads an optional JSON-encoded string-array argument
-// (e.g. '["a","b"]') into a []string. The wire shape matches every other
-// array-valued MCP argument in this SDK (see sdk/go/transport/mcp's
-// json.Marshal-then-string-arg convention, e.g. transport_ceremony.go's
-// CeremonyInitialize encoding req.SANs into args["sans"] as a JSON string,
-// and tools_vector.go's "ids" argument / handler pair for the server-side
-// precedent): the tool schema declares the argument as a plain string
-// (mcp.WithString), NOT mcp.WithArray, so it must be parsed with
-// mcp.ParseString + json.Unmarshal rather than a type assertion to
-// []interface{}, which a string argument value never satisfies.
-func parseStringArray(req mcp.CallToolRequest, key string) []string {
-	raw := mcp.ParseString(req, key, "")
-	if raw == "" {
-		return nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil
-	}
-	return out
-}
-
-// parseCeremonyOfficers reads an optional JSON-encoded array-of-object
-// argument (each element shaped {"username":..., "csr_pem":...}) into a
-// []service.CeremonyOfficerConfig. See parseStringArray's doc comment for
-// why this parses a JSON string (mcp.ParseString + json.Unmarshal) rather
-// than type-asserting a native array value.
-func parseCeremonyOfficers(req mcp.CallToolRequest, key string) []service.CeremonyOfficerConfig {
-	raw := mcp.ParseString(req, key, "")
-	if raw == "" {
-		return nil
-	}
-	var wire []struct {
-		Username string `json:"username"`
-		CSRPEM   string `json:"csr_pem"`
-	}
-	if err := json.Unmarshal([]byte(raw), &wire); err != nil || len(wire) == 0 {
-		return nil
-	}
-	out := make([]service.CeremonyOfficerConfig, 0, len(wire))
-	for _, o := range wire {
-		out = append(out, service.CeremonyOfficerConfig{Username: o.Username, CSRPEM: o.CSRPEM})
-	}
-	return out
 }
 
 // toolCeremonyStatus defines the qrdb_ceremony_status tool schema.
@@ -192,217 +112,6 @@ func handleCeremonyStatus(svc service.CeremonyServicer) mcpserver.ToolHandlerFun
 		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_status", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolCeremonyClaimCertBegin defines the qrdb_ceremony_claim_cert_begin
-// tool schema.
-func toolCeremonyClaimCertBegin() mcp.Tool {
-	return mcp.NewTool("qrdb_ceremony_claim_cert_begin",
-		mcp.WithDescription("Start the certificate claim handshake for an officer, returning a challenge nonce."),
-		mcp.WithString("username",
-			mcp.Required(),
-			mcp.Description("The officer username initiating the certificate claim."),
-		),
-	)
-}
-
-// handleCeremonyClaimCertBegin returns a tool handler that delegates to
-// svc.CeremonyBeginClaimCert.
-func handleCeremonyClaimCertBegin(svc service.CeremonyServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		username := mcp.ParseString(req, "username", "")
-		if username == "" {
-			return mcp.NewToolResultError("username is required"), nil
-		}
-
-		challenge, err := svc.CeremonyBeginClaimCert(ctx, username)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_claim_cert_begin", Err: err}
-		}
-
-		data, jsonErr := json.Marshal(challenge)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_claim_cert_begin", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolCeremonyClaimCertComplete defines the qrdb_ceremony_claim_cert_complete
-// tool schema.
-func toolCeremonyClaimCertComplete() mcp.Tool {
-	return mcp.NewTool("qrdb_ceremony_claim_cert_complete",
-		mcp.WithDescription("Complete the certificate claim handshake by verifying the officer's nonce signature."),
-		mcp.WithString("username",
-			mcp.Required(),
-			mcp.Description("The officer username completing the certificate claim."),
-		),
-		mcp.WithString("nonce_hex",
-			mcp.Required(),
-			mcp.Description("The hex-encoded challenge nonce from the begin step."),
-		),
-		mcp.WithString("signature",
-			mcp.Required(),
-			mcp.Description("The base64-encoded signature over the nonce."),
-		),
-	)
-}
-
-// handleCeremonyClaimCertComplete returns a tool handler that delegates to
-// svc.CeremonyCompleteClaimCert.
-func handleCeremonyClaimCertComplete(svc service.CeremonyServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		username := mcp.ParseString(req, "username", "")
-		if username == "" {
-			return mcp.NewToolResultError("username is required"), nil
-		}
-
-		nonceHex := mcp.ParseString(req, "nonce_hex", "")
-		if nonceHex == "" {
-			return mcp.NewToolResultError("nonce_hex is required"), nil
-		}
-
-		sigB64 := mcp.ParseString(req, "signature", "")
-		if sigB64 == "" {
-			return mcp.NewToolResultError("signature is required"), nil
-		}
-
-		sigBytes, decErr := base64.StdEncoding.DecodeString(sigB64)
-		if decErr != nil {
-			return mcp.NewToolResultError("signature must be valid base64"), nil
-		}
-
-		result, err := svc.CeremonyCompleteClaimCert(ctx, username, nonceHex, sigBytes)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_claim_cert_complete", Err: err}
-		}
-
-		data, jsonErr := json.Marshal(result)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_claim_cert_complete", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolCeremonyBeginClaimShare defines the qrdb_ceremony_begin_claim_share
-// tool schema.
-func toolCeremonyBeginClaimShare() mcp.Tool {
-	return mcp.NewTool("qrdb_ceremony_begin_claim_share",
-		mcp.WithDescription("Start the Shamir share claim handshake for an officer. Requires an mTLS client certificate matching the officer's enrolment record."),
-		mcp.WithString("username",
-			mcp.Required(),
-			mcp.Description("The officer username claiming their Shamir share."),
-		),
-	)
-}
-
-// handleCeremonyBeginClaimShare returns a tool handler that delegates to
-// svc.CeremonyBeginClaimShare. The caller certificate thumbprint is taken from
-// the MCP session's mTLS peer certificate, never from the tool arguments.
-func handleCeremonyBeginClaimShare(svc service.CeremonyServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		username := mcp.ParseString(req, "username", "")
-		if username == "" {
-			return mcp.NewToolResultError("username is required"), nil
-		}
-
-		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_ceremony_begin_claim_share")
-		if err != nil {
-			return nil, err
-		}
-
-		challenge, err := svc.CeremonyBeginClaimShare(ctx, username, thumbprint)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_begin_claim_share", Err: err}
-		}
-
-		result := struct {
-			NonceHex  string `json:"nonce_hex"`
-			ExpiresAt string `json:"expires_at"`
-		}{
-			NonceHex:  challenge.NonceHex,
-			ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
-		}
-
-		data, jsonErr := json.Marshal(result)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_begin_claim_share", Err: jsonErr}
-		}
-
-		return mcp.NewToolResultText(string(data)), nil
-	}
-}
-
-// toolCeremonyCompleteClaimShare defines the
-// qrdb_ceremony_complete_claim_share tool schema.
-func toolCeremonyCompleteClaimShare() mcp.Tool {
-	return mcp.NewTool("qrdb_ceremony_complete_claim_share",
-		mcp.WithDescription("Complete the Shamir share claim handshake by submitting the signed challenge nonce. The share is released exactly once."),
-		mcp.WithString("username",
-			mcp.Required(),
-			mcp.Description("The officer username claiming their Shamir share."),
-		),
-		mcp.WithString("nonce_hex",
-			mcp.Required(),
-			mcp.Description("The hex-encoded challenge nonce returned by begin."),
-		),
-		mcp.WithString("signature",
-			mcp.Required(),
-			mcp.Description("Base64-encoded signature over the raw nonce bytes."),
-		),
-	)
-}
-
-// handleCeremonyCompleteClaimShare returns a tool handler that delegates to
-// svc.CeremonyCompleteClaimShare. The caller certificate thumbprint is taken
-// from the MCP session's mTLS peer certificate, never from the tool arguments.
-func handleCeremonyCompleteClaimShare(svc service.CeremonyServicer) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		username := mcp.ParseString(req, "username", "")
-		if username == "" {
-			return mcp.NewToolResultError("username is required"), nil
-		}
-		nonceHex := mcp.ParseString(req, "nonce_hex", "")
-		if nonceHex == "" {
-			return mcp.NewToolResultError("nonce_hex is required"), nil
-		}
-		sigB64 := mcp.ParseString(req, "signature", "")
-		if sigB64 == "" {
-			return mcp.NewToolResultError("signature is required"), nil
-		}
-		sig, decErr := base64.StdEncoding.DecodeString(sigB64)
-		if decErr != nil {
-			return mcp.NewToolResultError("signature must be base64-encoded"), nil
-		}
-
-		thumbprint, err := mcpCertThumbprint(ctx, "qrdb_ceremony_complete_claim_share")
-		if err != nil {
-			return nil, err
-		}
-
-		claimed, err := svc.CeremonyCompleteClaimShare(ctx, username, nonceHex, sig, thumbprint)
-		if err != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_complete_claim_share", Err: err}
-		}
-
-		result := struct {
-			ShareIndex int    `json:"share_index"`
-			Share      string `json:"share"`
-		}{
-			ShareIndex: claimed.ShareIndex,
-			Share:      base64.StdEncoding.EncodeToString(claimed.ShareBytes),
-		}
-
-		data, jsonErr := json.Marshal(result)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_ceremony_complete_claim_share", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

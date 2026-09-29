@@ -105,8 +105,12 @@ func TestTenantBarrierOps_CrossTenantDenied(t *testing.T) {
 		{"unseal", func() error {
 			return svc.TenantBarrierUnseal(attacker, "victim", []byte("key"))
 		}},
-		{"unseal-share", func() error {
-			_, err := svc.TenantBarrierUnsealShare(attacker, "victim", "share-1")
+		{"quorum-begin", func() error {
+			_, err := svc.TenantBarrierQuorumBegin(attacker, "victim", seal.OpUnseal, "alice", "")
+			return err
+		}},
+		{"quorum-submit", func() error {
+			_, err := svc.TenantBarrierQuorumSubmit(attacker, "victim", &seal.HolderSubmission{Op: seal.OpUnseal, Holder: "alice"})
 			return err
 		}},
 		{"seal", func() error {

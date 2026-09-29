@@ -1,6 +1,6 @@
 # Initialization Ceremony — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 ## Exported surface
 
@@ -15,22 +15,41 @@ Composition-plane options (Tier 2):
 ```go
 func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption
 func WithPINBackend(backend pin.PINBackend) ServerOption
-func WithFactorRegistry(reg authfactors.FactorRegistry) ServerOption
+func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 ```
+
+`pkg/ceremony`:
+
+```go
+func NewCeremonyService(cfg *CeremonyConfig, barrier *seal.StorageBarrier, log *slog.Logger) (*CeremonyService, error)
+func (s *CeremonyService) SetCA(ca CeremonyCA)
+func (s *CeremonyService) SetTrustDomain(trustDomain string)
+func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry)
+func (s *CeremonyService) SetPINBackend(b pin.PINBackend)
+func (s *CeremonyService) Initialize(ctx, ca CeremonyCA, opts *InitializeOptions) (*InitResult, error)
+func (s *CeremonyService) SignCSRInit(ctx, username, soPin string, csrPEM []byte, role string) (*SignCSRInitResult, error)
+```
+
+`CeremonyService` is also the barrier's `seal.CeremonyDistributor` and
+`seal.HolderVerifier`, and serves the holder operations documented in
+[../shamir-custody/engineering.md](../shamir-custody/engineering.md).
+`NewTenantCeremonyService` builds the same engine for a tenant barrier over the
+system ceremony's `HolderDeps` (CA, trust domain, factor registry).
 
 The CA seam:
 
 ```go
 type CeremonyCA interface {
-	SignCSR(csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
+	SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
 	CACertificate() (*x509.Certificate, error)
 	CABundle() ([]byte, error)
-	IssueCertificate(req *IssueCertRequest) (*IssuedCert, error)
+	IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }
 ```
 
-Both `cert.CertProvider` (qrdb) and `ca.TrustedCA` (go-xkms) satisfy it through
-thin adapters.
+An implementation must issue exactly the `Subject` and `URIs` in
+`SignCSROptions`; the CSR contributes only its public key. `ceremony.LocalCA`
+is the reference implementation.
 
 **The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
 under the node's cluster CA, which the mTLS listener trusts for client logins,
@@ -55,95 +74,80 @@ every certificate a `CeremonyCA` returns and records nothing for it, returning
 `*ceremony.IssuedCertCapabilityError` (a CA, certificate signing or another
 key usage, or another set of extended key usages).
 
-Officer configuration (`pkg/ceremony/types.go`) carries `AuthenticatorType` and
-`AuthenticatorRef`. `ceremony.ParseEnrollmentSpec` parses
-`<username>:<kind>:<path>`; the two-field form `<username>:<path>` means `csr`.
-
-Share sealing picks an envelope from the officer's key algorithm: RSA-OAEP for
-RSA, ECIES over P-256 / P-384 for ECDSA, and X25519 (via the birational map
-from the Ed25519 public key) for Ed25519. **In FIPS 140-3 mode the Ed25519 form
-is refused** with `ErrAlgorithmNotFIPSApproved`: X25519 is not an approved
-algorithm and there is no approved substitute for an Ed25519 recipient, so such
-an officer must enrol an RSA or NIST-curve key instead. See
-[seal/fips140-mode.md](../seal/fips140-mode.md).
+`InitializeOptions.Officers` is the list of initial share holders
+(`OfficerConfig{Username, Role, CSRPEM}`); `Policy` is the factor policy of
+the initial share set; `Enroller` is the authenticated caller, which may not
+appear among the holders.
 
 `ThresholdInitializer` implementations register through `ThresholdRegistry`;
-qrdb ships only `NoopThresholdInitializer`
-(`pkg/ceremony/threshold_noop.go`).
+qrdb ships only `NoopThresholdInitializer`.
 
 ## States
 
 `awaiting_init` → `enrolling` → `operational`. Single-admin
-(`threshold < 2`) skips `enrolling`.
+(`threshold < 2`) skips `enrolling`. The move to `operational` happens when
+the last initial holder claims.
 
 ## Invariants
 
-- **Shares are never persisted to disk** and never leave a `secure.Secret`
-  (go-enclave sealed enclave) except into the claiming officer's
-  hands.
-- **`Store` consumes the caller's slice, wiping it.** Pinned by tests in
-  `pkg/ceremony/share_store_test.go`. A heap copy would survive a core dump or
-  a swapped page.
-- **`Claim` destroys the enclave** and retains only the fact of the claim, so a
-  second attempt is refused rather than served.
-- **The officer record persists; share bytes never do.**
-  `ceremony/officers/<name>` holds the certificate thumbprint or public key, the
-  share **index**, the auth factor and timestamps.
-- **An abandoned ceremony loses its shares** and must be re-run. Intentional.
-- **PINs never reach the credential store as raw bytes.** `pin.Service.SetSOPIN`
-  and `SetUserPIN` hash (Argon2id / PBKDF2 by FIPS mode) through the backend;
-  the raw receive buffers are wiped with `secure.Wipe` before bootstrap returns.
-- **In M-of-N the User PIN is the Shamir secret.** Its bytes are split with
-  `shamir.Split` and wiped locally once the shares exist. The PIN is never
-  persisted in plaintext anywhere.
-- **Without `WithPINBackend` the daemon builds a default `pin.SoftwareBackend`**
-  (Argon2id / PBKDF2 auto-selected by `seal.FIPSEnabled()`) over
-  barrier-protected storage. Hardware backends from go-xkms inject through the
-  same option; ceremony never learns which it is talking to.
-- **Verification ignores the authenticator kind.** `BeginClaimCert` and
-  `CompleteClaimCert` operate on the officer's CSR public key. The kind is
-  routing metadata for higher layers.
-- **sign-csr is an online SO PIN oracle, so failed checks lock it out and the
-  comparison is constant-time.** On the boot-time sealed-window listener it is
-  reachable without authentication, and the SO PIN is its only authorization.
-  `SignCSRInit` checks the PIN through the ceremony's `soPINAttempts`.
+- **Only the barrier's unseal key is split.** The ceremony enrols holders and
+  calls `StorageBarrier.InitializeShamir`; it never splits a PIN or any other
+  secret itself.
+- **Envelopes are never persisted** and leave a `secure.Secret` only as the
+  claim response to their holder.
+- **`Store` consumes the caller's slice, wiping it**, and replacing a held
+  envelope destroys the old one. Pinned by `pkg/ceremony/share_store_test.go`.
+- **`Claim` destroys the enclave** and retains only the fact of the claim.
+- **Holder certificate identity is CA-assigned**; holders are enrolled from a
+  CSR only.
+- **PINs never reach any store as raw bytes.** `pin.Provision` hashes through
+  the backend; SO-PIN checks are the backend's constant-time hash comparison;
+  receive buffers are wiped.
+- **No PIN backend, no PIN operation**: SO-PIN-gated operations fail closed
+  with `pin.ErrBackendNotConfigured`.
+- **sign-csr is an online SO PIN oracle, so failed checks lock it out.** On the
+  boot-time sealed-window listener it is reachable without authentication, and
+  the SO PIN is its only authorization. `SignCSRInit` runs the PIN backend's
+  check through the ceremony's `soPINAttempts`.
   - Checks run one at a time, and a failure is counted before the next check
     starts, so concurrent guesses are no cheaper than sequential ones.
   - The first 5 failures in a row cost nothing, so an operator can mistype.
     Every later failure locks the check for a backoff that doubles from 1 s up
     to 15 min, and a correct PIN resets the count.
-  - Only failed checks count. Successful signings, and requests that fail
-    before the PIN is looked at, never consume anything, so anonymous load
-    cannot starve a legitimate officer.
-  - The comparison is `subtle.ConstantTimeCompare` over SHA-256 digests.
+  - Only a wrong PIN (`pin.ErrPINInvalid`) counts. Successful signings,
+    requests that fail before the PIN is looked at, and a backend that cannot
+    answer never consume anything, so anonymous load cannot starve a
+    legitimate officer.
+  - The comparison is the PIN backend's constant-time hash comparison.
 - **The SO PIN needs at least 40 bits of entropy.** With the backoff at its
   cap an attacker gets about 96 guesses a day. Use, for example, 8 random
   characters from a 62-character alphabet (about 47 bits) or a 12-digit
   random number (about 40 bits).
-- **`AuthenticatorType` empty means `software`**; anything outside the set
-  yields `ErrInvalidAuthenticatorType`.
-- **Ceremony and firstboot are both idempotent** and safe to re-run on cluster
-  nodes — leader writes propagate via Raft, follower runs are no-ops.
-
-## Migration note
-
-The legacy `credentialSOPin` / `credentialUserPin` storage keys remain
-**readable** for in-place upgrades from older deployments. New writes go
-exclusively through the `pin.PINBackend`, and the legacy keys are **wiped on
-the first successful PIN backend write**.
+- **Holder enrolment is closed to anonymous callers once the ceremony is
+  operational.** `RegisterOfficer` refuses a request the boot-time
+  sealed-window listener admitted (`sealedwindow.Anonymous`) with
+  `ErrEnrollmentClosed` once `EnrollmentOpen` is false: the ceremony is
+  operational, the barrier records it (`MarkCeremonyOperational`), or the
+  barrier is initialized. The check runs under the ceremony's lock, in the
+  same critical section as the registration.
+- **Ceremony and firstboot are both idempotent.**
 
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| Threshold ≥ 2 with no `--officers` | typed `ErrNoOfficers` | **yes** |
-| Claim for an already-claimed share | refused — enclave destroyed | **yes** |
-| Nonce expired or signature invalid | refused | **yes** |
-| `AuthenticatorType` outside the set | `ErrInvalidAuthenticatorType` | **yes** |
-| Ceremony abandoned (restart mid-enrolment) | shares lost; must re-run | **yes** |
-| No `CeremonyCA` wired | initialization fails | **yes** |
-| Wrong SO PIN on sign-csr | `ErrSOPINMismatch`. The comparison is constant-time over SHA-256 digests, so it leaks neither where the PIN differs nor its length | **yes** |
-| sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `ceremony.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not compared, so a locked-out call cannot confirm a guess | **yes** |
+| Threshold ≥ 2 with no holders | `ErrNoOfficers` | **yes** |
+| Threshold above the holder count | `ErrInvalidThreshold` | **yes** |
+| Duplicate username in the request | `ErrDuplicateUsername` | **yes** |
+| The caller among the holders | `ErrSelfEnrolment` | **yes** |
+| Empty SO or User PIN | `ErrInvalidSOPIN` / `ErrInvalidUserPIN` | **yes** |
+| No PIN backend | `pin.ErrBackendNotConfigured` | **yes** |
+| No `CeremonyCA` | `ErrNilCA` | **yes** |
+| Ceremony already performed | `ErrAlreadyInitialized` | **yes** |
+| Node restarts before every holder claims | unclaimed envelopes are lost; a rekey redistributes | **yes** |
+| Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |
+| sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `ceremony.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not checked, so a locked-out call cannot confirm a guess | **yes** |
+| Anonymous holder registration after enrolment closed | `ErrEnrollmentClosed` | **yes** |
 
 ## Permission model
 
@@ -151,33 +155,30 @@ the first successful PIN backend write**.
 |---|---|
 | `ceremony:initialize` | initializing the ceremony |
 | `ceremony:status` | reading state |
-| `ceremony:sign_csr` | signing a CSR during or after the ceremony |
-| `ceremony:claim_cert` | the certificate-claim challenge pair |
-| `ceremony:enroll_custodian` / `ceremony:revoke_custodian` | custodian lifecycle, and external-officer enrolment |
-| `ceremony:claim_share_begin` / `ceremony:claim_share_complete` | the share-claim constants |
-| **identity-gated** | the custodian and officer share-claim routes — see [../shamir-custody/api.md](../shamir-custody/api.md#why-the-claim-routes-are-identity-gated) |
+| `ceremony:sign_csr` | issuing a login certificate under the SO PIN |
+
+Holder permissions are listed in
+[../shamir-custody/api.md](../shamir-custody/api.md).
 
 ## Persistence
 
-- Officer records: `ceremony/officers/<name>` — thumbprint or public key, share
-  index, auth factor, timestamps.
-- Custodian metadata: `__sys:custodian/<id>`, Raft-replicated, public only.
-- Shares: **go-enclave sealed enclave only** (`secure.Secret`), never on disk.
+- Holder records: `ceremony/officers/<name>` behind the barrier, public
+  material only.
+- PIN state: the PIN backend's own store (the node-local seal store for
+  `pin.SoftwareBackend`).
+- Envelopes: memory only.
 
 ## Test strategy
 
-- **Unit**: state transitions for both modes, `Store` wiping the caller's
-  slice, `Claim` destroying the enclave and refusing a second attempt,
-  enrolment-spec parsing for all three kinds and the two-field form, and
-  `AuthenticatorType.Normalized()`/`Validate()`.
-- **`pkg/ceremony/share_store_test.go` pins the custody invariants.** Those are
-  the tests that make the memory guarantees real rather than aspirational.
+- **Unit**: state transitions for both modes; holder enrolment through
+  `Initialize` and its refusals; that `Initialize` splits the barrier's unseal
+  key and nothing else; `Store` wiping and `Claim` destroying; CA-assigned
+  identity; PIN provisioning and fail-closed behaviour.
+- **`pkg/ceremony/share_store_test.go` pins the custody invariants.**
 - **Idempotence tests** for re-running ceremony and firstboot.
-- **Error tests** per function.
 
 ## Observability
 
-Ceremony state is reported by `CeremonyStatus`
-(`awaiting_init` / `enrolling` / `operational`). Per-officer claim state comes
-from the claim-status endpoint, which never returns share bytes. Ceremony
-operations are audited through [../audit/](../audit/).
+Ceremony state is reported by `CeremonyStatus`. Holder claim state comes from
+the holder list, which never returns a share. Ceremony operations are audited
+through [../audit/](../audit/).

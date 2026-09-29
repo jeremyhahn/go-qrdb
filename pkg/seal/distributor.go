@@ -16,19 +16,74 @@ package seal
 
 import "context"
 
-// CeremonyDistributor seals Shamir share material to enrolled Security
-// Officers via the ceremony subsystem. pkg/seal defines the interface
-// (consumer side); pkg/ceremony provides the implementations. The secret
-// passed to either method is wiped before the call returns, regardless of
-// outcome.
+// CeremonyDistributor seals a domain key's Shamir shares to that domain's
+// share holders. pkg/seal defines the interface (consumer side); pkg/ceremony
+// provides the implementations. It is the only way shares leave the barrier:
+// no API accepts share bytes as input to a distribution.
+//
+// A distribution is three calls, in this order, and the barrier makes them:
+//
+//  1. PrepareRoster snapshots the active holders into a roster. It has no
+//     side effects, so the barrier may also call it to validate a rekey
+//     before a quorum is gathered.
+//  2. Distribute splits the key and seals one share to each roster holder.
+//  3. Committed tells the distributor the wrapped key and its roster are
+//     durable, so it can record the new share indexes and drop removed
+//     holders.
+//
+// If anything fails between 2 and 3 the previously persisted blob, and with
+// it the previous share set, stays in force.
 type CeremonyDistributor interface {
-	// SealAndDistribute splits shareSecret into total shares with the given
-	// threshold and seals one share to each enrolled officer's enclave.
-	// Returns the number of shares sealed.
-	SealAndDistribute(ctx context.Context, shareSecret []byte, threshold, total int) (int, error)
+	// PrepareRoster returns a roster of every active holder of the domain
+	// except those named in exclude, with share indexes 1..N assigned, the
+	// given policy and threshold. It returns an error when the holder set
+	// cannot carry the threshold.
+	PrepareRoster(ctx context.Context, domain QuorumDomain, threshold int, policy FactorPolicy, exclude []string) (*HolderRoster, error)
 
-	// RekeyAndDistribute destroys all unclaimed share enclaves from the
-	// prior round, resets claim state, and seals new shares split from
-	// newShareSecret. Returns the number of shares sealed.
-	RekeyAndDistribute(ctx context.Context, newShareSecret []byte, newThreshold, newTotal int) (int, error)
+	// Distribute splits secret into roster.Total shares with roster.Threshold
+	// and seals the share with index i to the roster holder whose ShareIndex
+	// is i, binding rosterDigest into each sealed share. Every share from any
+	// earlier distribution of the domain is destroyed first. secret is wiped
+	// before Distribute returns, whatever the outcome. It returns the number
+	// of shares sealed.
+	Distribute(ctx context.Context, secret []byte, roster *HolderRoster, rosterDigest []byte) (int, error)
+
+	// Committed records that roster is now the domain's durable roster and
+	// that the holders in removed are no longer holders.
+	Committed(ctx context.Context, roster *HolderRoster, removed []string) error
+}
+
+// HolderVerifier authenticates the holder behind a share submission. pkg/seal
+// defines it and counts no share without it; pkg/ceremony implements it over
+// the holder's enrolled authentication factors. It must work while the
+// barrier is sealed, so it may rely on nothing but the roster it is handed
+// and state it holds in memory.
+type HolderVerifier interface {
+	// VerifyHolder checks proof authenticates holder for op in domain against
+	// the roster whose digest is rosterDigest. The challenge the proof answers
+	// must have been issued for exactly that (domain, op, holder, digest)
+	// and is consumed by the call, successful or not.
+	VerifyHolder(ctx context.Context, domain QuorumDomain, op QuorumOp, holder string, roster *HolderRoster, rosterDigest []byte, proof HolderProof) error
+}
+
+// HolderProof is the authentication material that accompanies a share.
+type HolderProof struct {
+	// ChallengeID names the challenge the proof answers.
+	ChallengeID string
+
+	// Factor names the factor that produced Response. Empty selects the
+	// holder's designated factor.
+	Factor string
+
+	// Response is the factor response (a signature or an assertion).
+	Response []byte
+
+	// ResponseMetadata carries the factor's response attributes.
+	ResponseMetadata map[string]string
+
+	// PeerCertThumbprint is the thumbprint of the client certificate the
+	// caller presented on a verified TLS session, set by the transport from
+	// the connection and never from the request body. Empty when the
+	// transport carried no verified client certificate.
+	PeerCertThumbprint string
 }

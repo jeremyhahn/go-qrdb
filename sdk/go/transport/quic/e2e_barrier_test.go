@@ -80,57 +80,11 @@ func TestE2E_BarrierInitializeShamir_HappyPath(t *testing.T) {
 			ShareCount: 3, Threshold: 2, TotalShares: 3,
 		})
 	})
-	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
-	})
+	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{})
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 	if resp.ShareCount != 3 || resp.Threshold != 2 {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_BarrierUnsealWithShare_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.ShamirUnsealShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.BarrierShamirUnsealShareResponse{
-			Required: 3, Submitted: 2, Complete: false,
-		})
-	})
-	resp, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{Share: "share-1"})
-	if err != nil {
-		t.Fatalf("BarrierUnsealWithShare: %v", err)
-	}
-	if resp.Submitted != 2 || resp.Complete {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_BarrierUnsealWithShares_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.ShamirUnsealShares", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, nil
-	})
-	if err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: []string{"a", "b", "c"},
-	}); err != nil {
-		t.Fatalf("BarrierUnsealWithShares: %v", err)
-	}
-}
-
-func TestE2E_BarrierRekey_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.Rekey", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.BarrierShamirOperationResponse{
-			ShareCount: 2, Threshold: 2, TotalShares: 2,
-		})
-	})
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 2, SOPin: "1234"})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	if resp.ShareCount != 2 {
 		t.Fatalf("resp = %+v", resp)
 	}
 }
@@ -177,26 +131,12 @@ func TestE2E_BarrierGenerateRecoveryKeys_HappyPath(t *testing.T) {
 			ShareCount: 2, Threshold: 1, Total: 2,
 		})
 	})
-	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
-		Threshold: 1, Total: 2, SOPin: "1234",
-	})
+	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{})
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
 	if resp.ShareCount != 2 {
 		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_BarrierRecoverWithKeys_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.RecoveryRecover", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, nil
-	})
-	if err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{
-		Keys: []string{"r1", "r2"},
-	}); err != nil {
-		t.Fatalf("BarrierRecoverWithKeys: %v", err)
 	}
 }
 
@@ -221,23 +161,5 @@ func TestE2E_BarrierHasRecoveryKeys_HappyPath(t *testing.T) {
 	}
 	if !resp.HasKeys {
 		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_BarrierGenerateRootToken_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.RootToken", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.BarrierRootTokenResponse{
-			Token: "tok-abc", CreatedAt: "2026-05-27T00:00:00Z",
-		})
-	})
-	resp, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"a", "b"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierGenerateRootToken: %v", err)
-	}
-	if resp.Token != "tok-abc" {
-		t.Fatalf("Token = %q", resp.Token)
 	}
 }

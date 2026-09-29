@@ -203,54 +203,7 @@ func TestGRPC_BarrierShamirInitialize_Error(t *testing.T) {
 		WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirUnsealShare_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.unsealShareErr = errors.New("unseal share error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{
-		Share: "share1",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierShamirUnsealShares_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.unsealSharesErr = errors.New("unseal shares error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{
-		Shares: []string{"s1", "s2"},
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierRekey_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.rekeyErr = errors.New("rekey error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3,
-	})
+	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -263,24 +216,7 @@ func TestGRPC_BarrierRecoveryGenerate_Error(t *testing.T) {
 		WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
-		Threshold: 2, Total: 3,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_BarrierRecoveryRecover_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.recoveryRecoverErr = errors.New("recover error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{
-		Keys: []string{"key1"},
-	})
+	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -312,21 +248,6 @@ func TestGRPC_BarrierRecoveryStatus_Error(t *testing.T) {
 	}
 }
 
-func TestGRPC_BarrierRootToken_Error(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	barrierSvc.rootTokenErr = errors.New("root token error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{
-		Shares: []string{"s1"},
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Ceremony error-path tests
 // ---------------------------------------------------------------------------
@@ -352,36 +273,6 @@ func TestGRPC_CeremonyStatus_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.CeremonyStatus(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_CeremonyClaimCertBegin_Error(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	ceremonySvc.beginErr = errors.New("claim cert begin error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{
-		Username: "alice",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestGRPC_CeremonyClaimShare_Error(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	ceremonySvc.claimShareErr = errors.New("claim share error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{
-		Username: "alice",
-	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -63,7 +63,7 @@ func TestOfficerRegistry_SaveLoad_RoundTrip(t *testing.T) {
 		CertThumbprint: "abc123",
 		PubKeyPEM:      "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n",
 		ShareIndex:     1,
-		AuthFactor:     "mtls",
+		Designated:     "mtls",
 		EnrolledAt:     now,
 	}
 	require.NoError(t, reg.Save(context.Background(), officer))
@@ -74,7 +74,7 @@ func TestOfficerRegistry_SaveLoad_RoundTrip(t *testing.T) {
 	assert.Equal(t, officer.CertThumbprint, got.CertThumbprint)
 	assert.Equal(t, officer.PubKeyPEM, got.PubKeyPEM)
 	assert.Equal(t, officer.ShareIndex, got.ShareIndex)
-	assert.Equal(t, officer.AuthFactor, got.AuthFactor)
+	assert.Equal(t, officer.Designated, got.Designated)
 	assert.True(t, got.EnrolledAt.Equal(now))
 	assert.True(t, got.ClaimedAt.IsZero())
 }
@@ -103,7 +103,7 @@ func TestOfficerRegistry_Save_DefaultsEnrolledAt(t *testing.T) {
 	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
 	require.NoError(t, err)
 
-	officer := &PersistentOfficer{Username: "bob", ShareIndex: 2, AuthFactor: "piv"}
+	officer := &PersistentOfficer{Username: "bob", ShareIndex: 2, Designated: "piv"}
 	require.NoError(t, reg.Save(context.Background(), officer))
 
 	got, err := reg.Load(context.Background(), "bob")
@@ -149,9 +149,9 @@ func TestOfficerRegistry_ListAll_OrdersByEnrolledAt(t *testing.T) {
 
 	base := time.Now().UTC().Truncate(time.Second)
 	officers := []*PersistentOfficer{
-		{Username: "carol", ShareIndex: 3, AuthFactor: "mtls", EnrolledAt: base.Add(2 * time.Second)},
-		{Username: "alice", ShareIndex: 1, AuthFactor: "mtls", EnrolledAt: base},
-		{Username: "bob", ShareIndex: 2, AuthFactor: "piv", EnrolledAt: base.Add(1 * time.Second)},
+		{Username: "carol", ShareIndex: 3, Designated: "mtls", EnrolledAt: base.Add(2 * time.Second)},
+		{Username: "alice", ShareIndex: 1, Designated: "mtls", EnrolledAt: base},
+		{Username: "bob", ShareIndex: 2, Designated: "piv", EnrolledAt: base.Add(1 * time.Second)},
 	}
 	for _, o := range officers {
 		require.NoError(t, reg.Save(context.Background(), o))
@@ -165,65 +165,6 @@ func TestOfficerRegistry_ListAll_OrdersByEnrolledAt(t *testing.T) {
 	assert.Equal(t, "carol", all[2].Username)
 }
 
-// TestOfficerRegistry_MarkClaimed_Success verifies MarkClaimed updates
-// the timestamp.
-func TestOfficerRegistry_MarkClaimed_Success(t *testing.T) {
-	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
-	require.NoError(t, err)
-
-	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
-		Username:   "dave",
-		ShareIndex: 1,
-		AuthFactor: "mtls",
-	}))
-
-	when := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, reg.MarkClaimed(context.Background(), "dave", when))
-
-	got, err := reg.Load(context.Background(), "dave")
-	require.NoError(t, err)
-	assert.True(t, got.ClaimedAt.Equal(when))
-}
-
-// TestOfficerRegistry_MarkClaimed_DefaultsToNow verifies that a zero
-// timestamp is replaced with the current UTC time.
-func TestOfficerRegistry_MarkClaimed_DefaultsToNow(t *testing.T) {
-	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
-	require.NoError(t, err)
-
-	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
-		Username:   "erin",
-		ShareIndex: 1,
-		AuthFactor: "mtls",
-	}))
-
-	before := time.Now().UTC().Add(-time.Second)
-	require.NoError(t, reg.MarkClaimed(context.Background(), "erin", time.Time{}))
-
-	got, err := reg.Load(context.Background(), "erin")
-	require.NoError(t, err)
-	assert.False(t, got.ClaimedAt.IsZero())
-	assert.False(t, got.ClaimedAt.Before(before))
-}
-
-// TestOfficerRegistry_MarkClaimed_EmptyUsername rejects empty username.
-func TestOfficerRegistry_MarkClaimed_EmptyUsername(t *testing.T) {
-	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
-	require.NoError(t, err)
-
-	err = reg.MarkClaimed(context.Background(), "", time.Now())
-	assert.ErrorIs(t, err, ErrMissingUsername)
-}
-
-// TestOfficerRegistry_MarkClaimed_NotFound verifies the error path.
-func TestOfficerRegistry_MarkClaimed_NotFound(t *testing.T) {
-	reg, err := NewOfficerRegistry(unsealedTestBarrier(t))
-	require.NoError(t, err)
-
-	err = reg.MarkClaimed(context.Background(), "nobody", time.Now())
-	assert.ErrorIs(t, err, ErrUserNotFound)
-}
-
 // TestOfficerRegistry_Sealed_GetReturnsErrSealed verifies that with a
 // sealed barrier, all backend-touching methods surface ErrSealed.
 func TestOfficerRegistry_Sealed_GetReturnsErrSealed(t *testing.T) {
@@ -234,26 +175,23 @@ func TestOfficerRegistry_Sealed_GetReturnsErrSealed(t *testing.T) {
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "frank",
 		ShareIndex: 1,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	}))
 
 	// Seal the barrier.
 	require.NoError(t, barrier.Seal())
 	assert.True(t, barrier.IsSealed())
 
-	// Cache may serve a hit, so test ListAll/MarkClaimed which hit the
-	// backend unconditionally.
+	// Cache may serve a hit, so test ListAll, which hits the backend
+	// unconditionally.
 	_, err = reg.ListAll(context.Background())
-	assert.ErrorIs(t, err, seal.ErrSealed)
-
-	err = reg.MarkClaimed(context.Background(), "frank", time.Now())
 	assert.ErrorIs(t, err, seal.ErrSealed)
 
 	// A Save attempt against a sealed barrier must also fail.
 	err = reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "sealed-user",
 		ShareIndex: 1,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	})
 	assert.ErrorIs(t, err, seal.ErrSealed)
 }
@@ -269,7 +207,7 @@ func TestOfficerRegistry_Sealed_LoadFromBackend(t *testing.T) {
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "gina",
 		ShareIndex: 1,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	}))
 
 	// Drop the cache so Load is forced to consult the backend.
@@ -291,8 +229,8 @@ func TestOfficerRegistry_Reload_AfterUnseal(t *testing.T) {
 	require.NoError(t, err)
 
 	officers := []*PersistentOfficer{
-		{Username: "h-alice", ShareIndex: 1, AuthFactor: "mtls"},
-		{Username: "h-bob", ShareIndex: 2, AuthFactor: "piv"},
+		{Username: "h-alice", ShareIndex: 1, Designated: "mtls"},
+		{Username: "h-bob", ShareIndex: 2, Designated: "piv"},
 	}
 	for _, o := range officers {
 		require.NoError(t, reg.Save(context.Background(), o))
@@ -338,7 +276,7 @@ func TestOfficerRegistry_Cached_DefensiveCopy(t *testing.T) {
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "ivan",
 		ShareIndex: 5,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	}))
 
 	cached := reg.Cached()
@@ -359,19 +297,19 @@ func TestOfficerRegistry_Save_OverwritesExisting(t *testing.T) {
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "judy",
 		ShareIndex: 1,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	}))
 
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "judy",
 		ShareIndex: 7,
-		AuthFactor: "piv",
+		Designated: "piv",
 	}))
 
 	got, err := reg.Load(context.Background(), "judy")
 	require.NoError(t, err)
 	assert.Equal(t, 7, got.ShareIndex)
-	assert.Equal(t, "piv", got.AuthFactor)
+	assert.Equal(t, "piv", got.Designated)
 }
 
 // TestOfficerRegistry_LoadFromBackend_AfterCacheDrop verifies that a Load
@@ -383,7 +321,7 @@ func TestOfficerRegistry_LoadFromBackend_AfterCacheDrop(t *testing.T) {
 	require.NoError(t, reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "ken",
 		ShareIndex: 4,
-		AuthFactor: "webauthn",
+		Designated: "webauthn",
 	}))
 
 	// Drop the cache.
@@ -453,7 +391,7 @@ func TestOfficerRegistry_Save_BackendError(t *testing.T) {
 	err = reg.Save(context.Background(), &PersistentOfficer{
 		Username:   "lin",
 		ShareIndex: 1,
-		AuthFactor: "mtls",
+		Designated: "mtls",
 	})
 	assert.ErrorIs(t, err, wantErr)
 }

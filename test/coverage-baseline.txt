@@ -56,7 +56,6 @@ github.com/jeremyhahn/go-qrdb/pkg/config 94.52
 github.com/jeremyhahn/go-qrdb/pkg/consistency 100.00
 github.com/jeremyhahn/go-qrdb/pkg/credentials 94.31
 github.com/jeremyhahn/go-qrdb/pkg/crypto/aesgcm 97.05
-github.com/jeremyhahn/go-qrdb/pkg/custodian 89.37
 github.com/jeremyhahn/go-qrdb/pkg/dao 92.64
 github.com/jeremyhahn/go-qrdb/pkg/database 91.89
 github.com/jeremyhahn/go-qrdb/pkg/dek 97.43

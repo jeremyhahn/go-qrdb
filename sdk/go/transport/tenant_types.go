@@ -314,38 +314,12 @@ type UpdateTenantEntitlementsResponse struct {
 	Tenant TenantInfo `json:"tenant"`
 }
 
-// TenantBarrierUnsealRequest contains parameters for unsealing a tenant barrier.
+// TenantBarrierUnsealRequest unseals a tenant barrier with its credential
+// (the passphrase or key it was initialized with). A Shamir tenant barrier
+// refuses it: M share holders unseal it through TenantBarrierQuorumSubmit.
 type TenantBarrierUnsealRequest struct {
 	TenantID string `json:"tenant_id"`
-	Share    []byte `json:"share,omitempty"`
 	Key      []byte `json:"key,omitempty"`
-}
-
-// TenantBarrierUnsealShareRequest contains parameters for submitting a single
-// Shamir share toward a per-tenant barrier's quorum threshold.
-type TenantBarrierUnsealShareRequest struct {
-	TenantID string `json:"tenant_id"`
-	Share    string `json:"share"`
-}
-
-// TenantBarrierUnsealProgress reports quorum progress while submitting Shamir
-// shares to unseal a per-tenant barrier. Once Complete is true the barrier has
-// been unsealed and the quorum accumulator has been reset.
-type TenantBarrierUnsealProgress struct {
-	// TenantID is the tenant whose barrier is being unsealed.
-	TenantID string `json:"tenant_id"`
-
-	// Required is the number of shares needed to reach the threshold.
-	Required int `json:"required"`
-
-	// Submitted is the number of distinct shares submitted so far.
-	Submitted int `json:"submitted"`
-
-	// Complete indicates the threshold has been met and the barrier unsealed.
-	Complete bool `json:"complete"`
-
-	// Sealed reports whether the barrier is still sealed.
-	Sealed bool `json:"sealed"`
 }
 
 // TenantBarrierSealRequest contains parameters for sealing a per-tenant

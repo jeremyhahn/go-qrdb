@@ -25,8 +25,10 @@ import (
 // is inside a loop over All(), and an empty loop reports success — so the
 // gate first insists the registry is at least as large as it was when the
 // gate was written. Measured 2026-09-13: 364. Raise it when permissions are
-// added; a drop below it is a red run, which is the point.
-const minRegisteredPermissions = 364
+// added; a drop below it is a red run, which is the point. Lowered to 362 on
+// purpose when the unified share holders retired the raw-share and
+// custodian-group permissions (see TestAll's expectedTotal for the ledger).
+const minRegisteredPermissions = 362
 
 // TestEveryPermissionDeclaresItsScope is the gate for go-qrdb#504: no
 // permission may acquire a scope by omission.

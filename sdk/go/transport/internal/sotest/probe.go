@@ -25,7 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// Probe is a QRDBService that answers Health and BarrierRekey and records
+// Probe is a QRDBService that answers Health and BarrierRekeyStart and records
 // every SO PIN that reaches it in metadata, so a test can assert that one
 // never crossed a connection it must not cross. It stands in for a server the
 // client cannot trust -- a plaintext listener -- which is why it is not the
@@ -42,14 +42,14 @@ func (p *Probe) Health(context.Context, *emptypb.Empty) (*pb.HealthResponse, err
 	return &pb.HealthResponse{Status: "ok"}, nil
 }
 
-// BarrierRekey records any SO PIN the request carried.
-func (p *Probe) BarrierRekey(ctx context.Context, _ *pb.BarrierRekeyRequest) (*pb.BarrierShamirOperationResponse, error) {
+// BarrierRekeyStart records any SO PIN the request carried.
+func (p *Probe) BarrierRekeyStart(ctx context.Context, _ *pb.BarrierRekeyStartRequest) (*pb.BarrierQuorumRound, error) {
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		p.mu.Lock()
 		p.pins = append(p.pins, md.Get(transport.SOPINMetadataKey)...)
 		p.mu.Unlock()
 	}
-	return &pb.BarrierShamirOperationResponse{Threshold: 2, TotalShares: 3}, nil
+	return &pb.BarrierQuorumRound{Domain: "unseal", Op: "rekey", Required: 2}, nil
 }
 
 // SawPIN reports whether any SO PIN reached the probe.

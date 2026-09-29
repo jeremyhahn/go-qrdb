@@ -150,7 +150,8 @@ Dedicated tenant raft groups replicate across cluster nodes. Decisions:
 - **Tenant DEK cluster-availability = per-node re-wrap via secure key transport** (per-node
   system-KEK independence preserved — NO shared cluster KEK). Placement leader holds the
   tenant root key and securely transports it over the authenticated mTLS control plane to
-  each target node (model on Shamir `ShareTransport`/`share_exchange_coordinator`); each
+  each target node (the unwired Shamir share-transport skeleton this once pointed at
+  has been removed); each
   node persists its OWN local copy of the tenant barrier. Protection strategy per node
   depends on the tenant's BarrierAutoUnseal choice (both modes supported multi-node):
   - **system-managed:** re-wrapped under THAT node's system barrier → auto-resolves at boot
@@ -206,8 +207,8 @@ stage does NOT start shards across nodes (4c-1d) or transport keys (4c-1c).
 ## Phase 4c-1c secure tenant-key transport — DECISIONS RESOLVED 2026-06-17 (build in progress)
 
 Security-critical: distributes a dedicated tenant's raft ROOT KEY to the nodes hosting its
-replicas. Findings: no concrete cross-node key transport exists today (`seal.ShareTransport`
-is a dormant, never-wired skeleton — do NOT revive). Node mTLS exists (go-quicraft QUIC raft
+replicas. Findings: no concrete cross-node key transport exists today (the Shamir
+share-transport skeleton in `pkg/seal` was dormant, never wired, and has been removed). Node mTLS exists (go-quicraft QUIC raft
 transport `RequireAndVerifyClientCert`+revocation; qrdb admin-HTTPS leader-forward, but that
 client presents NO client cert). `EpochBarrier.Initialize` generates its own root key — no
 import-supplied-key API; but a qrdb-side import works via `SystemBarrierStrategy.SealRootKey(k)`
@@ -296,8 +297,7 @@ DECISIONS RESOLVED 2026-06-17 (maintainer):
   Self-managed: HPKE-open → persist the portable sealed blob verbatim (no plaintext, already
   carries its own Salt/Epoch). keydelivery is payload-agnostic (seals arbitrary bytes) so this
   refinement does NOT change the crypto core.
-- **Envelope/replay:** model on `seal/share_exchange_coordinator.go` ShareExchangeMessage
-  (nonce + epoch/issuedAt TTL + handler dispatch map); do NOT revive the dormant ShareTransport.
+- **Envelope/replay:** nonce + epoch/issuedAt TTL + handler dispatch map.
 - **Pull-backstop:** 4c-1d reconciler watches `placement.Store.Watch` (EventPut) → if assigned
   a local replica with no key, pull from leader. (Watch returns ErrWatchUnsupported on backends
   without the Watcher seam → 4c-1d wires it / polling fallback.)

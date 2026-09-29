@@ -34,9 +34,13 @@ func TestRecoveryStrategyUnsealRootKey_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
 	rootKey := bytes.Repeat([]byte{0x5a}, 32)
-	strategy, err := newRecoveryStrategy(rootKey, nil)
+	buf, err := secure.NewBufferFromBytes(bytes.Clone(rootKey))
 	if err != nil {
-		t.Fatalf("newRecoveryStrategy: %v", err)
+		t.Fatalf("NewBufferFromBytes: %v", err)
+	}
+	strategy, err := newRecoveryStrategyFromBuffer(buf, nil)
+	if err != nil {
+		t.Fatalf("newRecoveryStrategyFromBuffer: %v", err)
 	}
 
 	got, err := strategy.UnsealRootKey(context.Background(), nil, Credentials{})

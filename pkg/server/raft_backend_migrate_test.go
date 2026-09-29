@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -205,8 +206,8 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTenant: %v", err)
 	}
-	dist := &serverCaptureDist{}
-	tb.Barrier().SetCeremonyDistributor(dist)
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(tb.Barrier())
 
 	svcs, err := s.raftReg.Services(ctx, "rt-shamir", "appdata")
 	if err != nil {
@@ -226,8 +227,10 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
 	if err := s.raftReg.MigrateTenantEncryption(ctx, "rt-shamir", opts); err != nil {
 		t.Fatalf("MigrateTenantEncryption(shamir): %v", err)
 	}
-	if len(dist.Shares()) != 3 {
-		t.Fatalf("distributor captured %d shares, want 3", len(dist.Shares()))
+	for _, h := range []string{"h1", "h2", "h3"} {
+		if custody.Distributor.Share(seal.DomainUnseal, h) == "" {
+			t.Fatalf("holder %s received no share from the migration", h)
+		}
 	}
 
 	status := tenantStatus(t, s.reg, "rt-shamir")
@@ -235,7 +238,7 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
 		t.Fatalf("post-migrate strategy = %q, want shamir (not silently downgraded to passphrase)", status.Strategy)
 	}
 	if !status.Sealed {
-		t.Fatal("post-migrate shamir tenant barrier must be sealed pending Security Officer quorum")
+		t.Fatal("post-migrate shamir tenant barrier must be sealed pending a share-holder quorum")
 	}
 	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
 		t.Fatalf("post-migrate scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
@@ -254,13 +257,9 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTenant(post-migrate): %v", err)
 	}
-	shares := dist.Shares()
-	if _, uerr := tb2.UnsealWithShare(ctx, shares[0]); uerr != nil {
-		t.Fatalf("UnsealWithShare(1/2): %v", uerr)
-	}
-	progress, uerr := tb2.UnsealWithShare(ctx, shares[1])
+	progress, uerr := custody.Quorum(ctx, tb2.Barrier(), seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
 	if uerr != nil {
-		t.Fatalf("UnsealWithShare(2/2): %v", uerr)
+		t.Fatalf("unseal quorum: %v", uerr)
 	}
 	if !progress.Complete || tb2.IsSealed() {
 		t.Fatalf("barrier not unsealed after a 2-of-3 quorum: progress=%+v sealed=%v", progress, tb2.IsSealed())

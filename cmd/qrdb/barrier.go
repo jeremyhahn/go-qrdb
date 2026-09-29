@@ -45,7 +45,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -60,12 +59,11 @@ import (
 // init`. The root-level `init` ceremony accepts the full strategy set
 // (pkcs11, tpm2, awskms, gcpkms, azurekv, vault) because it provisions
 // the CA and PIN-store in addition to the barrier; the dedicated
-// `barrier init` verb is intentionally limited to the three software-
-// observable strategies. Map lookup is O(1).
+// `barrier init` verb is limited to the credential strategies. Shamir is
+// not one: `barrier init-shamir` initializes it over the enrolled holders.
 var barrierStrategyInit = map[string]struct{}{
 	"none":       {},
 	"passphrase": {},
-	"shamir":     {},
 }
 
 // newBarrierCmd returns the canonical barrier command group.
@@ -76,20 +74,18 @@ func newBarrierCmd() *cobra.Command {
 		Long: `Canonical barrier command group.
 
 The verb tree exposed here is the gold-standard surface shared by every
-CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl). The
-seven canonical verbs are:
+CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
 
   status         Show barrier state
-  init           Initialize barrier with passphrase, none, or shamir-by-secret
-  init-shamir    Initialize barrier with M-of-N Shamir shares
+  init           Initialize barrier with passphrase or none
+  init-shamir    Initialize Shamir custody over the enrolled share holders
   unseal         Unseal using a passphrase
-  unseal-shares  Unseal using one or more Shamir shares
   seal           Seal the barrier
-  rekey          Rotate barrier key material
-  recovery       Generate or use recovery keys
-
-Operational sub-trees ("shamir", "root-token") are retained for ops
-parity but are not part of the canonical surface.`,
+  officer        Enrol, list, claim and revoke share holders
+  quorum         Submit an authenticated holder's share to a quorum round
+                 (unseal, seal, root-token, rekey, recover)
+  rekey          Open a quorum-gated rekey round
+  recovery       Generate the independent recovery key`,
 	}
 
 	cmd.AddCommand(
@@ -97,14 +93,12 @@ parity but are not part of the canonical surface.`,
 		newBarrierInitCmd(),
 		newBarrierInitShamirCmd(),
 		newBarrierUnsealCmd(),
-		newBarrierUnsealSharesCmd(),
 		newBarrierSealCmd(),
-		newBarrierShamirSealVoteCmd(),
-		newBarrierRekeyCmd(),
+		newHolderRekeyCmd("rekey", false),
 		newBarrierEnableEncryptionCmd(),
 		newBarrierRecoveryCmd(),
-		newBarrierOfficerCmd(),
-		newBarrierRootTokenCmd(),
+		newHolderOfficerCmd("officer", "Manage the system barrier's share holders", false),
+		newHolderQuorumCmd("quorum", false),
 	)
 
 	return cmd
@@ -187,10 +181,12 @@ func newBarrierInitCmd() *cobra.Command {
 Strategies:
   none        Identity passthrough; data stored in cleartext (dev only).
   passphrase  Single passphrase-derived master key (default).
-  shamir      Single-secret Shamir seed; use 'barrier init-shamir' for M-of-N.
 
---passphrase is required when --barrier-strategy is passphrase or shamir
-and rejected when --barrier-strategy is none. PINs are optional but
+Shamir M-of-N custody is initialized over the enrolled share holders with
+'barrier init-shamir', never from a passphrase.
+
+--passphrase is required when --barrier-strategy is passphrase and
+rejected when --barrier-strategy is none. PINs are optional but
 follow the dual-control rule: supplying --so-pin requires --user-pin
 (and vice versa) so the resulting PIN pair satisfies FIPS 140-3 /
 PCI-DSS v4 dual-control. PINs are rejected entirely when
@@ -222,9 +218,9 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&f.strategy, "barrier-strategy", "passphrase",
-		"Barrier strategy: none | passphrase | shamir")
+		"Barrier strategy: none | passphrase (use init-shamir for shamir)")
 	cmd.Flags().StringVar(&f.passphrase, "passphrase", "",
-		"Master passphrase (required for passphrase and shamir)")
+		"Master passphrase (required for passphrase)")
 	cmd.Flags().StringVar(&f.soPin, "so-pin", "",
 		"Security Officer PIN (optional; requires --user-pin)")
 	cmd.Flags().StringVar(&f.userPin, "user-pin", "",
@@ -237,10 +233,16 @@ Examples:
 // `barrier init`. Validation runs before any network call so operators
 // see actionable errors locally.
 func validateBarrierInitFlags(f *barrierInitFlags) error {
+	if f.strategy == "shamir" {
+		return &InvalidArgError{
+			Arg:    "--barrier-strategy",
+			Reason: "a shamir barrier is initialized over its enrolled share holders with 'barrier init-shamir'",
+		}
+	}
 	if _, ok := barrierStrategyInit[f.strategy]; !ok {
 		return &InvalidArgError{
 			Arg:    "--barrier-strategy",
-			Reason: "must be one of none, passphrase, shamir",
+			Reason: "must be one of none, passphrase",
 		}
 	}
 	if f.strategy != "none" && f.passphrase == "" {
@@ -279,6 +281,7 @@ type barrierInitShamirFlags struct {
 	passphrase string
 	threshold  int
 	total      int
+	policy     string
 	soPin      string
 	userPin    string
 }
@@ -293,33 +296,31 @@ func newBarrierInitShamirCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init-shamir",
 		Short: "Initialize the barrier with Shamir M-of-N secret sharing",
-		Long: `Initialize the barrier using Shamir M-of-N secret sharing.
+		Long: `Initialize the barrier under Shamir M-of-N custody.
 
-The master secret is split into --total shares of which --threshold are
-required to unseal. PIN flags are optional but follow the same dual-
-control rule as 'barrier init' -- supplying --so-pin requires
---user-pin.
+The server generates the root key and an independent unseal key, and splits
+the unseal key --total ways (which must equal the number of holders enrolled
+with 'barrier officer register'), --threshold of which unseal. PIN flags are
+optional but follow the same dual-control rule as 'barrier init' --
+supplying --so-pin requires --user-pin.
 
-The response is share-free: shares are sealed server-side to the
-enrolled Security Officers' enclaves. Each officer retrieves their
-share exactly once via 'barrier officer claim-begin' / 'claim-complete'
-using their own mTLS certificate.
+The response is share-free: one HPKE-sealed envelope is held for each
+holder, who claims it once with 'barrier officer claim'.
 
 Example:
-  qrdb barrier init-shamir --passphrase '<seed>' --threshold 3 --total 5`,
+  qrdb barrier init-shamir --threshold 3 --total 5`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateBarrierInitShamirFlags(f); err != nil {
 				return err
 			}
 			req := &transport.BarrierInitializeShamirRequest{
-				Secret:      secretBytes(f.passphrase),
 				Threshold:   f.threshold,
 				TotalShares: f.total,
+				Policy:      f.policy,
 				SOPin:       f.soPin,
 				UserPin:     f.userPin,
 			}
-			defer secure.Wipe(req.Secret)
 			resp, err := client.Barrier().BarrierInitializeShamir(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -328,12 +329,11 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVar(&f.passphrase, "passphrase", "", "Master passphrase (required)")
-	cmd.Flags().IntVar(&f.threshold, "threshold", 0, "Minimum shares required to unseal (M)")
-	cmd.Flags().IntVar(&f.total, "total", 0, "Total number of shares to generate (N)")
+	cmd.Flags().IntVar(&f.threshold, "threshold", 0, "Minimum holders required to unseal (M)")
+	cmd.Flags().IntVar(&f.total, "total", 0, "Number of shares (N, the enrolled holder count)")
+	cmd.Flags().StringVar(&f.policy, "policy", "", "Factor policy: designated (default) or any-enrolled")
 	cmd.Flags().StringVar(&f.soPin, "so-pin", "", "Security Officer PIN (optional; requires --user-pin)")
 	cmd.Flags().StringVar(&f.userPin, "user-pin", "", "User PIN (optional; requires --so-pin)")
-	_ = cmd.MarkFlagRequired("passphrase")
 	_ = cmd.MarkFlagRequired("threshold")
 	_ = cmd.MarkFlagRequired("total")
 
@@ -373,8 +373,8 @@ func renderShamirInit(resp *transport.BarrierInitializeShamirResponse) error {
 		_, _ = fmt.Fprintf(outputWriter, "Threshold:    %d\n", resp.Threshold)
 		_, _ = fmt.Fprintf(outputWriter, "TotalShares:  %d\n", resp.TotalShares)
 		_, _ = fmt.Fprintf(outputWriter, "ShareCount:   %d\n", resp.ShareCount)
-		_, _ = fmt.Fprintln(outputWriter, "Shares are sealed to enrolled Security Officers.")
-		_, _ = fmt.Fprintln(outputWriter, "Each officer must claim their share via 'barrier officer claim-begin'.")
+		_, _ = fmt.Fprintln(outputWriter, "One sealed envelope is held for each enrolled holder.")
+		_, _ = fmt.Fprintln(outputWriter, "Each holder claims its envelope once via 'barrier officer claim'.")
 		return nil
 	}
 }
@@ -417,129 +417,6 @@ Example:
 	_ = cmd.MarkFlagRequired("passphrase")
 
 	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// barrier unseal-shares (Shamir incremental / batch unseal)
-// ---------------------------------------------------------------------------
-
-// barrierUnsealSharesFlags holds the flag set for `barrier unseal-shares`.
-type barrierUnsealSharesFlags struct {
-	shares     []string
-	sharesFile string
-}
-
-// newBarrierUnsealSharesCmd returns the canonical
-// `barrier unseal-shares` subcommand. Operators may supply one or more
-// `--share` flags (repeatable) or point at a `--shares-file` with one
-// share per line. The two forms are mutually exclusive.
-func newBarrierUnsealSharesCmd() *cobra.Command {
-	f := &barrierUnsealSharesFlags{}
-
-	cmd := &cobra.Command{
-		Use:   "unseal-shares",
-		Short: "Unseal the barrier by submitting Shamir shares",
-		Long: `Unseal the barrier using one or more Shamir shares.
-
-Two input modes are supported. Exactly one must be supplied:
-
-  --share <value>           Repeatable. Supply one or more shares as flags.
-  --shares-file <path>      Newline-delimited file of shares. Use '-' for stdin.
-
-Submitting a number of shares >= the M threshold unseals the barrier in
-one call. Submitting fewer shares accumulates them toward the threshold;
-incremental progress is reported in the response.
-
-Examples:
-  qrdb barrier unseal-shares --share aaa --share bbb --share ccc
-  qrdb barrier unseal-shares --shares-file /run/shamir.txt`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			shares, err := resolveUnsealShares(f)
-			if err != nil {
-				return err
-			}
-			req := &transport.BarrierUnsealSharesRequest{Shares: shares}
-			if err := client.Barrier().BarrierUnsealWithShares(cmd.Context(), req); err != nil {
-				return err
-			}
-			printOK()
-			return nil
-		},
-	}
-
-	// StringArrayVar (not StringSliceVar): a claim-complete JSON share
-	// envelope contains commas, which StringSliceVar would mis-split.
-	cmd.Flags().StringArrayVar(&f.shares, "share", nil,
-		"Single Shamir share, or the JSON envelope 'barrier officer claim-complete' prints (repeatable: --share a --share b ...)")
-	cmd.Flags().StringVar(&f.sharesFile, "shares-file", "",
-		"Path to a newline-delimited share file; '-' for stdin")
-
-	return cmd
-}
-
-// resolveUnsealShares enforces the --share / --shares-file invariants
-// and returns the flattened share list. Each share is passed through
-// resolveShareInput so a claim-complete JSON envelope round-trips
-// straight into --share/--shares-file with no manual unwrap step.
-func resolveUnsealShares(f *barrierUnsealSharesFlags) ([]string, error) {
-	hasFlag := len(f.shares) > 0
-	hasFile := f.sharesFile != ""
-	if hasFlag && hasFile {
-		return nil, &InvalidArgError{
-			Arg:    "--share/--shares-file",
-			Reason: "exactly one of --share (repeatable) or --shares-file is allowed",
-		}
-	}
-	if !hasFlag && !hasFile {
-		return nil, &MissingArgError{Arg: "--share or --shares-file"}
-	}
-	if hasFlag {
-		return resolveShareInputs(f.shares)
-	}
-	shares, err := readSharesFile(f.sharesFile)
-	if err != nil {
-		return nil, err
-	}
-	return resolveShareInputs(shares)
-}
-
-// readSharesFile reads newline-delimited shares from path. The literal
-// path "-" reads from stdin. Blank lines and lines whose first
-// non-whitespace character is '#' are skipped to support commented
-// share manifests.
-func readSharesFile(path string) ([]string, error) {
-	var src *os.File
-	if path == "-" {
-		src = os.Stdin
-	} else {
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, &FileReadError{Path: path, Err: err}
-		}
-		defer func() { _ = f.Close() }()
-		src = f
-	}
-
-	var shares []string
-	scanner := bufio.NewScanner(src)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		shares = append(shares, line)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, &FileReadError{Path: path, Err: err}
-	}
-	if len(shares) == 0 {
-		return nil, &InvalidArgError{
-			Arg:    "--shares-file",
-			Reason: "no shares found in " + path,
-		}
-	}
-	return shares, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -593,7 +470,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&f.soPin, "so-pin", "",
-		"Security Officer PIN (required when a PINBackend is configured)")
+		"Security Officer PIN (required once an SO PIN is provisioned)")
 	cmd.Flags().BoolVarP(&f.assumeYes, "assume-yes", "y", false,
 		"Skip the interactive confirmation prompt")
 
@@ -713,104 +590,6 @@ func confirmDestructive(cmd *cobra.Command, prompt string) error {
 }
 
 // ---------------------------------------------------------------------------
-// barrier rekey
-// ---------------------------------------------------------------------------
-
-// barrierRekeyFlags holds the flag set for `barrier rekey`.
-type barrierRekeyFlags struct {
-	soPin     string
-	threshold int
-	total     int
-}
-
-// newBarrierRekeyCmd returns the canonical `barrier rekey` subcommand.
-// Rekey is a Shamir-only, server-side operation: the server generates a
-// fresh unseal key and share set itself, cryptographically revoking all
-// previously distributed shares. No secret material travels on the
-// request.
-func newBarrierRekeyCmd() *cobra.Command {
-	f := &barrierRekeyFlags{}
-
-	cmd := &cobra.Command{
-		Use:   "rekey",
-		Short: "Rotate the barrier Shamir unseal key and share set",
-		Long: `Rotate the barrier's Shamir unseal key and share set.
-
-The server generates a fresh unseal key, re-wraps the root key under it,
-and seals new shares to the enrolled Security Officers. All previously
-distributed shares are cryptographically revoked. --so-pin is required
-when a PINBackend is configured. --threshold and --total instruct the
-server to regenerate the share set with a new M/N; when omitted the
-configured M/N is reused.
-
-Example:
-  qrdb barrier rekey --so-pin SO123
-  qrdb barrier rekey --threshold 3 --total 5`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := validateBarrierRekeyFlags(f); err != nil {
-				return err
-			}
-			req := &transport.BarrierRekeyRequest{
-				SOPin:     f.soPin,
-				Threshold: f.threshold,
-				Total:     f.total,
-			}
-			resp, err := client.Barrier().BarrierRekey(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-			return renderRekey(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&f.soPin, "so-pin", "",
-		"Security Officer PIN (required when a PINBackend is configured)")
-	cmd.Flags().IntVar(&f.threshold, "threshold", 0,
-		"New Shamir threshold (required when --total > 0)")
-	cmd.Flags().IntVar(&f.total, "total", 0,
-		"New Shamir total share count (required when --threshold > 0)")
-
-	return cmd
-}
-
-// validateBarrierRekeyFlags enforces the rekey input contract.
-func validateBarrierRekeyFlags(f *barrierRekeyFlags) error {
-	// Shamir flags are paired: supplying one requires the other.
-	if (f.threshold > 0) != (f.total > 0) {
-		return &InvalidArgError{
-			Arg:    "--threshold/--total",
-			Reason: "must be supplied together when rekeying Shamir shares",
-		}
-	}
-	if f.threshold > 0 && f.threshold < 2 {
-		return &InvalidArgError{Arg: "--threshold", Reason: "must be >= 2"}
-	}
-	if f.total > 0 && f.total < f.threshold {
-		return &InvalidArgError{Arg: "--total", Reason: "must be >= --threshold"}
-	}
-	return nil
-}
-
-// renderRekey prints a BarrierRekeyResponse in the configured output
-// format.
-func renderRekey(resp *transport.BarrierRekeyResponse) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(resp)
-	case "yaml":
-		return printYAML(resp)
-	default:
-		_, _ = fmt.Fprintf(outputWriter, "Threshold:    %d\n", resp.Threshold)
-		_, _ = fmt.Fprintf(outputWriter, "TotalShares:  %d\n", resp.TotalShares)
-		_, _ = fmt.Fprintf(outputWriter, "ShareCount:   %d\n", resp.ShareCount)
-		_, _ = fmt.Fprintln(outputWriter, "Shares are sealed to enrolled Security Officers.")
-		_, _ = fmt.Fprintln(outputWriter, "Each officer must claim their share via 'barrier officer claim-begin'.")
-		return nil
-	}
-}
-
-// ---------------------------------------------------------------------------
 // barrier recovery (canonical: generate, recover) + ops (delete, status)
 // ---------------------------------------------------------------------------
 
@@ -824,9 +603,13 @@ func newBarrierRecoveryCmd() *cobra.Command {
 		Short: "Recovery key management",
 		Long: `Generate and use recovery keys for disaster recovery scenarios.
 
+The recovery key is an unseal key independent of the unseal domain's, split
+to the holders enrolled in the recovery domain ('barrier officer register
+--domain recovery'). Recovery is a holder quorum: 'barrier quorum submit
+--domain recovery --op recover'.
+
 Canonical surface:
-  recovery generate   Generate recovery keys (M-of-N)
-  recovery recover    Restore the barrier from recovery keys
+  recovery generate   Generate and distribute the recovery key (M-of-N)
 
 Operational verbs (not part of the canonical surface):
   recovery delete     Delete all stored recovery keys
@@ -835,10 +618,8 @@ Operational verbs (not part of the canonical surface):
 
 	cmd.AddCommand(
 		newBarrierRecoveryGenerateCmd(),
-		newBarrierRecoveryRecoverCmd(),
 		newBarrierRecoveryDeleteCmd(),
 		newBarrierRecoveryStatusCmd(),
-		newBarrierRecoveryOfficerCmd(),
 	)
 
 	return cmd
@@ -848,7 +629,7 @@ Operational verbs (not part of the canonical surface):
 // generate`.
 type barrierRecoveryGenerateFlags struct {
 	threshold int
-	total     int
+	policy    string
 	soPin     string
 }
 
@@ -860,25 +641,23 @@ func newBarrierRecoveryGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate M-of-N recovery keys",
-		Long: `Generate fresh recovery keys.
+		Long: `Generate the recovery key.
 
-Recovery keys are independent of the barrier's unseal shares and live in
-a parallel KMS slot. Generation requires a Security Officer PIN when a
-PINBackend is configured.
+The recovery key is an unseal key independent of the unseal domain's, with
+its own wrapped root-key blob. It is split --threshold-of-N to the N holders
+enrolled in the recovery domain, each of whom claims a sealed envelope.
+Generation requires the Security Officer PIN.
 
 Example:
-  qrdb barrier recovery generate --threshold 3 --total 5 --so-pin SO123`,
+  qrdb barrier recovery generate --threshold 3 --so-pin SO123`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if f.threshold < 2 {
 				return &InvalidArgError{Arg: "--threshold", Reason: "must be >= 2"}
 			}
-			if f.total < f.threshold {
-				return &InvalidArgError{Arg: "--total", Reason: "must be >= --threshold"}
-			}
 			req := &transport.BarrierGenerateRecoveryKeysRequest{
 				Threshold: f.threshold,
-				Total:     f.total,
+				Policy:    f.policy,
 				SOPin:     f.soPin,
 			}
 			resp, err := client.Barrier().BarrierGenerateRecoveryKeys(cmd.Context(), req)
@@ -890,11 +669,10 @@ Example:
 	}
 
 	cmd.Flags().IntVar(&f.threshold, "threshold", 0, "Minimum keys required for recovery (M)")
-	cmd.Flags().IntVar(&f.total, "total", 0, "Total number of recovery keys (N)")
+	cmd.Flags().StringVar(&f.policy, "policy", "", "Factor policy: designated (default) or any-enrolled")
 	cmd.Flags().StringVar(&f.soPin, "so-pin", "",
-		"Security Officer PIN (required when a PINBackend is configured)")
+		"Security Officer PIN (required once an SO PIN is provisioned)")
 	_ = cmd.MarkFlagRequired("threshold")
-	_ = cmd.MarkFlagRequired("total")
 
 	return cmd
 }
@@ -911,52 +689,10 @@ func renderRecoveryKeys(resp *transport.BarrierRecoveryKeysResponse) error {
 		_, _ = fmt.Fprintf(outputWriter, "Threshold:  %d\n", resp.Threshold)
 		_, _ = fmt.Fprintf(outputWriter, "Total:      %d\n", resp.Total)
 		_, _ = fmt.Fprintf(outputWriter, "ShareCount: %d\n", resp.ShareCount)
-		_, _ = fmt.Fprintln(outputWriter, "Recovery shares are sealed to enrolled recovery officers.")
-		_, _ = fmt.Fprintln(outputWriter, "Each officer must claim their share via 'barrier recovery officer claim-begin'.")
+		_, _ = fmt.Fprintln(outputWriter, "One sealed envelope is held for each recovery holder.")
+		_, _ = fmt.Fprintln(outputWriter, "Each holder claims it once via 'barrier officer claim --domain recovery'.")
 		return nil
 	}
-}
-
-// newBarrierRecoveryRecoverCmd returns the canonical
-// `barrier recovery recover` subcommand. It accepts one or more
-// repeatable `--share` flags.
-func newBarrierRecoveryRecoverCmd() *cobra.Command {
-	var shares []string
-
-	cmd := &cobra.Command{
-		Use:   "recover",
-		Short: "Recover the barrier using recovery keys",
-		Long: `Recover the barrier by submitting M-of-N recovery keys.
-
---share is repeatable: pass each recovery key as its own --share flag.
-
-Example:
-  qrdb barrier recovery recover --share key-a --share key-b --share key-c`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if len(shares) == 0 {
-				return &MissingArgError{Arg: "--share (at least one)"}
-			}
-			resolved, err := resolveShareInputs(shares)
-			if err != nil {
-				return err
-			}
-			req := &transport.BarrierRecoverWithKeysRequest{Keys: resolved}
-			if err := client.Barrier().BarrierRecoverWithKeys(cmd.Context(), req); err != nil {
-				return err
-			}
-			printOK()
-			return nil
-		},
-	}
-
-	// StringArrayVar (not StringSliceVar): a claim-complete JSON share
-	// envelope contains commas, which StringSliceVar would mis-split.
-	cmd.Flags().StringArrayVar(&shares, "share", nil,
-		"Recovery key, or the JSON envelope 'barrier recovery officer claim-complete' prints (repeatable: --share a --share b ...)")
-	_ = cmd.MarkFlagRequired("share")
-
-	return cmd
 }
 
 // newBarrierRecoveryDeleteCmd is an operational verb retained for ops
@@ -1000,810 +736,4 @@ func newBarrierRecoveryStatusCmd() *cobra.Command {
 			}
 		},
 	}
-}
-
-// ---------------------------------------------------------------------------
-// barrier root-token (operational; not part of canonical surface)
-// ---------------------------------------------------------------------------
-
-// newBarrierRootTokenCmd generates a root token from Shamir shares.
-// Retained for ops parity; not part of the canonical surface.
-func newBarrierRootTokenCmd() *cobra.Command {
-	var shares []string
-
-	cmd := &cobra.Command{
-		Use:   "root-token",
-		Short: "Generate a root token from Shamir shares (operational)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if len(shares) == 0 {
-				return &MissingArgError{Arg: "--share (at least one)"}
-			}
-			resolved, err := resolveShareInputs(shares)
-			if err != nil {
-				return err
-			}
-			req := &transport.BarrierGenerateRootTokenRequest{Shares: resolved}
-			resp, err := client.Barrier().BarrierGenerateRootToken(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-			switch outputFormat {
-			case "json":
-				return printJSON(resp)
-			case "yaml":
-				return printYAML(resp)
-			default:
-				_, _ = fmt.Fprintf(outputWriter, "Token:      %s\n", resp.Token)
-				_, _ = fmt.Fprintf(outputWriter, "CreatedAt:  %s\n", resp.CreatedAt)
-				return nil
-			}
-		},
-	}
-
-	// StringArrayVar (not StringSliceVar): a claim-complete JSON share
-	// envelope contains commas, which StringSliceVar would mis-split.
-	cmd.Flags().StringArrayVar(&shares, "share", nil,
-		"Shamir share, or the JSON envelope 'barrier officer claim-complete' prints (repeatable: --share a --share b ...)")
-	_ = cmd.MarkFlagRequired("share")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// barrier shamir seal-vote
-// ---------------------------------------------------------------------------
-
-// newBarrierShamirSealVoteCmd returns the `barrier shamir-seal-vote`
-// subcommand. Each enrolled SO submits their share as a vote to seal the
-// barrier; once the quorum threshold is met the barrier seals automatically.
-func newBarrierShamirSealVoteCmd() *cobra.Command {
-	var share string
-
-	cmd := &cobra.Command{
-		Use:   "shamir-seal-vote",
-		Short: "Submit a Shamir share as a seal vote (Shamir barriers only)",
-		Long: `Submit a Shamir share as a quorum vote to seal the barrier.
-
-When the quorum threshold is met all submitted shares are wiped and the
-barrier transitions to the sealed state automatically.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			resolved, err := resolveShareInput(share)
-			if err != nil {
-				return err
-			}
-			resp, err := client.Barrier().ShamirSealVote(cmd.Context(), &transport.ShamirSealVoteRequest{Share: resolved})
-			if err != nil {
-				return err
-			}
-			switch outputFormat {
-			case "json":
-				return printJSON(resp)
-			case "yaml":
-				return printYAML(resp)
-			default:
-				_, _ = fmt.Fprintf(outputWriter, "Required:   %d\n", resp.Required)
-				_, _ = fmt.Fprintf(outputWriter, "Submitted:  %d\n", resp.Submitted)
-				_, _ = fmt.Fprintf(outputWriter, "Complete:   %v\n", resp.Complete)
-				return nil
-			}
-		},
-	}
-
-	cmd.Flags().StringVar(&share, "share", "", "Shamir share to submit as a seal vote")
-	_ = cmd.MarkFlagRequired("share")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// Shamir share-envelope UX: claim-complete emits, and every share consumer
-// (unseal-shares, shamir-seal-vote, root-token, recovery recover, and the
-// tenant-barrier equivalents) accepts, either the bare base64 share value
-// or the full JSON shamir.Share envelope. See resolveShareInput.
-// ---------------------------------------------------------------------------
-
-// shareEnvelope mirrors the JSON shape the ceremony's claim-complete
-// endpoints (system officer, recovery officer, tenant officer) embed in
-// ShareClaimCompleteResponse.ShareBytes:
-// {"index":N,"threshold":M,"total":T,"value":"<base64>"}.
-type shareEnvelope struct {
-	Index     int    `json:"index"`
-	Threshold int    `json:"threshold"`
-	Total     int    `json:"total"`
-	Value     string `json:"value"`
-}
-
-// resolveShareInput accepts a Shamir/recovery share as either the bare
-// base64 value a consumer command expects, or the full JSON shareEnvelope
-// that 'barrier officer claim-complete' / 'barrier recovery officer
-// claim-complete' / 'tenant barrier-officer claim-complete' return (see
-// renderShareClaimComplete's "Share:" line). This lets an operator feed a
-// freshly claimed share straight into unseal-shares, shamir-seal-vote,
-// root-token, or recovery recover with no manual unwrap step. A value
-// that does not look like a JSON object (i.e. does not start with '{')
-// is returned unchanged, since base64 never begins with that character.
-func resolveShareInput(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if !strings.HasPrefix(trimmed, "{") {
-		return raw, nil
-	}
-	var env shareEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return "", &InvalidArgError{
-			Arg:    "--share",
-			Reason: "looks like a JSON share envelope but failed to parse: " + err.Error(),
-		}
-	}
-	if env.Value == "" {
-		return "", &InvalidArgError{
-			Arg:    "--share",
-			Reason: "JSON share envelope has an empty \"value\" field",
-		}
-	}
-	return env.Value, nil
-}
-
-// resolveShareInputs applies resolveShareInput to every element of raw,
-// preserving order, and fails on the first malformed entry.
-func resolveShareInputs(raw []string) ([]string, error) {
-	resolved := make([]string, len(raw))
-	for i, s := range raw {
-		v, err := resolveShareInput(s)
-		if err != nil {
-			return nil, err
-		}
-		resolved[i] = v
-	}
-	return resolved, nil
-}
-
-// ---------------------------------------------------------------------------
-// Shared officer/claim response renderers, reused by the system barrier
-// officer surface (barrier officer / barrier recovery officer) and the
-// tenant-scoped mirror (tenant barrier-officer).
-// ---------------------------------------------------------------------------
-
-// renderOfficerRegisterResponse prints an OfficerRegisterResponse in the
-// configured output format.
-func renderOfficerRegisterResponse(resp *transport.OfficerRegisterResponse) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(resp)
-	case "yaml":
-		return printYAML(resp)
-	default:
-		_, _ = fmt.Fprintf(outputWriter, "ShareIndex:  %d\n", resp.ShareIndex)
-		_, _ = fmt.Fprintf(outputWriter, "CertPEM:\n%s\n", string(resp.CertPEM))
-		return nil
-	}
-}
-
-// renderOfficerStatusList prints a detailed, bulleted view of enrolled
-// officers (used by the "list" verbs).
-func renderOfficerStatusList(officers []*transport.OfficerStatus) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(officers)
-	case "yaml":
-		return printYAML(officers)
-	default:
-		for _, o := range officers {
-			_, _ = fmt.Fprintf(outputWriter, "- Username:       %s\n", o.Username)
-			_, _ = fmt.Fprintf(outputWriter, "  ShareIndex:     %d\n", o.ShareIndex)
-			_, _ = fmt.Fprintf(outputWriter, "  AuthFactor:     %s\n", o.AuthFactor)
-			_, _ = fmt.Fprintf(outputWriter, "  SharePending:   %v\n", o.SharePending)
-			_, _ = fmt.Fprintf(outputWriter, "  EnrolledAt:     %s\n", o.EnrolledAt.Format("2006-01-02T15:04:05Z"))
-			if !o.ClaimedAt.IsZero() {
-				_, _ = fmt.Fprintf(outputWriter, "  ClaimedAt:      %s\n", o.ClaimedAt.Format("2006-01-02T15:04:05Z"))
-			}
-		}
-		return nil
-	}
-}
-
-// renderOfficerClaimStatusList prints a condensed, one-line-per-officer
-// claim status view (used by the "claim-status" verbs).
-func renderOfficerClaimStatusList(officers []*transport.OfficerStatus) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(officers)
-	case "yaml":
-		return printYAML(officers)
-	default:
-		for _, o := range officers {
-			claimed := "no"
-			if !o.ClaimedAt.IsZero() {
-				claimed = o.ClaimedAt.Format("2006-01-02T15:04:05Z")
-			}
-			_, _ = fmt.Fprintf(outputWriter, "- %-20s  index=%d  pending=%v  claimed=%s\n",
-				o.Username, o.ShareIndex, o.SharePending, claimed)
-		}
-		return nil
-	}
-}
-
-// renderShareClaimBegin prints a ShareClaimBeginResponse in the configured
-// output format.
-func renderShareClaimBegin(resp *transport.ShareClaimBeginResponse) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(resp)
-	case "yaml":
-		return printYAML(resp)
-	default:
-		_, _ = fmt.Fprintf(outputWriter, "NonceHex:   %s\n", resp.NonceHex)
-		_, _ = fmt.Fprintf(outputWriter, "ExpiresAt:  %s\n", resp.ExpiresAt.Format("2006-01-02T15:04:05Z"))
-		return nil
-	}
-}
-
-// renderShareClaimComplete prints a ShareClaimCompleteResponse in the
-// configured output format.
-//
-// ShareBytes carries the JSON shareEnvelope the ceremony's claim-complete
-// endpoints emit. Table output prints both the traditional hex dump
-// (ShareBytes, preserved for backward compatibility) and the raw envelope
-// text (Share) so operators can copy the latter straight into a
-// share-consuming command; those commands auto-unwrap the JSON envelope
-// via resolveShareInput, so no manual extraction of the "value" field is
-// required for the round trip to work.
-func renderShareClaimComplete(resp *transport.ShareClaimCompleteResponse) error {
-	switch outputFormat {
-	case "json":
-		return printJSON(resp)
-	case "yaml":
-		return printYAML(resp)
-	default:
-		_, _ = fmt.Fprintf(outputWriter, "ShareIndex:  %d\n", resp.ShareIndex)
-		_, _ = fmt.Fprintf(outputWriter, "ShareBytes:  %x\n", resp.ShareBytes)
-		_, _ = fmt.Fprintf(outputWriter, "Share:       %s\n", resp.ShareBytes)
-		return nil
-	}
-}
-
-// ---------------------------------------------------------------------------
-// barrier officer (register, list, claim-status, claim-begin, claim-complete)
-// ---------------------------------------------------------------------------
-
-// newBarrierOfficerCmd returns the `barrier officer` parent command grouping
-// all Security Officer enrollment and share-claim operations.
-func newBarrierOfficerCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "officer",
-		Short: "Manage Security Officers for the system barrier",
-		Long: `Security Officer (SO) management commands for the system barrier.
-
-SOs are registered before barrier initialization. After initialization their
-shares are sealed to their registered certificates. Each SO claims their share
-via a mTLS-authenticated challenge/response flow.`,
-	}
-
-	cmd.AddCommand(
-		newBarrierOfficerRegisterCmd(),
-		newBarrierOfficerListCmd(),
-		newBarrierOfficerClaimStatusCmd(),
-		newBarrierOfficerClaimBeginCmd(),
-		newBarrierOfficerClaimCompleteCmd(),
-	)
-
-	return cmd
-}
-
-// newBarrierOfficerRegisterCmd returns `barrier officer register`.
-func newBarrierOfficerRegisterCmd() *cobra.Command {
-	var username, csrFile, authenticatorType, authenticatorRef string
-
-	cmd := &cobra.Command{
-		Use:   "register",
-		Short: "Register a Security Officer for the system barrier",
-		Long: `Register a Security Officer (SO) for the system barrier.
-
-The officer's CSR is validated, signed by the ceremony CA, and the officer
-record is persisted. Share bytes are NOT produced at this step; the barrier
-must be initialized (barrier init-shamir) for share distribution to occur.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			csrPEM, err := os.ReadFile(csrFile)
-			if err != nil {
-				return fmt.Errorf("barrier officer register: reading CSR file: %w", err)
-			}
-			resp, err := client.Barrier().OfficerRegister(cmd.Context(), &transport.OfficerRegisterRequest{
-				Username:          username,
-				CSRPEM:            csrPEM,
-				AuthenticatorType: authenticatorType,
-				AuthenticatorRef:  authenticatorRef,
-			})
-			if err != nil {
-				return err
-			}
-			return renderOfficerRegisterResponse(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	cmd.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM-encoded CSR file")
-	cmd.Flags().StringVar(&authenticatorType, "authenticator-type", "", "Authenticator type (e.g. software, fido2, piv)")
-	cmd.Flags().StringVar(&authenticatorRef, "authenticator-ref", "", "Opaque authenticator reference")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("csr-file")
-
-	return cmd
-}
-
-// newBarrierOfficerListCmd returns `barrier officer list`.
-func newBarrierOfficerListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List all enrolled Security Officers for the system barrier",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			officers, err := client.Barrier().OfficerList(cmd.Context())
-			if err != nil {
-				return err
-			}
-			return renderOfficerStatusList(officers)
-		},
-	}
-}
-
-// newBarrierOfficerClaimStatusCmd returns `barrier officer claim-status`.
-func newBarrierOfficerClaimStatusCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "claim-status",
-		Short: "Show per-officer share claim status for the system barrier",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			officers, err := client.Barrier().OfficerClaimStatus(cmd.Context())
-			if err != nil {
-				return err
-			}
-			return renderOfficerClaimStatusList(officers)
-		},
-	}
-}
-
-// newBarrierOfficerClaimBeginCmd returns `barrier officer claim-begin`.
-func newBarrierOfficerClaimBeginCmd() *cobra.Command {
-	var username string
-
-	cmd := &cobra.Command{
-		Use:   "claim-begin",
-		Short: "Begin the share-claim handshake for a Security Officer",
-		Long: `Issue a challenge nonce to the named Security Officer.
-
-The officer must sign the returned nonce with their registered private key and
-submit the signature via 'barrier officer claim-complete' within the expiry window.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			resp, err := client.Barrier().ShareClaimBegin(cmd.Context(), &transport.ShareClaimBeginRequest{Username: username})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimBegin(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	_ = cmd.MarkFlagRequired("username")
-
-	return cmd
-}
-
-// newBarrierOfficerClaimCompleteCmd returns `barrier officer claim-complete`.
-func newBarrierOfficerClaimCompleteCmd() *cobra.Command {
-	var username, nonceHex, sigFile string
-
-	cmd := &cobra.Command{
-		Use:   "claim-complete",
-		Short: "Complete the share-claim handshake and retrieve the share",
-		Long: `Verify the officer's nonce signature and return the share bytes exactly once.
-
-The signature file must contain the raw signature bytes produced by signing the
-nonce (from claim-begin) with the officer's registered private key.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			sig, err := os.ReadFile(sigFile)
-			if err != nil {
-				return fmt.Errorf("barrier officer claim-complete: reading signature file: %w", err)
-			}
-			resp, err := client.Barrier().ShareClaimComplete(cmd.Context(), &transport.ShareClaimCompleteRequest{
-				Username:  username,
-				NonceHex:  nonceHex,
-				Signature: sig,
-			})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimComplete(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	cmd.Flags().StringVar(&nonceHex, "nonce-hex", "", "Nonce hex from claim-begin")
-	cmd.Flags().StringVar(&sigFile, "sig-file", "", "Path to file containing the raw signature bytes")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("nonce-hex")
-	_ = cmd.MarkFlagRequired("sig-file")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// barrier recovery officer (register, claim-begin, claim-complete)
-// ---------------------------------------------------------------------------
-
-// newBarrierRecoveryOfficerCmd returns the `barrier recovery officer` parent
-// command for recovery officer enrollment and share-claim operations.
-func newBarrierRecoveryOfficerCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "officer",
-		Short: "Manage recovery Security Officers for the system barrier",
-		Long: `Recovery officer management commands for the system barrier.
-
-Recovery officers receive recovery shares generated by 'barrier recovery generate'.
-They are independent from the unseal officers.`,
-	}
-
-	cmd.AddCommand(
-		newBarrierRecoveryOfficerRegisterCmd(),
-		newBarrierRecoveryOfficerClaimBeginCmd(),
-		newBarrierRecoveryOfficerClaimCompleteCmd(),
-	)
-
-	return cmd
-}
-
-// newBarrierRecoveryOfficerRegisterCmd returns `barrier recovery officer register`.
-func newBarrierRecoveryOfficerRegisterCmd() *cobra.Command {
-	var username, csrFile, authenticatorType, authenticatorRef string
-
-	cmd := &cobra.Command{
-		Use:   "register",
-		Short: "Register a recovery Security Officer for the system barrier",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			csrPEM, err := os.ReadFile(csrFile)
-			if err != nil {
-				return fmt.Errorf("barrier recovery officer register: reading CSR file: %w", err)
-			}
-			resp, err := client.Barrier().RecoveryOfficerRegister(cmd.Context(), &transport.OfficerRegisterRequest{
-				Username:          username,
-				CSRPEM:            csrPEM,
-				AuthenticatorType: authenticatorType,
-				AuthenticatorRef:  authenticatorRef,
-			})
-			if err != nil {
-				return err
-			}
-			return renderOfficerRegisterResponse(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Recovery officer username")
-	cmd.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM-encoded CSR file")
-	cmd.Flags().StringVar(&authenticatorType, "authenticator-type", "", "Authenticator type")
-	cmd.Flags().StringVar(&authenticatorRef, "authenticator-ref", "", "Opaque authenticator reference")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("csr-file")
-
-	return cmd
-}
-
-// newBarrierRecoveryOfficerClaimBeginCmd returns
-// `barrier recovery officer claim-begin`.
-func newBarrierRecoveryOfficerClaimBeginCmd() *cobra.Command {
-	var username string
-
-	cmd := &cobra.Command{
-		Use:   "claim-begin",
-		Short: "Begin the recovery share-claim handshake for a recovery officer",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			resp, err := client.Barrier().RecoveryShareClaimBegin(cmd.Context(), &transport.ShareClaimBeginRequest{Username: username})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimBegin(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Recovery officer username")
-	_ = cmd.MarkFlagRequired("username")
-
-	return cmd
-}
-
-// newBarrierRecoveryOfficerClaimCompleteCmd returns
-// `barrier recovery officer claim-complete`.
-func newBarrierRecoveryOfficerClaimCompleteCmd() *cobra.Command {
-	var username, nonceHex, sigFile string
-
-	cmd := &cobra.Command{
-		Use:   "claim-complete",
-		Short: "Complete the recovery share-claim handshake and retrieve the share",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			sig, err := os.ReadFile(sigFile)
-			if err != nil {
-				return fmt.Errorf("barrier recovery officer claim-complete: reading signature file: %w", err)
-			}
-			resp, err := client.Barrier().RecoveryShareClaimComplete(cmd.Context(), &transport.ShareClaimCompleteRequest{
-				Username:  username,
-				NonceHex:  nonceHex,
-				Signature: sig,
-			})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimComplete(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&username, "username", "", "Recovery officer username")
-	cmd.Flags().StringVar(&nonceHex, "nonce-hex", "", "Nonce hex from claim-begin")
-	cmd.Flags().StringVar(&sigFile, "sig-file", "", "Path to file containing the raw signature bytes")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("nonce-hex")
-	_ = cmd.MarkFlagRequired("sig-file")
-
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// tenant barrier-officer (register, list, claim-status, claim-begin,
-// claim-complete) + tenant barrier-shamir-seal-vote
-//
-// Tenant-scoped mirror of the system barrier's Security Officer surface
-// (barrier officer / barrier shamir-seal-vote), grafted onto the "tenant"
-// command tree from root.go (see newRootCmd) rather than tenant.go, so
-// this file alone owns the tenant officer CLI surface.
-// ---------------------------------------------------------------------------
-
-// newTenantBarrierOfficerCmd returns the `tenant barrier-officer` parent
-// command grouping Security Officer enrollment and share-claim operations
-// for a single tenant's dedicated barrier.
-func newTenantBarrierOfficerCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "barrier-officer",
-		Short: "Manage Security Officers for a tenant's dedicated barrier",
-		Long: `Security Officer (SO) management commands for a tenant's dedicated barrier.
-
-Mirrors 'barrier officer' (the system barrier's officer surface) scoped to a
-single tenant's own barrier via --tenant-id. Applies only to tenants with a
-dedicated (barrier/volume) isolation type; a tenant on the shared system
-barrier has no officers of its own.`,
-	}
-
-	cmd.AddCommand(
-		newTenantBarrierOfficerRegisterCmd(),
-		newTenantBarrierOfficerListCmd(),
-		newTenantBarrierOfficerClaimStatusCmd(),
-		newTenantBarrierOfficerClaimBeginCmd(),
-		newTenantBarrierOfficerClaimCompleteCmd(),
-	)
-
-	return cmd
-}
-
-// newTenantBarrierOfficerRegisterCmd returns `tenant barrier-officer register`.
-func newTenantBarrierOfficerRegisterCmd() *cobra.Command {
-	var tenantID, username, csrFile, authenticatorType, authenticatorRef string
-
-	cmd := &cobra.Command{
-		Use:   "register",
-		Short: "Register a Security Officer for a tenant's dedicated barrier",
-		Long: `Register a Security Officer (SO) for a tenant's dedicated barrier.
-
-The officer's CSR is validated, signed by the ceremony CA, and the officer
-record is persisted. Share bytes are NOT produced at this step; the tenant
-barrier must be initialized with the shamir strategy for share distribution
-to occur.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			csrPEM, err := os.ReadFile(csrFile)
-			if err != nil {
-				return fmt.Errorf("tenant barrier-officer register: reading CSR file: %w", err)
-			}
-			resp, err := client.Tenants().TenantBarrierOfficerRegister(cmd.Context(), &transport.TenantOfficerRegisterRequest{
-				TenantID:          tenantID,
-				Username:          username,
-				CSRPEM:            csrPEM,
-				AuthenticatorType: authenticatorType,
-				AuthenticatorRef:  authenticatorRef,
-			})
-			if err != nil {
-				return err
-			}
-			return renderOfficerRegisterResponse(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	cmd.Flags().StringVar(&csrFile, "csr-file", "", "Path to PEM-encoded CSR file")
-	cmd.Flags().StringVar(&authenticatorType, "authenticator-type", "", "Authenticator type (e.g. software, fido2, piv)")
-	cmd.Flags().StringVar(&authenticatorRef, "authenticator-ref", "", "Opaque authenticator reference")
-	_ = cmd.MarkFlagRequired("tenant-id")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("csr-file")
-
-	return cmd
-}
-
-// newTenantBarrierOfficerListCmd returns `tenant barrier-officer list`.
-func newTenantBarrierOfficerListCmd() *cobra.Command {
-	var tenantID string
-
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all enrolled Security Officers for a tenant's dedicated barrier",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			officers, err := client.Tenants().TenantBarrierOfficerList(cmd.Context(), tenantID)
-			if err != nil {
-				return err
-			}
-			return renderOfficerStatusList(officers)
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	_ = cmd.MarkFlagRequired("tenant-id")
-
-	return cmd
-}
-
-// newTenantBarrierOfficerClaimStatusCmd returns
-// `tenant barrier-officer claim-status`.
-func newTenantBarrierOfficerClaimStatusCmd() *cobra.Command {
-	var tenantID string
-
-	cmd := &cobra.Command{
-		Use:   "claim-status",
-		Short: "Show per-officer share claim status for a tenant's dedicated barrier",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			officers, err := client.Tenants().TenantBarrierOfficerClaimStatus(cmd.Context(), tenantID)
-			if err != nil {
-				return err
-			}
-			return renderOfficerClaimStatusList(officers)
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	_ = cmd.MarkFlagRequired("tenant-id")
-
-	return cmd
-}
-
-// newTenantBarrierOfficerClaimBeginCmd returns
-// `tenant barrier-officer claim-begin`.
-func newTenantBarrierOfficerClaimBeginCmd() *cobra.Command {
-	var tenantID, username string
-
-	cmd := &cobra.Command{
-		Use:   "claim-begin",
-		Short: "Begin the share-claim handshake for a tenant barrier Security Officer",
-		Long: `Issue a challenge nonce to the named Security Officer of a tenant's
-dedicated barrier.
-
-The officer must sign the returned nonce with their registered private key
-and submit the signature via 'tenant barrier-officer claim-complete' within
-the expiry window.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			resp, err := client.Tenants().TenantBarrierShareClaimBegin(cmd.Context(), &transport.TenantShareClaimBeginRequest{
-				TenantID: tenantID,
-				Username: username,
-			})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimBegin(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	_ = cmd.MarkFlagRequired("tenant-id")
-	_ = cmd.MarkFlagRequired("username")
-
-	return cmd
-}
-
-// newTenantBarrierOfficerClaimCompleteCmd returns
-// `tenant barrier-officer claim-complete`.
-func newTenantBarrierOfficerClaimCompleteCmd() *cobra.Command {
-	var tenantID, username, nonceHex, sigFile string
-
-	cmd := &cobra.Command{
-		Use:   "claim-complete",
-		Short: "Complete the share-claim handshake and retrieve the tenant barrier share",
-		Long: `Verify the officer's nonce signature and return the tenant barrier share
-exactly once.
-
-The signature file must contain the raw signature bytes produced by signing
-the nonce (from claim-begin) with the officer's registered private key.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			sig, err := os.ReadFile(sigFile)
-			if err != nil {
-				return fmt.Errorf("tenant barrier-officer claim-complete: reading signature file: %w", err)
-			}
-			resp, err := client.Tenants().TenantBarrierShareClaimComplete(cmd.Context(), &transport.TenantShareClaimCompleteRequest{
-				TenantID:  tenantID,
-				Username:  username,
-				NonceHex:  nonceHex,
-				Signature: sig,
-			})
-			if err != nil {
-				return err
-			}
-			return renderShareClaimComplete(resp)
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	cmd.Flags().StringVar(&username, "username", "", "Security Officer username")
-	cmd.Flags().StringVar(&nonceHex, "nonce-hex", "", "Nonce hex from claim-begin")
-	cmd.Flags().StringVar(&sigFile, "sig-file", "", "Path to file containing the raw signature bytes")
-	_ = cmd.MarkFlagRequired("tenant-id")
-	_ = cmd.MarkFlagRequired("username")
-	_ = cmd.MarkFlagRequired("nonce-hex")
-	_ = cmd.MarkFlagRequired("sig-file")
-
-	return cmd
-}
-
-// newTenantBarrierShamirSealVoteCmd returns the
-// `tenant barrier-shamir-seal-vote` subcommand. Each enrolled tenant SO
-// submits their share as a vote to seal the tenant's dedicated barrier;
-// once the quorum threshold is met the barrier seals automatically.
-func newTenantBarrierShamirSealVoteCmd() *cobra.Command {
-	var tenantID, share string
-
-	cmd := &cobra.Command{
-		Use:   "barrier-shamir-seal-vote",
-		Short: "Submit a Shamir share as a seal vote for a tenant's dedicated barrier",
-		Long: `Submit a Shamir share as a quorum vote to seal a tenant's dedicated
-barrier (Shamir-strategy tenant barriers only).
-
-When the quorum threshold is met all submitted shares are wiped and the
-tenant barrier transitions to the sealed state automatically.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			resolved, err := resolveShareInput(share)
-			if err != nil {
-				return err
-			}
-			resp, err := client.Tenants().TenantBarrierShamirSealVote(cmd.Context(), &transport.TenantShamirSealVoteRequest{
-				TenantID: tenantID,
-				Share:    resolved,
-			})
-			if err != nil {
-				return err
-			}
-			switch outputFormat {
-			case "json":
-				return printJSON(resp)
-			case "yaml":
-				return printYAML(resp)
-			default:
-				_, _ = fmt.Fprintf(outputWriter, "Required:   %d\n", resp.Required)
-				_, _ = fmt.Fprintf(outputWriter, "Submitted:  %d\n", resp.Submitted)
-				_, _ = fmt.Fprintf(outputWriter, "Complete:   %v\n", resp.Complete)
-				return nil
-			}
-		},
-	}
-
-	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
-	cmd.Flags().StringVar(&share, "share", "", "Shamir share to submit as a seal vote")
-	_ = cmd.MarkFlagRequired("tenant-id")
-	_ = cmd.MarkFlagRequired("share")
-
-	return cmd
 }

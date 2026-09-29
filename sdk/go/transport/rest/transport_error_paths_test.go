@@ -187,36 +187,6 @@ func TestRESTAuthFactor_AllMethods_ServerError(t *testing.T) {
 	}
 }
 
-func TestRESTCeremony_AllMethods_ServerError(t *testing.T) {
-	rt := errorServer(t, http.StatusInternalServerError)
-	ctx := context.Background()
-
-	if _, err := rt.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); err == nil {
-		t.Fatal("CeremonyInitialize: expected error")
-	}
-	if _, err := rt.CeremonyStatus(ctx); err == nil {
-		t.Fatal("CeremonyStatus: expected error")
-	}
-	if _, err := rt.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{}); err == nil {
-		t.Fatal("CeremonyClaimCertBegin: expected error")
-	}
-	if _, err := rt.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
-		t.Fatal("CeremonyClaimCertComplete: expected error")
-	}
-	if _, err := rt.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyBeginClaimShare: expected error")
-	}
-	if _, err := rt.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyCompleteClaimShare: expected error")
-	}
-	if _, err := rt.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
-		t.Fatal("CeremonySignCSR: expected error")
-	}
-	if _, err := rt.CeremonyEnrollExternalOfficer(ctx, &transport.EnrollExternalOfficerRequest{}); err == nil {
-		t.Fatal("CeremonyEnrollExternalOfficer: expected error")
-	}
-}
-
 func TestRESTUserAuthFactor_AllMethods_ServerError(t *testing.T) {
 	rt := errorServer(t, http.StatusInternalServerError)
 	ctx := context.Background()
@@ -444,33 +414,6 @@ func TestRESTAuthFactor_AllMethods_BadJSON(t *testing.T) {
 	}
 }
 
-func TestRESTCeremony_AllMethods_BadJSON(t *testing.T) {
-	rt := badJSONServer(t)
-	ctx := context.Background()
-
-	if _, err := rt.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); err == nil {
-		t.Fatal("CeremonyInitialize: expected JSON error")
-	}
-	if _, err := rt.CeremonyStatus(ctx); err == nil {
-		t.Fatal("CeremonyStatus: expected JSON error")
-	}
-	if _, err := rt.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{}); err == nil {
-		t.Fatal("CeremonyClaimCertBegin: expected JSON error")
-	}
-	if _, err := rt.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
-		t.Fatal("CeremonyClaimCertComplete: expected JSON error")
-	}
-	if _, err := rt.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyBeginClaimShare: expected JSON error")
-	}
-	if _, err := rt.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyCompleteClaimShare: expected JSON error")
-	}
-	if _, err := rt.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
-		t.Fatal("CeremonySignCSR: expected JSON error")
-	}
-}
-
 // ===========================================================================
 // User/Role/Cert BadJSON paths
 // ===========================================================================
@@ -566,42 +509,6 @@ func TestRESTUserRoleCert_AllMethods_ServerError(t *testing.T) {
 // ===========================================================================
 // Barrier ServerError + BadJSON paths for items not yet covered
 // ===========================================================================
-
-func TestRESTBarrier_MoreErrors(t *testing.T) {
-	rt := errorServer(t, http.StatusInternalServerError)
-	ctx := context.Background()
-
-	if err := rt.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{}); err == nil {
-		t.Fatal("BarrierInitialize: expected error")
-	}
-	if err := rt.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{}); err == nil {
-		t.Fatal("BarrierUnseal: expected error")
-	}
-	if err := rt.BarrierSeal(ctx); err == nil {
-		t.Fatal("BarrierSeal: expected error")
-	}
-	if _, err := rt.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{}); err == nil {
-		t.Fatal("BarrierInitializeShamir: expected error")
-	}
-	if _, err := rt.BarrierUnsealWithShare(ctx, &transport.BarrierUnsealShareRequest{}); err == nil {
-		t.Fatal("BarrierUnsealWithShare: expected error")
-	}
-	if err := rt.BarrierUnsealWithShares(ctx, &transport.BarrierUnsealSharesRequest{}); err == nil {
-		t.Fatal("BarrierUnsealWithShares: expected error")
-	}
-	if _, err := rt.BarrierRekey(ctx, &transport.BarrierRekeyRequest{}); err == nil {
-		t.Fatal("BarrierRekey: expected error")
-	}
-	if _, err := rt.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{}); err == nil {
-		t.Fatal("BarrierGenerateRecoveryKeys: expected error")
-	}
-	if err := rt.BarrierRecoverWithKeys(ctx, &transport.BarrierRecoverWithKeysRequest{}); err == nil {
-		t.Fatal("BarrierRecoverWithKeys: expected error")
-	}
-	if _, err := rt.BarrierGenerateRootToken(ctx, &transport.BarrierGenerateRootTokenRequest{}); err == nil {
-		t.Fatal("BarrierGenerateRootToken: expected error")
-	}
-}
 
 // ===========================================================================
 // Collection + Lease + Lock ServerError paths

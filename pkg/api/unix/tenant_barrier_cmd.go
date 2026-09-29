@@ -43,18 +43,12 @@ import (
 type TenantBarrierInitRequest = pb.TenantBarrierInitRequest
 
 // TenantBarrierInitResponse is the protobuf init response for Unix callers.
-// Share bytes are never present; Security Officers claim their shares via the
-// OfficerRegister / ShareClaimBegin / ShareClaimComplete flow.
+// Share material is never present; share holders claim their sealed
+// envelopes via the OfficerRegister / ShareClaimBegin / ShareClaimComplete flow.
 type TenantBarrierInitResponse = pb.TenantBarrierInitResponse
 
 // TenantBarrierUnsealRequest is the protobuf single-key unseal payload.
 type TenantBarrierUnsealRequest = pb.TenantBarrierUnsealRequest
-
-// TenantBarrierUnsealShareRequest is the protobuf Shamir-share unseal payload.
-type TenantBarrierUnsealShareRequest = pb.TenantBarrierUnsealShareRequest
-
-// TenantBarrierUnsealProgress is the protobuf Shamir quorum-progress response.
-type TenantBarrierUnsealProgress = pb.TenantBarrierUnsealProgress
 
 // TenantBarrierSealRequest is the protobuf seal payload.
 type TenantBarrierSealRequest = pb.TenantBarrierSealRequest
@@ -66,7 +60,7 @@ type TenantBarrierStatusRequest = pb.TenantBarrierStatusRequest
 type TenantBarrierStatusResponse = pb.TenantBarrierStatusResponse
 
 // ---------------------------------------------------------------------------
-// Security Officer wire types
+// Share-holder wire types
 // ---------------------------------------------------------------------------
 
 // TenantBarrierOfficerRegisterRequest is the protobuf SO registration request.
@@ -91,18 +85,19 @@ type TenantBarrierShareClaimBeginResponse = pb.TenantBarrierShareClaimBeginRespo
 type TenantBarrierShareClaimCompleteRequest = pb.TenantBarrierShareClaimCompleteRequest
 
 // TenantBarrierShareClaimCompleteResponse is the protobuf share-claim complete
-// response. This is the sole wire surface where share bytes appear
-// (INV-1/INV-11) — only in the claiming officer's own authenticated session.
+// response. It carries the holder's HPKE-sealed share envelope, delivered
+// once, in the claiming holder's own authenticated session.
 type TenantBarrierShareClaimCompleteResponse = pb.TenantBarrierShareClaimCompleteResponse
 
-// TenantBarrierOfficerClaimStatusRequest is the protobuf officer claim status request.
-type TenantBarrierOfficerClaimStatusRequest = pb.TenantBarrierOfficerClaimStatusRequest
+// TenantBarrierQuorumBeginRequest is the protobuf holder quorum challenge
+// request.
+type TenantBarrierQuorumBeginRequest = pb.TenantBarrierQuorumBeginRequest
 
-// TenantBarrierOfficerClaimStatusResponse is the protobuf officer claim status response.
-type TenantBarrierOfficerClaimStatusResponse = pb.TenantBarrierOfficerClaimStatusResponse
+// TenantBarrierQuorumSubmitRequest is the protobuf holder quorum submission.
+type TenantBarrierQuorumSubmitRequest = pb.TenantBarrierQuorumSubmitRequest
 
-// TenantBarrierShamirSealVoteRequest is the protobuf Shamir seal-vote request.
-type TenantBarrierShamirSealVoteRequest = pb.TenantBarrierShamirSealVoteRequest
+// TenantBarrierRekeyStartRequest is the protobuf rekey-round request.
+type TenantBarrierRekeyStartRequest = pb.TenantBarrierRekeyStartRequest
 
-// TenantBarrierShamirSealVoteResponse is the protobuf Shamir seal-vote response.
-type TenantBarrierShamirSealVoteResponse = pb.TenantBarrierShamirSealVoteResponse
+// TenantBarrierOfficerRevokeRequest is the protobuf holder revocation request.
+type TenantBarrierOfficerRevokeRequest = pb.TenantBarrierOfficerRevokeRequest

@@ -23,28 +23,26 @@
 //
 // Deliberate exclusions (never allowlisted on any transport):
 //
-//   - barrier seal and Shamir seal-vote — sealing is only meaningful
-//     while the barrier is unsealed (see docs/seal/sealed-window.md).
-//   - barrier enable-encryption — the migration requires an unsealed
+//   - barrier seal -- sealing is only meaningful while the barrier is
+//     unsealed (see docs/seal/sealed-window.md). A holder quorum voting to
+//     seal submits through the quorum verbs, whose service refuses the seal
+//     op on a sealed barrier.
+//   - barrier enable-encryption -- the migration requires an unsealed
 //     data plane.
-//   - Shamir share management (list/delete shares) — administrative
-//     operations served by the regular post-unseal listener.
-//   - custodian enroll/revoke — SO-gated governance operations served
-//     post-unseal.
-//   - officer list, recovery-key generate / delete / status, and rekey.
-//     Every verb that reaches the boot-time sealed-window listener does so
-//     WITHOUT authentication, because that listener has no identity plane
-//     to authenticate against. Rekey and the three recovery-key verbs
-//     refuse while the barrier is sealed (seal.ErrSealed), so allowlisting
-//     them bought nothing but an anonymous destructive surface. Officer
-//     list is served post-unseal to authenticated callers.
+//   - holder list, recovery-key generate / delete / status, rekey start and
+//     holder revocation. Every verb that reaches the boot-time sealed-window
+//     listener does so WITHOUT authentication, because that listener has no
+//     identity plane to authenticate against. Rekey, revocation and the
+//     three recovery-key verbs refuse while the barrier is sealed
+//     (seal.ErrSealed), so allowlisting them bought nothing but an anonymous
+//     destructive surface. The holder list is served post-unseal to
+//     authenticated callers.
 //
 // Every entry in Table is therefore an ANONYMOUS verb on that listener and
-// must be justified as one: liveness, credential possession (unseal,
-// recovery-recover, root-token), first-boot trust-on-first-use
-// (initialize, officer registration), or a handshake whose binding
-// authorization the handler enforces (the share and certificate claim
-// flows, and ceremony-sign-csr's SO PIN).
+// must be justified as one: liveness, credential possession (unseal),
+// first-boot trust-on-first-use (initialize, holder registration), or a
+// handshake whose binding authorization the handler enforces (the envelope
+// claims, the holder quorum's factor proof, and ceremony-sign-csr's SO PIN).
 package sealedwindow
 
 import (
@@ -67,16 +65,9 @@ const (
 	VerbBarrierInitialize Verb = "barrier-initialize"
 	VerbBarrierUnseal     Verb = "barrier-unseal"
 
-	VerbShamirInitialize   Verb = "shamir-initialize"
-	VerbShamirUnsealShare  Verb = "shamir-unseal-share"
-	VerbShamirUnsealShares Verb = "shamir-unseal-shares"
-
-	VerbRecoveryRecover Verb = "recovery-recover"
-
-	VerbRootToken Verb = "root-token"
+	VerbShamirInitialize Verb = "shamir-initialize"
 
 	VerbOfficerRegister    Verb = "officer-register"
-	VerbOfficerClaimStatus Verb = "officer-claim-status"
 	VerbShareClaimBegin    Verb = "share-claim-begin"
 	VerbShareClaimComplete Verb = "share-claim-complete"
 
@@ -84,16 +75,12 @@ const (
 	VerbRecoveryShareClaimBegin    Verb = "recovery-share-claim-begin"
 	VerbRecoveryShareClaimComplete Verb = "recovery-share-claim-complete"
 
-	VerbCeremonyInitialize           Verb = "ceremony-initialize"
-	VerbCeremonyStatus               Verb = "ceremony-status"
-	VerbCeremonyClaimCertBegin       Verb = "ceremony-claim-cert-begin"
-	VerbCeremonyClaimCertComplete    Verb = "ceremony-claim-cert-complete"
-	VerbCeremonyOfficerShareBegin    Verb = "ceremony-officer-share-begin"
-	VerbCeremonyOfficerShareComplete Verb = "ceremony-officer-share-complete"
-	VerbCeremonySignCSR              Verb = "ceremony-sign-csr"
-	VerbCeremonyClaimShareBegin      Verb = "ceremony-claim-share-begin"
-	VerbCeremonyClaimShareEnd        Verb = "ceremony-claim-share-complete"
-	VerbCeremonySubmitUnsealShare    Verb = "ceremony-submit-unseal-share"
+	VerbQuorumBegin  Verb = "quorum-begin"
+	VerbQuorumSubmit Verb = "quorum-submit"
+
+	VerbCeremonyInitialize Verb = "ceremony-initialize"
+	VerbCeremonyStatus     Verb = "ceremony-status"
+	VerbCeremonySignCSR    Verb = "ceremony-sign-csr"
 )
 
 // Names holds the per-transport wire names for one canonical verb. An
@@ -116,12 +103,11 @@ type Names struct {
 	// go-quicbaas/pkg/api/sealedwindow's field of the same name so the two
 	// canonical tables diff mechanically.
 	//
-	// It is set for the officer registration verbs: RegisterOfficer
-	// (pkg/ceremony/ceremony_officer.go) CA-signs any caller-supplied CSR
-	// and assigns a Shamir share index with no service-layer
-	// authentication, so an exemption that survives ceremony completion
-	// would let an unauthenticated caller enroll an officer during any
-	// restart-while-sealed. Officer enrollment belongs to the enrollment
+	// It is set for the holder registration verbs: RegisterOfficer
+	// (pkg/ceremony) has the CA issue a holder certificate for any
+	// caller-supplied CSR with no service-layer authentication, so an
+	// exemption that survives ceremony completion would let an
+	// unauthenticated caller enrol a holder during any restart-while-sealed. Officer enrollment belongs to the enrollment
 	// ceremony; once the ceremony is operational the exemption must lapse.
 	//
 	// The barrier / unseal verbs are deliberately NOT marked: a daemon
@@ -156,27 +142,17 @@ var Verbs = []Verb{
 	VerbBarrierInitialize,
 	VerbBarrierUnseal,
 	VerbShamirInitialize,
-	VerbShamirUnsealShare,
-	VerbShamirUnsealShares,
-	VerbRecoveryRecover,
-	VerbRootToken,
 	VerbOfficerRegister,
-	VerbOfficerClaimStatus,
 	VerbShareClaimBegin,
 	VerbShareClaimComplete,
 	VerbRecoveryOfficerRegister,
 	VerbRecoveryShareClaimBegin,
 	VerbRecoveryShareClaimComplete,
+	VerbQuorumBegin,
+	VerbQuorumSubmit,
 	VerbCeremonyInitialize,
 	VerbCeremonyStatus,
-	VerbCeremonyClaimCertBegin,
-	VerbCeremonyClaimCertComplete,
-	VerbCeremonyOfficerShareBegin,
-	VerbCeremonyOfficerShareComplete,
 	VerbCeremonySignCSR,
-	VerbCeremonyClaimShareBegin,
-	VerbCeremonyClaimShareEnd,
-	VerbCeremonySubmitUnsealShare,
 }
 
 // Table maps every canonical verb to its per-transport names. This is the
@@ -196,48 +172,38 @@ var Table = map[Verb]Names{
 	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Transition: true},
 	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal", Transition: true},
 
-	VerbShamirInitialize:   {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Transition: true},
-	VerbShamirUnsealShare:  {REST: []string{"/v1/barrier/shamir/unseal-share"}, GRPC: "BarrierShamirUnsealShare", QUIC: "barrier.ShamirUnsealShare", MCP: "qrdb_barrier_shamir_unseal_share", Transition: true},
-	VerbShamirUnsealShares: {REST: []string{"/v1/barrier/shamir/unseal-shares"}, GRPC: "BarrierShamirUnsealShares", QUIC: "barrier.ShamirUnsealShares", MCP: "qrdb_barrier_shamir_unseal_shares", Transition: true},
-
-	VerbRecoveryRecover: {REST: []string{"/v1/barrier/recovery/recover"}, GRPC: "BarrierRecoveryRecover", QUIC: "barrier.RecoveryRecover", MCP: "qrdb_barrier_recovery_recover", Transition: true},
-
-	VerbRootToken: {REST: []string{"/v1/barrier/root-token"}, GRPC: "BarrierRootToken", QUIC: "barrier.RootToken", MCP: "qrdb_barrier_root_token"},
+	VerbShamirInitialize: {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Transition: true},
 
 	// GET and POST /v1/barrier/officers share one path (method-dispatched),
-	// so officer-register is method-qualified: GET, the officer list, is not
+	// so officer-register is method-qualified: GET, the holder list, is not
 	// allowlisted.
-	// officer-register is PreOperationalOnly: RegisterOfficer CA-signs any
-	// caller-supplied CSR and assigns a share index with no service-layer
-	// auth, so its authentication exemption must lapse the moment the
-	// enrollment ceremony reaches operational (see Names.PreOperationalOnly).
-	VerbOfficerRegister:    {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
-	VerbOfficerClaimStatus: {REST: []string{"/v1/barrier/officers/claim-status"}, GRPC: "BarrierOfficerClaimStatus", QUIC: "barrier.OfficerClaimStatus", MCP: "qrdb_barrier_officer_claim_status"},
+	// officer-register is PreOperationalOnly: RegisterOfficer has the CA
+	// issue a holder certificate for the caller's CSR, so its authentication
+	// exemption must lapse the moment the enrollment ceremony reaches
+	// operational (see Names.PreOperationalOnly).
+	VerbOfficerRegister: {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
 	// The path-param claim routes (/{username}/claim/begin|complete) are
 	// covered by the /v1/barrier/officers/ prefix, shared by both verbs.
 	VerbShareClaimBegin:    {REST: []string{"/v1/barrier/officers/"}, GRPC: "BarrierShareClaimBegin", QUIC: "barrier.ShareClaimBegin", MCP: "qrdb_barrier_share_claim_begin"},
 	VerbShareClaimComplete: {REST: []string{"/v1/barrier/officers/"}, GRPC: "BarrierShareClaimComplete", QUIC: "barrier.ShareClaimComplete", MCP: "qrdb_barrier_share_claim_complete"},
 
 	// recovery-officer-register shares officer-register's PreOperationalOnly
-	// rationale: it enrolls a recovery officer via the same
-	// CSR-sign-and-assign-share flow with no service-layer auth.
+	// rationale: it enrols a recovery holder through the same flow.
 	VerbRecoveryOfficerRegister:    {REST: []string{"POST /v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", PreOperationalOnly: true},
 	VerbRecoveryShareClaimBegin:    {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
 	VerbRecoveryShareClaimComplete: {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
 
-	VerbCeremonyInitialize:        {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Transition: true},
-	VerbCeremonyStatus:            {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status"},
-	VerbCeremonyClaimCertBegin:    {REST: []string{"/v1/ceremony/claim-cert/begin"}, GRPC: "CeremonyClaimCertBegin", QUIC: "ceremony.ClaimCertBegin", MCP: "qrdb_ceremony_claim_cert_begin"},
-	VerbCeremonyClaimCertComplete: {REST: []string{"/v1/ceremony/claim-cert/complete"}, GRPC: "CeremonyClaimCertComplete", QUIC: "ceremony.ClaimCertComplete", MCP: "qrdb_ceremony_claim_cert_complete"},
-	// The officer share-claim handshake. Distinct from the custodian
-	// factor-based claim below (VerbCeremonyClaimShareBegin/End), which owns
-	// /v1/ceremony/claim-share/*.
-	VerbCeremonyOfficerShareBegin:    {REST: []string{"/v1/ceremony/officer-share/begin"}, GRPC: "CeremonyBeginClaimShare", QUIC: "ceremony.BeginClaimShare", MCP: "qrdb_ceremony_begin_claim_share"},
-	VerbCeremonyOfficerShareComplete: {REST: []string{"/v1/ceremony/officer-share/complete"}, GRPC: "CeremonyCompleteClaimShare", QUIC: "ceremony.CompleteClaimShare", MCP: "qrdb_ceremony_complete_claim_share"},
-	VerbCeremonySignCSR:              {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr"},
-	VerbCeremonyClaimShareBegin:      {REST: []string{"/v1/ceremony/claim-share/begin"}, GRPC: "CeremonyClaimShareBegin", QUIC: "ceremony.ClaimShareBegin", MCP: "qrdb_ceremony_claim_share_begin"},
-	VerbCeremonyClaimShareEnd:        {REST: []string{"/v1/ceremony/claim-share/complete"}, GRPC: "CeremonyClaimShareComplete", QUIC: "ceremony.ClaimShareComplete", MCP: "qrdb_ceremony_claim_share_complete"},
-	VerbCeremonySubmitUnsealShare:    {REST: []string{"/v1/barrier/unseal-share"}, GRPC: "CeremonySubmitUnsealShare", QUIC: "ceremony.SubmitUnsealShare", MCP: "qrdb_ceremony_submit_unseal_share", Transition: true},
+	// The holder quorum: a holder answers a factor challenge and submits its
+	// share. Unseal and recovery happen here, so both must be reachable
+	// while sealed; the factor proof, verified against the roster the
+	// wrapped root key is sealed under, is the credential. A submission can
+	// complete an unseal, so it is a Transition.
+	VerbQuorumBegin:  {REST: []string{"/v1/barrier/quorum/begin"}, GRPC: "BarrierQuorumBegin", QUIC: "barrier.QuorumBegin", MCP: "qrdb_barrier_quorum_begin"},
+	VerbQuorumSubmit: {REST: []string{"/v1/barrier/quorum/submit"}, GRPC: "BarrierQuorumSubmit", QUIC: "barrier.QuorumSubmit", MCP: "qrdb_barrier_quorum_submit", Transition: true},
+
+	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Transition: true},
+	VerbCeremonyStatus:     {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status"},
+	VerbCeremonySignCSR:    {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr"},
 }
 
 // RESTExtra lists REST-only allowlist entries that have no

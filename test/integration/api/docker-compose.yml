@@ -244,16 +244,15 @@ services:
           fi
           sleep 1
         done
-        # Bootstrap the Shamir barrier through the Security Officer claim
-        # flow (docs/seal/so-share-distribution-design.md). Shares are never
-        # returned by shamir/initialize (INV-1); instead three officers are
-        # registered with CSRs while the barrier is still sealed (officer
-        # registration routes are on the sealed-window allowlist), then
-        # initialization distributes one share per officer into server-side
-        # memguard enclaves. Officer count must EQUAL total_shares, and
-        # registration must happen BEFORE initialize. Guarded on the shares
-        # file so a container restart against a persisted volume does not
-        # re-run the one-time flow.
+        # Bootstrap the Shamir barrier through the share-holder flow
+        # (docs/shamir-custody/). Shares are never returned by
+        # shamir/initialize; instead three holders are enrolled with CSRs while
+        # the barrier is still sealed (holder enrolment is on the sealed-window
+        # allowlist), then initialization splits the unseal key and seals one
+        # HPKE envelope to each holder. The holder count must EQUAL
+        # total_shares, and enrolment must happen BEFORE initialize. Guarded on
+        # the holders file so a container restart against a persisted volume
+        # does not re-run the one-time flow.
         OFFDIR=/data/raft/officers
         if [ ! -s /data/raft/shamir-init.json ]; then
           mkdir -p $$OFFDIR
@@ -276,16 +275,14 @@ services:
               cat $$OFFDIR/so-$$n.register.json || true
             fi
           done
-          # Initialize the Shamir barrier (share-free response). This splits
-          # the root key into one enclave-held share per registered officer
-          # and unseals the barrier in direct mode, after which qrdbd tears
-          # down the sealed-window listener and continues the full boot.
-          # base64: aW50ZWdyYXRpb24tdGVzdC1zaGFtaXItc2VjcmV0 decodes to
-          # integration-test-shamir-secret. See the barrier init above.
+          # Initialize the Shamir barrier (share-free response). The barrier
+          # generates its keys, seals one envelope to each enrolled holder and
+          # unseals, after which qrdbd tears down the sealed-window listener
+          # and continues the full boot.
           echo "Initializing Shamir barrier..."
           curl -ks --max-time 10 -X POST $$AUTH \
             -H 'Content-Type: application/json' \
-            --data-binary '{"secret":"aW50ZWdyYXRpb24tdGVzdC1zaGFtaXItc2VjcmV0","threshold":2,"total_shares":3}' \
+            --data-binary '{"threshold":2,"total_shares":3}' \
             -o /data/raft/shamir-init-response.json \
             https://localhost:64002/v1/barrier/shamir/initialize || true
           echo "Shamir init response:"
@@ -301,19 +298,17 @@ services:
           fi
           sleep 1
         done
-        # Claim each officer's share over the officer's own mTLS session
-        # (INV-11: share bytes only ever appear in the claiming officer's
-        # response). The handshake is begin (returns a hex nonce) -> sign
-        # SHA-256(nonce) with the officer key (ECDSA ASN.1-DER, exactly what
-        # `openssl dgst -sha256 -sign` produces) -> complete (returns the
-        # base64 JSON-encoded shamir share, one time only — the server-side
-        # enclave is destroyed on claim). The combinable share VALUE strings
-        # are extracted and written to /data/raft/shamir-init.json so the
-        # integration-test runner can replay them for share-based unseal and
-        # seal-vote quorum tests.
+        # Claim each holder's envelope over the holder's own mTLS session: the
+        # envelope is delivered once, sealed to the holder's key. The handshake
+        # is begin (returns a hex nonce) -> sign SHA-256(nonce) with the holder
+        # key (ECDSA ASN.1-DER, exactly what `openssl dgst -sha256 -sign`
+        # produces) -> complete (returns the base64 envelope). The holders
+        # file lists each holder's certificate, key and envelope, relative to
+        # /data/raft, so the integration-test runner can drive the
+        # authenticated quorum with them.
         if [ ! -s /data/raft/shamir-init.json ]; then
-          echo "Claiming Security Officer shares..."
-          : > $$OFFDIR/share-values.txt
+          echo "Claiming share-holder envelopes..."
+          : > $$OFFDIR/holders.jsonl
           for n in 1 2 3; do
             SOAUTH="--cacert /data/raft/ca.pem --cert $$OFFDIR/so-$$n.crt --key $$OFFDIR/so-$$n.key"
             curl -ks --max-time 10 -X POST $$SOAUTH \
@@ -333,23 +328,21 @@ services:
                   --data-binary @- \
                   -o $$OFFDIR/so-$$n.complete.json \
                   https://localhost:64002/v1/barrier/officers/so-$$n/claim/complete || true
-            SHARE=$$(jq -r '.share_bytes // empty' $$OFFDIR/so-$$n.complete.json 2>/dev/null | base64 -d 2>/dev/null | jq -r '.value // empty' 2>/dev/null)
-            if [ -z "$$SHARE" ]; then
+            if ! jq -r '.envelope // empty' $$OFFDIR/so-$$n.complete.json 2>/dev/null | base64 -d > $$OFFDIR/so-$$n.env 2>/dev/null \
+                || [ ! -s $$OFFDIR/so-$$n.env ]; then
               echo "Claim complete failed for so-$$n:"
               cat $$OFFDIR/so-$$n.complete.json || true
               continue
             fi
-            echo "$$SHARE" >> $$OFFDIR/share-values.txt
-            # Scrub claim artifacts; the share now lives only in the shares
-            # file consumed by the test runner.
             rm -f $$OFFDIR/so-$$n.complete.json $$OFFDIR/so-$$n.nonce
-            echo "Officer so-$$n share claimed"
+            jq -cn --arg u "so-$$n" '{username: $$u, cert: ("officers/" + $$u + ".crt"), key: ("officers/" + $$u + ".key"), envelope: ("officers/" + $$u + ".env")}' \
+              >> $$OFFDIR/holders.jsonl
+            echo "Holder so-$$n envelope claimed"
           done
-          jq -Rn '{threshold: 2, total_shares: 3, shares: [inputs]}' \
-            < $$OFFDIR/share-values.txt > /data/raft/shamir-init.json
-          rm -f $$OFFDIR/share-values.txt
-          echo "Shamir shares file written:"
-          jq '{threshold, total_shares, share_count: (.shares | length)}' /data/raft/shamir-init.json || true
+          jq -s '{threshold: 2, total_shares: 3, holders: .}' < $$OFFDIR/holders.jsonl > /data/raft/shamir-init.json
+          rm -f $$OFFDIR/holders.jsonl
+          echo "Shamir holders file written:"
+          jq '{threshold, total_shares, holder_count: (.holders | length)}' /data/raft/shamir-init.json || true
         fi
         echo "Bootstrap complete"
         # Hand control back to qrdbd.

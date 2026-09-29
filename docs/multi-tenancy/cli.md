@@ -193,8 +193,9 @@ barrier of its own.
 | `--threshold` | int | M, shamir only (`0` = default) |
 | `--shares` | int | N, shamir only (`0` = default) |
 
-**Share material is never returned here** — officers claim their shares
-individually.
+**Share material is never returned here.** A Shamir tenant barrier is split
+to the tenant's enrolled share holders (`--shares` must equal their number),
+and each claims their own envelope.
 
 ```bash
 qrdb tenant barrier-init --id secure-co --strategy passphrase --passphrase "$PP"
@@ -209,33 +210,28 @@ qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 3 --shares
 
 ### `qrdb tenant barrier-unseal`
 
+The credential unseal. A Shamir tenant barrier refuses it: M of its share
+holders unseal it with `qrdb tenant barrier-quorum submit --op unseal`.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |
-| `--key` | string | base64-encoded master key |
-| `--share` | string | base64-encoded Shamir share |
+| `--key` | string | base64-encoded barrier credential |
 
-### `qrdb tenant barrier-shamir-seal-vote`
+## Tenant share holders
 
-| Flag | Type |
-|---|---|
-| `--tenant-id` | string |
-| `--share` | string |
-
-Shamir-strategy tenant barriers only. When the quorum is met all submitted
-shares are wiped and the barrier seals.
-
-## Tenant Security Officers
-
-`qrdb tenant barrier-officer` mirrors `qrdb barrier officer`
-([../shamir-custody/cli.md](../shamir-custody/cli.md)) scoped to one tenant via
-`--tenant-id`. Verbs: `register`, `list`, `claim-status`, `claim-begin`,
-`claim-complete`, with the same flags plus `--tenant-id`.
+`qrdb tenant barrier-officer`, `barrier-quorum` and `barrier-rekey` mirror the
+system barrier's `officer`, `quorum` and `rekey` verbs
+([../shamir-custody/cli.md](../shamir-custody/cli.md)) for one tenant, via
+`--tenant-id`. Officer verbs: `register`, `list`, `claim`, `claim-begin`,
+`claim-complete`, `revoke`. Quorum verbs: `begin`, `submit`.
 
 ```bash
 qrdb tenant barrier-officer register --tenant-id secure-co \
-     --username alice --csr-file alice.csr --authenticator-type piv
-qrdb tenant barrier-officer claim-status --tenant-id secure-co
+     --username alice --role so --csr-file alice.csr
+qrdb tenant barrier-officer list --tenant-id secure-co
+qrdb tenant barrier-quorum submit --tenant-id secure-co --op unseal \
+     --username alice --envelope alice.env --key alice.key
 ```
 
 Applies only to dedicated-isolation tenants.

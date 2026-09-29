@@ -392,6 +392,14 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// behind it cannot reach the authorizer.
 	identity.RoleBindings = nil
 	identity.Attributes = nil
+	// A share holder is not an account: it has no user record, no roles and
+	// no cert binding to check, and RBAC refuses it everything. Looking it up
+	// could only ever enrich it with the roles of an unrelated account that
+	// happens to share its name.
+	if identity.IsShareHolder() {
+		ctx = auth.WithIdentity(ctx, identity)
+		return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
+	}
 
 	// A holder certificate -- an officer's or custodian's, signed by the
 	// ceremony CA -- proves who holds a share; it is never a user login. It

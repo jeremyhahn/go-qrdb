@@ -31,81 +31,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// CeremonyCustodian — unmarshal-error paths to cover the 3rd branch (66.7%)
-// ---------------------------------------------------------------------------
-
-func TestE2E_CeremonyClaimShareBegin_RPCError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShareBegin", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("custodian not found")
-	})
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_CeremonyClaimShareBegin_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShareBegin", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_CeremonyClaimShareComplete_RPCError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShareComplete", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("invalid factor response")
-	})
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_CeremonyClaimShareComplete_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShareComplete", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_CeremonySubmitUnsealShare_RPCError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.SubmitUnsealShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("share rejected")
-	})
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-func TestE2E_CeremonySubmitUnsealShare_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.SubmitUnsealShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, []byte("bad-proto")
-	})
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{CustodianID: "x"})
-	assertQuicRequestError(t, err)
-}
-
-// quicCustodianToInfo: nil guard and optional timestamp paths
-func TestQUIC_CustodianToInfo_Nil(t *testing.T) {
-	info := quicCustodianToInfo(nil)
-	if info == nil {
-		t.Fatal("expected non-nil")
-	}
-}
-
-func TestQUIC_CustodianToInfo_WithTimestamps(t *testing.T) {
-	info := quicCustodianToInfo(&pb.CeremonyCustodianResponse{
-		Id: "c1", EnrolledAtUnix: 1800000000, RevokedAtUnix: 1850000000, ShareClaimedAtUnix: 1860000000,
-	})
-	if info.RevokedAt == nil || info.ShareClaimedAt == nil {
-		t.Fatal("expected optional timestamps set")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CredentialStore / CredentialRetrieve success paths (62.5% / 66.7%)
 // Already have closed from transport_closed_test.go; add success+error paths.
 // ---------------------------------------------------------------------------
@@ -340,24 +265,6 @@ func errorsAsP(err error, target **transport.ClosedError) bool {
 		return false
 	}
 	return errorAs(err, target)
-}
-
-func TestQUICExtraClosed_Barrier(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-
-	if err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{}); !errorAs(err, &ce) {
-		t.Errorf("BarrierUnsealWithShares: %v", err)
-	}
-	if err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{}); !errorAs(err, &ce) {
-		t.Errorf("BarrierRecoverWithKeys: %v", err)
-	}
-	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{}); !errorAs(err, &ce) {
-		t.Errorf("BarrierInitialize: %v", err)
-	}
-	if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{}); !errorAs(err, &ce) {
-		t.Errorf("BarrierUnseal: %v", err)
-	}
 }
 
 func TestQUICExtraClosed_Embedding(t *testing.T) {

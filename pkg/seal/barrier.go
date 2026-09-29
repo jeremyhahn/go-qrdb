@@ -149,37 +149,19 @@ type StorageBarrier struct {
 	// stores StrategyID.
 	persistedStrategyCache atomic.Value
 
-	// accumulator holds the Shamir share accumulator for quorum-based unsealing.
-	accumulator atomic.Value
-
-	// accumulatorMu serializes load-or-create of the accumulator so concurrent
-	// first shares cannot each construct a separate accumulator (which would
-	// lose quorum progress), and so an expired accumulator is wiped before it
-	// is replaced.
-	accumulatorMu sync.Mutex
-
 	// initializedAt records when the barrier was first initialized. Used by
 	// callers (notably the GUI's connection manager) to distinguish a never-
 	// initialized barrier from a sealed-but-initialized one. atomic.Value
 	// stores time.Time. Zero value means "never initialized".
 	initializedAt atomic.Value
 
-	// distributor is the ceremony distributor for system barrier share
-	// distribution (init, rekey). Set via SetCeremonyDistributor.
+	// distributor seals both key domains' shares to their holders (init,
+	// recovery-key generation, rekey). Set via SetCeremonyDistributor.
 	distributor CeremonyDistributor
 
-	// recoveryDistributor is the ceremony distributor for recovery key
-	// share distribution. Set via SetRecoveryDistributor.
-	recoveryDistributor CeremonyDistributor
-
-	// sealVoteAcc holds the Shamir share accumulator used exclusively for
-	// quorum-gated sealing. Separate from the unseal accumulator so that
-	// seal votes and unseal submissions never interfere with each other.
-	sealVoteAcc atomic.Value
-
-	// sealVoteMu serializes load-or-create of the seal-vote accumulator,
-	// mirroring the accumulatorMu pattern for the unseal accumulator.
-	sealVoteMu sync.Mutex
+	// quorumState holds the share-holder quorum rounds and the holder
+	// verifier (see quorum.go).
+	quorumState
 }
 
 // NewStorageBarrier creates a new StorageBarrier that encrypts all values
@@ -256,12 +238,13 @@ func NewStorageBarrier(
 	}
 
 	b := &StorageBarrier{
-		logger:     logger,
-		base:       base,
-		barrier:    epochBarrier,
-		config:     config,
-		strategies: stratMap,
-		prefOrder:  prefOrder,
+		logger:      logger,
+		base:        base,
+		barrier:     epochBarrier,
+		config:      config,
+		strategies:  stratMap,
+		prefOrder:   prefOrder,
+		quorumState: quorumState{rounds: newQuorumRounds()},
 	}
 	// Start sealed (state = 0 is zero value).
 	return b, nil
@@ -288,7 +271,39 @@ func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) erro
 			"deny", map[string]string{"error": err.Error()})
 		return err
 	}
+	if err := refuseCredentialShamirInit(strategy); err != nil {
+		return err
+	}
 	return b.initializeWithStrategy(ctx, strategy, creds)
+}
+
+// refuseCredentialShamirInit refuses to initialize a Shamir barrier through a
+// credential entry point: it would have no wrapped key and no roster, and so
+// could never be unsealed once sealed. InitializeShamir is the only way in.
+func refuseCredentialShamirInit(strategy SealingStrategy) error {
+	if strategy.ID() == StrategyShamir {
+		return ErrShamirInitializeRequiresHolders
+	}
+	return nil
+}
+
+// initializeShamirKey initializes b under its registered Shamir strategy and
+// leaves it unsealed with a fresh root key, ready for the caller to
+// distribute. Only the holder paths (InitializeShamir and the encryption
+// migration's Shamir mint) call it, and each distributes before returning.
+func (b *StorageBarrier) initializeShamirKey(ctx context.Context) error {
+	strategy := b.ShamirStrategy()
+	if strategy == nil {
+		return ErrShamirNotConfigured
+	}
+	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrAlreadyInitialized
+	}
+	return b.initializeWithStrategy(ctx, strategy, Credentials{})
 }
 
 // InitializeWithStrategy initializes the barrier using EXACTLY the supplied
@@ -307,6 +322,9 @@ func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) erro
 func (b *StorageBarrier) InitializeWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
 	if strategy == nil {
 		return ErrNoStrategySpecified
+	}
+	if err := refuseCredentialShamirInit(strategy); err != nil {
+		return err
 	}
 	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
 	if err != nil {
@@ -454,69 +472,6 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 	b.logger.Info("barrier unsealed",
 		slog.String("strategy", string(sealed.Strategy)))
 
-	return nil
-}
-
-// unsealDirect resolves the quorum-reconstructed secret to the barrier root
-// key (unwrapping it from the unseal-key blob when present, see
-// unsealkey.go) and transitions to the unsealed state. The EpochBarrier is
-// initialized with the root key directly.
-// Used by StrategyShamir where shares reconstruct the unseal key (or, on
-// legacy barriers, the root key itself).
-func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error {
-	shamirStrat, ok := b.strategyByID(StrategyShamir)
-	if !ok {
-		return ErrShamirNotConfigured
-	}
-
-	// Resolve the reconstructed secret to the root key. In unseal-key mode
-	// the AEAD unwrap doubles as share verification: wrong or rekey-revoked
-	// shares fail here with ErrUnsealKeyMismatch. The root key arrives in
-	// protected memory and stays there: it is read only under a borrow, and
-	// then handed to the recovery strategy by consuming the buffer, so no
-	// ordinary heap slice ever holds it on this path.
-	rootKey, err := b.resolveDirectSecret(ctx, secret)
-	if err != nil {
-		return err
-	}
-	// Destroy is a no-op once newRecoveryStrategyFromBuffer has consumed the
-	// buffer, and releases it on every earlier return.
-	defer rootKey.Destroy()
-
-	// The SOs have reconstructed the root key (rootKey). The real
-	// ShamirStrategy can no longer reconstruct it (shares are never persisted),
-	// so we unseal via a recovery strategy that simply hands the EpochBarrier
-	// the in-hand root key. The persisted (key-material-free) envelope supplies
-	// the epoch/salt state needed to re-derive DEKs. This mirrors RecoverWithKeys
-	// and works whether the EpochBarrier is freshly opened or sealed in-process.
-	blob, getErr := b.base.Get(ctx, b.config.RootKeyPath)
-	if getErr != nil {
-		return getErr
-	}
-	var sealed SealedRootKey
-	if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
-		return ErrCorruptRootKey
-	}
-	if stampErr := rootKey.WithBytes(func(key []byte) error {
-		return b.stampNoneOriginSealedState(key, &sealed)
-	}); stampErr != nil {
-		return stampErr
-	}
-	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
-		return setErr
-	}
-	recStrat, recErr := newRecoveryStrategyFromBuffer(rootKey, shamirStrat)
-	if recErr != nil {
-		return recErr
-	}
-	defer func() { _ = recStrat.Close() }()
-	if unsealErr := b.barrier.Unseal(ctx, recStrat, Credentials{}); unsealErr != nil {
-		return unsealErr
-	}
-
-	b.activeStrategy.Store(StrategyShamir)
-	b.state.Store(stateUnsealed)
-	b.restoreInitializedAt(ctx)
 	return nil
 }
 
@@ -737,8 +692,8 @@ func (b *StorageBarrier) ActiveStrategy() StrategyID {
 	return ""
 }
 
-// SetCeremonyDistributor installs the ceremony distributor used to seal
-// shares to enrolled Security Officers during system barrier init and rekey.
+// SetCeremonyDistributor installs the ceremony distributor that seals both
+// key domains' shares to their enrolled holders.
 func (b *StorageBarrier) SetCeremonyDistributor(d CeremonyDistributor) {
 	b.distributor = d
 }
@@ -747,18 +702,6 @@ func (b *StorageBarrier) SetCeremonyDistributor(d CeremonyDistributor) {
 // system barrier share distribution, or nil if not set.
 func (b *StorageBarrier) CeremonyDistributor() CeremonyDistributor {
 	return b.distributor
-}
-
-// SetRecoveryDistributor installs the ceremony distributor used to seal
-// shares to enrolled recovery Security Officers.
-func (b *StorageBarrier) SetRecoveryDistributor(d CeremonyDistributor) {
-	b.recoveryDistributor = d
-}
-
-// RecoveryDistributor returns the ceremony distributor configured for
-// recovery key share distribution, or nil if not set.
-func (b *StorageBarrier) RecoveryDistributor() CeremonyDistributor {
-	return b.recoveryDistributor
 }
 
 // Config returns the barrier's configuration.

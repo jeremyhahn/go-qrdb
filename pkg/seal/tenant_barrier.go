@@ -93,22 +93,15 @@ func (t *TenantBarrier) Unseal(ctx context.Context, creds Credentials) error {
 	return t.barrier.Unseal(ctx, creds)
 }
 
-// InitializeShamir initializes this tenant barrier using Shamir secret sharing
-// and seals the generated M-of-N shares to the enrolled Security Officers via
-// the CeremonyDistributor. No share bytes are returned; the ShamirInitParams
-// reports only the threshold, total, and officer share count.
-// The tenant barrier must have been registered with a ShamirStrategy and a
-// populated ShamirConfig (see BarrierRegistry.RegisterTenantPooledShamir).
-func (t *TenantBarrier) InitializeShamir(ctx context.Context, creds Credentials) (*ShamirInitParams, error) {
-	return t.barrier.InitializeShamir(ctx, creds)
-}
-
-// UnsealWithShare submits a single Shamir share toward this tenant barrier's
-// quorum threshold, automatically unsealing once enough shares are present. The
-// accumulator is owned by the tenant's own StorageBarrier, so quorum state is
-// isolated per tenant.
-func (t *TenantBarrier) UnsealWithShare(ctx context.Context, shareValue string) (*QuorumProgress, error) {
-	return t.barrier.UnsealWithShare(ctx, shareValue)
+// InitializeShamir initializes this tenant barrier under Shamir custody and
+// seals the unseal key's M-of-N shares to the tenant's enrolled share holders
+// via the CeremonyDistributor. No share bytes are returned. The tenant
+// barrier must have been registered with a ShamirStrategy and a populated
+// ShamirConfig (see BarrierRegistry.RegisterTenantPooledShamir). Quorum
+// rounds are owned by the tenant's own StorageBarrier, so they are isolated
+// per tenant.
+func (t *TenantBarrier) InitializeShamir(ctx context.Context, policy FactorPolicy) (*ShamirInitParams, error) {
+	return t.barrier.InitializeShamir(ctx, policy)
 }
 
 // Seal transitions the tenant barrier to sealed state and releases the

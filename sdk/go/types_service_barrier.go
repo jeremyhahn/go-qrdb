@@ -57,9 +57,6 @@ type BarrierStatusInfo = service.BarrierStatusInfo
 // ShamirInitInfo holds the result of a Shamir barrier initialization.
 type ShamirInitInfo = service.ShamirInitInfo
 
-// UnsealShareProgress reports progress toward a Shamir unseal quorum.
-type UnsealShareProgress = service.UnsealShareProgress
-
 // RecoveryKeysInfo holds recovery keys produced during initialization.
 type RecoveryKeysInfo = service.RecoveryKeysInfo
 
@@ -80,34 +77,30 @@ type BarrierOfficerStatus = service.BarrierOfficerStatus
 // BarrierShareClaimChallenge is the challenge issued by BarrierShareClaimBegin.
 type BarrierShareClaimChallenge = service.BarrierShareClaimChallenge
 
-// BarrierShareClaimResult is returned to the Security Officer exactly once
-// upon a successful BarrierShareClaimComplete.
+// BarrierShareClaimResult delivers a holder's sealed share envelope exactly
+// once, upon a successful BarrierShareClaimComplete.
 type BarrierShareClaimResult = service.BarrierShareClaimResult
+
+// QuorumBeginRequest asks for a holder's quorum challenge.
+type QuorumBeginRequest = service.QuorumBeginRequest
+
+// QuorumSubmitRequest submits one authenticated holder's share.
+type QuorumSubmitRequest = service.QuorumSubmitRequest
+
+// QuorumOutcomeInfo reports a quorum round's progress after a submission.
+type QuorumOutcomeInfo = service.QuorumOutcomeInfo
+
+// QuorumRoundInfo describes an open quorum round.
+type QuorumRoundInfo = service.QuorumRoundInfo
 
 // NewBarrierService creates a new BarrierServicer backed by the given barrier.
 var NewBarrierService = service.NewBarrierService
 
 // NewBarrierServiceWithCeremony creates a new BarrierServicer backed by the
-// given barrier and wired to the ceremony service for Security Officer share
-// distribution. The ceremony service is installed as the barrier's
-// CeremonyDistributor and RecoveryDistributor, enabling the officer / share /
-// recovery verbs that NewBarrierService alone leaves unconfigured.
+// given barrier and wired to the ceremony service, which distributes share
+// envelopes to the enrolled holders and verifies their quorum submissions,
+// enabling the holder verbs NewBarrierService alone leaves unconfigured.
 var NewBarrierServiceWithCeremony = service.NewBarrierServiceWithCeremony
-
-// ---------------------------------------------------------------------------
-// Ceremony service (additional service-layer types)
-// ---------------------------------------------------------------------------
-
-// ServiceCeremonyServicer is re-exported in types_service.go. The two
-// additional ceremony result types below are not covered there.
-
-// CeremonyCustodianChallenge contains the custodian challenge issued during
-// the ceremony custodian-claim handshake.
-type CeremonyCustodianChallenge = service.CeremonyCustodianChallenge
-
-// CeremonyUnsealShareResult contains the result of submitting an unseal share
-// during the initialization ceremony.
-type CeremonyUnsealShareResult = service.CeremonyUnsealShareResult
 
 // ---------------------------------------------------------------------------
 // Auth factor services (service layer)

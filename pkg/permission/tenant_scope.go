@@ -41,8 +41,8 @@ func tenantOnlyPermissions() []Permission {
 		TenantBarrierStatus,
 		TenantBarrierOfficerRegister,
 		TenantBarrierOfficerList,
-		TenantBarrierClaimShare,
-		TenantBarrierSealVote,
+		TenantBarrierRekey,
+		TenantBarrierOfficerRevoke,
 	}
 }
 

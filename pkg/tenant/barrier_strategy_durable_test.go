@@ -17,53 +17,10 @@ package tenant
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sync"
 	"testing"
-
-	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
-
-// tenantCaptureDist is a test-only CeremonyDistributor that captures generated
-// Shamir shares so tests can later call TenantBarrierUnsealShare.
-type tenantCaptureDist struct {
-	mu     sync.Mutex
-	shares []string
-}
-
-func (c *tenantCaptureDist) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
-	raw, err := quicraftShamir.Split(secret, threshold, total)
-	if err != nil {
-		return 0, fmt.Errorf("tenantCaptureDist: split failed: %w", err)
-	}
-	c.mu.Lock()
-	c.shares = make([]string, len(raw))
-	for i, s := range raw {
-		c.shares[i] = s.Value
-	}
-	c.mu.Unlock()
-	return len(raw), nil
-}
-
-func (c *tenantCaptureDist) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
-	c.mu.Lock()
-	c.shares = nil
-	c.mu.Unlock()
-	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
-}
-
-func (c *tenantCaptureDist) Shares() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.shares == nil {
-		return nil
-	}
-	out := make([]string, len(c.shares))
-	copy(out, c.shares)
-	return out
-}
 
 // TestTenantBarrierInitWithStrategy_DurableUnregisteredPath proves that when
 // TenantBarrierInitWithStrategy is called for a tenant whose barrier is not
@@ -188,100 +145,5 @@ func TestTenantBarrierInitWithStrategy_IdempotentRegistrationOnRegistered(t *tes
 	}
 	if count != 1 {
 		t.Errorf("tenant registered %d times, want exactly 1", count)
-	}
-}
-
-// TestTenantBarrierShamir_InitReturnsShareCountAndUnseals proves the per-tenant
-// Shamir vertical at the service layer: init distributes the M-of-N shares to
-// enrolled officers (captured here via a test distributor), and the barrier can
-// be sealed and then unsealed by submitting a quorum of those shares via
-// TenantBarrierUnsealShare.
-func TestTenantBarrierShamir_InitReturnsShareCountAndUnseals(t *testing.T) {
-	// Wire a capture distributor so the test can retrieve generated shares.
-	dist := &tenantCaptureDist{}
-	store := seal.NewMemoryBackend()
-	reg := newTestBarrierRegistry(t)
-	svc, err := NewTenantService(store, reg, testLogger(), WithTenantDistributor(dist))
-	if err != nil {
-		t.Fatalf("NewTenantService: %v", err)
-	}
-	ctx := context.Background()
-
-	const tenantID = "shamir-tenant"
-	if _, err := svc.CreateTenant(ctx, tenantID, "Shamir Tenant", ""); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-	if err := reg.UnregisterTenant(tenantID); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
-		t.Fatalf("UnregisterTenant: %v", err)
-	}
-
-	const threshold, total = 2, 3
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir)
-	if err != nil {
-		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
-	}
-	if res == nil || res.ShareCount != total || res.Threshold != threshold || res.TotalShares != total {
-		t.Fatalf("unexpected shamir init result: %+v", res)
-	}
-	if res.Strategy != string(seal.StrategyShamir) {
-		t.Fatalf("expected strategy %q, got %q", seal.StrategyShamir, res.Strategy)
-	}
-
-	// Retrieve the captured shares from the distributor.
-	shares := dist.Shares()
-	if len(shares) != total {
-		t.Fatalf("distributor captured %d shares, want %d", len(shares), total)
-	}
-
-	// Seal the barrier directly via the registry to bypass the service-layer
-	// Shamir quorum gate (which is correct behavior; this test only exercises
-	// the unseal-share path, not the seal-vote flow).
-	if err := reg.SealTenant(tenantID); err != nil {
-		t.Fatalf("reg.SealTenant: %v", err)
-	}
-
-	// First share is below threshold.
-	prog, err := svc.TenantBarrierUnsealShare(ctx, tenantID, shares[0])
-	if err != nil {
-		t.Fatalf("TenantBarrierUnsealShare(first): %v", err)
-	}
-	if prog.Complete || !prog.Sealed {
-		t.Fatalf("expected incomplete/sealed after one share, got %+v", prog)
-	}
-
-	// Second share meets the 2-of-3 threshold and unseals.
-	prog, err = svc.TenantBarrierUnsealShare(ctx, tenantID, shares[1])
-	if err != nil {
-		t.Fatalf("TenantBarrierUnsealShare(second): %v", err)
-	}
-	if !prog.Complete || prog.Sealed {
-		t.Fatalf("expected complete/unsealed after quorum, got %+v", prog)
-	}
-
-	st, err := svc.TenantBarrierStatus(ctx, tenantID)
-	if err != nil {
-		t.Fatalf("TenantBarrierStatus: %v", err)
-	}
-	if st.Sealed {
-		t.Error("expected barrier unsealed after quorum reached")
-	}
-	if st.ShamirThreshold != threshold || st.ShamirTotal != total {
-		t.Errorf("status shamir params = %d/%d, want %d/%d", st.ShamirThreshold, st.ShamirTotal, threshold, total)
-	}
-}
-
-// TestTenantBarrierUnsealShare_EmptyShareRejected verifies an empty share is
-// rejected with ErrEmptyShare.
-func TestTenantBarrierUnsealShare_EmptyShareRejected(t *testing.T) {
-	svc, _ := newTestService(t)
-	ctx := context.Background()
-
-	const tenantID = "shamir-empty"
-	if _, err := svc.CreateTenant(ctx, tenantID, "Shamir Empty", ""); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-
-	if _, err := svc.TenantBarrierUnsealShare(ctx, tenantID, ""); !errors.Is(err, ErrEmptyShare) {
-		t.Fatalf("expected ErrEmptyShare, got %v", err)
 	}
 }

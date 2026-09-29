@@ -243,7 +243,7 @@ func TestIsCryptoUse_ExcludesGovernanceAndAmbiguousVerbs(t *testing.T) {
 	notCryptoUse := []Permission{
 		// Module lifecycle: cryptographic by mechanism, governance by duty.
 		SealBootstrap, SealUnseal, SealSeal, SealRotateRootKey, SealRekey,
-		SealGenerateRecovery, SealRecoverWithKeys, CeremonySignCSR,
+		SealGenerateRecovery, CeremonySignCSR,
 		// Issuance and credential minting, not primitives on caller input.
 		CertsGenerate, PasswordsGenerate,
 		// Key lifecycle, including key entry / output.

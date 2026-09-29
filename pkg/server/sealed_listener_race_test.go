@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -45,20 +46,6 @@ func (p *pollSignalProbe) IsSealed() bool {
 	}
 	return p.barrier.IsSealed()
 }
-
-// recoverySink is a seal.CeremonyDistributor that accepts every share and
-// seals it nowhere: this test needs recovery metadata to exist, not officers.
-type recoverySink struct{}
-
-func (recoverySink) SealAndDistribute(_ context.Context, _ []byte, _, total int) (int, error) {
-	return total, nil
-}
-
-func (recoverySink) RekeyAndDistribute(_ context.Context, _ []byte, _, total int) (int, error) {
-	return total, nil
-}
-
-var _ seal.CeremonyDistributor = recoverySink{}
 
 // TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal pins the
 // unseal race on the boot-time sealed-window listener. That listener has no
@@ -87,12 +74,16 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	t.Cleanup(func() { _ = barrier.Close() })
-	barrier.SetRecoveryDistributor(recoverySink{})
+	// This test needs recovery metadata to exist, so the recovery domain gets
+	// three holders from the faithful in-memory distributor.
+	distributor := sealtest.NewDistributor()
+	distributor.SetHolders(seal.DomainRecovery, "r1", "r2", "r3")
+	barrier.SetCeremonyDistributor(distributor)
 	barrierSvc := service.NewBarrierService(barrier)
 	if err := barrierSvc.BarrierInitialize(ctx, secret); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
-	if _, err := barrierSvc.BarrierGenerateRecoveryKeys(ctx, 2, 3); err != nil {
+	if _, err := barrierSvc.BarrierGenerateRecoveryKeys(ctx, 2, ""); err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)
 	}
 	if err := barrierSvc.BarrierSeal(ctx); err != nil {

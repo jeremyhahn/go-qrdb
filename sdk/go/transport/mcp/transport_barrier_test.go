@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -40,50 +41,32 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockBarrierSvc struct {
+	service.BarrierServicer
 	mu sync.Mutex
 
 	// Configurable error injection.
-	initErr            error
-	unsealErr          error
-	sealErr            error
-	statusErr          error
-	initShamirErr      error
-	unsealShareErr     error
-	unsealSharesErr    error
-	listSharesErr      error
-	deleteShareErr     error
-	deleteAllSharesErr error
-	verifyErr          error
-	rekeyErr           error
-	genRecoveryErr     error
-	recoverErr         error
-	deleteRecoveryErr  error
-	hasRecoveryErr     error
-	rootTokenErr       error
+	initErr           error
+	unsealErr         error
+	sealErr           error
+	statusErr         error
+	initShamirErr     error
+	genRecoveryErr    error
+	deleteRecoveryErr error
+	hasRecoveryErr    error
 
 	// Recorded last-call arguments.
 	lastSecret          string
 	lastUnsealSecret    string
 	lastInitThreshold   int
 	lastInitTotalShares int
-	lastUnsealShare     string
-	lastUnsealShares    []string
-	lastDeleteIndex     int
-	lastRekeyThreshold  int
-	lastRekeyTotal      int
 	lastRecoveryThr     int
-	lastRecoveryTotal   int
-	lastRecoverKeys     []string
-	lastRootTokenShares []string
+	lastPolicy          string
 
 	// Configurable responses.
 	statusResp      *service.BarrierStatusInfo
 	shamirInitResp  *service.ShamirInitInfo
-	unsealShareResp *service.UnsealShareProgress
-	rekeyResp       *service.ShamirInitInfo
 	genRecoveryResp *service.RecoveryKeysInfo
 	hasRecoveryResp bool
-	rootTokenResp   *service.RootTokenInfo
 }
 
 var _ service.BarrierServicer = (*mockBarrierSvc)(nil)
@@ -100,23 +83,10 @@ func newMockBarrierSvc() *mockBarrierSvc {
 			Threshold:   2,
 			TotalShares: 3,
 		},
-		unsealShareResp: &service.UnsealShareProgress{
-			Required:  3,
-			Submitted: 1,
-			Complete:  false,
-		},
-		rekeyResp: &service.ShamirInitInfo{
-			ShareCount:  2,
-			Threshold:   2,
-			TotalShares: 2,
-		},
 		genRecoveryResp: &service.RecoveryKeysInfo{
 			ShareCount: 2,
 			Threshold:  1,
 			Total:      2,
-		},
-		rootTokenResp: &service.RootTokenInfo{
-			Token: "root-token-hex",
 		},
 	}
 }
@@ -146,62 +116,27 @@ func (m *mockBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatu
 	return m.statusResp, nil
 }
 
-func (m *mockBarrierSvc) BarrierInitializeShamir(_ context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierSvc) BarrierInitializeShamir(_ context.Context, threshold, total int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lastSecret = string(secret)
 	m.lastInitThreshold = threshold
-	m.lastInitTotalShares = totalShares
+	m.lastInitTotalShares = total
+	m.lastPolicy = string(policy)
 	if m.initShamirErr != nil {
 		return nil, m.initShamirErr
 	}
 	return m.shamirInitResp, nil
 }
 
-func (m *mockBarrierSvc) BarrierUnsealWithShare(_ context.Context, share string) (*service.UnsealShareProgress, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUnsealShare = share
-	if m.unsealShareErr != nil {
-		return nil, m.unsealShareErr
-	}
-	return m.unsealShareResp, nil
-}
-
-func (m *mockBarrierSvc) BarrierUnsealWithShares(_ context.Context, shares []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUnsealShares = append([]string(nil), shares...)
-	return m.unsealSharesErr
-}
-
-func (m *mockBarrierSvc) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastRekeyThreshold = threshold
-	m.lastRekeyTotal = total
-	if m.rekeyErr != nil {
-		return nil, m.rekeyErr
-	}
-	return m.rekeyResp, nil
-}
-
-func (m *mockBarrierSvc) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+func (m *mockBarrierSvc) BarrierGenerateRecoveryKeys(_ context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastRecoveryThr = threshold
-	m.lastRecoveryTotal = total
+	m.lastPolicy = string(policy)
 	if m.genRecoveryErr != nil {
 		return nil, m.genRecoveryErr
 	}
 	return m.genRecoveryResp, nil
-}
-
-func (m *mockBarrierSvc) BarrierRecoverWithKeys(_ context.Context, keys []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastRecoverKeys = append([]string(nil), keys...)
-	return m.recoverErr
 }
 
 func (m *mockBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error {
@@ -213,52 +148,6 @@ func (m *mockBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error)
 		return false, m.hasRecoveryErr
 	}
 	return m.hasRecoveryResp, nil
-}
-
-func (m *mockBarrierSvc) BarrierGenerateRootToken(_ context.Context, shares []string) (*service.RootTokenInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastRootTokenShares = append([]string(nil), shares...)
-	if m.rootTokenErr != nil {
-		return nil, m.rootTokenErr
-	}
-	return m.rootTokenResp, nil
-}
-
-func (m *mockBarrierSvc) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-
-func (m *mockBarrierSvc) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-
-func (m *mockBarrierSvc) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierSvc) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +162,7 @@ func connectBarrierInProcess(t *testing.T, svc service.BarrierServicer) (*Transp
 		newMockAdminService(),
 		":0",
 		mcpapi.WithBarrierService(svc),
+		mcpapi.WithPINBackend(pintest.NewBackend(t)),
 	)
 
 	mcpSrv := srv.MCPServer()
@@ -303,8 +193,8 @@ func TestBarrierInitialize_Success(t *testing.T) {
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
 		Secret:  []byte("passphrase"),
-		SOPin:   "1234",
-		UserPin: "5678",
+		SOPin:   "123456",
+		UserPin: "567890",
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
@@ -451,11 +341,10 @@ func TestBarrierInitializeShamir_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      []byte("passphrase"),
 		Threshold:   2,
 		TotalShares: 3,
-		SOPin:       "1111",
-		UserPin:     "2222",
+		SOPin:       "111111",
+		UserPin:     "222222",
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
@@ -480,138 +369,7 @@ func TestBarrierInitializeShamir_ServiceError(t *testing.T) {
 	tr, cleanup := connectBarrierInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret: []byte("s"), Threshold: 1, TotalShares: 1,
-	})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierUnsealWithShare
-// ---------------------------------------------------------------------------
-
-func TestBarrierUnsealWithShare_Success(t *testing.T) {
-	svc := newMockBarrierSvc()
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{
-		Share: "share-value",
-	})
-	if err != nil {
-		t.Fatalf("BarrierUnsealWithShare: %v", err)
-	}
-	if resp.Required != 3 || resp.Submitted != 1 {
-		t.Errorf("progress: got required=%d submitted=%d, want 3/1", resp.Required, resp.Submitted)
-	}
-
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	if svc.lastUnsealShare != "share-value" {
-		t.Errorf("share: got %q, want %q", svc.lastUnsealShare, "share-value")
-	}
-}
-
-func TestBarrierUnsealWithShare_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.unsealShareErr = errors.New("invalid share")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{Share: "x"})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierUnsealWithShares
-// ---------------------------------------------------------------------------
-
-func TestBarrierUnsealWithShares_Success(t *testing.T) {
-	svc := newMockBarrierSvc()
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: []string{"sh1", "sh2", "sh3"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierUnsealWithShares: %v", err)
-	}
-
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	if len(svc.lastUnsealShares) != 3 {
-		t.Errorf("shares: got %d, want 3", len(svc.lastUnsealShares))
-	}
-}
-
-func TestBarrierUnsealWithShares_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.unsealSharesErr = errors.New("not enough shares")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: []string{"sh1"},
-	})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierRekey
-// ---------------------------------------------------------------------------
-
-func TestBarrierRekey_Success(t *testing.T) {
-	svc := newMockBarrierSvc()
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2,
-		Total:     2,
-		SOPin:     "1234",
-	})
-	if err != nil {
-		t.Fatalf("BarrierRekey: %v", err)
-	}
-	// Single-word field Threshold round-trips through MCP; ShareCount does not
-	// (PascalCase JSON from service type vs snake_case expected by transport type).
-	if resp.Threshold != 2 {
-		t.Errorf("threshold: got %d, want 2", resp.Threshold)
-	}
-
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	if svc.lastRekeyThreshold != 2 || svc.lastRekeyTotal != 2 {
-		t.Errorf("rekey args: got %d/%d, want 2/2", svc.lastRekeyThreshold, svc.lastRekeyTotal)
-	}
-}
-
-func TestBarrierRekey_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.rekeyErr = errors.New("rekey failed")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 1, Total: 1})
+	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -632,7 +390,7 @@ func TestBarrierGenerateRecoveryKeys_Success(t *testing.T) {
 
 	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 1,
-		Total:     2,
+		Policy:    transport.PolicyAnyEnrolled,
 		SOPin:     "1234",
 	})
 	if err != nil {
@@ -645,63 +403,8 @@ func TestBarrierGenerateRecoveryKeys_Success(t *testing.T) {
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if svc.lastRecoveryThr != 1 || svc.lastRecoveryTotal != 2 {
-		t.Errorf("recovery args: got %d/%d, want 1/2", svc.lastRecoveryThr, svc.lastRecoveryTotal)
-	}
-}
-
-func TestBarrierGenerateRecoveryKeys_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.genRecoveryErr = errors.New("generation failed")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 1, Total: 1})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierRecoverWithKeys
-// ---------------------------------------------------------------------------
-
-func TestBarrierRecoverWithKeys_Success(t *testing.T) {
-	svc := newMockBarrierSvc()
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{
-		Keys: []string{"k1", "k2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierRecoverWithKeys: %v", err)
-	}
-
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	if len(svc.lastRecoverKeys) != 2 {
-		t.Errorf("keys: got %d, want 2", len(svc.lastRecoverKeys))
-	}
-}
-
-func TestBarrierRecoverWithKeys_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.recoverErr = errors.New("recovery failed")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{Keys: []string{"k1"}})
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
+	if svc.lastRecoveryThr != 1 || svc.lastPolicy != transport.PolicyAnyEnrolled {
+		t.Errorf("recovery args: got %d/%q, want 1/any-enrolled", svc.lastRecoveryThr, svc.lastPolicy)
 	}
 }
 
@@ -776,48 +479,6 @@ func TestBarrierHasRecoveryKeys_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	_, err := tr.BarrierHasRecoveryKeys(context.Background())
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierGenerateRootToken
-// ---------------------------------------------------------------------------
-
-func TestBarrierGenerateRootToken_Success(t *testing.T) {
-	svc := newMockBarrierSvc()
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"sh1", "sh2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierGenerateRootToken: %v", err)
-	}
-	if resp.Token != "root-token-hex" {
-		t.Errorf("token: got %q, want %q", resp.Token, "root-token-hex")
-	}
-
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
-	if len(svc.lastRootTokenShares) != 2 {
-		t.Errorf("shares: got %d, want 2", len(svc.lastRootTokenShares))
-	}
-}
-
-func TestBarrierGenerateRootToken_ServiceError(t *testing.T) {
-	svc := newMockBarrierSvc()
-	svc.rootTokenErr = errors.New("generation failed")
-	tr, cleanup := connectBarrierInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{Shares: []string{"sh1"}})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}

@@ -1543,83 +1543,72 @@ func TestBarrier_ShamirStrategy_Registered(t *testing.T) {
 	}
 }
 
-// --- unsealDirect ---------------------------------------------------------
+// --- unsealFromRootKey ---------------------------------------------------
 
-func TestBarrier_UnsealDirect_Success(t *testing.T) {
-	// Create barrier with ShamirStrategy and initialize via Shamir.
-	backend := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(2, 3)
-	if err != nil {
-		t.Fatalf("NewShamirStrategy: %v", err)
+func TestBarrier_UnsealFromRootKey_ViaHolderQuorum(t *testing.T) {
+	f := newHolderFixture(t, 2, 3)
+	f.sealWith("h1", "h2")
+	if o := f.quorum(DomainUnseal, OpUnseal, "h2", "h3"); !o.Complete {
+		t.Fatalf("unseal quorum incomplete: %+v", o)
 	}
-	cfg := BarrierConfig{
-		RootKeyPath:     "test/root-key",
-		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
-		PreferenceOrder: []StrategyID{StrategyShamir},
+	if f.b.IsSealed() {
+		t.Error("expected unsealed after the unseal quorum")
 	}
-	b, err := NewBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t), shamirStrat)
-	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
-	}
-	dist := newCaptureDistributor()
-	b.SetCeremonyDistributor(dist)
-
-	if _, err := b.InitializeShamir(context.Background(), Credentials{}); err != nil {
-		t.Fatalf("InitializeShamir: %v", err)
-	}
-	shares := dist.Shares()
-
-	// Seal, then unseal with shares to trigger unsealDirect.
-	ctx := context.Background()
-	if err := b.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-
-	if err := b.UnsealWithShares(ctx, shares[:2]); err != nil {
-		t.Fatalf("UnsealWithShares: %v", err)
-	}
-	if b.IsSealed() {
-		t.Error("expected unsealed after UnsealWithShares")
-	}
-	if b.ActiveStrategy() != StrategyShamir {
-		t.Errorf("expected active strategy %s, got %s", StrategyShamir, b.ActiveStrategy())
+	if f.b.ActiveStrategy() != StrategyShamir {
+		t.Errorf("expected active strategy %s, got %s", StrategyShamir, f.b.ActiveStrategy())
 	}
 }
 
-func TestBarrier_UnsealDirect_NoShamirStrategy(t *testing.T) {
-	// unsealDirect should return ErrShamirNotConfigured when no Shamir strategy.
+func TestBarrier_UnsealFromRootKey_RefusesWhenUnsealed(t *testing.T) {
+	f := newHolderFixture(t, 2, 3)
+	key, err := f.b.masterKeyBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Destroy()
+	if err := f.b.unsealFromRootKey(context.Background(), key, StrategyShamir); !errors.Is(err, ErrAlreadyUnsealed) {
+		t.Fatalf("expected ErrAlreadyUnsealed, got %v", err)
+	}
+}
+
+func TestBarrier_UnsealFromRootKey_SealingStrategyNotRegistered(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	initBarrier(t, b)
+	key, err := b.masterKeyBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Destroy()
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-
-	rootKey := make([]byte, 32)
-	err := b.unsealDirect(context.Background(), rootKey)
-	if !errors.Is(err, ErrShamirNotConfigured) {
-		t.Fatalf("expected ErrShamirNotConfigured, got %v", err)
+	b.strategiesMu.Lock()
+	delete(b.strategies, StrategyPassphrase)
+	b.strategiesMu.Unlock()
+	if err := b.unsealFromRootKey(context.Background(), key, StrategyShamir); !errors.Is(err, ErrStrategyNotFound) {
+		t.Fatalf("expected ErrStrategyNotFound, got %v", err)
 	}
 }
 
-func TestBarrier_UnsealDirect_EncryptorError(t *testing.T) {
-	// Register a strategy under StrategyShamir that fails on BarrierEncryptor.
-	failStrat := &mockFailingSealStrategy{}
-	cfg := BarrierConfig{
-		RootKeyPath:     "test/root-key",
-		PreferenceOrder: []StrategyID{StrategyPassphrase},
-	}
-	b, err := NewBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+func TestBarrier_UnsealFromRootKey_EncryptorError(t *testing.T) {
+	b, _ := newBarrierWithAudit(t)
+	initBarrier(t, b)
+	key, err := b.masterKeyBuffer()
 	if err != nil {
-		t.Fatalf("NewBarrier: %v", err)
+		t.Fatal(err)
 	}
-
-	// Manually register the failing strategy under StrategyShamir.
-	b.strategies[StrategyShamir] = failStrat
-
-	rootKey := make([]byte, 32)
-	err = b.unsealDirect(context.Background(), rootKey)
-	if err == nil {
+	defer key.Destroy()
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	b.strategiesMu.Lock()
+	b.strategies[StrategyPassphrase] = &mockFailingSealStrategy{}
+	b.strategiesMu.Unlock()
+	if err := b.unsealFromRootKey(context.Background(), key, StrategyShamir); err == nil {
 		t.Fatal("expected error from BarrierEncryptor failure")
+	}
+	if !b.IsSealed() {
+		t.Fatal("a failed unseal must leave the barrier sealed")
 	}
 }
 

@@ -83,9 +83,9 @@ The daemon initializes the Raft consensus layer:
 If no barrier exists (fresh install):
 
 - **Single-Admin Mode** (threshold < 2): Barrier is initialized and unsealed immediately
-- **M-of-N Mode** (threshold >= 2): Barrier is initialized, Shamir shares are generated, and the system enters "enrolling" state to wait for officers to claim certificates and shares
+- **M-of-N Mode** (threshold >= 2): the named share holders are enrolled, the barrier's unseal key is split to them, and the system enters "enrolling" state until each holder has claimed its sealed envelope
 
-The barrier status is checked via `BarrierStatus`. If sealed, data operations are blocked until `BarrierUnseal` or `BarrierUnsealWithShare(s)` is called.
+The barrier status is checked via `BarrierStatus`. If sealed, data operations are blocked until `BarrierUnseal` (credential strategies) succeeds, or — for a Shamir barrier — until M share holders complete an `unseal` quorum round (`BarrierQuorumSubmit`).
 
 ### 6. Role and User Bootstrap
 
@@ -104,7 +104,7 @@ migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
 | Operator | `SystemRoleID(tenantID, "Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
 | User | `SystemRoleID(tenantID, "User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
 | Auditor | `SystemRoleID(tenantID, "Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `SystemRoleID(tenantID, "Custodian")` | `barrier:unseal-share` | Shamir share holder only |
+| Custodian | `SystemRoleID(tenantID, "Custodian")` | none | Retained so persisted references resolve; share-holder operations are identity-gated |
 
 An admin user for the system tenant is also created:
 
@@ -195,26 +195,22 @@ For production and high-security environments:
 qrdbd start --threshold 2 --total 3
 ```
 
-After the daemon starts, it is in "enrolling" state. Officers must claim their certificates and Shamir shares via the REST/gRPC APIs. Only after all officers have claimed will the system transition to "operational".
+After the daemon starts, it is in "enrolling" state. Each share holder claims its sealed envelope (`qrdb barrier officer claim`). Only after every holder has claimed does the system transition to "operational".
 
 ## Troubleshooting
 
 ### Barrier Sealed
 
-If the barrier is sealed, data operations return `ErrBarrierSealed`. Unseal it via:
+If the barrier is sealed, data operations return `ErrBarrierSealed`. A Shamir
+barrier is unsealed by M share holders, each submitting through the sealed
+window:
 
 ```bash
-qrdb barrier unseal-shares --share share-1 --share share-2 --share share-3
+qrdb barrier quorum submit --op unseal --username alice \
+     --envelope alice.env --key alice.key
 ```
 
-Or via REST:
-
-```bash
-curl -X POST https://localhost:8443/v1/barrier/shamir/unseal-shares \
-  -H "Content-Type: application/json" \
-  --cert admin.pem \
-  -d '{"shares":["share-1","share-2","share-3"]}'
-```
+See [shamir-custody/user.md](shamir-custody/user.md).
 
 ### Admin User Not Created
 

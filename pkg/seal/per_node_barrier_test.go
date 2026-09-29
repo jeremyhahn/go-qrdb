@@ -94,18 +94,23 @@ func TestShamirOption3_SharedUnsealKeyPerNodeRootKeys(t *testing.T) {
 		t.Fatalf("generateUnsealKey: %v", err)
 	}
 
-	// Each node wraps ITS OWN root key under the shared U and persists the blob,
-	// so resolveDirectSecret(U) unwraps that node's own root key.
+	// Each node wraps ITS OWN root key under the shared U, bound to the same
+	// holder roster, and persists the blob, so resolveDomainKey(U) unwraps
+	// that node's own root key.
+	roster, err := newCaptureDistributor("h1", "h2", "h3").PrepareRoster(ctx, DomainUnseal, 2, "", nil)
+	if err != nil {
+		t.Fatalf("PrepareRoster: %v", err)
+	}
 	wrapUnder := func(bar *StorageBarrier) []byte {
 		rk, err := bar.GetMasterKey()
 		if err != nil {
 			t.Fatalf("GetMasterKey: %v", err)
 		}
-		blob, err := bar.wrapRootKey(u, rk)
+		blob, _, err := bar.wrapRootKey(DomainUnseal, u, rk, roster)
 		if err != nil {
 			t.Fatalf("wrapRootKey: %v", err)
 		}
-		if err := bar.base.Put(ctx, bar.wrappedRootKeyPath(), blob); err != nil {
+		if err := bar.base.Put(ctx, bar.wrappedKeyPath(DomainUnseal), blob); err != nil {
 			t.Fatalf("persist wrapped blob: %v", err)
 		}
 		return rk
@@ -114,13 +119,13 @@ func TestShamirOption3_SharedUnsealKeyPerNodeRootKeys(t *testing.T) {
 	rkB := wrapUnder(b)
 
 	// The single U unwraps each node's OWN distinct root key.
-	bufA, err := a.resolveDirectSecret(ctx, u)
+	bufA, err := a.resolveDomainKey(ctx, DomainUnseal, u)
 	if err != nil {
-		t.Fatalf("resolveDirectSecret(a): %v", err)
+		t.Fatalf("resolveDomainKey(a): %v", err)
 	}
-	bufB, err := b.resolveDirectSecret(ctx, u)
+	bufB, err := b.resolveDomainKey(ctx, DomainUnseal, u)
 	if err != nil {
-		t.Fatalf("resolveDirectSecret(b): %v", err)
+		t.Fatalf("resolveDomainKey(b): %v", err)
 	}
 	gotA, gotB := protectedBytes(t, bufA), protectedBytes(t, bufB)
 	if !bytes.Equal(gotA, rkA) || !bytes.Equal(gotB, rkB) {

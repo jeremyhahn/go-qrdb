@@ -54,7 +54,7 @@ func TestSOPIN_PlaintextConnectionNeverCarriesThePIN(t *testing.T) {
 
 	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()
-	_, err = tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3})
+	_, err = tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2})
 	if probe.SawPIN() {
 		t.Fatal("the SO PIN crossed a plaintext Unix socket connection")
 	}
@@ -62,7 +62,7 @@ func TestSOPIN_PlaintextConnectionNeverCarriesThePIN(t *testing.T) {
 	if !errors.As(err, &tlsErr) {
 		t.Fatalf("err = %v, want *transport.SOPINRequiresTLSError", err)
 	}
-	if _, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err != nil {
+	if _, err := tr.BarrierRekeyStart(context.Background(), &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
 		t.Fatalf("unbound rekey over plaintext: %v", err)
 	}
 }

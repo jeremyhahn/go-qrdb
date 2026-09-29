@@ -640,9 +640,6 @@ func (foreignTenantServicer) TenantBarrierInitWithStrategy(context.Context, stri
 func (foreignTenantServicer) TenantBarrierUnseal(context.Context, string, []byte) error {
 	return ErrBarrierNotEnabled
 }
-func (foreignTenantServicer) TenantBarrierUnsealShare(context.Context, string, string) (*TenantBarrierUnsealProgress, error) {
-	return nil, ErrBarrierNotEnabled
-}
 func (foreignTenantServicer) TenantBarrierSeal(context.Context, string) error {
 	return ErrBarrierNotEnabled
 }
@@ -661,10 +658,17 @@ func (foreignTenantServicer) TenantBarrierShareClaimBegin(context.Context, strin
 func (foreignTenantServicer) TenantBarrierShareClaimComplete(context.Context, string, string, string, []byte, string) (*ceremony.ShareClaimResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
-func (foreignTenantServicer) TenantBarrierOfficerClaimStatus(context.Context, string) ([]*ceremony.OfficerStatus, error) {
+
+func (foreignTenantServicer) TenantBarrierQuorumBegin(context.Context, string, seal.QuorumOp, string, string) (*ceremony.QuorumChallenge, error) {
 	return nil, ErrBarrierNotEnabled
 }
-func (foreignTenantServicer) TenantBarrierShamirSealVote(context.Context, string, string) (*TenantBarrierUnsealProgress, error) {
+func (foreignTenantServicer) TenantBarrierQuorumSubmit(context.Context, string, *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	return nil, ErrBarrierNotEnabled
+}
+func (foreignTenantServicer) TenantBarrierRekeyStart(context.Context, string, int, seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
+	return nil, ErrBarrierNotEnabled
+}
+func (foreignTenantServicer) TenantBarrierOfficerRevoke(context.Context, string, string, int) (*seal.QuorumRoundInfo, error) {
 	return nil, ErrBarrierNotEnabled
 }
 

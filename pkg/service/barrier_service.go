@@ -19,7 +19,6 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -40,88 +39,64 @@ type BarrierServicer interface {
 	BarrierUnseal(ctx context.Context, secret []byte) error
 
 	// BarrierSeal transitions the barrier to the sealed state. Returns
-	// ErrShamirBarrierRequiresQuorum when the active strategy is Shamir;
-	// callers must use BarrierShamirSealVote instead.
+	// ErrShamirBarrierRequiresQuorum when the active strategy is Shamir; a
+	// seal quorum (BarrierQuorumSubmit, seal.OpSeal) seals instead.
 	BarrierSeal(ctx context.Context) error
 
 	// BarrierStatus returns the current barrier status.
 	BarrierStatus(ctx context.Context) (*BarrierStatusInfo, error)
 
-	// BarrierInitializeShamir initializes the barrier with Shamir secret
-	// sharing, splitting the root key into threshold-of-totalShares shares.
-	// Shares are distributed to enrolled Security Officers via the
-	// CeremonyService; they do not appear in the returned ShamirInitInfo.
-	// secret is a borrow the caller may wipe on return; see BarrierInitialize.
-	BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*ShamirInitInfo, error)
+	// BarrierInitializeShamir initializes the barrier under Shamir custody:
+	// the barrier unseal key is split threshold-of-totalShares to the
+	// enrolled share holders (totalShares must equal their number), each
+	// share sealed into an envelope to its holder. No share material is
+	// returned. policy is the factor policy of the share set.
+	BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*ShamirInitInfo, error)
 
-	// BarrierUnsealWithShare submits a single Shamir share toward the
-	// quorum threshold.
-	BarrierUnsealWithShare(ctx context.Context, share string) (*UnsealShareProgress, error)
+	// BarrierGenerateRecoveryKeys creates the independent recovery-key
+	// domain, split threshold-of-N to the enrolled recovery holders.
+	BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*RecoveryKeysInfo, error)
 
-	// BarrierUnsealWithShares unseals the barrier using a complete set
-	// of Shamir shares in a single call.
-	BarrierUnsealWithShares(ctx context.Context, shares []string) error
-
-	// BarrierRekey generates new Shamir shares for the existing root key
-	// with the specified threshold and total parameters. Shares are
-	// distributed to enrolled Security Officers; they do not appear in the
-	// returned ShamirInitInfo.
-	BarrierRekey(ctx context.Context, threshold, total int) (*ShamirInitInfo, error)
-
-	// BarrierGenerateRecoveryKeys generates a set of Shamir recovery
-	// shares from the root key for disaster recovery. Recovery shares are
-	// distributed to enrolled recovery officers; they do not appear in the
-	// returned RecoveryKeysInfo.
-	BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*RecoveryKeysInfo, error)
-
-	// BarrierRecoverWithKeys unseals the barrier using recovery shares.
-	BarrierRecoverWithKeys(ctx context.Context, keys []string) error
-
-	// BarrierDeleteRecoveryKeys removes recovery key metadata from storage.
+	// BarrierDeleteRecoveryKeys removes the recovery-key domain.
 	BarrierDeleteRecoveryKeys(ctx context.Context) error
 
-	// BarrierHasRecoveryKeys reports whether recovery key metadata exists.
+	// BarrierHasRecoveryKeys reports whether a recovery-key domain exists.
 	BarrierHasRecoveryKeys(ctx context.Context) (bool, error)
 
-	// BarrierGenerateRootToken creates a new root token by proving
-	// knowledge of the master key through Shamir shares.
-	BarrierGenerateRootToken(ctx context.Context, shares []string) (*RootTokenInfo, error)
+	// BarrierOfficerRegister enrols a share holder (Security Officer or key
+	// custodian) for domain. The CA issues the holder a certificate; no
+	// share is produced here.
+	BarrierOfficerRegister(ctx context.Context, domain seal.QuorumDomain, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error)
 
-	// BarrierOfficerRegister registers a Security Officer for the system barrier.
-	// The officer's CSR is validated, signed by the ceremony CA, and the public
-	// enrollment record persisted. No share bytes are produced at this step.
-	BarrierOfficerRegister(ctx context.Context, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error)
+	// BarrierOfficerList returns every holder of domain with its claim
+	// state. It never includes share material.
+	BarrierOfficerList(ctx context.Context, domain seal.QuorumDomain) ([]*BarrierOfficerStatus, error)
 
-	// BarrierOfficerList returns all enrolled Security Officers for the system barrier.
-	BarrierOfficerList(ctx context.Context) ([]*BarrierOfficerStatus, error)
+	// BarrierShareClaimBegin issues the claim nonce to a holder presenting
+	// its enrolled certificate.
+	BarrierShareClaimBegin(ctx context.Context, domain seal.QuorumDomain, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error)
 
-	// BarrierOfficerClaimStatus returns a per-officer claim status snapshot
-	// for the system barrier. Never includes share bytes.
-	BarrierOfficerClaimStatus(ctx context.Context) ([]*BarrierOfficerStatus, error)
+	// BarrierShareClaimComplete verifies the holder's signature over the
+	// nonce and delivers its share envelope exactly once.
+	BarrierShareClaimComplete(ctx context.Context, domain seal.QuorumDomain, username, nonceHex string, signature []byte, callerCertThumbprint string) (*BarrierShareClaimResult, error)
 
-	// BarrierShareClaimBegin issues a challenge nonce to the named Security
-	// Officer for the system barrier share claim handshake.
-	BarrierShareClaimBegin(ctx context.Context, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error)
+	// BarrierQuorumBegin issues the factor challenge a holder answers to
+	// submit a share to op in domain. It works while the barrier is sealed.
+	BarrierQuorumBegin(ctx context.Context, req *QuorumBeginRequest) (*QuorumChallengeInfo, error)
 
-	// BarrierShareClaimComplete verifies the officer's nonce signature and
-	// returns the share bytes exactly once via the officer's own mTLS session.
-	BarrierShareClaimComplete(ctx context.Context, username, nonceHex string, signature []byte, callerCertThumbprint string) (*BarrierShareClaimResult, error)
+	// BarrierQuorumSubmit counts one authenticated holder's share toward the
+	// round for op in domain, running op when the round reaches M. Unseal,
+	// seal, root token, rekey (and so revocation) and recovery all go
+	// through it; no share is ever counted without an authenticated holder.
+	BarrierQuorumSubmit(ctx context.Context, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error)
 
-	// BarrierShamirSealVote submits a Shamir share as a seal vote. When the
-	// quorum threshold is met the barrier is sealed automatically.
-	// Returns ErrShamirBarrierRequiresQuorum if the barrier is already sealed.
-	BarrierShamirSealVote(ctx context.Context, share string) (*UnsealShareProgress, error)
+	// BarrierRekeyStart opens a rekey round for domain; a quorum of the
+	// current holders then submits through BarrierQuorumSubmit.
+	BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error)
 
-	// BarrierRecoveryOfficerRegister registers a Security Officer for recovery
-	// key distribution. Recovery officers are independent from unseal officers.
-	BarrierRecoveryOfficerRegister(ctx context.Context, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error)
-
-	// BarrierRecoveryShareClaimBegin issues a challenge nonce for a recovery officer.
-	BarrierRecoveryShareClaimBegin(ctx context.Context, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error)
-
-	// BarrierRecoveryShareClaimComplete verifies the recovery officer's nonce
-	// signature and returns the recovery share bytes exactly once.
-	BarrierRecoveryShareClaimComplete(ctx context.Context, username, nonceHex string, signature []byte, callerCertThumbprint string) (*BarrierShareClaimResult, error)
+	// BarrierOfficerRevoke revokes a holder of domain by opening a rekey
+	// round that excludes them; the remaining holders complete it.
+	BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*QuorumRoundInfo, error)
 }
 
 // BarrierStatusInfo describes the current state of the storage barrier.
@@ -162,18 +137,6 @@ type ShamirInitInfo struct {
 	ShareCount int
 }
 
-// UnsealShareProgress reports the current state of quorum-based unsealing.
-type UnsealShareProgress struct {
-	// Required is the minimum number of shares needed to unseal.
-	Required int
-
-	// Submitted is the number of shares provided so far.
-	Submitted int
-
-	// Complete is true when the quorum threshold has been met.
-	Complete bool
-}
-
 // RecoveryKeysInfo contains the output of recovery key generation. Recovery
 // share material is never present here; recovery officers retrieve their shares
 // via the BarrierRecoveryShareClaimBegin / BarrierRecoveryShareClaimComplete flow.
@@ -188,6 +151,112 @@ type RecoveryKeysInfo struct {
 	ShareCount int
 }
 
+// BarrierOfficerRegisterRequest carries the parameters for enrolling a
+// share holder.
+type BarrierOfficerRegisterRequest struct {
+	// Username is the holder's unique identifier in its scope.
+	Username string
+
+	// Role is so or custodian; empty means so.
+	Role seal.HolderRole
+
+	// CSRPEM is the holder's PEM certificate signing request; the CA
+	// assigns the certificate identity.
+	CSRPEM []byte
+
+	// EncryptionKEM and EncryptionKey name an optional separate envelope
+	// recipient key (HPKE suite name and key encoding).
+	EncryptionKEM string
+	EncryptionKey []byte
+
+	// Factors are additional authentication factors to enrol.
+	Factors []ceremony.FactorEnrolment
+
+	// Designated names the designated factor; empty means "mtls".
+	Designated string
+}
+
+// BarrierOfficerRegisterResult is the outcome of a successful registration.
+type BarrierOfficerRegisterResult struct {
+	// CertPEM is the certificate the CA issued to the holder.
+	CertPEM []byte
+
+	// Role, Designated, EncryptionKEM and Factors echo what was enrolled.
+	Role          seal.HolderRole
+	Designated    string
+	EncryptionKEM string
+	Factors       []string
+}
+
+// BarrierOfficerStatus is a non-secret view of an enrolled share holder.
+type BarrierOfficerStatus = ceremony.OfficerStatus
+
+// BarrierShareClaimChallenge is the challenge issued by BarrierShareClaimBegin.
+type BarrierShareClaimChallenge struct {
+	// NonceHex is the hex-encoded random challenge bytes the holder signs.
+	NonceHex string
+
+	// ExpiresAt is the deadline by which the holder must complete the claim.
+	ExpiresAt time.Time
+}
+
+// BarrierShareClaimResult is returned to the holder exactly once.
+type BarrierShareClaimResult struct {
+	// ShareIndex is the holder's share index.
+	ShareIndex int
+
+	// Envelope is the holder's share envelope (ceremony.ShareEnvelope JSON),
+	// sealed to the holder's key. It is excluded from struct marshalling and
+	// must only traverse the holder's own session.
+	Envelope []byte `json:"-"`
+}
+
+// QuorumBeginRequest asks for a quorum challenge.
+type QuorumBeginRequest struct {
+	Domain   seal.QuorumDomain
+	Op       seal.QuorumOp
+	Username string
+	// Factor selects the factor; empty means the holder's designated one.
+	Factor string
+}
+
+// QuorumChallengeInfo is the challenge a holder answers.
+type QuorumChallengeInfo = ceremony.QuorumChallenge
+
+// QuorumSubmitRequest is one holder's share with its factor response.
+type QuorumSubmitRequest struct {
+	Domain           seal.QuorumDomain
+	Op               seal.QuorumOp
+	Username         string
+	ChallengeID      string
+	Factor           string
+	Response         []byte
+	ResponseMetadata map[string]string
+
+	// PeerCertThumbprint is set by the TRANSPORT from the verified TLS
+	// session, never from the request body.
+	PeerCertThumbprint string
+
+	// Share is the base64 share value from the holder's envelope. It is
+	// consumed (wiped) by the submission.
+	Share []byte
+}
+
+// QuorumOutcomeInfo reports a submission's effect.
+type QuorumOutcomeInfo struct {
+	Domain    seal.QuorumDomain
+	Op        seal.QuorumOp
+	Required  int
+	Submitted int
+	Complete  bool
+
+	// RootToken is set when an OpRootToken round completed.
+	RootToken *RootTokenInfo
+
+	// Rekey is set when an OpRekey round completed.
+	Rekey *ShamirInitInfo
+}
+
 // RootTokenInfo represents a generated root token.
 type RootTokenInfo struct {
 	// Token is the hex-encoded root token value.
@@ -197,77 +266,8 @@ type RootTokenInfo struct {
 	CreatedAt time.Time
 }
 
-// BarrierOfficerRegisterRequest carries the parameters for registering a
-// Security Officer against the system or recovery barrier.
-type BarrierOfficerRegisterRequest struct {
-	// Username is the unique identifier for the officer.
-	Username string
-
-	// CSRPEM is the PEM-encoded certificate signing request from the officer.
-	CSRPEM []byte
-
-	// AuthenticatorType identifies which hardware or software backs the
-	// officer's signing credential.
-	AuthenticatorType string
-
-	// AuthenticatorRef is an opaque reference to the credential within the
-	// backing authenticator.
-	AuthenticatorRef string
-}
-
-// BarrierOfficerRegisterResult is the outcome of a successful officer registration.
-type BarrierOfficerRegisterResult struct {
-	// CertPEM is the PEM-encoded signed certificate for the officer.
-	CertPEM []byte
-
-	// ShareIndex is the 1-based Shamir share index assigned to this officer.
-	ShareIndex int
-}
-
-// BarrierOfficerStatus is a non-secret view of an enrolled Security Officer.
-type BarrierOfficerStatus struct {
-	// Username is the officer's unique identifier.
-	Username string
-
-	// CertThumbprint is the SHA-256 fingerprint of the officer's mTLS certificate.
-	CertThumbprint string
-
-	// ShareIndex is the 1-based Shamir share index assigned to this officer.
-	ShareIndex int
-
-	// AuthFactor identifies the backing authenticator type.
-	AuthFactor string
-
-	// EnrolledAt records when the officer was registered.
-	EnrolledAt time.Time
-
-	// ClaimedAt records when the officer claimed their share. Zero = unclaimed.
-	ClaimedAt time.Time
-
-	// SharePending is true when a share is sealed in the enclave awaiting claim.
-	SharePending bool
-}
-
-// BarrierShareClaimChallenge is the challenge issued by BarrierShareClaimBegin.
-type BarrierShareClaimChallenge struct {
-	// NonceHex is the hex-encoded random challenge bytes the officer must sign.
-	NonceHex string
-
-	// ExpiresAt is the deadline by which the officer must complete the claim.
-	ExpiresAt time.Time
-}
-
-// BarrierShareClaimResult is returned to the Security Officer exactly once
-// upon a successful BarrierShareClaimComplete. The share bytes must be wiped
-// by the caller after presenting them to the user.
-type BarrierShareClaimResult struct {
-	// ShareIndex is the 1-based Shamir share index for this officer.
-	ShareIndex int
-
-	// ShareBytes are the raw share bytes. This field is intentionally excluded
-	// from JSON serialization and must only traverse the SO's own mTLS session.
-	ShareBytes []byte `json:"-"`
-}
+// QuorumRoundInfo is the public state of an open round.
+type QuorumRoundInfo = seal.QuorumRoundInfo
 
 // BarrierService implements BarrierServicer by delegating to a
 // StorageBarrier instance from the seal package and, optionally, to a
@@ -286,13 +286,11 @@ func NewBarrierService(barrier *seal.StorageBarrier) BarrierServicer {
 	return &BarrierService{barrier: barrier}
 }
 
-// NewBarrierServiceWithCeremony creates a new BarrierServicer backed by
-// the given StorageBarrier and wired to the CeremonyService for Security
-// Officer share distribution. The CeremonyService is set as the barrier's
-// CeremonyDistributor and RecoveryDistributor.
+// NewBarrierServiceWithCeremony creates a new BarrierServicer backed by the
+// given StorageBarrier and its share-holder authority. The CeremonyService
+// installed itself as the barrier's distributor and holder verifier when it
+// was constructed.
 func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.CeremonyService) BarrierServicer {
-	barrier.SetCeremonyDistributor(svc)
-	barrier.SetRecoveryDistributor(svc.RecoveryDistributor())
 	return &BarrierService{barrier: barrier, ceremony: svc}
 }
 
@@ -323,8 +321,8 @@ func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error
 }
 
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected
-// barriers the single-admin seal path is blocked; callers must use
-// BarrierShamirSealVote to collect the required quorum before sealing.
+// barriers the single-admin seal path is blocked; a seal quorum of holders
+// (BarrierQuorumSubmit with seal.OpSeal) seals instead.
 func (s *BarrierService) BarrierSeal(_ context.Context) error {
 	if s.barrier.ActiveStrategy() == seal.StrategyShamir {
 		return seal.ErrShamirBarrierRequiresQuorum
@@ -346,340 +344,174 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 	}, nil
 }
 
-// BarrierInitializeShamir initializes the barrier with Shamir secret sharing.
-// When threshold and totalShares are both non-zero the barrier's Shamir config
-// is updated to honor the request parameters (request wins). When either is
-// zero the existing daemon configuration is preserved as the fallback.
-// Shares are distributed to enrolled Security Officers via the CeremonyService
-// and do not appear in the returned ShamirInitInfo.
-func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*ShamirInitInfo, error) {
+// BarrierInitializeShamir initializes the barrier under Shamir custody. The
+// request's threshold and share count win over the daemon configuration.
+func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*ShamirInitInfo, error) {
 	if threshold != 0 || totalShares != 0 {
-		s.barrier.SetShamirConfig(&seal.ShamirConfig{
-			Threshold:   threshold,
-			TotalShares: totalShares,
-		})
+		s.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: threshold, TotalShares: totalShares})
 	}
-
-	// secret is BORROWED, as in BarrierInitialize.
-	creds, err := seal.CredentialsFor(secret)
+	result, err := s.barrier.InitializeShamir(ctx, policy)
 	if err != nil {
 		return nil, err
 	}
-	defer creds.Secret.Destroy()
-	result, err := s.barrier.InitializeShamir(ctx, creds)
+	return &ShamirInitInfo{Threshold: result.Threshold, TotalShares: result.TotalShares, ShareCount: result.ShareCount}, nil
+}
+
+// BarrierGenerateRecoveryKeys creates the recovery-key domain.
+func (s *BarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*RecoveryKeysInfo, error) {
+	result, err := s.barrier.GenerateRecoveryKeys(ctx, threshold, policy)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ShamirInitInfo{
-		Threshold:   result.Threshold,
-		TotalShares: result.TotalShares,
-		ShareCount:  result.ShareCount,
-	}, nil
+	return &RecoveryKeysInfo{Threshold: result.Threshold, Total: result.TotalShares, ShareCount: result.ShareCount}, nil
 }
 
-// BarrierUnsealWithShare submits a single Shamir share toward the quorum
-// threshold. The QuorumProgress from the seal package is mapped to the
-// service-layer UnsealShareProgress type.
-func (s *BarrierService) BarrierUnsealWithShare(ctx context.Context, share string) (*UnsealShareProgress, error) {
-	progress, err := s.barrier.UnsealWithShare(ctx, share)
-	if err != nil {
-		return nil, err
-	}
-
-	return &UnsealShareProgress{
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// BarrierUnsealWithShares unseals the barrier using a complete set of
-// Shamir shares in a single call.
-func (s *BarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
-	return s.barrier.UnsealWithShares(ctx, shares)
-}
-
-// BarrierRekey generates new Shamir shares for the existing root key with
-// the specified threshold and total parameters. Shares are distributed to
-// enrolled Security Officers; they do not appear in the returned ShamirInitInfo.
-func (s *BarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*ShamirInitInfo, error) {
-	result, err := s.barrier.Rekey(ctx, threshold, total)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ShamirInitInfo{
-		Threshold:   result.Threshold,
-		TotalShares: result.TotalShares,
-		ShareCount:  result.ShareCount,
-	}, nil
-}
-
-// BarrierGenerateRecoveryKeys generates a set of Shamir recovery shares
-// from the root key. Recovery shares are distributed to enrolled recovery
-// officers; they do not appear in the returned RecoveryKeysInfo.
-func (s *BarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*RecoveryKeysInfo, error) {
-	result, err := s.barrier.GenerateRecoveryKeys(ctx, threshold, total)
-	if err != nil {
-		return nil, err
-	}
-
-	return &RecoveryKeysInfo{
-		Threshold:  result.Threshold,
-		Total:      result.TotalShares,
-		ShareCount: result.ShareCount,
-	}, nil
-}
-
-// BarrierRecoverWithKeys unseals the barrier using recovery shares that
-// were previously generated by BarrierGenerateRecoveryKeys.
-func (s *BarrierService) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
-	return s.barrier.RecoverWithKeys(ctx, keys)
-}
-
-// BarrierDeleteRecoveryKeys removes recovery key metadata from storage.
+// BarrierDeleteRecoveryKeys removes the recovery-key domain.
 func (s *BarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	return s.barrier.DeleteRecoveryKeys(ctx)
 }
 
-// BarrierHasRecoveryKeys reports whether recovery key metadata exists
-// in storage.
+// BarrierHasRecoveryKeys reports whether a recovery-key domain exists.
 func (s *BarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	return s.barrier.HasRecoveryKeys(ctx)
 }
 
-// BarrierGenerateRootToken creates a new root token by proving knowledge
-// of the master key through Shamir shares. The RootToken from the seal
-// package is mapped to the service-layer RootTokenInfo type.
-func (s *BarrierService) BarrierGenerateRootToken(ctx context.Context, shares []string) (*RootTokenInfo, error) {
-	token, err := s.barrier.GenerateRootToken(ctx, shares)
-	if err != nil {
-		return nil, err
-	}
-
-	return &RootTokenInfo{
-		Token:     token.Token,
-		CreatedAt: token.CreatedAt,
-	}, nil
-}
-
-// BarrierOfficerRegister registers a Security Officer for the system barrier.
-// The officer's CSR is validated, signed by the ceremony CA, and the public
-// enrollment record persisted. No share bytes are produced at registration time.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierOfficerRegister(ctx context.Context, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error) {
+// BarrierOfficerRegister enrols a share holder. The authenticated caller is
+// recorded as the enroller, who may not enrol itself.
+func (s *BarrierService) BarrierOfficerRegister(ctx context.Context, domain seal.QuorumDomain, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error) {
 	if s.ceremony == nil {
 		return nil, ErrCeremonyNotConfigured
 	}
-
-	result, err := s.ceremony.RegisterOfficer(ctx, ceremony.RegisterOfficerRequest{
-		Username:          req.Username,
-		CSRPEM:            req.CSRPEM,
-		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
+	if req == nil {
+		return nil, ErrNilRequest
+	}
+	result, err := s.ceremony.RegisterOfficer(ctx, domain, HolderRegistration(ctx, req))
 	if err != nil {
 		return nil, err
 	}
-
 	return &BarrierOfficerRegisterResult{
-		CertPEM:    result.CertPEM,
-		ShareIndex: result.ShareIndex,
+		CertPEM:       result.CertPEM,
+		Role:          result.Role,
+		Designated:    result.Designated,
+		EncryptionKEM: result.EncryptionKEM,
+		Factors:       result.Factors,
 	}, nil
 }
 
-// BarrierOfficerList returns all enrolled Security Officers for the system barrier.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierOfficerList(ctx context.Context) ([]*BarrierOfficerStatus, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
+// HolderRegistration builds the ceremony registration for req, recording the
+// authenticated caller in ctx as the enroller. Tenant holder registration
+// uses it too, so the self-enrolment rule is enforced identically.
+func HolderRegistration(ctx context.Context, req *BarrierOfficerRegisterRequest) ceremony.RegisterOfficerRequest {
+	out := ceremony.RegisterOfficerRequest{
+		Username:   req.Username,
+		Role:       req.Role,
+		CSRPEM:     req.CSRPEM,
+		Factors:    req.Factors,
+		Designated: req.Designated,
 	}
-
-	statuses, err := s.ceremony.OfficerClaimStatus(ctx)
-	if err != nil {
-		return nil, err
+	if req.EncryptionKEM != "" || len(req.EncryptionKey) > 0 {
+		out.EncryptionKey = &ceremony.EncryptionKeyEnrolment{KEM: req.EncryptionKEM, PublicKey: req.EncryptionKey}
 	}
-
-	return mapOfficerStatuses(statuses), nil
-}
-
-// BarrierOfficerClaimStatus returns a per-officer claim status snapshot for
-// the system barrier. Never includes share bytes.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierOfficerClaimStatus(ctx context.Context) ([]*BarrierOfficerStatus, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	statuses, err := s.ceremony.OfficerClaimStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	out := mapOfficerStatuses(statuses)
-	if auth.IdentityFromContext(ctx) == nil || sealedwindow.Anonymous(ctx) {
-		redactOfficerIdentities(out)
-	}
-	return out, nil
-}
-
-// redactOfficerIdentities strips from statuses everything that identifies an
-// officer -- username, certificate thumbprint and auth factor -- leaving the
-// share index, the enrolment and claim times and whether a share is pending.
-// That is all the first-boot wizard needs to track claims. It is what every
-// caller gets unless the context carries an authenticated identity: the
-// anonymous boot-time sealed-window listener, an unauthenticated listener,
-// and any composer path that did not authenticate.
-func redactOfficerIdentities(statuses []*BarrierOfficerStatus) {
-	for _, st := range statuses {
-		st.Username = ""
-		st.CertThumbprint = ""
-		st.AuthFactor = ""
-	}
-}
-
-// BarrierShareClaimBegin issues a challenge nonce to the named Security Officer
-// for the system barrier share claim handshake.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierShareClaimBegin(ctx context.Context, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	challenge, err := s.ceremony.BeginClaimShare(ctx, username, callerCertThumbprint)
-	if err != nil {
-		return nil, err
-	}
-
-	return mapShareClaimChallenge(challenge), nil
-}
-
-// BarrierShareClaimComplete verifies the officer's nonce signature and returns
-// the share bytes exactly once via the officer's own mTLS session.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierShareClaimComplete(
-	ctx context.Context,
-	username, nonceHex string,
-	signature []byte,
-	callerCertThumbprint string,
-) (*BarrierShareClaimResult, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	result, err := s.ceremony.CompleteClaimShare(ctx, username, nonceHex, signature, callerCertThumbprint)
-	if err != nil {
-		return nil, err
-	}
-
-	return &BarrierShareClaimResult{
-		ShareIndex: result.ShareIndex,
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// BarrierShamirSealVote submits a Shamir share as a seal vote for the system
-// barrier. When the quorum threshold is met the barrier is sealed automatically.
-func (s *BarrierService) BarrierShamirSealVote(ctx context.Context, share string) (*UnsealShareProgress, error) {
-	progress, err := s.barrier.SubmitSealVote(ctx, share)
-	if err != nil {
-		return nil, err
-	}
-
-	return &UnsealShareProgress{
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// BarrierRecoveryOfficerRegister registers a Security Officer for recovery key
-// distribution. Recovery officers are independent from unseal officers.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierRecoveryOfficerRegister(ctx context.Context, req *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResult, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	result, err := s.ceremony.RegisterRecoveryOfficer(ctx, ceremony.RegisterOfficerRequest{
-		Username:          req.Username,
-		CSRPEM:            req.CSRPEM,
-		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &BarrierOfficerRegisterResult{
-		CertPEM:    result.CertPEM,
-		ShareIndex: result.ShareIndex,
-	}, nil
-}
-
-// BarrierRecoveryShareClaimBegin issues a challenge nonce for a recovery officer.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierRecoveryShareClaimBegin(ctx context.Context, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	challenge, err := s.ceremony.BeginRecoveryShareClaim(ctx, username, callerCertThumbprint)
-	if err != nil {
-		return nil, err
-	}
-
-	return mapShareClaimChallenge(challenge), nil
-}
-
-// BarrierRecoveryShareClaimComplete verifies the recovery officer's nonce
-// signature and returns the recovery share bytes exactly once.
-// Returns ErrCeremonyNotConfigured when no CeremonyService has been wired.
-func (s *BarrierService) BarrierRecoveryShareClaimComplete(
-	ctx context.Context,
-	username, nonceHex string,
-	signature []byte,
-	callerCertThumbprint string,
-) (*BarrierShareClaimResult, error) {
-	if s.ceremony == nil {
-		return nil, ErrCeremonyNotConfigured
-	}
-
-	result, err := s.ceremony.CompleteRecoveryShareClaim(ctx, username, nonceHex, signature, callerCertThumbprint)
-	if err != nil {
-		return nil, err
-	}
-
-	return &BarrierShareClaimResult{
-		ShareIndex: result.ShareIndex,
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// mapOfficerStatuses converts a slice of ceremony.OfficerStatus to the
-// service-layer BarrierOfficerStatus slice.
-func mapOfficerStatuses(statuses []*ceremony.OfficerStatus) []*BarrierOfficerStatus {
-	out := make([]*BarrierOfficerStatus, 0, len(statuses))
-	for _, s := range statuses {
-		out = append(out, &BarrierOfficerStatus{
-			Username:       s.Username,
-			CertThumbprint: s.CertThumbprint,
-			ShareIndex:     s.ShareIndex,
-			AuthFactor:     s.AuthFactor,
-			EnrolledAt:     s.EnrolledAt,
-			ClaimedAt:      s.ClaimedAt,
-			SharePending:   s.SharePending,
-		})
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		out.Enroller = id.Subject
 	}
 	return out
 }
 
-// mapShareClaimChallenge converts a ceremony.ChallengeResponse to the
-// service-layer BarrierShareClaimChallenge, encoding the nonce as hex.
-func mapShareClaimChallenge(ch *ceremony.ChallengeResponse) *BarrierShareClaimChallenge {
-	return &BarrierShareClaimChallenge{
-		NonceHex:  hex.EncodeToString(ch.Nonce),
-		ExpiresAt: ch.ExpiresAt,
+// BarrierOfficerList returns every holder of domain.
+func (s *BarrierService) BarrierOfficerList(ctx context.Context, domain seal.QuorumDomain) ([]*BarrierOfficerStatus, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
 	}
+	return s.ceremony.ListOfficers(ctx, domain)
+}
+
+// BarrierShareClaimBegin issues the claim nonce to a holder.
+func (s *BarrierService) BarrierShareClaimBegin(ctx context.Context, domain seal.QuorumDomain, username, callerCertThumbprint string) (*BarrierShareClaimChallenge, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
+	}
+	challenge, err := s.ceremony.BeginClaimShare(ctx, domain, username, callerCertThumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &BarrierShareClaimChallenge{NonceHex: hex.EncodeToString(challenge.Nonce), ExpiresAt: challenge.ExpiresAt}, nil
+}
+
+// BarrierShareClaimComplete delivers the holder's share envelope exactly once.
+func (s *BarrierService) BarrierShareClaimComplete(ctx context.Context, domain seal.QuorumDomain, username, nonceHex string, signature []byte, callerCertThumbprint string) (*BarrierShareClaimResult, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
+	}
+	result, err := s.ceremony.CompleteClaimShare(ctx, domain, username, nonceHex, signature, callerCertThumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &BarrierShareClaimResult{ShareIndex: result.ShareIndex, Envelope: result.Envelope}, nil
+}
+
+// BarrierQuorumBegin issues a quorum challenge.
+func (s *BarrierService) BarrierQuorumBegin(ctx context.Context, req *QuorumBeginRequest) (*QuorumChallengeInfo, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
+	}
+	if req == nil {
+		return nil, ErrNilRequest
+	}
+	return s.ceremony.BeginQuorum(ctx, req.Domain, req.Op, req.Username, req.Factor)
+}
+
+// BarrierQuorumSubmit counts one authenticated holder's share.
+func (s *BarrierService) BarrierQuorumSubmit(ctx context.Context, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error) {
+	if req == nil {
+		return nil, ErrNilRequest
+	}
+	out, err := s.barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+		Domain: req.Domain,
+		Op:     req.Op,
+		Holder: req.Username,
+		Proof: seal.HolderProof{
+			ChallengeID:        req.ChallengeID,
+			Factor:             req.Factor,
+			Response:           req.Response,
+			ResponseMetadata:   req.ResponseMetadata,
+			PeerCertThumbprint: req.PeerCertThumbprint,
+		},
+		Share: req.Share,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return QuorumOutcomeFrom(out), nil
+}
+
+// QuorumOutcomeFrom maps a seal outcome onto the service type.
+func QuorumOutcomeFrom(out *seal.QuorumOutcome) *QuorumOutcomeInfo {
+	info := &QuorumOutcomeInfo{
+		Domain:    out.Domain,
+		Op:        out.Op,
+		Required:  out.Required,
+		Submitted: out.Submitted,
+		Complete:  out.Complete,
+	}
+	if out.RootToken != nil {
+		info.RootToken = &RootTokenInfo{Token: out.RootToken.Token, CreatedAt: out.RootToken.CreatedAt}
+	}
+	if out.Rekey != nil {
+		info.Rekey = &ShamirInitInfo{Threshold: out.Rekey.Threshold, TotalShares: out.Rekey.TotalShares, ShareCount: out.Rekey.ShareCount}
+	}
+	return info
+}
+
+// BarrierRekeyStart opens a rekey round for domain.
+func (s *BarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error) {
+	return s.barrier.StartRekey(ctx, domain, seal.RekeyParams{Threshold: threshold, Policy: policy})
+}
+
+// BarrierOfficerRevoke revokes a holder of domain through a quorum-gated rekey.
+func (s *BarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*QuorumRoundInfo, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
+	}
+	return s.ceremony.RevokeOfficer(ctx, domain, username, threshold)
 }

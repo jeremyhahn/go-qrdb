@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // migrationJournalSuffix is appended to the configured RootKeyPath to form the
@@ -427,7 +425,7 @@ func (b *StorageBarrier) DeleteRootKey(ctx context.Context) error {
 	if err := b.base.Delete(ctx, b.config.RootKeyPath); err != nil && !isSecretNotFound(err) {
 		return err
 	}
-	if err := b.base.Delete(ctx, b.wrappedRootKeyPath()); err != nil && !isSecretNotFound(err) {
+	if err := b.base.Delete(ctx, b.wrappedKeyPath(DomainUnseal)); err != nil && !isSecretNotFound(err) {
 		return err
 	}
 	return nil
@@ -509,8 +507,8 @@ func (b *StorageBarrier) MintKeyedSibling(ctx context.Context, stagingSuffix str
 // It mints the sibling at b.RootKeyPath()+stagingSuffix, generates its root
 // key via the plain Initialize path (ShamirStrategy.SealRootKey's envelope
 // carries no key material, matching initializeShamirDirect's own bootstrap),
-// wraps that root key under a fresh unseal key with the canonical AAD, splits
-// the unseal key to the enrolled officers, and returns the unsealed sibling
+// wraps that root key under a fresh unseal key with the canonical AAD and the
+// holder roster, splits the unseal key to the enrolled holders, and returns the unsealed sibling
 // plus the ShamirInitParams (threshold/total/share count) — no share bytes;
 // officers claim their share via the normal share-claim flow once the
 // migration adopts this sibling's root key (AdoptMigratedRootKey).
@@ -543,38 +541,27 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 	if derr := sib.DeleteRootKey(ctx); derr != nil {
 		return nil, nil, derr
 	}
-	sib.SetShamirConfig(&ShamirConfig{Threshold: threshold, TotalShares: total})
+	sib.SetShamirConfig(b.shamirConfigFor(threshold, total))
 	sib.SetCeremonyDistributor(b.distributor)
 
-	if ierr := sib.Initialize(ctx, Credentials{}); ierr != nil {
+	if ierr := sib.initializeShamirKey(ctx); ierr != nil {
 		return nil, nil, ierr
 	}
-	rootKey, err := sib.GetMasterKey()
+	rootKey, err := sib.masterKeyBuffer()
 	if err != nil {
 		return nil, nil, err
 	}
-	defer secure.Wipe(rootKey)
+	defer rootKey.Destroy()
 
-	unsealKey, err := generateUnsealKey()
+	// The blob is written under the sibling's path but wrapped with THIS
+	// barrier's canonical AAD, and the holders get their shares through this
+	// barrier's distributor: the same distribution path as a fresh
+	// InitializeShamir, with the default factor policy.
+	params, err := b.redistributeTo(ctx, sib, DomainUnseal, rootKey, threshold, FactorPolicyDesignated, nil, total)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer secure.Wipe(unsealKey)
-
-	wrappedBlob, err := b.wrapRootKey(unsealKey, rootKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	if perr := sib.base.Put(ctx, sib.wrappedRootKeyPath(), wrappedBlob); perr != nil {
-		return nil, nil, perr
-	}
-
-	shareCount, err := b.distributor.SealAndDistribute(ctx, unsealKey, threshold, total)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return sib, &ShamirInitParams{Threshold: threshold, TotalShares: total, ShareCount: shareCount}, nil
+	return sib, params, nil
 }
 
 // ReopenKeyed constructs a fresh barrier over THIS barrier's backend and config
@@ -587,9 +574,10 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 // A Shamir strategy is the one exception: ShamirStrategy.UnsealRootKey always
 // fails closed with ErrShamirUnsealRequiresQuorum — by design, a Shamir
 // barrier never auto-unseals from disk, migration or not — so ReopenKeyed does
-// not attempt Unseal for it. Instead it registers the M-of-N scheme and this
-// barrier's CeremonyDistributor on the fresh instance and returns it SEALED,
-// pending the normal Security Officer quorum via UnsealWithShare(s). This
+// not attempt Unseal for it. Instead it registers the M-of-N scheme, this
+// barrier's quorum lifetime, CeremonyDistributor and HolderVerifier on the
+// fresh instance and returns it SEALED,
+// pending the normal share-holder quorum (SubmitHolderShare). This
 // matches Shamir's behavior everywhere else in this package; the caller must
 // tolerate a sealed return (Services()-style callers already do, via
 // seal.ErrSealed).
@@ -604,9 +592,16 @@ func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrate
 	}
 	if strategy.ID() == StrategyShamir {
 		if shamirStrat, ok := strategy.(*ShamirStrategy); ok {
-			nb.SetShamirConfig(&ShamirConfig{Threshold: shamirStrat.Threshold(), TotalShares: shamirStrat.TotalShares()})
+			nb.SetShamirConfig(b.shamirConfigFor(shamirStrat.Threshold(), shamirStrat.TotalShares()))
 		}
+		// The reopened barrier is unsealed only by the holder quorum, so it
+		// needs both halves of the custody wiring: the distributor that seals
+		// shares and the verifier that authenticates their submission.
 		nb.SetCeremonyDistributor(b.distributor)
+		b.quorumMu.Lock()
+		verifier := b.holderVerifier
+		b.quorumMu.Unlock()
+		nb.SetHolderVerifier(verifier)
 		return nb, nil
 	}
 	if err := nb.Unseal(ctx, creds); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
@@ -636,12 +631,12 @@ func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrate
 // persists no key material in the envelope copied below by design (that is
 // the whole point of Shamir custody) — the actual root key lives, AEAD-wrapped
 // under the ephemeral unseal key the M-of-N shares reconstruct, at
-// target.wrappedRootKeyPath(). Without also copying that blob onto b's
-// canonical wrappedRootKeyPath(), a migrated Shamir barrier would adopt an
+// target.wrappedKeyPath(DomainUnseal). Without also copying that blob onto b's
+// canonical wrapped path, a migrated Shamir barrier would adopt an
 // envelope with no way to ever recover the root key — permanently unsealable.
 // It also registers the target's ShamirStrategy (with its threshold/total) and
 // CeremonyDistributor onto b so this in-process instance can serve a
-// subsequent UnsealWithShare(s) / Status() call immediately.
+// subsequent holder quorum / Status() call immediately.
 func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *StorageBarrier) error {
 	if target == nil {
 		return ErrNilSealedData
@@ -670,9 +665,8 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	// For a Shamir target, write the wrapped-root-key blob BEFORE the
 	// canonical root-key blob. The canonical blob at b.config.RootKeyPath is
 	// the boot marker: boot logic keys off its presence (and its Strategy
-	// field) to decide how to unseal, and resolveDirectSecret falls back to
-	// legacy direct-mode (treating the reconstructed unseal key AS the root
-	// key) whenever the wrapped blob is missing. Writing the canonical blob
+	// field) to decide how to unseal, and a Shamir barrier without its wrapped
+	// blob cannot be unsealed at all. Writing the canonical blob
 	// LAST makes the commit crash-safe write-ahead: if the process crashes
 	// between the two Puts, boot still observes the PRE-migration (source)
 	// canonical blob and the migration simply restarts from scratch — it can
@@ -682,11 +676,11 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	// permanently unsealable barrier with wrong DEKs derived from the raw
 	// unseal key.
 	if targetStrategy == StrategyShamir {
-		wrapped, werr := target.base.Get(ctx, target.wrappedRootKeyPath())
+		wrapped, werr := target.base.Get(ctx, target.wrappedKeyPath(DomainUnseal))
 		if werr != nil {
 			return werr
 		}
-		if perr := b.base.Put(ctx, b.wrappedRootKeyPath(), wrapped); perr != nil {
+		if perr := b.base.Put(ctx, b.wrappedKeyPath(DomainUnseal), wrapped); perr != nil {
 			return perr
 		}
 	}
@@ -703,7 +697,7 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	if targetStrategy == StrategyShamir {
 		if shamirStrategy := target.ShamirStrategy(); shamirStrategy != nil {
 			b.setStrategy(StrategyShamir, shamirStrategy)
-			b.SetShamirConfig(&ShamirConfig{Threshold: shamirStrategy.Threshold(), TotalShares: shamirStrategy.TotalShares()})
+			b.SetShamirConfig(b.shamirConfigFor(shamirStrategy.Threshold(), shamirStrategy.TotalShares()))
 		}
 	}
 
@@ -720,4 +714,15 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	emitAudit(b.config.AuditLogger, "enable_encryption", "barrier", b.config.RootKeyPath,
 		"allow", map[string]string{"from": string(sourceStrategy), "to": string(targetStrategy)})
 	return nil
+}
+
+// shamirConfigFor returns a threshold-of-total Shamir configuration that keeps
+// this barrier's configured quorum lifetime, so a migration that installs a
+// new scheme does not silently reset the operator's seal.share_ttl.
+func (b *StorageBarrier) shamirConfigFor(threshold, total int) *ShamirConfig {
+	cfg := &ShamirConfig{Threshold: threshold, TotalShares: total}
+	if b.config.Shamir != nil {
+		cfg.QuorumTTL = b.config.Shamir.QuorumTTL
+	}
+	return cfg
 }

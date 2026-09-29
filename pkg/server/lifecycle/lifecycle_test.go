@@ -1057,7 +1057,7 @@ func (stubCeremonyCA) IssueCertificate(context.Context, *ceremony.IssueCertReque
 func newTestCeremonyCore(t *testing.T, barrier *seal.StorageBarrier, credSvc *credentials.CredentialService) *ceremony.CeremonyService {
 	t.Helper()
 	svc, err := ceremony.NewCeremonyService(
-		&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, credSvc, slog.Default())
+		&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.Default())
 	if err != nil {
 		t.Fatalf("NewCeremonyService: %v", err)
 	}

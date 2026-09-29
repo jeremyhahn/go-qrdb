@@ -16,82 +16,290 @@ package seal
 
 import (
 	"context"
-	"fmt"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"sort"
+	"strconv"
 	"sync"
 	"testing"
 
 	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// captureDistributor implements CeremonyDistributor for use in unit tests.
-// It splits the secret using the real Shamir library, records the share strings
-// (so tests can later call UnsealWithShare / RecoverWithKeys), and returns the
-// share count. This mirrors what the ceremony package does in production but
-// without requiring a full ceremony setup.
+// errTestTooFewHolders is what the test distributor answers when the active
+// holder set cannot carry the requested threshold, as the real distributor
+// (pkg/ceremony) does with its own typed error.
+var errTestTooFewHolders = errors.New("test distributor: too few holders for the threshold")
+
+// captureDistributor is a faithful in-memory CeremonyDistributor. It keeps a
+// holder set per domain, prepares rosters the way pkg/ceremony does (every
+// active holder, minus the excluded ones, share indexes 1..N in a stable
+// order), splits with the real Shamir library, captures each holder's share
+// value so a test can submit it, and drops removed holders on Committed.
 type captureDistributor struct {
-	mu     sync.Mutex
-	shares []string // last round's shares
+	mu        sync.Mutex
+	holders   map[QuorumDomain][]string
+	shares    map[QuorumDomain]map[string]string
+	digests   map[QuorumDomain][]byte
+	committed map[QuorumDomain]*HolderRoster
+	failNext  error
 }
 
-// newCaptureDistributor returns a captureDistributor ready for use.
-func newCaptureDistributor() *captureDistributor {
-	return &captureDistributor{}
-}
-
-// SealAndDistribute splits secret into total shares with the given threshold,
-// records them in the distributor, and returns the count.
-func (c *captureDistributor) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
-	raw, err := quicraftShamir.Split(secret, threshold, total)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrShamirSplitFailed, err)
+// newCaptureDistributor returns a distributor whose unseal domain has the
+// given holders.
+func newCaptureDistributor(holders ...string) *captureDistributor {
+	return &captureDistributor{
+		holders:   map[QuorumDomain][]string{DomainUnseal: append([]string(nil), holders...)},
+		shares:    map[QuorumDomain]map[string]string{},
+		digests:   map[QuorumDomain][]byte{},
+		committed: map[QuorumDomain]*HolderRoster{},
 	}
+}
+
+// setHolders replaces a domain's active holder set.
+func (c *captureDistributor) setHolders(domain QuorumDomain, holders ...string) {
 	c.mu.Lock()
-	c.shares = make([]string, len(raw))
-	for i, s := range raw {
-		c.shares[i] = s.Value
+	defer c.mu.Unlock()
+	c.holders[domain] = append([]string(nil), holders...)
+}
+
+// testThumb is the deterministic certificate thumbprint of a test holder.
+func testThumb(holder string) string {
+	return hex.EncodeToString([]byte("cert-" + holder))
+}
+
+// PrepareRoster implements CeremonyDistributor.
+func (c *captureDistributor) PrepareRoster(_ context.Context, domain QuorumDomain, threshold int, policy FactorPolicy, exclude []string) (*HolderRoster, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	skip := map[string]bool{}
+	for _, e := range exclude {
+		skip[e] = true
 	}
-	c.mu.Unlock()
+	active := make([]string, 0, len(c.holders[domain]))
+	for _, h := range c.holders[domain] {
+		if !skip[h] {
+			active = append(active, h)
+		}
+	}
+	sort.Strings(active)
+	if threshold < 2 || len(active) < threshold {
+		return nil, errTestTooFewHolders
+	}
+	r := NewHolderRoster(domain, policy, threshold)
+	r.Distribution = "prepared"
+	for i, h := range active {
+		r.Holders = append(r.Holders, RosterHolder{
+			Username:       h,
+			Role:           RoleCustodian,
+			ShareIndex:     i + 1,
+			CertThumbprint: testThumb(h),
+			Designated:     "mtls",
+			Factors: []RosterFactor{
+				{Name: "mtls", EnrollmentID: "mtls:" + h, PublicKey: []byte("pk-" + h)},
+				{Name: "fido2", EnrollmentID: "fido2:" + h, PublicKey: []byte("fk-" + h)},
+			},
+		})
+	}
+	r.Total = len(r.Holders)
+	return r, nil
+}
+
+// Distribute implements CeremonyDistributor.
+func (c *captureDistributor) Distribute(_ context.Context, secret []byte, roster *HolderRoster, digest []byte) (int, error) {
+	defer secure.Wipe(secret)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.failNext; err != nil {
+		c.failNext = nil
+		return 0, err
+	}
+	raw, err := quicraftShamir.Split(secret, roster.Threshold, roster.Total)
+	if err != nil {
+		return 0, err
+	}
+	byHolder := make(map[string]string, len(raw))
+	for _, h := range roster.Holders {
+		byHolder[h.Username] = raw[h.ShareIndex-1].Value
+	}
+	c.shares[roster.Domain] = byHolder
+	c.digests[roster.Domain] = append([]byte(nil), digest...)
 	return len(raw), nil
 }
 
-// RekeyAndDistribute destroys the prior round and produces fresh shares.
-func (c *captureDistributor) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
-	c.mu.Lock()
-	c.shares = nil
-	c.mu.Unlock()
-	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
-}
-
-// Shares returns the share strings captured by the last SealAndDistribute or
-// RekeyAndDistribute call. The returned slice is a copy.
-func (c *captureDistributor) Shares() []string {
+// Committed implements CeremonyDistributor.
+func (c *captureDistributor) Committed(_ context.Context, roster *HolderRoster, removed []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.shares == nil {
-		return nil
+	gone := map[string]bool{}
+	for _, r := range removed {
+		gone[r] = true
 	}
-	out := make([]string, len(c.shares))
-	copy(out, c.shares)
+	kept := c.holders[roster.Domain][:0]
+	for _, h := range c.holders[roster.Domain] {
+		if !gone[h] {
+			kept = append(kept, h)
+		}
+	}
+	c.holders[roster.Domain] = kept
+	c.committed[roster.Domain] = roster
+	return nil
+}
+
+// share returns the share value distributed to holder in domain.
+func (c *captureDistributor) share(domain QuorumDomain, holder string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shares[domain][holder]
+}
+
+// testChallenge is one challenge the test verifier issued.
+type testChallenge struct {
+	domain QuorumDomain
+	op     QuorumOp
+	holder string
+	digest string
+	answer string
+}
+
+// testVerifier is a faithful HolderVerifier: it answers only a proof whose
+// challenge it issued for exactly (domain, op, holder, roster digest), with
+// the expected response, and consumes the challenge whether or not the proof
+// verifies, as the contract requires.
+type testVerifier struct {
+	mu     sync.Mutex
+	issued map[string]*testChallenge
+	calls  int
+}
+
+func newTestVerifier() *testVerifier {
+	return &testVerifier{issued: map[string]*testChallenge{}}
+}
+
+// issue records a challenge and returns the proof that answers it.
+func (v *testVerifier) issue(domain QuorumDomain, op QuorumOp, holder string, digest []byte) HolderProof {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	id := make([]byte, 8)
+	_, _ = rand.Read(id)
+	answer := make([]byte, 16)
+	_, _ = rand.Read(answer)
+	cid := hex.EncodeToString(id)
+	v.issued[cid] = &testChallenge{domain: domain, op: op, holder: holder, digest: hex.EncodeToString(digest), answer: hex.EncodeToString(answer)}
+	return HolderProof{ChallengeID: cid, Response: []byte(hex.EncodeToString(answer))}
+}
+
+var errTestProof = errors.New("test verifier: proof does not answer an issued challenge")
+
+// VerifyHolder implements HolderVerifier.
+func (v *testVerifier) VerifyHolder(_ context.Context, domain QuorumDomain, op QuorumOp, holder string, roster *HolderRoster, digest []byte, proof HolderProof) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.calls++
+	ch, ok := v.issued[proof.ChallengeID]
+	delete(v.issued, proof.ChallengeID)
+	if !ok || ch.domain != domain || ch.op != op || ch.holder != holder || ch.digest != hex.EncodeToString(digest) || ch.answer != string(proof.Response) {
+		return errTestProof
+	}
+	if _, err := roster.AdmittedFactor(holder, proof.Factor); err != nil {
+		return err
+	}
+	return nil
+}
+
+var _ HolderVerifier = (*testVerifier)(nil)
+var _ CeremonyDistributor = (*captureDistributor)(nil)
+
+// holderFixture is an initialized Shamir barrier with holders, a
+// distributor and a verifier wired.
+type holderFixture struct {
+	t        testing.TB
+	b        *StorageBarrier
+	dist     *captureDistributor
+	verifier *testVerifier
+}
+
+// holderNames returns h1..hN.
+func holderNames(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "h" + strconv.Itoa(i+1)
+	}
 	return out
 }
 
-// combineShareValues reconstructs the split secret from captured share value
-// strings. Used by tests that need the distributed secret (the unseal key in
-// direct mode) without going through a barrier unseal path.
-func combineShareValues(t testing.TB, values []string, threshold, total int) []byte {
+// newHolderFixture initializes a threshold-of-total Shamir barrier over
+// in-memory storage, distributing to holders h1..h<total>. The barrier is
+// left unsealed, as initialization leaves it.
+func newHolderFixture(t testing.TB, threshold, total int) *holderFixture {
 	t.Helper()
-	shares := make([]*quicraftShamir.Share, len(values))
-	for i, v := range values {
-		shares[i] = &quicraftShamir.Share{
-			Index:     i + 1,
-			Threshold: threshold,
-			Total:     total,
-			Value:     v,
-		}
-	}
-	secret, err := quicraftShamir.CombineUnverified(shares)
+	strat, err := NewShamirStrategy(threshold, total)
 	if err != nil {
-		t.Fatalf("combineShareValues: %v", err)
+		t.Fatal(err)
 	}
-	return secret
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "root-key",
+		Shamir:      &ShamirConfig{Threshold: threshold, TotalShares: total},
+	}, strat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &holderFixture{t: t, b: b, dist: newCaptureDistributor(holderNames(total)...), verifier: newTestVerifier()}
+	b.SetCeremonyDistributor(f.dist)
+	b.SetHolderVerifier(f.verifier)
+	if _, err := b.InitializeShamir(context.Background(), ""); err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	return f
+}
+
+// submit sends holder's own distributed share, with a valid proof, to
+// (domain, op).
+func (f *holderFixture) submit(domain QuorumDomain, op QuorumOp, holder string) (*QuorumOutcome, error) {
+	f.t.Helper()
+	return f.submitShare(domain, op, holder, f.dist.share(domain, holder))
+}
+
+// submitShare sends an arbitrary share value as holder, with a valid proof.
+func (f *holderFixture) submitShare(domain QuorumDomain, op QuorumOp, holder, share string) (*QuorumOutcome, error) {
+	f.t.Helper()
+	_, digest, err := f.b.HolderRoster(context.Background(), domain)
+	if err != nil {
+		return nil, err
+	}
+	return f.b.SubmitHolderShare(context.Background(), &HolderSubmission{
+		Domain: domain,
+		Op:     op,
+		Holder: holder,
+		Proof:  f.verifier.issue(domain, op, holder, digest),
+		Share:  []byte(share),
+	})
+}
+
+// quorum submits holders' shares in order and returns the last outcome.
+func (f *holderFixture) quorum(domain QuorumDomain, op QuorumOp, holders ...string) *QuorumOutcome {
+	f.t.Helper()
+	var out *QuorumOutcome
+	for _, h := range holders {
+		o, err := f.submit(domain, op, h)
+		if err != nil {
+			f.t.Fatalf("%s %s by %s: %v", domain, op, h, err)
+		}
+		out = o
+	}
+	return out
+}
+
+// seal seals the barrier through a seal quorum of the first threshold holders.
+func (f *holderFixture) sealWith(holders ...string) {
+	f.t.Helper()
+	if o := f.quorum(DomainUnseal, OpSeal, holders...); !o.Complete {
+		f.t.Fatalf("seal quorum incomplete: %+v", o)
+	}
+	if !f.b.IsSealed() {
+		f.t.Fatal("barrier not sealed after seal quorum")
+	}
 }

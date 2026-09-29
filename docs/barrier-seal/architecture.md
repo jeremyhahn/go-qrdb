@@ -1,6 +1,6 @@
 # Barrier and Seal — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 The barrier is the at-rest encryption boundary. Everything persistent passes
 through it, and when it is sealed the data path refuses every read and write.
@@ -44,7 +44,7 @@ hardware code**; it calls a registered factory by name.
 | StrategyID | Constant | Source | When to use |
 |------------|----------|--------|-------------|
 | `passphrase` | `seal.StrategyPassphrase` | go-quicraft (re-exported) | Single passphrase, FIPS-aware KDF (Argon2id or PBKDF2-SHA256). The default. |
-| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir.md](../seal/shamir.md)). |
+| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir-custody](../shamir-custody/)). |
 | `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. Valid enable-encryption source (plaintext→keyed migration). |
 | `system-barrier` | `seal.StrategySystemBarrier` | go-qrdb (tenant strategy only) | Auto-unseal with per-tenant root key wrapped under the system barrier; no per-tenant credential required. System-managed convenience mode for dedicated tenants. Valid enable-encryption source (credential-free→keyed migration). |
 
@@ -171,31 +171,11 @@ All persistent data is encrypted transparently at rest via the `StorageBarrier`:
 See [multi-tenant.md](../seal/multi-tenant.md) for the full tenant-barrier lifecycle and key-management modes.
 
 
-## Cluster auto-unseal — `ShareExchangeCoordinator`
+## No cluster auto-unseal
 
-The `ShareExchangeCoordinator` enables cluster-level auto-unseal by exchanging Shamir shares between nodes. It is transport-agnostic — callers inject a `ShareTransport` implementation.
-
-```go
-type ShareTransport interface {
-    SendShare(ctx context.Context, toNodeID uint64, msg *ShareExchangeMessage) error
-    BroadcastShareRequest(ctx context.Context, fromNodeID uint64) error
-}
-```
-
-### Flow
-
-1. Each node starts a coordinator with its `nodeID`, threshold, and transport
-2. On boot, `CollectSharesWithTimeout` broadcasts a share request to peers
-3. Peers respond with their encrypted shares via `OnShareReceived`
-4. When the quorum threshold is met, the `UnsealHandler` callback fires
-5. The handler calls `StorageBarrier.UnsealWithShares()` to reconstruct the root key
-
-### Key Design
-
-- **Lock-free state**: `started` and `quorumCalled` use `sync/atomic.Bool`
-- **Exactly-once unseal**: `CompareAndSwap` ensures the handler fires once
-- **Map-based dispatch**: Message routing uses `map[ShareMessageType]handler` for O(1) lookup
-- **No `time.Sleep`**: Uses `time.NewTimer` + `select` for timeouts
+Custody is per node. A Shamir barrier is unsealed only by a quorum of its own
+authenticated share holders ([../shamir-custody/](../shamir-custody/)); nodes
+never exchange shares.
 
 
 ## CA key lifecycle

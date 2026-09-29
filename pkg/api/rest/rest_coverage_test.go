@@ -19,18 +19,15 @@ package rest
 import (
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -47,9 +44,7 @@ type coverageCeremonyService struct {
 	capturedInitOpts *service.CeremonyInitializeOptions
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
-	beginResult      *service.CeremonyChallenge
 	beginErr         error
-	completeResult   *service.CeremonyClaimCertResult
 	completeErr      error
 	claimShareResult []byte
 	claimShareErr    error
@@ -69,8 +64,6 @@ func newCoverageCeremonyService() *coverageCeremonyService {
 			ShareCount: 3,
 		},
 		statusResult:     &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"},
-		beginResult:      &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Now().Add(time.Minute)},
-		completeResult:   &service.CeremonyClaimCertResult{CertPEM: []byte("officer-cert"), CACertPEM: []byte("ca-cert")},
 		claimShareResult: []byte("shamir-share-bytes"),
 		signCSRResult:    &service.CeremonySignCSRResult{CertPEM: []byte("signed-cert")},
 	}
@@ -83,39 +76,8 @@ func (m *coverageCeremonyService) CeremonyInitialize(_ context.Context, _ ceremo
 func (m *coverageCeremonyService) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
 	return m.statusResult, m.statusErr
 }
-func (m *coverageCeremonyService) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	return m.beginResult, m.beginErr
-}
-func (m *coverageCeremonyService) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	return m.completeResult, m.completeErr
-}
-func (m *coverageCeremonyService) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-func (m *coverageCeremonyService) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
-}
 func (m *coverageCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return m.signCSRResult, m.signCSRErr
-}
-func (m *coverageCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, nil
-}
-func (m *coverageCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, nil
-}
-func (m *coverageCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, nil
-}
-
-func (m *coverageCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -466,242 +428,6 @@ func TestHandleCeremonyStatus_ServiceError(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
-func TestHandleCeremonyClaimCertBegin_NilService(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/begin", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertBegin(rec, req)
-	assertStatus(t, rec, http.StatusNotImplemented)
-}
-
-func TestHandleCeremonyClaimCertBegin_BadBody(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/begin", strings.NewReader(`not-json`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertBegin(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyClaimCertBegin_Success(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/begin", strings.NewReader(`{"username":"alice"}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertBegin(rec, req)
-	assertStatus(t, rec, http.StatusOK)
-}
-
-func TestHandleCeremonyClaimCertBegin_ServiceError(t *testing.T) {
-	svc := newCoverageCeremonyService()
-	svc.beginErr = &service.KeyNotFoundError{Key: "k"}
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/begin", strings.NewReader(`{"username":"alice"}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertBegin(rec, req)
-	assertStatus(t, rec, http.StatusNotFound)
-}
-
-func TestHandleCeremonyClaimCertComplete_NilService(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/complete", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertComplete(rec, req)
-	assertStatus(t, rec, http.StatusNotImplemented)
-}
-
-func TestHandleCeremonyClaimCertComplete_BadBody(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/complete", strings.NewReader(`bad`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertComplete(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyClaimCertComplete_BadSignatureEncoding(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	body := `{"username":"alice","nonce_hex":"aa","signature":"!!not-base64!!"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/complete", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertComplete(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyClaimCertComplete_Success(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	sig := base64.StdEncoding.EncodeToString([]byte("signature"))
-	body := `{"username":"alice","nonce_hex":"deadbeef","signature":"` + sig + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/complete", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertComplete(rec, req)
-	assertStatus(t, rec, http.StatusOK)
-}
-
-func TestHandleCeremonyClaimCertComplete_ServiceError(t *testing.T) {
-	svc := newCoverageCeremonyService()
-	svc.completeErr = &service.KeyNotFoundError{Key: "k"}
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(svc))
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-cert/complete", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimCertComplete(rec, req)
-	assertStatus(t, rec, http.StatusNotFound)
-}
-
-func TestHandleCeremonyBeginClaimShare_NilService(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyBeginClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusNotImplemented)
-}
-
-// TestHandleCeremonyBeginClaimShare_RequiresClientCert proves a request with no
-// mTLS peer certificate is refused with 401 before the ceremony service is
-// consulted: the certificate thumbprint IS the authentication for this route.
-func TestHandleCeremonyBeginClaimShare_RequiresClientCert(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{"username":"alice"}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyBeginClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusUnauthorized)
-}
-
-func TestHandleCeremonyBeginClaimShare_BadBody(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`bad`))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyBeginClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyBeginClaimShare_Success(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{"username":"alice"}`))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyBeginClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusOK)
-
-	var resp map[string]interface{}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp["nonce_hex"] == "" {
-		t.Fatalf("expected a challenge nonce, got: %#v", resp)
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_NilService(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusNotImplemented)
-}
-
-// TestHandleCeremonyCompleteClaimShare_RequiresClientCert proves the completing
-// half refuses a certificate-less caller AND that the response body carries no
-// share material.
-func TestHandleCeremonyCompleteClaimShare_RequiresClientCert(t *testing.T) {
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusUnauthorized)
-
-	if strings.Contains(rec.Body.String(), "share_json") {
-		t.Fatalf("share material leaked on refusal: %s", rec.Body.String())
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_MissingNonce(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`{"username":"alice"}`))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyCompleteClaimShare_BadSignatureEncoding(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete",
-		strings.NewReader(`{"username":"alice","nonce_hex":"aa","signature":"!!!not-base64!!!"}`))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyCompleteClaimShare_BadBody(t *testing.T) {
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`bad`))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusOK)
-
-	// Regression guard: the response key and encoding must match
-	// transport.CompleteClaimShareResponse{ShareJSON string `json:"share_json"`}
-	// -- the shared SDK type gRPC/QUIC/embedded all populate with the raw JSON
-	// share text (not base64). A prior {"share": base64(...)} shape here left
-	// every REST-transport caller's ShareJSON field empty.
-	var resp map[string]interface{}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	shareJSON, ok := resp["share_json"].(string)
-	if !ok {
-		t.Fatalf("expected string share_json field, got: %#v", resp)
-	}
-	if shareJSON != "shamir-share-bytes" {
-		t.Errorf("share_json = %q, want the raw share bytes as a string, not base64", shareJSON)
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
-	svc := newCoverageCeremonyService()
-	svc.claimShareErr = &service.KeyNotFoundError{Key: "k"}
-	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithCeremonyService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
-	injectFakeTLS(req)
-	rec := httptest.NewRecorder()
-	s.handleCeremonyCompleteClaimShare(rec, req)
-	assertStatus(t, rec, http.StatusNotFound)
-}
-
 func TestHandleCeremonySignCSR_NilService(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
 	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/sign-csr", strings.NewReader(`{}`))
@@ -745,23 +471,6 @@ func TestHandleCeremonySignCSR_ServiceError(t *testing.T) {
 // Ceremony response converter functions
 // ---------------------------------------------------------------------------
 
-func TestCeremonyInitToResponse(t *testing.T) {
-	r := &service.CeremonyInitResult{
-		SPKIPin:    "pin",
-		CACertPEM:  []byte("ca"),
-		TLSCertPEM: []byte("tls"),
-		State:      "initialized",
-		ShareCount: 2,
-	}
-	m := ceremonyInitToResponse(r)
-	if m["spki_pin"] != "pin" {
-		t.Errorf("spki_pin = %v", m["spki_pin"])
-	}
-	if m["share_count"] != 2 {
-		t.Errorf("share_count = %v", m["share_count"])
-	}
-}
-
 func TestCeremonyStatusToResponse(t *testing.T) {
 	info := &service.CeremonyStatusInfo{State: "complete", SPKIPin: "abc"}
 	m := ceremonyStatusToResponse(info)
@@ -770,29 +479,6 @@ func TestCeremonyStatusToResponse(t *testing.T) {
 	}
 	if m["spki_pin"] != "abc" {
 		t.Errorf("spki_pin = %v", m["spki_pin"])
-	}
-}
-
-func TestCeremonyChallengeToResponse(t *testing.T) {
-	expiry := time.Now().Add(time.Minute)
-	c := &service.CeremonyChallenge{NonceHex: "ff00", ExpiresAt: expiry}
-	m := ceremonyChallengeToResponse(c)
-	if m["nonce_hex"] != "ff00" {
-		t.Errorf("nonce_hex = %v", m["nonce_hex"])
-	}
-	if m["expires_at"] == "" {
-		t.Error("expires_at should not be empty")
-	}
-}
-
-func TestCeremonyClaimCertToResponse(t *testing.T) {
-	r := &service.CeremonyClaimCertResult{CertPEM: []byte("cert"), CACertPEM: []byte("ca")}
-	m := ceremonyClaimCertToResponse(r)
-	if m["cert_pem"] != "cert" {
-		t.Errorf("cert_pem = %v", m["cert_pem"])
-	}
-	if m["ca_cert_pem"] != "ca" {
-		t.Errorf("ca_cert_pem = %v", m["ca_cert_pem"])
 	}
 }
 

@@ -17,7 +17,9 @@
 //
 //	spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>
 //
-// where kind is "user" (human identity) or "svc" (service identity). go-qrdb
+// where kind is "user" (human identity), "svc" (service identity) or
+// "holder" (a Shamir share holder: a Security Officer or key custodian whose
+// certificate the ceremony CA issued for share custody only). go-qrdb
 // is the bottom layer and owns mTLS authentication, so it carries its own
 // SPIFFE verifier rather than importing the issuer-side helper from go-xkms
 // (which depends on go-qrdb). The format is kept identical on both sides; this
@@ -43,7 +45,7 @@ var (
 	ErrTenantEmpty = errors.New("spiffe: tenant id must not be empty")
 
 	// ErrKindInvalid indicates an unsupported workload kind was parsed.
-	ErrKindInvalid = errors.New("spiffe: kind must be user or svc")
+	ErrKindInvalid = errors.New("spiffe: kind must be user, svc or holder")
 
 	// ErrNameEmpty indicates an empty workload name was parsed.
 	ErrNameEmpty = errors.New("spiffe: name must not be empty")
@@ -84,6 +86,11 @@ const (
 	// KindService identifies a non-human service/workload identity.
 	KindService = "svc"
 
+	// KindHolder identifies a Shamir share holder. It is a namespace of its
+	// own so a holder certificate can never be read as a login identity:
+	// pkg/auth marks it and RBAC refuses every permission to it.
+	KindHolder = "holder"
+
 	scheme = "spiffe"
 )
 
@@ -103,7 +110,7 @@ func (id ID) Validate() error {
 	if strings.TrimSpace(id.TenantID) == "" {
 		return ErrTenantEmpty
 	}
-	if id.Kind != KindUser && id.Kind != KindService {
+	if id.Kind != KindUser && id.Kind != KindService && id.Kind != KindHolder {
 		return ErrKindInvalid
 	}
 	if strings.TrimSpace(id.Name) == "" {

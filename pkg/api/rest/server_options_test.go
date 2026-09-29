@@ -103,13 +103,6 @@ func TestWithAuthFactorService_Applied(t *testing.T) {
 	}
 }
 
-func TestWithCustodianService_Applied(t *testing.T) {
-	srv := NewServer(nil, nil, ":0", WithCustodianService(nil))
-	if srv.custodianSvc != nil {
-		t.Error("expected custodianSvc to be nil")
-	}
-}
-
 func TestWithSOAuthenticator_Applied(t *testing.T) {
 	srv := NewServer(nil, nil, ":0", WithSOAuthenticator(nil))
 	if srv.soPINVerifier != nil {

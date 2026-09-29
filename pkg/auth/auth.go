@@ -19,6 +19,22 @@ package auth
 
 import "context"
 
+// MetaPrincipalKind is the Identity.Metadata key recording what kind of
+// principal a credential names when it is not an ordinary login identity.
+const MetaPrincipalKind = "principal_kind"
+
+// PrincipalShareHolder is the MetaPrincipalKind value for a Shamir share
+// holder authenticated by a certificate in the SPIFFE holder namespace. Such
+// an identity reaches only identity-gated share-custody endpoints; RBAC
+// refuses it every permission.
+const PrincipalShareHolder = "share-holder"
+
+// IsShareHolder reports whether the identity is a share holder rather than a
+// login identity. It is false for a nil identity.
+func (i *Identity) IsShareHolder() bool {
+	return i != nil && i.Metadata[MetaPrincipalKind] == PrincipalShareHolder
+}
+
 // Identity represents an authenticated entity.
 type Identity struct {
 	// Subject identifies the authenticated principal (e.g., CN from cert, JWT sub).

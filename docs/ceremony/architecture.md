@@ -1,113 +1,117 @@
 # Initialization Ceremony — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
-The ceremony is the barrier's custody bootstrap: it establishes the CA, splits
-the secret among Security Officers, and holds each share until its officer
-claims it. It is **not** the admin bootstrap — that is
-[../firstboot/](../firstboot/).
+The ceremony is the barrier's custody bootstrap and the home of the share
+holder engine: it establishes the PINs and the CA, enrols the initial share
+holders, has the barrier split its unseal key to them, and holds each sealed
+envelope until its holder claims it. It is **not** the admin bootstrap — that
+is [../firstboot/](../firstboot/). What share holders are and how the quorum
+works is [../shamir-custody/](../shamir-custody/).
 
 ## Problem
 
-A fresh system has no CA, no officers, no shares and no admin. Getting from
-nothing to a running M-of-N custody arrangement is a sequence with an order that
-matters, and doing it wrong — minting shares before officers exist, or handing
-every share out at once — defeats the point of the arrangement.
+A fresh system has no CA, no holders, no key and no admin. Getting from
+nothing to a running M-of-N custody arrangement is a sequence whose order
+matters: holders must exist, with CA-issued identities, before the key is
+split; the split must go only to them; and no step may let the person running
+the ceremony see a share.
 
 ## Shape chosen
 
-A three-state machine, driven by claims:
+A three-state machine:
 
 ```
-awaiting_init  ──Initialize()──>  enrolling  ──allClaimsComplete()──>  operational
+awaiting_init  --Initialize()-->  enrolling  --every holder claimed-->  operational
 ```
 
-- **awaiting_init**: System is freshly deployed, no ceremony has been performed.
-- **enrolling**: Ceremony in progress. Officers claim certificates and Shamir shares.
-- **operational**: All officers have claimed their artifacts. System is ready.
+- **awaiting_init** — freshly deployed; no ceremony performed.
+- **enrolling** — M-of-N custody initialized; holders are claiming their
+  envelopes.
+- **operational** — every initial holder has claimed. In single-admin mode
+  (`threshold < 2`) the state goes straight here from `awaiting_init`.
 
-In **single-admin mode** (`threshold < 2`) the state transitions directly from `awaiting_init` to `operational`. In **M-of-N mode** (`threshold >= 2`) the daemon stays in `enrolling` until every custodian has claimed.
+`Initialize`:
 
-In **single-admin mode** (`threshold < 2`) the state goes straight from
-`awaiting_init` to `operational`. In **M-of-N mode** (`threshold >= 2`) the
-daemon stays in `enrolling` until every custodian has claimed.
+1. provisions the SO and User PINs through the `pin.PINBackend` (or verifies
+   them, when barrier initialization already established them);
+2. issues the server TLS certificate from the ceremony CA;
+3. with `threshold >= 2`, enrols each named holder (Security Officer or
+   custodian, from a CSR) through the same `register` path the holder routes
+   use, then asks the barrier to initialize Shamir custody at
+   `threshold`-of-`len(holders)` under the requested factor policy. The barrier
+   splits its **unseal key** and the ceremony, as the barrier's distributor,
+   seals one envelope per holder.
+
+The response carries the CA bundle, its SPKI pin, the TLS certificate and each
+holder's CA-issued certificate. It never carries a share, and **nothing but
+the unseal key is split**: the User PIN is a PIN, not a Shamir secret.
 
 ## PIN handling — never raw bytes
 
-The ceremony never stores raw PIN bytes inside the credential store any more. PIN material is owned by a `pin.PINBackend` (see `pkg/pin/backend.go:33-84` and [../pin/README.md](../auth-factors/architecture.md)) injected through the qrdb server option:
+PIN material is owned by a `pin.PINBackend` injected with `WithPINBackend`;
+composers wire `pin.SoftwareBackend` over the node-local seal store, and
+hardware deployments inject go-xkms backends through the same option.
 
-```go
-// pkg/server/server.go:488-495
-func WithPINBackend(backend pin.PINBackend) ServerOption { ... }
-```
+- `pin.Provision` sets the SO PIN and then the User PIN (gated by the SO PIN),
+  hashed with Argon2id, or PBKDF2 in FIPS mode.
+- Every SO-PIN check anywhere in the stack goes through the backend, which
+  compares hashes in constant time. Nothing compares raw PINs.
+- Every SO-PIN-gated operation **fails closed** without a backend
+  (`pin.ErrBackendNotConfigured`).
+- Receive buffers are wiped before the call returns.
 
-At bootstrap the ceremony does the following with each PIN it receives from the caller:
+## The holder engine
 
-1. `pin.Service.SetSOPIN(currentSOPIN, newSOPIN)` — hashes (Argon2id / PBKDF2 depending on FIPS mode) and persists through the backend.
-2. `pin.Service.SetUserPIN(soPIN, newUserPIN)` — same, gated by SO verification.
-3. The raw byte buffers used to receive the PIN material are wiped (`secure.Wipe`) before the bootstrap call returns.
+`pkg/ceremony` owns one share-holder engine, `holderScope`, instantiated for
+the system unseal domain, the system recovery domain and every tenant barrier.
+Each scope has its own registry (public records behind the barrier), its own
+envelope store and its own pending challenges. The engine:
 
-For an M-of-N initialisation the User PIN is **also** the Shamir secret. The User PIN bytes are split via `shamir.Split` and the original bytes are wiped from local memory once the shares are produced; the PIN itself is never persisted in plaintext anywhere.
-
-When no `WithPINBackend` is supplied the daemon constructs a default `pin.SoftwareBackend` (Argon2id / PBKDF2 auto-selected by `seal.FIPSEnabled()`) backed by the barrier-protected storage. Hardware deployments inject TPM2 / PKCS#11 backends from go-xkms through the same option without ceremony needing to know which backend it is talking to.
-
-> **Migration note**: The legacy `credentialSOPin` / `credentialUserPin` storage keys remain readable for in-place upgrades from older deployments. New writes go exclusively through the `pin.PINBackend`; the legacy keys are wiped on first successful PIN backend write.
+- **enrols** holders: the CA issues a certificate with a CA-assigned identity
+  (`CN=<username>`, a SPIFFE URI in the holder namespace); the CSR contributes
+  only its public key. Self-enrolment and a second share for the same person
+  (same username, certificate key or envelope key) are refused;
+- **distributes**: as the barrier's `CeremonyDistributor` it prepares the
+  roster and HPKE-seals each share to its holder into a `secure.Secret` with a
+  time-to-live;
+- **delivers** each envelope once, over a connection presenting the holder's
+  certificate, after a signed-nonce challenge;
+- **verifies** quorum submissions: as the barrier's `HolderVerifier` it issues
+  and checks factor challenges against the roster.
 
 ## Share lifecycle
 
-Shares are **never persisted to disk.**
+Shares are **never persisted, anywhere**:
 
-Shares are **never persisted to disk**. During M-of-N enrollment:
+1. The barrier generates the domain key and splits it.
+2. Each share is HPKE-sealed to its holder's recipient key and held as a
+   `secure.Secret` with a timer (24h by default). Storing a new envelope for a
+   holder destroys the old one first.
+3. The holder claims it — `claim/begin`, sign the nonce, `claim/complete` —
+   and the held copy is destroyed.
+4. An unclaimed envelope is destroyed at its deadline; only a rekey replaces
+   it.
 
-1. `Initialize()` calls `shamir.Split()` on the user PIN
-2. Each share is sealed into a `*secure.Secret` (go-enclave sealed enclave,
-   sealed enclave)
-3. Officer connects via mTLS, calls `BeginClaimCert()` to get a challenge nonce
-4. Officer signs nonce with CSR private key, calls `CompleteClaimCert()` to receive certificate
-5. Officer calls `ClaimShare()` to retrieve their share bytes
-6. The `Secret` is `Destroy()`'d (secure wipe) immediately upon claim
-7. When all claims complete, the state transitions to `operational`
-
-If the ceremony is abandoned (e.g., server restart), all shares are lost and the ceremony must be re-run. This is intentional: shares are secrets that belong to custodians, not the system.
-
-**Invariants, pinned by tests in `pkg/ceremony/share_store_test.go`:**
-
-- `Store` **consumes** the caller's slice, wiping it. A copy left on the heap would survive in a core dump or a swapped page, defeating the enclave the share was just placed in.
-- `Claim` **destroys** the enclave and retains only the fact that a claim occurred, so a second attempt is refused rather than served. Once a custodian retrieves their share, they alone hold it.
-- What persists is the officer **record** (`ceremony/officers/<name>`): certificate thumbprint or public key, share **index**, auth factor, timestamps. **Never share bytes.**
-
-
-Recovering the root key later therefore requires a threshold of holders to
-bring their shares back. **The server cannot do it alone**, which is exactly
-the property an M-of-N ceremony is chosen for.
-
-### Officer enrollment kinds
-
-An officer supplies key material one of three ways, parsed by `ceremony.ParseEnrollmentSpec` (`<username>:<kind>:<path>`, the same vocabulary the platform admin uses):
-
-| Kind | Entry point | Trust |
-|------|-------------|-------|
-| `csr` | `RegisterOfficer` | Derived — the ceremony CA signs it |
-| `cert` | `EnrollExternalOfficer` | Verified — parsed, in-validity, chains to the configured external CA pool |
-| `pubkey` | `EnrollExternalOfficer` | Asserted by the administrator running the ceremony; a bare key has no chain |
-
-The two-field form `<username>:<path>` means `csr`.
-
+If the node restarts before every holder has claimed, the unclaimed envelopes
+are gone; the claimed ones, and the key, are unaffected. A rekey by M holders
+redistributes.
 
 ## The CA seam
 
-The ceremony requires a narrow CA interface that decouples it from any specific CA implementation:
-
 ```go
 type CeremonyCA interface {
-    SignCSR(csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
+    SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error)
     CACertificate() (*x509.Certificate, error)
     CABundle() ([]byte, error)
-    IssueCertificate(req *IssueCertRequest) (*IssuedCert, error)
+    IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error)
 }
 ```
 
-Both qrdb's `cert.CertProvider` and xkms's `ca.TrustedCA` can satisfy this via thin adapters.
+`SignCSROptions` carries the **Subject** and **URIs** the ceremony assigns. An
+implementation must write those — and nothing from the CSR but its public key —
+into the certificate. `ceremony.LocalCA` does; qrdb's `cert.CertProvider` and
+go-xkms's CA satisfy the interface through adapters that must do the same.
 
 **The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
 under the node's cluster CA, which the mTLS listener trusts for client logins,
@@ -134,103 +138,59 @@ key usage, or another set of extended key usages).
 
 ## Threshold initializers
 
-The `ThresholdInitializer` interface supports hardware-backed threshold ceremonies (e.g., HSM-native threshold). Implementations are registered via `ThresholdRegistry` and ship in go-xkms. qrdb itself ships only a `NoopThresholdInitializer` (`pkg/ceremony/threshold_noop.go`) for environments without hardware support.
-
-
-## Authenticator types
-
-The ceremony is **authenticator-agnostic at the cryptographic layer** — it only
-verifies signatures over challenge nonces. Officer credentials may therefore be
-backed by anything producing a `crypto.Signer`. The kind is carried as metadata
-so higher layers can route signing to the right backend.
-
-| Constant | Value | `AuthenticatorRef` |
-|---|---|---|
-| `AuthenticatorPIV` | `piv` | PIV slot identifier (e.g. `9a`), NIST SP 800-73 |
-| `AuthenticatorFIDO2` | `fido2` | base64url-encoded credential id, CTAP2 over USB-HID/NFC |
-| `AuthenticatorSoftware` | `software` | unused |
-
-The empty string is valid and maps to `AuthenticatorSoftware` via
-`Normalized()`, so callers that never set the field keep working. Anything else
-gets `ErrInvalidAuthenticatorType`.
-
-**The metadata is not used during verification.** Both `BeginClaimCert` and
-`CompleteClaimCert` operate on the officer's CSR public key regardless of which
-authenticator produced the key. Concrete FIDO2 / PIV / PKCS#11 implementations
-live in go-xkms and are injected through `authfactors.FactorRegistry`; qrdb
-ships the `Factor` framework and the software-mTLS reference factor.
+`ThresholdInitializer` supports hardware-native threshold ceremonies;
+implementations are registered through `ThresholdRegistry` and ship in go-xkms.
+qrdb ships only `NoopThresholdInitializer`.
 
 ## Relationship to firstboot
 
-`ceremony.Initialize` is **barrier-only**. It is **NOT** the canonical admin
-bootstrap.
+`ceremony.Initialize` is **barrier-only**.
 
 | Concern | Package | Function |
 |---------|---------|----------|
-| Barrier custody (M-of-N split, custodian enrolment, Shamir share lifecycle) | `pkg/ceremony` | `ceremony.Initialize` |
-| System tenant + built-in roles + platform admin user + admin client cert | `pkg/firstboot` | `firstboot.Initialize` |
+| PINs, CA, server certificate, initial holders, Shamir custody | `pkg/ceremony` | `ceremony.Initialize` |
+| System tenant, built-in roles, platform admin user and client cert | `pkg/firstboot` | `firstboot.Initialize` |
 
-Daemon startup runs them in order:
+Daemon startup runs the ceremony, then firstboot. Both are idempotent.
 
+## Alternatives rejected
 
-Daemon startup runs them in order: ceremony (PINs → barrier → CA cert, SO cert,
-shares) then firstboot (system tenant → built-in roles → admin user → admin
-client cert). **Both are idempotent and safe to re-run on cluster nodes** —
-leader writes propagate via Raft and follower runs are no-ops.
-
-### Alternatives rejected
-
-- **Persisting shares server side.** Rejected: shares are secrets that belong to
-  custodians, not the system. If the ceremony is abandoned — a server restart
-  mid-enrolment — all shares are lost and it must be re-run. That is
-  intentional.
-- **Storing raw PIN bytes in the credential store.** Rejected: PIN material is
-  owned by a `pin.PINBackend`, hashed with Argon2id or PBKDF2 depending on FIPS
-  mode. Raw receive buffers are wiped (`secure.Wipe`) before the bootstrap call
-  returns. In M-of-N the User PIN *is* the Shamir secret and its bytes are wiped
-  once the shares are produced.
-- **A single monolithic bootstrap.** Rejected: barrier custody and admin
-  identity have different trust models and different failure modes. Splitting
-  them is what lets an operator run one without the other.
-- **Serving a claimed share twice.** Rejected — `Claim` destroys the enclave and
-  retains only the fact that a claim occurred, so a second attempt is refused.
+- **Splitting the User PIN as the Shamir secret.** An earlier ceremony split
+  the User PIN and handed shares out through a separate officer-share
+  protocol. It made a login credential into key material and gave the store a
+  second share path. The ceremony now enrols holders and lets the barrier split
+  its own unseal key through the one distributor.
+- **Adopting holder certificates or bare public keys.** Enrolling an existing
+  certificate or key let the enroller choose the identity. Holders are enrolled
+  from a CSR only and the CA assigns the identity.
+- **Persisting shares server side.** Shares belong to holders.
+- **A single monolithic bootstrap.** Barrier custody and admin identity have
+  different trust models and different failure modes.
 
 ## Component boundaries
 
 | Piece | Package | Owner |
 |---|---|---|
-| Ceremony state machine, officers, share store | `pkg/ceremony` | go-qrdb |
+| Ceremony state machine, holder engine, envelopes, CA seam | `pkg/ceremony` | go-qrdb |
 | PIN backend contract and software implementation | `pkg/pin` — see [../auth-factors/](../auth-factors/) | go-qrdb |
-| Custodian records and protocol | `pkg/custodian` — see [../shamir-custody/](../shamir-custody/) | go-qrdb |
-| Barrier initialization | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
+| Barrier, roster, quorum | `pkg/seal` — see [../shamir-custody/](../shamir-custody/) | go-qrdb |
 | Admin/tenant/role bootstrap | `pkg/firstboot` — see [../firstboot/](../firstboot/) | go-qrdb |
-| Hardware threshold initializers, FIDO2/PIV/PKCS#11 factors | — | **go-xkms**, injected |
+| Hardware factors, threshold initializers | — | **go-xkms**, injected |
 | Shamir GF(256) primitive | — | **go-quicraft** |
-
-`CeremonyCA` is deliberately narrow so it decouples the ceremony from any
-specific CA. **Both qrdb's `cert.CertProvider` and xkms's `ca.TrustedCA` satisfy
-it through thin adapters.**
 
 ## Trust boundaries
 
-- **Shares live only in `secure.Secret` enclaves** (go-enclave sealed
-  enclaves), destroyed on claim.
-- **`Store` consumes the caller's slice, wiping it** — a copy left on the heap
-  would survive in a core dump or a swapped page.
-- **What persists is the officer record** (`ceremony/officers/<name>`):
-  certificate thumbprint or public key, share **index**, auth factor,
-  timestamps. **Never share bytes.**
-- **Claim is a nonce challenge/response over mTLS**, matched against the
-  officer's enrolment record.
-- Custodian metadata is Raft-replicated at `__sys:custodian/<id>`; share
-  ciphertext is held by the custodian, not the server.
+- **Envelopes live only in `secure.Secret` enclaves**, destroyed on claim or at
+  their deadline.
+- **What persists is the holder record**: certificate, envelope recipient key,
+  factor public material, share index, timestamps. **Never a share.**
+- **Certificate identity is CA-assigned.**
+- **The claim is a signed-nonce challenge over a connection presenting the
+  enrolled certificate.**
 
 ## What this feature deliberately does not do
 
 - **No admin, tenant or role creation.** That is firstboot.
-- **No share recovery.** An abandoned ceremony loses its shares by design.
-- **No hardware threshold ceremony of its own** — qrdb ships only
-  `NoopThresholdInitializer`; real implementations come from go-xkms through
-  `ThresholdRegistry`.
-- **No `qrdb ceremony init` verb.** It was removed; the root `qrdb init` is the
-  entry point.
+- **No share recovery.** A lost envelope is replaced by a rekey.
+- **No hardware factors or threshold ceremony of its own.**
+- **No `qrdb ceremony init` verb.** The root `qrdb init` is the entry point.

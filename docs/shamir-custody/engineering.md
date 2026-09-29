@@ -1,316 +1,251 @@
 # Shamir Custody — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 ## Exported surface
 
-`sdk/go`:
+`pkg/seal` — the key, the roster and the one quorum accumulator:
 
 ```go
-func (c *Client) CustodianGroups() transport.CustodianGroupClient
-func (c *Client) Barrier()         transport.BarrierClient   // quorum operations
+type QuorumDomain string // DomainUnseal, DomainRecovery
+type QuorumOp string     // OpUnseal, OpSeal, OpRootToken, OpRekey, OpRecover
+type HolderRole string   // RoleSecurityOfficer ("so"), RoleCustodian ("custodian")
+type FactorPolicy string // FactorPolicyDesignated (default), FactorPolicyAnyEnrolled
+
+type HolderRoster struct { Version, Domain, Policy, Threshold, Total, Distribution, Holders }
+
+func (b *StorageBarrier) SetCeremonyDistributor(d CeremonyDistributor)
+func (b *StorageBarrier) SetHolderVerifier(v HolderVerifier)
+func (b *StorageBarrier) InitializeShamir(ctx, policy FactorPolicy) (*ShamirInitParams, error)
+func (b *StorageBarrier) GenerateRecoveryKeys(ctx, threshold int, policy FactorPolicy) (*RecoveryKeyResult, error)
+func (b *StorageBarrier) StartRekey(ctx, domain QuorumDomain, p RekeyParams) (*QuorumRoundInfo, error)
+func (b *StorageBarrier) SubmitHolderShare(ctx, sub *HolderSubmission) (*QuorumOutcome, error)
+func (b *StorageBarrier) HolderRoster(ctx, domain QuorumDomain) (*HolderRoster, []byte, error)
 ```
 
-Composition-plane wiring (Tier 2):
+`CeremonyDistributor` (`PrepareRoster`, `Distribute`, `Committed`) and
+`HolderVerifier` (`VerifyHolder`) are consumer-side interfaces; `pkg/ceremony`
+implements both. `SubmitHolderShare` is the **only** way a share reaches a
+quorum: there is no string-share unseal, seal-vote, root-token or recovery
+entry point.
+
+`pkg/ceremony` — the holder engine shared by the system, recovery and every
+tenant scope:
 
 ```go
-SetCeremonyDistributor(d ...)   // required before InitializeShamir / Rekey
-SetRecoveryDistributor(d ...)   // required for recovery key generation
+func (s *CeremonyService) RegisterOfficer(ctx, domain, RegisterOfficerRequest) (*RegisterOfficerResult, error)
+func (s *CeremonyService) ListOfficers(ctx, domain) ([]*OfficerStatus, error)
+func (s *CeremonyService) BeginClaimShare(ctx, domain, username, callerThumbprint string) (*ChallengeResponse, error)
+func (s *CeremonyService) CompleteClaimShare(ctx, domain, username, nonceHex string, sig []byte, callerThumbprint string) (*ShareClaimResult, error)
+func (s *CeremonyService) BeginQuorum(ctx, domain, op, username, factor string) (*QuorumChallenge, error)
+func (s *CeremonyService) RevokeOfficer(ctx, domain, username string, threshold int) (*seal.QuorumRoundInfo, error)
+func ParseShareEnvelope(raw []byte) (*ShareEnvelope, error)
+func (e *ShareEnvelope) Open(priv *hpke.PrivateKey) ([]byte, error)
+func (e *ShareEnvelope) OpenWithKey(priv crypto.PrivateKey) ([]byte, error)
 ```
 
-`StorageBarrier` quorum operations (`pkg/seal`):
+Composition (Tier 2), through the server and node options:
+`WithCeremonyCA`, `WithFactorRegistry` (hardware factors from go-xkms),
+`WithPINBackend`. `sdk/go/node` wires the ceremony service as the barrier's
+distributor and verifier, for the sealed window and the full node alike.
 
-```go
-func (b *StorageBarrier) InitializeShamir(ctx, creds) (ShamirParams, error)
-func (b *StorageBarrier) UnsealWithShare(ctx, share) (QuorumProgress, error)
-func (b *StorageBarrier) UnsealWithShares(ctx, shares) error
-func (b *StorageBarrier) SubmitSealVote(ctx, share) (QuorumProgress, error)
-func (b *StorageBarrier) Rekey(ctx, threshold, total) (ShamirParams, error)
-func (b *StorageBarrier) GenerateRecoveryKeys(ctx, threshold, total) (RecoveryResult, error)
-func (b *StorageBarrier) RecoverWithKeys(ctx, shares) error
-func (b *StorageBarrier) GenerateRootToken(ctx, shares) (RootToken, error)
-```
+`sdk/go` — `transport.BarrierClient` and `transport.TenantClient` carry the
+holder methods listed in [api.md](api.md); `sdk/go/transport/embedded`
+serves them in-process.
 
-Custodian record (`pkg/custodian`), persisted at `__sys:custodian/<custodian_id>`:
+`pkg/seal/sealtest` — `sealtest.Custody` installs an in-memory distributor and
+verifier and drives quorum rounds, for tests of code that sits on a Shamir
+barrier.
 
-```go
-type Custodian struct {
-    ID              string           // UUID v4, assigned at enrollment
-    Username        string           // Human-readable identifier
-    Method          string           // "pkcs11" | "piv" | "fido2"
-    PublicCredential []byte          // Public key / credential metadata (no private key)
-    EnrolledAt      time.Time        // Enrollment timestamp
-    RevokedAt       *time.Time       // nil if active; set to time of revocation
-    ShareIndex      int              // Position in Shamir split (0-indexed)
-    CertificateID   string           // Reference to issued certificate (if MCA-signed)
-}
-```
+## Holder record
 
-**Public**: Persisted and Raft-replicated. Does NOT contain any share material.
+`ceremony.PersistentOfficer`, stored behind the barrier under
+`ceremony/officers/` of each scope — public material only:
 
-**Private** (server-held, temporary): Custodian's encrypted share envelope, held in memory only during the enrollment transaction. Zeroed and discarded after delivery to the Custodian.
+| Field | Meaning |
+|---|---|
+| `Username`, `Role` | the holder and `so` / `custodian` |
+| `CertPEM`, `CertThumbprint`, `PubKeyPEM` | the CA-issued certificate |
+| `EncryptionKEM`, `EncryptionKey` | the envelope recipient key |
+| `Factors`, `Designated` | each enrolled factor's public credential; the designated one |
+| `EnrolledAt`, `ClaimedAt`, `ShareIndex` | lifecycle |
 
+Records written while the barrier is sealed (the initialization ceremony
+enrols before the barrier exists) are cached and written the first time the
+barrier is seen unsealed. The roster in the wrapped blob, not the record, is
+what a sealed node authenticates submissions against.
 
-## Initialization
+## Distribution
 
+`redistribute` is the single distribution path, used by `InitializeShamir`,
+`GenerateRecoveryKeys`, the encryption migration and every completed rekey:
 
-`InitializeShamir` generates a root key, seals it, and — in direct mode —
-applies **unseal-key indirection** (Vault-style): a random 256-bit unseal key
-(UK) is generated, the root key is AEAD-wrapped (AES-256-GCM) under the UK and
-persisted as a sibling blob (`<RootKeyPath>.wrapped`), and the **UK — not the
-root key —** is split into N shares and distributed to the enrolled officers'
-enclaves. The wrapped blob is bound to the barrier's root-key path through the
-AEAD associated data, so it cannot be transplanted between barriers or
-tenants. The response is **share-free**:
+1. `PrepareRoster` snapshots the active holders (minus any being removed) with
+   share indexes 1..N, the policy, the threshold and a random distribution id.
+   Initialization refuses a holder count different from the requested total
+   (`HolderCountMismatchError`).
+2. A fresh 256-bit domain key wraps the root key (AES-256-GCM) with associated
+   data `go-qrdb/seal/wrapped-root-key/v2|<RootKeyPath>|<domain>|<roster digest>`;
+   the blob stores the roster bytes in clear.
+3. `Distribute` splits the domain key and HPKE-seals share *i* to the holder
+   with share index *i*. The envelope header — version, KEM, scope, domain,
+   holder, share index, threshold, total, distribution id and roster digest —
+   is bound into the HPKE info, so an
+   edited header makes the envelope unopenable. Every earlier envelope of the
+   domain is destroyed first. The domain key is wiped.
+4. The blob is persisted, **last**. `Committed` then records share indexes and
+   deletes removed holders' records.
 
-```go
-params, err := barrier.InitializeShamir(ctx, seal.Credentials{})
-// params.Threshold: 3
-// params.TotalShares: 5
-// params.ShareCount: 5 (shares sealed into officer enclaves)
-```
+A failure before step 4 leaves the previous blob, and the previous share set,
+in force; the operation can be re-run.
 
-A `CeremonyDistributor` must be wired via `SetCeremonyDistributor` before
-initialization; otherwise `ErrCeremonyDistributorNotConfigured` is returned.
-The barrier is unsealed after initialization.
+## Envelopes
 
+- HPKE (RFC 9180) with the holder's KEM: `dhkem-p256`, `dhkem-p384`,
+  `dhkem-x25519`, `mlkem768-x25519`; HKDF-SHA256/384 and AES-256-GCM.
+- Held as `secure.Secret` (go-enclave sealed) per holder, with a timer that
+  wipes it at `CeremonyConfig.ShareTTL` (default `ceremony.DefaultShareTTL`,
+  24h). Never persisted.
+- Claimed once: `claim/begin` issues a 32-byte nonce (5-minute TTL) to a caller
+  whose connection presents the enrolled certificate; `claim/complete` checks
+  the thumbprint again, verifies the signature over the raw nonce bytes with
+  the certificate key, returns the envelope and destroys the held copy.
+- Opened offline by the holder; opening needs no server.
 
-## Unsealing
+## Quorum rounds
 
-### Stateful (one-at-a-time)
+A round is keyed by (domain, op) and opened on demand for every op except
+`rekey`, which only `StartRekey` opens. The round pins the roster digest in
+force when it opens; a round whose roster has since been replaced is
+discarded. Admission (`admitLocked`) requires, in order:
 
-`UnsealWithShare` accumulates shares in an internal quorum accumulator with a configurable TTL (default **15 minutes**; set `seal.share_ttl` / `QRDB_SEAL_SHARE_TTL`):
+1. a holder verifier is installed (`ErrHolderVerifierNotConfigured`);
+2. the op is valid in the domain and the barrier's state
+   (`QuorumOpInvalidError`);
+3. the holder is in the roster (`HolderNotInRosterError`) and not being removed
+   (`HolderRevokedError`);
+4. the holder has not contributed (`HolderAlreadySubmittedError`);
+5. the verifier accepts the proof (`HolderAuthenticationError`,
+   `FactorNotAdmittedError`) — the challenge is consumed either way;
+6. the share's x-coordinate is the holder's share index
+   (`ShareIndexMismatchError`).
 
-```go
-progress, _ := barrier.UnsealWithShare(ctx, shareA)
-// progress.Required: 3, progress.Submitted: 1, progress.Complete: false
+At M the round is detached, the key is combined and must open the domain's
+blob (`ErrUnsealKeyMismatch` otherwise), and the op's finisher runs with the
+authenticated root key, which it must not retain. Every accumulated share is
+destroyed when the round completes, fails or expires (`seal.share_ttl`,
+default 15m, `ErrShamirQuorumExpired`).
 
-progress, _ = barrier.UnsealWithShare(ctx, shareB)
-// progress.Submitted: 2, progress.Complete: false
+## Holder verification
 
-progress, _ = barrier.UnsealWithShare(ctx, shareC)
-// progress.Submitted: 3, progress.Complete: true — barrier unsealed
-```
+`VerifyHolder` resolves the challenge by id, checks it was issued for exactly
+this domain, op, holder and roster digest (`ErrQuorumChallengeMismatch`), and
+verifies the factor response with the registered `authfactors.Factor` against
+the **roster's** copy of the factor's public material, not the registry's. A
+scope holds at most 256 pending challenges (`ErrTooManyPendingChallenges`);
+each expires on the factor's own deadline.
 
-Duplicate shares are rejected (`ErrShamirDuplicateShare`). The accumulator resets after TTL expiry (`ErrShamirQuorumExpired`).
+## Rekey and revocation
 
-**Share custody:** submitted shares are held only inside **go-enclave sealed
-enclaves** (never as raw, garbage-collected strings) — deduplication is done
-against a SHA-256 digest so the raw share is never retained as a map key, and
-plaintext is materialized only transiently during reconstruction. The instant
-the quorum reconstructs the secret, every accumulated share enclave is
-destroyed and the reconstructed secret is wiped after the unseal consumes it —
-so a subsequent unseal requires the Security Officers to submit fresh shares.
-The session TTL bounds how long un-completed shares may linger
-(`seal.share_ttl`, default 15m).
-
-### Stateless (batch)
-
-```go
-err := barrier.UnsealWithShares(ctx, shares[:3])
-```
-
-
-## Sealing requires a quorum
-
-A Shamir-strategy barrier cannot be sealed by a single administrator. `Seal`
-returns `ErrShamirBarrierRequiresQuorum`; instead, M officers each submit
-their share as a **seal vote**:
-
-```go
-progress, _ := barrier.SubmitSealVote(ctx, shareA)
-// progress.Required: 3, progress.Submitted: 1, progress.Complete: false
-
-progress, _ = barrier.SubmitSealVote(ctx, shareB)
-progress, _ = barrier.SubmitSealVote(ctx, shareC)
-// progress.Complete: true — quorum verified, barrier sealed
-```
-
-The reconstructed secret is verified against the barrier's key material
-before sealing (`ErrSealVoteVerificationFailed` on mismatch) and is wiped
-immediately afterward. The vote accumulator follows the same enclave custody
-and TTL rules as the unseal accumulator. This quorum gate applies **only** to
-Shamir-strategy barriers — `none` and `passphrase` barriers seal directly.
-
-
-## Rekey
-
-Generate a fresh unseal key and share set without changing the root key:
-
-```go
-params, err := barrier.Rekey(ctx, 4, 7) // new 4-of-7 split
-// New shares are sealed to the enrolled officers' enclaves; unclaimed
-// enclaves from the prior round are destroyed and claim history resets,
-// so each officer must claim again. The response carries only
-// Threshold/TotalShares/ShareCount.
-```
-
-**Rekey cryptographically revokes every previously distributed share —
-including shares officers have already claimed.** A new unseal key is
-generated, the root key is re-wrapped under it, and the re-wrapped blob
-replaces the old one. A prior-round quorum reconstructs an unseal key that no
-longer decrypts the wrapped root key, so stale shares fail with
-`ErrUnsealKeyMismatch` at unseal, seal-vote, and root-token generation. The
-root key itself never rotates (the epoch barrier derives per-epoch DEKs from
-it) and no stored data is re-encrypted.
-
-**The unwrapped root key never touches ordinary heap memory.** The AEAD
-decrypts the wrapped blob in place into a `pkg/secure` protected buffer sized
-exactly to the plaintext, and the unseal path hands that buffer to the
-recovery strategy by consuming it (`secure.NewSecretFromBuffer`). An AEAD that
-returns a slice it allocated itself instead of the destination it was given is
-refused with `UnprotectedDecryptError` and its output is wiped. Legacy direct
-mode, where the reconstructed secret is the root key, copies it into a
-protected buffer too. The single resolution step shared by `UnsealWithShare`
-and `UnsealWithShares` is unexported: the only way to it is through the
-barrier's own quorum accumulator.
-
-Ordering is crash-safe: the new shares are distributed *before* the
-re-wrapped blob is persisted. If distribution fails, the old blob — and thus
-the old shares — remain valid and `Rekey` can simply be re-run; there is no
-window where old shares are dead with new shares undistributed. Legacy
-barriers (initialized before unseal-key indirection) are upgraded by their
-first `Rekey`, after which the original root-key shares are revoked.
-
-
-## Recovery keys
-
-Recovery keys are an independent Shamir split of the root key (not DEK) for
-disaster recovery. Recovery shares follow the same SO distribution model
-through a dedicated recovery distributor (`SetRecoveryDistributor`) and
-recovery officer registry; they are never returned in the generation response
-and never persisted on the server.
-
-```go
-// Generate (barrier must be unsealed); response is share-free.
-result, err := barrier.GenerateRecoveryKeys(ctx, 3, 5)
-// result.Threshold: 3, result.TotalShares: 5, result.ShareCount: 5
-
-// Recover (barrier must be sealed) using shares claimed by recovery officers.
-err = barrier.RecoverWithKeys(ctx, recoveryShares[:3])
-```
-
-
-## Root token generation
-
-`GenerateRootToken` produces a one-time admin token by proving knowledge of
-the current unseal key through share reconstruction (the reconstructed key
-must decrypt the wrapped root key; rekey-revoked shares are rejected).
-Officers submit their claimed shares as a deliberate consent signal — this is
-the only sanctioned use of raw shares as request input, and no token is
-minted at initialization time:
-
-```go
-token, err := barrier.GenerateRootToken(ctx, shares[:3])
-// token.Token: hex-encoded HMAC-SHA256 value
-```
-
+`StartRekey(domain, RekeyParams{Threshold, Policy, Remove})` validates the
+redistribution up front through `PrepareRoster`, so an impossible one is
+refused before any holder is asked; a revocation that would leave fewer than M
+holders fails with `RevocationBreaksQuorumError`. The round is completed by M
+current holders not in `Remove`, and then redistributes. Only one rekey round
+per domain may be open (`ErrQuorumRoundInProgress`).
 
 ## Invariants
 
-- **Shares are never in a response.** Initialization, rekey and recovery
-  generation all return share-free results carrying only
-  `Threshold`/`TotalShares`/`ShareCount`.
-- **A share is claimed exactly once**; the server enclave is destroyed on
-  success.
-- **An unclaimed share lives for a bounded time.** Every distributed share
-  carries its own timer (`CeremonyConfig.ShareTTL`, default
-  `ceremony.DefaultShareTTL` = 24h; tenant scopes use the default) and is
-  destroyed at its deadline whether or not anything touches the store. A late
-  claim fails with `ErrShareExpired`, at `claim/begin` and at
-  `claim/complete`; shares are never persisted, so the remedy is a rekey.
-  Storing a share for a holder who already has one destroys the old enclave
-  first.
-- **Claim nonces carry a 5-minute TTL.**
-- **Claim routes are identity-gated, not RBAC-gated.** Officers are ceremony
-  principals registered before the user store exists. The handler enforces
-  registry membership, certificate-thumbprint match and nonce-signature
-  verification.
-- **Duplicate shares are rejected** (`ErrShamirDuplicateShare`), deduplicated
-  by SHA-256 digest so the raw share is never a map key.
-- **The quorum accumulator has a TTL** — default **15 minutes**, configurable
-  as `seal.share_ttl` / `QRDB_SEAL_SHARE_TTL`. Expiry resets it
-  (`ErrShamirQuorumExpired`).
-- **Every accumulated share enclave is destroyed the instant the quorum
-  reconstructs**, and the reconstructed secret is wiped after use — so a
-  subsequent unseal needs fresh shares.
-- **Rekey is crash-safe by ordering**: new shares are distributed *before* the
-  re-wrapped blob is persisted. If distribution fails, the old blob and old
-  shares remain valid and `Rekey` can simply be re-run. **There is no window in
-  which old shares are dead and new shares undistributed.**
-- **Rekey does not rotate the root key** and re-encrypts no stored data; the
-  epoch barrier derives per-epoch DEKs from the unchanged root key.
-- **Rekey resets claim history** and destroys unclaimed enclaves from the prior
-  round — every officer must claim again.
-- **Threshold must be ≥ 2 and ≤ total** (`ErrShamirThresholdInvalid`).
-- **A Shamir barrier cannot be sealed by one administrator**
-  (`ErrShamirBarrierRequiresQuorum`); `none` and `passphrase` barriers seal
-  directly.
-- **Seal votes are verified before sealing** (`ErrSealVoteVerificationFailed`)
-  and the reconstructed secret is wiped immediately after.
-- **Recovery keys are an independent split of the root key** (not the DEK, not
-  the unseal key), generated with the barrier **unsealed** and used with it
-  **sealed**. They are never returned in the generation response and **never
-  persisted on the server**.
-- **`GenerateRootToken` is the only sanctioned use of raw shares as request
-  input.** No token is minted at initialization.
+- **Shares never appear in a response** other than a claim, and there only
+  sealed to one holder.
+- **No API accepts a share except `SubmitHolderShare`**, and it counts a share
+  only for an authenticated holder, once, at that holder's own index.
+- **The roster is bound to the key.** Its digest is in the wrapped blob's AEAD
+  associated data and in every envelope's HPKE info.
+- **One person, one share, one role per scope**: usernames, certificate keys
+  and envelope keys are unique within a scope, and nobody enrols themselves
+  (`ErrSelfEnrolment`).
+- **Certificate identity is CA-assigned**; the CSR supplies only a public key.
+- **Membership changes need the quorum**: every change of holders, threshold
+  or policy is a rekey completed by M current holders.
+- **Rekey never rotates the root key** and re-encrypts no data; it revokes
+  every earlier share of the domain.
+- **Distribution is crash-safe by ordering**: envelopes first, blob last.
+- **SO-PIN-gated operations fail closed** when no PIN backend is configured
+  (`pin.ErrBackendNotConfigured`); PINs are compared hashed, in constant time,
+  by the backend.
+- **Transports wipe decoded share bytes** after the service call.
+- **A barrier whose wrapped blob predates the roster** answers
+  `ErrHolderRosterMissing`; there is no unauthenticated fallback.
 
 ## Error reference
 
 | Error | Condition |
-|-------|-----------|
-| `ErrShamirNotConfigured` | `BarrierConfig.Shamir` is nil |
-| `ErrShamirThresholdInvalid` | Threshold < 2 or > total |
-| `ErrShamirDuplicateShare` | Same share submitted twice |
-| `ErrShamirQuorumExpired` | share TTL elapsed (default 15m, `seal.share_ttl`) |
-| `ErrShamirQuorumIncomplete` | Not enough shares provided |
-| `ErrShamirCombineFailed` | Share reconstruction failed |
-| `ErrShamirUnsealRequiresQuorum` | Shamir strategy asked to unseal outside the share quorum |
-| `ErrShamirBarrierRequiresQuorum` | Single-admin `Seal` attempted on a Shamir barrier |
-| `ErrSealVoteVerificationFailed` | Seal-vote quorum reconstructed a secret that fails verification |
-| `ErrCeremonyDistributorNotConfigured` | Init/rekey attempted before `SetCeremonyDistributor` |
-| `ErrUnsealKeyMismatch` | Reconstructed unseal key failed to decrypt the wrapped root key (wrong shares, or shares revoked by a prior rekey) |
-| `ErrWrappedRootKeyCorrupt` | Wrapped root key blob is malformed (bad JSON, version, algorithm, or nonce) |
-| `ErrRecoveryKeysNotFound` | No recovery key metadata |
-| `ErrRootTokenVerificationFailed` | Share verification failed |
+|---|---|
+| `ErrHolderVerifierNotConfigured` | no verifier installed; every submission refused |
+| `ErrHolderRosterMissing` | the domain has no roster-bearing blob |
+| `ErrQuorumRoundNotOpen` | a `rekey` submission with no rekey started |
+| `ErrQuorumRoundInProgress` | a second rekey started on a domain |
+| `ErrShamirQuorumExpired` | the round's TTL elapsed |
+| `ErrUnsealKeyMismatch` | the reconstructed key did not open the blob |
+| `ErrShamirThresholdInvalid` | threshold < 2 or > total |
+| `ErrShamirUnsealRequiresQuorum` | a credential unseal of a Shamir barrier |
+| `ErrShamirBarrierRequiresQuorum` | a single-caller seal of a Shamir barrier |
+| `ErrCeremonyDistributorNotConfigured` | a distribution with no distributor |
+| `ErrRecoveryKeysExist` | recovery generation when a recovery key exists; rekey it |
+| `ErrRecoveryKeysNotFound` | no recovery key |
+| `HolderNotInRosterError`, `HolderRevokedError`, `HolderAlreadySubmittedError`, `ShareIndexMismatchError`, `FactorNotAdmittedError`, `HolderAuthenticationError` | admission refusals |
+| `QuorumOpInvalidError` | op not valid in the domain or state |
+| `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
+| `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
+| `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
+| `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `ErrTooManyPendingChallenges` | challenge refusals |
+| `ceremony.ErrShareEnvelopeMalformed`, `ShareEnvelopeError` | envelope parse/open failures |
+
+Every one is classified by `service.ClassifyHolderError`; see
+[api.md](api.md#error-classes).
 
 ## Configuration
 
 | Key | Env | Default | Meaning |
 |---|---|---|---|
-| `seal.share_ttl` | `QRDB_SEAL_SHARE_TTL` | `15m` | how long un-completed accumulated shares linger |
+| `seal.share_ttl` | `QRDB_SEAL_SHARE_TTL` | `15m` | how long a quorum round stays open |
 
-Threshold and total are per operation (`init-shamir`, `rekey`,
-`recovery generate`), not config keys.
+The envelope time-to-live is `CeremonyConfig.ShareTTL` (24h). Threshold, total
+and policy are per distribution, not configuration.
 
 ## Persistence
 
-- **Custodian records**: `__sys:custodian/<custodian_id>` — public metadata,
-  Raft-replicated, **no share material**.
-- **Wrapped root key**: `<RootKeyPath>.wrapped`, AEAD-bound to the root-key
-  path through associated data.
-- **Officer enclaves**: go-enclave sealed enclaves, in memory only, destroyed on claim or rekey.
-- **Recovery shares**: nowhere on the server.
-
-**Compatibility**: barriers predating unseal-key indirection have no wrapped
-blob and run in legacy direct mode; the first `Rekey` upgrades them and revokes
-the original root-key shares.
+- **Wrapped blobs**: `<RootKeyPath>.wrapped` (unseal) and
+  `<RootKeyPath>.recovery.wrapped` (recovery), version 2, each carrying its
+  roster.
+- **Holder records**: `ceremony/officers/` behind the barrier.
+- **Envelopes, rounds, challenges**: memory only.
+- **Shares**: nowhere.
 
 ## Test strategy
 
-- **Unit**: share accumulation and progress reporting, duplicate rejection by
-  digest, TTL expiry, quorum reconstruction, `ErrUnsealKeyMismatch` on
-  rekey-revoked shares, seal-vote verification, and the rekey ordering
-  guarantee (distribution before persistence).
-- **Zeroization is a tested property**, not a comment: enclave destruction on
-  quorum and after use.
-- **No `time.Sleep`** — the accumulator TTL is driven through the clock seam.
-- **Error tests** for every row of the error reference above.
+- **Unit** (`pkg/seal`, `pkg/ceremony`): roster validation and tamper
+  detection, each admission refusal, factor policies, round expiry and
+  replacement, rekey and revocation refusal, envelope binding, one-time claim,
+  share TTL. Zeroization is asserted, not assumed.
+- **Transport** (`pkg/api/{rest,grpc,quic,mcp,unix}`, embedded): every holder
+  route, its authorization, its error classes, and that submitted share bytes
+  are wiped.
+- **Conformance** (`sdk/go/conformance/share_holders_test.go`): on every SDK
+  transport, an administrator enrols two Security Officers and three
+  custodians (P-256, P-384, X25519 and ML-KEM hybrid envelope keys; `mtls`
+  and an assertion factor) at 3-of-5; holders claim; the node restarts sealed
+  and is unsealed through the sealed window by three holders with different
+  factors; a duplicate submission, a non-designated factor and a revoked
+  holder are refused; revocation and rekey need the quorum; a rekey to
+  `any-enrolled` admits a holder's other factor.
+- No `time.Sleep`: expiry is driven through the clock seam.
 
 ## Observability
 
-Barrier audit events cover the custody operations — `initialize`, `unseal`,
-`seal`, `rekey`, `recovery_generate` — with `allow`/`deny` outcomes. Per-officer
-enrolment and claim state is reported by the claim-status endpoint, which
-**never** returns share bytes. Custodian-specific audit events are listed in
-[seal/custodians.md](../seal/custodians.md#audit-events).
+The barrier emits audit events `distribute`, `rekey-start`, `quorum-share`
+(allow / deny, with the holder and op) and `quorum-complete`, alongside
+`initialize`, `unseal` and `seal`. The ceremony
+service logs enrolment (holder, role, designated factor, KEM) and claims.
+Holder status is available from the list operation and never includes a share.

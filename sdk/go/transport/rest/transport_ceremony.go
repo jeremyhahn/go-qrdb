@@ -16,7 +16,6 @@ package rest
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
@@ -84,79 +83,6 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 	return &statusResp, nil
 }
 
-// CeremonyClaimCertBegin starts a certificate claim challenge for the named
-// officer. Maps to POST /v1/ceremony/claim-cert/begin.
-func (t *Transport) CeremonyClaimCertBegin(ctx context.Context, req *transport.ClaimCertBeginRequest) (*transport.ClaimCertBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var resp transport.ClaimCertBeginResponse
-	if err := t.postJSONDecode(ctx, "CeremonyClaimCertBegin", "/v1/ceremony/claim-cert/begin", req, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
-// CeremonyClaimCertComplete completes a certificate claim by submitting the
-// signed nonce. Maps to POST /v1/ceremony/claim-cert/complete.
-func (t *Transport) CeremonyClaimCertComplete(ctx context.Context, req *transport.ClaimCertCompleteRequest) (*transport.ClaimCertCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var resp transport.ClaimCertCompleteResponse
-	if err := t.postJSONDecode(ctx, "CeremonyClaimCertComplete", "/v1/ceremony/claim-cert/complete", req, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
-// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
-// officer who has already claimed their certificate. Maps to
-// POST /v1/ceremony/officer-share/begin. The caller's certificate thumbprint
-// is derived server-side from the mTLS peer chain.
-func (t *Transport) CeremonyBeginClaimShare(ctx context.Context, req *transport.BeginClaimShareRequest) (*transport.BeginClaimShareResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var resp transport.BeginClaimShareResponse
-	if err := t.postJSONDecode(ctx, "CeremonyBeginClaimShare", "/v1/ceremony/officer-share/begin", req, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
-// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
-// submitting the signed challenge nonce. Maps to
-// POST /v1/ceremony/officer-share/complete.
-func (t *Transport) CeremonyCompleteClaimShare(ctx context.Context, req *transport.CompleteClaimShareRequest) (*transport.CompleteClaimShareResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	wire := struct {
-		Username  string `json:"username"`
-		NonceHex  string `json:"nonce_hex"`
-		Signature string `json:"signature"`
-	}{
-		Username:  req.Username,
-		NonceHex:  req.NonceHex,
-		Signature: base64.StdEncoding.EncodeToString(req.Signature),
-	}
-
-	var resp transport.CompleteClaimShareResponse
-	if err := t.postJSONDecode(ctx, "CeremonyCompleteClaimShare", "/v1/ceremony/officer-share/complete", wire, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
 // CeremonySignCSR submits a CSR for signing during or after the ceremony.
 // Maps to POST /v1/ceremony/sign-csr.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
@@ -175,21 +101,6 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 
 	var resp transport.SignCSRInitResponse
 	if err := t.postJSONDecode(ctx, "CeremonySignCSR", "/v1/ceremony/sign-csr", &body, &resp); err != nil {
-		return nil, err
-	}
-
-	return &resp, nil
-}
-
-// CeremonyEnrollExternalOfficer enrols an officer whose key material lives
-// outside go-qrdb. Maps to POST /v1/init/enroll-external-officer.
-func (t *Transport) CeremonyEnrollExternalOfficer(ctx context.Context, req *transport.EnrollExternalOfficerRequest) (*transport.EnrollExternalOfficerResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var resp transport.EnrollExternalOfficerResponse
-	if err := t.postJSONDecode(ctx, "CeremonyEnrollExternalOfficer", "/v1/init/enroll-external-officer", req, &resp); err != nil {
 		return nil, err
 	}
 

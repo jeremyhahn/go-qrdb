@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -45,7 +46,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := applyBarrierInitializePINs(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := pin.Provision(t.pinBackend, req.SOPin, req.UserPin); err != nil {
 		return err
 	}
 	return t.barrierSvc.BarrierInitialize(ctx, req.Secret)
@@ -101,9 +102,9 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	return resp, nil
 }
 
-// BarrierInitializeShamir initializes the barrier using Shamir secret
-// sharing and returns the generated key shares by delegating to the
-// injected BarrierServicer. When the request supplies SOPin / UserPin
+// BarrierInitializeShamir initializes the barrier under Shamir custody,
+// distributing one sealed envelope to each enrolled unseal-key holder, by
+// delegating to the injected BarrierServicer. When the request supplies SOPin / UserPin
 // and a pin.PINBackend has been injected via WithPINBackend, the PINs
 // are persisted on the backend before initialization.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
@@ -113,71 +114,14 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := applyBarrierInitializePINs(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := pin.Provision(t.pinBackend, req.SOPin, req.UserPin); err != nil {
 		return nil, err
 	}
-	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Secret, req.Threshold, req.TotalShares)
+	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Threshold, req.TotalShares, seal.FactorPolicy(req.Policy))
 	if err != nil {
 		return nil, err
 	}
 	return &transport.BarrierInitializeShamirResponse{
-		ShareCount:  info.ShareCount,
-		Threshold:   info.Threshold,
-		TotalShares: info.TotalShares,
-	}, nil
-}
-
-// BarrierUnsealWithShare submits a single Shamir share toward the unseal
-// threshold by delegating to the injected BarrierServicer.
-func (t *Transport) BarrierUnsealWithShare(ctx context.Context, req *transport.BarrierUnsealShareRequest) (*transport.BarrierUnsealShareResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	progress, err := t.barrierSvc.BarrierUnsealWithShare(ctx, req.Share)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.BarrierUnsealShareResponse{
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// BarrierUnsealWithShares submits multiple Shamir shares to unseal the
-// barrier in a single request by delegating to the injected BarrierServicer.
-func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.BarrierUnsealSharesRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return &NilServiceError{Service: "BarrierServicer"}
-	}
-	return t.barrierSvc.BarrierUnsealWithShares(ctx, req.Shares)
-}
-
-// BarrierRekey generates new Shamir shares with the specified threshold
-// and total count by delegating to the injected BarrierServicer. SO PIN
-// verification is enforced when a pin.PINBackend is injected and has a
-// SO PIN set.
-func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	if err := verifyBarrierSOPIN(t.pinBackend, req.SOPin); err != nil {
-		return nil, err
-	}
-	info, err := t.barrierSvc.BarrierRekey(ctx, req.Threshold, req.Total)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.BarrierRekeyResponse{
 		ShareCount:  info.ShareCount,
 		Threshold:   info.Threshold,
 		TotalShares: info.TotalShares,
@@ -310,10 +254,10 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := verifyBarrierSOPIN(t.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
 		return nil, err
 	}
-	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, req.Total)
+	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, seal.FactorPolicy(req.Policy))
 	if err != nil {
 		return nil, err
 	}
@@ -322,18 +266,6 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		Threshold:  info.Threshold,
 		Total:      info.Total,
 	}, nil
-}
-
-// BarrierRecoverWithKeys unseals the barrier using recovery keys by
-// delegating to the injected BarrierServicer.
-func (t *Transport) BarrierRecoverWithKeys(ctx context.Context, req *transport.BarrierRecoverWithKeysRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return &NilServiceError{Service: "BarrierServicer"}
-	}
-	return t.barrierSvc.BarrierRecoverWithKeys(ctx, req.Keys)
 }
 
 // BarrierDeleteRecoveryKeys deletes all stored recovery keys by delegating
@@ -362,25 +294,6 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 		return nil, err
 	}
 	return &transport.BarrierHasRecoveryKeysResponse{HasKeys: hasKeys}, nil
-}
-
-// BarrierGenerateRootToken generates a new root token using the provided
-// Shamir shares by delegating to the injected BarrierServicer.
-func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport.BarrierGenerateRootTokenRequest) (*transport.BarrierRootTokenResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	info, err := t.barrierSvc.BarrierGenerateRootToken(ctx, req.Shares)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.BarrierRootTokenResponse{
-		Token:     info.Token,
-		CreatedAt: info.CreatedAt.Format(time.RFC3339),
-	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -433,44 +346,6 @@ func handleBarrierInitializeShamir(ctx context.Context, t *Transport, req, resp 
 	return nil
 }
 
-func handleBarrierUnsealWithShare(ctx context.Context, t *Transport, req, resp any) error {
-	r, ok := req.(*transport.BarrierUnsealShareRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierUnsealWithShare"}
-	}
-	result, err := t.BarrierUnsealWithShare(ctx, r)
-	if err != nil {
-		return err
-	}
-	if out, ok := resp.(**transport.BarrierUnsealShareResponse); ok {
-		*out = result
-	}
-	return nil
-}
-
-func handleBarrierUnsealWithShares(ctx context.Context, t *Transport, req, _ any) error {
-	r, ok := req.(*transport.BarrierUnsealSharesRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierUnsealWithShares"}
-	}
-	return t.BarrierUnsealWithShares(ctx, r)
-}
-
-func handleBarrierRekey(ctx context.Context, t *Transport, req, resp any) error {
-	r, ok := req.(*transport.BarrierRekeyRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierRekey"}
-	}
-	result, err := t.BarrierRekey(ctx, r)
-	if err != nil {
-		return err
-	}
-	if out, ok := resp.(**transport.BarrierRekeyResponse); ok {
-		*out = result
-	}
-	return nil
-}
-
 func handleBarrierGenerateRecoveryKeys(ctx context.Context, t *Transport, req, resp any) error {
 	r, ok := req.(*transport.BarrierGenerateRecoveryKeysRequest)
 	if !ok {
@@ -486,18 +361,6 @@ func handleBarrierGenerateRecoveryKeys(ctx context.Context, t *Transport, req, r
 	return nil
 }
 
-func handleBarrierRecoverWithKeys(ctx context.Context, t *Transport, req, _ any) error {
-	r, ok := req.(*transport.BarrierRecoverWithKeysRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierRecoverWithKeys"}
-	}
-	return t.BarrierRecoverWithKeys(ctx, r)
-}
-
-func handleBarrierDeleteRecoveryKeys(ctx context.Context, t *Transport, _, _ any) error {
-	return t.BarrierDeleteRecoveryKeys(ctx)
-}
-
 func handleBarrierHasRecoveryKeys(ctx context.Context, t *Transport, _, resp any) error {
 	result, err := t.BarrierHasRecoveryKeys(ctx)
 	if err != nil {
@@ -509,222 +372,191 @@ func handleBarrierHasRecoveryKeys(ctx context.Context, t *Transport, _, resp any
 	return nil
 }
 
-func handleBarrierGenerateRootToken(ctx context.Context, t *Transport, req, resp any) error {
-	r, ok := req.(*transport.BarrierGenerateRootTokenRequest)
-	if !ok {
-		return &InvalidRequestError{Method: "BarrierGenerateRootToken"}
-	}
-	result, err := t.BarrierGenerateRootToken(ctx, r)
-	if err != nil {
-		return err
-	}
-	if out, ok := resp.(**transport.BarrierRootTokenResponse); ok {
-		*out = result
-	}
-	return nil
-}
-
-// OfficerRegister registers a Security Officer for the system barrier by
-// delegating to the injected BarrierServicer.
-func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	result, err := t.barrierSvc.BarrierOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
-		Username:          req.Username,
-		CSRPEM:            req.CSRPEM,
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    result.CertPEM,
-		ShareIndex: result.ShareIndex,
-	}, nil
-}
-
-// OfficerList returns all enrolled Security Officers for the system barrier
-// by delegating to the injected BarrierServicer.
-func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	officers, err := t.barrierSvc.BarrierOfficerList(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return embeddedBarrierOfficerStatusesToTransport(officers), nil
-}
-
-// OfficerClaimStatus returns a per-officer claim status snapshot for the
-// system barrier by delegating to the injected BarrierServicer.
-func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	officers, err := t.barrierSvc.BarrierOfficerClaimStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return embeddedBarrierOfficerStatusesToTransport(officers), nil
-}
-
-// ShareClaimBegin issues a challenge nonce to the named Security Officer for
-// the system barrier share claim handshake by delegating to the injected
-// BarrierServicer.
-func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	challenge, err := t.barrierSvc.BarrierShareClaimBegin(ctx, req.Username, "")
-	if err != nil {
-		return nil, err
-	}
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt,
-	}, nil
-}
-
-// ShareClaimComplete verifies the Security Officer's nonce signature and
-// returns the system barrier share bytes exactly once by delegating to the
-// injected BarrierServicer.
-func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	result, err := t.barrierSvc.BarrierShareClaimComplete(ctx, req.Username, req.NonceHex, req.Signature, "")
-	if err != nil {
-		return nil, err
-	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareIndex: result.ShareIndex,
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// ShamirSealVote submits a Shamir share as a seal vote for the system barrier
-// by delegating to the injected BarrierServicer.
-func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	progress, err := t.barrierSvc.BarrierShamirSealVote(ctx, req.Share)
-	if err != nil {
-		return nil, err
-	}
-	return &transport.ShamirSealVoteResponse{
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// RecoveryOfficerRegister registers a Security Officer for recovery key
-// distribution by delegating to the injected BarrierServicer.
-func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	result, err := t.barrierSvc.BarrierRecoveryOfficerRegister(ctx, &service.BarrierOfficerRegisterRequest{
-		Username:          req.Username,
-		CSRPEM:            req.CSRPEM,
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    result.CertPEM,
-		ShareIndex: result.ShareIndex,
-	}, nil
-}
-
-// RecoveryShareClaimBegin issues a challenge nonce to the named recovery
-// officer for the recovery share claim handshake by delegating to the injected
-// BarrierServicer.
-func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	challenge, err := t.barrierSvc.BarrierRecoveryShareClaimBegin(ctx, req.Username, "")
-	if err != nil {
-		return nil, err
-	}
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt,
-	}, nil
-}
-
-// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
-// and returns the recovery share bytes exactly once by delegating to the
-// injected BarrierServicer.
-func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.barrierSvc == nil {
-		return nil, &NilServiceError{Service: "BarrierServicer"}
-	}
-	result, err := t.barrierSvc.BarrierRecoveryShareClaimComplete(ctx, req.Username, req.NonceHex, req.Signature, "")
-	if err != nil {
-		return nil, err
-	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareIndex: result.ShareIndex,
-		ShareBytes: result.ShareBytes,
-	}, nil
+func handleBarrierDeleteRecoveryKeys(ctx context.Context, t *Transport, _, _ any) error {
+	return t.BarrierDeleteRecoveryKeys(ctx)
 }
 
 // ---------------------------------------------------------------------------
 // Conversion helpers
+
+// ---------------------------------------------------------------------------
+// Share holders (Security Officers and key custodians)
 // ---------------------------------------------------------------------------
 
-// embeddedBarrierOfficerStatusesToTransport converts service layer officer
-// status records to the transport layer representation.
-func embeddedBarrierOfficerStatusesToTransport(officers []*service.BarrierOfficerStatus) []*transport.OfficerStatus {
-	out := make([]*transport.OfficerStatus, len(officers))
-	for i, o := range officers {
-		out[i] = &transport.OfficerStatus{
-			Username:       o.Username,
-			CertThumbprint: o.CertThumbprint,
-			ShareIndex:     o.ShareIndex,
-			AuthFactor:     o.AuthFactor,
-			EnrolledAt:     o.EnrolledAt,
-			ClaimedAt:      o.ClaimedAt,
-			SharePending:   o.SharePending,
-		}
+// barrierService returns the injected BarrierServicer, or the typed refusal
+// when the transport is closed or none was injected.
+func (t *Transport) barrierService() (service.BarrierServicer, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
-	return out
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	return t.barrierSvc, nil
 }
+
+// contextOptionalThumbprint returns the verified TLS client certificate's
+// thumbprint carried on ctx, or "" when there is none. A quorum submission
+// does not require one; when present the mtls factor binds to it.
+func contextOptionalThumbprint(ctx context.Context) string {
+	thumb, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return ""
+	}
+	return thumb
+}
+
+// registerHolder enrols a holder of domain.
+func (t *Transport) registerHolder(ctx context.Context, domain seal.QuorumDomain, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	result, err := svc.BarrierOfficerRegister(ctx, domain, holderwire.RegisterFrom(req))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.RegisterTo(result), nil
+}
+
+// OfficerRegister enrols a share holder of the unseal key.
+func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	return t.registerHolder(ctx, seal.DomainUnseal, req)
+}
+
+// RecoveryOfficerRegister enrols a holder of the recovery key.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	return t.registerHolder(ctx, seal.DomainRecovery, req)
+}
+
+// OfficerList lists the unseal key's holders and their claim state.
+func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	officers, err := svc.BarrierOfficerList(ctx, seal.DomainUnseal)
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.StatusesTo(officers), nil
+}
+
+// claimBegin issues a claim nonce to a holder of domain, who must present
+// its certificate on ctx.
+func (t *Transport) claimBegin(ctx context.Context, domain seal.QuorumDomain, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	thumbprint, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	challenge, err := svc.BarrierShareClaimBegin(ctx, domain, req.Username, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimBeginResponse{NonceHex: challenge.NonceHex, ExpiresAt: challenge.ExpiresAt}, nil
+}
+
+// claimComplete delivers a holder's sealed envelope exactly once.
+func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	thumbprint, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, err := svc.BarrierShareClaimComplete(ctx, domain, req.Username, req.NonceHex, req.Signature, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimCompleteResponse{ShareIndex: result.ShareIndex, Envelope: result.Envelope}, nil
+}
+
+// ShareClaimBegin issues a claim nonce to an unseal-key holder.
+func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	return t.claimBegin(ctx, seal.DomainUnseal, req)
+}
+
+// ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
+func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	return t.claimComplete(ctx, seal.DomainUnseal, req)
+}
+
+// RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
+func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	return t.claimBegin(ctx, seal.DomainRecovery, req)
+}
+
+// RecoveryShareClaimComplete delivers a recovery holder's envelope once.
+func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	return t.claimComplete(ctx, seal.DomainRecovery, req)
+}
+
+// BarrierQuorumBegin issues the factor challenge a holder answers.
+func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	challenge, err := svc.BarrierQuorumBegin(ctx, holderwire.BeginFrom(req))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.ChallengeTo(challenge), nil
+}
+
+// BarrierQuorumSubmit submits one authenticated holder's share.
+func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.BarrierQuorumSubmit(ctx, holderwire.SubmitFrom(req, contextOptionalThumbprint(ctx)))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.OutcomeTo(out), nil
+}
+
+// BarrierRekeyStart opens a rekey round under SO PIN authorization.
+func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
+		return nil, err
+	}
+	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.RoundTo(round), nil
+}
+
+// BarrierOfficerRevoke revokes a holder through a quorum-gated rekey, under
+// SO PIN authorization.
+func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	svc, err := t.barrierService()
+	if err != nil {
+		return nil, err
+	}
+	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
+		return nil, err
+	}
+	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold)
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.RoundTo(round), nil
+}
+
+// ---------------------------------------------------------------------------
 
 // WithBarrierService injects a BarrierServicer into the transport.
 func WithBarrierService(svc service.BarrierServicer) Option {
@@ -751,8 +583,9 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) Option {
 
 // WithPINBackend injects the canonical pin.PINBackend used by the
 // embedded transport's barrier handlers to provision SO PIN / User PIN
-// on initialize and to verify SO PIN on rekey / recovery-generate. When
-// nil the PIN fields supplied in barrier requests are ignored.
+// on initialize and to verify the SO PIN on seal, recovery generation, rekey
+// start and holder revocation. Without one those operations fail closed with
+// pin.ErrBackendNotConfigured.
 func WithPINBackend(backend pin.PINBackend) Option {
 	return func(t *Transport) {
 		t.pinBackend = backend

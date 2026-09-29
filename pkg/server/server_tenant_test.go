@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,9 +62,6 @@ func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ 
 	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
-}
 func (m *mockTenantServicer) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
@@ -103,12 +101,21 @@ func (m *mockTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, 
 	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
+// errHolderQuorumStub answers the share-holder quorum methods, which no test
+// using this double drives.
+var errHolderQuorumStub = errors.New("mockTenantServicer: share-holder quorum not modelled")
 
-func (m *mockTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
+func (m *mockTenantServicer) TenantBarrierQuorumBegin(_ context.Context, _ string, _ seal.QuorumOp, _, _ string) (*ceremony.QuorumChallenge, error) {
+	return nil, errHolderQuorumStub
+}
+func (m *mockTenantServicer) TenantBarrierQuorumSubmit(_ context.Context, _ string, _ *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	return nil, errHolderQuorumStub
+}
+func (m *mockTenantServicer) TenantBarrierRekeyStart(_ context.Context, _ string, _ int, _ seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
+	return nil, errHolderQuorumStub
+}
+func (m *mockTenantServicer) TenantBarrierOfficerRevoke(_ context.Context, _, _ string, _ int) (*seal.QuorumRoundInfo, error) {
+	return nil, errHolderQuorumStub
 }
 
 // Compile-time interface check.

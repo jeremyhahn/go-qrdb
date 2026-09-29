@@ -370,10 +370,10 @@ var NewNoneStrategy = quicraftseal.NewNoneStrategy
 // session, re-exported from go-quicraft.
 const DefaultQuorumTTL = quicraftseal.DefaultQuorumTTL
 
-// DefaultShareTTL is qrdb's default time-to-live for an unseal-share quorum
-// session when seal.share_ttl is not configured. Submitted shares that do not
-// reach the threshold within this window are expired and discarded, requiring
-// Security Officers to resubmit. Overridable via the seal.share_ttl config key
+// DefaultShareTTL is qrdb's default time-to-live for a share-holder quorum
+// round when seal.share_ttl is not configured. Submitted shares that do not
+// reach the threshold within this window are expired and wiped, requiring the
+// holders to resubmit. Overridable via the seal.share_ttl config key
 // (env QRDB_SEAL_SHARE_TTL).
 const DefaultShareTTL = 15 * time.Minute
 

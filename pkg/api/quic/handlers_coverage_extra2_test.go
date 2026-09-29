@@ -39,6 +39,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockTenantSvc struct {
+	tenant.TenantServicer
 	createFn        func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
 	getFn           func(ctx context.Context, id string) (*tenant.TenantInfo, error)
 	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
@@ -124,10 +125,6 @@ func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id st
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 
-func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
-}
-
 func (m *mockTenantSvc) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
@@ -171,12 +168,6 @@ func (m *mockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ 
 }
 func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 func newTenantServer() *Server {

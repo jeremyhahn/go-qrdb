@@ -254,53 +254,13 @@ func TestCeremonyStatusCmd_TableOutput(t *testing.T) {
 // ceremony.go — cmd branches: claim-cert-begin table output path
 // ===========================================================================
 
-func TestCeremonyClaimCertBeginCmd_TableOutput(t *testing.T) {
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	root := newTestRootCmd(newMockKVService(), newMockAdminService())
-	_, _ = executeCommand(root, "ceremony", "claim-cert", "begin", "--username", "alice")
-}
-
 // ===========================================================================
 // ceremony.go — claim-cert-complete table output
 // ===========================================================================
 
-func TestCeremonyClaimCertCompleteCmd_TableOutput(t *testing.T) {
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	root := newTestRootCmd(newMockKVService(), newMockAdminService())
-	_, _ = executeCommand(root, "ceremony", "claim-cert", "complete",
-		"--username", "alice",
-		"--nonce", "deadbeef",
-		"--signature", "sig",
-	)
-}
-
 // ===========================================================================
 // ceremony.go — claim-share table output
 // ===========================================================================
-
-func TestCeremonyClaimShareCmd_TableOutput(t *testing.T) {
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	root := newTestRootCmd(newMockKVService(), newMockAdminService())
-	_, _ = executeCommand(root, "ceremony", "claim-share", "begin", "--username", "alice")
-}
 
 // ===========================================================================
 // ceremony.go — sign-csr table output

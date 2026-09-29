@@ -100,6 +100,36 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 		t.Error("rekey must not be on the sealed-window allowlist")
 	}
 
+	// The share-holder quorum submission — how a sealed barrier is unsealed —
+	// must be present on all four transports. The gRPC allowlist is fully
+	// service-qualified (a security hardening: matching the bare method tail
+	// would admit a same-named method on any co-registered service while
+	// sealed), so the entry is the full /service/method path.
+	if !restHas("/v1/barrier/quorum/submit") {
+		t.Error("REST allowlist missing /v1/barrier/quorum/submit")
+	}
+	if !grpcHas("/qrdb.v1.QRDBService/BarrierQuorumSubmit") {
+		t.Error("gRPC allowlist missing /qrdb.v1.QRDBService/BarrierQuorumSubmit")
+	}
+	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.QuorumSubmit"]; !ok {
+		t.Error("QUIC allowlist missing barrier.QuorumSubmit")
+	}
+	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_quorum_submit"]; !ok {
+		t.Error("MCP allowlist missing qrdb_barrier_quorum_submit")
+	}
+
+	// Opening a rekey needs an unsealed barrier: it must NOT be admitted while
+	// sealed on any transport.
+	if grpcHas("/qrdb.v1.QRDBService/BarrierRekeyStart") {
+		t.Error("gRPC allowlist admits BarrierRekeyStart while sealed")
+	}
+	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.RekeyStart"]; ok {
+		t.Error("QUIC allowlist admits barrier.RekeyStart while sealed")
+	}
+	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_rekey_start"]; ok {
+		t.Error("MCP allowlist admits qrdb_barrier_rekey_start while sealed")
+	}
+
 	// SealedWindowRESTAllowlist derives a fresh, equal list.
 	fresh := sdk.SealedWindowRESTAllowlist()
 	if len(fresh) != len(sdk.RESTSealedWindowAllowlist) {

@@ -2,150 +2,193 @@
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
-gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
-gRPC wire over a UDS, so its methods match the gRPC column.
+Every capability below is served on all six transports with the same
+semantics and the same error classes. gRPC service `qrdb.v1.QRDBService`
+(tenant methods on `qrdb.v1.TenantBarrierService`); the Unix socket transport
+serves the same gRPC wire over a UDS, so its methods match the gRPC column.
+The embedded column names the `transport.BarrierClient` /
+`transport.TenantClient` method the Go SDK calls in-process.
 
 The barrier's own operations are [../barrier-seal/api.md](../barrier-seal/api.md).
 
-## Capability matrix — Security Officers
+## Capability matrix — system barrier share holders
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
-| Register officer | `POST /v1/barrier/officers` | `BarrierOfficerRegister` | `barrier.OfficerRegister` | `qrdb_barrier_officer_register` | `OfficerRegister` | `seal:officer_register` |
-| List officers | `GET /v1/barrier/officers` | `BarrierOfficerList` | `barrier.OfficerList` | `qrdb_barrier_officer_list` | `OfficerList` | `seal:officer_list` |
-| Claim status | `GET /v1/barrier/officers/claim-status` | `BarrierOfficerClaimStatus` | `barrier.OfficerClaimStatus` | `qrdb_barrier_officer_claim_status` | `OfficerClaimStatus` | `seal:officer_list` |
+| Enrol holder (unseal domain) | `POST /v1/barrier/officers` | `BarrierOfficerRegister` | `barrier.OfficerRegister` | `qrdb_barrier_officer_register` | `OfficerRegister` | `seal:officer_register` |
+| Enrol holder (recovery domain) | `POST /v1/barrier/recovery/officers` | `BarrierRecoveryOfficerRegister` | `barrier.RecoveryOfficerRegister` | `qrdb_barrier_recovery_officer_register` | `RecoveryOfficerRegister` | `seal:officer_register` |
+| List holders | `GET /v1/barrier/officers` | `BarrierOfficerList` | `barrier.OfficerList` | `qrdb_barrier_officer_list` | `OfficerList` | `seal:officer_list` |
 | Claim begin | `POST /v1/barrier/officers/{username}/claim/begin` | `BarrierShareClaimBegin` | `barrier.ShareClaimBegin` | `qrdb_barrier_share_claim_begin` | `ShareClaimBegin` | **identity-gated** |
 | Claim complete | `POST /v1/barrier/officers/{username}/claim/complete` | `BarrierShareClaimComplete` | `barrier.ShareClaimComplete` | `qrdb_barrier_share_claim_complete` | `ShareClaimComplete` | **identity-gated** |
+| Recovery claim begin | `POST /v1/barrier/recovery/officers/{username}/claim/begin` | `BarrierRecoveryShareClaimBegin` | `barrier.RecoveryShareClaimBegin` | `qrdb_barrier_recovery_share_claim_begin` | `RecoveryShareClaimBegin` | **identity-gated** |
+| Recovery claim complete | `POST /v1/barrier/recovery/officers/{username}/claim/complete` | `BarrierRecoveryShareClaimComplete` | `barrier.RecoveryShareClaimComplete` | `qrdb_barrier_recovery_share_claim_complete` | `RecoveryShareClaimComplete` | **identity-gated** |
+| Quorum challenge | `POST /v1/barrier/quorum/begin` | `BarrierQuorumBegin` | `barrier.QuorumBegin` | `qrdb_barrier_quorum_begin` | `BarrierQuorumBegin` | **identity-gated** |
+| Quorum submission | `POST /v1/barrier/quorum/submit` | `BarrierQuorumSubmit` | `barrier.QuorumSubmit` | `qrdb_barrier_quorum_submit` | `BarrierQuorumSubmit` | **identity-gated** |
+| Start rekey | `POST /v1/barrier/rekey/start` | `BarrierRekeyStart` | `barrier.RekeyStart` | `qrdb_barrier_rekey_start` | `BarrierRekeyStart` | `seal:rekey` + SO PIN |
+| Revoke holder | `POST /v1/barrier/officers/revoke` | `BarrierOfficerRevoke` | `barrier.OfficerRevoke` | `qrdb_barrier_officer_revoke` | `BarrierOfficerRevoke` | `seal:officer_revoke` + SO PIN |
 
-## Capability matrix — quorum operations
-
-| Capability | REST | gRPC / Unix | QUIC | MCP tool | `scp` permission |
-|---|---|---|---|---|---|
-| Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `seal:initialize_shamir` |
-| Unseal — one share | `POST /v1/barrier/shamir/unseal-share` | `BarrierShamirUnsealShare` | `barrier.ShamirUnsealShare` | `qrdb_barrier_shamir_unseal_share` | `barrier:unseal-share` |
-| Unseal — many shares | `POST /v1/barrier/shamir/unseal-shares` | `BarrierShamirUnsealShares` | `barrier.ShamirUnsealShares` | `qrdb_barrier_shamir_unseal_shares` | `barrier:unseal-share` |
-| Seal vote | `POST /v1/barrier/shamir/seal-vote` | `BarrierShamirSealVote` | `barrier.ShamirSealVote` | `qrdb_barrier_shamir_seal_vote` | `seal:submit_seal_vote` |
-| Rekey | `POST /v1/barrier/rekey` | `BarrierRekey` | `barrier.Rekey` | `qrdb_barrier_rekey` | `seal:rekey` |
-| Root token | `POST /v1/barrier/root-token` | `BarrierRootToken` | `barrier.RootToken` | `qrdb_barrier_root_token` | `seal:bootstrap` |
-
-## Capability matrix — recovery
+## Capability matrix — distribution
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | `scp` permission |
 |---|---|---|---|---|---|
-| Generate recovery keys | `POST /v1/barrier/recovery/generate` | `BarrierRecoveryGenerate` | `barrier.RecoveryGenerate` | `qrdb_barrier_recovery_generate` | `seal:generate_recovery` |
-| Recover | `POST /v1/barrier/recovery/recover` | `BarrierRecoveryRecover` | `barrier.RecoveryRecover` | `qrdb_barrier_recovery_recover` | `seal:recover_with_keys` |
+| Initialize Shamir custody | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `seal:initialize_shamir` |
+| Generate recovery key | `POST /v1/barrier/recovery/generate` | `BarrierRecoveryGenerate` | `barrier.RecoveryGenerate` | `qrdb_barrier_recovery_generate` | `seal:generate_recovery` + SO PIN |
 | Recovery status | `GET /v1/barrier/recovery/status` | `BarrierRecoveryStatus` | `barrier.RecoveryStatus` | `qrdb_barrier_recovery_status` | `seal:status` |
-| Delete recovery keys | `DELETE /v1/barrier/recovery` | `BarrierRecoveryDelete` | `barrier.RecoveryDelete` | `qrdb_barrier_recovery_delete` | `seal:generate_recovery` |
-| Register recovery officer | `POST /v1/barrier/recovery/officers` | `BarrierRecoveryOfficerRegister` | `barrier.RecoveryOfficerRegister` | `qrdb_barrier_recovery_officer_register` | `seal:officer_register` |
-| Recovery claim begin | `POST /v1/barrier/recovery/officers/{username}/claim/begin` | `BarrierRecoveryShareClaimBegin` | `barrier.RecoveryShareClaimBegin` | `qrdb_barrier_recovery_share_claim_begin` | **identity-gated** |
-| Recovery claim complete | `POST /v1/barrier/recovery/officers/{username}/claim/complete` | `BarrierRecoveryShareClaimComplete` | `barrier.RecoveryShareClaimComplete` | `qrdb_barrier_recovery_share_claim_complete` | **identity-gated** |
+| Delete recovery key | `DELETE /v1/barrier/recovery` | `BarrierRecoveryDelete` | `barrier.RecoveryDelete` | `qrdb_barrier_recovery_delete` | `seal:generate_recovery` |
+| Initialization ceremony with holders | `POST /v1/ceremony/initialize` | `CeremonyInitialize` | `ceremony.Initialize` | `qrdb_ceremony_initialize` | `ceremony:initialize` |
 
-## Capability matrix — custodians and ceremony share claims
+Unseal, seal, root-token, recovery and the completion of a rekey have no
+route of their own: each is the quorum submission with its `op`.
 
-| Capability | REST | `scp` permission |
-|---|---|---|
-| Enroll custodian | `POST /v1/ceremony/enroll-custodian` | `ceremony:enroll_custodian` |
-| Revoke custodian | `POST /v1/ceremony/revoke-custodian` | `ceremony:revoke_custodian` |
-| Enroll external officer | `POST /v1/init/enroll-external-officer` | `ceremony:enroll_custodian` |
-| Custodian claim begin/complete | `POST /v1/ceremony/claim-share/begin` · `/complete` | **identity-gated** |
-| Officer share begin/complete | `POST /v1/ceremony/officer-share/begin` · `/complete` | **identity-gated** |
-| Submit unseal share | `POST /v1/barrier/unseal-share` | `barrier:unseal-share` |
+## Who may register, list and revoke node holders
 
-## Who may register and list officers
-
-The officer registry decides who holds a share of the node barrier's key:
+The node barrier's holder registry decides who holds a share of its key:
 every rekey, revocation and recovery-key generation sends a share to every
-registered officer. `seal:officer_register` (both the unseal and the recovery
-domain), `seal:officer_list` (the list and the claim status),
-`ceremony:enroll_custodian` (custodians and external officers),
-`ceremony:revoke_custodian`, `ceremony:initialize` and `ceremony:sign_csr` are
-therefore **cross-scope**: only an identity of the `system` tenant may exercise
-them, on every transport, and a tenant's SO or Admin is refused with `403` /
-`PermissionDenied` even though its built-in role carries the grant. The quorum
-and recovery operations above that change the node barrier (`seal:rekey`,
-`seal:bootstrap`, `seal:submit_seal_vote`, `seal:generate_recovery`,
-`seal:recover_with_keys`, `seal:initialize_shamir`) are cross-scope for the
-same reason, and so is `barrier:unseal-share`: the node accumulator takes any
-share it is given, and every tenant's built-in Custodian role carries the
-grant, so a tenant custodian could poison an in-progress node unseal. Node
-custodians are the `system` tenant's. `seal:status` is not cross-scope.
+registered holder. `seal:officer_register` (both the unseal and the recovery
+domain), `seal:officer_list`, `seal:officer_revoke`, `ceremony:initialize` and
+`ceremony:sign_csr` are therefore **cross-scope**: only an identity of the
+`system` tenant may exercise them, on every transport, and a tenant's SO or
+Admin is refused with `403` / `PermissionDenied` even though its built-in role
+carries the grant. The operations that change the node barrier
+(`seal:rekey`, `seal:bootstrap`, `seal:generate_recovery`,
+`seal:initialize_shamir`) are cross-scope for the same reason. `seal:status`
+is not cross-scope.
 
 **This changed.** These permissions were self-scoped, and because none of
 these routes names a tenant, the self-scope check compared the caller's tenant
 with itself and admitted any tenant's holder. A tenant role that relied on that
-can no longer register, list or enrol node officers; a tenant's own officers
+can no longer register, list or revoke node holders; a tenant's own holders
 are registered through `POST /v1/tenants/{id}/barrier/officers`
 (`tenant_barrier:officer_register`).
 
 First-boot registration is not affected. On the boot-time sealed-window
-listener officer and recovery-officer registration are anonymous while the
+listener holder and recovery-holder registration are anonymous while the
 enrollment ceremony is pre-operational, and that listener runs no RBAC.
 
-## Why the claim routes are identity-gated
+## Capability matrix — tenant barrier share holders
 
-Officers are **ceremony-registry principals, not RBAC users** — the user store
-does not yet exist when they are registered. The middleware therefore requires
-only an authenticated mTLS identity, and **the handler enforces the real
-authorization**: registry membership, certificate-thumbprint match against the
-enrolment record, and nonce-signature verification.
+A dedicated tenant barrier has the unseal domain only.
 
-This is a deliberate design, recorded here so it is not mistaken for a missing
-permission check.
+| Capability | REST | gRPC / Unix (`TenantBarrierService`) | QUIC | MCP tool | `scp` permission |
+|---|---|---|---|---|---|
+| Enrol holder | `POST /v1/tenants/{id}/barrier/officers` | `OfficerRegister` | `tenant.BarrierOfficerRegister` | `qrdb_tenant_barrier_officer_register` | `tenant_barrier:officer_register` |
+| List holders | `GET /v1/tenants/{id}/barrier/officers` | `OfficerList` | `tenant.BarrierOfficerList` | `qrdb_tenant_barrier_officer_list` | `tenant_barrier:officer_list` |
+| Claim begin | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` | `ShareClaimBegin` | `tenant.BarrierShareClaimBegin` | `qrdb_tenant_barrier_share_claim_begin` | **identity-gated** |
+| Claim complete | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete` | `ShareClaimComplete` | `tenant.BarrierShareClaimComplete` | `qrdb_tenant_barrier_share_claim_complete` | **identity-gated** |
+| Quorum challenge | `POST /v1/tenants/{id}/barrier/quorum/begin` | `QuorumBegin` | `tenant.BarrierQuorumBegin` | `qrdb_tenant_barrier_quorum_begin` | **identity-gated** |
+| Quorum submission | `POST /v1/tenants/{id}/barrier/quorum/submit` | `QuorumSubmit` | `tenant.BarrierQuorumSubmit` | `qrdb_tenant_barrier_quorum_submit` | **identity-gated** |
+| Start rekey | `POST /v1/tenants/{id}/barrier/rekey/start` | `RekeyStart` | `tenant.BarrierRekeyStart` | `qrdb_tenant_barrier_rekey_start` | `tenant_barrier:rekey` |
+| Revoke holder | `POST /v1/tenants/{id}/barrier/officers/revoke` | `OfficerRevoke` | `tenant.BarrierOfficerRevoke` | `qrdb_tenant_barrier_officer_revoke` | `tenant_barrier:officer_revoke` |
+
+## Why claims and submissions are identity-gated
+
+Holders use these routes while the barrier is sealed, and a holder identity is
+not a login identity. The middleware therefore requires only an authenticated
+caller, and **the handler enforces the real authorization**: for a claim, that
+the connection presents the holder's enrolled certificate and the nonce is
+signed by its key; for a submission, that the factor proof verifies against
+the roster the key is bound to. The routes are reachable through the sealed
+window ([../seal/sealed-window.md](../seal/sealed-window.md)).
+
+A claim **requires** a client certificate on the connection. A quorum
+submission does not — the factor proof authenticates the holder — but when a
+certificate is present the `mtls` factor also requires it to be the holder's.
+The peer certificate is always taken from the connection, never from the
+request.
 
 ## Schemas
 
-Officer registration:
+Enrolment request (JSON names; the protobuf fields match):
 
 ```json
-{ "username": "alice", "csr": "<PEM>",
-  "authenticator_type": "piv", "authenticator_ref": "slot9a" }
+{
+  "username": "carol",
+  "role": "custodian",
+  "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----...",
+  "encryption_kem": "mlkem768-x25519",
+  "encryption_key": "<base64 public key>",
+  "factors": [{ "name": "fido2", "params": { "...": "..." } }],
+  "designated": "fido2"
+}
 ```
 
-Response: the signed certificate and the officer's **share index** — never
-share bytes.
+`role` is `so` (default) or `custodian`. `encryption_kem`/`encryption_key` are
+optional; without them the envelope is sealed to the certificate key (P-256 or
+P-384). `factors` enrols factors beyond the built-in `mtls`; `designated`
+defaults to `mtls`. The response carries the CA-issued `cert_pem`, the `role`,
+the `designated` factor, the `encryption_kem` and the enrolled `factors` —
+never a share.
 
-Claim begin response: a nonce with a **5-minute TTL**.
-Claim complete request: the username, the nonce, and the raw signature.
-Claim complete response: the share bytes, **exactly once**; the server enclave
-is destroyed.
+Holder status (list): `username`, `role`, `cert_thumbprint`, `share_index`,
+`designated`, `factors`, `encryption_kem`, `enrolled_at`, `claimed_at`,
+`share_pending`. Never a share.
 
-Shamir initialization response — **share-free**:
+Claim begin response: `{"nonce_hex": "...", "expires_at": "..."}` — a
+5-minute nonce. Claim complete request: `{"nonce_hex": "...", "signature":
+"<base64 raw signature over the nonce bytes>"}`. Claim complete response:
+`{"share_index": 3, "envelope": "<base64>"}` — exactly once.
+
+Quorum challenge request and response:
 
 ```json
-{ "threshold": 3, "total_shares": 5, "share_count": 5 }
+{ "domain": "unseal", "op": "unseal", "username": "carol", "factor": "" }
 ```
-
-Quorum progress, returned by single-share unseal and by seal votes:
 
 ```json
-{ "required": 3, "submitted": 2, "complete": false }
+{ "challenge_id": "...", "domain": "unseal", "op": "unseal", "username": "carol",
+  "factor": "fido2", "nonce": "<base64>", "method_data": {}, "expires_at": "..." }
 ```
 
-**Below-threshold submission is a 200, not an error** — the shares accumulate.
+`factor` empty selects the designated factor. `op` is one of `unseal`, `seal`,
+`root-token`, `rekey`, `recover`.
 
-Recovery generation response is share-free in the same shape.
+Quorum submission:
 
-Root token response: `{"token": "<hex HMAC-SHA256>"}`.
+```json
+{ "domain": "unseal", "op": "unseal", "username": "carol",
+  "challenge_id": "...", "factor": "fido2", "response": "<base64>",
+  "response_metadata": {}, "share": "<base64 share opened from the envelope>" }
+```
 
-## Status and error mapping
+Quorum outcome: `domain`, `op`, `required`, `submitted`, `complete`; on a
+completed `root-token` round `root_token` and `root_token_created_at`; on a
+completed `rekey` round `threshold`, `total_shares` and `share_count` of the
+new split. **A below-threshold submission is a success, not an error.**
 
-| Condition | REST | gRPC / Unix |
-|---|---|---|
-| Success, including below-threshold progress | 200 | `OK` |
-| Duplicate share | 409 | `ALREADY_EXISTS` — `ErrShamirDuplicateShare` |
-| Quorum TTL elapsed (default 15m) | 410 | `DEADLINE_EXCEEDED` — `ErrShamirQuorumExpired` |
-| Reconstructed key fails to open the wrapped root key | 403 | `PERMISSION_DENIED` — `ErrUnsealKeyMismatch` (wrong or rekey-revoked shares) |
-| Wrapped blob malformed | 500 | `DATA_LOSS` — `ErrWrappedRootKeyCorrupt` |
-| Threshold < 2 or > total | 400 | `INVALID_ARGUMENT` — `ErrShamirThresholdInvalid` |
-| Single-admin `Seal` on a Shamir barrier | 409 | `FAILED_PRECONDITION` — `ErrShamirBarrierRequiresQuorum` |
-| Seal-vote quorum fails verification | 403 | `PERMISSION_DENIED` — `ErrSealVoteVerificationFailed` |
-| Init/rekey before `SetCeremonyDistributor` | 503 | `FAILED_PRECONDITION` — `ErrCeremonyDistributorNotConfigured` |
-| Claim nonce expired or signature invalid | 403 | `PERMISSION_DENIED` |
-| Claim for an already-claimed share | 409 | `FAILED_PRECONDITION` — delivered exactly once |
-| Claim after the share's TTL elapsed unclaimed (default 24h) | 410 | `FAILED_PRECONDITION` — `ErrShareExpired`; a rekey redistributes |
-| No recovery key metadata | 404 | `NOT_FOUND` — `ErrRecoveryKeysNotFound` |
-| Root token share verification failed | 403 | `PERMISSION_DENIED` — `ErrRootTokenVerificationFailed` |
+Start rekey: `{"domain": "unseal", "threshold": 3, "policy": "any-enrolled",
+"so_pin": "..."}`. Revoke: `{"domain": "unseal", "username": "erin",
+"threshold": 0, "so_pin": "..."}` (0 keeps the current threshold). Both answer
+the open round: `domain`, `op`, `required`, `submitted`, `expires_at`,
+`new_threshold`, `policy`, `remove`.
+
+Shamir initialization: `{"threshold": 3, "total_shares": 5, "policy":
+"designated"}`; the response is share-free, `{"threshold": 3, "total_shares":
+5, "share_count": 5}`. `total_shares` must equal the number of enrolled
+unseal-domain holders. Optional `so_pin` / `user_pin` provision the PIN
+backend first; PINs supplied with no backend configured are refused, never
+ignored. Recovery generation takes `threshold`, `policy` and
+`so_pin` and splits to every enrolled recovery holder.
+
+## Error classes
+
+Every share-holder, quorum and envelope error is classified once
+(`service.ClassifyHolderError`) and each transport renders the class:
+
+| Class | REST | gRPC / Unix | Typical cause |
+|---|---|---|---|
+| InvalidArgument | 400 | `INVALID_ARGUMENT` | unknown role, op or domain; bad CSR; unsupported KEM; malformed envelope |
+| PermissionDenied | 403 | `PERMISSION_DENIED` | factor proof failed; factor not admitted by the policy; holder not in roster or being revoked; share index not the holder's; certificate mismatch; self-enrolment; reconstructed key fails to open the blob (`ErrUnsealKeyMismatch`) |
+| NotFound | 404 | `NOT_FOUND` | unknown holder; no pending share; unknown factor |
+| AlreadyExists | 409 | `ALREADY_EXISTS` | holder already submitted to this round; duplicate username or key; a round already in progress |
+| FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed or expired; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA, trust domain or PIN backend |
+| ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges |
+
+QUIC and MCP carry the gRPC code name. A claim over a connection without a
+client certificate is a REST 401. An SO-PIN-gated route answers 401 for a
+wrong PIN and 412 when no PIN backend is configured — it fails closed.
 
 ## Versioning
 
-All custody REST paths are under `/v1/`. Nothing here is deprecated.
+All custody REST paths are under `/v1/`. The routes, RPCs, QUIC methods and
+MCP tools of the earlier custodian and batch-share model were removed, not
+deprecated; see the CHANGELOG.

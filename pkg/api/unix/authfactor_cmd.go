@@ -25,11 +25,9 @@
 //
 // Authorization (when permission constants are wired into the Unix interceptor
 // chain):
-//   - EnrollFactor / RevokeFactor: SO (CeremonyEnrollCustodian /
-//     CeremonyRevokeCustodian).
-//   - ChallengeFactor / VerifyFactor: enrolled custodian
-//     (CeremonyClaimShareBegin / CeremonyClaimShareComplete).
-//   - ListFactors: AuditRead (Auditor) or SO.
+//   - EnrollFactor / RevokeFactor: AuthFactorEnroll / AuthFactorRevoke.
+//   - ChallengeFactor / VerifyFactor: AuthFactorChallenge / AuthFactorVerify.
+//   - ListFactors: AuthFactorList.
 package unix
 
 import (

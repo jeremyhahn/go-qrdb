@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -78,17 +79,17 @@ func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthentic
 }
 
 // Barrier is a service.BarrierServicer that implements BarrierSeal,
-// BarrierRekey, BarrierDeleteRecoveryKeys, BarrierGenerateRecoveryKeys,
-// BarrierInitializeShamir, BarrierInitialize, BarrierUnseal,
-// BarrierUnsealWithShare and the four node Security Officer registry methods
-// (BarrierOfficerRegister, BarrierRecoveryOfficerRegister, BarrierOfficerList,
-// BarrierOfficerClaimStatus), and counts the calls that reached it, so a test
-// can tell a refused request from one the service performed. Every other
-// method is the nil embedded interface: a test that reaches one has left the
-// path it meant to drive.
+// BarrierRekeyStart, BarrierOfficerRevoke, BarrierDeleteRecoveryKeys,
+// BarrierGenerateRecoveryKeys, BarrierInitializeShamir, BarrierInitialize,
+// BarrierUnseal and the node share-holder registry methods
+// (BarrierOfficerRegister in either domain, BarrierOfficerList), and counts
+// the calls that reached it, so a test can tell a refused request from one
+// the service performed. Every other method is the nil embedded interface: a
+// test that reaches one has left the path it meant to drive.
 type Barrier struct {
 	service.BarrierServicer
 	rekeys           atomic.Int64
+	revocations      atomic.Int64
 	deletes          atomic.Int64
 	seals            atomic.Int64
 	generations      atomic.Int64
@@ -114,58 +115,34 @@ func (b *Barrier) BarrierUnseal(context.Context, []byte) error {
 	return nil
 }
 
-// BarrierUnsealWithShare records the submitted share and reports it as the
-// first of a quorum of three.
-func (b *Barrier) BarrierUnsealWithShare(context.Context, string) (*service.UnsealShareProgress, error) {
-	b.transitions.Add(1)
-	return &service.UnsealShareProgress{Required: 3, Submitted: 1}, nil
-}
-
-// Transitions reports how many initialize, unseal and unseal-share calls
-// reached the service.
+// Transitions reports how many initialize and unseal calls reached the
+// service.
 func (b *Barrier) Transitions() int64 { return b.transitions.Load() }
 
-// BarrierOfficerRegister records the registration and answers the way the
-// real service does: a certificate and the next share index.
-func (b *Barrier) BarrierOfficerRegister(_ context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+// BarrierOfficerRegister records the registration in domain and answers the
+// way the real service does: an issued certificate.
+func (b *Barrier) BarrierOfficerRegister(_ context.Context, domain seal.QuorumDomain, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if domain == seal.DomainRecovery {
+		b.recoveryRegs.Add(1)
+		return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate")}, nil
+	}
 	n := b.officerRegs.Add(1)
 	b.officerUsernames.Store(req.Username, int(n))
-	return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate"), ShareIndex: int(n)}, nil
+	return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate")}, nil
 }
 
-// OfficerRegistrations reports how many unseal-officer registrations reached
+// OfficerRegistrations reports how many unseal-domain registrations reached
 // the service.
 func (b *Barrier) OfficerRegistrations() int64 { return b.officerRegs.Load() }
 
-// BarrierRecoveryOfficerRegister records the recovery-officer registration.
-func (b *Barrier) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	n := b.recoveryRegs.Add(1)
-	return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate"), ShareIndex: int(n)}, nil
-}
-
-// RecoveryOfficerRegistrations reports how many recovery-officer
+// RecoveryOfficerRegistrations reports how many recovery-domain
 // registrations reached the service.
 func (b *Barrier) RecoveryOfficerRegistrations() int64 { return b.recoveryRegs.Load() }
 
-// BarrierOfficerList records the read and returns every officer registered
-// through this double.
-func (b *Barrier) BarrierOfficerList(context.Context) ([]*service.BarrierOfficerStatus, error) {
-	b.officerReads.Add(1)
-	return b.officers(), nil
-}
-
-// BarrierOfficerClaimStatus records the read and returns every officer
+// BarrierOfficerList records the read and returns every unseal-domain holder
 // registered through this double.
-func (b *Barrier) BarrierOfficerClaimStatus(context.Context) ([]*service.BarrierOfficerStatus, error) {
+func (b *Barrier) BarrierOfficerList(context.Context, seal.QuorumDomain) ([]*service.BarrierOfficerStatus, error) {
 	b.officerReads.Add(1)
-	return b.officers(), nil
-}
-
-// OfficerReads reports how many officer list and claim-status reads reached
-// the service.
-func (b *Barrier) OfficerReads() int64 { return b.officerReads.Load() }
-
-func (b *Barrier) officers() []*service.BarrierOfficerStatus {
 	var out []*service.BarrierOfficerStatus
 	b.officerUsernames.Range(func(k, v any) bool {
 		username, _ := k.(string)
@@ -173,13 +150,17 @@ func (b *Barrier) officers() []*service.BarrierOfficerStatus {
 		out = append(out, &service.BarrierOfficerStatus{Username: username, ShareIndex: index})
 		return true
 	})
-	return out
+	return out, nil
+}
+
+// OfficerReads reports how many holder list reads reached the service.
+func (b *Barrier) OfficerReads() int64 { return b.officerReads.Load() }
 }
 
 // BarrierGenerateRecoveryKeys records the generation.
-func (b *Barrier) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+func (b *Barrier) BarrierGenerateRecoveryKeys(_ context.Context, threshold int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 	b.generations.Add(1)
-	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
+	return &service.RecoveryKeysInfo{Threshold: threshold, Total: threshold, ShareCount: threshold}, nil
 }
 
 // RecoveryGenerations reports how many recovery-key generations reached the
@@ -187,7 +168,7 @@ func (b *Barrier) BarrierGenerateRecoveryKeys(_ context.Context, threshold, tota
 func (b *Barrier) RecoveryGenerations() int64 { return b.generations.Load() }
 
 // BarrierInitializeShamir records the initialization.
-func (b *Barrier) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (b *Barrier) BarrierInitializeShamir(_ context.Context, threshold, totalShares int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 	b.shamirInits.Add(1)
 	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
 }
@@ -308,11 +289,20 @@ func (m *memPINStore) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
-// BarrierRekey records the rekey.
-func (b *Barrier) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
+// BarrierRekeyStart records the rekey round.
+func (b *Barrier) BarrierRekeyStart(_ context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
 	b.rekeys.Add(1)
-	return &service.ShamirInitInfo{ShareCount: total, Threshold: threshold, TotalShares: total}, nil
+	return &service.QuorumRoundInfo{Domain: domain, Op: seal.OpRekey, Required: threshold, NewThreshold: threshold, Policy: policy}, nil
 }
 
-// Rekeys reports how many rekeys reached the service.
+// Rekeys reports how many rekey rounds reached the service.
 func (b *Barrier) Rekeys() int64 { return b.rekeys.Load() }
+
+// BarrierOfficerRevoke records the revocation round.
+func (b *Barrier) BarrierOfficerRevoke(_ context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error) {
+	b.revocations.Add(1)
+	return &service.QuorumRoundInfo{Domain: domain, Op: seal.OpRekey, Required: threshold, NewThreshold: threshold, Remove: []string{username}}, nil
+}
+
+// Revocations reports how many revocation rounds reached the service.
+func (b *Barrier) Revocations() int64 { return b.revocations.Load() }

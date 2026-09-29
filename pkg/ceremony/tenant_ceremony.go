@@ -18,252 +18,128 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// TenantCeremonyService orchestrates per-tenant Shamir share distribution.
-// It provides the same claim semantics as CeremonyService but scoped to a
-// single tenant barrier. There is exactly one TenantCeremonyService per
-// active tenant barrier operating under the Shamir strategy; it is created
-// by TenantService when the barrier is initialized and destroyed when the
-// barrier is decommissioned.
+// TenantCeremonyService is the share-holder authority for one tenant
+// barrier: the same holder engine as the system ceremony, scoped to the
+// tenant's unseal-key domain. There is exactly one per active Shamir tenant
+// barrier; TenantService creates it and installs it as the tenant barrier's
+// distributor and holder verifier.
 type TenantCeremonyService struct {
-	mu         sync.Mutex
-	scope      BarrierScope
-	shareStore *sealedShareStore
-	registry   *OfficerRegistry
-	ca         CeremonyCA
-	challenges map[string]*ChallengeResponse
-	logger     *slog.Logger
+	mu     sync.Mutex
+	deps   HolderDeps
+	holder *holderScope
+	logger *slog.Logger
 }
 
-// Compile-time check: TenantCeremonyService satisfies seal.CeremonyDistributor.
-var _ seal.CeremonyDistributor = (*TenantCeremonyService)(nil)
+// Compile-time checks.
+var (
+	_ seal.CeremonyDistributor = (*TenantCeremonyService)(nil)
+	_ seal.HolderVerifier      = (*TenantCeremonyService)(nil)
+)
 
-// NewTenantCeremonyService constructs a TenantCeremonyService for the given
-// tenant. The registry is backed by the tenant's own barrier storage backend.
-//
-// Returns ErrEmptyTenantID if tenantID is empty, ErrNilBackend if backend is
-// nil, or ErrNilCA if ca is nil.
-func NewTenantCeremonyService(
-	tenantID string,
-	backend seal.StorageBackend,
-	ca CeremonyCA,
-	logger *slog.Logger,
-) (*TenantCeremonyService, error) {
+// NewTenantCeremonyService constructs the holder authority for tenantID.
+// Holder records live in backend: the tenant barrier itself when it exists
+// (encrypted at rest), or the service store during pre-initialization
+// enrolment.
+func NewTenantCeremonyService(tenantID string, backend seal.StorageBackend, deps HolderDeps, logger *slog.Logger) (*TenantCeremonyService, error) {
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
 	}
 	if backend == nil {
 		return nil, ErrNilBackend
 	}
-	if ca == nil {
+	if deps.CA == nil {
 		return nil, ErrNilCA
 	}
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-
-	scope := ScopeTenant(tenantID)
-	reg, err := NewScopedOfficerRegistry(backend, scope)
+	sealed := func() bool { return false }
+	if b, ok := backend.(interface{ IsSealed() bool }); ok {
+		sealed = b.IsSealed
+	}
+	h, err := newHolderScope(ScopeTenant(tenantID), seal.DomainUnseal, tenantID, backend, DefaultShareTTL, sealed, logger)
 	if err != nil {
 		return nil, err
 	}
-
-	return &TenantCeremonyService{
-		scope:      scope,
-		shareStore: newSealedShareStore(DefaultShareTTL),
-		registry:   reg,
-		ca:         ca,
-		challenges: make(map[string]*ChallengeResponse),
-		logger:     logger,
-	}, nil
+	return &TenantCeremonyService{deps: deps, holder: h, logger: logger}, nil
 }
 
-// RegisterOfficer registers a security officer for this tenant's barrier.
-// Validates the CSR, signs it with the CA, persists public metadata in the
-// officer registry, and returns the signed certificate PEM. Does NOT split
-// or store any shares; that happens at SealAndDistribute time.
-func (t *TenantCeremonyService) RegisterOfficer(
-	ctx context.Context,
-	req RegisterOfficerRequest,
-) (*RegisterOfficerResult, error) {
+// RegisterOfficer enrols a share holder of the tenant barrier.
+func (t *TenantCeremonyService) RegisterOfficer(ctx context.Context, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if req.Username == "" {
-		return nil, ErrMissingUsername
-	}
-	if len(req.CSRPEM) == 0 {
-		return nil, ErrMissingCSRPEM
-	}
-	if err := req.AuthenticatorType.Validate(); err != nil {
-		return nil, err
-	}
-
-	// Uniqueness check.
-	if _, err := t.registry.Load(ctx, req.Username); err == nil {
-		return nil, ErrDuplicateUsername
-	}
-
-	cert, csr, certPEM, err := signOfficerCSR(ctx, t.ca, req.CSRPEM, t.scope.TenantID(), req.Username)
-	if err != nil {
-		return nil, err
-	}
-
-	shareIndex := len(t.registry.Cached()) + 1
-
-	thumb := certThumbprint(cert.Raw)
-	pubPEM, marshalErr := marshalPublicKeyPEM(csr.PublicKey)
-	if marshalErr != nil {
-		return nil, &CertEncodeError{Err: marshalErr}
-	}
-
-	persisted := &PersistentOfficer{
-		Username:       req.Username,
-		CertThumbprint: thumb,
-		PubKeyPEM:      pubPEM,
-		ShareIndex:     shareIndex,
-		AuthFactor:     authFactorFromAuthenticator(req.AuthenticatorType.Normalized()),
-		EnrolledAt:     time.Now().UTC(),
-	}
-
-	if err := t.registry.Save(ctx, persisted); err != nil {
-		// Best-effort: cache even when persistence fails (sealed barrier).
-		t.registry.mu.Lock()
-		t.registry.cache[persisted.Username] = persisted
-		t.registry.mu.Unlock()
-	}
-
-	t.logger.Info("tenant officer registered",
-		slog.String("tenant_id", t.scope.tenantID),
-		slog.String("username", req.Username),
-		slog.Int("share_index", shareIndex))
-
-	return &RegisterOfficerResult{
-		CertPEM:    certPEM,
-		ShareIndex: shareIndex,
-	}, nil
+	return t.holder.register(ctx, &t.deps, req)
 }
 
-// ListOfficers returns all enrolled officers for this tenant's barrier.
+// ListOfficers returns every holder with its claim state.
 func (t *TenantCeremonyService) ListOfficers(ctx context.Context) ([]*OfficerStatus, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	return officerStatusFromRegistry(t.registry, t.shareStore), nil
+	return t.holder.status(ctx)
 }
 
-// SealAndDistribute splits shareSecret into shares for the N enrolled officers
-// and places each share into the per-officer enclave in the sealedShareStore.
-// shareSecret is wiped before this function returns regardless of outcome.
-// Returns the number of shares sealed.
-// Returns ErrInsufficientOfficers if fewer than threshold officers are enrolled.
-func (t *TenantCeremonyService) SealAndDistribute(
-	ctx context.Context,
-	shareSecret []byte,
-	threshold, total int,
-) (int, error) {
-	defer secure.Wipe(shareSecret)
-
+// BeginClaimShare issues the claim nonce to a holder.
+func (t *TenantCeremonyService) BeginClaimShare(ctx context.Context, username, callerThumbprint string) (*ChallengeResponse, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	return sealSharesToOfficers(ctx, shareSecret, threshold, total, t.registry, t.shareStore)
+	return t.holder.beginClaim(ctx, username, callerThumbprint)
 }
 
-// BeginClaimShare issues a challenge nonce to the named officer. The officer
-// must present a valid mTLS certificate whose thumbprint matches the registry.
-func (t *TenantCeremonyService) BeginClaimShare(
-	ctx context.Context,
-	username string,
-	callerCertThumbprint string,
-) (*ChallengeResponse, error) {
+// CompleteClaimShare delivers the holder's share envelope exactly once.
+func (t *TenantCeremonyService) CompleteClaimShare(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	return beginClaimShareLocked(ctx, username, callerCertThumbprint,
-		t.registry, t.shareStore, t.challenges, "share:")
+	return t.holder.completeClaim(ctx, username, nonceHex, signature, callerThumbprint)
 }
 
-// CompleteClaimShare verifies the officer's nonce signature and returns the
-// share bytes exactly once, then destroys the enclave. Returns
-// ErrShareAlreadyClaimed on a second call. The returned bytes are the
-// caller's responsibility to wipe after use.
-func (t *TenantCeremonyService) CompleteClaimShare(
-	ctx context.Context,
-	username string,
-	nonceHex string,
-	signature []byte,
-	callerCertThumbprint string,
-) ([]byte, error) {
+// BeginQuorum issues a factor challenge for a holder's submission to op on
+// barrier, the tenant barrier this service is installed on.
+func (t *TenantCeremonyService) BeginQuorum(ctx context.Context, barrier *seal.StorageBarrier, op seal.QuorumOp, username, factor string) (*QuorumChallenge, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.holder.beginQuorum(ctx, &t.deps, barrier, op, username, factor)
+}
 
-	result, err := completeClaimShareLocked(ctx, username, nonceHex, signature, callerCertThumbprint,
-		t.registry, t.shareStore, nil, t.challenges, "share:")
-	if err != nil {
-		return nil, err
+// PrepareRoster implements seal.CeremonyDistributor.
+func (t *TenantCeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, exclude []string) (*seal.HolderRoster, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.holder.prepareRoster(ctx, domain, threshold, policy, exclude)
+}
+
+// Distribute implements seal.CeremonyDistributor.
+func (t *TenantCeremonyService) Distribute(ctx context.Context, secret []byte, roster *seal.HolderRoster, digest []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.holder.distribute(ctx, secret, roster, digest)
+}
+
+// Committed implements seal.CeremonyDistributor.
+func (t *TenantCeremonyService) Committed(ctx context.Context, roster *seal.HolderRoster, removed []string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.holder.committed(ctx, roster, removed)
+}
+
+// VerifyHolder implements seal.HolderVerifier.
+func (t *TenantCeremonyService) VerifyHolder(ctx context.Context, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if domain != seal.DomainUnseal {
+		return &seal.QuorumOpInvalidError{Domain: domain, Op: op}
 	}
-
-	if markErr := t.registry.MarkClaimed(ctx, username, time.Now().UTC()); markErr != nil {
-		t.logger.Warn("failed to mark tenant share claimed",
-			slog.String("username", username),
-			slog.String("error", markErr.Error()))
-	}
-
-	return result.ShareBytes, nil
+	return t.holder.verifyHolder(ctx, &t.deps, domain, op, holder, roster, digest, proof)
 }
 
-// OfficerClaimStatus returns a per-officer claim status snapshot (for admin
-// visibility). Never includes share bytes.
-func (t *TenantCeremonyService) OfficerClaimStatus(
-	ctx context.Context,
-) ([]*OfficerStatus, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	return officerStatusFromRegistry(t.registry, t.shareStore), nil
-}
-
-// RekeyAndDistribute generates new shares from newShareSecret and seals them
-// to the registered officers. Old unclaimed shares, if any, are destroyed
-// before new ones are stored. newShareSecret is wiped on return.
-func (t *TenantCeremonyService) RekeyAndDistribute(
-	ctx context.Context,
-	newShareSecret []byte,
-	newThreshold, newTotal int,
-) (int, error) {
-	defer secure.Wipe(newShareSecret)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// INV-10: destroy prior round's enclaves and clear claim history so
-	// officers who claimed in the prior round can claim their new shares.
-	t.shareStore.Reset()
-	if err := t.registry.ResetClaimedAt(ctx); err != nil {
-		t.logger.Warn("failed to reset tenant claimed-at timestamps during rekey",
-			slog.String("error", err.Error()))
-	}
-
-	return sealSharesToOfficers(ctx, newShareSecret, newThreshold, newTotal, t.registry, t.shareStore)
-}
-
-// Cleanup destroys all remaining share enclaves and clears challenge state.
+// Cleanup destroys every held envelope and pending challenge.
 func (t *TenantCeremonyService) Cleanup() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	t.shareStore.DestroyAll()
-
-	for key, challenge := range t.challenges {
-		secure.Wipe(challenge.Nonce)
-		delete(t.challenges, key)
-	}
+	t.holder.cleanup()
 }
 
 // TenantCeremonyRegistry manages the set of active TenantCeremonyService

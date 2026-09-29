@@ -64,7 +64,7 @@ func newSOFixture(t *testing.T, start SOStartFunc, gated bool) *soFixture {
 	return &soFixture{caller: caller, barrier: barrier, client: pb.NewQRDBServiceClient(conn)}
 }
 
-// rekey issues one BarrierRekey as id, presenting pin in the SO PIN metadata
+// rekey opens one BarrierRekeyStart round as id, presenting pin in the SO PIN metadata
 // entry when pin is non-empty.
 func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) error {
 	t.Helper()
@@ -73,7 +73,7 @@ func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) error {
 	if pin != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, authmw.SOPINMetadataKey, pin)
 	}
-	_, err := f.client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
+	_, err := f.client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2})
 	return err
 }
 
@@ -132,7 +132,7 @@ func SODualFactor(t *testing.T, start SOStartFunc) {
 		barrier := &authtest.Barrier{}
 		client := pb.NewQRDBServiceClient(start(t, nil, gate, barrier))
 		ctx := metadata.AppendToOutgoingContext(callCtx(t), authmw.SOPINMetadataKey, soPIN)
-		_, err := client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
+		_, err := client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2})
 		if barrier.Rekeys() != 0 {
 			t.Fatal("the gate was skipped for want of an auth middleware")
 		}

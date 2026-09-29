@@ -23,8 +23,10 @@ import (
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -58,6 +60,10 @@ type sealSubsystem struct {
 	// BarrierRegistry manages per-tenant barriers that are layered on
 	// top of the system barrier.
 	BarrierRegistry *seal.BarrierRegistry
+
+	// PINBackend holds the node's SO and User PINs, persisted in the seal
+	// sub-store so they are readable while the barrier is sealed.
+	PINBackend pin.PINBackend
 
 	// SealDataDir is the directory containing the seal sub-store. It
 	// is exposed so callers (e.g. ceremony service construction) can
@@ -248,6 +254,12 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 		return nil, &BarrierRegistryError{Err: regErr}
 	}
 
+	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend)
+	if pinErr != nil {
+		_ = sealStore.Close()
+		return nil, &SealStorageError{Err: pinErr}
+	}
+
 	slog.Info("seal subsystem initialized",
 		slog.String("strategy", f.sealConfig.CanonicalStrategy()),
 		slog.String("data_dir", sealDataDir))
@@ -257,6 +269,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 		SealBarrier:     sealBarrier,
 		CredCoreSvc:     credCoreSvc,
 		BarrierRegistry: barrierRegistry,
+		PINBackend:      pinBackend,
 		SealDataDir:     sealDataDir,
 	}, nil
 }
@@ -312,6 +325,8 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		CredentialCoreSvc:         sub.CredCoreSvc,
 		CeremonyDataDir:           sub.SealDataDir,
 		CeremonyCA:                ceremonyCA,
+		PINBackend:                sub.PINBackend,
+		HolderTrustDomain:         qrdbconfig.HolderTrustDomain(f.spiffeTrustDomain, f.clusterTrustDomain),
 		Logger:                    slog.Default(),
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
@@ -333,6 +348,9 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	}
 	if sealNode.Barrier != nil {
 		serverOpts = append(serverOpts, server.WithBarrierService(sealNode.Barrier))
+	}
+	if sub.PINBackend != nil {
+		serverOpts = append(serverOpts, server.WithPINBackend(sub.PINBackend))
 	}
 	if sealNode.Ceremony != nil {
 		serverOpts = append(serverOpts, server.WithCeremonyService(sealNode.Ceremony))

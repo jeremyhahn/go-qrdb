@@ -1115,68 +1115,6 @@ func TestAuthorize_SO_DenyListByDeterministicID(t *testing.T) {
 	}
 }
 
-func TestAuthorize_Custodian_UnsealShareAllowed(t *testing.T) {
-	// Custodian has exactly one permission: barrier:unseal-share. It feeds
-	// the node barrier's accumulator, so it is platform scope: the system
-	// tenant's custodian is admitted and a tenant's is not.
-	svc := newMockRoleService(map[string][]permission.Permission{
-		"custodian-role": {permission.BarrierUnsealShare},
-	})
-	authz := New(svc)
-
-	identity := &auth.Identity{
-		Subject:  "custodian-1",
-		TenantID: tenantid.System,
-		Roles:    []string{"custodian-role"},
-	}
-
-	err := authz.Authorize(ctxFor(tenantid.System), identity, "barrier", "unseal-share")
-	if err != nil {
-		t.Fatalf("custodian should be allowed barrier:unseal-share, got: %v", err)
-	}
-
-	tenantCustodian := &auth.Identity{Subject: "custodian-2", TenantID: "tenant-1", Roles: []string{"custodian-role"}}
-	if err := authz.Authorize(ctxFor("tenant-1"), tenantCustodian, "barrier", "unseal-share"); err == nil {
-		t.Fatal("a tenant's custodian was admitted to the node barrier's unseal accumulator")
-	}
-}
-
-func TestAuthorize_Custodian_OtherActionsDenied(t *testing.T) {
-	// Custodian must be denied all operations except unseal-share.
-	deniedActions := []struct {
-		resource, action string
-	}{
-		{"kv", "put"},
-		{"kv", "get"},
-		{"keys", "sign"},
-		{"keys", "get"},
-		{"seal", "status"},
-		{"audit", "read"},
-		{"users", "list"},
-		{"admin", "health"},
-	}
-
-	for _, tc := range deniedActions {
-		t.Run(tc.resource+":"+tc.action, func(t *testing.T) {
-			svc := newMockRoleService(map[string][]permission.Permission{
-				"custodian-role": {permission.BarrierUnsealShare},
-			})
-			authz := New(svc)
-
-			identity := &auth.Identity{
-				Subject:  "custodian-1",
-				TenantID: "tenant-1",
-				Roles:    []string{"custodian-role"},
-			}
-
-			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
-			if err == nil {
-				t.Fatalf("custodian should be denied %s:%s", tc.resource, tc.action)
-			}
-		})
-	}
-}
-
 func TestAuthorize_User_KeysSignAllowed(t *testing.T) {
 	// User role must be allowed keys:sign (unlike SO).
 	svc := newMockRoleService(map[string][]permission.Permission{
@@ -1648,4 +1586,29 @@ func TestSODenyList_CoversEverySOGrantsComplement(t *testing.T) {
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
 func (m *mockRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil
+}
+
+// TestAuthorize_ShareHolderRefusedEverything pins ruling 8: an identity in
+// the SPIFFE holder namespace is refused every RBAC permission, whatever
+// roles a same-named account might carry.
+func TestAuthorize_ShareHolderRefusedEverything(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"admin-role": {permission.KVPut, permission.SealUnseal, permission.SealOfficerRegister},
+	})
+	authz := New(svc)
+	holder := &auth.Identity{
+		Subject:  "carol",
+		TenantID: "tenant-1",
+		Roles:    []string{"admin-role"},
+		Metadata: map[string]string{auth.MetaPrincipalKind: auth.PrincipalShareHolder},
+	}
+	for _, rc := range []struct{ resource, action string }{{"kv", "put"}, {"seal", "unseal"}, {"seal", "officer_register"}} {
+		if err := authz.Authorize(ctxFor("tenant-1"), holder, rc.resource, rc.action); err == nil {
+			t.Errorf("a share holder must be refused %s:%s", rc.resource, rc.action)
+		}
+	}
+	admin := &auth.Identity{Subject: "carol", TenantID: "tenant-1", Roles: []string{"admin-role"}}
+	if err := authz.Authorize(ctxFor("tenant-1"), admin, "kv", "put"); err != nil {
+		t.Errorf("the same roles on a login identity are honoured: %v", err)
+	}
 }

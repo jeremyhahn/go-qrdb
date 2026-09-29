@@ -67,11 +67,10 @@ func (s *Server) handleStreamOnly(method string, perm permission.Permission) {
 // absent methods return StatusUnimplemented via the dispatch loop (their
 // permissions are still declared, preserving the static-table contract).
 //
-// The unified-authz cutover dropped the old table's dead aliases — methods
-// that never had a handler (barrier.UnsealShare, barrier.UnsealShares,
-// barrier.GenerateRecovery, barrier.RecoverWithKeys, ceremony.ClaimShare):
-// a request for them is now denied at authorization instead of authorized
-// and then StatusUnimplemented.
+// A method with no registration is denied at authorization rather than
+// authorized and then answered StatusUnimplemented; that covers the dead
+// aliases the unified-authz cutover dropped and the share verbs the unified
+// share-holder quorum retired.
 func (s *Server) buildHandlers() {
 	s.handlers = make(map[string]methodHandler)
 	s.methodPerms = authmw.NewQUICMethodRegistry()
@@ -300,14 +299,9 @@ func (s *Server) buildHandlers() {
 	s.handle("barrier.Seal", permission.SealSeal, s.handleBarrierSeal)
 	s.handle("barrier.Status", permission.SealStatus, s.handleBarrierStatus)
 	s.handle("barrier.ShamirInitialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
-	s.handle("barrier.ShamirUnsealShare", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShare)
-	s.handle("barrier.ShamirUnsealShares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
-	s.handle("barrier.Rekey", permission.SealRekey, s.handleBarrierRekey)
 	s.handle("barrier.RecoveryGenerate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
-	s.handle("barrier.RecoveryRecover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
 	s.handle("barrier.RecoveryDelete", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
 	s.handle("barrier.RecoveryStatus", permission.SealStatus, s.handleBarrierRecoveryStatus)
-	s.handle("barrier.RootToken", permission.SealBootstrap, s.handleBarrierRootToken)
 	// Barrier Security Officer (system barrier SO distribution). Share-claim
 	// routes are identity-gated (see permission.IdentityGated): the registered
 	// officer's mTLS certificate is the credential, and the handler enforces
@@ -316,33 +310,20 @@ func (s *Server) buildHandlers() {
 	s.handle("barrier.OfficerList", permission.SealOfficerList, s.handleBarrierOfficerList)
 	s.handle("barrier.ShareClaimBegin", permission.IdentityGated, s.handleBarrierShareClaimBegin)
 	s.handle("barrier.ShareClaimComplete", permission.IdentityGated, s.handleBarrierShareClaimComplete)
-	s.handle("barrier.OfficerClaimStatus", permission.SealOfficerList, s.handleBarrierOfficerClaimStatus)
-	s.handle("barrier.ShamirSealVote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
 	s.handle("barrier.RecoveryOfficerRegister", permission.SealOfficerRegister, s.handleBarrierRecoveryOfficerRegister)
 	s.handle("barrier.RecoveryShareClaimBegin", permission.IdentityGated, s.handleBarrierRecoveryShareClaimBegin)
 	s.handle("barrier.RecoveryShareClaimComplete", permission.IdentityGated, s.handleBarrierRecoveryShareClaimComplete)
+	s.handle("barrier.QuorumBegin", permission.IdentityGated, s.handleBarrierQuorumBegin)
+	s.handle("barrier.QuorumSubmit", permission.IdentityGated, s.handleBarrierQuorumSubmit)
+	s.handle("barrier.RekeyStart", permission.SealRekey, s.handleBarrierRekeyStart)
+	s.handle("barrier.OfficerRevoke", permission.SealOfficerRevoke, s.handleBarrierOfficerRevoke)
 	s.handle("barrier.EnableEncryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
 
-	// Ceremony. Share-claim routes are identity-gated (see
-	// permission.IdentityGated): the officer flow (Begin/CompleteClaimShare)
-	// verifies the enrolled officer's mTLS thumbprint and nonce signature in
-	// the handler, matching the gRPC CeremonyBeginClaimShare /
-	// CeremonyCompleteClaimShare "identity:gated" proto options and the REST
-	// /v1/ceremony/officer-share/* routes (the old quicPermissions table
-	// omitted these two methods, leaving them unconditionally denied on this
-	// transport — a parity gap closed at the cutover); the custodian flow
-	// (ClaimShareBegin/Complete) verifies the enrolled custodian's factor
-	// challenge response.
+	// Ceremony. Share holders claim their envelopes through the barrier
+	// holder methods above (barrier.ShareClaimBegin/Complete), not here.
 	s.handle("ceremony.Initialize", permission.CeremonyInitialize, s.handleCeremonyInitialize)
 	s.handle("ceremony.Status", permission.CeremonyStatus, s.handleCeremonyStatus)
-	s.handle("ceremony.ClaimCertBegin", permission.CeremonyClaimCert, s.handleCeremonyClaimCertBegin)
-	s.handle("ceremony.ClaimCertComplete", permission.CeremonyClaimCert, s.handleCeremonyClaimCertComplete)
-	s.handle("ceremony.BeginClaimShare", permission.IdentityGated, s.handleCeremonyBeginClaimShare)
-	s.handle("ceremony.CompleteClaimShare", permission.IdentityGated, s.handleCeremonyCompleteClaimShare)
 	s.handle("ceremony.SignCSR", permission.CeremonySignCSR, s.handleCeremonySignCSR)
-	s.handle("ceremony.ClaimShareBegin", permission.IdentityGated, s.handleCeremonyClaimShareBegin)
-	s.handle("ceremony.ClaimShareComplete", permission.IdentityGated, s.handleCeremonyClaimShareComplete)
-	s.handle("ceremony.SubmitUnsealShare", permission.BarrierUnsealShare, s.handleCeremonySubmitUnsealShare)
 
 	// Tenant management
 	s.handle("tenant.Create", permission.TenantsCreate, s.handleTenantCreate)
@@ -392,15 +373,16 @@ func (s *Server) buildHandlers() {
 	// identical to REST, gRPC, and MCP.
 	s.handleIf(tenantOn, "tenant.BarrierInit", permission.IdentityGated, s.handleTenantBarrierInit)
 	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.IdentityGated, s.handleTenantBarrierUnseal)
-	s.handleIf(tenantOn, "tenant.BarrierUnsealShare", permission.IdentityGated, s.handleTenantBarrierUnsealShare)
 	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
 	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.IdentityGated, s.handleTenantBarrierStatus)
 	s.handleIf(tenantOn, "tenant.BarrierOfficerRegister", permission.TenantBarrierOfficerRegister, s.handleTenantBarrierOfficerRegister)
 	s.handleIf(tenantOn, "tenant.BarrierOfficerList", permission.TenantBarrierOfficerList, s.handleTenantBarrierOfficerList)
 	s.handleIf(tenantOn, "tenant.BarrierShareClaimBegin", permission.IdentityGated, s.handleTenantBarrierShareClaimBegin)
 	s.handleIf(tenantOn, "tenant.BarrierShareClaimComplete", permission.IdentityGated, s.handleTenantBarrierShareClaimComplete)
-	s.handleIf(tenantOn, "tenant.BarrierOfficerClaimStatus", permission.TenantBarrierOfficerList, s.handleTenantBarrierOfficerClaimStatus)
-	s.handleIf(tenantOn, "tenant.BarrierShamirSealVote", permission.TenantBarrierSealVote, s.handleTenantBarrierShamirSealVote)
+	s.handleIf(tenantOn, "tenant.BarrierQuorumBegin", permission.IdentityGated, s.handleTenantBarrierQuorumBegin)
+	s.handleIf(tenantOn, "tenant.BarrierQuorumSubmit", permission.IdentityGated, s.handleTenantBarrierQuorumSubmit)
+	s.handleIf(tenantOn, "tenant.BarrierRekeyStart", permission.TenantBarrierRekey, s.handleTenantBarrierRekeyStart)
+	s.handleIf(tenantOn, "tenant.BarrierOfficerRevoke", permission.TenantBarrierOfficerRevoke, s.handleTenantBarrierOfficerRevoke)
 
 	// Backup management
 	backupOn := s.backupSvc != nil

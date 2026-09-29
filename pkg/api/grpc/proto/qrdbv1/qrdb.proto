@@ -786,21 +786,6 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:initialize_shamir";
     }
 
-    // BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
-    rpc BarrierShamirUnsealShare(BarrierShamirUnsealShareRequest) returns (BarrierShamirUnsealShareResponse) {
-        option (qrdb.v1.permission) = "barrier:unseal-share";
-    }
-
-    // BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
-    rpc BarrierShamirUnsealShares(BarrierShamirUnsealSharesRequest) returns (google.protobuf.Empty) {
-        option (qrdb.v1.permission) = "barrier:unseal-share";
-    }
-
-    // BarrierRekey generates new Shamir shares with the specified parameters.
-    rpc BarrierRekey(BarrierRekeyRequest) returns (BarrierShamirOperationResponse) {
-        option (qrdb.v1.permission) = "seal:rekey";
-    }
-
     // BarrierEnableEncryption migrates a previously-unencrypted barrier to a
     // keyed strategy (enable encryption after the fact). The migration runs
     // asynchronously because a system-scope migration recycles the data-plane
@@ -835,16 +820,6 @@ service QRDBService {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
-    // BarrierOfficerClaimStatus returns per-officer claim status (no share data).
-    rpc BarrierOfficerClaimStatus(google.protobuf.Empty) returns (BarrierOfficerClaimStatusResponse) {
-        option (qrdb.v1.permission) = "seal:officer_list";
-    }
-
-    // BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
-    rpc BarrierShamirSealVote(BarrierShamirSealVoteRequest) returns (BarrierShamirSealVoteResponse) {
-        option (qrdb.v1.permission) = "seal:submit_seal_vote";
-    }
-
     // BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
     rpc BarrierRecoveryOfficerRegister(BarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse) {
         option (qrdb.v1.permission) = "seal:officer_register";
@@ -865,11 +840,6 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:generate_recovery";
     }
 
-    // BarrierRecoveryRecover unseals the barrier using recovery keys.
-    rpc BarrierRecoveryRecover(BarrierRecoveryRecoverRequest) returns (google.protobuf.Empty) {
-        option (qrdb.v1.permission) = "seal:recover_with_keys";
-    }
-
     // BarrierRecoveryDelete deletes all stored recovery keys.
     rpc BarrierRecoveryDelete(BarrierRecoveryDeleteRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:generate_recovery";
@@ -880,9 +850,34 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:status";
     }
 
-    // BarrierRootToken generates a new root token using Shamir shares.
-    rpc BarrierRootToken(BarrierRootTokenRequest) returns (BarrierRootTokenResponse) {
-        option (qrdb.v1.permission) = "seal:bootstrap";
+    // -----------------------------------------------------------------------
+    // Share-holder quorums
+    // -----------------------------------------------------------------------
+
+    // BarrierQuorumBegin issues the factor challenge a share holder answers to
+    // submit a share toward a quorum (unseal, seal, root-token, rekey,
+    // recover). Reachable in the sealed window; the holder is authenticated
+    // by the factor proof at submission.
+    rpc BarrierQuorumBegin(BarrierQuorumBeginRequest) returns (BarrierQuorumChallenge) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // BarrierQuorumSubmit submits one authenticated holder's share. The
+    // operation runs when M distinct holders have submitted.
+    rpc BarrierQuorumSubmit(BarrierQuorumSubmitRequest) returns (BarrierQuorumOutcome) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // BarrierRekeyStart opens a rekey round; a quorum of the current holders
+    // then completes it through BarrierQuorumSubmit.
+    rpc BarrierRekeyStart(BarrierRekeyStartRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "seal:rekey";
+    }
+
+    // BarrierOfficerRevoke revokes a share holder by opening a rekey round
+    // that excludes them; the remaining holders complete it.
+    rpc BarrierOfficerRevoke(BarrierOfficerRevokeRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "seal:officer_revoke";
     }
 
     // -----------------------------------------------------------------------
@@ -899,60 +894,9 @@ service QRDBService {
         option (qrdb.v1.permission) = "ceremony:status";
     }
 
-    // CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
-    rpc CeremonyClaimCertBegin(CeremonyClaimCertBeginRequest) returns (CeremonyClaimCertBeginResponse) {
-        option (qrdb.v1.permission) = "ceremony:claim_cert";
-    }
-
-    // CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
-    rpc CeremonyClaimCertComplete(CeremonyClaimCertCompleteRequest) returns (CeremonyClaimCertCompleteResponse) {
-        option (qrdb.v1.permission) = "ceremony:claim_cert";
-    }
-
-    // CeremonyBeginClaimShare starts the Shamir share claim handshake for an
-    // officer. The caller MUST present an mTLS client certificate; the server
-    // matches its thumbprint against the enrolled officer record before
-    // issuing the challenge nonce.
-    rpc CeremonyBeginClaimShare(CeremonyBeginClaimShareRequest) returns (CeremonyBeginClaimShareResponse) {
-        option (qrdb.v1.permission) = "identity:gated";
-    }
-
-    // CeremonyCompleteClaimShare completes the Shamir share claim handshake by
-    // submitting the signed nonce. The caller's mTLS certificate thumbprint is
-    // re-verified before the share is released exactly once.
-    rpc CeremonyCompleteClaimShare(CeremonyCompleteClaimShareRequest) returns (CeremonyCompleteClaimShareResponse) {
-        option (qrdb.v1.permission) = "identity:gated";
-    }
-
     // CeremonySignCSR submits a CSR for signing during the ceremony.
     rpc CeremonySignCSR(CeremonySignCSRRequest) returns (CeremonySignCSRResponse) {
         option (qrdb.v1.permission) = "ceremony:sign_csr";
-    }
-
-    // CeremonyEnrollExternalOfficer enrols an officer whose key material
-    // lives outside go-qrdb. Either CertPEM (validated against the
-    // configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
-    // supplied, but not both.
-    rpc CeremonyEnrollExternalOfficer(CeremonyEnrollExternalOfficerRequest) returns (CeremonyEnrollExternalOfficerResponse) {
-        option (qrdb.v1.permission) = "ceremony:enroll_custodian";
-    }
-
-    // CeremonyClaimShareBegin issues a factor challenge for an enrolled
-    // custodian to claim their Shamir share.
-    rpc CeremonyClaimShareBegin(CeremonyClaimShareBeginRequest) returns (CeremonyClaimShareBeginResponse) {
-        option (qrdb.v1.permission) = "identity:gated";
-    }
-
-    // CeremonyClaimShareComplete verifies the custodian's factor response and
-    // returns the custodian metadata confirming share delivery.
-    rpc CeremonyClaimShareComplete(CeremonyClaimShareCompleteRequest) returns (CeremonyCustodianResponse) {
-        option (qrdb.v1.permission) = "identity:gated";
-    }
-
-    // CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
-    // (with factor proof) toward the unseal quorum.
-    rpc CeremonySubmitUnsealShare(CeremonySubmitUnsealShareRequest) returns (CeremonySubmitUnsealShareResponse) {
-        option (qrdb.v1.permission) = "barrier:unseal-share";
     }
 
     // -----------------------------------------------------------------------
@@ -3387,17 +3331,20 @@ message BarrierEnableEncryptionResponse {
     string scope = 2;  // "system" or "tenant"
 }
 
-// BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
-//
-// secret is the strategy wrapping passphrase and is `bytes` so callers can
-// zeroize it. so_pin and user_pin, when supplied, are routed to the canonical
-// pin.PINBackend on the server.
+// BarrierShamirInitializeRequest initializes the barrier under Shamir custody:
+// the unseal key is split threshold-of-total_shares to the enrolled share
+// holders. so_pin and user_pin, when supplied, are provisioned (or verified)
+// through the server's pin.PINBackend.
 message BarrierShamirInitializeRequest {
-    bytes secret = 1;
+    reserved 1;
+    reserved "secret";
     int32 threshold = 2;
     int32 total_shares = 3;
     string so_pin = 4;
     string user_pin = 5;
+    // policy is the factor policy of the share set: "designated" (default)
+    // or "any-enrolled".
+    string policy = 6;
 }
 
 // BarrierShamirOperationResponse is the share-free result of a Shamir
@@ -3411,49 +3358,18 @@ message BarrierShamirOperationResponse {
     int32 share_count  = 4;
 }
 
-// BarrierShamirUnsealShareRequest submits a single Shamir share.
-message BarrierShamirUnsealShareRequest {
-    string share = 1;
-}
-
-// BarrierShamirUnsealShareResponse reports unseal progress.
-message BarrierShamirUnsealShareResponse {
-    int32 required = 1;
-    int32 submitted = 2;
-    bool complete = 3;
-}
-
-// BarrierShamirUnsealSharesRequest submits multiple Shamir shares.
-message BarrierShamirUnsealSharesRequest {
-    repeated string shares = 1;
-}
-
-// BarrierRekeyRequest generates new Shamir shares.
-//
-// so_pin is the optional Security Officer PIN required for the rekey
-// administrative operation when the server has a pin.PINBackend
-// configured with a SO PIN set. When the backend is unconfigured or no
-// SO PIN has been set, this field is ignored (preserves dev-mode flows).
-//
-// Field 4 (new_secret) was a dead passphrase-rotation field the server
-// never read; rekey is Shamir-only and derives everything server-side.
-message BarrierRekeyRequest {
-    reserved 4;
-    reserved "new_secret";
-    int32 threshold = 1;
-    int32 total = 2;
-    string so_pin = 3;
-}
-
 // BarrierRecoveryGenerateRequest generates recovery keys.
 //
 // so_pin is the optional Security Officer PIN required for the recovery
 // key generation administrative operation when the server has a
 // pin.PINBackend configured with a SO PIN set.
 message BarrierRecoveryGenerateRequest {
+    reserved 2;
+    reserved "total";
     int32 threshold = 1;
-    int32 total = 2;
     string so_pin = 3;
+    // policy is the factor policy of the recovery share set.
+    string policy = 4;
 }
 
 // BarrierSealRequest seals the node barrier. It replaced google.protobuf.Empty
@@ -3489,17 +3405,39 @@ message BarrierRecoveryKeysResponse {
 // BarrierOfficerRegisterRequest carries the parameters for registering a new
 // Security Officer against the system barrier.
 message BarrierOfficerRegisterRequest {
-    string username           = 1;
-    bytes  csr_pem            = 2;
-    string authenticator_type = 3;
-    string authenticator_ref  = 4;
+    reserved 3, 4;
+    reserved "authenticator_type", "authenticator_ref";
+    string username = 1;
+    bytes  csr_pem  = 2;
+    // role is "so" or "custodian"; empty means "so".
+    string role = 5;
+    // encryption_kem and encryption_key name an optional separate
+    // share-envelope recipient key (HPKE suite name and key encoding).
+    string encryption_kem = 6;
+    bytes  encryption_key = 7;
+    // factors are additional authentication factors to enrol.
+    repeated HolderFactorEnrolment factors = 8;
+    // designated names the designated factor; empty means "mtls".
+    string designated = 9;
+}
+
+// HolderFactorEnrolment asks for one additional factor. params_json is the
+// factor's enrolment input as a JSON object.
+message HolderFactorEnrolment {
+    string name        = 1;
+    bytes  params_json = 2;
 }
 
 // BarrierOfficerRegisterResponse carries the signed certificate for the newly
 // registered Security Officer.
 message BarrierOfficerRegisterResponse {
-    bytes cert_pem   = 1;
-    int32 share_index = 2;
+    reserved 2;
+    reserved "share_index";
+    bytes  cert_pem       = 1;
+    string role           = 3;
+    string designated     = 4;
+    string encryption_kem = 5;
+    repeated string factors = 6;
 }
 
 // BarrierOfficerListResponse carries the list of registered Security Officers
@@ -3511,13 +3449,18 @@ message BarrierOfficerListResponse {
 // OfficerStatus is a non-secret view of an enrolled Security Officer. No share
 // material is present.
 message OfficerStatus {
+    reserved 4;
+    reserved "auth_factor";
     string username        = 1;
     string cert_thumbprint = 2;
     int32  share_index     = 3;
-    string auth_factor     = 4;
     string enrolled_at     = 5;  // RFC3339
     string claimed_at      = 6;  // RFC3339; empty = unclaimed
     bool   share_pending   = 7;
+    string role            = 8;
+    string designated      = 9;
+    repeated string factors = 10;
+    string encryption_kem  = 11;
 }
 
 // BarrierShareClaimBeginRequest starts the share claim handshake for the
@@ -3540,50 +3483,99 @@ message BarrierShareClaimCompleteRequest {
     bytes  signature = 3;
 }
 
-// BarrierShareClaimCompleteResponse carries the SO's share bytes. This is the
-// ONLY proto message that contains share_bytes on the wire.
+// BarrierShareClaimCompleteResponse carries the holder's share envelope,
+// HPKE-sealed to the holder's enrolled key. It is the only message that
+// carries share material on the wire, and never in plaintext.
 message BarrierShareClaimCompleteResponse {
+    reserved 2;
+    reserved "share_bytes";
     int32 share_index = 1;
-    bytes share_bytes = 2;
+    bytes envelope    = 3;
 }
 
-// BarrierShamirSealVoteRequest carries a Shamir share submitted as a seal vote.
-message BarrierShamirSealVoteRequest {
-    string share = 1;
+// BarrierQuorumBeginRequest asks for a quorum challenge. domain is "unseal"
+// or "recovery"; op is "unseal", "seal", "root-token", "rekey" or
+// "recover"; factor is empty for the holder's designated factor.
+message BarrierQuorumBeginRequest {
+    string domain   = 1;
+    string op       = 2;
+    string username = 3;
+    string factor   = 4;
 }
 
-// BarrierShamirSealVoteResponse reports the quorum progress of a seal vote.
-message BarrierShamirSealVoteResponse {
-    int32 required  = 1;
-    int32 submitted = 2;
-    bool  complete  = 3;
+// BarrierQuorumChallenge is the challenge a holder answers.
+message BarrierQuorumChallenge {
+    string challenge_id = 1;
+    string domain       = 2;
+    string op           = 3;
+    string username     = 4;
+    string factor       = 5;
+    bytes  nonce        = 6;
+    map<string, string> method_data = 7;
+    string expires_at   = 8;  // RFC3339
 }
 
-// BarrierOfficerClaimStatusResponse carries per-officer claim status for the
-// system barrier. Never includes share bytes.
-message BarrierOfficerClaimStatusResponse {
-    repeated OfficerStatus officers = 1;
+// BarrierQuorumSubmitRequest is one holder's share with its factor response.
+// share is the base64 share value from the holder's opened envelope.
+message BarrierQuorumSubmitRequest {
+    string domain       = 1;
+    string op           = 2;
+    string username     = 3;
+    string challenge_id = 4;
+    string factor       = 5;
+    bytes  response     = 6;
+    map<string, string> response_metadata = 7;
+    bytes  share        = 8;
 }
 
-// BarrierRecoveryRecoverRequest unseals the barrier using recovery keys.
-message BarrierRecoveryRecoverRequest {
-    repeated string keys = 1;
+// BarrierQuorumOutcome reports a submission's effect.
+message BarrierQuorumOutcome {
+    string domain     = 1;
+    string op         = 2;
+    int32  required   = 3;
+    int32  submitted  = 4;
+    bool   complete   = 5;
+    // root_token is set when a root-token round completed.
+    string root_token = 6;
+    string root_token_created_at = 7;
+    // threshold/total_shares/share_count are set when a rekey completed.
+    int32  threshold    = 8;
+    int32  total_shares = 9;
+    int32  share_count  = 10;
+}
+
+// BarrierRekeyStartRequest opens a rekey round. threshold 0 keeps the current
+// threshold; policy empty keeps the current policy.
+message BarrierRekeyStartRequest {
+    string domain    = 1;
+    int32  threshold = 2;
+    string policy    = 3;
+    string so_pin    = 4;
+}
+
+// BarrierOfficerRevokeRequest revokes a holder of domain.
+message BarrierOfficerRevokeRequest {
+    string domain    = 1;
+    string username  = 2;
+    int32  threshold = 3;
+    string so_pin    = 4;
+}
+
+// BarrierQuorumRound is the public state of an open round.
+message BarrierQuorumRound {
+    string domain        = 1;
+    string op            = 2;
+    int32  required      = 3;
+    int32  submitted     = 4;
+    string expires_at    = 5;  // RFC3339
+    int32  new_threshold = 6;
+    string policy        = 7;
+    repeated string remove = 8;
 }
 
 // BarrierRecoveryStatusResponse indicates whether recovery keys exist.
 message BarrierRecoveryStatusResponse {
     bool has_recovery_keys = 1;
-}
-
-// BarrierRootTokenRequest generates a root token using Shamir shares.
-message BarrierRootTokenRequest {
-    repeated string shares = 1;
-}
-
-// BarrierRootTokenResponse returns a newly generated root token.
-message BarrierRootTokenResponse {
-    string token = 1;
-    string created_at = 2;
 }
 
 // ===========================================================================
@@ -3594,6 +3586,15 @@ message BarrierRootTokenResponse {
 message CeremonyOfficer {
     string username = 1;
     string csr_pem = 2;
+    // role is "so" or "custodian"; empty means "so".
+    string role = 3;
+}
+
+// CeremonyHolderCert is one enrolled holder's issued certificate.
+message CeremonyHolderCert {
+    string username = 1;
+    string role     = 2;
+    bytes  cert_pem = 3;
 }
 
 // CeremonyInitializeRequest starts the initialization ceremony.
@@ -3605,6 +3606,8 @@ message CeremonyInitializeRequest {
     repeated CeremonyOfficer officers = 5;
     string hostname = 6;
     repeated string sans = 7;
+    // policy is the factor policy of the initial share set.
+    string policy = 8;
 }
 
 // CeremonyInitializeResponse returns the result of ceremony initialization.
@@ -3616,65 +3619,13 @@ message CeremonyInitializeResponse {
     reserved "so_cert_pem", "so_key_pem";
     string state = 6;
     int32 share_count = 7;
+    repeated CeremonyHolderCert holders = 8;
 }
 
 // CeremonyStatusResponse describes the current ceremony state.
 message CeremonyStatusResponse {
     string state = 1;
     string spki_pin = 2;
-}
-
-// CeremonyClaimCertBeginRequest starts a certificate claim challenge.
-message CeremonyClaimCertBeginRequest {
-    string username = 1;
-}
-
-// CeremonyClaimCertBeginResponse returns the challenge nonce.
-message CeremonyClaimCertBeginResponse {
-    string nonce_hex = 1;
-    string expires_at = 2;
-}
-
-// CeremonyClaimCertCompleteRequest completes a certificate claim.
-message CeremonyClaimCertCompleteRequest {
-    string username = 1;
-    string nonce_hex = 2;
-    string signature = 3;
-}
-
-// CeremonyClaimCertCompleteResponse returns the issued certificate.
-message CeremonyClaimCertCompleteResponse {
-    string cert_pem = 1;
-    string ca_cert_pem = 2;
-}
-
-// CeremonyBeginClaimShareRequest starts the Shamir share claim handshake for
-// the named officer. No thumbprint travels on the wire: the server derives it
-// from the caller's mTLS peer certificate so a client cannot assert one.
-message CeremonyBeginClaimShareRequest {
-    string username = 1;
-}
-
-// CeremonyBeginClaimShareResponse carries the challenge nonce the officer
-// must sign with the private key matching their enrolled certificate.
-message CeremonyBeginClaimShareResponse {
-    string nonce_hex  = 1;
-    string expires_at = 2;  // RFC3339
-}
-
-// CeremonyCompleteClaimShareRequest carries the signed nonce completing the
-// Shamir share claim handshake.
-message CeremonyCompleteClaimShareRequest {
-    string username  = 1;
-    string nonce_hex = 2;
-    bytes  signature = 3;
-}
-
-// CeremonyCompleteClaimShareResponse returns the officer's Shamir share. The
-// share is released exactly once and only over the officer's own mTLS session.
-message CeremonyCompleteClaimShareResponse {
-    int32  share_index = 1;
-    string share       = 2;
 }
 
 // CeremonySignCSRRequest submits a CSR for signing during the ceremony.
@@ -3688,22 +3639,6 @@ message CeremonySignCSRRequest {
 // CeremonySignCSRResponse returns the signed certificate.
 message CeremonySignCSRResponse {
     string cert_pem = 1;
-}
-
-// CeremonyEnrollExternalOfficerRequest requests enrolment of an external
-// officer whose key material lives outside go-qrdb.
-message CeremonyEnrollExternalOfficerRequest {
-    string username    = 1;
-    string cert_pem    = 2;
-    string pubkey_pem  = 3;
-    int32  share_index = 4;
-    string auth_factor = 5;
-    bytes  share_bytes = 6;
-}
-
-// CeremonyEnrollExternalOfficerResponse returns the sealed share envelope.
-message CeremonyEnrollExternalOfficerResponse {
-    string sealed_share = 1;
 }
 
 // ===========================================================================
@@ -4433,62 +4368,6 @@ message SQLQueryResponse {
 }
 
 // ===========================================================================
-// Ceremony custodian claim-share / unseal-share messages
-// ===========================================================================
-
-// CeremonyClaimShareBeginRequest names the enrolled custodian beginning a claim.
-message CeremonyClaimShareBeginRequest {
-    string custodian_id = 1;
-}
-
-// CeremonyClaimShareBeginResponse carries the factor challenge the custodian
-// must answer.
-message CeremonyClaimShareBeginResponse {
-    string custodian_id    = 1;
-    bytes  nonce           = 2;
-    int64  expires_at_unix = 3;
-}
-
-// CeremonyClaimShareCompleteRequest carries the custodian's factor response.
-message CeremonyClaimShareCompleteRequest {
-    string custodian_id    = 1;
-    string challenge_id    = 2;
-    bytes  factor_response = 3;
-}
-
-// CeremonyCustodianResponse is the custodian metadata returned after a
-// successful claim-complete.
-message CeremonyCustodianResponse {
-    string id                   = 1;
-    string username             = 2;
-    string tenant_id            = 3;
-    string method               = 4;
-    string enrollment_id        = 5;
-    string public_key_pem       = 6;
-    int32  share_index          = 7;
-    int64  enrolled_at_unix     = 8;
-    int64  revoked_at_unix      = 9;
-    bool   share_claimed        = 10;
-    int64  share_claimed_at_unix = 11;
-}
-
-// CeremonySubmitUnsealShareRequest carries a custodian's plaintext share plus
-// factor proof.
-message CeremonySubmitUnsealShareRequest {
-    string custodian_id    = 1;
-    string challenge_id    = 2;
-    bytes  factor_response = 3;
-    bytes  share_bytes     = 4;
-}
-
-// CeremonySubmitUnsealShareResponse reports quorum progress after submission.
-message CeremonySubmitUnsealShareResponse {
-    int32 submitted = 1;
-    int32 required  = 2;
-    bool  unsealed  = 3;
-}
-
-// ===========================================================================
 // TenantBarrierService — per-tenant barrier lifecycle (none/passphrase/shamir)
 //
 // Each tenant barrier is independent of the system barrier and may use a
@@ -4521,13 +4400,6 @@ service TenantBarrierService {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
-    // UnsealShare submits one Shamir share toward the tenant quorum threshold,
-    // auto-unsealing once enough distinct shares have been submitted.
-    // identity:gated for the same sealed-window reason as Unseal.
-    rpc UnsealShare(TenantBarrierUnsealShareRequest) returns (TenantBarrierUnsealProgress) {
-        option (qrdb.v1.permission) = "identity:gated";
-    }
-
     // Seal seals a tenant barrier.
     rpc Seal(TenantBarrierSealRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "tenant_barrier:seal";
@@ -4551,6 +4423,29 @@ service TenantBarrierService {
         option (qrdb.v1.permission) = "tenant_barrier:officer_list";
     }
 
+    // QuorumBegin issues the factor challenge a tenant share holder answers
+    // to submit a share (unseal, seal or rekey). identity:gated for the
+    // sealed-window reason Unseal is; the handler authorizes.
+    rpc QuorumBegin(TenantBarrierQuorumBeginRequest) returns (BarrierQuorumChallenge) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // QuorumSubmit submits one authenticated tenant holder's share.
+    rpc QuorumSubmit(TenantBarrierQuorumSubmitRequest) returns (BarrierQuorumOutcome) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // RekeyStart opens a rekey round on the tenant barrier.
+    rpc RekeyStart(TenantBarrierRekeyStartRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "tenant_barrier:rekey";
+    }
+
+    // OfficerRevoke revokes a tenant share holder through a quorum-gated
+    // rekey that excludes them.
+    rpc OfficerRevoke(TenantBarrierOfficerRevokeRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "tenant_barrier:officer_revoke";
+    }
+
     // ShareClaimBegin issues a challenge nonce to the named officer as the
     // first step of the two-phase share claim flow.
     rpc ShareClaimBegin(TenantBarrierShareClaimBeginRequest) returns (TenantBarrierShareClaimBeginResponse) {
@@ -4563,15 +4458,6 @@ service TenantBarrierService {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
-    // OfficerClaimStatus returns per-officer claim status for admin visibility.
-    rpc OfficerClaimStatus(TenantBarrierOfficerClaimStatusRequest) returns (TenantBarrierOfficerClaimStatusResponse) {
-        option (qrdb.v1.permission) = "tenant_barrier:officer_list";
-    }
-
-    // ShamirSealVote submits one share toward the quorum-gated seal threshold.
-    rpc ShamirSealVote(TenantBarrierShamirSealVoteRequest) returns (TenantBarrierShamirSealVoteResponse) {
-        option (qrdb.v1.permission) = "tenant_barrier:seal_vote";
-    }
 }
 
 // TenantBarrierInitRequest initializes the barrier for tenant_id.
@@ -4603,21 +4489,6 @@ message TenantBarrierUnsealRequest {
     bytes  key       = 2;
 }
 
-// TenantBarrierUnsealShareRequest carries one Shamir share.
-message TenantBarrierUnsealShareRequest {
-    string tenant_id = 1;
-    string share     = 2;
-}
-
-// TenantBarrierUnsealProgress reports quorum progress for a Shamir unseal.
-message TenantBarrierUnsealProgress {
-    string tenant_id = 1;
-    int32  required  = 2;
-    int32  submitted = 3;
-    bool   complete  = 4;
-    bool   sealed    = 5;
-}
-
 // TenantBarrierSealRequest seals the barrier for tenant_id.
 message TenantBarrierSealRequest {
     string tenant_id = 1;
@@ -4642,17 +4513,28 @@ message TenantBarrierStatusResponse {
 // TenantBarrierOfficerRegisterRequest enrolls a Security Officer for a
 // Shamir-strategy tenant barrier.
 message TenantBarrierOfficerRegisterRequest {
-    string tenant_id          = 1;
-    string username           = 2;
-    bytes  csr_pem            = 3;
-    string authenticator_type = 4;
+    reserved 4;
+    reserved "authenticator_type";
+    string tenant_id = 1;
+    string username  = 2;
+    bytes  csr_pem   = 3;
+    string role           = 5;
+    string encryption_kem = 6;
+    bytes  encryption_key = 7;
+    repeated HolderFactorEnrolment factors = 8;
+    string designated     = 9;
 }
 
 // TenantBarrierOfficerRegisterResponse carries the signed officer certificate
 // and the share index assigned to the new officer.
 message TenantBarrierOfficerRegisterResponse {
-    bytes cert_pem    = 1;
-    int32 share_index = 2;
+    reserved 2;
+    reserved "share_index";
+    bytes  cert_pem       = 1;
+    string role           = 3;
+    string designated     = 4;
+    string encryption_kem = 5;
+    repeated string factors = 6;
 }
 
 // TenantBarrierOfficerListRequest selects the tenant whose officers to list.
@@ -4692,33 +4574,45 @@ message TenantBarrierShareClaimCompleteRequest {
 // TenantBarrierShareClaimCompleteResponse carries the share bytes for the
 // claiming officer. The enclave is destroyed after this response is sent.
 message TenantBarrierShareClaimCompleteResponse {
-    bytes share_bytes = 1;
+    reserved 1;
+    reserved "share_bytes";
+    int32 share_index = 2;
+    bytes envelope    = 3;
 }
 
-// TenantBarrierOfficerClaimStatusRequest selects the tenant whose claim
-// status to query.
-message TenantBarrierOfficerClaimStatusRequest {
+// TenantBarrierQuorumBeginRequest asks for a quorum challenge on a tenant
+// barrier; op is "unseal", "seal" or "rekey".
+message TenantBarrierQuorumBeginRequest {
     string tenant_id = 1;
+    string op        = 2;
+    string username  = 3;
+    string factor    = 4;
 }
 
-// TenantBarrierOfficerClaimStatusResponse carries per-officer claim status
-// snapshots for admin visibility.
-message TenantBarrierOfficerClaimStatusResponse {
-    repeated OfficerStatus officers = 1;
+// TenantBarrierQuorumSubmitRequest is one tenant holder's share.
+message TenantBarrierQuorumSubmitRequest {
+    string tenant_id    = 1;
+    string op           = 2;
+    string username     = 3;
+    string challenge_id = 4;
+    string factor       = 5;
+    bytes  response     = 6;
+    map<string, string> response_metadata = 7;
+    bytes  share        = 8;
 }
 
-// TenantBarrierShamirSealVoteRequest submits one Shamir share toward the
-// quorum-gated seal threshold for a tenant barrier.
-message TenantBarrierShamirSealVoteRequest {
-    string tenant_id   = 1;
-    string share_value = 2;
+// TenantBarrierRekeyStartRequest opens a rekey round on a tenant barrier.
+message TenantBarrierRekeyStartRequest {
+    string tenant_id = 1;
+    int32  threshold = 2;
+    string policy    = 3;
 }
 
-// TenantBarrierShamirSealVoteResponse reports quorum progress toward a seal.
-message TenantBarrierShamirSealVoteResponse {
-    int32 required  = 1;
-    int32 submitted = 2;
-    bool  complete  = 3;
+// TenantBarrierOfficerRevokeRequest revokes a tenant holder.
+message TenantBarrierOfficerRevokeRequest {
+    string tenant_id = 1;
+    string username  = 2;
+    int32  threshold = 3;
 }
 
 // ===========================================================================

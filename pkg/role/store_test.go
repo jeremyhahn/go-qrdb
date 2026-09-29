@@ -1646,30 +1646,18 @@ func TestBuiltInRoles_SOHasNoCryptoPerms(t *testing.T) {
 	}
 }
 
-// TestBuiltInRoles_CustodianOnlyHasShareOps verifies that the Custodian
-// role's permission list is the exact closed set of share-submission
-// operations: barrier:unseal-share plus the tenant-scoped claim-share and
-// seal-vote permissions. Any other permission on the Custodian role is a
-// FIPS 140-3 AS10.06 violation.
-func TestBuiltInRoles_CustodianOnlyHasShareOps(t *testing.T) {
+// TestBuiltInRoles_CustodianGrantsNothing verifies that the Custodian role
+// carries no permission at all. A key custodian is a share holder, and a
+// share holder is not an RBAC principal: its operations are identity-gated
+// and RBAC refuses a holder identity everything (FIPS 140-3 AS10.06).
+func TestBuiltInRoles_CustodianGrantsNothing(t *testing.T) {
 	roles := BuiltInRoles("acme")
 	custodian := roleByName(roles, RoleNameCustodian)
 	if custodian == nil {
 		t.Fatal("custodian role not found")
 	}
-	want := map[permission.Permission]struct{}{
-		permission.BarrierUnsealShare:      {},
-		permission.TenantBarrierClaimShare: {},
-		permission.TenantBarrierSealVote:   {},
-	}
-	if len(custodian.Permissions) != len(want) {
-		t.Fatalf("custodian: expected exactly %d permissions, got %d: %v",
-			len(want), len(custodian.Permissions), custodian.Permissions)
-	}
-	for _, p := range custodian.Permissions {
-		if _, ok := want[p]; !ok {
-			t.Errorf("custodian: unexpected permission %q", p)
-		}
+	if len(custodian.Permissions) != 0 {
+		t.Fatalf("custodian: expected no permissions, got %v", custodian.Permissions)
 	}
 }
 
@@ -1694,8 +1682,8 @@ func TestBuiltInRoles_AuditorReadOnly(t *testing.T) {
 		permission.KeysCreate: {}, permission.KeysDelete: {}, permission.KeysRotate: {},
 		permission.KeysSign: {}, permission.KeysEncrypt: {}, permission.KeysDecrypt: {},
 		permission.SealBootstrap: {}, permission.SealSeal: {}, permission.SealUnseal: {},
-		permission.CeremonyInitialize: {}, permission.CeremonyEnrollCustodian: {},
-		permission.CeremonySignCSR: {}, permission.BarrierUnsealShare: {},
+		permission.CeremonyInitialize: {}, permission.CeremonySignCSR: {},
+		permission.SealOfficerRegister: {}, permission.SealOfficerRevoke: {},
 	}
 	for _, p := range auditor.Permissions {
 		if _, found := writePerms[p]; found {

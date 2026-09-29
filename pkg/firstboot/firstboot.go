@@ -204,8 +204,6 @@ type Dependencies struct {
 	// only its SPKI thumbprint is bound, which is the same identifier every
 	// other path binds. Mutually exclusive with AdminCSRPEM.
 	//
-	// This mirrors what the ceremony already offers a security officer through
-	// EnrollExternalOfficer: the admin and the SO enrol the same way.
 	AdminCertPEM []byte
 	// AdminCertPool holds the trust anchors a presented AdminCertPEM must chain
 	// to. Required whenever AdminCertPEM is set, and unused otherwise.

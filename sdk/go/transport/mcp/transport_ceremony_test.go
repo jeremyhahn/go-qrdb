@@ -20,11 +20,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -63,52 +61,6 @@ func (m *mockCeremonySvc) CeremonyInitialize(_ context.Context, _ ceremony.Cerem
 	return &service.CeremonyInitResult{SPKIPin: "pin123", State: "initialized", ShareCount: 3}, nil
 }
 
-func (m *mockCeremonySvc) CeremonyBeginClaimCert(_ context.Context, username string) (*service.CeremonyChallenge, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUsername = username
-	if m.beginCertErr != nil {
-		return nil, m.beginCertErr
-	}
-	return &service.CeremonyChallenge{
-		NonceHex:  "deadbeef",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, username, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUsername = username
-	if m.completeCertErr != nil {
-		return nil, m.completeCertErr
-	}
-	return &service.CeremonyClaimCertResult{
-		CertPEM:   []byte("cert"),
-		CACertPEM: []byte("ca"),
-	}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyBeginClaimShare(_ context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUsername = username
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyCompleteClaimShare(_ context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastUsername = username
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("share-data")}, nil
-}
-
 func (m *mockCeremonySvc) CeremonySignCSR(_ context.Context, username, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -124,34 +76,6 @@ func (m *mockCeremonySvc) CeremonyStatus(_ context.Context) (*service.CeremonySt
 		return nil, m.statusErr
 	}
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	if m.claimShareBegErr != nil {
-		return nil, m.claimShareBegErr
-	}
-	return &service.CeremonyCustodianChallenge{Nonce: []byte("nonce")}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	if m.claimShareComErr != nil {
-		return nil, m.claimShareComErr
-	}
-	return &custodian.Custodian{}, nil
-}
-
-func (m *mockCeremonySvc) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	if m.submitUnsealErr != nil {
-		return nil, m.submitUnsealErr
-	}
-	return &service.CeremonyUnsealShareResult{Submitted: 1, Required: 3}, nil
-}
-
-func (m *mockCeremonySvc) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	if m.enrollExternalErr != nil {
-		return nil, m.enrollExternalErr
-	}
-	return &service.CeremonyEnrollExternalOfficerResponse{SealedShare: "sealed-share"}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -214,112 +138,6 @@ func TestCeremonyStatus_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	if _, err := tr.CeremonyStatus(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CeremonyClaimCertBegin
-// ---------------------------------------------------------------------------
-
-func TestCeremonyClaimCertBegin_Success(t *testing.T) {
-	svc := newMockCeremonySvc()
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{
-		Username: "officer1",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertBegin: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-}
-
-func TestCeremonyClaimCertBegin_ServiceError(t *testing.T) {
-	svc := newMockCeremonySvc()
-	svc.beginCertErr = errors.New("not found")
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	if _, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{Username: "x"}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CeremonyClaimCertComplete
-// ---------------------------------------------------------------------------
-
-func TestCeremonyClaimCertComplete_Success(t *testing.T) {
-	svc := newMockCeremonySvc()
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Username:  "officer1",
-		NonceHex:  "deadbeef",
-		Signature: "c2ln",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertComplete: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-}
-
-func TestCeremonyClaimCertComplete_ServiceError(t *testing.T) {
-	svc := newMockCeremonySvc()
-	svc.completeCertErr = errors.New("invalid signature")
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	if _, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Username: "x", NonceHex: "dead", Signature: "eA==",
-	}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CeremonyBeginClaimShare / CeremonyCompleteClaimShare
-// ---------------------------------------------------------------------------
-
-// TestCeremonyClaimShare_RequiresClientCert proves the in-process MCP session
-// carries no mTLS peer certificate, so the server-side tool refuses the claim
-// and no share material comes back.
-func TestCeremonyClaimShare_RequiresClientCert(t *testing.T) {
-	svc := newMockCeremonySvc()
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{
-		Username: "officer1",
-	}); err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-
-	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{
-		Username: "officer1", NonceHex: "abcd", Signature: []byte("sig"),
-	})
-	if err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-	if resp != nil {
-		t.Fatalf("share material leaked on refusal: %#v", resp)
-	}
-}
-
-func TestCeremonyClaimShare_ServiceError(t *testing.T) {
-	svc := newMockCeremonySvc()
-	svc.claimShareErr = errors.New("not enrolled")
-	tr, cleanup := connectCeremonyInProcess(t, svc)
-	defer cleanup()
-
-	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "x"}); err == nil {
 		t.Fatal("expected error")
 	}
 }

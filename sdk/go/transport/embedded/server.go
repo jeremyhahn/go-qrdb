@@ -286,9 +286,9 @@ type BarrierConfig struct {
 	// opened. The memory backend ignores this field.
 	//
 	// For StrategyPassphrase the credential is the passphrase below.
-	// For StrategyShamir the credential is the M-of-N share set in
-	// ShamirShares; the embedded server reconstructs the secret and
-	// unseals via the Shamir strategy.
+	// StrategyShamir cannot auto-unseal: a Shamir barrier opens only when
+	// an authenticated quorum of its enrolled share holders submits, and
+	// no configuration may carry their shares.
 	AutoUnseal bool
 
 	// Passphrase is the secret used by software / passphrase-style
@@ -331,10 +331,6 @@ type BarrierConfig struct {
 	// obvious consequence of that ownership rule, and it is exactly the
 	// case that must fail loudly rather than quietly drop the barrier.
 	Passphrase *secure.Buffer
-
-	// ShamirShares supplies the unseal shares when AutoUnseal is true
-	// and Strategy is StrategyShamir.
-	ShamirShares []string
 }
 
 // ShamirConfig controls M-of-N secret sharing.
@@ -604,8 +600,8 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 			if config.Barrier.Shamir.Total < config.Barrier.Shamir.Threshold {
 				return &ServerConfigError{Field: "Barrier.Shamir.Total", Message: "must be >= threshold"}
 			}
-			if config.Barrier.AutoUnseal && len(config.Barrier.ShamirShares) < config.Barrier.Shamir.Threshold {
-				return &ServerConfigError{Field: "Barrier.ShamirShares", Message: "auto-unseal needs at least Threshold shares"}
+			if config.Barrier.AutoUnseal {
+				return &ServerConfigError{Field: "Barrier.AutoUnseal", Message: "a shamir barrier is unsealed only by an authenticated share-holder quorum"}
 			}
 		}
 
@@ -908,8 +904,8 @@ func (s *Server) setupBarrier(
 
 // runAutoUnseal initializes (on a fresh seal sub-store) or unseals (on
 // an existing one) the barrier using the configured credentials. The
-// software strategy uses softwareCreds, which the caller owns and destroys;
-// the Shamir strategy reconstructs from the configured share set.
+// software strategy uses softwareCreds, which the caller owns and destroys.
+// A Shamir barrier is never auto-unsealed.
 func (s *Server) runAutoUnseal(
 	ctx context.Context,
 	barrier *seal.StorageBarrier,
@@ -919,35 +915,9 @@ func (s *Server) runAutoUnseal(
 ) error {
 	switch strategy {
 	case seal.StrategyShamir:
-		if len(cfg.ShamirShares) == 0 {
-			return &BarrierUnsealError{Err: errors.New("auto-unseal requires Barrier.ShamirShares for shamir strategy")}
-		}
-		// Shamir initialization requires a seed secret on a fresh
-		// barrier. Try Unseal first; on ErrNotInitialized fall back
-		// to InitializeShamir + UnsealWithShares.
-		err := barrier.Unseal(ctx, seal.Credentials{})
-		if err == nil {
-			// The barrier was already unsealed; nothing more to do.
-			return nil
-		}
-		if errors.Is(err, seal.ErrAlreadyUnsealed) {
-			return nil
-		}
-		if !errors.Is(err, seal.ErrNotInitialized) {
-			// Either ErrInvalidCredentials, missing strategy, or a
-			// real error — let it bubble up.
-			return &BarrierUnsealError{Err: err}
-		}
-		// Fresh barrier: initialize Shamir, then unseal with the
-		// supplied shares. The seed credential is the bootstrap
-		// passphrase to keep parity with the embedded software path.
-		if _, initErr := barrier.InitializeShamir(ctx, softwareCreds); initErr != nil {
-			return &BarrierUnsealError{Err: initErr}
-		}
-		if unsealErr := barrier.UnsealWithShares(ctx, cfg.ShamirShares); unsealErr != nil {
-			return &BarrierUnsealError{Err: unsealErr}
-		}
-		return nil
+		// Unreachable through NewServer, whose validation refuses it; a
+		// Shamir barrier opens only through an authenticated holder quorum.
+		return &BarrierUnsealError{Err: ErrShamirAutoUnseal}
 
 	default:
 		// StrategyPassphrase (or zero value).

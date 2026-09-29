@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -36,6 +37,7 @@ import (
 // assert on per-tenant barrier RPC invocations and inject errors. It is
 // the SDK-side equivalent of the Unix server-side stub.
 type mockTenantBarrierSvc struct {
+	tenant.TenantServicer
 	initFn   func(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
 	unsealFn func(ctx context.Context, tenantID string, key []byte) error
 	sealFn   func(ctx context.Context, tenantID string) error
@@ -87,11 +89,6 @@ func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
-// TenantBarrierUnsealShare returns a zero progress for the given tenant.
-func (m *mockTenantBarrierSvc) TenantBarrierUnsealShare(_ context.Context, tenantID, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{TenantID: tenantID}, nil
-}
-
 // TenantBarrierUnseal dispatches to unsealFn or returns nil.
 func (m *mockTenantBarrierSvc) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
 	if m.unsealFn != nil {
@@ -136,17 +133,11 @@ func (m *mockTenantBarrierSvc) TenantBarrierOfficerRegister(_ context.Context, _
 func (m *mockTenantBarrierSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
 	return nil, nil
 }
-func (m *mockTenantBarrierSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
 func (m *mockTenantBarrierSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
 	return &ceremony.ChallengeResponse{}, nil
 }
 func (m *mockTenantBarrierSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantBarrierSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 // Compile-time interface assertion.
@@ -240,7 +231,6 @@ func TestTransport_TenantBarrierUnseal_RoundTrip_KeyTakesPrecedence(t *testing.T
 	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
 		TenantID: "bob",
 		Key:      []byte("kkkk"),
-		Share:    []byte("ssss"),
 	})
 	if err != nil {
 		t.Fatalf("TenantBarrierUnseal: %v", err)
@@ -249,29 +239,7 @@ func TestTransport_TenantBarrierUnseal_RoundTrip_KeyTakesPrecedence(t *testing.T
 		t.Fatalf("got tenant %q, want bob", gotID)
 	}
 	if !bytes.Equal(gotKey, []byte("kkkk")) {
-		t.Fatalf("got key %q, want kkkk (Key must win over Share)", gotKey)
-	}
-}
-
-func TestTransport_TenantBarrierUnseal_RoundTrip_ShareFallback(t *testing.T) {
-	var gotKey []byte
-	mock := &mockTenantBarrierSvc{
-		unsealFn: func(_ context.Context, _ string, key []byte) error {
-			gotKey = key
-			return nil
-		},
-	}
-	tr, cleanup := connectTransportWithBarrier(t, mock)
-	defer cleanup()
-
-	if err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "carol",
-		Share:    []byte("share-only"),
-	}); err != nil {
-		t.Fatalf("TenantBarrierUnseal: %v", err)
-	}
-	if !bytes.Equal(gotKey, []byte("share-only")) {
-		t.Fatalf("got key %q, want share-only", gotKey)
+		t.Fatalf("got key %q, want kkkk", gotKey)
 	}
 }
 

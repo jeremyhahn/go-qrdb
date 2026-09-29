@@ -79,7 +79,7 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) uint16 {
 	t.Helper()
 	f.caller.Set(id)
-	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{Threshold: 2, Total: 3, SoPin: pin})
+	payload, err := proto.Marshal(&pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, SoPin: pin})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -195,8 +195,8 @@ func TestSOPINFromPayload(t *testing.T) {
 	if soPINFromPayload("ceremony.SignCSR", []byte{0xff, 0xff}) != nil {
 		t.Fatal("an undecodable payload yielded a PIN")
 	}
-	empty, _ := proto.Marshal(&pb.BarrierRekeyRequest{})
-	if soPINFromPayload("barrier.Rekey", empty) != nil {
+	empty, _ := proto.Marshal(&pb.BarrierRekeyStartRequest{})
+	if soPINFromPayload("barrier.RekeyStart", empty) != nil {
 		t.Fatal("an empty so_pin yielded a PIN")
 	}
 }
@@ -216,7 +216,7 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 		t.Fatalf("start server: %v", err)
 	}
 	t.Cleanup(srv.Stop)
-	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{Threshold: 2, Total: 3, SoPin: soTestPIN})
+	payload, err := proto.Marshal(&pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, SoPin: soTestPIN})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

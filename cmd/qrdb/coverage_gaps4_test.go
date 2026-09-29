@@ -23,8 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ===========================================================================
@@ -333,43 +331,5 @@ func TestBarrierRecoveryDeleteCmd_ServiceError(t *testing.T) {
 	_, err := executeCommand(root, "barrier", "recovery", "delete")
 	if err == nil {
 		t.Fatal("expected error from recovery delete when service fails")
-	}
-}
-
-// TestBarrierRootTokenCmd_ServiceError exercises the error return
-// in newBarrierRootTokenCmd.
-func TestBarrierRootTokenCmd_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		genRootTokenFn: func(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-			return nil, errors.New("root-token: insufficient shares")
-		},
-	}
-	root := newBarrierTestRoot(t, svc)
-	_, err := executeCommand(root, "barrier", "root-token",
-		"--share", "share1", "--share", "share2")
-	if err == nil {
-		t.Fatal("expected error from root-token when service fails")
-	}
-}
-
-// TestBarrierRootTokenCmd_YAMLFormat exercises the yaml output branch
-// of the operational root-token verb.
-func TestBarrierRootTokenCmd_YAMLFormat(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "--output", "yaml", "barrier", "root-token",
-		"--share", "share1", "--share", "share2")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// TestBarrierRootTokenCmd_JSONFormat exercises the json output branch
-// of the operational root-token verb.
-func TestBarrierRootTokenCmd_JSONFormat(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "--output", "json", "barrier", "root-token",
-		"--share", "share1", "--share", "share2")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }

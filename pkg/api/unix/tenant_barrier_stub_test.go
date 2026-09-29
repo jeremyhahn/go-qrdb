@@ -28,6 +28,7 @@ import (
 // tests only verify wiring; the four barrier methods are inspectable so
 // downstream tests can assert they were called with the expected arguments.
 type stubTenantBarrierSvc struct {
+	tenant.TenantServicer
 	initCalled    bool
 	unsealCalled  bool
 	sealCalled    bool
@@ -93,11 +94,6 @@ func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID str
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit for test simplicity.
 func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return s.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
-}
-
-// TenantBarrierUnsealShare is a no-op stub.
-func (s *stubTenantBarrierSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
 }
 
 // TenantBarrierUnseal records arguments and returns the configured error.
@@ -166,16 +162,6 @@ func (s *stubTenantBarrierSvc) TenantBarrierShareClaimBegin(_ context.Context, _
 // TenantBarrierShareClaimComplete is a no-op stub.
 func (s *stubTenantBarrierSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-
-// TenantBarrierOfficerClaimStatus is a no-op stub.
-func (s *stubTenantBarrierSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
-
-// TenantBarrierShamirSealVote is a no-op stub.
-func (s *stubTenantBarrierSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // Compile-time interface check.

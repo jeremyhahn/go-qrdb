@@ -41,19 +41,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type covMockBarrierSvc struct {
+	service.BarrierServicer
 	initializeFn           func(ctx context.Context, secret []byte) error
 	unsealFn               func(ctx context.Context, secret []byte) error
 	sealFn                 func(ctx context.Context) error
 	statusFn               func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn     func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
-	unsealWithShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
-	unsealWithSharesFn     func(ctx context.Context, shares []string) error
-	rekeyFn                func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
-	generateRecoveryKeysFn func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
-	recoverWithKeysFn      func(ctx context.Context, keys []string) error
+	initializeShamirFn     func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
+	generateRecoveryKeysFn func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
 	deleteRecoveryKeysFn   func(ctx context.Context) error
 	hasRecoveryKeysFn      func(ctx context.Context) (bool, error)
-	generateRootTokenFn    func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 }
 
 func newCovMockBarrierSvc() *covMockBarrierSvc { return &covMockBarrierSvc{} }
@@ -82,41 +78,17 @@ func (m *covMockBarrierSvc) BarrierStatus(ctx context.Context) (*service.Barrier
 	}
 	return &service.BarrierStatusInfo{Sealed: false, Strategy: "software"}, nil
 }
-func (m *covMockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *covMockBarrierSvc) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
-		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
+		return m.initializeShamirFn(ctx, threshold, totalShares, policy)
 	}
 	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
 }
-func (m *covMockBarrierSvc) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
-	if m.unsealWithShareFn != nil {
-		return m.unsealWithShareFn(ctx, share)
-	}
-	return &service.UnsealShareProgress{Required: 3, Submitted: 1, Complete: false}, nil
-}
-func (m *covMockBarrierSvc) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
-	if m.unsealWithSharesFn != nil {
-		return m.unsealWithSharesFn(ctx, shares)
-	}
-	return nil
-}
-func (m *covMockBarrierSvc) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	if m.rekeyFn != nil {
-		return m.rekeyFn(ctx, threshold, total)
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
-}
-func (m *covMockBarrierSvc) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+func (m *covMockBarrierSvc) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 	if m.generateRecoveryKeysFn != nil {
-		return m.generateRecoveryKeysFn(ctx, threshold, total)
+		return m.generateRecoveryKeysFn(ctx, threshold, policy)
 	}
-	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
-}
-func (m *covMockBarrierSvc) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
-	if m.recoverWithKeysFn != nil {
-		return m.recoverWithKeysFn(ctx, keys)
-	}
-	return nil
+	return &service.RecoveryKeysInfo{Threshold: threshold, Total: threshold + 1, ShareCount: threshold + 1}, nil
 }
 func (m *covMockBarrierSvc) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if m.deleteRecoveryKeysFn != nil {
@@ -130,45 +102,13 @@ func (m *covMockBarrierSvc) BarrierHasRecoveryKeys(ctx context.Context) (bool, e
 	}
 	return true, nil
 }
-func (m *covMockBarrierSvc) BarrierGenerateRootToken(ctx context.Context, shares []string) (*service.RootTokenInfo, error) {
-	if m.generateRootTokenFn != nil {
-		return m.generateRootTokenFn(ctx, shares)
-	}
-	return &service.RootTokenInfo{Token: "tok-abc", CreatedAt: time.Now()}, nil
-}
-func (m *covMockBarrierSvc) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *covMockBarrierSvc) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *covMockBarrierSvc) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *covMockBarrierSvc) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *covMockBarrierSvc) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (m *covMockBarrierSvc) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (m *covMockBarrierSvc) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *covMockBarrierSvc) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *covMockBarrierSvc) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
 
 // ---------------------------------------------------------------------------
 // Mock: TenantServicer
 // ---------------------------------------------------------------------------
 
 type covMockTenantSvc struct {
+	tenant.TenantServicer
 	createFn        func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
 	getFn           func(ctx context.Context, id string) (*tenant.TenantInfo, error)
 	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
@@ -283,9 +223,6 @@ func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id string, pas
 func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
-func (m *covMockTenantSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
-}
 func (m *covMockTenantSvc) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, id, key)
@@ -315,12 +252,6 @@ func (m *covMockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _,
 }
 func (m *covMockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *covMockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
-func (m *covMockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -486,36 +417,33 @@ func (m *covMockAuditLogger) Close() error { return nil }
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	tools := barrierTools(svc, nil, nil)
-	if len(tools) != 23 {
-		t.Fatalf("expected 23 tools, got %d", len(tools))
-	}
 	names := []string{
 		"qrdb_barrier_initialize",
 		"qrdb_barrier_unseal",
 		"qrdb_barrier_seal",
 		"qrdb_barrier_status",
 		"qrdb_barrier_shamir_initialize",
-		"qrdb_barrier_shamir_unseal_share",
-		"qrdb_barrier_shamir_unseal_shares",
-		"qrdb_barrier_rekey",
 		"qrdb_barrier_recovery_generate",
-		"qrdb_barrier_recovery_recover",
 		"qrdb_barrier_recovery_delete",
 		"qrdb_barrier_recovery_status",
-		"qrdb_barrier_root_token",
-		"qrdb_barrier_officer_register",
-		"qrdb_barrier_officer_list",
-		"qrdb_barrier_share_claim_begin",
-		"qrdb_barrier_share_claim_complete",
-		"qrdb_barrier_officer_claim_status",
-		"qrdb_barrier_shamir_seal_vote",
-		"qrdb_barrier_recovery_officer_register",
-		"qrdb_barrier_recovery_share_claim_begin",
-		"qrdb_barrier_recovery_share_claim_complete",
 		// Registered even with a nil encMigrator (go-qrdb#558): the handler
 		// itself refuses with a typed error rather than the tool being
 		// omitted.
 		"qrdb_barrier_enable_encryption",
+		"qrdb_barrier_officer_register",
+		"qrdb_barrier_recovery_officer_register",
+		"qrdb_barrier_officer_list",
+		"qrdb_barrier_share_claim_begin",
+		"qrdb_barrier_share_claim_complete",
+		"qrdb_barrier_recovery_share_claim_begin",
+		"qrdb_barrier_recovery_share_claim_complete",
+		"qrdb_barrier_quorum_begin",
+		"qrdb_barrier_quorum_submit",
+		"qrdb_barrier_rekey_start",
+		"qrdb_barrier_officer_revoke",
+	}
+	if len(tools) != len(names) {
+		t.Fatalf("expected %d tools, got %d", len(names), len(tools))
 	}
 	for i, n := range names {
 		if tools[i].Tool.Name != n {
@@ -634,7 +562,7 @@ func TestCovHandleBarrierUnseal_ServiceError(t *testing.T) {
 // ===========================================================================
 
 func TestCovHandleBarrierSeal_Success(t *testing.T) {
-	handler := handleBarrierSeal(newCovMockBarrierSvc(), nil)
+	handler := handleBarrierSeal(newCovMockBarrierSvc(), &covMockPINBackend{})
 	req := buildCallToolRequest(t, "qrdb_barrier_seal", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -648,7 +576,7 @@ func TestCovHandleBarrierSeal_Success(t *testing.T) {
 func TestCovHandleBarrierSeal_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	svc.sealFn = func(_ context.Context) error { return errors.New("seal failed") }
-	handler := handleBarrierSeal(svc, nil)
+	handler := handleBarrierSeal(svc, &covMockPINBackend{})
 	req := buildCallToolRequest(t, "qrdb_barrier_seal", map[string]any{})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -700,7 +628,7 @@ func TestCovHandleBarrierStatus_ServiceError(t *testing.T) {
 func TestCovHandleBarrierShamirInitialize_Success(t *testing.T) {
 	handler := handleBarrierShamirInitialize(newCovMockBarrierSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"secret": "s", "threshold": float64(2), "total_shares": float64(3),
+		"threshold": float64(2), "total_shares": float64(3),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -721,21 +649,10 @@ func TestCovHandleBarrierShamirInitialize_Success(t *testing.T) {
 	}
 }
 
-func TestCovHandleBarrierShamirInitialize_MissingSecret(t *testing.T) {
-	handler := handleBarrierShamirInitialize(newCovMockBarrierSvc(), nil)
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"threshold": float64(2), "total_shares": float64(3),
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result, got err=%v result.IsError=%v", err, result.IsError)
-	}
-}
-
 func TestCovHandleBarrierShamirInitialize_MissingThreshold(t *testing.T) {
 	handler := handleBarrierShamirInitialize(newCovMockBarrierSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"secret": "s", "total_shares": float64(3),
+		"total_shares": float64(3),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -746,7 +663,7 @@ func TestCovHandleBarrierShamirInitialize_MissingThreshold(t *testing.T) {
 func TestCovHandleBarrierShamirInitialize_MissingTotalShares(t *testing.T) {
 	handler := handleBarrierShamirInitialize(newCovMockBarrierSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"secret": "s", "threshold": float64(2),
+		"threshold": float64(2),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -756,12 +673,12 @@ func TestCovHandleBarrierShamirInitialize_MissingTotalShares(t *testing.T) {
 
 func TestCovHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	svc.initializeShamirFn = func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
+	svc.initializeShamirFn = func(_ context.Context, _, _ int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 		return nil, errors.New("failed")
 	}
 	handler := handleBarrierShamirInitialize(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"secret": "s", "threshold": float64(2), "total_shares": float64(3),
+		"threshold": float64(2), "total_shares": float64(3),
 	})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -773,142 +690,20 @@ func TestCovHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 // handleBarrierShamirUnsealShare
 // ===========================================================================
 
-func TestCovHandleBarrierShamirUnsealShare_Success(t *testing.T) {
-	handler := handleBarrierShamirUnsealShare(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_share", map[string]any{"share": "s1"})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var prog service.UnsealShareProgress
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &prog); jerr != nil {
-		t.Fatalf("unmarshal: %v", jerr)
-	}
-	if prog.Required != 3 {
-		t.Errorf("expected required=3, got %d", prog.Required)
-	}
-}
-
-func TestCovHandleBarrierShamirUnsealShare_MissingShare(t *testing.T) {
-	handler := handleBarrierShamirUnsealShare(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_share", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierShamirUnsealShare_ServiceError(t *testing.T) {
-	svc := newCovMockBarrierSvc()
-	svc.unsealWithShareFn = func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-		return nil, errors.New("invalid share")
-	}
-	handler := handleBarrierShamirUnsealShare(svc)
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_share", map[string]any{"share": "bad"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // ===========================================================================
 // handleBarrierShamirUnsealShares
 // ===========================================================================
 
-func TestCovHandleBarrierShamirUnsealShares_Success(t *testing.T) {
-	handler := handleBarrierShamirUnsealShares(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_shares", map[string]any{"shares": "s1,s2,s3"})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resultText(t, result) != "barrier unsealed" {
-		t.Errorf("unexpected text: %s", resultText(t, result))
-	}
-}
-
-func TestCovHandleBarrierShamirUnsealShares_MissingShares(t *testing.T) {
-	handler := handleBarrierShamirUnsealShares(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_shares", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierShamirUnsealShares_ServiceError(t *testing.T) {
-	svc := newCovMockBarrierSvc()
-	svc.unsealWithSharesFn = func(_ context.Context, _ []string) error { return errors.New("err") }
-	handler := handleBarrierShamirUnsealShares(svc)
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_unseal_shares", map[string]any{"shares": "a,b"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // ===========================================================================
 // handleBarrierRekey
 // ===========================================================================
-
-func TestCovHandleBarrierRekey_Success(t *testing.T) {
-	handler := handleBarrierRekey(newCovMockBarrierSvc(), nil)
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{"threshold": float64(2), "total": float64(4)})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Rekey shares the snake_case wire shape produced by shamirInitInfoToWire.
-	var info struct {
-		Threshold   int `json:"threshold"`
-		TotalShares int `json:"total_shares"`
-		ShareCount  int `json:"share_count"`
-	}
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &info); jerr != nil {
-		t.Fatalf("unmarshal: %v", jerr)
-	}
-	if info.Threshold != 2 || info.TotalShares != 4 {
-		t.Errorf("unexpected: %+v", info)
-	}
-}
-
-func TestCovHandleBarrierRekey_MissingThreshold(t *testing.T) {
-	handler := handleBarrierRekey(newCovMockBarrierSvc(), nil)
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{"total": float64(4)})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierRekey_MissingTotal(t *testing.T) {
-	handler := handleBarrierRekey(newCovMockBarrierSvc(), nil)
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{"threshold": float64(2)})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierRekey_ServiceError(t *testing.T) {
-	svc := newCovMockBarrierSvc()
-	svc.rekeyFn = func(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
-		return nil, errors.New("rekey err")
-	}
-	handler := handleBarrierRekey(svc, nil)
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{"threshold": float64(2), "total": float64(3)})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
 
 // ===========================================================================
 // handleBarrierRecoveryGenerate
 // ===========================================================================
 
 func TestCovHandleBarrierRecoveryGenerate_Success(t *testing.T) {
-	handler := handleBarrierRecoveryGenerate(newCovMockBarrierSvc(), nil)
+	handler := handleBarrierRecoveryGenerate(newCovMockBarrierSvc(), &covMockPINBackend{})
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{"threshold": float64(2), "total": float64(3)})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -924,7 +719,7 @@ func TestCovHandleBarrierRecoveryGenerate_Success(t *testing.T) {
 }
 
 func TestCovHandleBarrierRecoveryGenerate_MissingThreshold(t *testing.T) {
-	handler := handleBarrierRecoveryGenerate(newCovMockBarrierSvc(), nil)
+	handler := handleBarrierRecoveryGenerate(newCovMockBarrierSvc(), &covMockPINBackend{})
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{"total": float64(3)})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -934,10 +729,10 @@ func TestCovHandleBarrierRecoveryGenerate_MissingThreshold(t *testing.T) {
 
 func TestCovHandleBarrierRecoveryGenerate_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	svc.generateRecoveryKeysFn = func(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
+	svc.generateRecoveryKeysFn = func(_ context.Context, _ int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 		return nil, errors.New("err")
 	}
-	handler := handleBarrierRecoveryGenerate(svc, nil)
+	handler := handleBarrierRecoveryGenerate(svc, &covMockPINBackend{})
 	req := buildCallToolRequest(t, "qrdb_barrier_recovery_generate", map[string]any{"threshold": float64(2), "total": float64(3)})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -948,38 +743,6 @@ func TestCovHandleBarrierRecoveryGenerate_ServiceError(t *testing.T) {
 // ===========================================================================
 // handleBarrierRecoveryRecover
 // ===========================================================================
-
-func TestCovHandleBarrierRecoveryRecover_Success(t *testing.T) {
-	handler := handleBarrierRecoveryRecover(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_recovery_recover", map[string]any{"keys": "k1,k2"})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resultText(t, result) != "barrier recovered" {
-		t.Errorf("unexpected: %s", resultText(t, result))
-	}
-}
-
-func TestCovHandleBarrierRecoveryRecover_MissingKeys(t *testing.T) {
-	handler := handleBarrierRecoveryRecover(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_recovery_recover", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierRecoveryRecover_ServiceError(t *testing.T) {
-	svc := newCovMockBarrierSvc()
-	svc.recoverWithKeysFn = func(_ context.Context, _ []string) error { return errors.New("bad keys") }
-	handler := handleBarrierRecoveryRecover(svc)
-	req := buildCallToolRequest(t, "qrdb_barrier_recovery_recover", map[string]any{"keys": "k1"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
 
 // ===========================================================================
 // handleBarrierRecoveryDelete
@@ -1064,44 +827,6 @@ func TestCovHandleBarrierRecoveryStatus_ServiceError(t *testing.T) {
 // ===========================================================================
 // handleBarrierRootToken
 // ===========================================================================
-
-func TestCovHandleBarrierRootToken_Success(t *testing.T) {
-	handler := handleBarrierRootToken(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_root_token", map[string]any{"shares": "s1,s2,s3"})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var info service.RootTokenInfo
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &info); jerr != nil {
-		t.Fatalf("unmarshal: %v", jerr)
-	}
-	if info.Token == "" {
-		t.Error("expected non-empty token")
-	}
-}
-
-func TestCovHandleBarrierRootToken_MissingShares(t *testing.T) {
-	handler := handleBarrierRootToken(newCovMockBarrierSvc())
-	req := buildCallToolRequest(t, "qrdb_barrier_root_token", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleBarrierRootToken_ServiceError(t *testing.T) {
-	svc := newCovMockBarrierSvc()
-	svc.generateRootTokenFn = func(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-		return nil, errors.New("err")
-	}
-	handler := handleBarrierRootToken(svc)
-	req := buildCallToolRequest(t, "qrdb_barrier_root_token", map[string]any{"shares": "s1,s2"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
 
 // ===========================================================================
 // server.go With* options
@@ -1540,8 +1265,9 @@ func TestCovHandleTenantUpdateQuotas_ServiceError(t *testing.T) {
 func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantBarrierTools(svc, allowAllTenantBarrierAuthz())
-	if len(tools) != 11 {
-		t.Fatalf("expected 11 tools, got %d", len(tools))
+	// init, unseal, seal, status + the eight share-holder tools.
+	if len(tools) != 12 {
+		t.Fatalf("expected 12 tools, got %d", len(tools))
 	}
 }
 

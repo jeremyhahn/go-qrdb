@@ -1116,12 +1116,12 @@ func (r *BarrierRegistry) RegisterTenantPooledWithStrategy(
 // tenant whose DEK is sealed with an M-of-N Shamir scheme. It mirrors
 // RegisterTenantPooledWithStrategy but additionally constructs a ShamirStrategy
 // for the requested threshold/total and populates the per-tenant BarrierConfig's
-// Shamir section so InitializeShamir / UnsealWithShare can drive the quorum.
+// Shamir section so InitializeShamir and the holder quorum can drive it.
 //
 // threshold must be >= 2 and <= total. When ttl is zero the barrier falls back
 // to the default quorum share TTL. The strategy splits the tenant's root key
-// directly (direct mode); the generated shares are returned from
-// InitializeTenantShamir and are never persisted.
+// under unseal-key indirection; the shares are sealed to the tenant's holders
+// by InitializeTenantShamir and are never persisted.
 func (r *BarrierRegistry) RegisterTenantPooledShamir(
 	ctx context.Context,
 	tenantID string,
@@ -1142,26 +1142,16 @@ func (r *BarrierRegistry) RegisterTenantPooledShamir(
 }
 
 // InitializeTenantShamir initializes the tenant barrier identified by tenantID
-// using Shamir secret sharing and seals shares to the enrolled Security Officers
-// via the barrier's CeremonyDistributor. Returns metadata only; no share bytes
-// are returned. The tenant must already be registered via RegisterTenantPooledShamir.
-func (r *BarrierRegistry) InitializeTenantShamir(ctx context.Context, tenantID string, creds Credentials) (*ShamirInitParams, error) {
+// under Shamir custody and seals the unseal key's shares to the tenant's
+// enrolled share holders via the barrier's CeremonyDistributor. Returns
+// metadata only. The tenant must already be registered via
+// RegisterTenantPooledShamir.
+func (r *BarrierRegistry) InitializeTenantShamir(ctx context.Context, tenantID string, policy FactorPolicy) (*ShamirInitParams, error) {
 	tb, err := r.GetTenant(tenantID)
 	if err != nil {
 		return nil, err
 	}
-	return tb.InitializeShamir(ctx, creds)
-}
-
-// UnsealTenantWithShare submits a single Shamir share toward the tenant
-// barrier's quorum threshold, automatically unsealing once the threshold is
-// met. The tenant must already be registered and initialized with Shamir.
-func (r *BarrierRegistry) UnsealTenantWithShare(ctx context.Context, tenantID, shareValue string) (*QuorumProgress, error) {
-	tb, err := r.GetTenant(tenantID)
-	if err != nil {
-		return nil, err
-	}
-	return tb.UnsealWithShare(ctx, shareValue)
+	return tb.InitializeShamir(ctx, policy)
 }
 
 // tenantBarrierConfig returns the canonical BarrierConfig for a per-tenant

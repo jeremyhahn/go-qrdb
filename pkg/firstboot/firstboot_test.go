@@ -120,9 +120,6 @@ func (f *fakeTenants) TenantBarrierInit(_ context.Context, _ string, _ []byte, _
 func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
-func (f *fakeTenants) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
-	return nil, nil
-}
 func (f *fakeTenants) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }

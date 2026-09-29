@@ -285,7 +285,7 @@ type nodeMigrationProvider struct {
 	creds seal.Credentials
 	// shamirThreshold / shamirTotal carry the M-of-N scheme from MintKeyedTarget
 	// to Reopen (via reopenStrategy) so the reopened Shamir barrier reports the
-	// correct scheme before the first UnsealWithShare(s) quorum.
+	// correct scheme before the first share-holder unseal quorum.
 	shamirThreshold int
 	shamirTotal     int
 }
@@ -386,7 +386,7 @@ func (p *nodeMigrationProvider) Quiesce(_ context.Context, _ service.BarrierScop
 // are reconstructed — mirroring the sealed branch of NewStandaloneNode — and
 // n.pendingStandalone is left set so Node.Unseal's "already unsealed
 // externally" fallthrough (see its doc comment) completes the boot once the
-// operator drives the barrier unsealed via UnsealWithShare(s). This mirrors
+// share holders unseal the barrier through the quorum. This mirrors
 // pkg/server/tenant_migrate.go's MigrateEncryption, which likewise skips its
 // eager Host re-Attach when the reopened barrier is still sealed.
 func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.BarrierScope) error {

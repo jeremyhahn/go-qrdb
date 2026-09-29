@@ -131,7 +131,10 @@ func TestLookupGRPCFromDescriptor_DefaultDenyRegression(t *testing.T) {
 		"/qrdb.v1.TenantBarrierService/ShareClaimComplete",
 		"/qrdb.v1.TenantBarrierService/Init",
 		"/qrdb.v1.TenantBarrierService/Unseal",
-		"/qrdb.v1.TenantBarrierService/UnsealShare",
+		"/qrdb.v1.TenantBarrierService/QuorumBegin",
+		"/qrdb.v1.TenantBarrierService/QuorumSubmit",
+		"/qrdb.v1.QRDBService/BarrierQuorumBegin",
+		"/qrdb.v1.QRDBService/BarrierQuorumSubmit",
 		"/qrdb.v1.TenantBarrierService/Status",
 	} {
 		if got, ok := LookupGRPCFromDescriptor(method); !ok || got != permission.IdentityGated {

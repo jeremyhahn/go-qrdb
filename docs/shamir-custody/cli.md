@@ -1,180 +1,192 @@
 # Shamir Custody — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
-Custody verbs live under `qrdb barrier`, in the `officer`, `recovery` and
-`root-token` sub-trees. The canonical barrier verbs themselves are documented in
-[../barrier-seal/cli.md](../barrier-seal/cli.md).
-
-The `officer`, `shamir-seal-vote` and `root-token` sub-trees are retained for
-operational parity and are **not** part of the canonical CLI surface shared
-across the stack's binaries.
+Custody verbs live under `qrdb barrier` (`officer`, `quorum`, `rekey`,
+`init-shamir`, `recovery`) for the system barrier and under `qrdb tenant`
+(`barrier-officer`, `barrier-quorum`, `barrier-rekey`) for a dedicated tenant
+barrier. The canonical barrier verbs are documented in
+[../barrier-seal/cli.md](../barrier-seal/cli.md); `qrdb init` is in
+[../ceremony/cli.md](../ceremony/cli.md).
 
 All verbs accept the root persistent flags documented in
-[../key-value/cli.md](../key-value/cli.md#global-flags).
+[../key-value/cli.md](../key-value/cli.md#global-flags), and `--output json`
+or `--output yaml` where they print a result.
 
-## Security Officers
+Private keys never leave the machine the CLI runs on. `claim` signs the claim
+nonce locally; `quorum submit` answers the `mtls` factor, opens the envelope
+and sends only the factor response and the opened share.
 
-Officers are registered **before** barrier initialization. After
-initialization their shares are sealed to their registered certificates, and
-each claims their own share through an mTLS challenge/response.
+## Scope flags
+
+Every `officer` and `quorum` verb takes:
+
+| Flag | Meaning |
+|---|---|
+| `--domain` | `unseal` (default) or `recovery` — system barrier only |
+| `--tenant-id` | the tenant — tenant verbs only |
+
+## Enrolment
 
 ### `qrdb barrier officer register`
 
-The officer's CSR is validated, signed by the ceremony CA, and the officer
-record is persisted. Only the CSR's key is used: the certificate is issued as
-`CN=<--username>`, `OU=[<tenant>, custodian]` with no SAN, whatever Subject the
-CSR names. **Share bytes are NOT produced at this step** — the
-barrier must be initialized (`barrier init-shamir`) for distribution to occur.
+Enrol a share holder. Run by an administrator or a Security Officer, never by
+the holder being enrolled. No share is produced.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--username` | string | Security Officer username |
-| `--csr-file` | string | path to a PEM-encoded CSR |
-| `--authenticator-type` | string | e.g. `software`, `fido2`, `piv` |
-| `--authenticator-ref` | string | opaque authenticator reference |
+| `--username` | string | holder username; becomes the certificate CN |
+| `--role` | string | `so` (default) or `custodian` |
+| `--csr-file` | path | PEM CSR supplying the holder's public key; its subject and SANs are ignored |
+| `--encryption-kem` | string | HPKE suite of a separate envelope key: `dhkem-p256`, `dhkem-p384`, `dhkem-x25519`, `mlkem768-x25519` |
+| `--encryption-key-file` | path | the separate envelope public key, raw, in the suite's encoding |
+| `--factor` | stringArray | an additional factor: `name` or `name=<json params>`; repeatable |
+| `--designated` | string | the factor fixed at enrolment for the `designated` policy (default `mtls`) |
 
 ```bash
-qrdb barrier officer register --username alice --csr-file alice.csr \
-     --authenticator-type piv --authenticator-ref "slot9a"
+qrdb barrier officer register --username alice --role so --csr-file alice.csr
+qrdb barrier officer register --username carol --role custodian --csr-file carol.csr \
+     --encryption-kem mlkem768-x25519 --encryption-key-file carol-kem.pub \
+     --factor "fido2=$(cat carol-fido2-enrol.json)" --designated fido2
 ```
+
+The command prints the CA-issued certificate; deliver it to the holder.
 
 ### `qrdb barrier officer list`
 
-List enrolled Security Officers for the system barrier. No flags.
+Holders and their claim state. Never a share.
 
-### `qrdb barrier officer claim-status`
+## Distribution
 
-Per-officer enrolment and claim state. **Never returns share bytes.** No flags.
+### `qrdb barrier init-shamir`
 
-```bash
-qrdb barrier officer claim-status --output json
-```
-
-### `qrdb barrier officer claim-begin`
-
-Issue a challenge nonce to the named officer. The officer signs it with their
-registered private key and submits the signature to `claim-complete` **within
-the expiry window (5 minutes)**.
-
-| Flag | Type |
-|---|---|
-| `--username` | string |
-
-### `qrdb barrier officer claim-complete`
-
-Verify the nonce signature and return the share bytes **exactly once**. The
-signature file must contain the raw signature bytes produced by signing the
-nonce from `claim-begin`.
-
-| Flag | Type |
-|---|---|
-| `--username` | string |
-| `--nonce-hex` | string — the nonce from `claim-begin` |
-| `--sig-file` | string — path to the raw signature bytes |
-
-```bash
-NONCE=$(qrdb barrier officer claim-begin --username alice --output json | jq -r .nonce)
-# sign $NONCE with alice's private key into alice.sig
-qrdb barrier officer claim-complete --username alice \
-     --nonce-hex "$NONCE" --sig-file alice.sig
-```
-
-The share is returned once and the server-side enclave is destroyed. There is
-no second chance — store it before the terminal scrolls.
-
-## Quorum operations
-
-### `qrdb barrier unseal-shares`
-
-Submit shares to unseal. See
-[../barrier-seal/cli.md](../barrier-seal/cli.md#qrdb-barrier-unseal-shares).
-Below-threshold submissions accumulate and report progress; they are not
-errors.
-
-### `qrdb barrier shamir-seal-vote`
-
-Submit a share as a vote to **seal**. A Shamir barrier cannot be sealed by one
-administrator — M officers must each vote. When the threshold is met all
-submitted shares are wiped and the barrier seals.
-
-| Flag | Type |
-|---|---|
-| `--share` | string |
-
-### `qrdb barrier rekey`
-
-Rotate the unseal key and the whole share set, **cryptographically revoking
-every previously distributed share**. Claim history resets and every officer
-must claim again. See
-[../barrier-seal/cli.md](../barrier-seal/cli.md#qrdb-barrier-rekey).
-
-### `qrdb barrier root-token`
-
-Generate a one-time admin token by reconstructing from shares. Officers
-submitting their claimed shares **is** the consent signal, and this is the only
-place raw shares are legitimate request input.
-
-| Flag | Type |
-|---|---|
-| `--share` | stringArray — repeatable; a share, or the claim-complete JSON envelope |
-
-```bash
-qrdb barrier root-token --share a --share b --share c
-```
-
-## Recovery keys
-
-Recovery keys are an **independent** Shamir split of the root key, for the case
-where the operational quorum is unavailable. They are never returned in the
-generation response and never persisted on the server.
-
-### `qrdb barrier recovery generate`
-
-Requires the barrier **unsealed**, and a Security Officer PIN when a PINBackend
-is configured.
+Split the unseal key to the enrolled unseal-domain holders.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--threshold` | int | minimum keys required for recovery (M) |
-| `--total` | int | total recovery keys (N) |
-| `--so-pin` | string | required when a PINBackend is configured |
+| `--threshold` | int | M |
+| `--total` | int | N; must equal the number of enrolled holders |
+| `--policy` | string | `designated` (default) or `any-enrolled` |
 
 ```bash
-qrdb barrier recovery generate --threshold 3 --total 5 --so-pin SO123
+qrdb barrier init-shamir --threshold 3 --total 5
 ```
 
-### `qrdb barrier recovery officer register` / `claim-begin` / `claim-complete`
+### `qrdb barrier recovery generate`
 
-Recovery officers are **independent from the unseal officers** and receive the
-recovery shares. The flags mirror the unseal-officer verbs above
-(`--username`, `--csr-file`, `--authenticator-type`, `--authenticator-ref`;
-then `--nonce-hex`, `--sig-file`).
-
-### `qrdb barrier recovery recover`
-
-Recover the barrier by submitting M-of-N recovery keys. Requires the barrier
-**sealed**.
+Generate the independent recovery key and split it to every enrolled
+recovery-domain holder (`officer register --domain recovery`). Needs the SO
+PIN.
 
 | Flag | Type |
 |---|---|
-| `--share` | stringArray — repeatable; a recovery key, or the claim-complete JSON envelope |
+| `--threshold` | int |
+| `--policy` | string |
+| `--so-pin` | string |
+
+`recovery status` and `recovery delete` report and remove the recovery key.
+
+## Claim
+
+### `qrdb barrier officer claim`
+
+Claim the holder's envelope, once. The connection must present the holder's
+certificate (the root `--cert-file`/`--key-file` flags).
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--username` | string | the holder |
+| `--key` | path | PEM private key of the holder's certificate, used to sign the nonce |
+| `--out` | path | where to write the envelope (mode 0600) |
+
+### `qrdb barrier officer claim-begin` / `claim-complete`
+
+The same claim, split for keys that sign outside the CLI (a smart card, an
+HSM). `claim-begin --username` prints the nonce; sign the raw nonce bytes;
+`claim-complete --username --nonce-hex --sig-file --out` delivers the envelope.
+
+## Quorum rounds
+
+### `qrdb barrier quorum begin`
+
+Issue a challenge for a holder's factor. Needed only when the factor is
+answered outside the CLI; the `mtls` factor is answered by `quorum submit`
+itself.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--op` | string | `unseal`, `seal`, `root-token`, `rekey` or `recover` |
+| `--username` | string | the holder |
+| `--factor` | string | the factor to answer with (designated when empty) |
+
+### `qrdb barrier quorum submit`
+
+Submit the holder's share to the open round for `--op`.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--op` | string | as above |
+| `--username` | string | the holder |
+| `--envelope` | path | the claimed envelope |
+| `--key` | path | the certificate key: answers `mtls` and, without `--encryption-key-file`, opens the envelope |
+| `--encryption-key-file` | path | the raw private key of a separately enrolled envelope key |
+| `--challenge-id` | string | a challenge answered outside the CLI |
+| `--factor` | string | the factor that answered it |
+| `--response-file` | path | the raw factor response |
+| `--response-metadata` | string | a JSON object of response metadata |
 
 ```bash
-qrdb barrier recovery recover --share key-a --share key-b --share key-c
+# alice answers mtls with her certificate key
+qrdb barrier quorum submit --op unseal --username alice \
+     --envelope alice.env --key alice.key
+# carol answers her designated FIDO2 factor
+qrdb barrier quorum begin --op unseal --username carol -o json   # -> challenge
+qrdb barrier quorum submit --op unseal --username carol --envelope carol.env \
+     --encryption-key-file carol-kem.key \
+     --challenge-id "$ID" --factor fido2 --response-file carol.assertion
 ```
 
-### `qrdb barrier recovery status` / `delete` (operational)
+Each submission prints the round's progress; the M-th completes the
+operation (for `root-token`, it prints the token).
 
-`status` reports whether recovery keys are present. `delete` removes all stored
-recovery key metadata. Neither takes flags.
+## Rekey and revocation
 
-## Per-tenant custody
+### `qrdb barrier rekey`
 
-Tenants with a dedicated barrier have the same officer model under
-`qrdb tenant barrier-officer` — see
-[../multi-tenancy/cli.md](../multi-tenancy/cli.md).
+Open a rekey round. It completes when M current holders submit to
+`--op rekey`, and then redistributes the key to every holder enrolled at that
+moment — which is how a holder is added.
 
-## Parity
+| Flag | Type | Meaning |
+|---|---|---|
+| `--domain` | string | `unseal` (default) or `recovery` |
+| `--threshold` | int | M of the new share set |
+| `--policy` | string | `designated` or `any-enrolled` |
+| `--so-pin` | string | Security Officer PIN |
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+### `qrdb barrier officer revoke`
+
+Revoke a holder: a rekey round that removes them, completed by M of the
+remaining holders and refused when M would exceed N−1.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--username` | string | the holder to revoke |
+| `--threshold` | int | M of the remaining share set; 0 keeps the current one |
+| `--so-pin` | string | Security Officer PIN |
+
+Every remaining holder claims a new envelope once the round completes.
+
+## Tenant barriers
+
+`qrdb tenant barrier-officer register|list|claim|claim-begin|claim-complete|revoke`,
+`qrdb tenant barrier-quorum begin|submit` and `qrdb tenant barrier-rekey`
+take `--tenant-id` and otherwise the same flags, without `--domain` and
+without `--so-pin` (tenant rekey and revocation are authorized by RBAC).
+
+## Desktop application
+
+The desktop application's `OfficerBinding` drives the same verbs:
+`RegisterHolder`, `ListHolders`, `ClaimEnvelope`, `SubmitShare`, `StartRekey`,
+`RevokeHolder`. Keys passed to it are used in the application process and
+wiped after the call.

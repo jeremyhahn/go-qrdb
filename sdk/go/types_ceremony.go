@@ -17,7 +17,9 @@ package sdk
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 )
 
 // ---------------------------------------------------------------------------
@@ -60,26 +62,20 @@ type InitResult = ceremony.InitResult
 // ChallengeResponse holds the nonce challenge for officer cert claims.
 type ChallengeResponse = ceremony.ChallengeResponse
 
-// ClaimCertResult holds the result of an officer certificate claim.
-type ClaimCertResult = ceremony.ClaimCertResult
-
 // ShareClaimResult holds the result of an officer Shamir share claim. It is
 // produced exactly once per officer per distribution round by
 // CeremonyService.CompleteClaimShare.
 type ShareClaimResult = ceremony.ShareClaimResult
 
 // CertThumbprint returns the lowercase hex SHA-256 of a DER-encoded
-// certificate. It is THE canonical binding identifier for the officer
-// share-claim flow: the ceremony records it for each officer at enrollment and
-// matches it against the thumbprint a transport derives from the caller's mTLS
-// peer certificate. Consumers must not invent a second encoding.
-var CertThumbprint = ceremony.CertThumbprint
+// certificate. It is THE canonical binding identifier for share holders: the
+// ceremony records it for each holder at enrolment and matches it against the
+// thumbprint a transport derives from the caller's mTLS peer certificate.
+// Consumers must not invent a second encoding.
+var CertThumbprint = mtls.Thumbprint
 
 // SignCSRInitResult holds the result of a CSR signing during init.
 type SignCSRInitResult = ceremony.SignCSRInitResult
-
-// PendingCert holds a certificate pending officer claim.
-type PendingCert = ceremony.PendingCert
 
 // ---------------------------------------------------------------------------
 // Ceremony CA interface
@@ -104,9 +100,6 @@ type IssuedCert = ceremony.IssuedCert
 // CeremonyService manages the initialization ceremony lifecycle.
 type CeremonyService = ceremony.CeremonyService
 
-// CredentialServicer persists sealed credentials.
-type CredentialServicer = ceremony.CredentialServicer
-
 // ---------------------------------------------------------------------------
 // Threshold types
 // ---------------------------------------------------------------------------
@@ -130,16 +123,6 @@ type ThresholdFactory = ceremony.ThresholdFactory
 type ThresholdRegistry = ceremony.ThresholdRegistry
 
 // ---------------------------------------------------------------------------
-// Custodian group types
-// ---------------------------------------------------------------------------
-
-// CustodianGroupServicer manages custodian groups for Shamir shares.
-type CustodianGroupServicer = ceremony.CustodianGroupServicer
-
-// CustodianGroupService is the concrete custodian group service.
-type CustodianGroupService = ceremony.CustodianGroupService
-
-// ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
 
@@ -148,25 +131,6 @@ var NewCeremonyService = ceremony.NewCeremonyService
 
 // NewThresholdRegistry creates a new ThresholdRegistry.
 var NewThresholdRegistry = ceremony.NewThresholdRegistry
-
-// NewCustodianGroupService creates a new CustodianGroupService.
-var NewCustodianGroupService = ceremony.NewCustodianGroupService
-
-// AuthenticatorType identifies the hardware or software that backs an
-// officer's signing credential.
-type AuthenticatorType = ceremony.AuthenticatorType
-
-// AuthenticatorType constants.
-const (
-	// AuthenticatorPIV indicates a PIV smart card credential.
-	AuthenticatorPIV = ceremony.AuthenticatorPIV
-
-	// AuthenticatorFIDO2 indicates a FIDO2 / CTAP2 credential.
-	AuthenticatorFIDO2 = ceremony.AuthenticatorFIDO2
-
-	// AuthenticatorSoftware indicates a software-backed credential.
-	AuthenticatorSoftware = ceremony.AuthenticatorSoftware
-)
 
 // -----------------------------------------------------------------------
 // Admin login-factor enrollment
@@ -289,9 +253,10 @@ type AdminFactorEnrollmentError = ceremony.FactorEnrollmentError
 // EnrollmentKind names how an operator supplies key material for an identity:
 // a CSR to be signed, a certificate they already hold, or a bare public key.
 //
-// The same vocabulary serves the platform administrator and every security
-// officer. Re-exported so xkmsd and quicbaasd parse `--admin` and `--so`
-// identically to qrdbd rather than each growing its own dialect.
+// The vocabulary serves the platform administrator. Share holders are
+// enrolled from a CSR only: the ceremony CA assigns their certificate
+// identity. Re-exported so downstream daemons parse `--admin` identically to
+// qrdbd rather than each growing its own dialect.
 type EnrollmentKind = ceremony.EnrollmentKind
 
 const (
@@ -327,11 +292,11 @@ func EnrollmentKindNames() []string { return ceremony.EnrollmentKindNames() }
 // ---------------------------------------------------------------------------
 // Security Officer registration and status
 //
-// These are the types behind step 1 of the Security Officer distribution model
-// (docs/seal/shamir.md): an admin submits each officer's CSR, the ceremony CA
-// signs it, and the officer is bound to the issued certificate's thumbprint.
-// Registration returns the certificate and the assigned share index — never
-// share bytes; splitting happens later, at SealAndDistribute.
+// Security Officers and key custodians are enrolled the same way
+// (docs/shamir-custody): an admin or Security Officer submits the holder's
+// CSR, the ceremony CA issues a certificate whose identity it assigns, and the
+// holder is bound to that certificate. Registration never returns share
+// material; each holder claims its own HPKE-sealed envelope.
 //
 // They are re-exported so the layers above (go-xkms, and go-quicbaas through
 // it) can offer the same officer flow without importing pkg/ceremony directly.
@@ -340,18 +305,50 @@ func EnrollmentKindNames() []string { return ceremony.EnrollmentKindNames() }
 // RegisterOfficerRequest carries one officer's enrolment material.
 type RegisterOfficerRequest = ceremony.RegisterOfficerRequest
 
-// RegisterOfficerResult returns the signed certificate and the officer's
-// assigned Shamir share index. It never carries share material.
+// RegisterOfficerResult returns the issued certificate. It never carries
+// share material.
 type RegisterOfficerResult = ceremony.RegisterOfficerResult
 
-// CeremonyOfficerStatus is a non-secret view of an enrolled officer: username,
-// certificate thumbprint, share index, auth factor, and claim state.
+// CeremonyOfficerStatus is a non-secret view of an enrolled holder: role,
+// certificate thumbprint, share index, factors, and claim state.
 type CeremonyOfficerStatus = ceremony.OfficerStatus
 
-// EnrollExternalOfficerRequest enrols an officer whose key material is held
-// externally — a certificate from a corporate CA, or a bare public key —
-// rather than being minted from a CSR by the ceremony CA.
-type EnrollExternalOfficerRequest = ceremony.EnrollExternalOfficerRequest
+// FactorEnrolment enrols one additional authentication factor for a holder.
+type FactorEnrolment = ceremony.FactorEnrolment
 
-// EnrollExternalOfficerResponse reports the outcome of an external enrolment.
-type EnrollExternalOfficerResponse = ceremony.EnrollExternalOfficerResponse
+// EncryptionKeyEnrolment enrols a separate HPKE share-envelope key.
+type EncryptionKeyEnrolment = ceremony.EncryptionKeyEnrolment
+
+// QuorumChallenge is the factor challenge a holder answers to submit a share.
+type QuorumChallenge = ceremony.QuorumChallenge
+
+// ---------------------------------------------------------------------------
+// Share envelopes
+//
+// A holder's share reaches it as a ShareEnvelope, HPKE-sealed to the holder's
+// enrolled encryption key. The holder parses the envelope it claimed and opens
+// it with its private key; the node keeps no copy.
+// ---------------------------------------------------------------------------
+
+// ShareEnvelope is a holder's sealed share.
+type ShareEnvelope = ceremony.ShareEnvelope
+
+// ParseShareEnvelope decodes a claimed envelope.
+var ParseShareEnvelope = ceremony.ParseShareEnvelope
+
+// KEMSuite is an HPKE suite a holder's envelope key can use.
+type KEMSuite = keydelivery.Suite
+
+// LookupKEMSuite returns the named HPKE suite.
+var LookupKEMSuite = keydelivery.LookupSuite
+
+// KEMSuiteNames lists the supported HPKE suites.
+var KEMSuiteNames = keydelivery.SuiteNames
+
+// The supported HPKE suites.
+const (
+	KEMP256           = keydelivery.KEMP256
+	KEMP384           = keydelivery.KEMP384
+	KEMX25519         = keydelivery.KEMX25519
+	KEMMLKEM768X25519 = keydelivery.KEMMLKEM768X25519
+)

@@ -31,7 +31,7 @@ import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 //		return err
 //	}
 //	defer release()
-//	_, err = client.Barrier().BarrierRekey(ctx, req)
+//	_, err = client.Barrier().BarrierRekeyStart(ctx, req)
 //
 // REST and MCP send it in the X-QRDB-SO-PIN header, gRPC and the Unix socket
 // in the x-qrdb-so-pin metadata entry, QUIC in the request message's so_pin

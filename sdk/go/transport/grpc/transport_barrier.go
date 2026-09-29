@@ -16,12 +16,12 @@ package grpc
 
 import (
 	"context"
-	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/holderconv"
 )
 
 // Compile-time interface assertion.
@@ -97,8 +97,8 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	}, nil
 }
 
-// BarrierInitializeShamir initializes the barrier using Shamir secret sharing
-// and returns the generated key shares.
+// BarrierInitializeShamir initializes the barrier under Shamir custody and
+// distributes one sealed envelope to each enrolled unseal-key holder.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -111,9 +111,9 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		return nil, err
 	}
 	resp, err := t.client.BarrierShamirInitialize(ctx, &pb.BarrierShamirInitializeRequest{
-		Secret:      req.Secret,
-		Threshold:   int32(req.Threshold),
-		TotalShares: int32(req.TotalShares),
+		Threshold:   int32(req.Threshold),   //nolint:gosec
+		TotalShares: int32(req.TotalShares), //nolint:gosec
+		Policy:      req.Policy,
 		SoPin:       soPIN,
 		UserPin:     req.UserPin,
 	})
@@ -121,68 +121,6 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		return nil, mapGRPCError("BarrierInitializeShamir", err)
 	}
 	return &transport.BarrierInitializeShamirResponse{
-		Threshold:   int(resp.GetThreshold()),
-		TotalShares: int(resp.GetTotalShares()),
-		ShareCount:  int(resp.GetShareCount()),
-	}, nil
-}
-
-// BarrierUnsealWithShare submits a single Shamir share toward the unseal
-// threshold.
-func (t *Transport) BarrierUnsealWithShare(ctx context.Context, req *transport.BarrierUnsealShareRequest) (*transport.BarrierUnsealShareResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierShamirUnsealShare(ctx, &pb.BarrierShamirUnsealShareRequest{
-		Share: req.Share,
-	})
-	if err != nil {
-		return nil, mapGRPCError("BarrierUnsealWithShare", err)
-	}
-	return &transport.BarrierUnsealShareResponse{
-		Required:  int(resp.GetRequired()),
-		Submitted: int(resp.GetSubmitted()),
-		Complete:  resp.GetComplete(),
-	}, nil
-}
-
-// BarrierUnsealWithShares submits multiple Shamir shares to unseal the
-// barrier in a single request.
-func (t *Transport) BarrierUnsealWithShares(ctx context.Context, req *transport.BarrierUnsealSharesRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.client.BarrierShamirUnsealShares(ctx, &pb.BarrierShamirUnsealSharesRequest{
-		Shares: req.Shares,
-	})
-	if err != nil {
-		return mapGRPCError("BarrierUnsealWithShares", err)
-	}
-	return nil
-}
-
-// BarrierRekey generates new Shamir shares with the specified threshold and
-// total count, replacing the existing shares.
-func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierRekeyRequest) (*transport.BarrierRekeyResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	// The SO PIN travels in the request's own so_pin field too, which the
-	// server reads; it comes from the PIN bound by transport.WithSOPIN when
-	// the request carries none, exactly as on QUIC.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := t.client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{
-		Threshold: int32(req.Threshold),
-		Total:     int32(req.Total),
-		SoPin:     soPIN,
-	})
-	if err != nil {
-		return nil, mapGRPCError("BarrierRekey", err)
-	}
-	return &transport.BarrierRekeyResponse{
 		Threshold:   int(resp.GetThreshold()),
 		TotalShares: int(resp.GetTotalShares()),
 		ShareCount:  int(resp.GetShareCount()),
@@ -228,8 +166,8 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		return nil, err
 	}
 	resp, err := t.client.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{
-		Threshold: int32(req.Threshold),
-		Total:     int32(req.Total),
+		Threshold: int32(req.Threshold), //nolint:gosec
+		Policy:    req.Policy,
 		SoPin:     soPIN,
 	})
 	if err != nil {
@@ -240,20 +178,6 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		Total:      int(resp.GetTotal()),
 		ShareCount: int(resp.GetShareCount()),
 	}, nil
-}
-
-// BarrierRecoverWithKeys unseals the barrier using recovery keys.
-func (t *Transport) BarrierRecoverWithKeys(ctx context.Context, req *transport.BarrierRecoverWithKeysRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	_, err := t.client.BarrierRecoveryRecover(ctx, &pb.BarrierRecoveryRecoverRequest{
-		Keys: req.Keys,
-	})
-	if err != nil {
-		return mapGRPCError("BarrierRecoverWithKeys", err)
-	}
-	return nil
 }
 
 // BarrierDeleteRecoveryKeys deletes all stored recovery keys.
@@ -282,49 +206,43 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 	}, nil
 }
 
-// BarrierGenerateRootToken generates a new root token using the provided
-// Shamir shares.
-func (t *Transport) BarrierGenerateRootToken(ctx context.Context, req *transport.BarrierGenerateRootTokenRequest) (*transport.BarrierRootTokenResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierRootToken(ctx, &pb.BarrierRootTokenRequest{
-		Shares: req.Shares,
-	})
-	if err != nil {
-		return nil, mapGRPCError("BarrierGenerateRootToken", err)
-	}
-	return &transport.BarrierRootTokenResponse{
-		Token:     resp.GetToken(),
-		CreatedAt: resp.GetCreatedAt(),
-	}, nil
-}
-
 // ---------------------------------------------------------------------------
-// Security Officer / share-claim operations
+// Share holders (Security Officers and key custodians)
 // ---------------------------------------------------------------------------
 
-// OfficerRegister registers a Security Officer for the system barrier.
+// OfficerRegister enrols a share holder of the unseal key.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.BarrierOfficerRegister(ctx, &pb.BarrierOfficerRegisterRequest{
-		Username:          req.Username,
-		CsrPem:            req.CSRPEM,
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
+	in, err := holderconv.RegisterToPB(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.client.BarrierOfficerRegister(ctx, in)
 	if err != nil {
 		return nil, mapGRPCError("OfficerRegister", err)
 	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    resp.GetCertPem(),
-		ShareIndex: int(resp.GetShareIndex()),
-	}, nil
+	return holderconv.RegisterFromPB(resp), nil
 }
 
-// OfficerList lists all registered Security Officers for the system barrier.
+// RecoveryOfficerRegister enrols a holder of the recovery key.
+func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	in, err := holderconv.RegisterToPB(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.client.BarrierRecoveryOfficerRegister(ctx, in)
+	if err != nil {
+		return nil, mapGRPCError("RecoveryOfficerRegister", err)
+	}
+	return holderconv.RegisterFromPB(resp), nil
+}
+
+// OfficerList lists the unseal key's holders and their claim state.
 func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -333,41 +251,22 @@ func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus
 	if err != nil {
 		return nil, mapGRPCError("OfficerList", err)
 	}
-	return protoToOfficerStatusSlice(resp.GetOfficers()), nil
+	return holderconv.StatusesFromPB(resp.GetOfficers()), nil
 }
 
-// OfficerClaimStatus returns per-officer claim status (no share data).
-func (t *Transport) OfficerClaimStatus(ctx context.Context) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierOfficerClaimStatus(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapGRPCError("OfficerClaimStatus", err)
-	}
-	return protoToOfficerStatusSlice(resp.GetOfficers()), nil
-}
-
-// ShareClaimBegin issues a challenge nonce to the named Security Officer.
+// ShareClaimBegin issues a claim nonce to an unseal-key holder.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.BarrierShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{
-		Username: req.Username,
-	})
+	resp, err := t.client.BarrierShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("ShareClaimBegin", err)
 	}
-	expiresAt, _ := time.Parse(time.RFC3339, resp.GetExpiresAt())
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  resp.GetNonceHex(),
-		ExpiresAt: expiresAt,
-	}, nil
+	return holderconv.ClaimBeginFromPB(resp.GetNonceHex(), resp.GetExpiresAt()), nil
 }
 
-// ShareClaimComplete verifies the officer's nonce signature and returns the
-// share bytes exactly once.
+// ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -380,71 +279,22 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 	if err != nil {
 		return nil, mapGRPCError("ShareClaimComplete", err)
 	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareIndex: int(resp.GetShareIndex()),
-		ShareBytes: resp.GetShareBytes(),
-	}, nil
+	return &transport.ShareClaimCompleteResponse{ShareIndex: int(resp.GetShareIndex()), Envelope: resp.GetEnvelope()}, nil
 }
 
-// ShamirSealVote submits a Shamir share as a seal vote.
-func (t *Transport) ShamirSealVote(ctx context.Context, req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierShamirSealVote(ctx, &pb.BarrierShamirSealVoteRequest{
-		Share: req.Share,
-	})
-	if err != nil {
-		return nil, mapGRPCError("ShamirSealVote", err)
-	}
-	return &transport.ShamirSealVoteResponse{
-		Required:  int(resp.GetRequired()),
-		Submitted: int(resp.GetSubmitted()),
-		Complete:  resp.GetComplete(),
-	}, nil
-}
-
-// RecoveryOfficerRegister registers a Security Officer for recovery key
-// distribution.
-func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	resp, err := t.client.BarrierRecoveryOfficerRegister(ctx, &pb.BarrierOfficerRegisterRequest{
-		Username:          req.Username,
-		CsrPem:            req.CSRPEM,
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
-	if err != nil {
-		return nil, mapGRPCError("RecoveryOfficerRegister", err)
-	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    resp.GetCertPem(),
-		ShareIndex: int(resp.GetShareIndex()),
-	}, nil
-}
-
-// RecoveryShareClaimBegin issues a challenge nonce for a recovery officer.
+// RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.BarrierRecoveryShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{
-		Username: req.Username,
-	})
+	resp, err := t.client.BarrierRecoveryShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("RecoveryShareClaimBegin", err)
 	}
-	expiresAt, _ := time.Parse(time.RFC3339, resp.GetExpiresAt())
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  resp.GetNonceHex(),
-		ExpiresAt: expiresAt,
-	}, nil
+	return holderconv.ClaimBeginFromPB(resp.GetNonceHex(), resp.GetExpiresAt()), nil
 }
 
-// RecoveryShareClaimComplete verifies the recovery officer's nonce signature
-// and returns the recovery share bytes exactly once.
+// RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -457,31 +307,53 @@ func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transpo
 	if err != nil {
 		return nil, mapGRPCError("RecoveryShareClaimComplete", err)
 	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareIndex: int(resp.GetShareIndex()),
-		ShareBytes: resp.GetShareBytes(),
-	}, nil
+	return &transport.ShareClaimCompleteResponse{ShareIndex: int(resp.GetShareIndex()), Envelope: resp.GetEnvelope()}, nil
 }
 
-// protoToOfficerStatusSlice converts a slice of pb.OfficerStatus to transport
-// OfficerStatus values.
-func protoToOfficerStatusSlice(officers []*pb.OfficerStatus) []*transport.OfficerStatus {
-	result := make([]*transport.OfficerStatus, 0, len(officers))
-	for _, o := range officers {
-		s := &transport.OfficerStatus{
-			Username:       o.GetUsername(),
-			CertThumbprint: o.GetCertThumbprint(),
-			ShareIndex:     int(o.GetShareIndex()),
-			AuthFactor:     o.GetAuthFactor(),
-			SharePending:   o.GetSharePending(),
-		}
-		if ea := o.GetEnrolledAt(); ea != "" {
-			s.EnrolledAt, _ = time.Parse(time.RFC3339, ea)
-		}
-		if ca := o.GetClaimedAt(); ca != "" {
-			s.ClaimedAt, _ = time.Parse(time.RFC3339, ca)
-		}
-		result = append(result, s)
+// BarrierQuorumBegin issues the factor challenge a holder answers.
+func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
-	return result
+	resp, err := t.client.BarrierQuorumBegin(ctx, holderconv.BeginToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("BarrierQuorumBegin", err)
+	}
+	return holderconv.ChallengeFromPB(resp), nil
+}
+
+// BarrierQuorumSubmit submits one authenticated holder's share.
+func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierQuorumSubmit(ctx, holderconv.SubmitToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("BarrierQuorumSubmit", err)
+	}
+	return holderconv.OutcomeFromPB(resp), nil
+}
+
+// BarrierRekeyStart opens a rekey round.
+func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierRekeyStart(ctx, holderconv.RekeyToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("BarrierRekeyStart", err)
+	}
+	return holderconv.RoundFromPB(resp), nil
+}
+
+// BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
+func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierOfficerRevoke(ctx, holderconv.RevokeToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("BarrierOfficerRevoke", err)
+	}
+	return holderconv.RoundFromPB(resp), nil
 }

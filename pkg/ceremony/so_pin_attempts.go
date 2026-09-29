@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -55,10 +56,12 @@ type soPINAttempts struct {
 	now func() time.Time
 }
 
-// check compares presented with configured in constant time. It returns
-// nil on a match, ErrSOPINMismatch on a mismatch, and *SOPINLockedError
-// without comparing anything while the check is locked out.
-func (a *soPINAttempts) check(presented, configured string) error {
+// check runs verify, the PIN backend's hashed, constant-time SO PIN
+// verification, unless the check is locked out. It returns nil when verify
+// does, verify's error unchanged otherwise, and *SOPINLockedError without
+// running verify while locked out. Only a wrong PIN (pin.ErrPINInvalid)
+// counts as a failure: a backend that cannot answer is not a guess.
+func (a *soPINAttempts) check(verify func() error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -69,16 +72,20 @@ func (a *soPINAttempts) check(presented, configured string) error {
 	if now.Before(a.lockedUntil) {
 		return &SOPINLockedError{RetryAfter: a.lockedUntil.Sub(now)}
 	}
-	if soPINMatches(presented, configured) {
+	err := verify()
+	if err == nil {
 		a.failures = 0
 		a.lockedUntil = time.Time{}
 		return nil
+	}
+	if !errors.Is(err, pin.ErrPINInvalid) {
+		return err
 	}
 	a.failures++
 	if a.failures >= soPINFreeFailures {
 		a.lockedUntil = now.Add(soPINBackoff(a.failures - soPINFreeFailures))
 	}
-	return ErrSOPINMismatch
+	return err
 }
 
 // soPINBackoff is the lockout after the n-th failure past the free ones:

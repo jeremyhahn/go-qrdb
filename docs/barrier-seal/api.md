@@ -5,8 +5,9 @@
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
 
-Officer, share-claim and recovery-officer endpoints belong to
-[../shamir-custody/api.md](../shamir-custody/api.md).
+Share holders — enrolment, claims, the quorum rounds that unseal, seal,
+mint root tokens, recover and rekey a Shamir barrier, and revocation — belong
+to [../shamir-custody/api.md](../shamir-custody/api.md).
 
 ## Capability matrix
 
@@ -14,15 +15,17 @@ Officer, share-claim and recovery-officer endpoints belong to
 |---|---|---|---|---|---|---|
 | Status | `GET /v1/barrier/status` | `BarrierStatus` | `barrier.Status` | `qrdb_barrier_status` | `Status` | `seal:status` |
 | Initialize | `POST /v1/barrier/initialize` | `BarrierInitialize` | `barrier.Initialize` | `qrdb_barrier_initialize` | `Initialize` | `seal:bootstrap` |
-| Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `ShamirInitialize` | `seal:initialize_shamir` |
+| Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
 | Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `Unseal` | `seal:unseal` |
-| Unseal — one share | `POST /v1/barrier/shamir/unseal-share` | `BarrierShamirUnsealShare` | `barrier.ShamirUnsealShare` | `qrdb_barrier_shamir_unseal_share` | `UnsealShare` | `barrier:unseal-share` |
-| Unseal — many shares | `POST /v1/barrier/shamir/unseal-shares` | `BarrierShamirUnsealShares` | `barrier.ShamirUnsealShares` | `qrdb_barrier_shamir_unseal_shares` | `UnsealWithShares` | `barrier:unseal-share` |
-| Seal | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `Seal` | `seal:seal` |
-| Shamir seal vote | `POST /v1/barrier/shamir/seal-vote` | `BarrierShamirSealVote` | `barrier.ShamirSealVote` | `qrdb_barrier_shamir_seal_vote` | `ShamirSealVote` | `seal:submit_seal_vote` |
-| Rekey | `POST /v1/barrier/rekey` | `BarrierRekey` | `barrier.Rekey` | `qrdb_barrier_rekey` | `Rekey` | `seal:rekey` |
+| Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `Seal` | `seal:seal` + SO PIN |
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` |
-| Root token | `POST /v1/barrier/root-token` | `BarrierRootToken` | `barrier.RootToken` | `qrdb_barrier_root_token` | `RootToken` | `seal:bootstrap` |
+
+A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
+only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
+and `POST /v1/barrier/rekey/start`, in
+[../shamir-custody/api.md](../shamir-custody/api.md). `BarrierUnseal` refuses a
+Shamir barrier (`ErrShamirUnsealRequiresQuorum`) and `BarrierSeal` refuses one
+(`ErrShamirBarrierRequiresQuorum`).
 
 ### Who may call these
 
@@ -116,12 +119,11 @@ of them stub the call locally.
 | Tenant barrier status | `GET /v1/tenants/{id}/barrier/status` | identity-gated |
 | Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `TenantBarrierSeal` |
 | Tenant barrier unseal | `POST /v1/tenants/{id}/barrier/unseal` | identity-gated |
-| Tenant unseal share | `POST /v1/tenants/{id}/barrier/unseal-share` | identity-gated |
-| Tenant seal vote | `POST /v1/tenants/{id}/barrier/seal-vote` | `TenantBarrierSealVote` |
 
 Tenant barrier operations are served by the dedicated gRPC service
-`qrdb.v1.TenantBarrierService` (`Init`, `Unseal`, `UnsealShare`, `Seal`,
-`Status`, plus the officer methods). See
+`qrdb.v1.TenantBarrierService` (`Init`, `Unseal`, `Seal`, `Status`, plus the
+share-holder methods). A Shamir tenant barrier is unsealed and sealed through
+its holder quorum. See
 [../multi-tenancy/api.md](../multi-tenancy/api.md).
 
 **Identity-gated** means the caller's own authenticated identity authorizes the
@@ -188,16 +190,12 @@ daemon takes its strategy from its own boot-time seal config** —
 `BarrierInitialize` has no strategy parameter on any transport, and a server
 that receives the field ignores it.
 
-`POST /v1/barrier/shamir/initialize`: same base64 `secret`, plus `threshold`
-(M) and `total_shares` (N). **The response is share-free** — shares are sealed
-server side to the enrolled officers' enclaves.
+`POST /v1/barrier/shamir/initialize`: `threshold` (M), `total_shares` (N,
+which must equal the number of enrolled holders) and `policy`. There is no
+secret: the barrier generates its keys. **The response is share-free** — each
+share is sealed to its holder.
 
 `POST /v1/barrier/unseal`: the base64 `secret` alone.
-
-`POST /v1/barrier/shamir/unseal-shares`: a list of shares. Submitting ≥ M
-unseals in one call; fewer accumulate and the response reports progress toward
-the threshold. Share fields are text strings, not byte strings — see the
-limitation note below.
 
 `POST /v1/barrier/enable-encryption`:
 
@@ -212,8 +210,8 @@ limitation note below.
 started; poll `BarrierStatus` until `strategy` changes.
 
 `BarrierStatus` reports the sealed/unsealed state, the active strategy, the
-initialization timestamp, and — for Shamir barriers — accumulated share
-progress.
+initialization timestamp, and — for Shamir barriers — the threshold and
+total of the share set in force.
 
 ## Sealed-window behaviour
 
@@ -231,12 +229,12 @@ that is deliberate, since it is how an operator finds out what to do next.
 |---|---|---|
 | Success | 200 | `OK` |
 | Barrier sealed (data path) | 503 | `UNAVAILABLE` — `ErrBarrierSealed` |
-| Wrong passphrase or share set | 403 | `PERMISSION_DENIED` — stays sealed |
+| Wrong passphrase | 403 | `PERMISSION_DENIED` — stays sealed |
+| Credential unseal or single-caller seal of a Shamir barrier | 409 / 422 | `FAILED_PRECONDITION` — use the holder quorum |
 | Several strategies registered, none named | 400 | `INVALID_ARGUMENT` — `ErrNoStrategySpecified` |
 | Unknown strategy name | 400 | `INVALID_ARGUMENT` |
 | One PIN supplied without the other | 400 | `INVALID_ARGUMENT` — dual control |
 | Any PIN with `strategy: none` | 400 | `INVALID_ARGUMENT` — `PINsNotAllowedError` |
-| Shares below threshold | 200 with progress | `OK` with progress — not an error |
 | `enable-encryption` on a tenant using the shared system barrier | 409 | `FAILED_PRECONDITION` |
 | `enable-encryption` while another migration on the same barrier (system or tenant) is already in progress | 409 | `FAILED_PRECONDITION` — `seal.ErrMigrationInProgress` |
 | CA operation while sealed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
@@ -246,18 +244,18 @@ that is deliberate, since it is how an operator finds out what to do next.
 | Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |
 | `enable-encryption` (or unseal) on an embedded node that is closing | `503` | `UNAVAILABLE` — `service.ErrNodeClosed`; retry against another node |
 
-The complete HTTP status mapping table is in
-[seal/README.md](../seal/README.md#barrier-http-status-mapping) if that file is
-still present in your tree; the rows above are the ones this feature guarantees.
+Share-holder and quorum errors are classified in
+[../shamir-custody/api.md](../shamir-custody/api.md#error-classes).
 
 ## Known limitation — share and PIN fields are still text strings
 
 The wipeable-bytes rule above covers the **wrapping credential**. It does not
 yet cover every secret on this surface:
 
-- Shamir **share** fields (`share`, `shares`, recovery `keys`, seal-vote
-  `share`) are text strings on all transports.
 - `so_pin` and `user_pin` are text strings.
+
+Quorum submissions carry the share as bytes, and every transport wipes the
+decoded share after the call.
 
 Those are secrets too, and a Go string is no more wipeable for a share than it
 is for a passphrase. They are named here so the gap is visible rather than

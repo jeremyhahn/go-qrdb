@@ -76,9 +76,6 @@ var (
 	// ErrShamirQuorumIncomplete is returned when the quorum is not yet met.
 	ErrShamirQuorumIncomplete = seal.ErrShamirQuorumIncomplete
 
-	// ErrShamirNoQuorum is returned when no active quorum accumulator exists.
-	ErrShamirNoQuorum = seal.ErrShamirNoQuorum
-
 	// ErrShamirCombineFailed is returned when shares fail to reconstruct the secret.
 	ErrShamirCombineFailed = seal.ErrShamirCombineFailed
 
@@ -114,9 +111,6 @@ var (
 
 	// ErrResealFailed is returned when re-sealing a secret fails.
 	ErrResealFailed = seal.ErrResealFailed
-
-	// ErrRecoveryKeysNotFound is returned when recovery keys do not exist.
-	ErrRecoveryKeysNotFound = seal.ErrRecoveryKeysNotFound
 
 	// ErrRootTokenVerificationFailed is returned when root token verification fails.
 	ErrRootTokenVerificationFailed = seal.ErrRootTokenVerificationFailed

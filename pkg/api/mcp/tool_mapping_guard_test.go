@@ -28,10 +28,10 @@ package mcp
 //     conditional addTools group fires) builds a registry that matches,
 //     exactly, the curated tool -> permission table the old mcpPermissions
 //     map declared (minus its dead qrdb_ceremony_claim_share entry that
-//     never had a tool, plus the two officer ceremony share-claim tools that
-//     gained the same identity-gated contract they already carry on gRPC and
-//     REST), so the migration to registration-site permissions cannot
-//     silently change a tool's required permission.
+//     never had a tool, and with the raw-share tools the unified share-holder
+//     quorum retired replaced by the quorum, rekey and revocation tools), so
+//     the migration to registration-site permissions cannot silently change a
+//     tool's required permission.
 //  2. The set of tools registered on the underlying mcp-go server is
 //     EXACTLY the set covered by the registry (the MCP analogue of REST's
 //     walk-the-router assertion).
@@ -55,11 +55,9 @@ import (
 )
 
 // expectedToolPerms is the authoritative tool -> permission table for the MCP
-// transport: exactly the permissions the deleted mcpPermissions table carried
-// for every registered tool, plus qrdb_ceremony_begin_claim_share and
-// qrdb_ceremony_complete_claim_share at permission.IdentityGated
-// (cross-transport parity with their gRPC proto options and REST routes; the
-// old table omitted them, leaving the two tools unconditionally denied).
+// transport. The share-holder quorum tools (qrdb_barrier_quorum_begin/submit
+// and their tenant forms) are permission.IdentityGated: the holder's factor
+// proof is the credential, checked by the service.
 var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_put":    permission.KVPut,
 	"qrdb_get":    permission.KVGet,
@@ -193,46 +191,39 @@ var expectedToolPerms = map[string]permission.Permission{
 	// identical to REST, gRPC, and QUIC.
 	"qrdb_tenant_barrier_init":                   permission.IdentityGated,
 	"qrdb_tenant_barrier_unseal":                 permission.IdentityGated,
-	"qrdb_tenant_barrier_unseal_share":           permission.IdentityGated,
 	"qrdb_tenant_barrier_seal":                   permission.TenantBarrierSeal,
 	"qrdb_tenant_barrier_status":                 permission.IdentityGated,
 	"qrdb_tenant_barrier_officer_register":       permission.TenantBarrierOfficerRegister,
 	"qrdb_tenant_barrier_officer_list":           permission.TenantBarrierOfficerList,
 	"qrdb_tenant_barrier_share_claim_begin":      permission.IdentityGated,
 	"qrdb_tenant_barrier_share_claim_complete":   permission.IdentityGated,
-	"qrdb_tenant_barrier_officer_claim_status":   permission.TenantBarrierOfficerList,
-	"qrdb_tenant_barrier_shamir_seal_vote":       permission.TenantBarrierSealVote,
+	"qrdb_tenant_barrier_quorum_begin":           permission.IdentityGated,
+	"qrdb_tenant_barrier_quorum_submit":          permission.IdentityGated,
+	"qrdb_tenant_barrier_rekey_start":            permission.TenantBarrierRekey,
+	"qrdb_tenant_barrier_officer_revoke":         permission.TenantBarrierOfficerRevoke,
 	"qrdb_barrier_initialize":                    permission.SealBootstrap,
 	"qrdb_barrier_unseal":                        permission.SealUnseal,
 	"qrdb_barrier_seal":                          permission.SealSeal,
 	"qrdb_barrier_status":                        permission.SealStatus,
 	"qrdb_barrier_shamir_initialize":             permission.SealInitializeShamir,
-	"qrdb_barrier_shamir_unseal_share":           permission.BarrierUnsealShare,
-	"qrdb_barrier_shamir_unseal_shares":          permission.BarrierUnsealShare,
-	"qrdb_barrier_rekey":                         permission.SealRekey,
 	"qrdb_barrier_enable_encryption":             permission.SealEnableEncryption,
 	"qrdb_barrier_recovery_generate":             permission.SealGenerateRecovery,
-	"qrdb_barrier_recovery_recover":              permission.SealRecoverWithKeys,
 	"qrdb_barrier_recovery_delete":               permission.SealGenerateRecovery,
 	"qrdb_barrier_recovery_status":               permission.SealStatus,
-	"qrdb_barrier_root_token":                    permission.SealBootstrap,
 	"qrdb_barrier_officer_register":              permission.SealOfficerRegister,
 	"qrdb_barrier_officer_list":                  permission.SealOfficerList,
 	"qrdb_barrier_share_claim_begin":             permission.IdentityGated,
 	"qrdb_barrier_share_claim_complete":          permission.IdentityGated,
-	"qrdb_barrier_officer_claim_status":          permission.SealOfficerList,
-	"qrdb_barrier_shamir_seal_vote":              permission.SealSubmitSealVote,
 	"qrdb_barrier_recovery_officer_register":     permission.SealOfficerRegister,
 	"qrdb_barrier_recovery_share_claim_begin":    permission.IdentityGated,
 	"qrdb_barrier_recovery_share_claim_complete": permission.IdentityGated,
+	"qrdb_barrier_quorum_begin":                  permission.IdentityGated,
+	"qrdb_barrier_quorum_submit":                 permission.IdentityGated,
+	"qrdb_barrier_rekey_start":                   permission.SealRekey,
+	"qrdb_barrier_officer_revoke":                permission.SealOfficerRevoke,
 	"qrdb_ceremony_initialize":                   permission.CeremonyInitialize,
 	"qrdb_ceremony_status":                       permission.CeremonyStatus,
-	"qrdb_ceremony_claim_cert_begin":             permission.CeremonyClaimCert,
-	"qrdb_ceremony_claim_cert_complete":          permission.CeremonyClaimCert,
 	"qrdb_ceremony_sign_csr":                     permission.CeremonySignCSR,
-	"qrdb_ceremony_claim_share_begin":            permission.IdentityGated,
-	"qrdb_ceremony_claim_share_complete":         permission.IdentityGated,
-	"qrdb_ceremony_submit_unseal_share":          permission.BarrierUnsealShare,
 	"qrdb_credential_submit":                     permission.CredentialsSubmit,
 	"qrdb_credential_strategy":                   permission.CredentialsStrategy,
 	"qrdb_credential_list":                       permission.CredentialsList,
@@ -300,8 +291,6 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_user_authfactor_rotate":                permission.UserAuthFactorsRotate,
 	"qrdb_user_authfactor_relabel":               permission.UserAuthFactorsRelabel,
 	"qrdb_user_authfactor_login":                 permission.UserAuthFactorsLogin,
-	"qrdb_ceremony_begin_claim_share":            permission.IdentityGated,
-	"qrdb_ceremony_complete_claim_share":         permission.IdentityGated,
 }
 
 // ---------------------------------------------------------------------------
@@ -486,8 +475,15 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_totally_unknown_tool", nil); err == nil {
 		t.Error("unknown tool must be denied (default-deny)")
 	}
-	if err := mw.AuthorizeMCP(ctx, srv.toolPerms, "qrdb_ceremony_claim_share", nil); err == nil {
-		t.Error("dead table entry qrdb_ceremony_claim_share must be denied (it has no tool)")
+	for _, dead := range []string{
+		"qrdb_ceremony_claim_share",
+		// Retired by the unified share-holder quorum.
+		"qrdb_barrier_shamir_unseal_share", "qrdb_barrier_root_token", "qrdb_barrier_rekey",
+		"qrdb_ceremony_begin_claim_share", "qrdb_ceremony_submit_unseal_share", "qrdb_tenant_barrier_unseal_share",
+	} {
+		if err := mw.AuthorizeMCP(ctx, srv.toolPerms, dead, nil); err == nil {
+			t.Errorf("dead tool %s must be denied (it has no tool)", dead)
+		}
 	}
 	if authz.calls != 0 {
 		t.Errorf("authorizer consulted %d times for denied tools, want 0", authz.calls)
@@ -501,21 +497,5 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 	}
 	if authz.calls != 4 {
 		t.Errorf("authorizer consulted %d times for allowed tools, want 4", authz.calls)
-	}
-}
-
-// TestToolMappingGuard_OfficerShareClaimParity pins the two parity additions:
-// the officer ceremony share-claim tools carry the identity-gated sentinel,
-// matching their gRPC "identity:gated" proto options and REST routes.
-func TestToolMappingGuard_OfficerShareClaimParity(t *testing.T) {
-	srv := newFullyWiredGuardServer(t)
-	for _, tool := range []string{
-		"qrdb_ceremony_begin_claim_share",
-		"qrdb_ceremony_complete_claim_share",
-	} {
-		got, ok := srv.toolPerms.Lookup(tool)
-		if !ok || got != permission.IdentityGated {
-			t.Errorf("%s: got (%q, %v), want (%q, true)", tool, got, ok, permission.IdentityGated)
-		}
 	}
 }

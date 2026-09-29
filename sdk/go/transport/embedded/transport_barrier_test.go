@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -32,15 +33,14 @@ import (
 // mockBarrierService implements service.BarrierServicer with function-field
 // injection so each test can control the behavior of every method.
 type mockBarrierService struct {
+	service.BarrierServicer
 	barrierInitializeFn         func(ctx context.Context, secret []byte) error
 	barrierUnsealFn             func(ctx context.Context, secret []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	barrierInitializeShamirFn   func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
-	barrierUnsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
+	barrierInitializeShamirFn   func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
-	barrierRekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
-	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
+	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
 	barrierRecoverWithKeysFn    func(ctx context.Context, keys []string) error
 	barrierDeleteRecoveryKeysFn func(ctx context.Context) error
 	barrierHasRecoveryKeysFn    func(ctx context.Context) (bool, error)
@@ -68,53 +68,25 @@ func (m *mockBarrierService) BarrierSeal(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+	if m.barrierInitializeShamirFn != nil {
+		return m.barrierInitializeShamirFn(ctx, threshold, totalShares, policy)
+	}
+	return &service.ShamirInitInfo{ShareCount: totalShares, Threshold: threshold, TotalShares: totalShares}, nil
+}
+
+func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
+	if m.barrierGenRecoveryKeysFn != nil {
+		return m.barrierGenRecoveryKeysFn(ctx, threshold, policy)
+	}
+	return &service.RecoveryKeysInfo{ShareCount: threshold + 1, Threshold: threshold, Total: threshold + 1}, nil
+}
+
 func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.BarrierStatusInfo, error) {
 	if m.barrierStatusFn != nil {
 		return m.barrierStatusFn(ctx)
 	}
 	return &service.BarrierStatusInfo{}, nil
-}
-
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
-	if m.barrierInitializeShamirFn != nil {
-		return m.barrierInitializeShamirFn(ctx, secret, threshold, totalShares)
-	}
-	return &service.ShamirInitInfo{}, nil
-}
-
-func (m *mockBarrierService) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
-	if m.barrierUnsealWithShareFn != nil {
-		return m.barrierUnsealWithShareFn(ctx, share)
-	}
-	return &service.UnsealShareProgress{}, nil
-}
-
-func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
-	if m.barrierUnsealWithSharesFn != nil {
-		return m.barrierUnsealWithSharesFn(ctx, shares)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	if m.barrierRekeyFn != nil {
-		return m.barrierRekeyFn(ctx, threshold, total)
-	}
-	return &service.ShamirInitInfo{}, nil
-}
-
-func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-	if m.barrierGenRecoveryKeysFn != nil {
-		return m.barrierGenRecoveryKeysFn(ctx, threshold, total)
-	}
-	return &service.RecoveryKeysInfo{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
-	if m.barrierRecoverWithKeysFn != nil {
-		return m.barrierRecoverWithKeysFn(ctx, keys)
-	}
-	return nil
 }
 
 func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) error {
@@ -131,54 +103,11 @@ func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, 
 	return false, nil
 }
 
-func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, shares []string) (*service.RootTokenInfo, error) {
-	if m.barrierGenRootTokenFn != nil {
-		return m.barrierGenRootTokenFn(ctx, shares)
-	}
-	return &service.RootTokenInfo{}, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-
-func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-
 // newBarrierTransport creates a transport with the given barrier service
 // injected via the WithBarrierService option.
 func newBarrierTransport(t *testing.T, svc service.BarrierServicer) *Transport {
 	t.Helper()
-	opts := []Option{}
+	opts := []Option{WithPINBackend(pintest.NewBackend(t))}
 	if svc != nil {
 		opts = append(opts, WithBarrierService(svc))
 	}
@@ -470,9 +399,9 @@ func TestEmbeddedBarrier_Status_ServiceError(t *testing.T) {
 
 func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
-			if string(secret) != "shamir-secret" {
-				t.Errorf("expected secret 'shamir-secret', got %q", secret)
+		barrierInitializeShamirFn: func(_ context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+			if policy != seal.FactorPolicyAnyEnrolled {
+				t.Errorf("expected policy any-enrolled, got %q", policy)
 			}
 			if threshold != 3 {
 				t.Errorf("expected threshold 3, got %d", threshold)
@@ -490,9 +419,9 @@ func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 	tr := newBarrierTransport(t, svc)
 
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      []byte("shamir-secret"),
 		Threshold:   3,
 		TotalShares: 5,
+		Policy:      transport.PolicyAnyEnrolled,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -512,7 +441,6 @@ func TestEmbeddedBarrier_ShamirInitialize_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -526,7 +454,6 @@ func TestEmbeddedBarrier_ShamirInitialize_NilService(t *testing.T) {
 	tr := newBarrierTransport(t, nil)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -538,230 +465,15 @@ func TestEmbeddedBarrier_ShamirInitialize_NilService(t *testing.T) {
 
 func TestEmbeddedBarrier_ShamirInitialize_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
+		barrierInitializeShamirFn: func(_ context.Context, _, _ int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 			return nil, errBarrier
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
-	})
-	if !errors.Is(err, errBarrier) {
-		t.Errorf("expected errBarrier, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierUnsealWithShare
-// ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_ShamirUnsealShare(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierUnsealWithShareFn: func(_ context.Context, share string) (*service.UnsealShareProgress, error) {
-			if share != "share-1" {
-				t.Errorf("expected share 'share-1', got %q", share)
-			}
-			return &service.UnsealShareProgress{
-				Required:  3,
-				Submitted: 1,
-				Complete:  false,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	resp, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{
-		Share: "share-1",
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if resp.Required != 3 {
-		t.Errorf("expected required=3, got %d", resp.Required)
-	}
-	if resp.Submitted != 1 {
-		t.Errorf("expected submitted=1, got %d", resp.Submitted)
-	}
-	if resp.Complete {
-		t.Error("expected complete=false")
-	}
-}
-
-func TestEmbeddedBarrier_ShamirUnsealShare_Closed(t *testing.T) {
-	tr := closedBarrierTransport(t)
-
-	_, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{
-		Share: "share-1",
-	})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_ShamirUnsealShare_NilService(t *testing.T) {
-	tr := newBarrierTransport(t, nil)
-
-	_, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{
-		Share: "share-1",
-	})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Errorf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_ShamirUnsealShare_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierUnsealWithShareFn: func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-			return nil, errBarrier
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	_, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{
-		Share: "invalid-share",
-	})
-	if !errors.Is(err, errBarrier) {
-		t.Errorf("expected errBarrier, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierUnsealWithShares
-// ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_ShamirUnsealShares(t *testing.T) {
-	var capturedShares []string
-	svc := &mockBarrierService{
-		barrierUnsealWithSharesFn: func(_ context.Context, shares []string) error {
-			capturedShares = shares
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	shares := []string{"share-1", "share-2", "share-3"}
-	err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: shares,
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if len(capturedShares) != 3 {
-		t.Errorf("expected 3 shares, got %d", len(capturedShares))
-	}
-	for i, s := range shares {
-		if capturedShares[i] != s {
-			t.Errorf("share[%d]: expected %q, got %q", i, s, capturedShares[i])
-		}
-	}
-}
-
-func TestEmbeddedBarrier_ShamirUnsealShares_Closed(t *testing.T) {
-	tr := closedBarrierTransport(t)
-
-	err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: []string{"s1"},
-	})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_ShamirUnsealShares_NilService(t *testing.T) {
-	tr := newBarrierTransport(t, nil)
-
-	err := tr.BarrierUnsealWithShares(context.Background(), &transport.BarrierUnsealSharesRequest{
-		Shares: []string{"s1"},
-	})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Errorf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierRekey
-// ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_Rekey(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierRekeyFn: func(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-			if threshold != 2 {
-				t.Errorf("expected threshold=2, got %d", threshold)
-			}
-			if total != 5 {
-				t.Errorf("expected total=5, got %d", total)
-			}
-			return &service.ShamirInitInfo{
-				ShareCount:  5,
-				Threshold:   2,
-				TotalShares: 5,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	resp, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2,
-		Total:     5,
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if resp.ShareCount != 5 {
-		t.Errorf("expected ShareCount=5, got %d", resp.ShareCount)
-	}
-	if resp.Threshold != 2 {
-		t.Errorf("expected threshold=2, got %d", resp.Threshold)
-	}
-	if resp.TotalShares != 5 {
-		t.Errorf("expected total_shares=5, got %d", resp.TotalShares)
-	}
-}
-
-func TestEmbeddedBarrier_Rekey_Closed(t *testing.T) {
-	tr := closedBarrierTransport(t)
-
-	_, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2,
-		Total:     3,
-	})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Rekey_NilService(t *testing.T) {
-	tr := newBarrierTransport(t, nil)
-
-	_, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2,
-		Total:     3,
-	})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Errorf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Rekey_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierRekeyFn: func(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
-			return nil, errBarrier
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	_, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{
-		Threshold: 2,
-		Total:     3,
 	})
 	if !errors.Is(err, errBarrier) {
 		t.Errorf("expected errBarrier, got %v", err)
@@ -774,12 +486,12 @@ func TestEmbeddedBarrier_Rekey_ServiceError(t *testing.T) {
 
 func TestEmbeddedBarrier_RecoveryGenerate(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierGenRecoveryKeysFn: func(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+		barrierGenRecoveryKeysFn: func(_ context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 			if threshold != 2 {
 				t.Errorf("expected threshold=2, got %d", threshold)
 			}
-			if total != 3 {
-				t.Errorf("expected total=3, got %d", total)
+			if policy != seal.FactorPolicyDesignated {
+				t.Errorf("expected policy designated, got %q", policy)
 			}
 			return &service.RecoveryKeysInfo{
 				ShareCount: 3,
@@ -792,7 +504,7 @@ func TestEmbeddedBarrier_RecoveryGenerate(t *testing.T) {
 
 	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 2,
-		Total:     3,
+		Policy:    transport.PolicyDesignated,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -813,7 +525,6 @@ func TestEmbeddedBarrier_RecoveryGenerate_Closed(t *testing.T) {
 
 	_, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 2,
-		Total:     3,
 	})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
@@ -826,7 +537,6 @@ func TestEmbeddedBarrier_RecoveryGenerate_NilService(t *testing.T) {
 
 	_, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 2,
-		Total:     3,
 	})
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
@@ -836,7 +546,7 @@ func TestEmbeddedBarrier_RecoveryGenerate_NilService(t *testing.T) {
 
 func TestEmbeddedBarrier_RecoveryGenerate_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierGenRecoveryKeysFn: func(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
+		barrierGenRecoveryKeysFn: func(_ context.Context, _ int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 			return nil, errBarrier
 		},
 	}
@@ -844,65 +554,9 @@ func TestEmbeddedBarrier_RecoveryGenerate_ServiceError(t *testing.T) {
 
 	_, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 2,
-		Total:     3,
 	})
 	if !errors.Is(err, errBarrier) {
 		t.Errorf("expected errBarrier, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierRecoverWithKeys
-// ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_RecoveryRecover(t *testing.T) {
-	var capturedKeys []string
-	svc := &mockBarrierService{
-		barrierRecoverWithKeysFn: func(_ context.Context, keys []string) error {
-			capturedKeys = keys
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	keys := []string{"rk-1", "rk-2"}
-	err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{
-		Keys: keys,
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if len(capturedKeys) != 2 {
-		t.Errorf("expected 2 keys, got %d", len(capturedKeys))
-	}
-	for i, k := range keys {
-		if capturedKeys[i] != k {
-			t.Errorf("key[%d]: expected %q, got %q", i, k, capturedKeys[i])
-		}
-	}
-}
-
-func TestEmbeddedBarrier_RecoveryRecover_Closed(t *testing.T) {
-	tr := closedBarrierTransport(t)
-
-	err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{
-		Keys: []string{"k1"},
-	})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_RecoveryRecover_NilService(t *testing.T) {
-	tr := newBarrierTransport(t, nil)
-
-	err := tr.BarrierRecoverWithKeys(context.Background(), &transport.BarrierRecoverWithKeysRequest{
-		Keys: []string{"k1"},
-	})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Errorf("expected NilServiceError, got %T: %v", err, err)
 	}
 }
 
@@ -1016,80 +670,6 @@ func TestEmbeddedBarrier_RecoveryStatus_ServiceError(t *testing.T) {
 	tr := newBarrierTransport(t, svc)
 
 	_, err := tr.BarrierHasRecoveryKeys(context.Background())
-	if !errors.Is(err, errBarrier) {
-		t.Errorf("expected errBarrier, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BarrierGenerateRootToken
-// ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_RootToken(t *testing.T) {
-	createdAt := time.Date(2026, 3, 4, 15, 0, 0, 0, time.UTC)
-	svc := &mockBarrierService{
-		barrierGenRootTokenFn: func(_ context.Context, shares []string) (*service.RootTokenInfo, error) {
-			if len(shares) != 3 {
-				t.Errorf("expected 3 shares, got %d", len(shares))
-			}
-			return &service.RootTokenInfo{
-				Token:     "root-token-abc123",
-				CreatedAt: createdAt,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	resp, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"s1", "s2", "s3"},
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if resp.Token != "root-token-abc123" {
-		t.Errorf("expected token 'root-token-abc123', got %q", resp.Token)
-	}
-	expectedCreatedAt := createdAt.Format(time.RFC3339)
-	if resp.CreatedAt != expectedCreatedAt {
-		t.Errorf("expected created_at %q, got %q", expectedCreatedAt, resp.CreatedAt)
-	}
-}
-
-func TestEmbeddedBarrier_RootToken_Closed(t *testing.T) {
-	tr := closedBarrierTransport(t)
-
-	_, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"s1"},
-	})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_RootToken_NilService(t *testing.T) {
-	tr := newBarrierTransport(t, nil)
-
-	_, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"s1"},
-	})
-	var nilErr *NilServiceError
-	if !errors.As(err, &nilErr) {
-		t.Errorf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_RootToken_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierGenRootTokenFn: func(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-			return nil, errBarrier
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	_, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{
-		Shares: []string{"s1"},
-	})
 	if !errors.Is(err, errBarrier) {
 		t.Errorf("expected errBarrier, got %v", err)
 	}
@@ -1218,32 +798,6 @@ func TestEmbeddedBarrier_Request_BarrierSeal(t *testing.T) {
 	}
 }
 
-func TestEmbeddedBarrier_Request_BarrierInitializeShamir(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
-			return &service.ShamirInitInfo{
-				ShareCount:  3,
-				Threshold:   2,
-				TotalShares: 3,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	var resp *transport.BarrierInitializeShamirResponse
-	err := tr.Request(context.Background(), "BarrierInitializeShamir",
-		&transport.BarrierInitializeShamirRequest{Secret: []byte("s"), Threshold: 2, TotalShares: 3}, &resp)
-	if err != nil {
-		t.Fatalf("Request BarrierInitializeShamir failed: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.ShareCount != 3 {
-		t.Errorf("expected ShareCount=3, got %d", resp.ShareCount)
-	}
-}
-
 func TestEmbeddedBarrier_Request_BarrierInitializeShamir_InvalidRequest(t *testing.T) {
 	tr := newBarrierTransport(t, &mockBarrierService{})
 
@@ -1254,164 +808,10 @@ func TestEmbeddedBarrier_Request_BarrierInitializeShamir_InvalidRequest(t *testi
 	}
 }
 
-func TestEmbeddedBarrier_Request_BarrierUnsealWithShare(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierUnsealWithShareFn: func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-			return &service.UnsealShareProgress{Required: 3, Submitted: 2, Complete: false}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	var resp *transport.BarrierUnsealShareResponse
-	err := tr.Request(context.Background(), "BarrierUnsealWithShare",
-		&transport.BarrierUnsealShareRequest{Share: "s1"}, &resp)
-	if err != nil {
-		t.Fatalf("Request BarrierUnsealWithShare failed: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.Submitted != 2 {
-		t.Errorf("expected submitted=2, got %d", resp.Submitted)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierUnsealWithShare_InvalidRequest(t *testing.T) {
-	tr := newBarrierTransport(t, &mockBarrierService{})
-
-	err := tr.Request(context.Background(), "BarrierUnsealWithShare", false, nil)
-	var ire *InvalidRequestError
-	if !errors.As(err, &ire) {
-		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierUnsealWithShares(t *testing.T) {
-	var capturedShares []string
-	svc := &mockBarrierService{
-		barrierUnsealWithSharesFn: func(_ context.Context, shares []string) error {
-			capturedShares = shares
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.Request(context.Background(), "BarrierUnsealWithShares",
-		&transport.BarrierUnsealSharesRequest{Shares: []string{"a", "b"}}, nil)
-	if err != nil {
-		t.Fatalf("Request BarrierUnsealWithShares failed: %v", err)
-	}
-	if len(capturedShares) != 2 {
-		t.Errorf("expected 2 shares, got %d", len(capturedShares))
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierUnsealWithShares_InvalidRequest(t *testing.T) {
-	tr := newBarrierTransport(t, &mockBarrierService{})
-
-	err := tr.Request(context.Background(), "BarrierUnsealWithShares", 99, nil)
-	var ire *InvalidRequestError
-	if !errors.As(err, &ire) {
-		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierRekey(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierRekeyFn: func(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
-			return &service.ShamirInitInfo{
-				ShareCount:  2,
-				Threshold:   1,
-				TotalShares: 2,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	var resp *transport.BarrierRekeyResponse
-	err := tr.Request(context.Background(), "BarrierRekey",
-		&transport.BarrierRekeyRequest{Threshold: 1, Total: 2}, &resp)
-	if err != nil {
-		t.Fatalf("Request BarrierRekey failed: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.ShareCount != 2 {
-		t.Errorf("expected ShareCount=2, got %d", resp.ShareCount)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierRekey_InvalidRequest(t *testing.T) {
-	tr := newBarrierTransport(t, &mockBarrierService{})
-
-	err := tr.Request(context.Background(), "BarrierRekey", "bad", nil)
-	var ire *InvalidRequestError
-	if !errors.As(err, &ire) {
-		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierGenerateRecoveryKeys(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierGenRecoveryKeysFn: func(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
-			return &service.RecoveryKeysInfo{
-				ShareCount: 2,
-				Threshold:  1,
-				Total:      2,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	var resp *transport.BarrierRecoveryKeysResponse
-	err := tr.Request(context.Background(), "BarrierGenerateRecoveryKeys",
-		&transport.BarrierGenerateRecoveryKeysRequest{Threshold: 1, Total: 2}, &resp)
-	if err != nil {
-		t.Fatalf("Request BarrierGenerateRecoveryKeys failed: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.ShareCount != 2 {
-		t.Errorf("expected ShareCount=2, got %d", resp.ShareCount)
-	}
-}
-
 func TestEmbeddedBarrier_Request_BarrierGenerateRecoveryKeys_InvalidRequest(t *testing.T) {
 	tr := newBarrierTransport(t, &mockBarrierService{})
 
 	err := tr.Request(context.Background(), "BarrierGenerateRecoveryKeys", true, nil)
-	var ire *InvalidRequestError
-	if !errors.As(err, &ire) {
-		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierRecoverWithKeys(t *testing.T) {
-	recoverCalled := false
-	svc := &mockBarrierService{
-		barrierRecoverWithKeysFn: func(_ context.Context, _ []string) error {
-			recoverCalled = true
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.Request(context.Background(), "BarrierRecoverWithKeys",
-		&transport.BarrierRecoverWithKeysRequest{Keys: []string{"k1"}}, nil)
-	if err != nil {
-		t.Fatalf("Request BarrierRecoverWithKeys failed: %v", err)
-	}
-	if !recoverCalled {
-		t.Error("expected BarrierRecoverWithKeys to be called via dispatch")
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierRecoverWithKeys_InvalidRequest(t *testing.T) {
-	tr := newBarrierTransport(t, &mockBarrierService{})
-
-	err := tr.Request(context.Background(), "BarrierRecoverWithKeys", "bad", nil)
 	var ire *InvalidRequestError
 	if !errors.As(err, &ire) {
 		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
@@ -1455,46 +855,6 @@ func TestEmbeddedBarrier_Request_BarrierHasRecoveryKeys(t *testing.T) {
 	}
 	if !resp.HasKeys {
 		t.Error("expected has_keys=true")
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierGenerateRootToken(t *testing.T) {
-	createdAt := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
-	svc := &mockBarrierService{
-		barrierGenRootTokenFn: func(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-			return &service.RootTokenInfo{
-				Token:     "dispatch-root-token",
-				CreatedAt: createdAt,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	var resp *transport.BarrierRootTokenResponse
-	err := tr.Request(context.Background(), "BarrierGenerateRootToken",
-		&transport.BarrierGenerateRootTokenRequest{Shares: []string{"s1", "s2"}}, &resp)
-	if err != nil {
-		t.Fatalf("Request BarrierGenerateRootToken failed: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.Token != "dispatch-root-token" {
-		t.Errorf("expected token 'dispatch-root-token', got %q", resp.Token)
-	}
-	expectedCreated := createdAt.Format(time.RFC3339)
-	if resp.CreatedAt != expectedCreated {
-		t.Errorf("expected created_at %q, got %q", expectedCreated, resp.CreatedAt)
-	}
-}
-
-func TestEmbeddedBarrier_Request_BarrierGenerateRootToken_InvalidRequest(t *testing.T) {
-	tr := newBarrierTransport(t, &mockBarrierService{})
-
-	err := tr.Request(context.Background(), "BarrierGenerateRootToken", 123, nil)
-	var ire *InvalidRequestError
-	if !errors.As(err, &ire) {
-		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
 	}
 }
 
@@ -1635,5 +995,22 @@ func TestWithBarrierService(t *testing.T) {
 	err = tr.BarrierSeal(context.Background())
 	if err != nil {
 		t.Fatalf("expected no error when barrier service is set, got: %v", err)
+	}
+}
+
+// TestEmbeddedBarrier_Request_RetiredShareVerbsAreUnknown proves the raw-share
+// verbs the unified share-holder quorum retired are gone from the dispatch
+// table: every share now reaches the barrier through BarrierQuorumSubmit from
+// an authenticated holder.
+func TestEmbeddedBarrier_Request_RetiredShareVerbsAreUnknown(t *testing.T) {
+	tr := newBarrierTransport(t, &mockBarrierService{})
+	for _, method := range []string{
+		"BarrierUnsealWithShare", "BarrierUnsealWithShares", "BarrierRekey",
+		"BarrierRecoverWithKeys", "BarrierGenerateRootToken", "BarrierShamirSealVote",
+	} {
+		var unknown *UnknownMethodError
+		if err := tr.Request(context.Background(), method, true, nil); !errors.As(err, &unknown) {
+			t.Errorf("Request(%s) = %v, want UnknownMethodError", method, err)
+		}
 	}
 }

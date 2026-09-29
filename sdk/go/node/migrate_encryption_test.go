@@ -17,57 +17,18 @@ package node
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	quicraftshamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
-
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// nodeCaptureDist is a test-only seal.CeremonyDistributor that captures the
-// Shamir shares generated during a direct-mode migration ceremony so the test
-// can later reconstruct quorum and drive UnsealWithShare, without standing up
-// the full external-officer PKI ceremony. Mirrors
-// pkg/server/tenant_migrate_test.go's serverCaptureDist.
-type nodeCaptureDist struct {
-	mu     sync.Mutex
-	shares []string
-}
-
-func (c *nodeCaptureDist) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
-	raw, err := quicraftshamir.Split(secret, threshold, total)
-	if err != nil {
-		return 0, err
-	}
-	c.mu.Lock()
-	c.shares = make([]string, len(raw))
-	for i, s := range raw {
-		c.shares[i] = s.Value
-	}
-	c.mu.Unlock()
-	return len(raw), nil
-}
-
-func (c *nodeCaptureDist) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
-	c.mu.Lock()
-	c.shares = nil
-	c.mu.Unlock()
-	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
-}
-
-func (c *nodeCaptureDist) Shares() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.shares...)
-}
 
 // noSealStoreNode boots a real standalone node and then re-adopts its seal
 // subsystem through adoptSealSubsystem -- the one path both node builders
@@ -399,8 +360,8 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 	// BarrierShamirInitialize has: SetCeremonyDistributor before the
 	// migration, exactly mirroring pkg/server/tenant_migrate_test.go's
 	// TestTenantHostRegistry_MigrateEncryption_NoneToShamir.
-	dist := &nodeCaptureDist{}
-	n.barrier.Load().SetCeremonyDistributor(dist)
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(n.barrier.Load())
 
 	// --- Write data through the none (unencrypted) barrier. ----------------
 	kv := n.KVService()
@@ -425,7 +386,9 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 
 	// A genuine M-of-N ceremony ran: 3 real shares were distributed (not a
 	// mislabeled passphrase strategy with zero officer shares).
-	require.Len(t, dist.Shares(), 3, "migration must distribute real Shamir shares to enrolled officers")
+	for _, h := range []string{"h1", "h2", "h3"} {
+		require.NotEmptyf(t, custody.Distributor.Share(seal.DomainUnseal, h), "migration must distribute a real Shamir share to holder %s", h)
+	}
 
 	// The system barrier is now genuinely Shamir — correct label, correct
 	// M/N — and SEALED (Shamir never auto-unseals from disk, migration or
@@ -441,10 +404,11 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 
 	// Submitting a quorum (2-of-3) of the REAL distributed shares unseals the
 	// migrated barrier — the "shares are usable" proof.
-	shares := dist.Shares()
-	_, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[0])
-	require.NoError(t, uerr)
-	progress, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[1])
+	// The reopened barrier is re-composed with the node's own ceremony
+	// service as its custody; put the test's custody back so its holders can
+	// answer.
+	custody.Install(n.barrier.Load())
+	progress, uerr := custody.Quorum(ctx, n.barrier.Load(), seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
 	require.NoError(t, uerr)
 	require.True(t, progress.Complete)
 	require.False(t, n.barrier.Load().IsSealed())

@@ -649,65 +649,52 @@ func TestChangePasswordRefusesBeforeItTouchesKeyMaterial(t *testing.T) {
 	})
 }
 
-// TestRekeyRefusesWithoutAShamirSetup covers Rekey's guard chain. Rekeying
-// re-splits the quorum, so every precondition is checked before the root key
-// is opened -- and an invalid threshold must be refused rather than producing
-// a quorum that cannot be reassembled.
-func TestRekeyRefusesWithoutAShamirSetup(t *testing.T) {
+// TestStartRekeyRefusesWithoutAShamirSetup covers StartRekey's guard chain:
+// every precondition is checked before any holder is asked for a share.
+func TestStartRekeyRefusesWithoutAShamirSetup(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("sealed barrier", func(t *testing.T) {
 		b := newSwapBarrier(t, "sys/root")
-		params, err := b.Rekey(ctx, 2, 3)
+		info, err := b.StartRekey(ctx, DomainUnseal, RekeyParams{})
 		if !errors.Is(err, ErrSealed) {
 			t.Fatalf("error = %v, want ErrSealed", err)
 		}
-		if params != nil {
-			t.Error("a refused rekey must return no parameters")
+		if info != nil {
+			t.Error("a refused rekey must return no round")
 		}
 	})
 
-	t.Run("no shamir strategy", func(t *testing.T) {
+	t.Run("no distributor", func(t *testing.T) {
 		b := newSwapBarrier(t, "sys/root")
 		if err := b.Initialize(ctx, Credentials{}); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
-		if _, err := b.Rekey(ctx, 2, 3); !errors.Is(err, ErrShamirNotConfigured) {
-			t.Fatalf("error = %v, want ErrShamirNotConfigured", err)
+		if _, err := b.StartRekey(ctx, DomainUnseal, RekeyParams{}); !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
+			t.Fatalf("error = %v, want ErrCeremonyDistributorNotConfigured", err)
+		}
+	})
+
+	t.Run("no roster", func(t *testing.T) {
+		b := newSwapBarrier(t, "sys/root")
+		if err := b.Initialize(ctx, Credentials{}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		b.SetCeremonyDistributor(newCaptureDistributor("h1", "h2"))
+		if _, err := b.StartRekey(ctx, DomainUnseal, RekeyParams{}); !errors.Is(err, ErrHolderRosterMissing) {
+			t.Fatalf("error = %v, want ErrHolderRosterMissing", err)
 		}
 	})
 }
 
-// TestRekeyRejectsAnUnsatisfiableThreshold pins the parameter validation. A
-// threshold below two removes the point of splitting at all, and a threshold
-// above the share count produces a quorum that can never be met -- which would
-// permanently seal the barrier.
-func TestRekeyRejectsAnUnsatisfiableThreshold(t *testing.T) {
-	ctx := context.Background()
-
-	tests := []struct {
-		name             string
-		threshold, total int
-	}{
-		{"threshold below two", 1, 5},
-		{"zero threshold", 0, 5},
-		{"threshold above the share count", 4, 3},
-		{"no shares at all", 2, 0},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			b := newSwapBarrier(t, "sys/root")
-			if err := b.Initialize(ctx, Credentials{}); err != nil {
-				t.Fatalf("Initialize: %v", err)
-			}
-
-			// The threshold check runs after the shamir-configured check, so
-			// an unconfigured barrier reports that first. Either refusal is
-			// acceptable here; what must NOT happen is success.
-			if _, err := b.Rekey(ctx, tc.threshold, tc.total); err == nil {
-				t.Fatal("Rekey must refuse an unsatisfiable threshold")
-			}
-		})
+// TestStartRekeyRejectsAnUnsatisfiableThreshold pins the parameter
+// validation: a threshold below two removes the point of splitting, and one
+// above the holder count could never be met.
+func TestStartRekeyRejectsAnUnsatisfiableThreshold(t *testing.T) {
+	for _, threshold := range []int{1, 4, 9} {
+		f := newHolderFixture(t, 2, 3)
+		if _, err := f.b.StartRekey(context.Background(), DomainUnseal, RekeyParams{Threshold: threshold}); err == nil {
+			t.Fatalf("StartRekey(threshold=%d) must refuse", threshold)
+		}
 	}
 }

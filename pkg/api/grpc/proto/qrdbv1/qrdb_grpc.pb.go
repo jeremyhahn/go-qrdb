@@ -167,35 +167,24 @@ const (
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
 	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
 	QRDBService_BarrierShamirInitialize_FullMethodName           = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
-	QRDBService_BarrierShamirUnsealShare_FullMethodName          = "/qrdb.v1.QRDBService/BarrierShamirUnsealShare"
-	QRDBService_BarrierShamirUnsealShares_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShamirUnsealShares"
-	QRDBService_BarrierRekey_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierRekey"
 	QRDBService_BarrierEnableEncryption_FullMethodName           = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
 	QRDBService_BarrierOfficerRegister_FullMethodName            = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
 	QRDBService_BarrierOfficerList_FullMethodName                = "/qrdb.v1.QRDBService/BarrierOfficerList"
 	QRDBService_BarrierShareClaimBegin_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShareClaimBegin"
 	QRDBService_BarrierShareClaimComplete_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShareClaimComplete"
-	QRDBService_BarrierOfficerClaimStatus_FullMethodName         = "/qrdb.v1.QRDBService/BarrierOfficerClaimStatus"
-	QRDBService_BarrierShamirSealVote_FullMethodName             = "/qrdb.v1.QRDBService/BarrierShamirSealVote"
 	QRDBService_BarrierRecoveryOfficerRegister_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"
 	QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimBegin"
 	QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimComplete"
 	QRDBService_BarrierRecoveryGenerate_FullMethodName           = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
-	QRDBService_BarrierRecoveryRecover_FullMethodName            = "/qrdb.v1.QRDBService/BarrierRecoveryRecover"
 	QRDBService_BarrierRecoveryDelete_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
 	QRDBService_BarrierRecoveryStatus_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
-	QRDBService_BarrierRootToken_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierRootToken"
+	QRDBService_BarrierQuorumBegin_FullMethodName                = "/qrdb.v1.QRDBService/BarrierQuorumBegin"
+	QRDBService_BarrierQuorumSubmit_FullMethodName               = "/qrdb.v1.QRDBService/BarrierQuorumSubmit"
+	QRDBService_BarrierRekeyStart_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierRekeyStart"
+	QRDBService_BarrierOfficerRevoke_FullMethodName              = "/qrdb.v1.QRDBService/BarrierOfficerRevoke"
 	QRDBService_CeremonyInitialize_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyInitialize"
 	QRDBService_CeremonyStatus_FullMethodName                    = "/qrdb.v1.QRDBService/CeremonyStatus"
-	QRDBService_CeremonyClaimCertBegin_FullMethodName            = "/qrdb.v1.QRDBService/CeremonyClaimCertBegin"
-	QRDBService_CeremonyClaimCertComplete_FullMethodName         = "/qrdb.v1.QRDBService/CeremonyClaimCertComplete"
-	QRDBService_CeremonyBeginClaimShare_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyBeginClaimShare"
-	QRDBService_CeremonyCompleteClaimShare_FullMethodName        = "/qrdb.v1.QRDBService/CeremonyCompleteClaimShare"
 	QRDBService_CeremonySignCSR_FullMethodName                   = "/qrdb.v1.QRDBService/CeremonySignCSR"
-	QRDBService_CeremonyEnrollExternalOfficer_FullMethodName     = "/qrdb.v1.QRDBService/CeremonyEnrollExternalOfficer"
-	QRDBService_CeremonyClaimShareBegin_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyClaimShareBegin"
-	QRDBService_CeremonyClaimShareComplete_FullMethodName        = "/qrdb.v1.QRDBService/CeremonyClaimShareComplete"
-	QRDBService_CeremonySubmitUnsealShare_FullMethodName         = "/qrdb.v1.QRDBService/CeremonySubmitUnsealShare"
 	QRDBService_TenantCreate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantCreate"
 	QRDBService_TenantGet_FullMethodName                         = "/qrdb.v1.QRDBService/TenantGet"
 	QRDBService_TenantList_FullMethodName                        = "/qrdb.v1.QRDBService/TenantList"
@@ -550,12 +539,6 @@ type QRDBServiceClient interface {
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
 	BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
-	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
-	BarrierShamirUnsealShare(ctx context.Context, in *BarrierShamirUnsealShareRequest, opts ...grpc.CallOption) (*BarrierShamirUnsealShareResponse, error)
-	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
-	BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// BarrierRekey generates new Shamir shares with the specified parameters.
-	BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
 	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
 	// keyed strategy (enable encryption after the fact). The migration runs
 	// asynchronously because a system-scope migration recycles the data-plane
@@ -571,10 +554,6 @@ type QRDBServiceClient interface {
 	// BarrierShareClaimComplete completes the share claim handshake and returns
 	// the share exactly once. Only callable by the SO's own mTLS session.
 	BarrierShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error)
-	// BarrierOfficerClaimStatus returns per-officer claim status (no share data).
-	BarrierOfficerClaimStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerClaimStatusResponse, error)
-	// BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
-	BarrierShamirSealVote(ctx context.Context, in *BarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*BarrierShamirSealVoteResponse, error)
 	// BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
 	BarrierRecoveryOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error)
 	// BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
@@ -583,47 +562,30 @@ type QRDBServiceClient interface {
 	BarrierRecoveryShareClaimComplete(ctx context.Context, in *BarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error)
 	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
 	BarrierRecoveryGenerate(ctx context.Context, in *BarrierRecoveryGenerateRequest, opts ...grpc.CallOption) (*BarrierRecoveryKeysResponse, error)
-	// BarrierRecoveryRecover unseals the barrier using recovery keys.
-	BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
 	BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierRecoveryStatusResponse, error)
-	// BarrierRootToken generates a new root token using Shamir shares.
-	BarrierRootToken(ctx context.Context, in *BarrierRootTokenRequest, opts ...grpc.CallOption) (*BarrierRootTokenResponse, error)
+	// BarrierQuorumBegin issues the factor challenge a share holder answers to
+	// submit a share toward a quorum (unseal, seal, root-token, rekey,
+	// recover). Reachable in the sealed window; the holder is authenticated
+	// by the factor proof at submission.
+	BarrierQuorumBegin(ctx context.Context, in *BarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error)
+	// BarrierQuorumSubmit submits one authenticated holder's share. The
+	// operation runs when M distinct holders have submitted.
+	BarrierQuorumSubmit(ctx context.Context, in *BarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error)
+	// BarrierRekeyStart opens a rekey round; a quorum of the current holders
+	// then completes it through BarrierQuorumSubmit.
+	BarrierRekeyStart(ctx context.Context, in *BarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
+	// BarrierOfficerRevoke revokes a share holder by opening a rekey round
+	// that excludes them; the remaining holders complete it.
+	BarrierOfficerRevoke(ctx context.Context, in *BarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
 	// CeremonyInitialize starts the initialization ceremony.
 	CeremonyInitialize(ctx context.Context, in *CeremonyInitializeRequest, opts ...grpc.CallOption) (*CeremonyInitializeResponse, error)
 	// CeremonyStatus returns the current ceremony state.
 	CeremonyStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CeremonyStatusResponse, error)
-	// CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
-	CeremonyClaimCertBegin(ctx context.Context, in *CeremonyClaimCertBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimCertBeginResponse, error)
-	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
-	CeremonyClaimCertComplete(ctx context.Context, in *CeremonyClaimCertCompleteRequest, opts ...grpc.CallOption) (*CeremonyClaimCertCompleteResponse, error)
-	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
-	// officer. The caller MUST present an mTLS client certificate; the server
-	// matches its thumbprint against the enrolled officer record before
-	// issuing the challenge nonce.
-	CeremonyBeginClaimShare(ctx context.Context, in *CeremonyBeginClaimShareRequest, opts ...grpc.CallOption) (*CeremonyBeginClaimShareResponse, error)
-	// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
-	// submitting the signed nonce. The caller's mTLS certificate thumbprint is
-	// re-verified before the share is released exactly once.
-	CeremonyCompleteClaimShare(ctx context.Context, in *CeremonyCompleteClaimShareRequest, opts ...grpc.CallOption) (*CeremonyCompleteClaimShareResponse, error)
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error)
-	// CeremonyEnrollExternalOfficer enrols an officer whose key material
-	// lives outside go-qrdb. Either CertPEM (validated against the
-	// configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
-	// supplied, but not both.
-	CeremonyEnrollExternalOfficer(ctx context.Context, in *CeremonyEnrollExternalOfficerRequest, opts ...grpc.CallOption) (*CeremonyEnrollExternalOfficerResponse, error)
-	// CeremonyClaimShareBegin issues a factor challenge for an enrolled
-	// custodian to claim their Shamir share.
-	CeremonyClaimShareBegin(ctx context.Context, in *CeremonyClaimShareBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimShareBeginResponse, error)
-	// CeremonyClaimShareComplete verifies the custodian's factor response and
-	// returns the custodian metadata confirming share delivery.
-	CeremonyClaimShareComplete(ctx context.Context, in *CeremonyClaimShareCompleteRequest, opts ...grpc.CallOption) (*CeremonyCustodianResponse, error)
-	// CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
-	// (with factor proof) toward the unseal quorum.
-	CeremonySubmitUnsealShare(ctx context.Context, in *CeremonySubmitUnsealShareRequest, opts ...grpc.CallOption) (*CeremonySubmitUnsealShareResponse, error)
 	// TenantCreate creates a new tenant with the given ID, name, and isolation type.
 	TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantGet retrieves a tenant by ID.
@@ -2088,36 +2050,6 @@ func (c *qRDBServiceClient) BarrierShamirInitialize(ctx context.Context, in *Bar
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierShamirUnsealShare(ctx context.Context, in *BarrierShamirUnsealShareRequest, opts ...grpc.CallOption) (*BarrierShamirUnsealShareResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierShamirUnsealShareResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirUnsealShare_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) BarrierShamirUnsealShares(ctx context.Context, in *BarrierShamirUnsealSharesRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirUnsealShares_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) BarrierRekey(ctx context.Context, in *BarrierRekeyRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierShamirOperationResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierRekey_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) BarrierEnableEncryption(ctx context.Context, in *BarrierEnableEncryptionRequest, opts ...grpc.CallOption) (*BarrierEnableEncryptionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BarrierEnableEncryptionResponse)
@@ -2168,26 +2100,6 @@ func (c *qRDBServiceClient) BarrierShareClaimComplete(ctx context.Context, in *B
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierOfficerClaimStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierOfficerClaimStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierOfficerClaimStatusResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierOfficerClaimStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) BarrierShamirSealVote(ctx context.Context, in *BarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*BarrierShamirSealVoteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierShamirSealVoteResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierShamirSealVote_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) BarrierRecoveryOfficerRegister(ctx context.Context, in *BarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BarrierOfficerRegisterResponse)
@@ -2228,16 +2140,6 @@ func (c *qRDBServiceClient) BarrierRecoveryGenerate(ctx context.Context, in *Bar
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryRecover_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -2258,10 +2160,40 @@ func (c *qRDBServiceClient) BarrierRecoveryStatus(ctx context.Context, in *empty
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierRootToken(ctx context.Context, in *BarrierRootTokenRequest, opts ...grpc.CallOption) (*BarrierRootTokenResponse, error) {
+func (c *qRDBServiceClient) BarrierQuorumBegin(ctx context.Context, in *BarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BarrierRootTokenResponse)
-	err := c.cc.Invoke(ctx, QRDBService_BarrierRootToken_FullMethodName, in, out, cOpts...)
+	out := new(BarrierQuorumChallenge)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierQuorumBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierQuorumSubmit(ctx context.Context, in *BarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumOutcome)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierQuorumSubmit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierRekeyStart(ctx context.Context, in *BarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierRekeyStart_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierOfficerRevoke(ctx context.Context, in *BarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierOfficerRevoke_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2288,90 +2220,10 @@ func (c *qRDBServiceClient) CeremonyStatus(ctx context.Context, in *emptypb.Empt
 	return out, nil
 }
 
-func (c *qRDBServiceClient) CeremonyClaimCertBegin(ctx context.Context, in *CeremonyClaimCertBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimCertBeginResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyClaimCertBeginResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimCertBegin_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyClaimCertComplete(ctx context.Context, in *CeremonyClaimCertCompleteRequest, opts ...grpc.CallOption) (*CeremonyClaimCertCompleteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyClaimCertCompleteResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimCertComplete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyBeginClaimShare(ctx context.Context, in *CeremonyBeginClaimShareRequest, opts ...grpc.CallOption) (*CeremonyBeginClaimShareResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyBeginClaimShareResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyBeginClaimShare_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyCompleteClaimShare(ctx context.Context, in *CeremonyCompleteClaimShareRequest, opts ...grpc.CallOption) (*CeremonyCompleteClaimShareResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyCompleteClaimShareResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyCompleteClaimShare_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *qRDBServiceClient) CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CeremonySignCSRResponse)
 	err := c.cc.Invoke(ctx, QRDBService_CeremonySignCSR_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyEnrollExternalOfficer(ctx context.Context, in *CeremonyEnrollExternalOfficerRequest, opts ...grpc.CallOption) (*CeremonyEnrollExternalOfficerResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyEnrollExternalOfficerResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyEnrollExternalOfficer_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyClaimShareBegin(ctx context.Context, in *CeremonyClaimShareBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimShareBeginResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyClaimShareBeginResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimShareBegin_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonyClaimShareComplete(ctx context.Context, in *CeremonyClaimShareCompleteRequest, opts ...grpc.CallOption) (*CeremonyCustodianResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyCustodianResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimShareComplete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *qRDBServiceClient) CeremonySubmitUnsealShare(ctx context.Context, in *CeremonySubmitUnsealShareRequest, opts ...grpc.CallOption) (*CeremonySubmitUnsealShareResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonySubmitUnsealShareResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonySubmitUnsealShare_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3144,12 +2996,6 @@ type QRDBServiceServer interface {
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
 	BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error)
-	// BarrierShamirUnsealShare submits a single Shamir share toward the unseal threshold.
-	BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error)
-	// BarrierShamirUnsealShares submits multiple Shamir shares to unseal in one call.
-	BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error)
-	// BarrierRekey generates new Shamir shares with the specified parameters.
-	BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error)
 	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
 	// keyed strategy (enable encryption after the fact). The migration runs
 	// asynchronously because a system-scope migration recycles the data-plane
@@ -3165,10 +3011,6 @@ type QRDBServiceServer interface {
 	// BarrierShareClaimComplete completes the share claim handshake and returns
 	// the share exactly once. Only callable by the SO's own mTLS session.
 	BarrierShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error)
-	// BarrierOfficerClaimStatus returns per-officer claim status (no share data).
-	BarrierOfficerClaimStatus(context.Context, *emptypb.Empty) (*BarrierOfficerClaimStatusResponse, error)
-	// BarrierShamirSealVote submits a share as a seal vote (Shamir barriers only).
-	BarrierShamirSealVote(context.Context, *BarrierShamirSealVoteRequest) (*BarrierShamirSealVoteResponse, error)
 	// BarrierRecoveryOfficerRegister registers an SO for recovery key distribution.
 	BarrierRecoveryOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error)
 	// BarrierRecoveryShareClaimBegin starts the recovery share claim handshake.
@@ -3177,47 +3019,30 @@ type QRDBServiceServer interface {
 	BarrierRecoveryShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error)
 	// BarrierRecoveryGenerate generates recovery keys for disaster recovery.
 	BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error)
-	// BarrierRecoveryRecover unseals the barrier using recovery keys.
-	BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
 	BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error)
-	// BarrierRootToken generates a new root token using Shamir shares.
-	BarrierRootToken(context.Context, *BarrierRootTokenRequest) (*BarrierRootTokenResponse, error)
+	// BarrierQuorumBegin issues the factor challenge a share holder answers to
+	// submit a share toward a quorum (unseal, seal, root-token, rekey,
+	// recover). Reachable in the sealed window; the holder is authenticated
+	// by the factor proof at submission.
+	BarrierQuorumBegin(context.Context, *BarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error)
+	// BarrierQuorumSubmit submits one authenticated holder's share. The
+	// operation runs when M distinct holders have submitted.
+	BarrierQuorumSubmit(context.Context, *BarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error)
+	// BarrierRekeyStart opens a rekey round; a quorum of the current holders
+	// then completes it through BarrierQuorumSubmit.
+	BarrierRekeyStart(context.Context, *BarrierRekeyStartRequest) (*BarrierQuorumRound, error)
+	// BarrierOfficerRevoke revokes a share holder by opening a rekey round
+	// that excludes them; the remaining holders complete it.
+	BarrierOfficerRevoke(context.Context, *BarrierOfficerRevokeRequest) (*BarrierQuorumRound, error)
 	// CeremonyInitialize starts the initialization ceremony.
 	CeremonyInitialize(context.Context, *CeremonyInitializeRequest) (*CeremonyInitializeResponse, error)
 	// CeremonyStatus returns the current ceremony state.
 	CeremonyStatus(context.Context, *emptypb.Empty) (*CeremonyStatusResponse, error)
-	// CeremonyClaimCertBegin starts a certificate claim challenge for an officer.
-	CeremonyClaimCertBegin(context.Context, *CeremonyClaimCertBeginRequest) (*CeremonyClaimCertBeginResponse, error)
-	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
-	CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error)
-	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
-	// officer. The caller MUST present an mTLS client certificate; the server
-	// matches its thumbprint against the enrolled officer record before
-	// issuing the challenge nonce.
-	CeremonyBeginClaimShare(context.Context, *CeremonyBeginClaimShareRequest) (*CeremonyBeginClaimShareResponse, error)
-	// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
-	// submitting the signed nonce. The caller's mTLS certificate thumbprint is
-	// re-verified before the share is released exactly once.
-	CeremonyCompleteClaimShare(context.Context, *CeremonyCompleteClaimShareRequest) (*CeremonyCompleteClaimShareResponse, error)
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error)
-	// CeremonyEnrollExternalOfficer enrols an officer whose key material
-	// lives outside go-qrdb. Either CertPEM (validated against the
-	// configured CA pools) or PubKeyPEM (admin-asserted trust) MUST be
-	// supplied, but not both.
-	CeremonyEnrollExternalOfficer(context.Context, *CeremonyEnrollExternalOfficerRequest) (*CeremonyEnrollExternalOfficerResponse, error)
-	// CeremonyClaimShareBegin issues a factor challenge for an enrolled
-	// custodian to claim their Shamir share.
-	CeremonyClaimShareBegin(context.Context, *CeremonyClaimShareBeginRequest) (*CeremonyClaimShareBeginResponse, error)
-	// CeremonyClaimShareComplete verifies the custodian's factor response and
-	// returns the custodian metadata confirming share delivery.
-	CeremonyClaimShareComplete(context.Context, *CeremonyClaimShareCompleteRequest) (*CeremonyCustodianResponse, error)
-	// CeremonySubmitUnsealShare submits a custodian's plaintext Shamir share
-	// (with factor proof) toward the unseal quorum.
-	CeremonySubmitUnsealShare(context.Context, *CeremonySubmitUnsealShareRequest) (*CeremonySubmitUnsealShareResponse, error)
 	// TenantCreate creates a new tenant with the given ID, name, and isolation type.
 	TenantCreate(context.Context, *TenantCreateRequest) (*TenantResponse, error)
 	// TenantGet retrieves a tenant by ID.
@@ -3749,15 +3574,6 @@ func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Em
 func (UnimplementedQRDBServiceServer) BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierShamirInitialize not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShare(context.Context, *BarrierShamirUnsealShareRequest) (*BarrierShamirUnsealShareResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierShamirUnsealShare not implemented")
-}
-func (UnimplementedQRDBServiceServer) BarrierShamirUnsealShares(context.Context, *BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierShamirUnsealShares not implemented")
-}
-func (UnimplementedQRDBServiceServer) BarrierRekey(context.Context, *BarrierRekeyRequest) (*BarrierShamirOperationResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierRekey not implemented")
-}
 func (UnimplementedQRDBServiceServer) BarrierEnableEncryption(context.Context, *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierEnableEncryption not implemented")
 }
@@ -3773,12 +3589,6 @@ func (UnimplementedQRDBServiceServer) BarrierShareClaimBegin(context.Context, *B
 func (UnimplementedQRDBServiceServer) BarrierShareClaimComplete(context.Context, *BarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierShareClaimComplete not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierOfficerClaimStatus(context.Context, *emptypb.Empty) (*BarrierOfficerClaimStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerClaimStatus not implemented")
-}
-func (UnimplementedQRDBServiceServer) BarrierShamirSealVote(context.Context, *BarrierShamirSealVoteRequest) (*BarrierShamirSealVoteResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierShamirSealVote not implemented")
-}
 func (UnimplementedQRDBServiceServer) BarrierRecoveryOfficerRegister(context.Context, *BarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryOfficerRegister not implemented")
 }
@@ -3791,17 +3601,23 @@ func (UnimplementedQRDBServiceServer) BarrierRecoveryShareClaimComplete(context.
 func (UnimplementedQRDBServiceServer) BarrierRecoveryGenerate(context.Context, *BarrierRecoveryGenerateRequest) (*BarrierRecoveryKeysResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryGenerate not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryRecover not implemented")
-}
 func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryDelete not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryStatus not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierRootToken(context.Context, *BarrierRootTokenRequest) (*BarrierRootTokenResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method BarrierRootToken not implemented")
+func (UnimplementedQRDBServiceServer) BarrierQuorumBegin(context.Context, *BarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierQuorumBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierQuorumSubmit(context.Context, *BarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierQuorumSubmit not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierRekeyStart(context.Context, *BarrierRekeyStartRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierRekeyStart not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierOfficerRevoke(context.Context, *BarrierOfficerRevokeRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierOfficerRevoke not implemented")
 }
 func (UnimplementedQRDBServiceServer) CeremonyInitialize(context.Context, *CeremonyInitializeRequest) (*CeremonyInitializeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonyInitialize not implemented")
@@ -3809,32 +3625,8 @@ func (UnimplementedQRDBServiceServer) CeremonyInitialize(context.Context, *Cerem
 func (UnimplementedQRDBServiceServer) CeremonyStatus(context.Context, *emptypb.Empty) (*CeremonyStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonyStatus not implemented")
 }
-func (UnimplementedQRDBServiceServer) CeremonyClaimCertBegin(context.Context, *CeremonyClaimCertBeginRequest) (*CeremonyClaimCertBeginResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimCertBegin not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimCertComplete not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyBeginClaimShare(context.Context, *CeremonyBeginClaimShareRequest) (*CeremonyBeginClaimShareResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyBeginClaimShare not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyCompleteClaimShare(context.Context, *CeremonyCompleteClaimShareRequest) (*CeremonyCompleteClaimShareResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyCompleteClaimShare not implemented")
-}
 func (UnimplementedQRDBServiceServer) CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonySignCSR not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyEnrollExternalOfficer(context.Context, *CeremonyEnrollExternalOfficerRequest) (*CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyEnrollExternalOfficer not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyClaimShareBegin(context.Context, *CeremonyClaimShareBeginRequest) (*CeremonyClaimShareBeginResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimShareBegin not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonyClaimShareComplete(context.Context, *CeremonyClaimShareCompleteRequest) (*CeremonyCustodianResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimShareComplete not implemented")
-}
-func (UnimplementedQRDBServiceServer) CeremonySubmitUnsealShare(context.Context, *CeremonySubmitUnsealShareRequest) (*CeremonySubmitUnsealShareResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonySubmitUnsealShare not implemented")
 }
 func (UnimplementedQRDBServiceServer) TenantCreate(context.Context, *TenantCreateRequest) (*TenantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantCreate not implemented")
@@ -6364,60 +6156,6 @@ func _QRDBService_BarrierShamirInitialize_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_BarrierShamirUnsealShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierShamirUnsealShareRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierShamirUnsealShare(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierShamirUnsealShare_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierShamirUnsealShare(ctx, req.(*BarrierShamirUnsealShareRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_BarrierShamirUnsealShares_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierShamirUnsealSharesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierShamirUnsealShares(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierShamirUnsealShares_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierShamirUnsealShares(ctx, req.(*BarrierShamirUnsealSharesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_BarrierRekey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierRekeyRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierRekey(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierRekey_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierRekey(ctx, req.(*BarrierRekeyRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_BarrierEnableEncryption_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierEnableEncryptionRequest)
 	if err := dec(in); err != nil {
@@ -6508,42 +6246,6 @@ func _QRDBService_BarrierShareClaimComplete_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_BarrierOfficerClaimStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierOfficerClaimStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierOfficerClaimStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierOfficerClaimStatus(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_BarrierShamirSealVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierShamirSealVoteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierShamirSealVote(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierShamirSealVote_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierShamirSealVote(ctx, req.(*BarrierShamirSealVoteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_BarrierRecoveryOfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierOfficerRegisterRequest)
 	if err := dec(in); err != nil {
@@ -6616,24 +6318,6 @@ func _QRDBService_BarrierRecoveryGenerate_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_BarrierRecoveryRecover_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierRecoveryRecoverRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierRecoveryRecover(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_BarrierRecoveryRecover_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierRecoveryRecover(ctx, req.(*BarrierRecoveryRecoverRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierRecoveryDeleteRequest)
 	if err := dec(in); err != nil {
@@ -6670,20 +6354,74 @@ func _QRDBService_BarrierRecoveryStatus_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_BarrierRootToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BarrierRootTokenRequest)
+func _QRDBService_BarrierQuorumBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierQuorumBeginRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(QRDBServiceServer).BarrierRootToken(ctx, in)
+		return srv.(QRDBServiceServer).BarrierQuorumBegin(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: QRDBService_BarrierRootToken_FullMethodName,
+		FullMethod: QRDBService_BarrierQuorumBegin_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierRootToken(ctx, req.(*BarrierRootTokenRequest))
+		return srv.(QRDBServiceServer).BarrierQuorumBegin(ctx, req.(*BarrierQuorumBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierQuorumSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierQuorumSubmitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierQuorumSubmit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierQuorumSubmit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierQuorumSubmit(ctx, req.(*BarrierQuorumSubmitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierRekeyStart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierRekeyStartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierRekeyStart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierRekeyStart_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierRekeyStart(ctx, req.(*BarrierRekeyStartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierOfficerRevoke_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierOfficerRevokeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierOfficerRevoke(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierOfficerRevoke_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierOfficerRevoke(ctx, req.(*BarrierOfficerRevokeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6724,78 +6462,6 @@ func _QRDBService_CeremonyStatus_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_CeremonyClaimCertBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyClaimCertBeginRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyClaimCertBegin(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyClaimCertBegin_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyClaimCertBegin(ctx, req.(*CeremonyClaimCertBeginRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyClaimCertComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyClaimCertCompleteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyClaimCertComplete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyClaimCertComplete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyClaimCertComplete(ctx, req.(*CeremonyClaimCertCompleteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyBeginClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyBeginClaimShareRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyBeginClaimShare(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyBeginClaimShare_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyBeginClaimShare(ctx, req.(*CeremonyBeginClaimShareRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyCompleteClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyCompleteClaimShareRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyCompleteClaimShare(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyCompleteClaimShare_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyCompleteClaimShare(ctx, req.(*CeremonyCompleteClaimShareRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _QRDBService_CeremonySignCSR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CeremonySignCSRRequest)
 	if err := dec(in); err != nil {
@@ -6810,78 +6476,6 @@ func _QRDBService_CeremonySignCSR_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).CeremonySignCSR(ctx, req.(*CeremonySignCSRRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyEnrollExternalOfficer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyEnrollExternalOfficerRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyEnrollExternalOfficer(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyEnrollExternalOfficer_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyEnrollExternalOfficer(ctx, req.(*CeremonyEnrollExternalOfficerRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyClaimShareBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyClaimShareBeginRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyClaimShareBegin(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyClaimShareBegin_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyClaimShareBegin(ctx, req.(*CeremonyClaimShareBeginRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonyClaimShareComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyClaimShareCompleteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyClaimShareComplete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonyClaimShareComplete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyClaimShareComplete(ctx, req.(*CeremonyClaimShareCompleteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _QRDBService_CeremonySubmitUnsealShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonySubmitUnsealShareRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonySubmitUnsealShare(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: QRDBService_CeremonySubmitUnsealShare_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonySubmitUnsealShare(ctx, req.(*CeremonySubmitUnsealShareRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8246,18 +7840,6 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierShamirInitialize_Handler,
 		},
 		{
-			MethodName: "BarrierShamirUnsealShare",
-			Handler:    _QRDBService_BarrierShamirUnsealShare_Handler,
-		},
-		{
-			MethodName: "BarrierShamirUnsealShares",
-			Handler:    _QRDBService_BarrierShamirUnsealShares_Handler,
-		},
-		{
-			MethodName: "BarrierRekey",
-			Handler:    _QRDBService_BarrierRekey_Handler,
-		},
-		{
 			MethodName: "BarrierEnableEncryption",
 			Handler:    _QRDBService_BarrierEnableEncryption_Handler,
 		},
@@ -8278,14 +7860,6 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierShareClaimComplete_Handler,
 		},
 		{
-			MethodName: "BarrierOfficerClaimStatus",
-			Handler:    _QRDBService_BarrierOfficerClaimStatus_Handler,
-		},
-		{
-			MethodName: "BarrierShamirSealVote",
-			Handler:    _QRDBService_BarrierShamirSealVote_Handler,
-		},
-		{
 			MethodName: "BarrierRecoveryOfficerRegister",
 			Handler:    _QRDBService_BarrierRecoveryOfficerRegister_Handler,
 		},
@@ -8302,10 +7876,6 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierRecoveryGenerate_Handler,
 		},
 		{
-			MethodName: "BarrierRecoveryRecover",
-			Handler:    _QRDBService_BarrierRecoveryRecover_Handler,
-		},
-		{
 			MethodName: "BarrierRecoveryDelete",
 			Handler:    _QRDBService_BarrierRecoveryDelete_Handler,
 		},
@@ -8314,8 +7884,20 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierRecoveryStatus_Handler,
 		},
 		{
-			MethodName: "BarrierRootToken",
-			Handler:    _QRDBService_BarrierRootToken_Handler,
+			MethodName: "BarrierQuorumBegin",
+			Handler:    _QRDBService_BarrierQuorumBegin_Handler,
+		},
+		{
+			MethodName: "BarrierQuorumSubmit",
+			Handler:    _QRDBService_BarrierQuorumSubmit_Handler,
+		},
+		{
+			MethodName: "BarrierRekeyStart",
+			Handler:    _QRDBService_BarrierRekeyStart_Handler,
+		},
+		{
+			MethodName: "BarrierOfficerRevoke",
+			Handler:    _QRDBService_BarrierOfficerRevoke_Handler,
 		},
 		{
 			MethodName: "CeremonyInitialize",
@@ -8326,40 +7908,8 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_CeremonyStatus_Handler,
 		},
 		{
-			MethodName: "CeremonyClaimCertBegin",
-			Handler:    _QRDBService_CeremonyClaimCertBegin_Handler,
-		},
-		{
-			MethodName: "CeremonyClaimCertComplete",
-			Handler:    _QRDBService_CeremonyClaimCertComplete_Handler,
-		},
-		{
-			MethodName: "CeremonyBeginClaimShare",
-			Handler:    _QRDBService_CeremonyBeginClaimShare_Handler,
-		},
-		{
-			MethodName: "CeremonyCompleteClaimShare",
-			Handler:    _QRDBService_CeremonyCompleteClaimShare_Handler,
-		},
-		{
 			MethodName: "CeremonySignCSR",
 			Handler:    _QRDBService_CeremonySignCSR_Handler,
-		},
-		{
-			MethodName: "CeremonyEnrollExternalOfficer",
-			Handler:    _QRDBService_CeremonyEnrollExternalOfficer_Handler,
-		},
-		{
-			MethodName: "CeremonyClaimShareBegin",
-			Handler:    _QRDBService_CeremonyClaimShareBegin_Handler,
-		},
-		{
-			MethodName: "CeremonyClaimShareComplete",
-			Handler:    _QRDBService_CeremonyClaimShareComplete_Handler,
-		},
-		{
-			MethodName: "CeremonySubmitUnsealShare",
-			Handler:    _QRDBService_CeremonySubmitUnsealShare_Handler,
 		},
 		{
 			MethodName: "TenantCreate",
@@ -8559,15 +8109,16 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 const (
 	TenantBarrierService_Init_FullMethodName               = "/qrdb.v1.TenantBarrierService/Init"
 	TenantBarrierService_Unseal_FullMethodName             = "/qrdb.v1.TenantBarrierService/Unseal"
-	TenantBarrierService_UnsealShare_FullMethodName        = "/qrdb.v1.TenantBarrierService/UnsealShare"
 	TenantBarrierService_Seal_FullMethodName               = "/qrdb.v1.TenantBarrierService/Seal"
 	TenantBarrierService_Status_FullMethodName             = "/qrdb.v1.TenantBarrierService/Status"
 	TenantBarrierService_OfficerRegister_FullMethodName    = "/qrdb.v1.TenantBarrierService/OfficerRegister"
 	TenantBarrierService_OfficerList_FullMethodName        = "/qrdb.v1.TenantBarrierService/OfficerList"
+	TenantBarrierService_QuorumBegin_FullMethodName        = "/qrdb.v1.TenantBarrierService/QuorumBegin"
+	TenantBarrierService_QuorumSubmit_FullMethodName       = "/qrdb.v1.TenantBarrierService/QuorumSubmit"
+	TenantBarrierService_RekeyStart_FullMethodName         = "/qrdb.v1.TenantBarrierService/RekeyStart"
+	TenantBarrierService_OfficerRevoke_FullMethodName      = "/qrdb.v1.TenantBarrierService/OfficerRevoke"
 	TenantBarrierService_ShareClaimBegin_FullMethodName    = "/qrdb.v1.TenantBarrierService/ShareClaimBegin"
 	TenantBarrierService_ShareClaimComplete_FullMethodName = "/qrdb.v1.TenantBarrierService/ShareClaimComplete"
-	TenantBarrierService_OfficerClaimStatus_FullMethodName = "/qrdb.v1.TenantBarrierService/OfficerClaimStatus"
-	TenantBarrierService_ShamirSealVote_FullMethodName     = "/qrdb.v1.TenantBarrierService/ShamirSealVote"
 )
 
 // TenantBarrierServiceClient is the client API for TenantBarrierService service.
@@ -8601,10 +8152,6 @@ type TenantBarrierServiceClient interface {
 	// full RBAC check with the shared sealed-window fallback
 	// (middleware.AuthorizeTenantBarrierSealedOp).
 	Unseal(ctx context.Context, in *TenantBarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
-	// auto-unsealing once enough distinct shares have been submitted.
-	// identity:gated for the same sealed-window reason as Unseal.
-	UnsealShare(ctx context.Context, in *TenantBarrierUnsealShareRequest, opts ...grpc.CallOption) (*TenantBarrierUnsealProgress, error)
 	// Seal seals a tenant barrier.
 	Seal(ctx context.Context, in *TenantBarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Status reports a tenant barrier's sealed/initialized state and strategy.
@@ -8616,16 +8163,23 @@ type TenantBarrierServiceClient interface {
 	OfficerRegister(ctx context.Context, in *TenantBarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerRegisterResponse, error)
 	// OfficerList returns the enrolled officers for this tenant's barrier.
 	OfficerList(ctx context.Context, in *TenantBarrierOfficerListRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerListResponse, error)
+	// QuorumBegin issues the factor challenge a tenant share holder answers
+	// to submit a share (unseal, seal or rekey). identity:gated for the
+	// sealed-window reason Unseal is; the handler authorizes.
+	QuorumBegin(ctx context.Context, in *TenantBarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error)
+	// QuorumSubmit submits one authenticated tenant holder's share.
+	QuorumSubmit(ctx context.Context, in *TenantBarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error)
+	// RekeyStart opens a rekey round on the tenant barrier.
+	RekeyStart(ctx context.Context, in *TenantBarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
+	// OfficerRevoke revokes a tenant share holder through a quorum-gated
+	// rekey that excludes them.
+	OfficerRevoke(ctx context.Context, in *TenantBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
 	// ShareClaimBegin issues a challenge nonce to the named officer as the
 	// first step of the two-phase share claim flow.
 	ShareClaimBegin(ctx context.Context, in *TenantBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimBeginResponse, error)
 	// ShareClaimComplete verifies the signed nonce and returns the share bytes
 	// exactly once, then destroys the enclave.
 	ShareClaimComplete(ctx context.Context, in *TenantBarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimCompleteResponse, error)
-	// OfficerClaimStatus returns per-officer claim status for admin visibility.
-	OfficerClaimStatus(ctx context.Context, in *TenantBarrierOfficerClaimStatusRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerClaimStatusResponse, error)
-	// ShamirSealVote submits one share toward the quorum-gated seal threshold.
-	ShamirSealVote(ctx context.Context, in *TenantBarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*TenantBarrierShamirSealVoteResponse, error)
 }
 
 type tenantBarrierServiceClient struct {
@@ -8650,16 +8204,6 @@ func (c *tenantBarrierServiceClient) Unseal(ctx context.Context, in *TenantBarri
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, TenantBarrierService_Unseal_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *tenantBarrierServiceClient) UnsealShare(ctx context.Context, in *TenantBarrierUnsealShareRequest, opts ...grpc.CallOption) (*TenantBarrierUnsealProgress, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TenantBarrierUnsealProgress)
-	err := c.cc.Invoke(ctx, TenantBarrierService_UnsealShare_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -8706,6 +8250,46 @@ func (c *tenantBarrierServiceClient) OfficerList(ctx context.Context, in *Tenant
 	return out, nil
 }
 
+func (c *tenantBarrierServiceClient) QuorumBegin(ctx context.Context, in *TenantBarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumChallenge)
+	err := c.cc.Invoke(ctx, TenantBarrierService_QuorumBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) QuorumSubmit(ctx context.Context, in *TenantBarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumOutcome)
+	err := c.cc.Invoke(ctx, TenantBarrierService_QuorumSubmit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) RekeyStart(ctx context.Context, in *TenantBarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, TenantBarrierService_RekeyStart_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) OfficerRevoke(ctx context.Context, in *TenantBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, TenantBarrierService_OfficerRevoke_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tenantBarrierServiceClient) ShareClaimBegin(ctx context.Context, in *TenantBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*TenantBarrierShareClaimBeginResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantBarrierShareClaimBeginResponse)
@@ -8720,26 +8304,6 @@ func (c *tenantBarrierServiceClient) ShareClaimComplete(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantBarrierShareClaimCompleteResponse)
 	err := c.cc.Invoke(ctx, TenantBarrierService_ShareClaimComplete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *tenantBarrierServiceClient) OfficerClaimStatus(ctx context.Context, in *TenantBarrierOfficerClaimStatusRequest, opts ...grpc.CallOption) (*TenantBarrierOfficerClaimStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TenantBarrierOfficerClaimStatusResponse)
-	err := c.cc.Invoke(ctx, TenantBarrierService_OfficerClaimStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *tenantBarrierServiceClient) ShamirSealVote(ctx context.Context, in *TenantBarrierShamirSealVoteRequest, opts ...grpc.CallOption) (*TenantBarrierShamirSealVoteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(TenantBarrierShamirSealVoteResponse)
-	err := c.cc.Invoke(ctx, TenantBarrierService_ShamirSealVote_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -8777,10 +8341,6 @@ type TenantBarrierServiceServer interface {
 	// full RBAC check with the shared sealed-window fallback
 	// (middleware.AuthorizeTenantBarrierSealedOp).
 	Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error)
-	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
-	// auto-unsealing once enough distinct shares have been submitted.
-	// identity:gated for the same sealed-window reason as Unseal.
-	UnsealShare(context.Context, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)
 	// Seal seals a tenant barrier.
 	Seal(context.Context, *TenantBarrierSealRequest) (*emptypb.Empty, error)
 	// Status reports a tenant barrier's sealed/initialized state and strategy.
@@ -8792,16 +8352,23 @@ type TenantBarrierServiceServer interface {
 	OfficerRegister(context.Context, *TenantBarrierOfficerRegisterRequest) (*TenantBarrierOfficerRegisterResponse, error)
 	// OfficerList returns the enrolled officers for this tenant's barrier.
 	OfficerList(context.Context, *TenantBarrierOfficerListRequest) (*TenantBarrierOfficerListResponse, error)
+	// QuorumBegin issues the factor challenge a tenant share holder answers
+	// to submit a share (unseal, seal or rekey). identity:gated for the
+	// sealed-window reason Unseal is; the handler authorizes.
+	QuorumBegin(context.Context, *TenantBarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error)
+	// QuorumSubmit submits one authenticated tenant holder's share.
+	QuorumSubmit(context.Context, *TenantBarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error)
+	// RekeyStart opens a rekey round on the tenant barrier.
+	RekeyStart(context.Context, *TenantBarrierRekeyStartRequest) (*BarrierQuorumRound, error)
+	// OfficerRevoke revokes a tenant share holder through a quorum-gated
+	// rekey that excludes them.
+	OfficerRevoke(context.Context, *TenantBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error)
 	// ShareClaimBegin issues a challenge nonce to the named officer as the
 	// first step of the two-phase share claim flow.
 	ShareClaimBegin(context.Context, *TenantBarrierShareClaimBeginRequest) (*TenantBarrierShareClaimBeginResponse, error)
 	// ShareClaimComplete verifies the signed nonce and returns the share bytes
 	// exactly once, then destroys the enclave.
 	ShareClaimComplete(context.Context, *TenantBarrierShareClaimCompleteRequest) (*TenantBarrierShareClaimCompleteResponse, error)
-	// OfficerClaimStatus returns per-officer claim status for admin visibility.
-	OfficerClaimStatus(context.Context, *TenantBarrierOfficerClaimStatusRequest) (*TenantBarrierOfficerClaimStatusResponse, error)
-	// ShamirSealVote submits one share toward the quorum-gated seal threshold.
-	ShamirSealVote(context.Context, *TenantBarrierShamirSealVoteRequest) (*TenantBarrierShamirSealVoteResponse, error)
 	mustEmbedUnimplementedTenantBarrierServiceServer()
 }
 
@@ -8818,9 +8385,6 @@ func (UnimplementedTenantBarrierServiceServer) Init(context.Context, *TenantBarr
 func (UnimplementedTenantBarrierServiceServer) Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unseal not implemented")
 }
-func (UnimplementedTenantBarrierServiceServer) UnsealShare(context.Context, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error) {
-	return nil, status.Error(codes.Unimplemented, "method UnsealShare not implemented")
-}
 func (UnimplementedTenantBarrierServiceServer) Seal(context.Context, *TenantBarrierSealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Seal not implemented")
 }
@@ -8833,17 +8397,23 @@ func (UnimplementedTenantBarrierServiceServer) OfficerRegister(context.Context, 
 func (UnimplementedTenantBarrierServiceServer) OfficerList(context.Context, *TenantBarrierOfficerListRequest) (*TenantBarrierOfficerListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method OfficerList not implemented")
 }
+func (UnimplementedTenantBarrierServiceServer) QuorumBegin(context.Context, *TenantBarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error) {
+	return nil, status.Error(codes.Unimplemented, "method QuorumBegin not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) QuorumSubmit(context.Context, *TenantBarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error) {
+	return nil, status.Error(codes.Unimplemented, "method QuorumSubmit not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) RekeyStart(context.Context, *TenantBarrierRekeyStartRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method RekeyStart not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) OfficerRevoke(context.Context, *TenantBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method OfficerRevoke not implemented")
+}
 func (UnimplementedTenantBarrierServiceServer) ShareClaimBegin(context.Context, *TenantBarrierShareClaimBeginRequest) (*TenantBarrierShareClaimBeginResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShareClaimBegin not implemented")
 }
 func (UnimplementedTenantBarrierServiceServer) ShareClaimComplete(context.Context, *TenantBarrierShareClaimCompleteRequest) (*TenantBarrierShareClaimCompleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShareClaimComplete not implemented")
-}
-func (UnimplementedTenantBarrierServiceServer) OfficerClaimStatus(context.Context, *TenantBarrierOfficerClaimStatusRequest) (*TenantBarrierOfficerClaimStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method OfficerClaimStatus not implemented")
-}
-func (UnimplementedTenantBarrierServiceServer) ShamirSealVote(context.Context, *TenantBarrierShamirSealVoteRequest) (*TenantBarrierShamirSealVoteResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ShamirSealVote not implemented")
 }
 func (UnimplementedTenantBarrierServiceServer) mustEmbedUnimplementedTenantBarrierServiceServer() {}
 func (UnimplementedTenantBarrierServiceServer) testEmbeddedByValue()                              {}
@@ -8898,24 +8468,6 @@ func _TenantBarrierService_Unseal_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TenantBarrierServiceServer).Unseal(ctx, req.(*TenantBarrierUnsealRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _TenantBarrierService_UnsealShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TenantBarrierUnsealShareRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TenantBarrierServiceServer).UnsealShare(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TenantBarrierService_UnsealShare_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TenantBarrierServiceServer).UnsealShare(ctx, req.(*TenantBarrierUnsealShareRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8992,6 +8544,78 @@ func _TenantBarrierService_OfficerList_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TenantBarrierService_QuorumBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierQuorumBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).QuorumBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_QuorumBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).QuorumBegin(ctx, req.(*TenantBarrierQuorumBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_QuorumSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierQuorumSubmitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).QuorumSubmit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_QuorumSubmit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).QuorumSubmit(ctx, req.(*TenantBarrierQuorumSubmitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_RekeyStart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierRekeyStartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).RekeyStart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_RekeyStart_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).RekeyStart(ctx, req.(*TenantBarrierRekeyStartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_OfficerRevoke_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierOfficerRevokeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).OfficerRevoke(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_OfficerRevoke_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).OfficerRevoke(ctx, req.(*TenantBarrierOfficerRevokeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TenantBarrierService_ShareClaimBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TenantBarrierShareClaimBeginRequest)
 	if err := dec(in); err != nil {
@@ -9028,42 +8652,6 @@ func _TenantBarrierService_ShareClaimComplete_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
-func _TenantBarrierService_OfficerClaimStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TenantBarrierOfficerClaimStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TenantBarrierServiceServer).OfficerClaimStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TenantBarrierService_OfficerClaimStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TenantBarrierServiceServer).OfficerClaimStatus(ctx, req.(*TenantBarrierOfficerClaimStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _TenantBarrierService_ShamirSealVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(TenantBarrierShamirSealVoteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TenantBarrierServiceServer).ShamirSealVote(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TenantBarrierService_ShamirSealVote_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TenantBarrierServiceServer).ShamirSealVote(ctx, req.(*TenantBarrierShamirSealVoteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // TenantBarrierService_ServiceDesc is the grpc.ServiceDesc for TenantBarrierService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -9078,10 +8666,6 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Unseal",
 			Handler:    _TenantBarrierService_Unseal_Handler,
-		},
-		{
-			MethodName: "UnsealShare",
-			Handler:    _TenantBarrierService_UnsealShare_Handler,
 		},
 		{
 			MethodName: "Seal",
@@ -9100,20 +8684,28 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TenantBarrierService_OfficerList_Handler,
 		},
 		{
+			MethodName: "QuorumBegin",
+			Handler:    _TenantBarrierService_QuorumBegin_Handler,
+		},
+		{
+			MethodName: "QuorumSubmit",
+			Handler:    _TenantBarrierService_QuorumSubmit_Handler,
+		},
+		{
+			MethodName: "RekeyStart",
+			Handler:    _TenantBarrierService_RekeyStart_Handler,
+		},
+		{
+			MethodName: "OfficerRevoke",
+			Handler:    _TenantBarrierService_OfficerRevoke_Handler,
+		},
+		{
 			MethodName: "ShareClaimBegin",
 			Handler:    _TenantBarrierService_ShareClaimBegin_Handler,
 		},
 		{
 			MethodName: "ShareClaimComplete",
 			Handler:    _TenantBarrierService_ShareClaimComplete_Handler,
-		},
-		{
-			MethodName: "OfficerClaimStatus",
-			Handler:    _TenantBarrierService_OfficerClaimStatus_Handler,
-		},
-		{
-			MethodName: "ShamirSealVote",
-			Handler:    _TenantBarrierService_ShamirSealVote_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

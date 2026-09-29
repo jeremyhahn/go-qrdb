@@ -24,43 +24,51 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// registerAnonymouslyAfterInit returns an initialized-then-sealed barrier's
-// fresh ceremony -- a restart while sealed -- with its CA set, and an
-// anonymous context as the boot-time sealed-window listener marks one.
-func registerAnonymouslyAfterInit(t *testing.T) (*CeremonyService, context.Context) {
+// registerAnonymouslyAfterInit returns the env of an initialized-then-sealed
+// barrier's fresh ceremony -- a restart while sealed -- and an anonymous
+// context as the boot-time sealed-window listener marks one.
+func registerAnonymouslyAfterInit(t *testing.T) (*holderEnv, context.Context) {
 	t.Helper()
 	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
 	barrier := testBarrier(t)
 	require.NoError(t, barrier.Initialize(ctx, seal.Credentials{}))
 	require.NoError(t, barrier.Seal())
-	svc, err := NewCeremonyService(defaultConfig(), barrier, newTestCredentialService(), testLogger())
-	require.NoError(t, err)
-	svc.SetCA(newMockCA(t))
-	return svc, sealedwindow.WithAnonymous(ctx)
+	e.barrier = barrier
+	e.svc = e.newService(barrier)
+	return e, sealedwindow.WithAnonymous(ctx)
 }
 
 // TestRegisterOfficer_RefusesAnonymousAfterEnrollmentClosed: the
 // PreOperationalOnly rule is enforced by the ceremony itself, under its own
 // lock, not only by the listener's gate, so no path that reaches
 // RegisterOfficer anonymously -- a gate that missed it, or one that sampled
-// enrollment just before it closed -- can enroll an officer once enrollment
-// is over.
+// enrollment just before it closed -- can enrol a holder once enrollment is
+// over, in either domain.
 func TestRegisterOfficer_RefusesAnonymousAfterEnrollmentClosed(t *testing.T) {
-	svc, anon := registerAnonymouslyAfterInit(t)
-	csrPEM, _ := generateCSRPEM(t, "mallory")
-	_, err := svc.RegisterOfficer(anon, RegisterOfficerRequest{Username: "mallory", CSRPEM: csrPEM})
-	require.ErrorIs(t, err, ErrEnrollmentClosed)
+	e, anon := registerAnonymouslyAfterInit(t)
+	h := newHolder(t, "mallory", seal.RoleSecurityOfficer)
+	for _, domain := range []seal.QuorumDomain{seal.DomainUnseal, seal.DomainRecovery} {
+		_, err := e.svc.RegisterOfficer(anon, domain, h.request("admin"))
+		require.ErrorIs(t, err, ErrEnrollmentClosed, domain)
+	}
+}
 
-	_, err = svc.RegisterRecoveryOfficer(anon, RegisterOfficerRequest{Username: "mallory", CSRPEM: csrPEM})
-	require.ErrorIs(t, err, ErrEnrollmentClosed)
+// TestRegisterOfficer_AnonymousAdmittedWhileEnrollmentOpen: on a fresh
+// barrier the first-boot exemption still holds.
+func TestRegisterOfficer_AnonymousAdmittedWhileEnrollmentOpen(t *testing.T) {
+	e := newHolderEnv(t, 2, 2)
+	h := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	_, err := e.svc.RegisterOfficer(sealedwindow.WithAnonymous(context.Background()), seal.DomainUnseal, h.request("admin"))
+	require.NoError(t, err)
 }
 
 // TestRegisterOfficer_AuthenticatedCallerUnaffected: a caller whose context
-// is not marked anonymous -- an authenticated listener's -- still registers
-// officers after enrollment closed, as rekey and recovery need.
+// is not marked anonymous -- an authenticated listener's -- still enrols
+// holders after enrollment closed, as rekey and recovery need.
 func TestRegisterOfficer_AuthenticatedCallerUnaffected(t *testing.T) {
-	svc, _ := registerAnonymouslyAfterInit(t)
-	csrPEM, _ := generateCSRPEM(t, "alice")
-	_, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{Username: "alice", CSRPEM: csrPEM})
+	e, _ := registerAnonymouslyAfterInit(t)
+	h := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	_, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, h.request("admin"))
 	require.NoError(t, err)
 }

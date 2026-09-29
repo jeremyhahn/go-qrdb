@@ -24,11 +24,10 @@ import (
 )
 
 // TestEnrollmentOpen_FreshCeremony: before anything has happened, anonymous
-// officer enrollment is open -- the first-boot state.
+// holder enrollment is open -- the first-boot state.
 func TestEnrollmentOpen_FreshCeremony(t *testing.T) {
-	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
-	require.NoError(t, err)
-	require.True(t, svc.EnrollmentOpen(context.Background()))
+	e := newHolderEnv(t, 2, 2)
+	require.True(t, e.svc.EnrollmentOpen(context.Background()))
 }
 
 // TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart: reaching
@@ -37,22 +36,40 @@ func TestEnrollmentOpen_FreshCeremony(t *testing.T) {
 // restart -- even though that service's own state starts over.
 func TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart(t *testing.T) {
 	ctx := context.Background()
-	barrier := testBarrier(t)
-	svc, err := NewCeremonyService(defaultConfig(), barrier, newTestCredentialService(), testLogger())
+	e := newHolderEnv(t, 2, 2)
+	_, err := e.svc.Initialize(ctx, e.ca, initOpts(0))
 	require.NoError(t, err)
-	_, err = svc.Initialize(ctx, newMockCA(t), nil)
-	require.NoError(t, err)
-	require.Equal(t, StateOperational, svc.State())
-	require.False(t, svc.EnrollmentOpen(ctx), "an operational ceremony must close enrollment")
+	require.Equal(t, StateOperational, e.svc.State())
+	require.False(t, e.svc.EnrollmentOpen(ctx), "an operational ceremony must close enrollment")
 
-	marked, err := barrier.CeremonyOperational(ctx)
+	marked, err := e.barrier.CeremonyOperational(ctx)
 	require.NoError(t, err)
 	require.True(t, marked, "reaching operational must record the marker on the barrier")
 
-	restarted, err := NewCeremonyService(defaultConfig(), barrier, newTestCredentialService(), testLogger())
-	require.NoError(t, err)
+	restarted := e.newService(e.barrier)
 	require.Equal(t, StateAwaitingInit, restarted.State())
 	require.False(t, restarted.EnrollmentOpen(ctx), "the marker must keep enrollment closed after a restart")
+}
+
+// TestEnrollmentOpen_ClosedWhenTheLastEnvelopeIsClaimed: a Shamir ceremony
+// becomes operational, and closes enrollment, when its last holder claims.
+func TestEnrollmentOpen_ClosedWhenTheLastEnvelopeIsClaimed(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	holders := []*testHolder{newHolder(t, "alice", seal.RoleSecurityOfficer), newHolder(t, "bob", seal.RoleCustodian)}
+	res, err := e.svc.Initialize(ctx, e.ca, initOpts(2, holders...))
+	require.NoError(t, err)
+	for i, h := range holders {
+		h.recordCert(t, res.Holders[i].CertPEM)
+	}
+	e.claim(seal.DomainUnseal, holders[0])
+	require.Equal(t, StateEnrolling, e.svc.State())
+	e.claim(seal.DomainUnseal, holders[1])
+	require.Equal(t, StateOperational, e.svc.State())
+	marked, err := e.barrier.CeremonyOperational(ctx)
+	require.NoError(t, err)
+	require.True(t, marked)
+	require.False(t, e.svc.EnrollmentOpen(ctx))
 }
 
 // TestEnrollmentOpen_ClosedOnInitializedBarrier: a barrier that is already
@@ -64,29 +81,25 @@ func TestEnrollmentOpen_ClosedOnInitializedBarrier(t *testing.T) {
 	require.NoError(t, barrier.Initialize(ctx, seal.Credentials{}))
 	require.NoError(t, barrier.Seal())
 
-	svc, err := NewCeremonyService(defaultConfig(), barrier, newTestCredentialService(), testLogger())
-	require.NoError(t, err)
-	require.False(t, svc.EnrollmentOpen(ctx))
+	e := newHolderEnv(t, 2, 2)
+	require.False(t, e.newService(barrier).EnrollmentOpen(ctx))
 }
 
 // TestEnrollmentOpen_ClosedByMarker: the recorded marker alone closes
 // enrollment, whatever the barrier's and the service's state.
 func TestEnrollmentOpen_ClosedByMarker(t *testing.T) {
 	ctx := context.Background()
-	barrier := testBarrier(t)
-	require.NoError(t, barrier.MarkCeremonyOperational(ctx))
-	svc, err := NewCeremonyService(defaultConfig(), barrier, newTestCredentialService(), testLogger())
-	require.NoError(t, err)
-	require.False(t, svc.EnrollmentOpen(ctx))
+	e := newHolderEnv(t, 2, 2)
+	require.NoError(t, e.barrier.MarkCeremonyOperational(ctx))
+	require.False(t, e.newService(e.barrier).EnrollmentOpen(ctx))
 }
 
 // TestEnrollmentOpen_EndedContextFailsClosed: a probe whose context has
 // already ended cannot read the barrier and reports enrollment closed.
 func TestEnrollmentOpen_EndedContextFailsClosed(t *testing.T) {
-	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
-	require.NoError(t, err)
-	require.True(t, svc.EnrollmentOpen(context.Background()))
+	e := newHolderEnv(t, 2, 2)
+	require.True(t, e.svc.EnrollmentOpen(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.False(t, svc.EnrollmentOpen(ctx))
+	require.False(t, e.svc.EnrollmentOpen(ctx))
 }

@@ -53,9 +53,11 @@ type TestConfig struct {
 	ShamirTLSCACert      string
 	ShamirTLSCert        string
 	ShamirTLSKey         string
-	// ShamirSharesFile is the path to the JSON file ({"shares":[...]})
-	// produced by the qrdbd-shamir bootstrap when it initialized the
-	// barrier. Used to replay shares for share-based unseal.
+	// ShamirSharesFile is the path to the JSON file the qrdbd-shamir
+	// bootstrap writes after its share holders claim their envelopes:
+	// {"threshold":M,"total_shares":N,"holders":[{"username","cert","key",
+	// "envelope"}]}, with file paths relative to the file's own directory.
+	// Tests replay the holders' envelopes through the authenticated quorum.
 	ShamirSharesFile string
 }
 
@@ -329,27 +331,42 @@ func (cfg *TestConfig) shamirConfig() *TestConfig {
 	return &clone
 }
 
-// loadShamirShares reads the JSON file produced by the qrdbd-shamir
-// bootstrap's Security Officer claim flow (register officers → share-free
-// POST /v1/barrier/shamir/initialize → one-time per-officer share claims)
-// and returns the claimed share values. The file shape is
-// {"shares":[...],"threshold":N,"total_shares":N}.
-func loadShamirShares(t *testing.T, cfg *TestConfig) []string {
+// shamirHolder is one share holder the qrdbd-shamir bootstrap enrolled and
+// whose envelope it claimed: the holder's certificate and key (which
+// authenticate the holder and open the envelope) and the claimed envelope.
+type shamirHolder struct {
+	Username string `json:"username"`
+	Cert     string `json:"cert"`
+	Key      string `json:"key"`
+	Envelope string `json:"envelope"`
+}
+
+// loadShamirHolders reads the JSON file produced by the qrdbd-shamir
+// bootstrap's share-holder flow (enrol holders → share-free
+// POST /v1/barrier/shamir/initialize → one-time per-holder envelope claims)
+// and returns the holders with their file paths resolved against the file's
+// directory.
+func loadShamirHolders(t *testing.T, cfg *TestConfig) []shamirHolder {
 	t.Helper()
 	data, err := os.ReadFile(cfg.ShamirSharesFile)
 	if err != nil {
-		t.Fatalf("failed to read shamir shares file %q: %v", cfg.ShamirSharesFile, err)
+		t.Fatalf("failed to read shamir holders file %q: %v", cfg.ShamirSharesFile, err)
 	}
 	var parsed struct {
-		Shares []string `json:"shares"`
+		Holders []shamirHolder `json:"holders"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to parse shamir shares file %q: %v (content: %s)", cfg.ShamirSharesFile, err, string(data))
+		t.Fatalf("failed to parse shamir holders file %q: %v (content: %s)", cfg.ShamirSharesFile, err, string(data))
 	}
-	if len(parsed.Shares) == 0 {
-		t.Fatalf("shamir shares file %q contained no shares (content: %s)", cfg.ShamirSharesFile, string(data))
+	if len(parsed.Holders) == 0 {
+		t.Fatalf("shamir holders file %q contained no holders (content: %s)", cfg.ShamirSharesFile, string(data))
 	}
-	return parsed.Shares
+	dir := filepath.Dir(cfg.ShamirSharesFile)
+	for i := range parsed.Holders {
+		h := &parsed.Holders[i]
+		h.Cert, h.Key, h.Envelope = filepath.Join(dir, h.Cert), filepath.Join(dir, h.Key), filepath.Join(dir, h.Envelope)
+	}
+	return parsed.Holders
 }
 
 // IsProtocolAvailable checks if the specified protocol server is available.

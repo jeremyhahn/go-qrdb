@@ -24,7 +24,8 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -35,9 +36,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // BarrierInitialize initializes the storage barrier with a secret credential.
-// When the request supplies a non-empty SoPin / UserPin and the server has a
-// pin.PINBackend configured, the PINs are persisted on the backend before
-// the barrier is initialized. With no backend the PIN fields are ignored.
+// PINs the request supplies are provisioned on the pin.PINBackend before the
+// barrier is initialized (see pin.Provision); PINs supplied to a server with
+// no backend are refused, never ignored.
 func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.BarrierInitializeRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
@@ -48,7 +49,7 @@ func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.Barri
 	// so a deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.GetSecret())
 
-	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -74,19 +75,15 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 	return &emptypb.Empty{}, nil
 }
 
-// BarrierSeal transitions the storage barrier to the sealed state. The
-// proto RPC accepts Empty so this transport does not surface SO PIN gating
-// at the wire (it would require a breaking proto change). The same SO PIN
-// enforcement is available through the REST surface which carries the
-// barrierSealRequest JSON body; QUIC, MCP and Unix mirror REST semantics
-// for parity.
+// BarrierSeal transitions the storage barrier to the sealed state under the
+// configured SO PIN, verified by the PIN backend exactly as on every other
+// transport; without a PIN backend it fails closed.
 func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, req *pb.BarrierSealRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
-	// The configured barrier SO PIN, exactly as REST and MCP verify it.
-	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -119,87 +116,22 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 	}, nil
 }
 
-// BarrierShamirInitialize initializes the barrier with Shamir secret sharing,
-// splitting the root key into threshold-of-totalShares shares. When the
-// request supplies SoPin / UserPin and a pin.PINBackend is configured,
-// the PINs are persisted on the backend before initialization.
-// The response is share-free: shares are distributed to officers via the
-// BarrierOfficerRegister / BarrierShareClaimBegin / BarrierShareClaimComplete flow.
+// BarrierShamirInitialize initializes the barrier under Shamir custody: the
+// unseal key is split threshold-of-total_shares to the enrolled share
+// holders, each share sealed into an envelope to its holder. Supplied PINs are
+// provisioned (or verified) through the PINBackend first. No share material
+// is returned.
 func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb.BarrierShamirInitializeRequest) (*pb.BarrierShamirOperationResponse, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
-
-	defer secure.Wipe(req.GetSecret())
-
-	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
-
-	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, req.GetSecret(), int(req.GetThreshold()), int(req.GetTotalShares()))
+	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, int(req.GetThreshold()), int(req.GetTotalShares()), seal.FactorPolicy(req.GetPolicy()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-
-	return &pb.BarrierShamirOperationResponse{
-		Threshold:   int32(info.Threshold),   //nolint:gosec
-		TotalShares: int32(info.TotalShares), //nolint:gosec
-		ShareCount:  int32(info.ShareCount),  //nolint:gosec
-	}, nil
-}
-
-// BarrierShamirUnsealShare submits a single Shamir share toward the quorum
-// threshold and reports current unseal progress.
-func (s *qrdbServiceServer) BarrierShamirUnsealShare(ctx context.Context, req *pb.BarrierShamirUnsealShareRequest) (*pb.BarrierShamirUnsealShareResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	progress, err := s.barrierSvc.BarrierUnsealWithShare(ctx, req.GetShare())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShamirUnsealShareResponse{
-		Required:  int32(progress.Required),  //nolint:gosec
-		Submitted: int32(progress.Submitted), //nolint:gosec
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// BarrierShamirUnsealShares unseals the barrier using a complete set of
-// Shamir shares in a single call.
-func (s *qrdbServiceServer) BarrierShamirUnsealShares(ctx context.Context, req *pb.BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	if err := s.barrierSvc.BarrierUnsealWithShares(ctx, req.GetShares()); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &emptypb.Empty{}, nil
-}
-
-// BarrierRekey generates new Shamir shares for the existing root key with
-// the specified threshold and total parameters. SO PIN verification is
-// enforced when a pin.PINBackend is configured AND a SO PIN has been set.
-// The response is share-free: new shares are sealed to officers via
-// the claim flow.
-func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRekeyRequest) (*pb.BarrierShamirOperationResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	info, err := s.barrierSvc.BarrierRekey(ctx, int(req.GetThreshold()), int(req.GetTotal()))
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
 	return &pb.BarrierShamirOperationResponse{
 		Threshold:   int32(info.Threshold),   //nolint:gosec
 		TotalShares: int32(info.TotalShares), //nolint:gosec
@@ -308,44 +240,25 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 	}, nil
 }
 
-// BarrierRecoveryGenerate generates a set of Shamir recovery shares from the
-// root key for disaster recovery. SO PIN verification is enforced when a
-// pin.PINBackend is configured AND a SO PIN has been set.
-// The response is share-free: recovery shares are sealed to recovery officers
-// and claimed via the BarrierRecoveryShareClaimBegin / BarrierRecoveryShareClaimComplete flow.
+// BarrierRecoveryGenerate creates the independent recovery-key domain, split
+// to the enrolled recovery holders, under SO PIN authorization. No share
+// material is returned.
 func (s *qrdbServiceServer) BarrierRecoveryGenerate(ctx context.Context, req *pb.BarrierRecoveryGenerateRequest) (*pb.BarrierRecoveryKeysResponse, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
-
-	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
-
-	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), int(req.GetTotal()))
+	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
-
 	return &pb.BarrierRecoveryKeysResponse{
 		Threshold:  int32(info.Threshold),  //nolint:gosec
 		Total:      int32(info.Total),      //nolint:gosec
 		ShareCount: int32(info.ShareCount), //nolint:gosec
 	}, nil
-}
-
-// BarrierRecoveryRecover unseals the barrier using recovery shares that were
-// previously generated by BarrierRecoveryGenerate.
-func (s *qrdbServiceServer) BarrierRecoveryRecover(ctx context.Context, req *pb.BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	if err := s.barrierSvc.BarrierRecoverWithKeys(ctx, req.GetKeys()); err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &emptypb.Empty{}, nil
 }
 
 // BarrierRecoveryDelete removes recovery key metadata from storage.
@@ -377,24 +290,6 @@ func (s *qrdbServiceServer) BarrierRecoveryStatus(ctx context.Context, _ *emptyp
 	}, nil
 }
 
-// BarrierRootToken creates a new root token by proving knowledge of the
-// master key through Shamir shares.
-func (s *qrdbServiceServer) BarrierRootToken(ctx context.Context, req *pb.BarrierRootTokenRequest) (*pb.BarrierRootTokenResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	info, err := s.barrierSvc.BarrierGenerateRootToken(ctx, req.GetShares())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierRootTokenResponse{
-		Token:     info.Token,
-		CreatedAt: info.CreatedAt.Format(time.RFC3339Nano),
-	}, nil
-}
-
 // ---------------------------------------------------------------------------
 // Security Officer management handlers (new: share-distribution model)
 // ---------------------------------------------------------------------------
@@ -414,231 +309,9 @@ func peerCertThumbprint(ctx context.Context) (string, error) {
 	if len(tlsInfo.State.PeerCertificates) == 0 {
 		return "", &ClientCertRequiredError{}
 	}
-	return ceremony.CertThumbprint(tlsInfo.State.PeerCertificates[0].Raw), nil
-}
-
-// BarrierOfficerRegister registers a Security Officer for the system barrier.
-// The officer receives a signed certificate; their Shamir share is distributed
-// at init / rekey time and claimed via the share-claim flow.
-func (s *qrdbServiceServer) BarrierOfficerRegister(ctx context.Context, req *pb.BarrierOfficerRegisterRequest) (*pb.BarrierOfficerRegisterResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	svcReq := &service.BarrierOfficerRegisterRequest{
-		Username:          req.GetUsername(),
-		CSRPEM:            req.GetCsrPem(),
-		AuthenticatorType: req.GetAuthenticatorType(),
-		AuthenticatorRef:  req.GetAuthenticatorRef(),
-	}
-	result, err := s.barrierSvc.BarrierOfficerRegister(ctx, svcReq)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierOfficerRegisterResponse{
-		CertPem:    result.CertPEM,
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec
-	}, nil
-}
-
-// BarrierOfficerList lists all registered Security Officers for the system barrier.
-// The response contains only public officer metadata — no share bytes.
-func (s *qrdbServiceServer) BarrierOfficerList(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierOfficerListResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	officers, err := s.barrierSvc.BarrierOfficerList(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierOfficerListResponse{
-		Officers: barrierOfficerStatusesToProto(officers),
-	}, nil
-}
-
-// BarrierShareClaimBegin starts the share-claim handshake for the calling
-// Security Officer. The SO must present their mTLS certificate; the server
-// issues a challenge nonce the SO must sign to prove key possession.
-func (s *qrdbServiceServer) BarrierShareClaimBegin(ctx context.Context, req *pb.BarrierShareClaimBeginRequest) (*pb.BarrierShareClaimBeginResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	challenge, err := s.barrierSvc.BarrierShareClaimBegin(ctx, req.GetUsername(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShareClaimBeginResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
-	}, nil
-}
-
-// BarrierShareClaimComplete completes the share-claim handshake and returns
-// the Shamir share exactly once over the SO's own mTLS session. The share bytes
-// are never logged and are the caller's responsibility to wipe after use.
-func (s *qrdbServiceServer) BarrierShareClaimComplete(ctx context.Context, req *pb.BarrierShareClaimCompleteRequest) (*pb.BarrierShareClaimCompleteResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	result, err := s.barrierSvc.BarrierShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShareClaimCompleteResponse{
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// BarrierOfficerClaimStatus returns per-officer claim status for the system
-// barrier. The response contains only public metadata — no share bytes.
-func (s *qrdbServiceServer) BarrierOfficerClaimStatus(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierOfficerClaimStatusResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	officers, err := s.barrierSvc.BarrierOfficerClaimStatus(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierOfficerClaimStatusResponse{
-		Officers: barrierOfficerStatusesToProto(officers),
-	}, nil
-}
-
-// BarrierShamirSealVote submits a Shamir share as a seal vote. When the
-// threshold is reached the system barrier is sealed and all vote enclaves
-// are destroyed. Returns ErrShamirBarrierRequiresQuorum if the barrier is
-// not in Shamir mode.
-func (s *qrdbServiceServer) BarrierShamirSealVote(ctx context.Context, req *pb.BarrierShamirSealVoteRequest) (*pb.BarrierShamirSealVoteResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	progress, err := s.barrierSvc.BarrierShamirSealVote(ctx, req.GetShare())
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShamirSealVoteResponse{
-		Required:  int32(progress.Required),  //nolint:gosec
-		Submitted: int32(progress.Submitted), //nolint:gosec
-		Complete:  progress.Complete,
-	}, nil
-}
-
-// BarrierRecoveryOfficerRegister registers a Security Officer for recovery
-// key distribution. Recovery officers use the same claim flow as unseal officers
-// but against the recovery scope.
-func (s *qrdbServiceServer) BarrierRecoveryOfficerRegister(ctx context.Context, req *pb.BarrierOfficerRegisterRequest) (*pb.BarrierOfficerRegisterResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	svcReq := &service.BarrierOfficerRegisterRequest{
-		Username:          req.GetUsername(),
-		CSRPEM:            req.GetCsrPem(),
-		AuthenticatorType: req.GetAuthenticatorType(),
-		AuthenticatorRef:  req.GetAuthenticatorRef(),
-	}
-	result, err := s.barrierSvc.BarrierRecoveryOfficerRegister(ctx, svcReq)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierOfficerRegisterResponse{
-		CertPem:    result.CertPEM,
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec
-	}, nil
-}
-
-// BarrierRecoveryShareClaimBegin starts the recovery-share claim handshake
-// for the calling Security Officer.
-func (s *qrdbServiceServer) BarrierRecoveryShareClaimBegin(ctx context.Context, req *pb.BarrierShareClaimBeginRequest) (*pb.BarrierShareClaimBeginResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	challenge, err := s.barrierSvc.BarrierRecoveryShareClaimBegin(ctx, req.GetUsername(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShareClaimBeginResponse{
-		NonceHex:  challenge.NonceHex,
-		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
-	}, nil
-}
-
-// BarrierRecoveryShareClaimComplete completes the recovery-share claim
-// handshake and returns the recovery share exactly once over the SO's own
-// mTLS session. The share bytes are never logged.
-func (s *qrdbServiceServer) BarrierRecoveryShareClaimComplete(ctx context.Context, req *pb.BarrierShareClaimCompleteRequest) (*pb.BarrierShareClaimCompleteResponse, error) {
-	if s.barrierSvc == nil {
-		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
-	}
-
-	thumbprint, err := peerCertThumbprint(ctx)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	result, err := s.barrierSvc.BarrierRecoveryShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
-	if err != nil {
-		return nil, mapServiceError(err)
-	}
-
-	return &pb.BarrierShareClaimCompleteResponse{
-		ShareIndex: int32(result.ShareIndex), //nolint:gosec
-		ShareBytes: result.ShareBytes,
-	}, nil
+	return mtls.Thumbprint(tlsInfo.State.PeerCertificates[0].Raw), nil
 }
 
 // ---------------------------------------------------------------------------
 // Error mapping helpers
 // ---------------------------------------------------------------------------
-
-// barrierOfficerStatusesToProto converts service-layer BarrierOfficerStatus
-// slices to proto OfficerStatus messages.
-func barrierOfficerStatusesToProto(officers []*service.BarrierOfficerStatus) []*pb.OfficerStatus {
-	out := make([]*pb.OfficerStatus, len(officers))
-	for i, o := range officers {
-		var claimedAt string
-		if !o.ClaimedAt.IsZero() {
-			claimedAt = o.ClaimedAt.Format(time.RFC3339)
-		}
-		out[i] = &pb.OfficerStatus{
-			Username:       o.Username,
-			CertThumbprint: o.CertThumbprint,
-			ShareIndex:     int32(o.ShareIndex), //nolint:gosec
-			AuthFactor:     o.AuthFactor,
-			EnrolledAt:     o.EnrolledAt.Format(time.RFC3339),
-			ClaimedAt:      claimedAt,
-			SharePending:   o.SharePending,
-		}
-	}
-	return out
-}

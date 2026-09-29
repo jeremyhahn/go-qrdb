@@ -18,12 +18,10 @@ package server
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
-	quicraftshamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -106,41 +104,6 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToPassphrase(t *testing.T) {
 	}
 }
 
-// serverCaptureDist is a test-only seal.CeremonyDistributor that captures the
-// Shamir shares generated during a direct-mode InitializeShamir/migration so
-// tests can later reconstruct quorum and drive UnsealWithShare.
-type serverCaptureDist struct {
-	mu     sync.Mutex
-	shares []string
-}
-
-func (c *serverCaptureDist) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
-	raw, err := quicraftshamir.Split(secret, threshold, total)
-	if err != nil {
-		return 0, err
-	}
-	c.mu.Lock()
-	c.shares = make([]string, len(raw))
-	for i, s := range raw {
-		c.shares[i] = s.Value
-	}
-	c.mu.Unlock()
-	return len(raw), nil
-}
-
-func (c *serverCaptureDist) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
-	c.mu.Lock()
-	c.shares = nil
-	c.mu.Unlock()
-	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
-}
-
-func (c *serverCaptureDist) Shares() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.shares...)
-}
-
 // TestTenantHostRegistry_MigrateEncryption_NoneToShamir proves the Shamir
 // target migration produces a GENUINE M-of-N Shamir barrier — not a silently
 // mislabeled passphrase barrier — and that it survives the full lifecycle: the
@@ -160,8 +123,8 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToShamir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTenant: %v", err)
 	}
-	dist := &serverCaptureDist{}
-	tb.Barrier().SetCeremonyDistributor(dist)
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(tb.Barrier())
 
 	// Seed data through the live (unencrypted) Host before migrating.
 	svcs, err := hostReg.Services(ctx, "vt-shamir")
@@ -182,8 +145,10 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToShamir(t *testing.T) {
 	if err := hostReg.MigrateEncryption(ctx, "vt-shamir", opts); err != nil {
 		t.Fatalf("MigrateEncryption(shamir): %v", err)
 	}
-	if len(dist.Shares()) != 3 {
-		t.Fatalf("distributor captured %d shares, want 3", len(dist.Shares()))
+	for _, h := range []string{"h1", "h2", "h3"} {
+		if custody.Distributor.Share(seal.DomainUnseal, h) == "" {
+			t.Fatalf("holder %s received no share from the migration", h)
+		}
 	}
 
 	// The live tenant barrier is genuinely Shamir — correct label, correct
@@ -194,7 +159,7 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToShamir(t *testing.T) {
 		t.Fatalf("post-migrate strategy = %q, want shamir (not silently downgraded to passphrase)", status.Strategy)
 	}
 	if !status.Sealed {
-		t.Fatal("post-migrate shamir barrier must be sealed pending Security Officer quorum")
+		t.Fatal("post-migrate shamir barrier must be sealed pending a share-holder quorum")
 	}
 	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
 		t.Fatalf("post-migrate scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
@@ -213,13 +178,9 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToShamir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTenant(post-migrate): %v", err)
 	}
-	shares := dist.Shares()
-	if _, uerr := tb2.UnsealWithShare(ctx, shares[0]); uerr != nil {
-		t.Fatalf("UnsealWithShare(1/2): %v", uerr)
-	}
-	progress, uerr := tb2.UnsealWithShare(ctx, shares[1])
+	progress, uerr := custody.Quorum(ctx, tb2.Barrier(), seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
 	if uerr != nil {
-		t.Fatalf("UnsealWithShare(2/2): %v", uerr)
+		t.Fatalf("unseal quorum: %v", uerr)
 	}
 	if !progress.Complete || tb2.IsSealed() {
 		t.Fatalf("barrier not unsealed after a 2-of-3 quorum: progress=%+v sealed=%v", progress, tb2.IsSealed())

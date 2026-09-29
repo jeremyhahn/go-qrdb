@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // newNoneBarrier returns an initialized none-strategy barrier over a fresh
@@ -74,7 +75,7 @@ func TestMintKeyedSibling_Idempotent(t *testing.T) {
 func TestMintKeyedShamirSibling_Success(t *testing.T) {
 	ctx := context.Background()
 	src, _ := newNoneBarrier(t)
-	dist := newCaptureDistributor()
+	dist := newCaptureDistributor("h1", "h2", "h3")
 	src.SetCeremonyDistributor(dist)
 
 	sib, params, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
@@ -86,8 +87,10 @@ func TestMintKeyedShamirSibling_Success(t *testing.T) {
 	if params.Threshold != 2 || params.TotalShares != 3 || params.ShareCount != 3 {
 		t.Fatalf("params = %+v, want threshold=2 total=3 shareCount=3", params)
 	}
-	if len(dist.Shares()) != 3 {
-		t.Fatalf("captured %d shares, want 3", len(dist.Shares()))
+	for _, h := range []string{"h1", "h2", "h3"} {
+		if dist.share(DomainUnseal, h) == "" {
+			t.Fatalf("holder %s received no share", h)
+		}
 	}
 	if sib.IsSealed() {
 		t.Fatal("minted shamir sibling must be unsealed (direct-mode Initialize unseals it)")
@@ -115,7 +118,7 @@ func TestMintKeyedShamirSibling_NoDistributor(t *testing.T) {
 func TestMintKeyedShamirSibling_InvalidThreshold(t *testing.T) {
 	ctx := context.Background()
 	src, _ := newNoneBarrier(t)
-	src.SetCeremonyDistributor(newCaptureDistributor())
+	src.SetCeremonyDistributor(newCaptureDistributor("h1", "h2", "h3"))
 	if _, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 1, 3); !errors.Is(err, ErrShamirThresholdInvalid) {
 		t.Fatalf("MintKeyedShamirSibling(threshold=1) = %v, want ErrShamirThresholdInvalid", err)
 	}
@@ -130,7 +133,7 @@ func TestMintKeyedShamirSibling_InvalidThreshold(t *testing.T) {
 func TestAdoptMigratedRootKey_Shamir_AdoptsWrappedKeyAndScheme(t *testing.T) {
 	ctx := context.Background()
 	src, backend := newNoneBarrier(t)
-	dist := newCaptureDistributor()
+	dist := newCaptureDistributor("h1", "h2", "h3")
 	src.SetCeremonyDistributor(dist)
 
 	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
@@ -153,12 +156,12 @@ func TestAdoptMigratedRootKey_Shamir_AdoptsWrappedKeyAndScheme(t *testing.T) {
 
 	// The wrapped-root-key blob must have been copied onto the CANONICAL path
 	// (not left stranded at the staging sibling's path) — this is exactly what
-	// UnsealWithShare(s) reads on a future unseal.
-	canonicalWrapped, gerr := backend.Get(ctx, src.wrappedRootKeyPath())
+	// the holder quorum reads on a future unseal.
+	canonicalWrapped, gerr := backend.Get(ctx, src.wrappedKeyPath(DomainUnseal))
 	if gerr != nil || len(canonicalWrapped) == 0 {
 		t.Fatalf("canonical wrapped-root-key blob missing after adopt: %v", gerr)
 	}
-	stagingWrapped, _ := backend.Get(ctx, sib.wrappedRootKeyPath())
+	stagingWrapped, _ := backend.Get(ctx, sib.wrappedKeyPath(DomainUnseal))
 	if string(canonicalWrapped) != string(stagingWrapped) {
 		t.Fatal("adopted wrapped-root-key blob does not match the staging sibling's")
 	}
@@ -179,13 +182,12 @@ func TestAdoptMigratedRootKey_InvalidTargetStrategy(t *testing.T) {
 // TestReopenKeyed_Shamir_StaysSealedPendingQuorum proves ReopenKeyed does NOT
 // attempt to auto-unseal a Shamir target (ShamirStrategy.UnsealRootKey always
 // fails closed by design): it returns a sealed barrier with the M-of-N scheme
-// + distributor already registered, ready for the normal
-// UnsealWithShare(s)/Status() flow, rather than propagating the doomed unseal
-// error.
+// + distributor already registered, ready for the share-holder quorum and
+// Status(), rather than propagating the doomed unseal error.
 func TestReopenKeyed_Shamir_StaysSealedPendingQuorum(t *testing.T) {
 	ctx := context.Background()
 	src, _ := newNoneBarrier(t)
-	dist := newCaptureDistributor()
+	dist := newCaptureDistributor("h1", "h2", "h3")
 	src.SetCeremonyDistributor(dist)
 
 	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
@@ -211,6 +213,60 @@ func TestReopenKeyed_Shamir_StaysSealedPendingQuorum(t *testing.T) {
 	status := keyed.Status()
 	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
 		t.Fatalf("reopened sealed barrier scheme = %d/%d, want 2/3 (from config, since sealed)", status.ShamirThreshold, status.ShamirTotal)
+	}
+}
+
+// TestReopenKeyed_Shamir_HoldersCanUnseal proves the reopened Shamir barrier
+// is unsealable at all: it must carry the source barrier's holder verifier
+// and quorum lifetime, not only its distributor. Without the verifier every
+// share submission is refused and a migrated barrier can never be unsealed
+// again; without the lifetime its rounds silently fall back to the default.
+func TestReopenKeyed_Shamir_HoldersCanUnseal(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	dist := newCaptureDistributor("h1", "h2", "h3")
+	verifier := newTestVerifier()
+	src.SetCeremonyDistributor(dist)
+	src.SetHolderVerifier(verifier)
+	src.SetShamirConfig(&ShamirConfig{Threshold: 2, TotalShares: 3, QuorumTTL: 42 * time.Minute})
+
+	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
+	if err != nil {
+		t.Fatalf("MintKeyedShamirSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+	if err := src.AdoptMigratedRootKey(ctx, sib); err != nil {
+		t.Fatalf("AdoptMigratedRootKey: %v", err)
+	}
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	keyed, err := src.ReopenKeyed(ctx, shamirStrat, Credentials{})
+	if err != nil {
+		t.Fatalf("ReopenKeyed: %v", err)
+	}
+	if got := keyed.quorumTTL(); got != 42*time.Minute {
+		t.Fatalf("reopened quorum TTL = %v, want the source's 42m", got)
+	}
+
+	_, digest, err := keyed.HolderRoster(ctx, DomainUnseal)
+	if err != nil {
+		t.Fatalf("HolderRoster: %v", err)
+	}
+	var out *QuorumOutcome
+	for _, h := range []string{"h1", "h2"} {
+		out, err = keyed.SubmitHolderShare(ctx, &HolderSubmission{
+			Domain: DomainUnseal, Op: OpUnseal, Holder: h,
+			Proof: verifier.issue(DomainUnseal, OpUnseal, h, digest),
+			Share: []byte(dist.share(DomainUnseal, h)),
+		})
+		if err != nil {
+			t.Fatalf("SubmitHolderShare(%s) on the reopened barrier: %v", h, err)
+		}
+	}
+	if !out.Complete || keyed.IsSealed() {
+		t.Fatalf("reopened barrier not unsealed by a 2-of-3 quorum: %+v", out)
 	}
 }
 

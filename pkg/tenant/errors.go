@@ -60,8 +60,8 @@ var (
 	// supply the secret.
 	ErrEmptyPassphrase = errors.New("tenant: empty passphrase")
 
-	// ErrEmptyShare is returned when a Shamir unseal-share operation is
-	// invoked without a caller-supplied share value.
+	// ErrEmptyShare is returned when a holder quorum submission carries no
+	// share value.
 	ErrEmptyShare = errors.New("tenant: empty shamir share")
 
 	// ErrNilStore is returned when a nil storage backend is provided

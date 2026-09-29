@@ -92,9 +92,6 @@ type testQRDBServer struct {
 	dbBarrierStatusFn func(ctx context.Context, req *pb.DatabaseBarrierStatusRequest) (*pb.DatabaseBarrierStatusResponse, error)
 
 	// ceremony custodian
-	claimShareBeginFn    func(ctx context.Context, req *pb.CeremonyClaimShareBeginRequest) (*pb.CeremonyClaimShareBeginResponse, error)
-	claimShareCompleteFn func(ctx context.Context, req *pb.CeremonyClaimShareCompleteRequest) (*pb.CeremonyCustodianResponse, error)
-	submitUnsealShareFn  func(ctx context.Context, req *pb.CeremonySubmitUnsealShareRequest) (*pb.CeremonySubmitUnsealShareResponse, error)
 
 	// embedding
 	embedFn      func(ctx context.Context, req *pb.EmbedRequest) (*pb.EmbedResponse, error)
@@ -199,32 +196,6 @@ func (s *testQRDBServer) DatabaseBarrierStatus(ctx context.Context, req *pb.Data
 }
 
 // --------------- ceremony custodian RPCs -------------------------------------
-
-func (s *testQRDBServer) CeremonyClaimShareBegin(ctx context.Context, req *pb.CeremonyClaimShareBeginRequest) (*pb.CeremonyClaimShareBeginResponse, error) {
-	if s.claimShareBeginFn != nil {
-		return s.claimShareBeginFn(ctx, req)
-	}
-	return &pb.CeremonyClaimShareBeginResponse{
-		CustodianId: req.GetCustodianId(), Nonce: []byte{0x01}, ExpiresAtUnix: 1900000000,
-	}, nil
-}
-
-func (s *testQRDBServer) CeremonyClaimShareComplete(ctx context.Context, req *pb.CeremonyClaimShareCompleteRequest) (*pb.CeremonyCustodianResponse, error) {
-	if s.claimShareCompleteFn != nil {
-		return s.claimShareCompleteFn(ctx, req)
-	}
-	return &pb.CeremonyCustodianResponse{
-		Id: req.GetCustodianId(), Username: "alice", ShareIndex: 1, ShareClaimed: true,
-		EnrolledAtUnix: 1800000000,
-	}, nil
-}
-
-func (s *testQRDBServer) CeremonySubmitUnsealShare(ctx context.Context, req *pb.CeremonySubmitUnsealShareRequest) (*pb.CeremonySubmitUnsealShareResponse, error) {
-	if s.submitUnsealShareFn != nil {
-		return s.submitUnsealShareFn(ctx, req)
-	}
-	return &pb.CeremonySubmitUnsealShareResponse{Submitted: 1, Required: 3, Unsealed: false}, nil
-}
 
 // --------------- embedding RPCs ----------------------------------------------
 
@@ -750,142 +721,6 @@ func TestGRPCDatabaseBarrier_Status_RPCError(t *testing.T) {
 	_, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
 	if err == nil {
 		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CeremonyCustodian tests
-// ---------------------------------------------------------------------------
-
-func TestGRPCCeremonyCustodian_ClaimShareBegin_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
-	defer cleanup()
-
-	resp, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{
-		CustodianID: "officer-1",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShareBegin: %v", err)
-	}
-	if resp.CustodianID != "officer-1" {
-		t.Fatalf("unexpected CustodianID: %q", resp.CustodianID)
-	}
-}
-
-func TestGRPCCeremonyCustodian_ClaimShareBegin_Closed(t *testing.T) {
-	_, err := newUpliftClosed().CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCCeremonyCustodian_ClaimShareBegin_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		claimShareBeginFn: func(_ context.Context, _ *pb.CeremonyClaimShareBeginRequest) (*pb.CeremonyClaimShareBeginResponse, error) {
-			return nil, errors.New("custodian not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{CustodianID: "bad"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestGRPCCeremonyCustodian_ClaimShareComplete_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
-	defer cleanup()
-
-	info, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{
-		CustodianID: "officer-1", ChallengeID: "chal-1", FactorResponse: []byte{0x99},
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShareComplete: %v", err)
-	}
-	if info.Username != "alice" {
-		t.Fatalf("unexpected username: %q", info.Username)
-	}
-}
-
-func TestGRPCCeremonyCustodian_ClaimShareComplete_Closed(t *testing.T) {
-	_, err := newUpliftClosed().CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCCeremonyCustodian_ClaimShareComplete_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		claimShareCompleteFn: func(_ context.Context, _ *pb.CeremonyClaimShareCompleteRequest) (*pb.CeremonyCustodianResponse, error) {
-			return nil, errors.New("invalid response")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestGRPCCeremonyCustodian_SubmitUnsealShare_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
-	defer cleanup()
-
-	resp, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{
-		CustodianID: "officer-1", ChallengeID: "chal-1", ShareBytes: []byte{0xAB},
-	})
-	if err != nil {
-		t.Fatalf("CeremonySubmitUnsealShare: %v", err)
-	}
-	if resp.Required != 3 {
-		t.Fatalf("unexpected Required: %d", resp.Required)
-	}
-}
-
-func TestGRPCCeremonyCustodian_SubmitUnsealShare_Closed(t *testing.T) {
-	_, err := newUpliftClosed().CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCCeremonyCustodian_SubmitUnsealShare_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		submitUnsealShareFn: func(_ context.Context, _ *pb.CeremonySubmitUnsealShareRequest) (*pb.CeremonySubmitUnsealShareResponse, error) {
-			return nil, errors.New("share rejected")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// protoCustodianToInfo nil guard
-func TestGRPCCeremonyCustodian_ProtoToInfo_Nil(t *testing.T) {
-	info := protoCustodianToInfo(nil)
-	if info == nil {
-		t.Fatal("expected non-nil")
-	}
-}
-
-// protoCustodianToInfo with optional timestamps populated
-func TestGRPCCeremonyCustodian_ProtoToInfo_WithTimestamps(t *testing.T) {
-	info := protoCustodianToInfo(&pb.CeremonyCustodianResponse{
-		Id: "c1", EnrolledAtUnix: 1800000000, RevokedAtUnix: 1850000000, ShareClaimedAtUnix: 1860000000,
-	})
-	if info.RevokedAt == nil || info.ShareClaimedAt == nil {
-		t.Fatal("expected optional timestamps to be set")
 	}
 }
 

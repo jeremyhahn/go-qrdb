@@ -26,9 +26,12 @@ import (
 // row -- or signing while anonymous callers send requests that never reach a
 // PIN check -- is never refused for volume alone.
 func TestCeremonySignCSR_CorrectPINIsNotStarved(t *testing.T) {
-	svc, ca := newTestCeremonyService(t)
+	e := newHolderSvcEnv(t, 2, 2)
+	svc := e.cer
 	ctx := context.Background()
-	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	_, err := svc.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
+		SOPin: "so-pin-1234", UserPin: "user-pin-1234", Hostname: "db.example.com",
+	})
 	require.NoError(t, err)
 	for i := 0; i < 30; i++ {
 		// Malformed requests that fail before the PIN is looked at.
@@ -37,7 +40,7 @@ func TestCeremonySignCSR_CorrectPINIsNotStarved(t *testing.T) {
 	}
 	for i := 0; i < 30; i++ {
 		csrPEM := string(newTestOfficerCSR(t, "officer"))
-		if _, err := svc.CeremonySignCSR(ctx, "officer", "test-so-pin", csrPEM, "admin"); err != nil {
+		if _, err := svc.CeremonySignCSR(ctx, "officer", "so-pin-1234", csrPEM, "admin"); err != nil {
 			t.Fatalf("correct-PIN signing %d: %v", i, err)
 		}
 	}

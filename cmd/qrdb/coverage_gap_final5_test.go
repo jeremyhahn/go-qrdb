@@ -23,10 +23,8 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -43,25 +41,6 @@ func (m *mockCeremonyServiceFinal5) CeremonyInitialize(_ context.Context, _ cere
 	return &service.CeremonyInitResult{State: "initialized"}, nil
 }
 
-func (m *mockCeremonyServiceFinal5) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	return &service.CeremonyChallenge{NonceHex: "deadbeef"}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	return &service.CeremonyClaimCertResult{
-		CertPEM:   []byte("-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----"),
-		CACertPEM: []byte("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----"),
-	}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"share":"test-share"}`)}, nil
-}
-
 func (m *mockCeremonyServiceFinal5) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return &service.CeremonySignCSRResult{
 		CertPEM: []byte("-----BEGIN CERTIFICATE-----\nsigned\n-----END CERTIFICATE-----"),
@@ -70,22 +49,6 @@ func (m *mockCeremonyServiceFinal5) CeremonySignCSR(_ context.Context, _, _, _, 
 
 func (m *mockCeremonyServiceFinal5) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return &service.CeremonyCustodianChallenge{}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return &custodian.Custodian{}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return &service.CeremonyUnsealShareResult{}, nil
-}
-
-func (m *mockCeremonyServiceFinal5) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return &service.CeremonyEnrollExternalOfficerResponse{}, nil
 }
 
 // ===========================================================================
@@ -183,152 +146,13 @@ func TestCeremonyStatusCmd_YAML_WithMockCeremony(t *testing.T) {
 // ceremony.go — newCeremonyClaimCertBeginCmd (57%)
 // ===========================================================================
 
-func TestCeremonyClaimCertBeginCmd_Table_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	cmd := newCeremonyClaimCertBeginCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	if err := cmd.RunE(cmd, nil); err != nil {
-		t.Fatalf("RunE: %v", err)
-	}
-}
-
-func TestCeremonyClaimCertBeginCmd_JSON_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "json"
-
-	cmd := newCeremonyClaimCertBeginCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	if err := cmd.RunE(cmd, nil); err != nil {
-		t.Fatalf("RunE JSON: %v", err)
-	}
-}
-
-func TestCeremonyClaimCertBeginCmd_YAML_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "yaml"
-
-	cmd := newCeremonyClaimCertBeginCmd()
-	_ = cmd.Flags().Set("username", "bob")
-	_ = cmd.RunE(cmd, nil)
-}
-
 // ===========================================================================
 // ceremony.go — newCeremonyClaimCertCompleteCmd (66%)
 // ===========================================================================
 
-func TestCeremonyClaimCertCompleteCmd_Table_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	// The signature must be base64-encoded bytes. Use a valid base64 value.
-	cmd := newCeremonyClaimCertCompleteCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	_ = cmd.Flags().Set("nonce", "deadbeef")
-	_ = cmd.Flags().Set("signature", "ZGVhZGJlZWY=") // base64("deadbeef")
-	if err := cmd.RunE(cmd, nil); err != nil {
-		t.Fatalf("RunE: %v", err)
-	}
-}
-
-func TestCeremonyClaimCertCompleteCmd_JSON_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "json"
-
-	cmd := newCeremonyClaimCertCompleteCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	_ = cmd.Flags().Set("nonce", "deadbeef")
-	_ = cmd.Flags().Set("signature", "ZGVhZGJlZWY=")
-	_ = cmd.RunE(cmd, nil)
-}
-
 // ===========================================================================
 // ceremony.go — newCeremonyClaimShareCmd (61%)
 // ===========================================================================
-
-func TestCeremonyClaimShareCmd_Table_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "table"
-
-	// The embedded transport derives the caller thumbprint from the TLS peer
-	// certificate on the context. This CLI invocation carries none, so both
-	// halves of the handshake must fail closed rather than release a share.
-	cmd := newCeremonyBeginClaimShareCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	if err := cmd.RunE(cmd, nil); err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-
-	complete := newCeremonyCompleteClaimShareCmd()
-	_ = complete.Flags().Set("username", "alice")
-	_ = complete.Flags().Set("nonce", "abcd")
-	_ = complete.Flags().Set("signature", "c2ln")
-	if err := complete.RunE(complete, nil); err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("share material printed on refusal: %q", buf.String())
-	}
-}
-
-func TestCeremonyClaimShareCmd_JSON_WithMockCeremony(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
-	defer cleanup()
-
-	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	var buf bytes.Buffer
-	outputWriter = &buf
-	outputFormat = "json"
-
-	cmd := newCeremonyBeginClaimShareCmd()
-	_ = cmd.Flags().Set("username", "alice")
-	_ = cmd.RunE(cmd, nil)
-}
 
 // ===========================================================================
 // ceremony.go — newCeremonySignCSRCmd (77%)

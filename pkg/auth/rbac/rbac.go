@@ -677,6 +677,18 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		return auth.ErrUnauthenticated
 	}
 
+	// A share-holder certificate is a custody credential, not a login: it
+	// reaches only the identity-gated share endpoints, which never come
+	// here, and is refused every RBAC permission — even if an account with
+	// the same name holds roles.
+	if identity.IsShareHolder() {
+		return &PermissionDeniedError{
+			Resource: resource,
+			Action:   action,
+			Subject:  identity.Subject,
+			Reason:   "share-holder certificates cannot be used to log in",
+		}
+	}
 	// Captured BEFORE any tenant rebind below: boundRoleIDs and the SO/
 	// permission resolution below both need the call's ORIGINAL target
 	// tenant, and every entry boundRoleIDs returns belongs to it.

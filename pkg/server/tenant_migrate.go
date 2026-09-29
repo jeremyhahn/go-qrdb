@@ -252,8 +252,8 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	// A Shamir target reopens SEALED (see ReopenKeyed): by design it never
 	// auto-unseals from disk, migration or not. The migration itself is
 	// complete and the keyed barrier is installed; the tenant Host stays
-	// detached until a Security Officer quorum unseals it via
-	// BarrierUnsealWithShare(s) (the same mechanism as a fresh Shamir init) —
+	// detached until a share-holder quorum unseals it (TenantBarrierQuorumSubmit,
+	// the same mechanism as a fresh Shamir init) —
 	// the next Services()/Attach call (request-driven or operator-driven)
 	// naturally retries and succeeds once unsealed. Skipping the eager Attach
 	// here is expected, not a failure.

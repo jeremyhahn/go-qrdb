@@ -1,0 +1,114 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package holderpb
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
+
+// TestRegistration pins the registration conversions and the params check.
+func TestRegistration(t *testing.T) {
+	req, err := RegisterFromPB(&pb.BarrierOfficerRegisterRequest{
+		Username: "carol", Role: "custodian", CsrPem: []byte("csr"), EncryptionKem: "dhkem-x25519", EncryptionKey: []byte{1},
+		Factors: []*pb.HolderFactorEnrolment{{Name: "fido2", ParamsJson: []byte(`{"public_key":"abc"}`)}, {Name: "piv"}}, Designated: "fido2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Role != seal.RoleCustodian || len(req.Factors) != 2 || req.Factors[0].Params["public_key"] != "abc" || req.Designated != "fido2" {
+		t.Errorf("RegisterFromPB = %+v", req)
+	}
+	_, err = RegisterFromPB(&pb.BarrierOfficerRegisterRequest{Factors: []*pb.HolderFactorEnrolment{{Name: "x", ParamsJson: []byte("[1]")}}})
+	var fpe *FactorParamsError
+	if !errors.As(err, &fpe) || fpe.Error() == "" || fpe.Unwrap() == nil {
+		t.Errorf("params that are not an object must be refused: %v", err)
+	}
+	if _, err := TenantRegisterFromPB(&pb.TenantBarrierOfficerRegisterRequest{Factors: []*pb.HolderFactorEnrolment{{Name: "x", ParamsJson: []byte("nope")}}}); err == nil {
+		t.Error("tenant registration must check params too")
+	}
+	treq, err := TenantRegisterFromPB(&pb.TenantBarrierOfficerRegisterRequest{TenantId: "acme", Username: "d", CsrPem: []byte("c")})
+	if err != nil || treq.Username != "d" {
+		t.Errorf("TenantRegisterFromPB = %+v, %v", treq, err)
+	}
+	resp := RegisterToPB(&service.BarrierOfficerRegisterResult{CertPEM: []byte("cert"), Role: seal.RoleSecurityOfficer, Factors: []string{"mtls"}})
+	if string(resp.GetCertPem()) != "cert" || resp.GetRole() != "so" {
+		t.Errorf("RegisterToPB = %+v", resp)
+	}
+	tresp := TenantRegisterToPB(&ceremony.RegisterOfficerResult{CertPEM: []byte("c2"), Role: seal.RoleCustodian})
+	if string(tresp.GetCertPem()) != "c2" || tresp.GetRole() != "custodian" {
+		t.Errorf("TenantRegisterToPB = %+v", tresp)
+	}
+}
+
+// TestQuorumConversions pins the challenge, submission, outcome and round
+// conversions.
+func TestQuorumConversions(t *testing.T) {
+	now := time.Now().UTC()
+	st := StatusesToPB([]*ceremony.OfficerStatus{{Username: "a", ShareIndex: 1, EnrolledAt: now, ClaimedAt: now}, {Username: "b"}})
+	if st[0].GetClaimedAt() == "" || st[1].GetClaimedAt() != "" {
+		t.Errorf("StatusesToPB claimed = %q / %q", st[0].GetClaimedAt(), st[1].GetClaimedAt())
+	}
+	ch := ChallengeToPB(&ceremony.QuorumChallenge{ChallengeID: "c", Domain: seal.DomainUnseal, Op: seal.OpUnseal, Holder: "a", Nonce: []byte{1}, ExpiresAt: now})
+	if ch.GetChallengeId() != "c" || ch.GetUsername() != "a" || ch.GetExpiresAt() == "" {
+		t.Errorf("ChallengeToPB = %+v", ch)
+	}
+	sub := SubmitFromPB(&pb.BarrierQuorumSubmitRequest{Domain: "unseal", Op: "seal", Username: "a", Share: []byte("s")}, "peer")
+	if sub.PeerCertThumbprint != "peer" || sub.Op != seal.OpSeal {
+		t.Errorf("SubmitFromPB = %+v", sub)
+	}
+	tsub := TenantSubmitFromPB(&pb.TenantBarrierQuorumSubmitRequest{Op: "unseal", Username: "a"}, "")
+	if tsub.Domain != seal.DomainUnseal || tsub.Holder != "a" {
+		t.Errorf("TenantSubmitFromPB = %+v", tsub)
+	}
+	out := OutcomeToPB(&service.QuorumOutcomeInfo{Complete: true, RootToken: &service.RootTokenInfo{Token: "t", CreatedAt: now}, Rekey: &service.ShamirInitInfo{TotalShares: 3}})
+	if out.GetRootToken() != "t" || out.GetTotalShares() != 3 {
+		t.Errorf("OutcomeToPB = %+v", out)
+	}
+	r := RoundToPB(&seal.QuorumRoundInfo{Op: seal.OpRekey, NewThreshold: 2, Remove: []string{"x"}, ExpiresAt: now})
+	if r.GetOp() != "rekey" || r.GetNewThreshold() != 2 || len(r.GetRemove()) != 1 {
+		t.Errorf("RoundToPB = %+v", r)
+	}
+}
+
+// TestCeremonyInit pins the protobuf ceremony initialization conversions.
+func TestCeremonyInit(t *testing.T) {
+	opts := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{
+		SoPin: "so", UserPin: "user", CredentialSealStrategy: "shamir", Threshold: 2, Policy: "designated",
+		Officers: []*pb.CeremonyOfficer{{Username: "alice", Role: "so", CsrPem: "a"}},
+		Hostname: "db.example.com", Sans: []string{"db.example.com"},
+	})
+	if opts.SOPin != "so" || opts.Threshold != 2 || opts.Policy != seal.FactorPolicyDesignated || len(opts.Officers) != 1 ||
+		opts.Officers[0].Role != seal.RoleSecurityOfficer || opts.Officers[0].CSRPEM != "a" || opts.Hostname != "db.example.com" {
+		t.Errorf("CeremonyInitFromPB = %+v", opts)
+	}
+	if empty := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{}); empty.Officers != nil {
+		t.Errorf("no holders must stay nil: %+v", empty.Officers)
+	}
+	resp := CeremonyInitToPB(&service.CeremonyInitResult{
+		SPKIPin: "pin", CACertPEM: []byte("ca"), State: "initialized", ShareCount: 1,
+		Holders: []service.CeremonyHolderCert{{Username: "alice", Role: seal.RoleSecurityOfficer, CertPEM: []byte("cert")}},
+	})
+	if resp.GetSpkiPin() != "pin" || resp.GetCaCertPem() != "ca" || resp.GetShareCount() != 1 || len(resp.GetHolders()) != 1 ||
+		resp.GetHolders()[0].GetRole() != "so" || string(resp.GetHolders()[0].GetCertPem()) != "cert" {
+		t.Errorf("CeremonyInitToPB = %+v", resp)
+	}
+}

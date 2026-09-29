@@ -22,7 +22,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"errors"
 	"io"
 	"math/big"
@@ -34,7 +33,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -766,15 +764,12 @@ func TestEmbeddedAuthFactor_WithAuthFactorService_Option(t *testing.T) {
 // ===========================================================================
 
 type mockCeremonyService struct {
-	initFn           func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
-	lastInitOpts     *service.CeremonyInitializeOptions
-	initOptsSeen     bool
-	beginClaimFn     func(ctx context.Context, username string) (*service.CeremonyChallenge, error)
-	completeClaimFn  func(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error)
-	claimShareFn     func(ctx context.Context, username string) ([]byte, error)
-	signCSRFn        func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
-	statusFn         func(ctx context.Context) (*service.CeremonyStatusInfo, error)
-	enrollExternalFn func(ctx context.Context, req *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error)
+	initFn       func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
+	lastInitOpts *service.CeremonyInitializeOptions
+	initOptsSeen bool
+	claimShareFn func(ctx context.Context, username string) ([]byte, error)
+	signCSRFn    func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
+	statusFn     func(ctx context.Context) (*service.CeremonyStatusInfo, error)
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
@@ -792,40 +787,6 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 	}, nil
 }
 
-func (m *mockCeremonyService) CeremonyBeginClaimCert(ctx context.Context, username string) (*service.CeremonyChallenge, error) {
-	if m.beginClaimFn != nil {
-		return m.beginClaimFn(ctx, username)
-	}
-	return &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Unix(1700001000, 0).UTC()}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.completeClaimFn != nil {
-		return m.completeClaimFn(ctx, username, nonceHex, sig)
-	}
-	return &service.CeremonyClaimCertResult{CertPEM: []byte("CERT"), CACertPEM: []byte("CA")}, nil
-}
-
-func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareFn != nil {
-		if _, err := m.claimShareFn(ctx, username); err != nil {
-			return nil, err
-		}
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareFn != nil {
-		share, err := m.claimShareFn(ctx, username)
-		if err != nil {
-			return nil, err
-		}
-		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"share":"x"}`)}, nil
-}
-
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRFn != nil {
 		return m.signCSRFn(ctx, username, soPin, csrPEM, role)
@@ -838,25 +799,6 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 		return m.statusFn(ctx)
 	}
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin"}, nil
-}
-
-func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, errors.New("not implemented in mock")
-}
-
-func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, errors.New("not implemented in mock")
-}
-
-func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, errors.New("not implemented in mock")
-}
-
-func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(ctx context.Context, req *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	if m.enrollExternalFn != nil {
-		return m.enrollExternalFn(ctx, req)
-	}
-	return &service.CeremonyEnrollExternalOfficerResponse{SealedShare: "sealed"}, nil
 }
 
 var _ service.CeremonyServicer = (*mockCeremonyService)(nil)
@@ -1083,164 +1025,6 @@ func TestEmbeddedCeremony_Status_ServiceError(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCeremony_ClaimCertBegin(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	resp, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{Username: "alice"})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertBegin: %v", err)
-	}
-	if resp.NonceHex != "deadbeef" {
-		t.Fatalf("NonceHex = %q", resp.NonceHex)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertBegin_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertBegin_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertBegin_ServiceError(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{
-		beginClaimFn: func(_ context.Context, _ string) (*service.CeremonyChallenge, error) { return nil, errSentinel },
-	}))
-	_, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{Username: "x"})
-	if !errors.Is(err, errSentinel) {
-		t.Fatalf("unexpected: %v", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertComplete(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	resp, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Username:  "alice",
-		NonceHex:  "deadbeef",
-		Signature: base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertComplete: %v", err)
-	}
-	if resp.CertPEM != "CERT" {
-		t.Fatalf("CertPEM = %q", resp.CertPEM)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertComplete_BadSignature(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Signature: "not-base64-!!!",
-	})
-	var re *transport.RequestError
-	if !errors.As(err, &re) {
-		t.Fatalf("expected RequestError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertComplete_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertComplete_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimCertComplete_ServiceError(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{
-		completeClaimFn: func(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-			return nil, errSentinel
-		},
-	}))
-	_, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Signature: base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-	if !errors.Is(err, errSentinel) {
-		t.Fatalf("unexpected: %v", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimShare(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	ctx := ctxWithEmbeddedPeerCert(t)
-
-	begun, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{Username: "alice"})
-	if err != nil {
-		t.Fatalf("CeremonyBeginClaimShare: %v", err)
-	}
-	if begun.NonceHex == "" {
-		t.Fatal("expected a challenge nonce")
-	}
-
-	resp, err := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{
-		Username: "alice", NonceHex: begun.NonceHex, Signature: []byte("sig"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonyCompleteClaimShare: %v", err)
-	}
-	if resp.ShareJSON != `{"share":"x"}` {
-		t.Fatalf("ShareJSON = %q", resp.ShareJSON)
-	}
-}
-
-// TestEmbeddedCeremony_ClaimShare_RequiresPeerCert proves the embedded
-// transport is not a bypass: without a peer certificate on the context the
-// claim is refused and no share material is returned.
-func TestEmbeddedCeremony_ClaimShare_RequiresPeerCert(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-
-	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "alice"}); err == nil {
-		t.Fatal("expected ClientCertRequiredError")
-	}
-
-	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{Username: "alice"})
-	var cr *ClientCertRequiredError
-	if !errors.As(err, &cr) {
-		t.Fatalf("expected ClientCertRequiredError, got %T", err)
-	}
-	if resp != nil {
-		t.Fatalf("share material leaked on refusal: %#v", resp)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimShare_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_ClaimShare_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
 // ctxWithEmbeddedPeerCert returns a context carrying a self-signed leaf as the
 // mTLS peer certificate, mirroring what a real transport installs.
 func ctxWithEmbeddedPeerCert(t *testing.T) context.Context {
@@ -1266,16 +1050,6 @@ func ctxWithEmbeddedPeerCert(t *testing.T) context.Context {
 	return auth.WithTLSState(context.Background(), &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	})
-}
-
-func TestEmbeddedCeremony_ClaimShare_ServiceError(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{
-		claimShareFn: func(_ context.Context, _ string) ([]byte, error) { return nil, errSentinel },
-	}))
-	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{Username: "x"})
-	if !errors.Is(err, errSentinel) {
-		t.Fatalf("unexpected: %v", err)
-	}
 }
 
 func TestEmbeddedCeremony_SignCSR(t *testing.T) {
@@ -1324,53 +1098,6 @@ func TestEmbeddedCeremony_SignCSR_ServiceError(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCeremony_EnrollExternalOfficer(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	resp, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{
-		Username:   "alice",
-		CertPEM:    "CERT",
-		ShareIndex: 1,
-		AuthFactor: "mtls",
-		ShareBytes: []byte("share"),
-	})
-	if err != nil {
-		t.Fatalf("EnrollExternalOfficer: %v", err)
-	}
-	if resp.SealedShare != "sealed" {
-		t.Fatalf("SealedShare = %q", resp.SealedShare)
-	}
-}
-
-func TestEmbeddedCeremony_EnrollExternalOfficer_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_EnrollExternalOfficer_Closed(t *testing.T) {
-	tr := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedCeremony_EnrollExternalOfficer_ServiceError(t *testing.T) {
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{
-		enrollExternalFn: func(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-			return nil, errSentinel
-		},
-	}))
-	_, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{})
-	if !errors.Is(err, errSentinel) {
-		t.Fatalf("unexpected: %v", err)
-	}
-}
-
 func TestEmbeddedCeremony_WithCeremonyService_Option(t *testing.T) {
 	svc := &mockCeremonyService{}
 	tr := newExtTransport(t, WithCeremonyService(svc))
@@ -1390,105 +1117,6 @@ func TestEmbeddedCeremony_WithCeremonyCA_Option(t *testing.T) {
 // ===========================================================================
 // Ceremony dispatch handler coverage
 // ===========================================================================
-
-func TestEmbeddedCeremony_Dispatch(t *testing.T) {
-	tr := newExtTransport(t,
-		WithCeremonyService(&mockCeremonyService{}),
-		WithCeremonyCA(&mockCeremonyCA{}),
-	)
-
-	t.Run("Initialize", func(t *testing.T) {
-		var resp *transport.CeremonyInitializeResponse
-		if err := tr.Request(context.Background(), "CeremonyInitialize", &transport.CeremonyInitializeRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-		if resp == nil || resp.SPKIPin == "" {
-			t.Fatal("nil resp")
-		}
-	})
-	t.Run("InitializeBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonyInitialize", "bad", nil)
-		var ie *InvalidRequestError
-		if !errors.As(err, &ie) {
-			t.Fatalf("expected InvalidRequestError, got %T", err)
-		}
-	})
-	t.Run("Status", func(t *testing.T) {
-		var resp *transport.CeremonyStatusResponse
-		if err := tr.Request(context.Background(), "CeremonyStatus", nil, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("nil resp")
-		}
-	})
-	t.Run("ClaimCertBegin", func(t *testing.T) {
-		var resp *transport.ClaimCertBeginResponse
-		if err := tr.Request(context.Background(), "CeremonyClaimCertBegin",
-			&transport.ClaimCertBeginRequest{Username: "x"}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-		if resp == nil || resp.NonceHex == "" {
-			t.Fatal("bad resp")
-		}
-	})
-	t.Run("ClaimCertBeginBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonyClaimCertBegin", "bad", nil)
-		var ie *InvalidRequestError
-		if !errors.As(err, &ie) {
-			t.Fatalf("expected InvalidRequestError, got %T", err)
-		}
-	})
-	t.Run("ClaimCertComplete", func(t *testing.T) {
-		var resp *transport.ClaimCertCompleteResponse
-		if err := tr.Request(context.Background(), "CeremonyClaimCertComplete",
-			&transport.ClaimCertCompleteRequest{Signature: base64.StdEncoding.EncodeToString([]byte("s"))}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-	})
-	t.Run("ClaimCertCompleteBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonyClaimCertComplete", "bad", nil)
-		var ie *InvalidRequestError
-		if !errors.As(err, &ie) {
-			t.Fatalf("expected InvalidRequestError, got %T", err)
-		}
-	})
-	t.Run("ClaimShare", func(t *testing.T) {
-		var resp *transport.BeginClaimShareResponse
-		if err := tr.Request(ctxWithEmbeddedPeerCert(t), "CeremonyBeginClaimShare",
-			&transport.BeginClaimShareRequest{Username: "x"}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-	})
-	t.Run("CompleteClaimShare", func(t *testing.T) {
-		var resp *transport.CompleteClaimShareResponse
-		if err := tr.Request(ctxWithEmbeddedPeerCert(t), "CeremonyCompleteClaimShare",
-			&transport.CompleteClaimShareRequest{Username: "x"}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-	})
-	t.Run("ClaimShareBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonyBeginClaimShare", "bad", nil)
-		var ie *InvalidRequestError
-		if !errors.As(err, &ie) {
-			t.Fatalf("expected InvalidRequestError, got %T", err)
-		}
-	})
-	t.Run("SignCSR", func(t *testing.T) {
-		var resp *transport.SignCSRInitResponse
-		if err := tr.Request(context.Background(), "CeremonySignCSR",
-			&transport.SignCSRInitRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-	})
-	t.Run("SignCSRBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonySignCSR", "bad", nil)
-		var ie *InvalidRequestError
-		if !errors.As(err, &ie) {
-			t.Fatalf("expected InvalidRequestError, got %T", err)
-		}
-	})
-}
 
 // ===========================================================================
 // Mock: LeaseServicer

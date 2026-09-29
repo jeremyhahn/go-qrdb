@@ -108,11 +108,6 @@ func selfScopedPermissions() []Permission {
 		// backup:* is ScopeCross (cluster_admin_scope.go): a backup is of
 		// shards, holding every tenant's data on them.
 
-		// barrier
-		//
-		// BarrierUnsealShare is ScopeCross (node_barrier_scope.go): it feeds
-		// the node barrier's unseal accumulator.
-
 		// batch
 		BatchExecute,
 
@@ -124,13 +119,9 @@ func selfScopedPermissions() []Permission {
 
 		// ceremony
 		//
-		// CeremonyEnrollCustodian, CeremonyInitialize,
-		// CeremonyRevokeCustodian and CeremonySignCSR are ScopeCross
+		// CeremonyInitialize and CeremonySignCSR are ScopeCross
 		// (node_barrier_scope.go): they decide who holds a share of the node
 		// barrier's key, and sign with the cluster CA.
-		CeremonyClaimCert,
-		CeremonyClaimShareBegin,
-		CeremonyClaimShareComplete,
 		CeremonyStatus,
 
 		// certs: ScopeSelfStrict (self_strict_scope.go), except

@@ -35,7 +35,10 @@ type secretBearingField struct {
 var barrierSecretFields = []secretBearingField{
 	{req: BarrierInitializeRequest{}, field: "Secret", json: "secret"},
 	{req: BarrierUnsealRequest{}, field: "Secret", json: "secret"},
-	{req: BarrierInitializeShamirRequest{}, field: "Secret", json: "secret"},
+	// A holder's share, recovered from its envelope, is submitted to a
+	// quorum and must be wipeable by the caller.
+	{req: QuorumSubmitRequest{}, field: "Share", json: "share"},
+	{req: TenantQuorumSubmitRequest{}, field: "Share", json: "share"},
 	{req: BarrierEnableEncryptionRequest{}, field: "Passphrase", json: "passphrase,omitempty"},
 	{req: TenantBarrierInitRequest{}, field: "Passphrase", json: "passphrase,omitempty"},
 	// Already []byte before this rule was written down; listed so a

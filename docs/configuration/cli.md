@@ -170,24 +170,18 @@ against the budget, which is why a derived budget leaves headroom:
 - **Sealing a `secure.Secret`.** go-enclave v0.6.0-alpha has no budgeted seal
   path; the per-seal key and the process Sealer's own keys are locked outside
   the allocator.
-- **Shamir unseal shares** (`StorageBarrier.UnsealWithShare(s)`, the
-  accumulator's `AddProtectedShare`/`ReconstructProtected`, and
-  `SplitProtected` at barrier initialization) go through go-quicraft's
-  `pkg/crypto/shamir`, which builds its enclaves with go-enclave's unbudgeted
-  constructors; go-quicraft exposes no allocator-aware variant yet.
-  `SplitProtected` runs only at barrier initialization; the unseal entry points
-  are gated by the `barrier:unseal-share` permission on every transport. Each
-  share is one page-rounded enclave, but the count is bounded less tightly than
-  the ceremony's M-of-N suggests:
-  - `UnsealWithShares` holds one enclave per element of the submitted list for
-    the duration of the call, and at most `total_shares` of them: an element
-    past `total_shares` is refused before it is allocated, and the call then
-    releases the ones it already built.
-  - The `UnsealWithShare` accumulator normally holds at most `threshold`
-    shares. If reconstruction fails, it is not reset, and keeps accepting
-    distinct shares until its TTL.
-  - An expired accumulator's shares are released on the next submission, not
-    by a timer, so they can outlive the TTL on an idle node.
+- **Shamir quorum shares** (`StorageBarrier.SubmitHolderShare`, which wraps
+  each admitted share with `shamir.NewProtectedShare` and reconstructs with
+  `CombineProtected`) go through go-quicraft's `pkg/crypto/shamir`, which
+  builds its enclaves with go-enclave's unbudgeted constructors; go-quicraft
+  exposes no allocator-aware variant yet. A share is allocated only after its
+  holder has been authenticated, so an unauthenticated caller cannot lock
+  pages this way. Each share is one page-rounded enclave:
+  - a round holds at most `threshold - 1` shares before it completes, and one
+    round may be open per (domain, operation) per barrier;
+  - a completed or failed round destroys its shares at once;
+  - an expired round's shares are released when the round is next touched,
+    not by a timer, so they can outlive the TTL on an idle node.
 - **The Noise enrollment static key.** `qrdbd` still links
   `github.com/awnumar/memguard` through go-truststrap's `pkg/noiseproto`, used
   by cluster enrollment. Its key buffers are locked by memguard, outside this

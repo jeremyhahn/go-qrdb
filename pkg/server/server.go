@@ -49,7 +49,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -231,7 +230,6 @@ type serverOptions struct {
 	auditLogger           audit.AuditLogger
 	authFactorSvc         service.AuthFactorServicer
 	userAuthFactorSvc     service.UserAuthFactorServicer
-	custodianSvc          custodian.Servicer
 	soAuthenticator       *auth.SOAuthenticator
 
 	// sealStrategy overrides the default seal strategy used when no
@@ -246,7 +244,9 @@ type serverOptions struct {
 	strategyRegistry seal.StrategyRegistry
 
 	// pinBackend is the canonical PIN management implementation. nil
-	// means qrdb constructs a default SoftwareBackend at init time;
+	// means every PIN-gated operation fails closed with
+	// pin.ErrBackendNotConfigured; composers wire a software backend over
+	// the node-local seal store (lifecycle.NewSealStorePINBackend), and
 	// hardware-aware callers inject a TPM2 or PKCS#11 backend here.
 	pinBackend pin.PINBackend
 
@@ -827,13 +827,6 @@ func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption 
 	return func(o *serverOptions) { o.userAuthFactorSvc = svc }
 }
 
-// WithCustodianService configures the custodian lifecycle service for barrier
-// ceremony enrollment, revocation, and metadata persistence. When set, the
-// custodian management endpoints are registered on the REST server.
-func WithCustodianService(svc custodian.Servicer) ServerOption {
-	return func(o *serverOptions) { o.custodianSvc = svc }
-}
-
 // WithSOAuthenticator configures the Security Officer dual-factor PIN
 // authenticator. When set, SO-permissioned endpoints require an in-band
 // X-QRDB-SO-PIN header over TLS for verification against the hash-committed
@@ -868,8 +861,8 @@ func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
 	return func(o *serverOptions) { o.strategyRegistry = reg }
 }
 
-// WithPINBackend injects the canonical PIN backend. When nil, qrdb
-// constructs a default pin.SoftwareBackend at init time. Hardware
+// WithPINBackend injects the canonical PIN backend. Without one every
+// PIN-gated operation fails closed with pin.ErrBackendNotConfigured. Hardware
 // callers inject TPM2 or PKCS#11 backends from go-xkms here; the
 // ceremony service uses the backend to store and verify the SO and
 // User PINs (never as raw bytes).
@@ -910,6 +903,10 @@ type CryptoOptions struct {
 	// When nil and FactorRegistry is non-nil, the server and SDK node builders
 	// construct the service automatically via ensureAuthFactorService.
 	AuthFactorService service.AuthFactorServicer
+	// CeremonyCA is the CA passed through WithCeremonyCA. The node builders
+	// hand it to the ceremony service, which issues every share holder's
+	// certificate from it.
+	CeremonyCA ceremony.CeremonyCA
 }
 
 // ResolveCryptoOptions applies the given ServerOptions to a throwaway option
@@ -932,6 +929,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		FactorRegistry:    o.factorRegistry,
 		AuditLogger:       o.auditLogger,
 		AuthFactorService: o.authFactorSvc,
+		CeremonyCA:        o.ceremonyCA,
 	}
 }
 
@@ -1582,9 +1580,6 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.userAuthFactorSvc != nil {
 		restOpts = append(restOpts, rest.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
-	}
-	if s.opts.custodianSvc != nil {
-		restOpts = append(restOpts, rest.WithCustodianService(s.opts.custodianSvc))
 	}
 	if s.opts.soAuthenticator != nil {
 		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))

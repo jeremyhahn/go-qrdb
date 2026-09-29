@@ -18,7 +18,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -119,55 +118,5 @@ func TestMCP_HandleBarrierInitialize_PersistsPINs(t *testing.T) {
 	}
 	if !backend.UserPINSet() || backend.storedUserPIN != "u-5678" {
 		t.Fatalf("User PIN not persisted: set=%v stored=%q", backend.UserPINSet(), backend.storedUserPIN)
-	}
-}
-
-// TestMCP_HandleBarrierRekey_BadSOPIN verifies that the MCP rekey tool
-// rejects the call when the supplied SO PIN does not match the PIN
-// backend's record.
-func TestMCP_HandleBarrierRekey_BadSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	svc := newMockBarrierService()
-	handler := handleBarrierRekey(svc, backend)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
-		"threshold": 2,
-		"total":     3,
-		"so_pin":    "wrong-pin",
-	})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for bad SO PIN, got nil")
-	}
-	if !errors.Is(err, pin.ErrPINInvalid) {
-		t.Fatalf("expected ErrPINInvalid, got %v", err)
-	}
-	if backend.verifyCalls == 0 {
-		t.Fatal("VerifySOPIN was not invoked")
-	}
-}
-
-// TestMCP_HandleBarrierRekey_GoodSOPIN verifies that the MCP rekey tool
-// proceeds when the supplied SO PIN matches.
-func TestMCP_HandleBarrierRekey_GoodSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	svc := newMockBarrierService()
-	handler := handleBarrierRekey(svc, backend)
-
-	req := buildCallToolRequest(t, "qrdb_barrier_rekey", map[string]any{
-		"threshold": 2,
-		"total":     3,
-		"so_pin":    "correct-pin",
-	})
-
-	if _, err := handler(context.Background(), req); err != nil {
-		t.Fatalf("handleBarrierRekey: %v", err)
 	}
 }

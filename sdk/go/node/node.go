@@ -108,6 +108,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -115,6 +116,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
@@ -432,6 +434,10 @@ type nodeSealSubsystem struct {
 	// exact shape Node.sealStore's nil checks exist to rule out.
 	sealStore   seal.LegacyStorage
 	sealDataDir string
+	// pinBackend is the software PIN backend over the node-local seal store
+	// (lifecycle.NewSealStorePINBackend). It is the node's PIN backend
+	// unless the caller injects one through server.WithPINBackend.
+	pinBackend *pin.SoftwareBackend
 	// volumePool is non-nil when the config declares at least one volume pool.
 	// It is closed during node shutdown after the per-tenant registry is
 	// drained, mirroring the daemon's shutdown ordering.
@@ -447,6 +453,45 @@ func (n *Node) adoptSealSubsystem(sub *nodeSealSubsystem) {
 	n.sealStore = sub.sealStore
 	n.credCoreSvc = sub.credCoreSvc
 	n.volumePool = sub.volumePool
+	if sub.pinBackend != nil {
+		n.sealPINBackend = sub.pinBackend
+	}
+}
+
+// pinBackend returns the node's PIN backend: the one the caller injected
+// through server.WithPINBackend, else the software backend over the
+// node-local seal store, else nil — in which case every PIN-gated operation
+// fails closed.
+func (n *Node) pinBackend(serverOpts []server.ServerOption) pin.PINBackend {
+	if injected := server.ResolveCryptoOptions(serverOpts...).PINBackend; injected != nil {
+		return injected
+	}
+	return n.sealPINBackend
+}
+
+// sealedWindowCeremonyCore returns the core ceremony service of the node's
+// sealed-window service graph, or nil when there is none. The full boot reuses
+// it rather than building a second instance, exactly as the daemon does.
+func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
+	prior := n.svcNode.Load()
+	if prior == nil || prior.Ceremony == nil {
+		return nil
+	}
+	core, _ := service.CeremonyServiceCore(prior.Ceremony)
+	return core
+}
+
+// withHolderInfra fills infra's share-holder dependencies: the PIN backend,
+// the holder trust domain, and the caller's factor registry and ceremony CA.
+// Without the CA the ceremony service cannot issue a holder certificate, so
+// no share holder could be enrolled on an SDK-built node.
+func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) lifecycle.Infra {
+	crypto := server.ResolveCryptoOptions(serverOpts...)
+	infra.PINBackend = n.pinBackend(serverOpts)
+	infra.HolderTrustDomain = qrdbconfig.HolderTrustDomain(cfg.Auth.SPIFFETrustDomain, cfg.Auth.ClusterTrustDomain)
+	infra.FactorRegistry = crypto.FactorRegistry
+	infra.CeremonyCA = crypto.CeremonyCA
+	return infra
 }
 
 // close releases the seal store and the volume-pool state store (in that
@@ -609,7 +654,11 @@ type Node struct {
 	// itself means a genuinely-absent seal store is nil at the type the
 	// field actually holds, so canonicalRootKeyStrategy's nil check (see its
 	// doc comment) means what it says.
-	sealStore       seal.LegacyStorage
+	sealStore seal.LegacyStorage
+	// sealPINBackend is the software PIN backend over the node-local seal
+	// store, set when the seal subsystem is adopted. It stays the interface
+	// type so a node without one holds a true nil.
+	sealPINBackend  pin.PINBackend
 	barrier         atomic.Pointer[seal.StorageBarrier]
 	barrierRegistry atomic.Pointer[seal.BarrierRegistry]
 	// volumePool is non-nil when the config declares at least one volume pool.
@@ -974,7 +1023,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	profile := profileCfg.EffectiveCapabilities()
 	profile.WarnUnencryptedAtRest(n.logger)
 
-	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+	svcNode, err := lifecycle.BuildServices(ctx, n.withHolderInfra(lifecycle.Infra{
 		Host:              localHost,
 		WatchHub:          watchHub,
 		DataDir:           pending.dataDir,
@@ -996,13 +1045,17 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
+		// Reuse the sealed-window ceremony service: holder registrations made
+		// while sealed are cache-only and distributed shares live in its
+		// in-memory enclaves, so a fresh instance would orphan both.
+		CeremonyCoreSvc: n.sealedWindowCeremonyCore(),
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
 		// because the TenantService is constructed inside BuildServices.
 		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
-	})
+	}, pending.cfg, pending.serverOpts))
 	if err != nil {
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -1447,7 +1500,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	profile.WarnUnencryptedAtRest(n.logger)
 
-	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+	svcNode, err := lifecycle.BuildServices(ctx, n.withHolderInfra(lifecycle.Infra{
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
@@ -1469,6 +1522,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
+		// Reuse the sealed-window ceremony service: holder registrations made
+		// while sealed are cache-only and distributed shares live in its
+		// in-memory enclaves, so a fresh instance would orphan both.
+		CeremonyCoreSvc: n.sealedWindowCeremonyCore(),
 		// DatabaseManager is shared so lifecycle wires its shard-ID claimer
 		// into the one manager the node serves, and does not open a second
 		// manager on the same data directory.
@@ -1478,7 +1535,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// hardware/cloud seal strategies resolve in clustered mode too.
 		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
-	})
+	}, pending.cfg, pending.serverOpts))
 	if err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()
@@ -1914,14 +1971,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 		// Build the sealed-window service graph (barrier + ceremony +
 		// credential only) so they are accessible even before full boot.
-		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
+		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
 			DataDir:           dataDir,
 			SealBarrier:       sub.barrier,
 			BarrierRegistry:   sub.barrierRegistry,
 			CredentialCoreSvc: sub.credCoreSvc,
 			CeremonyDataDir:   sub.sealDataDir,
 			Logger:            log,
-		})
+		}, cfg, serverOpts))
 		if sealNodeErr != nil {
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}
@@ -2100,14 +2157,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		}
 		n.adoptSealSubsystem(sub)
 
-		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
+		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
 			DataDir:           dataDir,
 			SealBarrier:       sub.barrier,
 			BarrierRegistry:   sub.barrierRegistry,
 			CredentialCoreSvc: sub.credCoreSvc,
 			CeremonyDataDir:   sub.sealDataDir,
 			Logger:            log,
-		})
+		}, cfg, serverOpts))
 		if sealNodeErr != nil {
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}
@@ -2370,12 +2427,19 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		)
 	}
 
+	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend)
+	if pinErr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-pin", Err: pinErr}
+	}
+
 	return &nodeSealSubsystem{
 		barrier:         barrier,
 		credCoreSvc:     credCoreSvc,
 		barrierRegistry: barrierRegistry,
 		sealStore:       sealStore,
 		sealDataDir:     sealDataDir,
+		pinBackend:      pinBackend,
 		volumePool:      vp,
 	}, nil
 }
@@ -2652,6 +2716,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		embeddedOpts = append(embeddedOpts, embedded.WithDatabaseService(
 			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant)))
 	}
+	if pinBackend := n.pinBackend(callerOpts); pinBackend != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))
+	}
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
@@ -2865,9 +2932,6 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	// verbs worked on every network transport of the same node.
 	if svcNode.Tenant != nil {
 		opts = append(opts, embedded.WithTenantService(svcNode.Tenant))
-	}
-	if svcNode.CustodianGroup != nil {
-		opts = append(opts, embedded.WithCustodianGroupService(svcNode.CustodianGroup))
 	}
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))

@@ -72,24 +72,15 @@ func TestRESTAllowlistContents(t *testing.T) {
 		"/v1/barrier/initialize",
 		"/v1/barrier/unseal",
 		"/v1/barrier/shamir/initialize",
-		"/v1/barrier/shamir/unseal-share",
-		"/v1/barrier/shamir/unseal-shares",
-		"/v1/barrier/recovery/recover",
-		"/v1/barrier/root-token",
 		"POST /v1/barrier/officers",
-		"/v1/barrier/officers/claim-status",
 		"/v1/barrier/officers/",
 		"POST /v1/barrier/recovery/officers",
 		"/v1/barrier/recovery/officers/",
+		"/v1/barrier/quorum/begin",
+		"/v1/barrier/quorum/submit",
 		"/v1/ceremony/initialize",
 		"/v1/ceremony/status",
-		"/v1/ceremony/claim-cert/begin",
-		"/v1/ceremony/claim-cert/complete",
-		"/v1/ceremony/officer-share/begin", "/v1/ceremony/officer-share/complete",
 		"/v1/ceremony/sign-csr",
-		"/v1/ceremony/claim-share/begin",
-		"/v1/ceremony/claim-share/complete",
-		"/v1/barrier/unseal-share",
 		"/v1/cluster/",
 	}
 	for _, p := range want {
@@ -117,24 +108,19 @@ func TestGRPCAllowlistContents(t *testing.T) {
 	for _, m := range []string{
 		"Health", "Status",
 		"BarrierStatus", "BarrierInitialize", "BarrierUnseal",
-		"BarrierShamirInitialize", "BarrierShamirUnsealShare", "BarrierShamirUnsealShares",
-		"BarrierRecoveryRecover",
-		"BarrierRootToken",
-		"BarrierOfficerRegister", "BarrierOfficerClaimStatus",
+		"BarrierShamirInitialize",
+		"BarrierOfficerRegister",
 		"BarrierShareClaimBegin", "BarrierShareClaimComplete",
 		"BarrierRecoveryOfficerRegister", "BarrierRecoveryShareClaimBegin", "BarrierRecoveryShareClaimComplete",
-		"CeremonyInitialize", "CeremonyStatus",
-		"CeremonyClaimCertBegin", "CeremonyClaimCertComplete",
-		"CeremonyBeginClaimShare", "CeremonyCompleteClaimShare", "CeremonySignCSR",
-		"CeremonyClaimShareBegin", "CeremonyClaimShareComplete",
-		"CeremonySubmitUnsealShare",
+		"BarrierQuorumBegin", "BarrierQuorumSubmit",
+		"CeremonyInitialize", "CeremonyStatus", "CeremonySignCSR",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("gRPC allowlist missing %q", m)
 		}
 	}
-	if len(list) != 27 {
-		t.Errorf("gRPC allowlist has %d entries, want 27: %v", len(list), list)
+	if len(list) != 17 {
+		t.Errorf("gRPC allowlist has %d entries, want 17: %v", len(list), list)
 	}
 }
 
@@ -176,24 +162,19 @@ func TestQUICAllowlistContents(t *testing.T) {
 	for _, m := range []string{
 		"admin.Health", "admin.Status",
 		"barrier.Status", "barrier.Initialize", "barrier.Unseal",
-		"barrier.ShamirInitialize", "barrier.ShamirUnsealShare", "barrier.ShamirUnsealShares",
-		"barrier.RecoveryRecover",
-		"barrier.RootToken",
-		"barrier.OfficerRegister", "barrier.OfficerClaimStatus",
+		"barrier.ShamirInitialize",
+		"barrier.OfficerRegister",
 		"barrier.ShareClaimBegin", "barrier.ShareClaimComplete",
 		"barrier.RecoveryOfficerRegister", "barrier.RecoveryShareClaimBegin", "barrier.RecoveryShareClaimComplete",
-		"ceremony.Initialize", "ceremony.Status",
-		"ceremony.ClaimCertBegin", "ceremony.ClaimCertComplete",
-		"ceremony.BeginClaimShare", "ceremony.CompleteClaimShare", "ceremony.SignCSR",
-		"ceremony.ClaimShareBegin", "ceremony.ClaimShareComplete",
-		"ceremony.SubmitUnsealShare",
+		"barrier.QuorumBegin", "barrier.QuorumSubmit",
+		"ceremony.Initialize", "ceremony.Status", "ceremony.SignCSR",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("QUIC allowlist missing %q", m)
 		}
 	}
-	if len(set) != 27 {
-		t.Errorf("QUIC allowlist has %d entries, want 27", len(set))
+	if len(set) != 17 {
+		t.Errorf("QUIC allowlist has %d entries, want 17", len(set))
 	}
 }
 
@@ -204,28 +185,23 @@ func TestMCPAllowlistContents(t *testing.T) {
 	for _, m := range []string{
 		"qrdb_health", "qrdb_status",
 		"qrdb_barrier_status", "qrdb_barrier_initialize", "qrdb_barrier_unseal",
-		"qrdb_barrier_shamir_initialize", "qrdb_barrier_shamir_unseal_share", "qrdb_barrier_shamir_unseal_shares",
-		"qrdb_barrier_recovery_recover",
-		"qrdb_barrier_root_token",
-		"qrdb_barrier_officer_register", "qrdb_barrier_officer_claim_status",
+		"qrdb_barrier_shamir_initialize",
+		"qrdb_barrier_officer_register",
 		"qrdb_barrier_share_claim_begin", "qrdb_barrier_share_claim_complete",
 		"qrdb_barrier_recovery_officer_register",
 		"qrdb_barrier_recovery_share_claim_begin", "qrdb_barrier_recovery_share_claim_complete",
-		"qrdb_ceremony_initialize", "qrdb_ceremony_status",
-		"qrdb_ceremony_claim_cert_begin", "qrdb_ceremony_claim_cert_complete",
-		"qrdb_ceremony_begin_claim_share", "qrdb_ceremony_complete_claim_share", "qrdb_ceremony_sign_csr",
-		"qrdb_ceremony_claim_share_begin", "qrdb_ceremony_claim_share_complete",
-		"qrdb_ceremony_submit_unseal_share",
+		"qrdb_barrier_quorum_begin", "qrdb_barrier_quorum_submit",
+		"qrdb_ceremony_initialize", "qrdb_ceremony_status", "qrdb_ceremony_sign_csr",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("MCP allowlist missing %q", m)
 		}
 	}
-	if len(set) != 27 {
-		t.Errorf("MCP allowlist has %d entries, want 27", len(set))
+	if len(set) != 17 {
+		t.Errorf("MCP allowlist has %d entries, want 17", len(set))
 	}
-	// shamir-verify and enroll-external-officer have no MCP tools.
-	for _, m := range []string{"qrdb_barrier_shamir_verify", "qrdb_ceremony_enroll_external_officer"} {
+	// shamir-verify has no MCP tool.
+	for _, m := range []string{"qrdb_barrier_shamir_verify"} {
 		if _, ok := set[m]; ok {
 			t.Errorf("MCP allowlist must not contain nonexistent tool %q", m)
 		}
@@ -262,6 +238,7 @@ func TestDeliberateExclusions(t *testing.T) {
 		{"POST", "/v1/barrier/recovery/generate"},
 		{"GET", "/v1/barrier/recovery/status"},
 		{"POST", "/v1/barrier/rekey"},
+		{"POST", "/v1/barrier/rekey/start"},
 		{"POST", "/v1/barrier/shamir/verify"},
 		{"POST", "/v1/init/enroll-external-officer"},
 		{"POST", "/v1/bootstrap/anything"},
@@ -280,7 +257,7 @@ func TestDeliberateExclusions(t *testing.T) {
 	for _, m := range []string{
 		"BarrierSeal", "BarrierShamirSealVote", "BarrierEnableEncryption", "Seal", "ShamirSealVote",
 		"BarrierOfficerList", "BarrierRecoveryDelete", "BarrierRecoveryGenerate", "BarrierRecoveryStatus",
-		"BarrierRekey", "CeremonyEnrollExternalOfficer",
+		"BarrierRekey", "BarrierRekeyStart", "BarrierOfficerRevoke", "CeremonyEnrollExternalOfficer",
 	} {
 		if _, ok := grpcSet[m]; ok {
 			t.Errorf("gRPC allowlist must not contain %q", m)
@@ -292,7 +269,7 @@ func TestDeliberateExclusions(t *testing.T) {
 		"barrier.Seal", "barrier.ShamirSealVote", "barrier.EnableEncryption",
 		"barrier.ShamirListShares", "barrier.ShamirDeleteShare", "barrier.ShamirDeleteAllShares",
 		"barrier.OfficerList", "barrier.RecoveryDelete", "barrier.RecoveryGenerate", "barrier.RecoveryStatus",
-		"barrier.Rekey", "barrier.ShamirVerify",
+		"barrier.Rekey", "barrier.RekeyStart", "barrier.OfficerRevoke", "barrier.ShamirVerify",
 	} {
 		if _, ok := quicSet[m]; ok {
 			t.Errorf("QUIC allowlist must not contain %q", m)
@@ -303,7 +280,7 @@ func TestDeliberateExclusions(t *testing.T) {
 	for _, m := range []string{
 		"qrdb_barrier_seal", "qrdb_barrier_shamir_seal_vote", "qrdb_barrier_enable_encryption",
 		"qrdb_barrier_officer_list", "qrdb_barrier_recovery_delete", "qrdb_barrier_recovery_generate",
-		"qrdb_barrier_recovery_status", "qrdb_barrier_rekey",
+		"qrdb_barrier_recovery_status", "qrdb_barrier_rekey", "qrdb_barrier_rekey_start", "qrdb_barrier_officer_revoke",
 	} {
 		if _, ok := mcpSet[m]; ok {
 			t.Errorf("MCP allowlist must not contain %q", m)
@@ -439,10 +416,10 @@ func TestOrFailClosed(t *testing.T) {
 
 // TestPreOperationalOnlyFlags locks the exact set of verbs whose sealed-window
 // authentication exemption is gated on a pre-operational ceremony. The two
-// officer registration verbs are flagged because RegisterOfficer CA-signs any
-// caller-supplied CSR and assigns a Shamir share index with no service-layer
-// auth: an exemption surviving ceremony completion would let an
-// unauthenticated caller enroll an officer during any restart-while-sealed.
+// holder registration verbs are flagged because RegisterOfficer has the CA
+// issue a holder certificate for any caller-supplied CSR with no
+// service-layer auth: an exemption surviving ceremony completion would let an
+// unauthenticated caller enrol a holder during any restart-while-sealed.
 //
 // Flagging a NEW verb here is a security-posture change reviewed as such;
 // UN-flagging either officer verb reopens the post-operational enrollment
@@ -472,8 +449,8 @@ func TestPreOperationalOnlyFlags(t *testing.T) {
 	// the only way back to a usable data plane.
 	for _, v := range []sealedwindow.Verb{
 		sealedwindow.VerbBarrierUnseal,
-		sealedwindow.VerbShamirUnsealShare,
-		sealedwindow.VerbShamirUnsealShares,
+		sealedwindow.VerbQuorumBegin,
+		sealedwindow.VerbQuorumSubmit,
 		sealedwindow.VerbBarrierStatus,
 	} {
 		if sealedwindow.PreOperationalOnly(v) {
@@ -500,13 +477,13 @@ func TestAnonymous(t *testing.T) {
 }
 
 // TestTransitionDerivations: the Transition verbs are exactly the ones that
-// initialize or unseal the barrier, on every transport.
+// initialize or unseal the barrier, on every transport. A holder quorum
+// submission can complete an unseal, so it is one.
 func TestTransitionDerivations(t *testing.T) {
 	rest := sealedwindow.RESTTransition()
 	want := []string{
 		"/v1/barrier/initialize", "/v1/barrier/unseal", "/v1/barrier/shamir/initialize",
-		"/v1/barrier/shamir/unseal-share", "/v1/barrier/shamir/unseal-shares",
-		"/v1/barrier/recovery/recover", "/v1/ceremony/initialize", "/v1/barrier/unseal-share",
+		"/v1/barrier/quorum/submit", "/v1/ceremony/initialize",
 	}
 	if len(rest) != len(want) {
 		t.Fatalf("RESTTransition = %v, want %v", rest, want)
@@ -516,13 +493,13 @@ func TestTransitionDerivations(t *testing.T) {
 			t.Errorf("RESTTransition[%d] = %q, want %q", i, rest[i], want[i])
 		}
 	}
-	if got := sealedwindow.GRPCFullMethodTransition("qrdb.v1.QRDBService"); len(got) != 8 {
-		t.Errorf("GRPCFullMethodTransition has %d entries, want 8", len(got))
+	if got := sealedwindow.GRPCFullMethodTransition("qrdb.v1.QRDBService"); len(got) != 5 {
+		t.Errorf("GRPCFullMethodTransition has %d entries, want 5", len(got))
 	}
-	if _, ok := sealedwindow.QUICTransition()["barrier.Unseal"]; !ok || len(sealedwindow.QUICTransition()) != 8 {
+	if _, ok := sealedwindow.QUICTransition()["barrier.Unseal"]; !ok || len(sealedwindow.QUICTransition()) != 5 {
 		t.Errorf("QUICTransition = %v", sealedwindow.QUICTransition())
 	}
-	if _, ok := sealedwindow.MCPTransition()["qrdb_barrier_unseal"]; !ok || len(sealedwindow.MCPTransition()) != 8 {
+	if _, ok := sealedwindow.MCPTransition()["qrdb_barrier_unseal"]; !ok || len(sealedwindow.MCPTransition()) != 5 {
 		t.Errorf("MCPTransition = %v", sealedwindow.MCPTransition())
 	}
 }

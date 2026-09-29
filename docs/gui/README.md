@@ -125,18 +125,17 @@ in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 | `ConfigBinding`            | App config state        | Local file I/O               |
 | `TenantBinding`            | Tenant management       | `sdk` Tenants client         |
 | `BackupBinding`            | Backup/restore          | `sdk` Backup client          |
-| `OfficerBinding`           | Security Officer ceremony | `sdk` Barrier + Tenants clients |
+| `OfficerBinding`           | Share holders           | `sdk` Barrier + Tenants clients |
 | `DaemonBinding`            | Local qrdbd lifecycle   | `os/exec` process control    |
 
-`OfficerBinding` exposes the Security Officer share-distribution
-ceremony to the desktop GUI: system and tenant officer
-enrollment (CSR-based), claim status, the two-step
-challenge/signature share claim, quorum seal votes, and the
-recovery-officer mirror. PEM material crosses the Wails IPC boundary as
-plain strings (local DTOs convert to/from the transport's `[]byte`
-fields) so certificates and CSRs are not base64-mangled by
-`encoding/json`. See [../seal/shamir.md](../seal/shamir.md) for the
-ceremony contract.
+`OfficerBinding` exposes share-holder operations to the desktop GUI for
+the system barrier (unseal and recovery domains) and tenant barriers:
+`RegisterHolder`, `ListHolders`, `ClaimEnvelope` (signs the claim nonce with
+the holder's key in the application process), `SubmitShare` (answers the
+`mtls` factor, opens the envelope and submits the share), `StartRekey` and
+`RevokeHolder`. Keys passed in are wiped after each call; only factor
+responses and the opened share leave the process. See
+[../shamir-custody/](../shamir-custody/) for the contract.
 
 Watch events are delivered to the frontend in real time via Wails
 `runtime.EventsEmit`, which the Svelte watch store subscribes to using

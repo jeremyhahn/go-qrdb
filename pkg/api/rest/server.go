@@ -211,9 +211,6 @@ type Server struct {
 	webUI              http.Handler      // optional embedded web UI file server
 	auditLogger        audit.AuditLogger // optional compliance-grade audit logger
 
-	// custodianSvc handles custodian registration, listing, and revocation.
-	custodianSvc custodianServicer
-
 	// soPINVerifier handles SO PIN verification for dual-factor auth.
 	soPINVerifier soPINVerifier
 
@@ -484,11 +481,11 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(s *Server) { s.encMigrator = m }
 }
 
-// WithPINBackend attaches the canonical pin.PINBackend used for the
-// optional SO PIN / User PIN compliance-gating layer on barrier
-// administrative operations (initialize/rekey/seal). When nil, PIN
-// fields supplied in barrier requests are ignored — preserving
-// dev-mode and unconfigured-deployment flows.
+// WithPINBackend attaches the node's pin.PINBackend: barrier and ceremony
+// initialization provision the SO and User PINs through it, and the
+// SO-PIN-gated operations (seal, recovery generation, rekey start, holder
+// revocation) verify against it. Without one those operations fail closed
+// with pin.ErrBackendNotConfigured.
 func WithPINBackend(backend pin.PINBackend) ServerOption {
 	return func(s *Server) { s.pinBackend = backend }
 }
@@ -562,10 +559,10 @@ func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption 
 	return func(s *Server) { s.userAuthFactorSvc = svc }
 }
 
-// WithCustodianService attaches a custodianServicer for custodian lifecycle
-// management (register, list, revoke). Handlers return 501 when nil.
-func WithCustodianService(svc custodianServicer) ServerOption {
-	return func(s *Server) { s.custodianSvc = svc }
+// soPINVerifier is the narrow interface the SO dual-factor middleware needs
+// from the SO authenticator. Satisfied by *auth.SOAuthenticator.
+type soPINVerifier interface {
+	VerifySOPIN(ctx context.Context, tenantID string, presentedPIN []byte) error
 }
 
 // WithSOAuthenticator attaches an soPINVerifier for SO dual-factor PIN
@@ -1803,7 +1800,6 @@ func (s *Server) registerRoutes() {
 	// (middleware.IdentityIAMSealed); see authorizeTenantBarrierSealedOp.
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.IdentityGated, s.handleTenantByID)
 	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
-	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	// barrier/init is IdentityGated at the ROUTE level because its real
 	// authorization is conditional and lives in the handler
 	// (authorizeTenantBarrierInit): an initialized barrier demands the full
@@ -1814,12 +1810,14 @@ func (s *Server) registerRoutes() {
 	// role able to satisfy the RBAC check can exist before the call.
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal-share", permission.IdentityGated, s.handleTenantByID)
 	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, authmw.RESTPathTenant("id"), s.handleTenantByID)
-	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/quorum/begin", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/quorum/submit", permission.IdentityGated, s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/rekey/start", permission.TenantBarrierRekey, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers/revoke", permission.TenantBarrierOfficerRevoke, authmw.RESTPathTenant("id"), s.handleTenantByID)
 
 	// The legacy dispatcher routed the bare "/v1/tenants/" (trailing slash,
 	// empty id) to handleTenantByID, which reports 400 missing-parameter.
@@ -1900,10 +1898,6 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/seal", permission.SealSeal, s.handleBarrierSeal)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/status", permission.SealStatus, s.handleBarrierStatus)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/initialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-share", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShare)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-shares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/seal-vote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/rekey", permission.SealRekey, s.handleBarrierRekey)
 	// Registered unconditionally, not gated on barrierOn or s.encMigrator
 	// (go-qrdb#558): the handler's own encMigrator nil-check already answers
 	// with a typed 501 when unavailable (no barrier / standalone), and gating
@@ -1913,11 +1907,8 @@ func (s *Server) registerRoutes() {
 	// barrierOn.
 	s.routeIf(true, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/generate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/recover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
 	s.routeIf(barrierOn, http.MethodDelete, "/v1/barrier/recovery", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/recovery/status", permission.SealStatus, s.handleBarrierRecoveryStatus)
-	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/root-token", permission.SealBootstrap, s.handleBarrierRootToken)
-	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/officers/claim-status", permission.SealOfficerList, s.handleBarrierOfficerClaimStatus)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/officers", permission.SealOfficerRegister, s.handleBarrierRecoveryOfficerRegister)
 
 	// Security Officer registration/listing on the shared /v1/barrier/officers
@@ -1940,27 +1931,22 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/barrier/recovery/officers/{username}/claim/begin", permission.IdentityGated, s.handleBarrierOfficersByPath)
 	s.route(http.MethodPost, "/v1/barrier/recovery/officers/{username}/claim/complete", permission.IdentityGated, s.handleBarrierOfficersByPath)
 
-	// Ceremony lifecycle routes. The officer-share claim routes are
-	// identity-gated (see permission.IdentityGated).
+	// Holder quorum rounds. Begin and submit are identity-gated: the
+	// holder's factor proof is the credential, verified against the roster
+	// the wrapped root key is sealed under, and both are reachable while the
+	// barrier is sealed. Rekey and revocation open rounds under RBAC and SO
+	// PIN authorization.
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/quorum/begin", permission.IdentityGated, s.handleBarrierQuorumBegin)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/quorum/submit", permission.IdentityGated, s.handleBarrierQuorumSubmit)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/rekey/start", permission.SealRekey, s.handleBarrierRekeyStart)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/officers/revoke", permission.SealOfficerRevoke, s.handleBarrierOfficerRevoke)
+
+	// Ceremony lifecycle routes. Share holders claim through the barrier
+	// officer routes above.
 	ceremonyOn := s.ceremonySvc != nil
 	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/initialize", permission.CeremonyInitialize, s.handleCeremonyInitialize)
 	s.routeIf(ceremonyOn, http.MethodGet, "/v1/ceremony/status", permission.CeremonyStatus, s.handleCeremonyStatus)
-	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/claim-cert/begin", permission.CeremonyClaimCert, s.handleCeremonyClaimCertBegin)
-	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/claim-cert/complete", permission.CeremonyClaimCert, s.handleCeremonyClaimCertComplete)
-	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/officer-share/begin", permission.IdentityGated, s.handleCeremonyBeginClaimShare)
-	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/officer-share/complete", permission.IdentityGated, s.handleCeremonyCompleteClaimShare)
 	s.routeIf(ceremonyOn, http.MethodPost, "/v1/ceremony/sign-csr", permission.CeremonySignCSR, s.handleCeremonySignCSR)
-	s.routeIf(ceremonyOn, http.MethodPost, "/v1/init/enroll-external-officer", permission.CeremonyEnrollCustodian, s.handleCeremonyEnrollExternalOfficer)
-
-	// Custodian lifecycle routes (Phase 4). Custodian share-claim routes are
-	// identity-gated: the handler verifies the enrolled custodian's factor
-	// challenge response.
-	custodianOn := s.custodianSvc != nil
-	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/enroll-custodian", permission.CeremonyEnrollCustodian, s.handleEnrollCustodian)
-	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/revoke-custodian", permission.CeremonyRevokeCustodian, s.handleRevokeCustodian)
-	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/claim-share/begin", permission.IdentityGated, s.handleCustodianClaimShareBegin)
-	s.routeIf(custodianOn, http.MethodPost, "/v1/ceremony/claim-share/complete", permission.IdentityGated, s.handleCustodianClaimShareComplete)
-	s.routeIf(custodianOn, http.MethodPost, "/v1/barrier/unseal-share", permission.BarrierUnsealShare, s.handleUnsealShare)
 
 	// Credential management routes.
 	credOn := s.credentialSvc != nil

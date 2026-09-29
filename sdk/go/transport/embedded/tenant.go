@@ -18,9 +18,10 @@ import (
 	"context"
 	"encoding/hex"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -356,171 +357,133 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 		return &NilServiceError{Service: "TenantServicer"}
 	}
 
-	// Prefer share over key for unseal material.
-	key := req.Key
-	if len(req.Share) > 0 {
-		key = req.Share
-	}
-
-	return t.tenantSvc.TenantBarrierUnseal(ctx, req.TenantID, key)
+	return t.tenantSvc.TenantBarrierUnseal(ctx, req.TenantID, req.Key)
 }
 
-// TenantBarrierUnsealShare submits a single Shamir share toward a per-tenant
-// barrier's quorum threshold by delegating to the TenantServicer.
-func (t *Transport) TenantBarrierUnsealShare(ctx context.Context, req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
+// tenantService returns the injected TenantServicer, or the typed refusal
+// when the transport is closed or none was injected.
+func (t *Transport) tenantService() (tenant.TenantServicer, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
-
-	progress, err := t.tenantSvc.TenantBarrierUnsealShare(ctx, req.TenantID, req.Share)
-	if err != nil {
-		return nil, err
-	}
-	if progress == nil {
-		return &transport.TenantBarrierUnsealProgress{TenantID: req.TenantID}, nil
-	}
-	return &transport.TenantBarrierUnsealProgress{
-		TenantID:  progress.TenantID,
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-		Sealed:    progress.Sealed,
-	}, nil
+	return t.tenantSvc, nil
 }
 
-// TenantBarrierOfficerRegister registers a Security Officer for the named
-// tenant's barrier by delegating to the injected TenantServicer.
+// TenantBarrierOfficerRegister enrols a share holder of a tenant barrier.
 func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	result, err := t.tenantSvc.TenantBarrierOfficerRegister(ctx, req.TenantID, &ceremony.RegisterOfficerRequest{
-		Username:          req.Username,
-		CSRPEM:            req.CSRPEM,
-		AuthenticatorType: ceremony.AuthenticatorType(req.AuthenticatorType),
-		AuthenticatorRef:  req.AuthenticatorRef,
-	})
+	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	return &transport.OfficerRegisterResponse{
-		CertPEM:    result.CertPEM,
-		ShareIndex: result.ShareIndex,
-	}, nil
+	reg := service.HolderRegistration(ctx, holderwire.TenantRegisterFrom(req))
+	result, err := svc.TenantBarrierOfficerRegister(ctx, req.TenantID, &reg)
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.TenantRegisterTo(result), nil
 }
 
-// TenantBarrierOfficerList returns all enrolled Security Officers for the
-// named tenant's barrier by delegating to the injected TenantServicer.
+// TenantBarrierOfficerList lists a tenant barrier's holders.
 func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	officers, err := t.tenantSvc.TenantBarrierOfficerList(ctx, tenantID)
+	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	return embeddedCeremonyOfficerStatusesToTransport(officers), nil
-}
-
-// TenantBarrierOfficerClaimStatus returns a per-officer claim status snapshot
-// for the named tenant's barrier by delegating to the injected TenantServicer.
-func (t *Transport) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	officers, err := t.tenantSvc.TenantBarrierOfficerClaimStatus(ctx, tenantID)
+	officers, err := svc.TenantBarrierOfficerList(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	return embeddedCeremonyOfficerStatusesToTransport(officers), nil
+	return holderwire.StatusesTo(officers), nil
 }
 
-// TenantBarrierShareClaimBegin issues a challenge nonce to the named Security
-// Officer for the tenant barrier share claim handshake by delegating to the
-// injected TenantServicer.
+// TenantBarrierShareClaimBegin issues a claim nonce to a tenant holder, who
+// must present its certificate on ctx.
 func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	challenge, err := t.tenantSvc.TenantBarrierShareClaimBegin(ctx, req.TenantID, req.Username, "")
+	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	return &transport.ShareClaimBeginResponse{
-		NonceHex:  hex.EncodeToString(challenge.Nonce),
-		ExpiresAt: challenge.ExpiresAt,
-	}, nil
+	thumbprint, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	challenge, err := svc.TenantBarrierShareClaimBegin(ctx, req.TenantID, req.Username, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimBeginResponse{NonceHex: hex.EncodeToString(challenge.Nonce), ExpiresAt: challenge.ExpiresAt}, nil
 }
 
-// TenantBarrierShareClaimComplete verifies the Security Officer's nonce
-// signature and returns the tenant barrier share bytes exactly once by
-// delegating to the injected TenantServicer.
+// TenantBarrierShareClaimComplete delivers a tenant holder's sealed envelope
+// exactly once.
 func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	result, err := t.tenantSvc.TenantBarrierShareClaimComplete(ctx, req.TenantID, req.Username, req.NonceHex, req.Signature, "")
+	svc, err := t.tenantService()
 	if err != nil {
 		return nil, err
 	}
-	return &transport.ShareClaimCompleteResponse{
-		ShareIndex: result.ShareIndex,
-		ShareBytes: result.ShareBytes,
-	}, nil
-}
-
-// TenantBarrierShamirSealVote submits a Shamir share as a seal vote for the
-// named tenant's barrier by delegating to the injected TenantServicer.
-func (t *Transport) TenantBarrierShamirSealVote(ctx context.Context, req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	if t.tenantSvc == nil {
-		return nil, &NilServiceError{Service: "TenantServicer"}
-	}
-	progress, err := t.tenantSvc.TenantBarrierShamirSealVote(ctx, req.TenantID, req.Share)
+	thumbprint, err := contextCertThumbprint(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &transport.ShamirSealVoteResponse{
-		Required:  progress.Required,
-		Submitted: progress.Submitted,
-		Complete:  progress.Complete,
-	}, nil
+	result, err := svc.TenantBarrierShareClaimComplete(ctx, req.TenantID, req.Username, req.NonceHex, req.Signature, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.ShareClaimCompleteResponse{ShareIndex: result.ShareIndex, Envelope: result.Envelope}, nil
 }
 
-// embeddedCeremonyOfficerStatusesToTransport converts ceremony layer officer
-// status records to the transport layer representation.
-func embeddedCeremonyOfficerStatusesToTransport(officers []*ceremony.OfficerStatus) []*transport.OfficerStatus {
-	out := make([]*transport.OfficerStatus, len(officers))
-	for i, o := range officers {
-		out[i] = &transport.OfficerStatus{
-			Username:       o.Username,
-			CertThumbprint: o.CertThumbprint,
-			ShareIndex:     o.ShareIndex,
-			AuthFactor:     o.AuthFactor,
-			EnrolledAt:     o.EnrolledAt,
-			ClaimedAt:      o.ClaimedAt,
-			SharePending:   o.SharePending,
-		}
+// TenantBarrierQuorumBegin issues a tenant holder's quorum challenge.
+func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport.TenantQuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	svc, err := t.tenantService()
+	if err != nil {
+		return nil, err
 	}
-	return out
+	challenge, err := svc.TenantBarrierQuorumBegin(ctx, req.TenantID, seal.QuorumOp(req.Op), req.Username, req.Factor)
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.ChallengeTo(challenge), nil
+}
+
+// TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
+func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	svc, err := t.tenantService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.TenantBarrierQuorumSubmit(ctx, req.TenantID, holderwire.TenantSubmitFrom(req, contextOptionalThumbprint(ctx)))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.OutcomeTo(service.QuorumOutcomeFrom(out)), nil
+}
+
+// TenantBarrierRekeyStart opens a rekey round on a tenant barrier.
+func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.TenantRekeyStartRequest) (*transport.QuorumRound, error) {
+	svc, err := t.tenantService()
+	if err != nil {
+		return nil, err
+	}
+	round, err := svc.TenantBarrierRekeyStart(ctx, req.TenantID, req.Threshold, seal.FactorPolicy(req.Policy))
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.RoundTo(round), nil
+}
+
+// TenantBarrierOfficerRevoke revokes a tenant holder through a quorum-gated
+// rekey.
+func (t *Transport) TenantBarrierOfficerRevoke(ctx context.Context, req *transport.TenantOfficerRevokeRequest) (*transport.QuorumRound, error) {
+	svc, err := t.tenantService()
+	if err != nil {
+		return nil, err
+	}
+	round, err := svc.TenantBarrierOfficerRevoke(ctx, req.TenantID, req.Username, req.Threshold)
+	if err != nil {
+		return nil, err
+	}
+	return holderwire.RoundTo(round), nil
 }

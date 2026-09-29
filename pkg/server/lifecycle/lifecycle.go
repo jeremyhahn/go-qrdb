@@ -31,6 +31,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -42,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -170,6 +172,22 @@ type Infra struct {
 	// admin out. An unrecognised value fails BuildServices. Empty means
 	// "enrolled".
 	MTLSBindingPolicy string
+	// PINBackend holds the node's SO and User PINs. Composers wire either
+	// an injected (hardware) backend or NewSealStorePINBackend over the
+	// node-local seal store. When nil every PIN-gated operation fails
+	// closed with pin.ErrBackendNotConfigured: there is no fallback.
+	PINBackend pin.PINBackend
+
+	// HolderTrustDomain is the SPIFFE trust domain share-holder
+	// certificates are issued in. Holder registration fails with
+	// ceremony.ErrTrustDomainNotConfigured while it is empty.
+	HolderTrustDomain string
+
+	// FactorRegistry resolves the authentication factors share holders
+	// enrol and answer quorum challenges with. The built-in mtls factor is
+	// always available; hardware factors (FIDO2, PIV, ...) are registered
+	// by the composer.
+	FactorRegistry *authfactors.FactorRegistry
 
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
@@ -278,12 +296,11 @@ type Node struct {
 	Role role.RoleServicer
 
 	// Security services. All are nil when no SealBarrier was provided.
-	Barrier        service.BarrierServicer
-	Ceremony       service.CeremonyServicer
-	CustodianGroup ceremony.CustodianGroupServicer
-	Credential     service.CredentialServicer
-	Tenant         tenant.TenantServicer
-	CertProv       cert.CertProvider
+	Barrier    service.BarrierServicer
+	Ceremony   service.CeremonyServicer
+	Credential service.CredentialServicer
+	Tenant     tenant.TenantServicer
+	CertProv   cert.CertProvider
 
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
 	// It is non-nil only when a BarrierRegistry was supplied: barrier-mode
@@ -472,18 +489,6 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		return nil, &RoleServiceError{Err: err}
 	}
 	n.Role = roleSvc
-
-	// Custodian group + Shamir share services, backed by the node's KV store
-	// (the same store the IAM services use). They power the embedded ceremony
-	// API that go-xkms exposes as its custodian-group and share endpoints. The
-	// node hosts no seal barrier of its own, so these use the KV store directly;
-	// any at-rest encryption is provided by a barrier layered over KV upstream.
-	custodianStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
-	custodianGroupSvc, err := ceremony.NewCustodianGroupService(custodianStore, log)
-	if err != nil {
-		return nil, &CustodianGroupServiceError{Err: err}
-	}
-	n.CustodianGroup = custodianGroupSvc
 
 	// Database service. Use the caller-supplied manager when available
 	// (callers may have run migrations or created databases before calling
@@ -870,23 +875,10 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 	if infra.CredentialCoreSvc != nil {
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
-		ceremonyCoreSvc := infra.CeremonyCoreSvc
-		if ceremonyCoreSvc == nil {
-			ceremonyDataDir := infra.CeremonyDataDir
-			if ceremonyDataDir == "" {
-				ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
-			}
-			ceremonyCfg := &ceremony.CeremonyConfig{
-				DataDir: ceremonyDataDir,
-			}
-			svc, err := ceremony.NewCeremonyService(
-				ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
-			if err != nil {
-				return &CeremonyServiceError{Err: err}
-			}
-			ceremonyCoreSvc = svc
+		ceremonyCoreSvc, err := ceremonyService(infra, log)
+		if err != nil {
+			return err
 		}
-		ceremonyCoreSvc.SetCA(infra.CeremonyCA)
 		n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
 		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc)
 	} else {
@@ -897,7 +889,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		tenantOpts := buildTenantServiceOpts(infra)
 		if n.Ceremony != nil {
 			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
-				tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(coreSvc.CA()))
+				tenantOpts = append(tenantOpts, tenant.WithTenantHolderDeps(coreSvc.HolderDeps()))
 			}
 		}
 		// Tenant metadata (TenantInfo) is replicated cluster state: back it with
@@ -938,6 +930,31 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 	return nil
 }
 
+// ceremonyService returns the node's core ceremony service — infra's when
+// one is threaded through from the sealed-window phase, a new one otherwise —
+// configured with the CA, the holder trust domain, the factor registry and
+// the PIN backend. Configuration is applied to a threaded instance too, so
+// the post-unseal graph cannot run with dependencies the sealed window had.
+func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, error) {
+	svc := infra.CeremonyCoreSvc
+	if svc == nil {
+		dataDir := infra.CeremonyDataDir
+		if dataDir == "" {
+			dataDir = filepath.Join(infra.DataDir, "seal")
+		}
+		created, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: dataDir}, infra.SealBarrier, log)
+		if err != nil {
+			return nil, &CeremonyServiceError{Err: err}
+		}
+		svc = created
+	}
+	svc.SetCA(infra.CeremonyCA)
+	svc.SetTrustDomain(infra.HolderTrustDomain)
+	svc.SetFactorRegistry(infra.FactorRegistry)
+	svc.SetPINBackend(infra.PINBackend)
+	return svc, nil
+}
+
 // BuildSealServicesOnly constructs the subset of seal-gated services that
 // do NOT require a Raft host: Barrier, Credential, Ceremony, and (when a
 // BarrierRegistry is supplied) Tenant. It is intended for the pre-host
@@ -973,29 +990,16 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 	n := &Node{}
 	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
 
-	ceremonyCoreSvc := infra.CeremonyCoreSvc
-	if ceremonyCoreSvc == nil {
-		ceremonyDataDir := infra.CeremonyDataDir
-		if ceremonyDataDir == "" {
-			ceremonyDataDir = filepath.Join(infra.DataDir, "seal")
-		}
-		ceremonyCfg := &ceremony.CeremonyConfig{DataDir: ceremonyDataDir}
-		svc, err := ceremony.NewCeremonyService(
-			ceremonyCfg, infra.SealBarrier, infra.CredentialCoreSvc, log)
-		if err != nil {
-			return nil, &CeremonyServiceError{Err: err}
-		}
-		ceremonyCoreSvc = svc
+	ceremonyCoreSvc, err := ceremonyService(infra, log)
+	if err != nil {
+		return nil, err
 	}
-	ceremonyCoreSvc.SetCA(infra.CeremonyCA)
 	n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
 	n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc)
 
 	if infra.BarrierRegistry != nil {
 		tenantOpts := buildTenantServiceOpts(infra)
-		if ca := ceremonyCoreSvc.CA(); ca != nil {
-			tenantOpts = append(tenantOpts, tenant.WithTenantCeremonyCA(ca))
-		}
+		tenantOpts = append(tenantOpts, tenant.WithTenantHolderDeps(ceremonyCoreSvc.HolderDeps()))
 		// The sealed-window service graph has no Raft host (the data plane
 		// cannot be opened while the storage barrier is sealed), so this tenant
 		// service is necessarily backed by the node-local seal store rather than

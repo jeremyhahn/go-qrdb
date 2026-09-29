@@ -21,7 +21,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 )
 
@@ -38,9 +37,12 @@ const signCSRGuessBudget = 50
 // RESOURCE_EXHAUSTED) instead of checking another guess, and the refusal
 // covers the correct PIN too, so it cannot confirm a guess while throttled.
 func TestCeremonySignCSR_SOPINGuessingIsThrottled(t *testing.T) {
-	svc, ca := newTestCeremonyService(t)
+	e := newHolderSvcEnv(t, 2, 2)
+	svc := e.cer
 	ctx := context.Background()
-	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	_, err := svc.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
+		SOPin: "so-pin-1234", UserPin: "user-pin-1234", Hostname: "db.example.com",
+	})
 	require.NoError(t, err)
 	csrPEM := string(newTestOfficerCSR(t, "user-1"))
 
@@ -50,15 +52,15 @@ func TestCeremonySignCSR_SOPINGuessingIsThrottled(t *testing.T) {
 		switch {
 		case errors.Is(err, pin.ErrPINLocked):
 			throttled++
-		case !errors.Is(err, ceremony.ErrSOPINMismatch):
-			t.Fatalf("guess %d: %v, want ceremony.ErrSOPINMismatch or pin.ErrPINLocked", i, err)
+		case !errors.Is(err, pin.ErrPINInvalid):
+			t.Fatalf("guess %d: %v, want pin.ErrPINInvalid or pin.ErrPINLocked", i, err)
 		}
 	}
 	if throttled == 0 {
 		t.Fatalf("%d SO PIN guesses in a row were all checked; want the endpoint throttled", signCSRGuessBudget)
 	}
 
-	_, err = svc.CeremonySignCSR(ctx, "user-1", "test-so-pin", csrPEM, "admin")
+	_, err = svc.CeremonySignCSR(ctx, "user-1", "so-pin-1234", csrPEM, "admin")
 	if !errors.Is(err, pin.ErrPINLocked) {
 		t.Fatalf("the correct SO PIN while throttled: %v, want pin.ErrPINLocked", err)
 	}

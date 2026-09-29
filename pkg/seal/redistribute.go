@@ -1,0 +1,160 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package seal
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+)
+
+// HolderCountMismatchError is returned when a distribution is asked for a
+// specific number of shares but a different number of holders is enrolled.
+type HolderCountMismatchError struct {
+	// Want is the requested share count.
+	Want int
+	// Enrolled is the number of active holders.
+	Enrolled int
+}
+
+// Error returns a human-readable description.
+func (e *HolderCountMismatchError) Error() string {
+	return "qrdb/seal: " + strconv.Itoa(e.Want) + " shares were requested but " + strconv.Itoa(e.Enrolled) + " holders are enrolled"
+}
+
+// redistribute generates a fresh key for domain, wraps rootKey under it bound
+// to a newly prepared roster, seals the new shares to that roster's holders
+// and persists the blob. It is the single distribution path: Shamir
+// initialization, the encryption-migration mint, recovery-key generation and
+// every rekey (including revocation) go through it.
+//
+// Ordering is deliberate: distribute FIRST, persist the blob LAST. If
+// distribution fails, the previous blob — and so the previous share set —
+// stays valid and the operation can be retried. Committed runs only once the
+// blob is durable.
+//
+// expectTotal, when positive, is the share count the caller asked for; a
+// different number of enrolled holders is refused rather than silently
+// adopted.
+func (b *StorageBarrier) redistribute(ctx context.Context, domain QuorumDomain, rootKey *secure.Buffer, threshold int, policy FactorPolicy, remove []string, expectTotal int) (*ShamirInitParams, error) {
+	return b.redistributeTo(ctx, b, domain, rootKey, threshold, policy, remove, expectTotal)
+}
+
+// redistributeTo is redistribute with the blob written to target's backend
+// under THIS barrier's path and AAD. The encryption migration mints its
+// sibling this way so the blob it adopts is already bound to the canonical
+// root key path.
+func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarrier, domain QuorumDomain, rootKey *secure.Buffer, threshold int, policy FactorPolicy, remove []string, expectTotal int) (*ShamirInitParams, error) {
+	if b.distributor == nil {
+		return nil, ErrCeremonyDistributorNotConfigured
+	}
+	if !policy.Valid() {
+		return nil, &InvalidRosterError{Reason: "unknown factor policy " + string(policy)}
+	}
+	roster, err := b.distributor.PrepareRoster(ctx, domain, threshold, policy.OrDefault(), remove)
+	if err != nil {
+		return nil, err
+	}
+	if expectTotal > 0 && roster.Total != expectTotal {
+		return nil, &HolderCountMismatchError{Want: expectTotal, Enrolled: roster.Total}
+	}
+	distribution := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, distribution); err != nil {
+		return nil, err
+	}
+	roster.Distribution = hex.EncodeToString(distribution)
+
+	key, err := generateUnsealKey()
+	if err != nil {
+		return nil, err
+	}
+	defer secure.Wipe(key)
+
+	var blob, digest []byte
+	if err := rootKey.WithBytes(func(rk []byte) error {
+		var werr error
+		blob, digest, werr = b.wrapRootKey(domain, key, rk, roster)
+		return werr
+	}); err != nil {
+		return nil, err
+	}
+
+	// Distribute wipes the slice it is handed, so it gets its own copy and
+	// the deferred wipe above still owns key.
+	shareSecret := make([]byte, len(key))
+	copy(shareSecret, key)
+	count, err := b.distributor.Distribute(ctx, shareSecret, roster, digest)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := target.base.Put(ctx, target.wrappedKeyPath(domain), blob); err != nil {
+		return nil, err
+	}
+	if domain == DomainUnseal {
+		if err := target.recordShamirParams(ctx, roster.Threshold, roster.Total); err != nil {
+			return nil, err
+		}
+	}
+	if err := b.distributor.Committed(ctx, roster, remove); err != nil {
+		return nil, err
+	}
+
+	emitAudit(b.config.AuditLogger, "distribute", "barrier", b.config.RootKeyPath, "allow",
+		map[string]string{"domain": string(domain), "threshold": itoa(roster.Threshold),
+			"total": itoa(roster.Total), "policy": string(roster.Policy), "removed": itoa(len(remove))})
+
+	return &ShamirInitParams{Threshold: roster.Threshold, TotalShares: roster.Total, ShareCount: count}, nil
+}
+
+// recordShamirParams writes threshold/total into the persisted
+// (key-material-free) sealed envelope and replaces the in-memory
+// ShamirStrategy and config, so Status reports the share set in force.
+func (b *StorageBarrier) recordShamirParams(ctx context.Context, threshold, total int) error {
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	if err != nil {
+		return err
+	}
+	var sealed SealedRootKey
+	if err := json.Unmarshal(blob, &sealed); err != nil {
+		return ErrCorruptRootKey
+	}
+	if sealed.ShamirThreshold != threshold || sealed.ShamirTotal != total {
+		sealed.ShamirThreshold = threshold
+		sealed.ShamirTotal = total
+		updated, err := json.Marshal(&sealed)
+		if err != nil {
+			return err
+		}
+		if err := b.base.Put(ctx, b.config.RootKeyPath, updated); err != nil {
+			return err
+		}
+	}
+	strat, err := NewShamirStrategy(threshold, total)
+	if err != nil {
+		return err
+	}
+	b.setStrategy(StrategyShamir, strat)
+	if b.config.Shamir != nil {
+		b.config.Shamir.Threshold = threshold
+		b.config.Shamir.TotalShares = total
+	}
+	return nil
+}

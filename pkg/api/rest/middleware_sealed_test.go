@@ -108,13 +108,10 @@ func TestSealedWindow_SealedAllowlistPasses(t *testing.T) {
 		{http.MethodPost, "/v1/barrier/initialize"},
 		{http.MethodPost, "/v1/barrier/unseal"},
 		{http.MethodPost, "/v1/barrier/shamir/initialize"},
-		{http.MethodPost, "/v1/barrier/shamir/unseal-share"},
-		{http.MethodPost, "/v1/barrier/shamir/unseal-shares"},
-		{http.MethodPost, "/v1/barrier/recovery/recover"},
-		{http.MethodPost, "/v1/barrier/root-token"},
 		{http.MethodPost, "/v1/barrier/officers"},
-		{http.MethodGet, "/v1/barrier/officers/claim-status"},
 		{http.MethodPost, "/v1/barrier/officers/alice/claim/begin"},
+		{http.MethodPost, "/v1/barrier/quorum/begin"},
+		{http.MethodPost, "/v1/barrier/quorum/submit"},
 		{http.MethodPost, "/v1/ceremony/sign-csr"},
 	} {
 		t.Run(req.method+" "+req.path, func(t *testing.T) {

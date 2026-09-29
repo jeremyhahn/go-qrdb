@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -51,9 +50,6 @@ var _ audit.AuditLogger = (*stubAuditLogger)(nil)
 
 // stubAuthFactorService satisfies service.AuthFactorServicer via embedding.
 type stubAuthFactorService struct{ service.AuthFactorServicer }
-
-// stubCustodianServicer satisfies custodian.Servicer via embedding.
-type stubCustodianServicer struct{ custodian.Servicer }
 
 // stubLockImpl implements service.LockServicer with real method stubs
 // so the embedding type assertion passes.
@@ -110,9 +106,6 @@ func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _ s
 }
 
 func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
-	return nil, nil
-}
-func (s *stubTenantServicerForRegistry) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
 	return nil, nil
 }
 func (s *stubTenantServicerForRegistry) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
@@ -291,32 +284,6 @@ func TestWithAuthFactorService_ViaNewServer(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithAuthFactorService(svc))
 	if srv.opts.authFactorSvc != svc {
 		t.Error("WithAuthFactorService not propagated via New()")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WithCustodianService
-// ---------------------------------------------------------------------------
-
-// TestWithCustodianService verifies that WithCustodianService stores the
-// provided custodian.Servicer on serverOptions.
-func TestWithCustodianService(t *testing.T) {
-	t.Parallel()
-	svc := &stubCustodianServicer{}
-	var opts serverOptions
-	WithCustodianService(svc)(&opts)
-	if opts.custodianSvc != svc {
-		t.Error("WithCustodianService did not store the provided service")
-	}
-}
-
-// TestWithCustodianService_ViaNewServer verifies the option propagates through New().
-func TestWithCustodianService_ViaNewServer(t *testing.T) {
-	svc := &stubCustodianServicer{}
-	cfg := testConfig(t, false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCustodianService(svc))
-	if srv.opts.custodianSvc != svc {
-		t.Error("WithCustodianService not propagated via New()")
 	}
 }
 

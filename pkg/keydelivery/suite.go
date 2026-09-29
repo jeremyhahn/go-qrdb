@@ -56,13 +56,17 @@ type Suite struct {
 	kem  hpke.KEM
 	kdf  hpke.KDF
 	aead hpke.AEAD
+
+	// fipsApproved reports whether every primitive of the suite is FIPS
+	// 140-3 approved. Only approved suites are served in FIPS mode.
+	fipsApproved bool
 }
 
 // suites is the KEM registry. It is fixed at build time: a suite is a
 // security decision, not a runtime extension point.
 var suites = map[string]*Suite{
-	KEMP256:           {name: KEMP256, kem: hpke.DHKEM(ecdh.P256()), kdf: hpke.HKDFSHA256(), aead: hpke.AES256GCM()},
-	KEMP384:           {name: KEMP384, kem: hpke.DHKEM(ecdh.P384()), kdf: hpke.HKDFSHA384(), aead: hpke.AES256GCM()},
+	KEMP256:           {name: KEMP256, kem: hpke.DHKEM(ecdh.P256()), kdf: hpke.HKDFSHA256(), aead: hpke.AES256GCM(), fipsApproved: true},
+	KEMP384:           {name: KEMP384, kem: hpke.DHKEM(ecdh.P384()), kdf: hpke.HKDFSHA384(), aead: hpke.AES256GCM(), fipsApproved: true},
 	KEMX25519:         {name: KEMX25519, kem: hpke.DHKEM(ecdh.X25519()), kdf: hpke.HKDFSHA256(), aead: hpke.AES256GCM()},
 	KEMMLKEM768X25519: {name: KEMMLKEM768X25519, kem: hpke.MLKEM768X25519(), kdf: hpke.HKDFSHA256(), aead: hpke.AES256GCM()},
 }
@@ -103,11 +107,16 @@ func (e *KEMKeyMismatchError) Error() string {
 	return "keydelivery: key does not belong to KEM " + e.Suite
 }
 
-// LookupSuite returns the suite registered under name.
+// LookupSuite returns the suite registered under name. In FIPS mode a suite
+// that is not FIPS 140-3 approved is refused with SuiteNotApprovedError, so
+// no share-holder envelope or node key delivery is ever built on it.
 func LookupSuite(name string) (*Suite, error) {
 	s, ok := suites[name]
 	if !ok {
 		return nil, &UnsupportedKEMError{Name: name}
+	}
+	if !s.fipsApproved && fipsMode() {
+		return nil, &SuiteNotApprovedError{Name: name}
 	}
 	return s, nil
 }
@@ -208,6 +217,9 @@ func RecipientFromPublicKey(pub crypto.PublicKey) (string, []byte, error) {
 	}
 	name, err := suiteForCurve(ek.Curve())
 	if err != nil {
+		return "", nil, err
+	}
+	if _, err := LookupSuite(name); err != nil {
 		return "", nil, err
 	}
 	return name, ek.Bytes(), nil

@@ -563,22 +563,9 @@ func TestBarrierRegistry_SystemBarrier_Accessor(t *testing.T) {
 
 func TestBarrierRegistry_InitializeTenantShamir_TenantNotFound(t *testing.T) {
 	reg := newTestRegistry(t)
-	_, err := reg.InitializeTenantShamir(context.Background(), "nonexistent", Credentials{})
+	_, err := reg.InitializeTenantShamir(context.Background(), "nonexistent", "")
 	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("InitializeTenantShamir(unknown): got %v, want ErrTenantNotFound", err)
-	}
-}
-
-// --------------------------------------------------------------------------
-// barrier_registry.go: UnsealTenantWithShare — 75%
-// (GetTenant error path)
-// --------------------------------------------------------------------------
-
-func TestBarrierRegistry_UnsealTenantWithShare_TenantNotFound(t *testing.T) {
-	reg := newTestRegistry(t)
-	_, err := reg.UnsealTenantWithShare(context.Background(), "nonexistent", "share-val")
-	if !errors.Is(err, ErrTenantNotFound) {
-		t.Errorf("UnsealTenantWithShare(unknown): got %v, want ErrTenantNotFound", err)
 	}
 }
 

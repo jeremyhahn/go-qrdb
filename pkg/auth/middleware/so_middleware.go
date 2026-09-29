@@ -35,14 +35,12 @@ const (
 // authentication (mTLS identity + in-band PIN). Any route mapped to one
 // of these permissions will be gated by SOMiddleware.
 var SOPermissions = map[permission.Permission]struct{}{
-	permission.CeremonyInitialize:      {},
-	permission.CeremonyEnrollCustodian: {},
-	permission.CeremonyRevokeCustodian: {},
-	permission.CeremonySignCSR:         {},
-	permission.SealRotateRootKey:       {},
-	permission.SealRekey:               {},
-	permission.SealGenerateRecovery:    {},
-	permission.SealInitializeShamir:    {},
+	permission.CeremonyInitialize:   {},
+	permission.CeremonySignCSR:      {},
+	permission.SealRotateRootKey:    {},
+	permission.SealRekey:            {},
+	permission.SealGenerateRecovery: {},
+	permission.SealInitializeShamir: {},
 }
 
 // SOPINVerifier is the interface consumed by SOMiddleware to verify the SO PIN.

@@ -450,36 +450,27 @@ const (
 	SealEnableEncryption Permission = "seal:enable_encryption"
 	// SealGenerateRecovery grants access to generate offline recovery keys (SO only).
 	SealGenerateRecovery Permission = "seal:generate_recovery"
-	// SealRecoverWithKeys grants access to recover the barrier using offline recovery keys.
-	SealRecoverWithKeys Permission = "seal:recover_with_keys"
 	// SealInitializeShamir grants access to initialize Shamir secret sharing (SO only).
 	SealInitializeShamir Permission = "seal:initialize_shamir"
-	// BarrierUnsealShare grants access to submit a single Shamir share toward
-	// the node barrier's unseal quorum. Every tenant's Custodian role carries
-	// it; it is ScopeCross (node_barrier_scope.go), so only a system-tenant
-	// custodian exercises it. A tenant's own barrier takes unseal shares on
-	// identity-gated routes bound to the tenant they name.
-	BarrierUnsealShare Permission = "barrier:unseal-share"
-
-	// SealOfficerRegister grants the ability to register a Security Officer
-	// into the node barrier's unseal domain or its recovery domain. Every
-	// distribution sends a share to every registered officer, so it decides
-	// who can reconstruct the node key. Held by the SO role; ScopeCross
-	// (node_barrier_scope.go), so only a system-tenant identity exercises it.
-	// Anonymous first-boot registration on the sealed-window listener runs no
-	// RBAC and is unaffected (sealedwindow.PreOperationalOnly).
+	// SealOfficerRegister grants the ability to enrol a share holder — a
+	// Security Officer or a key custodian — of the node barrier, into its
+	// unseal or recovery domain. Every distribution sends a share to every
+	// enrolled holder, so it decides who can reconstruct the node key. Admins
+	// and Security Officers hold it, and nobody may enrol themselves.
+	// ScopeCross (node_barrier_scope.go), so only a system-tenant identity
+	// exercises it. Anonymous first-boot registration on the sealed-window
+	// listener runs no RBAC and is unaffected (sealedwindow.PreOperationalOnly).
 	SealOfficerRegister Permission = "seal:officer_register"
 
-	// SealOfficerList grants access to list the node barrier's registered
-	// Security Officers, with their certificate thumbprints and claim status.
-	// Held by the SO role; ScopeCross, so only a system-tenant identity
-	// exercises it.
-	SealOfficerList Permission = "seal:officer_list"
+	// SealOfficerRevoke grants the ability to revoke a share holder of the
+	// node barrier. Revocation opens a rekey round; it completes only with a
+	// quorum of the remaining holders. ScopeCross.
+	SealOfficerRevoke Permission = "seal:officer_revoke"
 
-	// SealSubmitSealVote grants a Security Officer the ability to submit a seal
-	// vote (share) to collectively seal a Shamir-protected node barrier.
-	// ScopeCross.
-	SealSubmitSealVote Permission = "seal:submit_seal_vote"
+	// SealOfficerList grants access to list the node barrier's share holders,
+	// with their certificate thumbprints and claim state. ScopeCross, so only
+	// a system-tenant identity exercises it.
+	SealOfficerList Permission = "seal:officer_list"
 )
 
 // ---------------------------------------------------------------------------
@@ -489,16 +480,6 @@ const (
 const (
 	// CeremonyInitialize grants access to initialize the key ceremony (SO only).
 	CeremonyInitialize Permission = "ceremony:initialize"
-	// CeremonyEnrollCustodian grants access to enroll a custodian during ceremony (SO only).
-	CeremonyEnrollCustodian Permission = "ceremony:enroll_custodian"
-	// CeremonyRevokeCustodian grants access to revoke a custodian (SO only).
-	CeremonyRevokeCustodian Permission = "ceremony:revoke_custodian"
-	// CeremonyClaimCert grants access to claim a certificate during ceremony (enrolled officer).
-	CeremonyClaimCert Permission = "ceremony:claim_cert"
-	// CeremonyClaimShareBegin grants access to begin claiming a Shamir share (enrolled custodian).
-	CeremonyClaimShareBegin Permission = "ceremony:claim_share_begin"
-	// CeremonyClaimShareComplete grants access to complete claiming a Shamir share (enrolled custodian).
-	CeremonyClaimShareComplete Permission = "ceremony:claim_share_complete"
 	// CeremonySignCSR grants access to sign a CSR during ceremony (SO only).
 	CeremonySignCSR Permission = "ceremony:sign_csr"
 	// CeremonyStatus grants access to query ceremony state (SO, Admin, Operator, Auditor).
@@ -610,23 +591,21 @@ const (
 	// cross-tenant access are denied.
 	TenantBarrierStatus Permission = "tenant_barrier:status"
 
-	// TenantBarrierOfficerRegister grants a tenant-admin the ability to register
-	// a Security Officer for their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
+	// TenantBarrierOfficerRegister grants a tenant admin the ability to enrol a
+	// share holder of their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
 	TenantBarrierOfficerRegister Permission = "tenant_barrier:officer_register"
 
-	// TenantBarrierOfficerList grants access to list Security Officers for a tenant
-	// barrier. Tenant-scoped (ScopeTenantOnly).
+	// TenantBarrierOfficerList grants access to list a tenant barrier's share
+	// holders. Tenant-scoped (ScopeTenantOnly).
 	TenantBarrierOfficerList Permission = "tenant_barrier:officer_list"
 
-	// TenantBarrierClaimShare grants a tenant Security Officer the ability to claim
-	// their Shamir share from the tenant barrier. Tenant-scoped (ScopeTenantOnly).
-	// The handler additionally enforces that the caller's mTLS cert thumbprint matches
-	// the officer record (identity-gated, not just role-gated).
-	TenantBarrierClaimShare Permission = "tenant_barrier:claim_share"
+	// TenantBarrierRekey grants a tenant admin the ability to open a rekey
+	// round on their tenant's Shamir barrier.
+	TenantBarrierRekey Permission = "tenant_barrier:rekey"
 
-	// TenantBarrierSealVote grants a tenant Security Officer the ability to submit
-	// a seal vote for their tenant's barrier. Tenant-scoped (ScopeTenantOnly).
-	TenantBarrierSealVote Permission = "tenant_barrier:seal_vote"
+	// TenantBarrierOfficerRevoke grants a tenant admin the ability to revoke a
+	// share holder of their tenant's barrier (a quorum-gated rekey).
+	TenantBarrierOfficerRevoke Permission = "tenant_barrier:officer_revoke"
 
 	// TenantBarrierEnableEncryption grants access to migrate a tenant's dedicated
 	// barrier from the none (unencrypted) strategy to a keyed strategy in place.
@@ -975,18 +954,15 @@ var categories = []Category{
 		Permissions: []Permission{
 			SealBootstrap, SealUnseal, SealSeal, SealStatus,
 			SealRotateRootKey, SealRekey, SealEnableEncryption,
-			SealGenerateRecovery, SealRecoverWithKeys, SealInitializeShamir,
-			BarrierUnsealShare, SealOfficerRegister, SealOfficerList,
-			SealSubmitSealVote,
+			SealGenerateRecovery, SealInitializeShamir,
+			SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		},
 	},
 	{
 		Name:  "Ceremony",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			CeremonyInitialize, CeremonyEnrollCustodian, CeremonyRevokeCustodian,
-			CeremonyClaimCert, CeremonyClaimShareBegin, CeremonyClaimShareComplete,
-			CeremonySignCSR, CeremonyStatus,
+			CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		},
 	},
 	{
@@ -1014,7 +990,7 @@ var categories = []Category{
 			TenantsListDeleted, TenantsReconcileDeleted,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,
-			TenantBarrierClaimShare, TenantBarrierSealVote,
+			TenantBarrierRekey, TenantBarrierOfficerRevoke,
 			TenantBarrierEnableEncryption,
 		},
 	},

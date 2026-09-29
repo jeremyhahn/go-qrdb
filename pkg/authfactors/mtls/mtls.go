@@ -196,12 +196,65 @@ func VerifyNonceSignature(pub crypto.PublicKey, nonce, signature []byte) bool {
 	}
 }
 
+// SignNonce produces the signature VerifyNonceSignature accepts: ECDSA
+// (ASN.1 DER) and RSA PKCS#1 v1.5 over SHA-256(nonce), Ed25519 over the
+// nonce itself. It is the one signing format holders answer the mtls
+// factor's challenge and the share-claim nonce with.
+func SignNonce(signer crypto.Signer, nonce []byte) ([]byte, error) {
+	if signer == nil || len(nonce) == 0 {
+		return nil, &UnsupportedSignerError{}
+	}
+	switch signer.Public().(type) {
+	case ed25519.PublicKey:
+		return signer.Sign(rand.Reader, nonce, crypto.Hash(0))
+	case *ecdsa.PublicKey, *rsa.PublicKey:
+		digest := sha256.Sum256(nonce)
+		return signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	default:
+		return nil, &UnsupportedSignerError{}
+	}
+}
+
+// UnsupportedSignerError is returned by SignNonce for a nil signer, an empty
+// nonce, or a key type the mtls factor does not verify.
+type UnsupportedSignerError struct{}
+
+// Error returns a human-readable description.
+func (e *UnsupportedSignerError) Error() string {
+	return "mtls: signer must be an ECDSA, RSA or Ed25519 key over a non-empty nonce"
+}
+
 // Thumbprint returns the lowercase hex SHA-256 of a certificate's DER. It is
 // the canonical certificate identity the enrolment, the roster and the TLS
 // peer binding all compare.
 func Thumbprint(certDER []byte) string {
 	sum := sha256.Sum256(certDER)
 	return hex.EncodeToString(sum[:])
+}
+
+// ParseSignerPEM parses a PEM private key — SEC1 EC, PKCS#1 RSA or PKCS#8
+// (ECDSA, RSA, Ed25519) — as the crypto.Signer a holder answers the mtls
+// factor with.
+func ParseSignerPEM(keyPEM []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, &authfactors.EnrollmentInvalidError{Reason: "no PEM block in private key"}
+	}
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, &authfactors.EnrollmentInvalidError{Reason: "private key: " + err.Error()}
+	}
+	signer, ok := parsed.(crypto.Signer)
+	if !ok {
+		return nil, &UnsupportedSignerError{}
+	}
+	return signer, nil
 }
 
 // ParseCertificatePEM parses the first CERTIFICATE block of pemBytes.

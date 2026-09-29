@@ -63,37 +63,6 @@ func TestUnixTenant_AfterClose(t *testing.T) {
 // transport_ceremony.go closed-paths
 // ===========================================================================
 
-func TestUnixCeremony_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-	ctx := context.Background()
-
-	if _, err := tr.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyInitialize: %v", err)
-	}
-	if _, err := tr.CeremonyStatus(ctx); !errors.As(err, &ce) {
-		t.Errorf("CeremonyStatus: %v", err)
-	}
-	if _, err := tr.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimCertBegin: %v", err)
-	}
-	if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimCertComplete: %v", err)
-	}
-	if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyBeginClaimShare: %v", err)
-	}
-	if _, err := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyCompleteClaimShare: %v", err)
-	}
-	if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonySignCSR: %v", err)
-	}
-	if _, err := tr.CeremonyEnrollExternalOfficer(ctx, &transport.EnrollExternalOfficerRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyEnrollExternalOfficer: %v", err)
-	}
-}
-
 // ===========================================================================
 // transport_collection.go closed-paths
 // ===========================================================================
@@ -135,34 +104,6 @@ func TestUnixCollection_AfterClose(t *testing.T) {
 // ===========================================================================
 // transport_barrier.go closed-paths (the subset not in transport_closed_test.go)
 // ===========================================================================
-
-func TestUnixBarrierExtras_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-	ctx := context.Background()
-
-	if _, err := tr.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierInitializeShamir: %v", err)
-	}
-	if _, err := tr.BarrierUnsealWithShare(ctx, &transport.BarrierUnsealShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierUnsealWithShare: %v", err)
-	}
-	if err := tr.BarrierUnsealWithShares(ctx, &transport.BarrierUnsealSharesRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierUnsealWithShares: %v", err)
-	}
-	if _, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierRekey: %v", err)
-	}
-	if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierGenerateRecoveryKeys: %v", err)
-	}
-	if err := tr.BarrierRecoverWithKeys(ctx, &transport.BarrierRecoverWithKeysRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierRecoverWithKeys: %v", err)
-	}
-	if _, err := tr.BarrierGenerateRootToken(ctx, &transport.BarrierGenerateRootTokenRequest{}); !errors.As(err, &ce) {
-		t.Errorf("BarrierGenerateRootToken: %v", err)
-	}
-}
 
 // ===========================================================================
 // transport_watch.go closed-paths

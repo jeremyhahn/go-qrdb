@@ -52,7 +52,7 @@ func (m *captureMigrator) EnableEncryption(_ context.Context, scope service.Barr
 
 func newEnableEncTestServer(t *testing.T, mig service.EncryptionMigrator) *Server {
 	t.Helper()
-	opts := []ServerOption{WithBarrierService(newExtBarrierSvc())}
+	opts := []ServerOption{WithBarrierService(&mockBarrierService{})}
 	if mig != nil {
 		opts = append(opts, WithEncryptionMigrator(mig))
 	}

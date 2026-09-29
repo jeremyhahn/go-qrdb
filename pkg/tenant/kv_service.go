@@ -669,12 +669,6 @@ func (s *kvTenantService) TenantBarrierUnseal(_ context.Context, _ string, _ []b
 	return ErrBarrierNotEnabled
 }
 
-// TenantBarrierUnsealShare returns ErrBarrierNotEnabled. The seal subsystem is
-// not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*TenantBarrierUnsealProgress, error) {
-	return nil, ErrBarrierNotEnabled
-}
-
 // TenantBarrierSeal returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
 func (s *kvTenantService) TenantBarrierSeal(_ context.Context, _ string) error {
@@ -711,14 +705,26 @@ func (s *kvTenantService) TenantBarrierShareClaimComplete(_ context.Context, _, 
 	return nil, ErrBarrierNotEnabled
 }
 
-// TenantBarrierOfficerClaimStatus returns ErrBarrierNotEnabled. The seal
-// subsystem is not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
+// TenantBarrierQuorumBegin returns ErrBarrierNotEnabled. The seal subsystem is
+// not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierQuorumBegin(_ context.Context, _ string, _ seal.QuorumOp, _, _ string) (*ceremony.QuorumChallenge, error) {
 	return nil, ErrBarrierNotEnabled
 }
 
-// TenantBarrierShamirSealVote returns ErrBarrierNotEnabled. The seal
-// subsystem is not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*TenantBarrierUnsealProgress, error) {
+// TenantBarrierQuorumSubmit returns ErrBarrierNotEnabled. The seal subsystem
+// is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierQuorumSubmit(_ context.Context, _ string, _ *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierRekeyStart returns ErrBarrierNotEnabled. The seal subsystem is
+// not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierRekeyStart(_ context.Context, _ string, _ int, _ seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+// TenantBarrierOfficerRevoke returns ErrBarrierNotEnabled. The seal subsystem
+// is not configured when this service implementation is in use.
+func (s *kvTenantService) TenantBarrierOfficerRevoke(_ context.Context, _, _ string, _ int) (*seal.QuorumRoundInfo, error) {
 	return nil, ErrBarrierNotEnabled
 }

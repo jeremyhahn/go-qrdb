@@ -42,7 +42,8 @@ const soPINField = "so_pin"
 // method registry, so a newly gated method cannot silently lack one.
 var soPINCarriers = map[string]func() proto.Message{
 	"barrier.ShamirInitialize": func() proto.Message { return &pb.BarrierShamirInitializeRequest{} },
-	"barrier.Rekey":            func() proto.Message { return &pb.BarrierRekeyRequest{} },
+	"barrier.RekeyStart":       func() proto.Message { return &pb.BarrierRekeyStartRequest{} },
+	"barrier.OfficerRevoke":    func() proto.Message { return &pb.BarrierOfficerRevokeRequest{} },
 	"barrier.RecoveryGenerate": func() proto.Message { return &pb.BarrierRecoveryGenerateRequest{} },
 	"barrier.RecoveryDelete":   func() proto.Message { return &pb.BarrierRecoveryDeleteRequest{} },
 	"ceremony.Initialize":      func() proto.Message { return &pb.CeremonyInitializeRequest{} },

@@ -31,6 +31,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -912,30 +913,12 @@ func TestTenantBarrierStatusHandler_DecodeError(t *testing.T) {
 	}
 }
 
-// TestTenantBarrierStatus_NilStatus verifies that when the service returns a
-// nil *TenantBarrierStatus with no error the handler returns codes.Internal.
-func TestTenantBarrierStatus_NilStatus(t *testing.T) {
-	svc := &nilStatusTenantBarrierSvc{}
-	server := &tenantBarrierServer{svc: svc, authMW: nil}
-
-	_, err := server.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "t1"})
-	if err == nil {
-		t.Fatal("expected error for nil status response")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Internal {
-		t.Fatalf("expected Internal, got %s", st.Code())
-	}
-}
-
 // nilStatusTenantBarrierSvc returns nil from TenantBarrierStatus.
 type nilStatusTenantBarrierSvc struct {
+	tenant.TenantServicer
 	mockTenantBarrierOnlySvc
 }
 
 func (n *nilStatusTenantBarrierSvc) TenantBarrierStatus(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
 	return nil, nil
 }
-
-// Ensure interface satisfied.
-var _ tenantpkg.TenantServicer = (*nilStatusTenantBarrierSvc)(nil)

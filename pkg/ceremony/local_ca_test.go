@@ -24,6 +24,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
 
@@ -204,9 +205,14 @@ func TestNewLocalCA_BadKeyPEM(t *testing.T) {
 // SignCSR
 // ---------------------------------------------------------------------------
 
-func TestLocalCA_SignCSR_Custodian(t *testing.T) {
+// TestLocalCA_SignCSR_AssignsTheIdentity pins the §6 fix: the certificate
+// carries the subject and URIs the caller assigns, and nothing the CSR asked
+// for — not its common name, not its OUs, not its DNS SANs.
+func TestLocalCA_SignCSR_AssignsTheIdentity(t *testing.T) {
 	ca := newTestLocalCA(t)
 	csrPEM := newTestCSRPEM(t, "so-1")
+	uri, err := url.Parse("spiffe://db.example.com/tenant/system/holder/carol")
+	require.NoError(t, err)
 
 	cert, err := ca.SignCSR(context.Background(), csrPEM, &SignCSROptions{
 		TenantID:     "acme",
@@ -227,7 +233,7 @@ func TestLocalCA_SignCSR_Custodian(t *testing.T) {
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 365), cert.NotAfter, time.Hour)
 
 	// The signed certificate must chain to the CA — the property the
-	// officer claim flow depends on for mTLS client authentication.
+	// holder claim flow depends on for mTLS client authentication.
 	caCert, err := ca.CACertificate()
 	require.NoError(t, err)
 	assert.NoError(t, cert.CheckSignatureFrom(caCert))

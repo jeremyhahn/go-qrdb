@@ -136,18 +136,19 @@ and prepends it to the ciphertext.
 |---|---|
 | `pkg/crypto/aesgcm/aesgcm.go` | shared AES-256-GCM helper; the tenant DEK keyring (`pkg/dek`) encrypts through it |
 | `pkg/seal/encfs/block.go` | encrypted-filesystem block cipher |
-| `pkg/custodian/share_envelope.go` | Shamir share envelope |
-| `pkg/ceremony/external_officer.go` | external-officer share envelope |
 
-**No migration is required.** All four sites already framed their output as
+Share envelopes are HPKE (`crypto/hpke`, see below) and construct no GCM of
+their own; the two earlier share-envelope sites (`pkg/custodian` and the
+external-officer envelope) have been removed.
+
+**No migration is required.** Every site already framed their output as
 `nonce (12) || ciphertext || tag (16)` with a nonce drawn from `crypto/rand`,
 which is byte-for-byte what `NewGCMWithRandomNonce` produces. Ciphertext
-written by an older build opens under the new code and vice versa. The two
-envelope formats that carry the nonce in a separate field
-(`custodian.SealedEnvelope.Nonce`, and the ceremony envelope's packed layout)
-split the module-generated prefix back off, so those wire formats are unchanged
-as well — which matters, because the custodian-side inverse is third-party
-client software (see [custodians.md](custodians.md)).
+written by an older build opens under the new code and vice versa. The
+envelope formats that carried the nonce in a separate field split the
+module-generated prefix back off, so those wire formats were unchanged as
+well — which matters, because the custodian-side inverse is third-party
+client software (see [shamir-custody](../shamir-custody/)).
 
 Note that `NewGCMWithRandomNonce` reports `NonceSize() == 0` and
 `Overhead() == 28`. Code that framed on `gcm.NonceSize()` now uses a named
@@ -180,7 +181,7 @@ the METHOD is what goes rather than the primitive within it.
   written to the data directory.
 
 Every exclusion logs at WARN naming FIPS. `Enabled()` rather than `Enforced()`,
-for the reason given below for external officers.
+for the reason given below for share-holder envelope suites.
 
 The cost is stated plainly in
 [../clustering/architecture.md](../clustering/architecture.md): a FIPS
@@ -188,23 +189,22 @@ deployment cannot use the Noise bootstrap method, in either the shared-CA-key or
 the attested anchor mode, and that is permanent rather than pending an upstream
 fix.
 
-### X25519 — refused for Ed25519 external officers in FIPS mode
+### X25519 — share-holder envelope suites refused in FIPS mode
 
-Ed25519 is a signature algorithm, so sealing a Shamir share to an Ed25519
-officer key requires the birational map to X25519 — and X25519 is not on the
-approved list, so `crypto/ecdh` rejects it under `only`. There is no approved
-substitute for an Ed25519 recipient.
+A share holder's envelope is HPKE-sealed to the holder's enrolled key under one
+of the `pkg/keydelivery` suites: `dhkem-p256`, `dhkem-p384`, `dhkem-x25519` or
+the hybrid `mlkem768-x25519`. X25519 is not an approved key agreement, so in
+FIPS mode `keydelivery.LookupSuite` refuses `dhkem-x25519` and
+`mlkem768-x25519` with `*keydelivery.SuiteNotApprovedError` — and so does
+`RecipientFromPublicKey` for an X25519 key. Enrolment of such a holder is
+therefore refused up front, before any share exists, rather than failing when
+a share is sealed. The NIST-curve suites are unaffected; a holder whose key is
+X25519-only must enrol a P-256 or P-384 envelope key instead. Ed25519
+certificate keys have no DHKEM mapping at all and need a separate envelope key
+in every mode.
 
-`pkg/ceremony` now refuses that enrollment explicitly when
-`crypto/fips140.Enabled()` reports FIPS mode, returning
-`ErrAlgorithmNotFIPSApproved` instead of letting a low-level ECDH failure
-surface as a generic seal error. Sealing a share of the barrier root key is a
-regulated path, so the enrollment is refused rather than completed with
-cryptography the deployment may not use. RSA and NIST-curve (P-256, P-384)
-officer keys are unaffected; an officer whose key is Ed25519 must enrol one of
-those instead.
-
-The guard keys off `Enabled()` rather than `Enforced()` deliberately: under
+The guard keys off the stack's FIPS predicate (`seal.FIPSEnabled`, the
+`Enabled()`-first check) rather than `Enforced()` deliberately: under
 `fips140=on` the module permits X25519, but a deployment that has asked for
 FIPS mode should not be handed a non-approved envelope just because the
 runtime tolerates it.
@@ -251,12 +251,12 @@ really does protect a Shamir share.
 
 ### UUIDv8 — SHA-1 role and custodian identifiers
 
-`pkg/role.deterministicUUID` and the matching derivation in `pkg/custodian`
-built their stable identifiers with `uuid.NewSHA1`, an RFC 4122 v5 name-based
+`pkg/role.deterministicUUID` and the matching derivation in the since-removed
+`pkg/custodian` built their stable identifiers with `uuid.NewSHA1`, an RFC 4122 v5 name-based
 UUID. `crypto/sha1` **panics** under `only`, and both derivations run during
 package initialization and tenant seeding, so this was the widest of the
 findings: it took out `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`,
-`pkg/firstboot`, `pkg/custodian` and every package that seeds a tenant — and,
+`pkg/firstboot`, the since-removed `pkg/custodian` and every package that seeds a tenant — and,
 because the panic happens before a test body runs, it reached any downstream
 consumer that authorized through `pkg/role` at all.
 
@@ -400,8 +400,8 @@ engineering one. The two candidate answers on the table are compiling
 enrollment when `fips140.Enabled()` [...] Neither is go-qrdb's call to make."*
 
 **It was ruled, and it is the second answer with one correction.** Noise is
-refused at run time on `fips140.Enabled()`, as `pkg/ceremony` refuses an Ed25519
-external officer — not compiled out under a build tag, because a build tag would
+refused at run time on `fips140.Enabled()`, as `pkg/keydelivery` refuses an
+X25519 envelope suite — not compiled out under a build tag, because a build tag would
 ship two binaries whose enrollment surfaces differ invisibly while `GODEBUG` is
 a run-time switch. The correction is that **enrollment itself is not refused**:
 
@@ -441,7 +441,7 @@ accurate gap list is worth more than a claim of completeness:
 |---|---|---|
 | **Noise NK peer enrollment** (`--bootstrap-noise-key`, the first node's Noise listener) | **unavailable, permanently** | Noise_NK_25519_ChaChaPoly_SHA256 has no FIPS-approved DH to substitute. Peers enroll over SPKI, DANE or direct HTTPS. This does not go away when the dependency is fixed — there is nothing to fix it to. |
 | **Attested (anchor-mode) enrollment over Noise** — `StartAnchorAdvertiser` / `FetchAnchor` | **unavailable over Noise** | Same cause. `FetchAnchor` over SPKI / DANE / direct HTTPS is unaffected. |
-| Ed25519 external-officer share sealing | refused | see [X25519](#x25519--refused-for-ed25519-external-officers-in-fips-mode) |
+| X25519 and ML-KEM-768 + X25519 share-holder envelope suites | refused | see [X25519](#x25519--share-holder-envelope-suites-refused-in-fips-mode) |
 | PKCS#12 export | refused under `Enforced()` | see the [exemption register](#exemption-register) |
 
 Everything else in `pkg/` and `cmd/` is approved-algorithm clean as measured
@@ -644,7 +644,7 @@ reached, in this section, with the run that completed it.
 ## See Also
 
 - [compliance.md](compliance.md) — FIPS 140-3 / FedRAMP / PCI-DSS / HIPAA requirement matrices
-- [custodians.md](custodians.md) — custodian share-delivery protocol and envelope format
+- [shamir-custody](../shamir-custody/) — share-holder envelopes and the HPKE suites
 - [Go FIPS 140-3 documentation](https://go.dev/doc/security/fips140) — `GOFIPS140`, `GODEBUG=fips140`, and the module's approved-algorithm list
 - [NIST SP 800-38D](https://csrc.nist.gov/publications/detail/sp/800-38d/final) — GCM, including the IV construction requirement
 - [NIST SP 800-107 Rev. 1](https://csrc.nist.gov/publications/detail/sp/800-107/rev-1/final) — §5.3.4, HMAC key length

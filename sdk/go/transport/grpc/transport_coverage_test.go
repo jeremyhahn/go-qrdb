@@ -236,104 +236,9 @@ func TestGRPCUserAuthFactor_AllMethods_Closed(t *testing.T) {
 // Ceremony closed paths
 // ===========================================================================
 
-func TestGRPCCeremony_AllMethods_Closed(t *testing.T) {
-	tr := newClosedTransport()
-	ctx := context.Background()
-	var ce *transport.ClosedError
-
-	cases := []struct {
-		name string
-		call func() error
-	}{
-		{"CeremonyInitialize", func() error {
-			_, e := tr.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{})
-			return e
-		}},
-		{"CeremonyStatus", func() error { _, e := tr.CeremonyStatus(ctx); return e }},
-		{"CeremonyClaimCertBegin", func() error {
-			_, e := tr.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{})
-			return e
-		}},
-		{"CeremonyClaimCertComplete", func() error {
-			_, e := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{})
-			return e
-		}},
-		{"CeremonyBeginClaimShare", func() error {
-			_, e := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{})
-			return e
-		}},
-		{"CeremonyCompleteClaimShare", func() error {
-			_, e := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{})
-			return e
-		}},
-		{"CeremonySignCSR", func() error {
-			_, e := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{})
-			return e
-		}},
-		{"CeremonyEnrollExternalOfficer", func() error {
-			_, e := tr.CeremonyEnrollExternalOfficer(ctx, &transport.EnrollExternalOfficerRequest{})
-			return e
-		}},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if err := c.call(); !errors.As(err, &ce) {
-				t.Fatalf("expected ClosedError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
 // ===========================================================================
 // Barrier closed paths (those not in transport_closed_test.go)
 // ===========================================================================
-
-func TestGRPCBarrier_RemainingMethods_Closed(t *testing.T) {
-	tr := newClosedTransport()
-	ctx := context.Background()
-	var ce *transport.ClosedError
-
-	cases := []struct {
-		name string
-		call func() error
-	}{
-		{"BarrierInitializeShamir", func() error {
-			_, e := tr.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{})
-			return e
-		}},
-		{"BarrierUnsealWithShare", func() error {
-			_, e := tr.BarrierUnsealWithShare(ctx, &transport.BarrierUnsealShareRequest{})
-			return e
-		}},
-		{"BarrierUnsealWithShares", func() error {
-			return tr.BarrierUnsealWithShares(ctx, &transport.BarrierUnsealSharesRequest{})
-		}},
-		{"BarrierRekey", func() error {
-			_, e := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{})
-			return e
-		}},
-		{"BarrierGenerateRecoveryKeys", func() error {
-			_, e := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{})
-			return e
-		}},
-		{"BarrierRecoverWithKeys", func() error {
-			return tr.BarrierRecoverWithKeys(ctx, &transport.BarrierRecoverWithKeysRequest{})
-		}},
-		{"BarrierGenerateRootToken", func() error {
-			_, e := tr.BarrierGenerateRootToken(ctx, &transport.BarrierGenerateRootTokenRequest{})
-			return e
-		}},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if err := c.call(); !errors.As(err, &ce) {
-				t.Fatalf("expected ClosedError, got %T: %v", err, err)
-			}
-		})
-	}
-}
 
 // ===========================================================================
 // Watch closed paths
@@ -644,26 +549,6 @@ func TestGRPCServer_LeaseLockIndexCtxCanceled(t *testing.T) {
 	}
 	if err := tr.IndexCreate(canceledCtx, "i1", "f", transport.IndexConfig{}); err == nil {
 		t.Fatal("IndexCreate: expected error")
-	}
-}
-
-func TestGRPCServer_BarrierCtxCanceled(t *testing.T) {
-	addr, stop := startBarrierServer(t)
-	defer stop()
-	tr, cleanup := connectBarrierTransport(t, addr)
-	defer cleanup()
-
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if _, err := tr.BarrierStatus(canceledCtx); err == nil {
-		t.Fatal("BarrierStatus: expected error")
-	}
-	if _, err := tr.BarrierInitializeShamir(canceledCtx, &transport.BarrierInitializeShamirRequest{}); err == nil {
-		t.Fatal("BarrierInitializeShamir: expected error")
-	}
-	if _, err := tr.BarrierRekey(canceledCtx, &transport.BarrierRekeyRequest{}); err == nil {
-		t.Fatal("BarrierRekey: expected error")
 	}
 }
 

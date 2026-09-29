@@ -38,14 +38,6 @@ var (
 	// the ceremony has already completed.
 	ErrAlreadyInitialized = errors.New("ceremony: ceremony already completed")
 
-	// ErrNotInEnrollingState is returned when an operation requires
-	// the enrolling state but the ceremony is in a different state.
-	ErrNotInEnrollingState = errors.New("ceremony: operation requires enrolling state")
-
-	// ErrNotInOperationalState is returned when an operation requires
-	// the operational state but the ceremony is in a different state.
-	ErrNotInOperationalState = errors.New("ceremony: operation requires operational state")
-
 	// ErrInvalidSOPIN is returned when the SO PIN is empty or invalid.
 	ErrInvalidSOPIN = errors.New("ceremony: SO PIN is empty or invalid")
 
@@ -66,14 +58,6 @@ var (
 	// ErrDuplicateUsername is returned when an officer username is
 	// specified more than once.
 	ErrDuplicateUsername = errors.New("ceremony: officer username already exists")
-
-	// ErrPendingCertNotFound is returned when no pending certificate
-	// exists for the given username.
-	ErrPendingCertNotFound = errors.New("ceremony: no pending cert for username")
-
-	// ErrCertAlreadyClaimed is returned when a certificate has already
-	// been claimed by the officer.
-	ErrCertAlreadyClaimed = errors.New("ceremony: cert already claimed")
 
 	// ErrShareAlreadyClaimed is returned when a share has already been
 	// claimed by the officer.
@@ -121,10 +105,6 @@ var (
 	// ErrNotImplemented is returned when an operation is not yet implemented.
 	ErrNotImplemented = errors.New("ceremony: operation not implemented")
 
-	// ErrSOPINMismatch is returned when the provided SO PIN does not match
-	// the stored SO PIN.
-	ErrSOPINMismatch = errors.New("ceremony: SO PIN mismatch")
-
 	// ErrEnrollmentClosed is returned when an unauthenticated caller (a
 	// request the boot-time sealed-window listener admitted, see
 	// sealedwindow.Anonymous) registers an officer after enrollment has
@@ -155,10 +135,6 @@ var (
 	// the enrolling or operational state.
 	ErrNotInitializedOrEnrolling = errors.New("ceremony: sign-csr requires enrolling or operational state")
 
-	// ErrNilCredentialService is returned when a nil credential service
-	// is provided.
-	ErrNilCredentialService = errors.New("ceremony: nil credential service provided")
-
 	// ErrChallengeExpired is returned when a challenge nonce has expired.
 	ErrChallengeExpired = errors.New("ceremony: challenge has expired")
 
@@ -166,99 +142,12 @@ var (
 	// for the given username.
 	ErrChallengeNotFound = errors.New("ceremony: no active challenge for username")
 
-	// ErrGroupNotFound is returned when a custodian group does not exist.
-	ErrGroupNotFound = errors.New("ceremony: custodian group not found")
-
-	// ErrGroupAlreadyExists is returned when creating a group with an
-	// ID that already exists.
-	ErrGroupAlreadyExists = errors.New("ceremony: custodian group already exists")
-
-	// ErrGroupFull is returned when adding a member to a group that has
-	// reached its total member capacity.
-	ErrGroupFull = errors.New("ceremony: custodian group is full")
-
-	// ErrMemberNotFound is returned when a member does not exist in the
-	// custodian group.
-	ErrMemberNotFound = errors.New("ceremony: custodian member not found")
-
-	// ErrMemberAlreadyExists is returned when adding a member who is
-	// already in the custodian group.
-	ErrMemberAlreadyExists = errors.New("ceremony: custodian member already exists")
-
-	// ErrEmptyGroupID is returned when a group ID is empty.
-	ErrEmptyGroupID = errors.New("ceremony: empty group ID")
-
-	// ErrShareAlreadySubmitted is returned when a share has already been
-	// submitted for the given group and share index.
-	ErrShareAlreadySubmitted = errors.New("ceremony: share already submitted")
-
-	// ErrEmptyShareData is returned when share data is empty.
-	ErrEmptyShareData = errors.New("ceremony: empty share data")
-
-	// ErrInsufficientMembers is returned when distributing shares to a
-	// group that does not have enough members.
-	ErrInsufficientMembers = errors.New("ceremony: insufficient members for share distribution")
-
-	// ErrEmptyGroupName is returned when a group name is empty.
-	ErrEmptyGroupName = errors.New("ceremony: empty group name")
-
-	// ErrInvalidTotal is returned when the total member count is invalid.
-	ErrInvalidTotal = errors.New("ceremony: invalid total member count")
-
-	// ErrInvalidAuthenticatorType is returned when an officer's
-	// AuthenticatorType is not one of the known values.
-	ErrInvalidAuthenticatorType = errors.New("ceremony: invalid authenticator type")
-
 	// ErrInvalidOfficerRecord is returned when a nil or otherwise invalid
 	// officer record is supplied to the persistent registry.
 	ErrInvalidOfficerRecord = errors.New("ceremony: invalid officer record")
 
-	// ErrCertAndPubKeyBothSupplied is returned when an external officer
-	// enrollment carries both CertPEM and PubKeyPEM. Exactly one must be
-	// provided.
-	ErrCertAndPubKeyBothSupplied = errors.New("ceremony: cannot supply both cert and pubkey")
-
-	// ErrCertOrPubKeyRequired is returned when neither CertPEM nor
-	// PubKeyPEM is provided to external officer enrollment.
-	ErrCertOrPubKeyRequired = errors.New("ceremony: cert or pubkey required")
-
-	// ErrInvalidAuthFactor is returned when an external officer enrollment
-	// carries an unrecognised auth factor.
-	ErrInvalidAuthFactor = errors.New("ceremony: invalid auth factor")
-
-	// ErrCertExpired is returned when the supplied X.509 certificate is
-	// not valid at the current time.
-	ErrCertExpired = errors.New("ceremony: certificate expired or not yet valid")
-
-	// ErrCertUntrusted is returned when the supplied X.509 certificate
-	// does not chain to any configured CA pool.
-	ErrCertUntrusted = errors.New("ceremony: certificate does not chain to a trusted CA")
-
-	// ErrInvalidCertPEM is returned when CertPEM cannot be parsed.
-	ErrInvalidCertPEM = errors.New("ceremony: invalid certificate PEM")
-
 	// ErrInvalidPubKeyPEM is returned when PubKeyPEM cannot be parsed.
 	ErrInvalidPubKeyPEM = errors.New("ceremony: invalid public key PEM")
-
-	// ErrUnsupportedKeyAlgorithm is returned when the public key algorithm
-	// is not supported for share sealing.
-	ErrUnsupportedKeyAlgorithm = errors.New("ceremony: unsupported key algorithm for share sealing")
-
-	// ErrShareSealFailed is returned when share sealing to the officer's
-	// public key fails for any cryptographic reason.
-	ErrShareSealFailed = errors.New("ceremony: share sealing failed")
-
-	// ErrAlgorithmNotFIPSApproved is returned when the officer's key algorithm
-	// would require a non-approved primitive to seal a share and the process is
-	// running in FIPS 140-3 mode. Sealing a Shamir share of the barrier root
-	// key is a regulated path, so the enrollment is refused rather than
-	// completed with cryptography a FedRAMP / PCI DSS / HIPAA deployment may
-	// not use.
-	ErrAlgorithmNotFIPSApproved = errors.New("ceremony: key algorithm is not FIPS 140-3 approved for share sealing")
-
-	// ErrInvalidShareIndex is returned when ShareIndex is outside the
-	// valid 1..N range.
-	ErrInvalidShareIndex = errors.New("ceremony: invalid share index")
 
 	// ErrCertThumbprintMismatch is returned when the caller's mTLS certificate
 	// thumbprint does not match the officer's registered CertThumbprint.
@@ -267,10 +156,6 @@ var (
 	// ErrInsufficientOfficers is returned when fewer than threshold officers
 	// are enrolled for a SealAndDistribute operation.
 	ErrInsufficientOfficers = errors.New("ceremony: insufficient officers enrolled for threshold")
-
-	// ErrOfficerCountMismatch is returned when the total share count does not
-	// equal the number of enrolled officers.
-	ErrOfficerCountMismatch = errors.New("ceremony: total shares must equal enrolled officer count")
 
 	// ErrOfficerNotFound is returned when the requested officer is not enrolled
 	// in the registry.
@@ -291,6 +176,11 @@ var (
 	// ErrEmptyTenantID is returned when an empty tenant ID is provided to
 	// TenantCeremonyService or ScopeTenant.
 	ErrEmptyTenantID = errors.New("ceremony: tenant ID must not be empty")
+
+	// ErrCertIdentityRequired is returned when a CSR is to be signed without
+	// a CA-assigned subject. The CA never takes a certificate's identity from
+	// the CSR.
+	ErrCertIdentityRequired = errors.New("ceremony: the CA must assign the certificate identity; no subject common name was supplied")
 )
 
 // OfficerRegistryError wraps an error from persistent-registry operations.
@@ -474,22 +364,6 @@ func (e *SPKIPinError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *SPKIPinError) Unwrap() error {
-	return e.Err
-}
-
-// GroupStoreError wraps an error from custodian group storage operations.
-type GroupStoreError struct {
-	Op  string
-	Err error
-}
-
-// Error returns a human-readable description of the group store failure.
-func (e *GroupStoreError) Error() string {
-	return fmt.Sprintf("ceremony: custodian group %s failed: %v", e.Op, e.Err)
-}
-
-// Unwrap returns the underlying error.
-func (e *GroupStoreError) Unwrap() error {
 	return e.Err
 }
 

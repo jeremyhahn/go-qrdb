@@ -131,24 +131,6 @@ func (b *TenantBinding) BarrierUnseal(req *transport.TenantBarrierUnsealRequest)
 	return nil
 }
 
-// BarrierUnsealShare submits a single Shamir share toward the per-tenant
-// barrier's quorum threshold, returning the current quorum progress.
-func (b *TenantBinding) BarrierUnsealShare(req *transport.TenantBarrierUnsealShareRequest) (*transport.TenantBarrierUnsealProgress, error) {
-	b.logger.Debug("BarrierUnsealShare called", "tenantID", req.TenantID)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("BarrierUnsealShare failed", "error", err)
-		return nil, err
-	}
-	progress, err := cl.Tenants().TenantBarrierUnsealShare(context.Background(), req)
-	if err != nil {
-		b.logger.Error("BarrierUnsealShare failed", "tenantID", req.TenantID, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("BarrierUnsealShare completed", "tenantID", req.TenantID, "complete", progress.Complete)
-	return progress, nil
-}
-
 // BarrierStatus returns the current sealed/initialized state and active
 // strategy metadata for the per-tenant barrier.
 func (b *TenantBinding) BarrierStatus(tenantID string) (*transport.TenantBarrierStatusResponse, error) {

@@ -294,7 +294,7 @@ func toolUserCreate() mcp.Tool {
 		),
 		// A JSON array, NOT a comma-separated string — following the
 		// array-argument convention this transport already uses (see
-		// parseStringArray in tools_ceremony.go); see parseOpaqueStringList.
+		// wire.DecodeArgs, which the ceremony tools use); see parseOpaqueStringList.
 		mcp.WithString("auth_methods",
 			mcp.Description(`JSON array of permitted authentication methods, e.g. ["webauthn","piv"]: the built-in "mtls", "piv", "webauthn", or the name of an authenticator this deployment runs. Empty states no restriction.`),
 		),
@@ -926,7 +926,7 @@ func parseCSV(s string) []string {
 //
 // BOTH encodings are accepted, because both are legitimate callers. The SDK MCP
 // transport follows this package's convention of sending an array as a
-// JSON-encoded STRING (see parseStringArray in tools_ceremony.go), while a raw
+// JSON-encoded STRING (see wire.DecodeArgs), while a raw
 // MCP client sending the tool a native array is answering the schema honestly
 // too. Anything else is an error, never a silent absence.
 func parseOpaqueStringList(req mcp.CallToolRequest, key string) ([]string, error) {

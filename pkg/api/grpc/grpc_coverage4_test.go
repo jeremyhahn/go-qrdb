@@ -18,7 +18,6 @@ package grpc
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -31,7 +30,6 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -43,26 +41,27 @@ import (
 // ---------------------------------------------------------------------------
 
 type barrierSvcMini struct {
-	initErr            error
-	unsealErr          error
-	sealErr            error
-	statusResult       *service.BarrierStatusInfo
-	statusErr          error
-	shamirInitResult   *service.ShamirInitInfo
-	shamirInitErr      error
-	unsealShareResult  *service.UnsealShareProgress
-	unsealShareErr     error
-	unsealSharesErr    error
-	rekeyResult        *service.ShamirInitInfo
-	rekeyErr           error
-	recoveryGenResult  *service.RecoveryKeysInfo
-	recoveryGenErr     error
-	recoveryRecoverErr error
-	recoveryDeleteErr  error
-	recoveryHasResult  bool
-	recoveryHasErr     error
-	rootTokenResult    *service.RootTokenInfo
-	rootTokenErr       error
+	service.BarrierServicer
+	initErr           error
+	unsealErr         error
+	sealErr           error
+	statusResult      *service.BarrierStatusInfo
+	statusErr         error
+	shamirInitResult  *service.ShamirInitInfo
+	shamirInitErr     error
+	recoveryGenResult *service.RecoveryKeysInfo
+	recoveryGenErr    error
+	recoveryDeleteErr error
+	recoveryHasResult bool
+	recoveryHasErr    error
+}
+
+func (m *barrierSvcMini) BarrierInitializeShamir(_ context.Context, _, _ int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+	return m.shamirInitResult, m.shamirInitErr
+}
+
+func (m *barrierSvcMini) BarrierGenerateRecoveryKeys(_ context.Context, _ int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
+	return m.recoveryGenResult, m.recoveryGenErr
 }
 
 func newBarrierSvcMini() *barrierSvcMini {
@@ -73,10 +72,7 @@ func newBarrierSvcMini() *barrierSvcMini {
 			InitializedAt: time.Now(),
 		},
 		shamirInitResult:  &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
-		unsealShareResult: &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false},
-		rekeyResult:       &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
 		recoveryGenResult: &service.RecoveryKeysInfo{Threshold: 1, Total: 1, ShareCount: 1},
-		rootTokenResult:   &service.RootTokenInfo{Token: "root-tok", CreatedAt: time.Now()},
 	}
 }
 
@@ -86,59 +82,11 @@ func (m *barrierSvcMini) BarrierSeal(_ context.Context) error                 { 
 func (m *barrierSvcMini) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return m.statusResult, m.statusErr
 }
-func (m *barrierSvcMini) BarrierInitializeShamir(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
-	return m.shamirInitResult, m.shamirInitErr
-}
-func (m *barrierSvcMini) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return m.unsealShareResult, m.unsealShareErr
-}
-func (m *barrierSvcMini) BarrierUnsealWithShares(_ context.Context, _ []string) error {
-	return m.unsealSharesErr
-}
-func (m *barrierSvcMini) BarrierRekey(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
-	return m.rekeyResult, m.rekeyErr
-}
-func (m *barrierSvcMini) BarrierGenerateRecoveryKeys(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
-	return m.recoveryGenResult, m.recoveryGenErr
-}
-func (m *barrierSvcMini) BarrierRecoverWithKeys(_ context.Context, _ []string) error {
-	return m.recoveryRecoverErr
-}
 func (m *barrierSvcMini) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return m.recoveryDeleteErr
 }
 func (m *barrierSvcMini) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return m.recoveryHasResult, m.recoveryHasErr
-}
-func (m *barrierSvcMini) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-	return m.rootTokenResult, m.rootTokenErr
-}
-func (m *barrierSvcMini) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *barrierSvcMini) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *barrierSvcMini) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *barrierSvcMini) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *barrierSvcMini) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (m *barrierSvcMini) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (m *barrierSvcMini) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *barrierSvcMini) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *barrierSvcMini) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -150,9 +98,7 @@ type ceremonySvcMini struct {
 	initErr          error
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
-	beginResult      *service.CeremonyChallenge
 	beginErr         error
-	completeResult   *service.CeremonyClaimCertResult
 	completeErr      error
 	claimShareResult []byte
 	claimShareErr    error
@@ -168,8 +114,6 @@ func newCeremonySvcMini() *ceremonySvcMini {
 			State: "initialized", ShareCount: 3,
 		},
 		statusResult:     &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin"},
-		beginResult:      &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Now().Add(time.Minute)},
-		completeResult:   &service.CeremonyClaimCertResult{CertPEM: []byte("cert"), CACertPEM: []byte("ca")},
 		claimShareResult: []byte("share-data"),
 		signCSRResult:    &service.CeremonySignCSRResult{CertPEM: []byte("signed")},
 	}
@@ -181,41 +125,8 @@ func (m *ceremonySvcMini) CeremonyInitialize(_ context.Context, _ ceremony.Cerem
 func (m *ceremonySvcMini) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
 	return m.statusResult, m.statusErr
 }
-func (m *ceremonySvcMini) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	return m.beginResult, m.beginErr
-}
-func (m *ceremonySvcMini) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	return m.completeResult, m.completeErr
-}
-func (m *ceremonySvcMini) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-func (m *ceremonySvcMini) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
-}
 func (m *ceremonySvcMini) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return m.signCSRResult, m.signCSRErr
-}
-func (m *ceremonySvcMini) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *ceremonySvcMini) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *ceremonySvcMini) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *ceremonySvcMini) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	if m.enrollExtErr != nil {
-		return nil, m.enrollExtErr
-	}
-	return &service.CeremonyEnrollExternalOfficerResponse{SealedShare: "sealed"}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -571,9 +482,7 @@ func TestBarrier_ShamirInitialize_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
-	})
+	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{})
 	if err != nil {
 		t.Fatalf("BarrierShamirInitialize failed: %v", err)
 	}
@@ -590,9 +499,7 @@ func TestBarrier_ShamirInitialize_WithPINs(t *testing.T) {
 		WithPINBackend(backend))
 	defer cleanup()
 
-	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: []byte("s"), Threshold: 2, TotalShares: 3, SoPin: "sopin",
-	})
+	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{})
 	if err != nil {
 		t.Fatalf("BarrierShamirInitialize with PINs failed: %v", err)
 	}
@@ -604,9 +511,7 @@ func TestBarrier_ShamirInitialize_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
-	})
+	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -626,157 +531,12 @@ func TestBarrier_ShamirInitialize_NilService(t *testing.T) {
 	}
 }
 
-func TestBarrier_ShamirUnsealShare_Success(t *testing.T) {
-	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	resp, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{Share: "s1"})
-	if err != nil {
-		t.Fatalf("BarrierShamirUnsealShare failed: %v", err)
-	}
-	if resp.GetRequired() != 2 {
-		t.Fatalf("expected required=2, got %d", resp.GetRequired())
-	}
-}
-
-func TestBarrier_ShamirUnsealShare_Error(t *testing.T) {
-	svc := newBarrierSvcMini()
-	svc.unsealShareErr = errors.New("share error")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{Share: "s"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_ShamirUnsealShare_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{Share: "s"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_ShamirUnsealShares_Success(t *testing.T) {
-	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{
-		Shares: []string{"s1", "s2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierShamirUnsealShares failed: %v", err)
-	}
-}
-
-func TestBarrier_ShamirUnsealShares_Error(t *testing.T) {
-	svc := newBarrierSvcMini()
-	svc.unsealSharesErr = errors.New("shares error")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{Shares: []string{"s"}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_ShamirUnsealShares_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_Rekey_Success(t *testing.T) {
-	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	resp, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
-	if err != nil {
-		t.Fatalf("BarrierRekey failed: %v", err)
-	}
-	if resp.GetShareCount() != 2 {
-		t.Fatalf("expected share_count=2, got %d", resp.GetShareCount())
-	}
-}
-
-func TestBarrier_Rekey_WithPINVerification(t *testing.T) {
-	svc := newBarrierSvcMini()
-	backend := &pinBackendMini{soPINSet: true, verifyErr: nil}
-	client, cleanup := startTestServerFull(t,
-		WithBarrierService(svc),
-		WithPINBackend(backend))
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "valid-pin",
-	})
-	if err != nil {
-		t.Fatalf("BarrierRekey with PIN failed: %v", err)
-	}
-}
-
-func TestBarrier_Rekey_PINError(t *testing.T) {
-	svc := newBarrierSvcMini()
-	backend := &pinBackendMini{soPINSet: true, verifyErr: pin.ErrPINInvalid}
-	client, cleanup := startTestServerFull(t,
-		WithBarrierService(svc),
-		WithPINBackend(backend))
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "wrong",
-	})
-	if err == nil {
-		t.Fatal("expected PIN error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-}
-
-func TestBarrier_Rekey_Error(t *testing.T) {
-	svc := newBarrierSvcMini()
-	svc.rekeyErr = errors.New("rekey failed")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_Rekey_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
 func TestBarrier_RecoveryGenerate_Success(t *testing.T) {
 	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
+	client, cleanup := startTestServerFull(t, WithBarrierService(svc), WithPINBackend(&pinBackendMini{}))
 	defer cleanup()
 
-	resp, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
-		Threshold: 1, Total: 1,
-	})
+	resp, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
 	if err != nil {
 		t.Fatalf("BarrierRecoveryGenerate failed: %v", err)
 	}
@@ -793,9 +553,7 @@ func TestBarrier_RecoveryGenerate_WithPIN(t *testing.T) {
 		WithPINBackend(backend))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
-		Threshold: 1, Total: 1, SoPin: "pin",
-	})
+	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
 	if err != nil {
 		t.Fatalf("BarrierRecoveryGenerate with PIN failed: %v", err)
 	}
@@ -807,9 +565,7 @@ func TestBarrier_RecoveryGenerate_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
-		Threshold: 1, Total: 1,
-	})
+	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -820,39 +576,6 @@ func TestBarrier_RecoveryGenerate_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_RecoveryRecover_Success(t *testing.T) {
-	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{Keys: []string{"k1"}})
-	if err != nil {
-		t.Fatalf("BarrierRecoveryRecover failed: %v", err)
-	}
-}
-
-func TestBarrier_RecoveryRecover_Error(t *testing.T) {
-	svc := newBarrierSvcMini()
-	svc.recoveryRecoverErr = errors.New("recover failed")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{Keys: []string{"k1"}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_RecoveryRecover_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -928,44 +651,6 @@ func TestBarrier_RecoveryStatus_NilService(t *testing.T) {
 	}
 }
 
-func TestBarrier_RootToken_Success(t *testing.T) {
-	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	resp, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{
-		Shares: []string{"s1", "s2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierRootToken failed: %v", err)
-	}
-	if resp.GetToken() != "root-tok" {
-		t.Fatalf("expected token 'root-tok', got %q", resp.GetToken())
-	}
-}
-
-func TestBarrier_RootToken_Error(t *testing.T) {
-	svc := newBarrierSvcMini()
-	svc.rootTokenErr = errors.New("root token error")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
-	defer cleanup()
-
-	_, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{Shares: []string{"s1"}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestBarrier_RootToken_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // service_barrier_pin.go tests
 // ---------------------------------------------------------------------------
@@ -1004,49 +689,53 @@ func TestMapPINError_AllSentinels(t *testing.T) {
 	}
 }
 
+// TestApplyBarrierInitializePINs_NilBackend pins the fail-closed rule: PINs
+// with no backend to hold them are refused, never silently dropped.
 func TestApplyBarrierInitializePINs_NilBackend(t *testing.T) {
-	if err := applyBarrierInitializePINs(nil, "so", "user"); err != nil {
-		t.Fatalf("expected nil error for nil backend, got %v", err)
+	if err := pin.Provision(nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("expected ErrBackendNotConfigured for nil backend, got %v", err)
 	}
 }
 
 func TestApplyBarrierInitializePINs_EmptyPINs(t *testing.T) {
 	backend := &pinBackendMini{}
-	if err := applyBarrierInitializePINs(backend, "", ""); err != nil {
+	if err := pin.Provision(backend, "", ""); err != nil {
 		t.Fatalf("expected nil error for empty PINs, got %v", err)
 	}
 }
 
 func TestApplyBarrierInitializePINs_SOPINError(t *testing.T) {
 	backend := &pinBackendMini{setSOErr: pin.ErrPINTooShort}
-	if err := applyBarrierInitializePINs(backend, "short", ""); err == nil {
+	if err := pin.Provision(backend, "short", ""); err == nil {
 		t.Fatal("expected error from SetSOPIN, got nil")
 	}
 }
 
 func TestApplyBarrierInitializePINs_UserPINError(t *testing.T) {
 	backend := &pinBackendMini{setUserErr: pin.ErrPINTooShort}
-	if err := applyBarrierInitializePINs(backend, "", "x"); err == nil {
+	if err := pin.Provision(backend, "", "x"); err == nil {
 		t.Fatal("expected error from SetUserPIN, got nil")
 	}
 }
 
+// TestVerifyBarrierSOPIN_NilBackend pins the fail-closed rule: with no PIN
+// backend a PIN-gated operation is refused.
 func TestVerifyBarrierSOPIN_NilBackend(t *testing.T) {
-	if err := verifyBarrierSOPIN(nil, "pin"); err != nil {
-		t.Fatalf("expected nil for nil backend, got %v", err)
+	if err := pin.RequireSOPIN(nil, "pin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("expected ErrBackendNotConfigured for nil backend, got %v", err)
 	}
 }
 
 func TestVerifyBarrierSOPIN_SOPINNotSet(t *testing.T) {
 	backend := &pinBackendMini{soPINSet: false}
-	if err := verifyBarrierSOPIN(backend, "pin"); err != nil {
+	if err := pin.RequireSOPIN(backend, "pin"); err != nil {
 		t.Fatalf("expected nil when SO PIN not set, got %v", err)
 	}
 }
 
 func TestVerifyBarrierSOPIN_VerifyError(t *testing.T) {
 	backend := &pinBackendMini{soPINSet: true, verifyErr: pin.ErrPINInvalid}
-	err := verifyBarrierSOPIN(backend, "wrong")
+	err := pin.RequireSOPIN(backend, "wrong")
 	if err == nil {
 		t.Fatal("expected error from VerifySOPIN, got nil")
 	}
@@ -1130,179 +819,6 @@ func TestCeremony_Status_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.CeremonyStatus(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_ClaimCertBegin_Success(t *testing.T) {
-	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{
-		Username: "alice",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertBegin failed: %v", err)
-	}
-	if resp.GetNonceHex() != "deadbeef" {
-		t.Fatalf("expected nonce 'deadbeef', got %q", resp.GetNonceHex())
-	}
-}
-
-func TestCeremony_ClaimCertBegin_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_ClaimCertBegin_Error(t *testing.T) {
-	svc := newCeremonySvcMini()
-	svc.beginErr = errors.New("begin error")
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_ClaimCertComplete_Success(t *testing.T) {
-	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	sig := base64.StdEncoding.EncodeToString([]byte("valid-signature"))
-	resp, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username: "alice", NonceHex: "deadbeef", Signature: sig,
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertComplete failed: %v", err)
-	}
-	if resp.GetCertPem() != "cert" {
-		t.Fatalf("expected cert 'cert', got %q", resp.GetCertPem())
-	}
-}
-
-func TestCeremony_ClaimCertComplete_InvalidBase64(t *testing.T) {
-	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username: "alice", NonceHex: "deadbeef", Signature: "not-base64!!",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid base64, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestCeremony_ClaimCertComplete_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username: "alice", Signature: base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_ClaimCertComplete_Error(t *testing.T) {
-	svc := newCeremonySvcMini()
-	svc.completeErr = errors.New("complete error")
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	_, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username: "alice", Signature: sig,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_BeginClaimShare_NoClientCert(t *testing.T) {
-	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_ClaimShare_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_CompleteClaimShare_NoClientCert(t *testing.T) {
-	svc := newCeremonySvcMini()
-	svc.claimShareErr = errors.New("claim share error")
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := client.CeremonyCompleteClaimShare(context.Background(), &pb.CeremonyCompleteClaimShareRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if resp.GetShare() != "" {
-		t.Fatalf("share bytes leaked on refusal: %q", resp.GetShare())
-	}
-}
-
-func TestCeremony_EnrollExternalOfficer_Success(t *testing.T) {
-	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	resp, err := client.CeremonyEnrollExternalOfficer(context.Background(), &pb.CeremonyEnrollExternalOfficerRequest{
-		Username: "alice", CertPem: "pem",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyEnrollExternalOfficer failed: %v", err)
-	}
-	if len(resp.GetSealedShare()) == 0 {
-		t.Fatal("expected non-empty sealed_share")
-	}
-}
-
-func TestCeremony_EnrollExternalOfficer_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyEnrollExternalOfficer(context.Background(), &pb.CeremonyEnrollExternalOfficerRequest{Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestCeremony_EnrollExternalOfficer_Error(t *testing.T) {
-	svc := newCeremonySvcMini()
-	svc.enrollExtErr = errors.New("enroll error")
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
-	defer cleanup()
-
-	_, err := client.CeremonyEnrollExternalOfficer(context.Background(), &pb.CeremonyEnrollExternalOfficerRequest{Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

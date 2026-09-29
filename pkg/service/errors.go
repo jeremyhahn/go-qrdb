@@ -954,6 +954,16 @@ type nodeClosedError struct{}
 // Error returns a human-readable description.
 func (e *nodeClosedError) Error() string { return "service: node closed" }
 
+// ErrNilRequest is returned when a service method that takes a request
+// struct is handed nil.
+var ErrNilRequest = &nilRequestError{}
+
+// nilRequestError is the concrete type behind ErrNilRequest.
+type nilRequestError struct{}
+
+// Error returns a human-readable description.
+func (e *nilRequestError) Error() string { return "service: nil request" }
+
 // ErrCeremonyNotConfigured is returned when a Security Officer operation is
 // attempted but no CeremonyService has been wired into the BarrierService.
 // Use NewBarrierServiceWithCeremony to enable officer registration and share

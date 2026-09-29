@@ -11,11 +11,13 @@ package seal
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // --------------------------------------------------------------------------
@@ -206,7 +208,7 @@ func TestPutError_ErrorAndUnwrap(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestRecoveryStrategy_ID(t *testing.T) {
-	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategyForTest([]byte("key"), nil)
 	if rsErr != nil {
 		t.Fatalf("newRecoveryStrategy: %v", rsErr)
 	}
@@ -216,7 +218,7 @@ func TestRecoveryStrategy_ID(t *testing.T) {
 }
 
 func TestRecoveryStrategy_Available(t *testing.T) {
-	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategyForTest([]byte("key"), nil)
 	if rsErr != nil {
 		t.Fatalf("newRecoveryStrategy: %v", rsErr)
 	}
@@ -226,7 +228,7 @@ func TestRecoveryStrategy_Available(t *testing.T) {
 }
 
 func TestRecoveryStrategy_HardwareBacked(t *testing.T) {
-	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategyForTest([]byte("key"), nil)
 	if rsErr != nil {
 		t.Fatalf("newRecoveryStrategy: %v", rsErr)
 	}
@@ -237,7 +239,7 @@ func TestRecoveryStrategy_HardwareBacked(t *testing.T) {
 
 func TestRecoveryStrategy_Close(t *testing.T) {
 	key := []byte{0x01, 0x02, 0x03}
-	rs, err := newRecoveryStrategy(key, nil)
+	rs, err := newRecoveryStrategyForTest(key, nil)
 	if err != nil {
 		t.Fatalf("newRecoveryStrategy: %v", err)
 	}
@@ -259,7 +261,7 @@ func TestRecoveryStrategy_Close(t *testing.T) {
 }
 
 func TestRecoveryStrategy_SealRootKey(t *testing.T) {
-	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategyForTest([]byte("key"), nil)
 	if rsErr != nil {
 		t.Fatalf("newRecoveryStrategy: %v", rsErr)
 	}
@@ -270,7 +272,7 @@ func TestRecoveryStrategy_SealRootKey(t *testing.T) {
 }
 
 func TestRecoveryStrategy_BarrierEncryptor_NilDelegate(t *testing.T) {
-	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategyForTest([]byte("key"), nil)
 	if rsErr != nil {
 		t.Fatalf("newRecoveryStrategy: %v", rsErr)
 	}
@@ -280,47 +282,6 @@ func TestRecoveryStrategy_BarrierEncryptor_NilDelegate(t *testing.T) {
 	}
 	if enc != nil {
 		t.Error("expected nil encryptor when delegate is nil")
-	}
-}
-
-// --------------------------------------------------------------------------
-// recovery.go: RecoverWithKeys with ShamirStrategy registered
-// --------------------------------------------------------------------------
-
-func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
-	b, _, dist := newRecoveryBarrierWithShamir(t)
-	ctx := context.Background()
-
-	// Initialize via Shamir.
-	shamirCfg := b.config.Shamir
-	if shamirCfg == nil {
-		t.Fatal("expected Shamir config")
-	}
-	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Generate recovery keys while unsealed.
-	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
-		t.Fatal(err)
-	}
-	recShares := dist.Shares()
-
-	// Seal the barrier.
-	if err := b.Seal(); err != nil {
-		t.Fatal(err)
-	}
-	if !b.IsSealed() {
-		t.Fatal("barrier should be sealed")
-	}
-
-	// Recover using recovery keys (this exercises the ShamirStrategy path
-	// in RecoverWithKeys, not the recoverWithSoftwareStrategy fallback).
-	if err := b.RecoverWithKeys(ctx, recShares[:2]); err != nil {
-		t.Fatalf("RecoverWithKeys via Shamir path: %v", err)
-	}
-	if b.IsSealed() {
-		t.Error("barrier should be unsealed after recovery")
 	}
 }
 
@@ -457,52 +418,6 @@ func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// barrier.go: unsealDirect error path (already initialized branch)
-// --------------------------------------------------------------------------
-
-func TestStorageBarrier_UnsealDirect_AlreadyInitialized(t *testing.T) {
-	// This test exercises the unsealDirect code path where
-	// EpochBarrier.Initialize returns ErrBarrierAlreadyInit, causing
-	// it to fall through to the Unseal branch.
-	backend := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(2, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath:     "test/root-key",
-		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
-		PreferenceOrder: []StrategyID{StrategyShamir},
-	}, shamirStrat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dist := newCaptureDistributor()
-	b.SetCeremonyDistributor(dist)
-	ctx := context.Background()
-
-	// Initialize via Shamir (this calls barrier.Initialize internally).
-	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-	shares := dist.Shares()
-
-	// Seal the barrier.
-	if err := b.Seal(); err != nil {
-		t.Fatal(err)
-	}
-
-	// UnsealWithShares calls unsealDirect. Since the EpochBarrier is already
-	// initialized, it will follow the "already init" path.
-	if err := b.UnsealWithShares(ctx, shares[:2]); err != nil {
-		t.Fatalf("UnsealWithShares: %v", err)
-	}
-	if b.IsSealed() {
-		t.Error("barrier should be unsealed")
-	}
-}
-
-// --------------------------------------------------------------------------
 // barrier.go: Put encrypt error path (PutError)
 // --------------------------------------------------------------------------
 
@@ -534,127 +449,6 @@ func TestStorageBarrier_Put_EncryptError(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// recovery.go: recoverWithSoftwareStrategy - strategy not found path
-// --------------------------------------------------------------------------
-
-func TestRecoverWithSoftwareStrategy_StrategyNotFound(t *testing.T) {
-	// Create a barrier with a software strategy and initialize it.
-	backend := NewMemoryBackend()
-	sw := testSoftwareStrategy(t)
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath: "test/root-key",
-	}, sw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dist := newCaptureDistributor()
-	b.SetRecoveryDistributor(dist)
-	ctx := context.Background()
-	if err := b.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
-		t.Fatal(err)
-	}
-
-	// Generate recovery keys.
-	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
-		t.Fatal(err)
-	}
-	recShares := dist.Shares()
-
-	// Tamper with the sealed root key blob to reference an unknown strategy.
-	blob, _ := backend.Get(ctx, "test/root-key")
-	var sealed SealedRootKey
-	_ = json.Unmarshal(blob, &sealed)
-	sealed.Strategy = "nonexistent"
-	tamperedBlob, _ := json.Marshal(&sealed)
-	_ = backend.Put(ctx, "test/root-key", tamperedBlob)
-
-	// Seal the barrier (software strategy — direct seal is allowed).
-	if err := b.Seal(); err != nil {
-		t.Fatal(err)
-	}
-
-	// recoverWithSoftwareStrategy loads the sealed blob and looks up sealed.Strategy
-	// in the barrier's strategy map. Since we changed it to "nonexistent",
-	// it should return ErrStrategyNotFound.
-	err = b.RecoverWithKeys(ctx, recShares[:2])
-	if !errors.Is(err, ErrStrategyNotFound) {
-		t.Errorf("recoverWithSoftwareStrategy: got %v, want ErrStrategyNotFound", err)
-	}
-}
-
-// --------------------------------------------------------------------------
-// root_token.go: verifyDirectMode error paths
-// --------------------------------------------------------------------------
-
-func TestGenerateRootToken_VerifyDirectMode_NonShamirStrategy(t *testing.T) {
-	// Create a Shamir barrier where the sealed root key uses Shamir strategy.
-	backend := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(2, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath:     "test/root-key",
-		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
-		PreferenceOrder: []StrategyID{StrategyShamir},
-	}, shamirStrat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dist := newCaptureDistributor()
-	b.SetCeremonyDistributor(dist)
-	ctx := context.Background()
-	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-	shares := dist.Shares()
-
-	// Tamper with sealed root key to change strategy from "shamir" to something else.
-	blob, _ := backend.Get(ctx, "test/root-key")
-	var sealed SealedRootKey
-	_ = json.Unmarshal(blob, &sealed)
-	sealed.Strategy = "other"
-	tamperedBlob, _ := json.Marshal(&sealed)
-	_ = backend.Put(ctx, "test/root-key", tamperedBlob)
-
-	_, err = b.GenerateRootToken(ctx, shares[:2])
-	if !errors.Is(err, ErrRootTokenVerificationFailed) {
-		t.Errorf("verifyDirectMode with non-shamir strategy: got %v, want ErrRootTokenVerificationFailed", err)
-	}
-}
-
-func TestGenerateRootToken_VerifyDirectMode_CorruptBlob(t *testing.T) {
-	backend := NewMemoryBackend()
-	shamirStrat, err := NewShamirStrategy(2, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := NewBarrier(slog.Default(), backend, BarrierConfig{
-		RootKeyPath:     "test/root-key",
-		Shamir:          &ShamirConfig{Threshold: 2, TotalShares: 3},
-		PreferenceOrder: []StrategyID{StrategyShamir},
-	}, shamirStrat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dist := newCaptureDistributor()
-	b.SetCeremonyDistributor(dist)
-	ctx := context.Background()
-	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-	shares := dist.Shares()
-
-	// Corrupt the sealed root key blob.
-	_ = backend.Put(ctx, "test/root-key", []byte("not-json"))
-
-	_, err = b.GenerateRootToken(ctx, shares[:2])
-	if !errors.Is(err, ErrRootTokenVerificationFailed) {
-		t.Errorf("verifyDirectMode with corrupt blob: got %v, want ErrRootTokenVerificationFailed", err)
-	}
-}
-
-// --------------------------------------------------------------------------
 // shamir.go: initializeShamirDirect error path - Exists fails
 // --------------------------------------------------------------------------
 
@@ -672,8 +466,9 @@ func TestInitializeShamirDirect_ExistsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	b.SetCeremonyDistributor(newCaptureDistributor("h1", "h2", "h3"))
 
-	_, err = b.InitializeShamir(ctx, Credentials{})
+	_, err = b.InitializeShamir(ctx, "")
 	if err == nil {
 		t.Fatal("expected error when Exists fails")
 	}
@@ -683,6 +478,8 @@ func TestInitializeShamirDirect_ExistsError(t *testing.T) {
 // tenant_keys.go: wrapAndStore Put error, RotateTenantDEK wrap error
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// helpers: errorBackend for injecting storage errors
 // --------------------------------------------------------------------------
 // helpers: errorBackend for injecting storage errors
 // --------------------------------------------------------------------------
@@ -729,74 +526,120 @@ func (e *errorBackend) Exists(_ context.Context, _ string) (bool, error) {
 }
 func (e *errorBackend) Close() error { return nil }
 
-// The temporary recovery strategy's heap copy of the root key is wiped before
-// RecoverWithKeys returns.
+// failingKVStore wraps a KVStore and injects errors on specific operations.
+type failingKVStore struct {
+	inner     *memoryKVStore
+	putErr    error
+	getErr    error
+	deleteErr error
+}
+
+func (f *failingKVStore) Put(ctx context.Context, key string, value []byte) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	return f.inner.Put(ctx, key, value)
+}
+
+func (f *failingKVStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.inner.Get(ctx, key)
+}
+
+func (f *failingKVStore) Delete(ctx context.Context, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.inner.Delete(ctx, key)
+}
+
+func (f *failingKVStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	return f.inner.Scan(ctx, prefix, fn)
+}
+
+func (f *failingKVStore) List(ctx context.Context, prefix string) ([]string, error) {
+	return f.inner.List(ctx, prefix)
+}
+
+func (f *failingKVStore) Exists(ctx context.Context, key string) (bool, error) {
+	return f.inner.Exists(ctx, key)
+}
+
+func (f *failingKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
+	return nil
+}
+
+func (f *failingKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
+	return nil, nil
+}
+
+func (f *failingKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
+	return nil, nil
+}
+
+func (f *failingKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
+	return nil, nil
+}
+
+func (f *failingKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
+	return nil, nil
+}
+
+// --------------------------------------------------------------------------
+// The temporary recovery strategy's protected copy of the root key is
+// destroyed before a quorum unseal returns.
 //
-// newRecoveryStrategy COPIES the borrowed root key into an ordinary []byte, and
-// Close is the only thing that wipes it. Barrier.Unseal does not retain the
-// strategy — it calls UnsealRootKey and drops it — so without an explicit Close
-// that copy outlives the enclave it was taken from, at the one point where the
-// root key is most exposed (found in review of go-qrdb#46).
-//
-// The strategy is built and discarded inside the recovery functions, so it is
-// observed through newRecoveryStrategyFn; there is no other seam, and a fix
-// that is not observable is a fix nobody can keep.
-//
-// Scope: this covers the SUCCESS path. I could not build a fixture that fails
-// AFTER the strategy is constructed without corrupting barrier internals — a
-// malformed share set fails in CombineProtected, well before the strategy
-// exists — so the failure path rests on the cleanup being a `defer` rather than
-// an inline call, which is visible in the diff and is precisely why it is
-// written that way. TestRecoveryStrategy_CloseWipesItsRootKeyCopy pins the
-// other half: that Close does what the defer relies on.
-func TestRecoverWithKeys_WipesTheTemporaryStrategysRootKeyCopy(t *testing.T) {
-	b, _, dist := newRecoveryBarrierWithShamir(t)
-	ctx := context.Background()
+// Barrier.Unseal does not retain the strategy — it calls UnsealRootKey and
+// drops it — so without the deferred Close the copy would outlive the round
+// that produced it, at the one point where the root key is most exposed
+// (found in review of go-qrdb#46). The strategy is built and discarded inside
+// unsealFromRootKey, so it is observed through newRecoveryStrategyFn.
+func TestQuorumUnseal_DestroysTheTemporaryStrategysRootKeyCopy(t *testing.T) {
+	for _, tc := range []struct {
+		domain QuorumDomain
+		op     QuorumOp
+	}{{DomainUnseal, OpUnseal}, {DomainRecovery, OpRecover}} {
+		t.Run(string(tc.op), func(t *testing.T) {
+			f := newHolderFixture(t, 2, 3)
+			f.dist.setHolders(DomainRecovery, "r1", "r2", "r3")
+			if _, err := f.b.GenerateRecoveryKeys(context.Background(), 2, ""); err != nil {
+				t.Fatal(err)
+			}
+			f.sealWith("h1", "h2")
 
-	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
-		t.Fatal(err)
-	}
-	recShares := dist.Shares()
-	if err := b.Seal(); err != nil {
-		t.Fatal(err)
-	}
+			var captured *recoveryStrategy
+			original := newRecoveryStrategyFn
+			newRecoveryStrategyFn = func(rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
+				rs, err := original(rootKey, delegate)
+				if err != nil {
+					return nil, err
+				}
+				captured = rs
+				buf, openErr := captured.rootKey.Open()
+				if openErr != nil {
+					t.Fatalf("the strategy was handed an unreadable root key; this test would prove nothing: %v", openErr)
+				}
+				buf.Destroy()
+				return captured, nil
+			}
+			t.Cleanup(func() { newRecoveryStrategyFn = original })
 
-	var captured *recoveryStrategy
-	original := newRecoveryStrategyFn
-	newRecoveryStrategyFn = func(rootKey []byte, delegate SealingStrategy) (*recoveryStrategy, error) {
-		rs, err := original(rootKey, delegate)
-		if err != nil {
-			return nil, err
-		}
-		captured = rs
-		// The strategy must hold a READABLE protected copy at construction, or
-		// its later destruction would prove nothing.
-		buf, openErr := captured.rootKey.Open()
-		if openErr != nil {
-			t.Fatalf("the strategy was handed an unreadable root key; "+
-				"this test would prove nothing: %v", openErr)
-		}
-		buf.Destroy()
-		return captured, nil
-	}
-	t.Cleanup(func() { newRecoveryStrategyFn = original })
-
-	if err := b.RecoverWithKeys(ctx, recShares[:2]); err != nil {
-		t.Fatalf("RecoverWithKeys: %v", err)
-	}
-
-	if captured == nil {
-		t.Fatal("no recovery strategy was built; the seam did not fire")
-	}
-	// After RecoverWithKeys returns, Close has run and the temporary
-	// strategy's protected copy must be destroyed: opening it must fail rather
-	// than yield readable key material.
-	if _, openErr := captured.rootKey.Open(); openErr == nil {
-		t.Error("the temporary strategy's protected root-key copy was left " +
-			"readable after RecoverWithKeys returned")
+			holders := []string{"h1", "h2"}
+			if tc.domain == DomainRecovery {
+				holders = []string{"r1", "r3"}
+			}
+			if o := f.quorum(tc.domain, tc.op, holders...); !o.Complete {
+				t.Fatalf("quorum incomplete: %+v", o)
+			}
+			if captured == nil {
+				t.Fatal("no recovery strategy was built; the seam did not fire")
+			}
+			if _, openErr := captured.rootKey.Open(); openErr == nil {
+				t.Error("the temporary strategy's protected root-key copy was left readable after the unseal returned")
+			}
+		})
 	}
 }
 
@@ -806,9 +649,9 @@ func TestRecoverWithKeys_WipesTheTemporaryStrategysRootKeyCopy(t *testing.T) {
 func TestRecoveryStrategy_CloseWipesItsRootKeyCopy(t *testing.T) {
 	key := []byte("root-key-material")
 	want := append([]byte(nil), key...)
-	recStrat, err := newRecoveryStrategy(key, nil)
+	recStrat, err := newRecoveryStrategyForTest(key, nil)
 	if err != nil {
-		t.Fatalf("newRecoveryStrategy: %v", err)
+		t.Fatalf("newRecoveryStrategyForTest: %v", err)
 	}
 
 	// The strategy holds a COPY in protected memory: clearing the caller's

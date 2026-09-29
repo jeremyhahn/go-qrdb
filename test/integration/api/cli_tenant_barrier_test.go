@@ -331,15 +331,15 @@ func TestCLIMultiProtocolTenantBarrierUnsealInputValidation(t *testing.T) {
 
 			tenantID := fmt.Sprintf("unseal-validate-%s-%d", proto, testTimestamp())
 
-			// Neither --share nor --key supplied.
+			// No --key supplied.
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
 				"tenant", "barrier-unseal", "--id", tenantID)
 			if err == nil {
-				t.Fatalf("[%s] expected error when neither --share nor --key is supplied, got success (stdout: %s)",
+				t.Fatalf("[%s] expected error when --key is not supplied, got success (stdout: %s)",
 					proto, stdout)
 			}
-			assertContains(t, stdout+stderr, "provide --share or --key",
-				fmt.Sprintf("[%s] missing --share/--key should report the input error", proto))
+			assertContains(t, stdout+stderr, "provide --key",
+				fmt.Sprintf("[%s] a missing --key should report the input error", proto))
 
 			// Invalid base64 in --key.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
@@ -350,14 +350,15 @@ func TestCLIMultiProtocolTenantBarrierUnsealInputValidation(t *testing.T) {
 			assertContains(t, stdout+stderr, "base64 decode key",
 				fmt.Sprintf("[%s] invalid base64 --key should report a decode error", proto))
 
-			// Invalid base64 in --share.
+			// The credential unseal takes no share: a Shamir tenant barrier
+			// is unsealed by its holders through barrier-quorum submit.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"tenant", "barrier-unseal", "--id", tenantID, "--share", "not-valid-base64!!")
+				"tenant", "barrier-unseal", "--id", tenantID, "--share", "c2hhcmU=")
 			if err == nil {
-				t.Fatalf("[%s] expected error decoding invalid base64 --share, got success (stdout: %s)", proto, stdout)
+				t.Fatalf("[%s] expected --share to be refused, got success (stdout: %s)", proto, stdout)
 			}
-			assertContains(t, stdout+stderr, "base64 decode share",
-				fmt.Sprintf("[%s] invalid base64 --share should report a decode error", proto))
+			assertContains(t, stdout+stderr, "unknown flag: --share",
+				fmt.Sprintf("[%s] --share should be an unknown flag", proto))
 
 			t.Logf("[%s] tenant barrier-unseal input validation passed", proto)
 		})

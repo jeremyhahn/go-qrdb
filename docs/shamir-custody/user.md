@@ -1,195 +1,160 @@
 # Shamir Custody — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 M-of-N custody means no one person can open the database alone. This guide is
-for the people who hold the shares and the person who sets it up.
+for the people who hold the shares — Security Officers and key custodians —
+and for the administrator who sets custody up.
+
+## Who is who
+
+- **Administrator** — enrols holders, starts rekeys and revocations. Never
+  sees a share.
+- **Security Officer** — holds a share and also has governance rights.
+- **Key custodian** — holds a share and nothing else.
+
+Officers and custodians are **share holders**. They receive, protect and use
+their shares in exactly the same way.
 
 ## Prerequisites
 
-- A ceremony CA available to sign officer certificates — see
-  [../ceremony/user.md](../ceremony/user.md).
-- Client certificates for each officer, and the relevant `seal:*` permissions
-  for the administrator doing the setup.
-- Each officer needs their own private key, because they will sign a challenge
-  with it.
+- A ceremony CA on the node (see [../ceremony/user.md](../ceremony/user.md)).
+- For each holder: a private key and a CSR for it. The CSR contributes only the
+  public key; the CA decides the certificate's name.
+- Optionally, a separate envelope key per holder — for instance an ML-KEM
+  hybrid key for post-quantum protection of the envelope — and any hardware
+  factor your deployment provides (FIDO2, PIV, PKCS#11).
 
 ## The shape of it
 
-1. **Register** every officer, *before* initializing the barrier.
-2. **Initialize** with `init-shamir --threshold M --total N`. The response
-   contains **no shares** — they are sealed to the officers server side.
-3. Each officer **claims** their own share, once.
-4. To unseal, M officers submit their shares.
-5. To seal, M officers vote.
+1. The administrator **enrols** every holder.
+2. The administrator **initializes** custody at M-of-N. Nobody sees a share:
+   each is sealed to its holder.
+3. Each holder **claims** their sealed envelope, once, and keeps it.
+4. Whenever the node needs its key — to unseal, to seal, to mint a root token,
+   to rekey — M holders each **submit** their share, authenticated.
 
 ## Setting it up
 
-**Register the officers.** Each supplies a CSR; the ceremony CA signs it and
-binds the officer to their certificate's thumbprint. Only the CSR's key
-matters: the certificate is issued for the `--username` you register, in your
-tenant, and it is an officer credential — it reaches the officer claim steps
-only, and never logs in as a user, even one of the same name. Unseal shares are
-submitted as a user or an administrator, not with the officer certificate.
+**Enrol the holders.** Two officers and three custodians, for a 3-of-5:
 
 ```bash
-qrdb barrier officer register --username alice --csr-file alice.csr \
-     --authenticator-type piv --authenticator-ref slot9a
-qrdb barrier officer register --username bob   --csr-file bob.csr
+qrdb barrier officer register --username alice --role so --csr-file alice.csr
+qrdb barrier officer register --username bob   --role so --csr-file bob.csr
+qrdb barrier officer register --username carol --role custodian --csr-file carol.csr \
+     --encryption-kem mlkem768-x25519 --encryption-key-file carol-kem.pub
+qrdb barrier officer register --username dave  --role custodian --csr-file dave.csr \
+     --factor "fido2=$(cat dave-fido2-enrol.json)" --designated fido2
+qrdb barrier officer register --username erin  --role custodian --csr-file erin.csr
 qrdb barrier officer list
 ```
 
-No shares exist yet. Registration produces the certificate and a share index.
+Each command prints the holder's certificate; give it to the holder. You
+cannot enrol yourself, and one person cannot hold two shares.
+
+`qrdb init --barrier-strategy shamir` can do this in one step for a new
+system: `--officers name=csr` and `--custodians name=csr`, repeated.
 
 **Initialize.**
 
 ```bash
-qrdb barrier init-shamir --passphrase '<seed>' --threshold 3 --total 5
+qrdb barrier init-shamir --threshold 3 --total 5
 ```
 
-The response tells you M, N and how many shares were sealed. It does **not**
-contain shares, and never will — that is the whole design.
+`--total` must equal the number of holders you enrolled. The answer contains
+M, N and how many envelopes were sealed — never a share.
 
-**Each officer claims their share.** Two steps: get a nonce, sign it, hand back
-the signature.
+**Choose a factor policy.** By default each holder must authenticate with the
+one factor fixed at enrolment (`designated`): a holder with a hardware key
+cannot be let in with a weaker one. `--policy any-enrolled` lets holders use
+any factor they enrolled. The policy is part of the share set; changing it is
+a rekey.
+
+## For holders: claim your envelope
+
+Connect with your certificate and claim, once:
 
 ```bash
-NONCE=$(qrdb barrier officer claim-begin --username alice --output json | jq -r .nonce)
-# sign the nonce with alice's private key -> alice.sig
-qrdb barrier officer claim-complete --username alice \
-     --nonce-hex "$NONCE" --sig-file alice.sig
+qrdb --cert-file alice.crt --key-file alice.key \
+     barrier officer claim --username alice --key alice.key --out alice.env
 ```
 
-**The share is returned exactly once.** The server destroys its copy. Store it
-before the terminal buffer scrolls away — there is no second retrieval. The
-nonce expires after five minutes.
+The envelope is sealed to your key — only you can open it — and the node keeps
+no copy. Keep the file safe; it is useless without your private key, and your
+key is useless without it. If your key lives on a smart card, use
+`claim-begin`, sign the nonce with the card, and finish with `claim-complete`.
 
-**Claim promptly.** A share nobody claims is destroyed after 24 hours by
-default. A late claim is refused with "share expired unclaimed", and the only
-way to get a new share is a rekey.
+Claim within 24 hours; an unclaimed envelope is wiped, and only a rekey
+replaces it.
 
-**Check who has claimed.**
+## For holders: take part in a quorum
+
+When the node is sealed — after a restart, for instance — it serves the holder
+routes on its sealed window. Each holder submits:
 
 ```bash
-qrdb barrier officer claim-status --output json
+qrdb barrier quorum submit --op unseal --username alice \
+     --envelope alice.env --key alice.key
 ```
 
-This never shows share bytes.
-
-## Day to day
-
-**Unseal.** Any M officers.
+A holder with a hardware factor asks for a challenge first, answers it with
+the device, then submits:
 
 ```bash
-qrdb barrier unseal-shares --share <alice> --share <bob> --share <carol>
+qrdb barrier quorum begin --op unseal --username dave -o json
+qrdb barrier quorum submit --op unseal --username dave --envelope dave.env \
+     --key dave.key --challenge-id <id> --factor fido2 --response-file dave.assertion
 ```
 
-Or one at a time, from different terminals:
+Each submission reports how many of M have been counted. The M-th unseals the
+node. The same flow with `--op seal` seals it, and `--op root-token` mints a
+one-time root token.
 
-```bash
-qrdb barrier unseal-shares --share <alice>    # progress: 1 of 3
-qrdb barrier unseal-shares --share <bob>      # progress: 2 of 3
-qrdb barrier unseal-shares --share <carol>    # unsealed
-```
+You are counted once per round; submitting again is refused. So is a
+submission with a factor the policy does not admit, and a submission from
+someone no longer a holder.
 
-Below the threshold is **not an error** — it reports progress. But the
-accumulator expires after 15 minutes by default, so coordinate.
+## Adding, removing and rotating holders
 
-**Seal.** One administrator cannot seal a Shamir barrier. M officers vote:
+Every change to who holds the key is a **rekey**, and a rekey needs M current
+holders to agree.
 
-```bash
-qrdb barrier shamir-seal-vote --share <alice>
-qrdb barrier shamir-seal-vote --share <bob>
-qrdb barrier shamir-seal-vote --share <carol>   # quorum met, barrier sealed
-```
+- **Add a holder**: enrol them, then `qrdb barrier rekey --threshold M --so-pin …`, and M
+  holders submit with `--op rekey`.
+- **Remove a holder**: `qrdb barrier officer revoke --username erin --so-pin …`, and M of
+  the *remaining* holders submit with `--op rekey`. It is refused if the
+  remaining holders could not meet the threshold.
+- **Change M or the policy**: `qrdb barrier rekey --threshold 4 --policy any-enrolled --so-pin …`.
 
-**Get a root token.** Officers submitting their shares *is* the consent signal.
-No token exists until they do this.
+Starting a rekey or revocation on the system barrier needs the Security
+Officer PIN.
 
-```bash
-qrdb barrier root-token --share <alice> --share <bob> --share <carol>
-```
+When the round completes every earlier share stops working, including the
+revoked holder's. Every remaining holder claims a new envelope.
 
-## When an officer leaves
+## Recovery holders
 
-Rekey. This generates a fresh unseal key and a fresh share set, and
-**cryptographically revokes every share previously handed out** — including
-ones already claimed.
+A separate group can hold an independent **recovery key**, for when the
+unseal holders are unavailable. Enrol them with `--domain recovery`, generate
+the key with `qrdb barrier recovery generate --threshold M`, have them claim
+with `--domain recovery`, and they unseal with `quorum submit --domain
+recovery --op recover`. The two groups
+never share keys, and a rekey of one never affects the other.
 
-```bash
-qrdb barrier rekey --so-pin SO123
-qrdb barrier rekey --threshold 3 --total 5     # change M/N at the same time
-```
+## Tenants
 
-Every officer must claim again; claim history resets. Your data is **not**
-re-encrypted — the root key does not change, only the key that guards it.
-
-## Recovery keys
-
-A separate, independent split of the root key for the case where the
-operational quorum simply cannot be assembled. Different people, kept offline.
-
-**Generate** — barrier must be **unsealed**:
-
-```bash
-qrdb barrier recovery generate --threshold 3 --total 5 --so-pin SO123
-```
-
-Recovery officers register and claim exactly like unseal officers, under
-`qrdb barrier recovery officer ...`, and they are a **different set of people**.
-
-**Recover** — barrier must be **sealed**:
-
-```bash
-qrdb barrier recovery recover --share key-a --share key-b --share key-c
-```
-
-Recovery keys are never persisted on the server. Where they live — an offline
-vault, an HSM backup, a corporate escrow — is your decision and your
-responsibility.
-
-```bash
-qrdb barrier recovery status      # are recovery keys configured at all?
-```
+A tenant with its own barrier has its own holders: the same commands under
+`qrdb tenant barrier-officer`, `barrier-quorum` and `barrier-rekey`, with
+`--tenant-id`.
 
 ## Troubleshooting
 
-**"unseal key mismatch".** The shares reconstructed something that does not
-open the wrapped root key. Either they are from different sets, one is
-mistyped, or a rekey has revoked them. This is the check working — the
-alternative would be unsealing with a wrong key and corrupting everything it
-touched.
-
-**"quorum expired".** The accumulator TTL elapsed (15 minutes by default,
-`seal.share_ttl`). Start again with all M officers ready.
-
-**"duplicate share".** The same share was submitted twice. It does not count
-twice; find the missing officer.
-
-**An officer lost their share.** There is no re-issue — the server destroyed
-its copy on claim. **Rekey**, which redistributes the whole set, and have
-everyone claim again.
-
-**An officer's key is compromised.** Revoke the custodian and rekey. Rekey
-revokes every prior share, so the compromised one stops working even though it
-was already claimed.
-
-**Claim fails with "already claimed".** Delivery is once, by design. If the
-share was lost between the response and storage, rekey is the recovery.
-
-**The claim nonce expired.** Five-minute TTL. Get a new one with `claim-begin`
-and sign it promptly.
-
-**`init-shamir` failed with "ceremony distributor not configured".** The
-server has no wired distributor, so it cannot seal shares to officers. That is
-a deployment wiring problem, not something a flag fixes.
-
-**Registration was rejected before the barrier existed.** When the daemon
-manages its own TLS, the ceremony CA is built from the cluster CA bundle and
-registration works. With bring-your-own TLS certificates you must run the full
-initialization ceremony first to establish a CA — see
-[../ceremony/user.md](../ceremony/user.md).
-
-**Nobody can unseal and there are no recovery keys.** The data is not
-recoverable. Generate recovery keys **now**, on a barrier you can still unseal,
-if you have not.
+| Symptom | Meaning |
+|---|---|
+| `claim` refused: certificate | the connection is not presenting your enrolled certificate |
+| `claim` refused: already claimed / expired | claims are once only; ask for a rekey |
+| submission refused: already submitted | you are already counted in this round |
+| submission refused: factor not admitted | use your designated factor, or ask for a rekey to `any-enrolled` |
+| submission refused: not in roster / revoked | you are not a holder of the current share set |
+| round expired | a round lasts 15 minutes by default; submit again |
+| revocation refused | the remaining holders could not meet the threshold; lower it or enrol a holder first |

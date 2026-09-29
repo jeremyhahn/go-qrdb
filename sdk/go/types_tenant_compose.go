@@ -72,14 +72,10 @@ type TenantServiceOption = tenant.TenantServiceOption
 // pkg/tenant.WithStrategyRegistry.)
 var WithTenantStrategyRegistry = tenant.WithStrategyRegistry
 
-// WithTenantDistributor injects a CeremonyDistributor wired onto each newly
-// registered Shamir tenant barrier before initialization. (Aliases
-// pkg/tenant.WithTenantDistributor.)
-var WithTenantDistributor = tenant.WithTenantDistributor
-
-// WithTenantCeremonyCA injects the CeremonyCA used when lazily constructing
-// per-tenant ceremony services. (Aliases pkg/tenant.WithTenantCeremonyCA.)
-var WithTenantCeremonyCA = tenant.WithTenantCeremonyCA
+// WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA,
+// the holder trust domain and the factor registry) per-tenant ceremonies are
+// built with. (Aliases pkg/tenant.WithTenantHolderDeps.)
+var WithTenantHolderDeps = tenant.WithTenantHolderDeps
 
 // WithTenantDefaultQuotas injects the operator-configured default quotas applied
 // to tenants whose own Quotas are nil. (Aliases pkg/tenant.WithDefaultQuotas.)

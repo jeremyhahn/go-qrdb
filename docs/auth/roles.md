@@ -17,12 +17,12 @@ Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct r
 
 | Role | Abbreviation | Description |
 |------|-------------|-------------|
-| Security Officer | SO | Module initialization, PIN management, CA operations, unseal-share enrollment. **Cannot** sign/encrypt/decrypt. |
+| Security Officer | SO | Module initialization, PIN management, CA operations, share-holder enrolment and revocation. **Cannot** sign/encrypt/decrypt. |
 | Admin | Admin | Day-to-day key lifecycle (create, rotate, delete operational keys), tenant management, backup. |
 | Operator | Operator | Operational key use, routine maintenance, barrier seal/unseal (except share-claim). |
 | User | User | Cryptographic operations only (sign, encrypt, decrypt, verify). No key creation or deletion. |
 | Auditor | Auditor | Read-only access to audit logs and system state. Cannot modify. |
-| Custodian | Custodian | Shamir share holder. Can **only** submit `barrier:unseal-share`. |
+| Custodian | Custodian | Shamir share holder. The role grants **no** permission: a holder's operations are identity-gated. |
 
 ## Role Details
 
@@ -47,7 +47,7 @@ The SO performs all module initialization, administrative lifecycle operations, 
 
 **Key constraint:** The SO role **cannot** perform a cryptographic operation. That is not a `keys:*` rule: it covers every permission declared `DutyCryptoUse` (`keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`) and every resource whose action names a cryptographic primitive (`sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote`) -- including resources contributed by a higher layer, such as go-quicbaas's `attestation:attest`, which extends a PCR on the host TPM and returns a signed quote. Enforcement is dual-layer per FIPS 140-3 AS10.03: `permission.RegisterRoleGrant` refuses the **grant** at registration time, and the RBAC deny-list refuses the **request** at authorization time even if a grant reached a role by some other path (defense-in-depth). See [../permissions/README.md](../identity-rbac/architecture.md#structural-separation-of-duties-enforcement-fips-140-3-as1003).
 
-**Authorization:** SO is granted seal:* (all seal operations including bootstrap, unseal, seal, status, rotate_root_key, rekey, generate recovery keys, recover_with_keys, initialize_shamir, officer_register, officer_list, submit_seal_vote), certs:* (generate, export, revoke, list, read), roles:* (create, read, update, delete, list, assign, unassign), users:* (create, read, update, delete, list, enable, disable), ceremony:* (initialize, enroll_custodian, revoke_custodian, claim_cert, sign_csr, status), ca:* (create, read, list, update), acme:* (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), audit:read, audit:query, admin:* (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), backends:* (list, read), pin:* (read, write), piv:* (read, write, delete), authfactor:* (enroll, list, revoke). **Denied**: every cryptographic operation -- `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any `resource:action` whose action is a cryptographic primitive. Note that `seal:unseal`, `seal:seal`, `seal:rekey`, `ceremony:sign_csr` and `certs:generate` are cryptographic by mechanism but are granted to the SO on purpose: they are module lifecycle and issuance governance, the duties FIPS 140-3 assigns to the Security Officer, not use of a key on a requester's behalf.
+**Authorization:** SO is granted seal:* (all seal operations including bootstrap, unseal, seal, status, rotate_root_key, rekey, generate recovery keys, initialize_shamir, officer_register, officer_list, officer_revoke), certs:* (generate, export, revoke, list, read), roles:* (create, read, update, delete, list, assign, unassign), users:* (create, read, update, delete, list, enable, disable), ceremony:* (initialize, sign_csr, status), ca:* (create, read, list, update), acme:* (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), audit:read, audit:query, admin:* (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), backends:* (list, read), pin:* (read, write), piv:* (read, write, delete), authfactor:* (enroll, list, revoke). **Denied**: every cryptographic operation -- `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any `resource:action` whose action is a cryptographic primitive. Note that `seal:unseal`, `seal:seal`, `seal:rekey`, `ceremony:sign_csr` and `certs:generate` are cryptographic by mechanism but are granted to the SO on purpose: they are module lifecycle and issuance governance, the duties FIPS 140-3 assigns to the Security Officer, not use of a key on a requester's behalf.
 
 ### Admin
 
@@ -63,7 +63,7 @@ Admins manage operational keys and certificates but cannot initialize or re-init
 - Perform backups and replication
 - Access audit logs for operational oversight
 
-**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (generate, export, revoke, list, read), `tenants:*` (read, update, delete, list; and, cross-scope, create, set_quotas, set_entitlements, set_isolation, list:cross, create:cross, approve, list_deleted, reconcile_deleted), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable), `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`.
+**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (generate, export, revoke, list, read), `tenants:*` (read, update, delete, list; and, cross-scope, create, set_quotas, set_entitlements, set_isolation, list:cross, create:cross, approve, list_deleted, reconcile_deleted), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:officer_register`, `seal:officer_list`, `seal:officer_revoke`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list, officer_revoke, rekey), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable), `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`.
 
 ### Operator
 
@@ -112,20 +112,32 @@ Auditors have read-only access to audit logs, system state, and configuration. T
 
 ### Custodian
 
-Custodians hold one Shamir share of the barrier root key. Their only operational capability is submitting their share during barrier unseal. They have no access to keys, certificates, audit logs, or system configuration. Recovery Key Holders are a **separate, offline tier** — not persisted in the qrdb roles table. See [custodians.md](../seal/custodians.md) for the two-tier share model.
+A key custodian holds one Shamir share of a barrier key, exactly as a Security
+Officer does, but carries no governance rights. Custodians and Security
+Officers are both **share holders**: enrolled the same way, claiming their
+sealed envelopes the same way, and submitting their shares to the same
+authenticated quorum. See [../shamir-custody/](../shamir-custody/).
 
-**Authentication:** Dual-factor — mTLS certificate (issued during ceremony) + private key held by an auth factor (PIV card, PKCS#11 token, FIDO2 authenticator, or software mTLS for low-assurance deployments). Challenge-response verification at unseal time.
+**Authentication:** a CA-issued holder certificate in the SPIFFE holder
+namespace, plus the holder's enrolled factors: `mtls` (possession of the
+certificate key) and any factor the composer registered through
+`WithFactorRegistry` (FIDO2, PIV, PKCS#11 — go-xkms implementations). Every
+share submission carries a factor proof checked against the holder roster.
 
-**Assigned during:** SO-driven enrollment in M-of-N ceremony. Each custodian is paired with an auth factor looked up by name in the `authfactors.FactorRegistry` injected via `WithFactorRegistry`. qrdb ships the `Factor` framework and the software mTLS factor; the hardware factor implementations (FIDO2, PIV, PKCS#11) live in go-xkms.
+**Assigned during:** enrolment by an Admin or a Security Officer (never by the
+holder), in the initialization ceremony or with `barrier officer register
+--role custodian`.
 
 **Responsibilities:**
-- Store their Shamir share securely (encrypted, in hardware factor or local file)
-- Participate in unseal quorum when barrier is sealed
-- Sign challenge during quorum unseal to prove possession of share
+- Claim their sealed envelope once and keep it
+- Take part in quorum rounds (unseal, seal, root token, rekey) when asked
 
-**Key constraint:** Custodian role can **only** submit `barrier:unseal-share`. Any other operation is denied.
+**Key constraint:** the Custodian role grants **no** RBAC permission. A holder
+identity is refused as a login identity; the holder routes are identity-gated
+and authorize the holder themselves. The role is retained so persisted role
+references resolve.
 
-**Authorization:** Single permission: `barrier:unseal-share`. All other resource access is explicitly denied.
+**Authorization:** none.
 
 ## FIPS 140-3 Role-to-Operation Matrix
 
@@ -137,21 +149,20 @@ BARRIER OPERATIONS
   Initialize barrier                    YES   --     --        --    --       --
   Seal barrier                          YES   YES    YES       --    --       --
   Unseal barrier (master secret)        YES   YES    YES       --    --       --
-  Unseal with share (quorum)            --    --     --        --    --       YES
-  Initialize Shamir shares              YES   --     --        --    --       --
+  Initialize Shamir custody             YES   --     --        --    --       --
   Rotate barrier root key               YES   --     --        --    --       --
-  Rekey shares                          YES   --     --        --    --       --
+  Start a rekey (quorum completes it)   YES   --     --        --    --       --
+  Enrol / revoke share holders          YES   YES    --        --    --       --
   Generate recovery keys                YES   --     --        --    --       --
-  Recover with recovery keys            YES   YES    --        --    --       --
   Barrier status                        YES   YES    YES       --    --       --
+
+  Unseal, seal, root token, recovery and rekey completion on a Shamir barrier
+  are not role permissions: each needs a quorum of authenticated share holders
+  (Security Officers and custodians), whatever their RBAC role.
 
 CEREMONY OPERATIONS
   Initialize ceremony                   YES   --     --        --    --       --
-  Enroll custodian (SO-driven)          YES   --     --        --    --       --
-  Claim cert (enrolled officer)         YES   --     --        --    --       --
-  Claim share (enrolled custodian)      --    --     --        --    --       YES
   Sign CSR (for new certs)              YES   --     --        --    --       --
-  Revoke custodian                      YES   --     --        --    --       --
   Ceremony status                       YES   YES    YES       --    YES      --
 
 PIN MANAGEMENT (delegated to pin.PINBackend; see docs/pin/README.md)
@@ -228,18 +239,22 @@ curl -X POST https://localhost:8443/v1/barrier/pin/reset \
   -d '{"new_pin": "new-pin-value"}'
 ```
 
-### Factor-Authenticated Custodian
+### Share Holders
 
-During ceremony enrollment, the SO provides the custodian with an authentication factor enrollment (public credential + metadata). At unseal time, the custodian proves possession of their private key via challenge-response:
+A share holder — Security Officer or custodian — authenticates for a quorum
+submission, not a login:
 
-1. **Custodian authenticates** with their mTLS cert (issued during ceremony)
-2. **Server issues a challenge** (cryptographic nonce)
-3. **Custodian signs the challenge** with their private key held in the authentication factor (PIV card, PKCS#11 token, FIDO2 authenticator, or software mTLS). The signing path is dispatched through the `authfactors.FactorRegistry`; concrete hardware implementations ship in go-xkms.
-4. **Server verifies the signature** and, if valid, returns the sealed share envelope (ciphertext of the Shamir share, encrypted to the custodian's enrollment public key)
-5. **Custodian-side software decrypts the share locally** (private key never leaves the hardware factor)
-6. **Custodian submits the plaintext share** to `barrier:unseal-share` for quorum accumulation
+1. **The holder asks for a challenge** for their designated (or, under the
+   `any-enrolled` policy, any enrolled) factor.
+2. **The holder answers it** — a signature with the certificate key for `mtls`,
+   an assertion from the device for a hardware factor, dispatched through the
+   `authfactors.FactorRegistry`.
+3. **The holder opens their envelope locally** with their envelope key and
+   submits the share with the factor response.
+4. **The server verifies the response against the roster** the key is bound
+   to, counts the holder once, and runs the operation at M.
 
-See [custodians.md](../seal/custodians.md) for the full share-delivery protocol.
+See [../shamir-custody/architecture.md](../shamir-custody/architecture.md).
 
 ### Standard Authentication (Other Roles)
 
@@ -316,11 +331,11 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 | Role | RBAC Permissions | Key Differences |
 |------|------------------|-----------------|
 | SO | `seal:*`, `certs:*`, `roles:*`, `users:*`, `ceremony:*`, `ca:*`, `acme:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:read/write/delete`, `authfactor:enroll/list/revoke`, `keys:create/rotate/delete/list/get/import/export` | Explicitly **denied** every cryptographic operation: `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any action naming a cryptographic primitive. Dual-factor auth. |
-| Admin | `keys:*`, `certs:*`, `tenants:*` (the plan permissions cross-scope, see below), `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. |
+| Admin | `keys:*`, `certs:*`, `tenants:*` (the plan permissions cross-scope, see below), `seal:unseal`, `seal:seal`, `seal:status`, `seal:officer_register`, `seal:officer_list`, `seal:officer_revoke`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. |
 | Operator | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*`, `mvcc:*`, `transaction:execute`, `batch:execute`, `watch:*`, `lease:*`, `index:*`, `timeseries:*`, `vector:*`, `admin:health`, `admin:status`, `backends:*`, `pin:read`, `piv:read`, `piv:use`, `passwords:*`, `ssh:*`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list` | No key creation/deletion, no SO operations. No wrap/unwrap. No certs operations. No admin/governance verbs. |
 | User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:list`, `keys:get`, `admin:health`, `admin:status` | Minimal: crypto-only. No key creation/deletion/rotation. No administrative operations. |
 | Auditor | `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, orchestrator read-only perms | Read-only everywhere. No seal:status. No write/delete permissions. |
-| Custodian | `barrier:unseal-share` | Single permission. Everything else denied. |
+| Custodian | none | A share holder's operations are identity-gated; the role grants nothing. |
 
 ### Tenant plan permissions are platform-operator only
 
@@ -454,7 +469,7 @@ Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a use
 
 - [xkms docs/init/roles.md](https://github.com/jeremyhahn/go-xkms/blob/main/docs/init/roles.md) — Extended xkms role model with hardware attestation
 - [compliance.md](../seal/compliance.md) — Per-framework requirement cross-reference
-- [custodians.md](../seal/custodians.md) — Custodian lifecycle and two-tier share model
+- [../shamir-custody/](../shamir-custody/) — share holders (Security Officers and custodians), the quorum, and the recovery tier
 - [bootstrap.md](../bootstrap.md) — Deterministic role initialization
 - [FIPS 140-3 ISO/IEC 19790](https://csrc.nist.gov/publications/detail/fips/140/3) — AS10.03, AS10.05, AS10.06, AS10.09, AS10.10
 - [PCI-DSS v4](https://www.pcisecuritystandards.org/documents/PCI-DSS-v4-0.pdf) — Requirement 7.1, 3.2.x, 3.6.x, 10.2.x

@@ -21,14 +21,17 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -97,7 +100,7 @@ func newTestRootCmdInitOfficers(svc *capturingCeremonyService) *cobra.Command {
 // ---------------------------------------------------------------------------
 
 func TestParseOfficerFlags_Empty(t *testing.T) {
-	got, err := parseOfficerFlags(nil)
+	got, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,11 +111,11 @@ func TestParseOfficerFlags_Empty(t *testing.T) {
 
 func TestParseOfficerFlags_ValidEntries(t *testing.T) {
 	csrPath := writeOfficerTempFile(t, "alice.csr", []byte("ALICE-CSR-PEM"))
-	got, err := parseOfficerFlags([]string{"alice=" + csrPath})
+	got, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, []string{"alice=" + csrPath})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Username != "alice" || got[0].CSRPEM != "ALICE-CSR-PEM" {
+	if len(got) != 1 || got[0].Username != "alice" || got[0].CSRPEM != "ALICE-CSR-PEM" || got[0].Role != transport.RoleSecurityOfficer {
 		t.Fatalf("unexpected officers: %+v", got)
 	}
 }
@@ -120,7 +123,7 @@ func TestParseOfficerFlags_ValidEntries(t *testing.T) {
 func TestParseOfficerFlags_MultipleEntries(t *testing.T) {
 	alicePath := writeOfficerTempFile(t, "alice.csr", []byte("ALICE-CSR"))
 	bobPath := writeOfficerTempFile(t, "bob.csr", []byte("BOB-CSR"))
-	got, err := parseOfficerFlags([]string{"alice=" + alicePath, "bob=" + bobPath})
+	got, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, []string{"alice=" + alicePath, "bob=" + bobPath})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,7 +133,7 @@ func TestParseOfficerFlags_MultipleEntries(t *testing.T) {
 }
 
 func TestParseOfficerFlags_MalformedEntry(t *testing.T) {
-	_, err := parseOfficerFlags([]string{"no-equals-sign"})
+	_, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, []string{"no-equals-sign"})
 	if err == nil {
 		t.Fatal("expected an error for a malformed --officers entry")
 	}
@@ -142,14 +145,14 @@ func TestParseOfficerFlags_MalformedEntry(t *testing.T) {
 
 func TestParseOfficerFlags_EmptyUsername(t *testing.T) {
 	csrPath := writeOfficerTempFile(t, "x.csr", []byte("X"))
-	_, err := parseOfficerFlags([]string{"=" + csrPath})
+	_, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, []string{"=" + csrPath})
 	if err == nil {
 		t.Fatal("expected an error for an empty username")
 	}
 }
 
 func TestParseOfficerFlags_MissingCSRFile(t *testing.T) {
-	_, err := parseOfficerFlags([]string{"alice=" + filepath.Join(t.TempDir(), "missing.csr")})
+	_, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, []string{"alice=" + filepath.Join(t.TempDir(), "missing.csr")})
 	if err == nil {
 		t.Fatal("expected an error for a missing CSR file")
 	}
@@ -163,10 +166,10 @@ func TestParseOfficerFlags_MissingCSRFile(t *testing.T) {
 // qrdb init --officers -- end-to-end (in-process) success case
 // ---------------------------------------------------------------------------
 
-// TestInitCmd_ShamirWithOfficers_Success proves the earlier fail-closed
-// behavior (a Threshold>=2 request with no Officers) now has a working
-// success path: with --officers supplied, the CSRs are read from disk and
-// forwarded through CeremonyInitializeRequest -> CeremonyInitializeOptions.
+// TestInitCmd_ShamirWithOfficers_Success proves the admin enrols Security
+// Officers and key custodians the same way: --officers and --custodians CSRs
+// are read from disk and forwarded, each with its role, together with the
+// factor policy, through CeremonyInitializeRequest -> CeremonyInitializeOptions.
 func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 	alicePath := writeOfficerTempFile(t, "alice.csr", []byte("ALICE-CSR-PEM"))
 	bobPath := writeOfficerTempFile(t, "bob.csr", []byte("BOB-CSR-PEM"))
@@ -176,12 +179,13 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 
 	out, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
-		"--barrier-strategy", "shamir", "--shares", "3", "--threshold", "2",
+		"--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2",
 		"--officers", "alice="+alicePath,
-		"--officers", "bob="+bobPath,
+		"--custodians", "bob="+bobPath,
+		"--policy", "any-enrolled",
 	)
 	if err != nil {
-		t.Fatalf("init --officers: %v\noutput: %s", err, out)
+		t.Fatalf("init --officers --custodians: %v\noutput: %s", err, out)
 	}
 
 	if svc.gotOpts == nil {
@@ -190,14 +194,46 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 	if len(svc.gotOpts.Officers) != 2 {
 		t.Fatalf("expected 2 officers forwarded, got %d: %+v", len(svc.gotOpts.Officers), svc.gotOpts.Officers)
 	}
-	if svc.gotOpts.Officers[0].Username != "alice" || svc.gotOpts.Officers[0].CSRPEM != "ALICE-CSR-PEM" {
-		t.Errorf("officer[0] mismatch: %+v", svc.gotOpts.Officers[0])
+	if o := svc.gotOpts.Officers[0]; o.Username != "alice" || o.CSRPEM != "ALICE-CSR-PEM" || o.Role != seal.RoleSecurityOfficer {
+		t.Errorf("holder[0] mismatch: %+v", o)
 	}
-	if svc.gotOpts.Officers[1].Username != "bob" || svc.gotOpts.Officers[1].CSRPEM != "BOB-CSR-PEM" {
-		t.Errorf("officer[1] mismatch: %+v", svc.gotOpts.Officers[1])
+	if o := svc.gotOpts.Officers[1]; o.Username != "bob" || o.CSRPEM != "BOB-CSR-PEM" || o.Role != seal.RoleCustodian {
+		t.Errorf("holder[1] mismatch: %+v", o)
+	}
+	if svc.gotOpts.Policy != seal.FactorPolicyAnyEnrolled {
+		t.Errorf("policy = %q, want any-enrolled", svc.gotOpts.Policy)
 	}
 	if svc.gotOpts.Threshold != 2 {
 		t.Errorf("expected threshold 2 forwarded, got %d", svc.gotOpts.Threshold)
+	}
+}
+
+// TestInitCmd_SharesMustMatchHolders proves --shares is N: the key is split
+// to exactly the named holders, so a --shares that disagrees with the number
+// of --officers plus --custodians is refused before any call, rather than the
+// split silently following the holder count.
+func TestInitCmd_SharesMustMatchHolders(t *testing.T) {
+	alicePath := writeOfficerTempFile(t, "alice.csr", []byte("ALICE-CSR-PEM"))
+	bobPath := writeOfficerTempFile(t, "bob.csr", []byte("BOB-CSR-PEM"))
+	for name, shares := range map[string]string{"more shares than holders": "3", "fewer shares than holders": "2"} {
+		t.Run(name, func(t *testing.T) {
+			svc := &capturingCeremonyService{}
+			root := newTestRootCmdInitOfficers(svc)
+			args := []string{"init", "--so-pin", "sopin", "--user-pin", "userpin",
+				"--barrier-strategy", "shamir", "--shares", shares, "--threshold", "2",
+				"--officers", "alice=" + alicePath, "--custodians", "bob=" + bobPath}
+			if shares == "2" {
+				args = append(args, "--custodians", "carol="+bobPath)
+			}
+			_, err := executeCommand(root, args...)
+			var invalid *InvalidArgError
+			if !errors.As(err, &invalid) || invalid.Arg != "--shares" {
+				t.Fatalf("err = %v, want an InvalidArgError on --shares", err)
+			}
+			if svc.gotOpts != nil {
+				t.Fatal("CeremonyInitialize was called with a holder count that disagrees with --shares")
+			}
+		})
 	}
 }
 
@@ -242,4 +278,15 @@ func TestInitCmd_NoOfficers_ServiceRejects(t *testing.T) {
 	if len(svc.gotOpts.Officers) != 0 {
 		t.Errorf("expected no officers forwarded, got %+v", svc.gotOpts.Officers)
 	}
+}
+
+// writeOfficerTempFile writes content to name under a fresh temp dir and
+// returns its path.
+func writeOfficerTempFile(t *testing.T, name string, content []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+	return path
 }

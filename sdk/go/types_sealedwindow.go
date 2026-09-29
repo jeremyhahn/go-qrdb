@@ -80,7 +80,7 @@ var RESTSealedWindowAllowlist = restapi.SealedWindowAllowlist
 
 // GRPCSealedWindowAllowlist is the gRPC sealed-window allowlist. Entries are
 // fully service-qualified gRPC methods (the complete FullMethod path, e.g.
-// "/qrdb.v1.QRDBService/BarrierRekey") — NOT bare method tails. Matching the
+// "/qrdb.v1.QRDBService/BarrierQuorumSubmit") — NOT bare method tails. Matching the
 // full path prevents a same-named method on a co-registered service from being
 // admitted while the barrier is sealed.
 var GRPCSealedWindowAllowlist = grpcapi.SealedWindowAllowlist

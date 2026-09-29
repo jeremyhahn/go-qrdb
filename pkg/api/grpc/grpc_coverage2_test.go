@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -1142,6 +1143,7 @@ func TestTenantBarrierService_NilSvc_NotRegistered(t *testing.T) {
 // barrier-related methods carry real logic; all metadata CRUD methods
 // return empty/no-op results.
 type mockTenantBarrierOnlySvc struct {
+	tenant.TenantServicer
 	barrierInitErr   error
 	barrierUnsealErr error
 	barrierSealErr   error
@@ -1195,9 +1197,6 @@ func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _ string
 func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return nil, nil
-}
 func (m *mockTenantBarrierOnlySvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return m.barrierUnsealErr
 }
@@ -1226,12 +1225,6 @@ func (m *mockTenantBarrierOnlySvc) TenantBarrierShareClaimBegin(_ context.Contex
 }
 func (m *mockTenantBarrierOnlySvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantBarrierOnlySvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockTenantBarrierOnlySvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 // ---------------------------------------------------------------------------

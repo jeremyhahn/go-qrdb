@@ -27,7 +27,7 @@
 // REST: the single-admin happy path (TestCLI_Init_PassphraseHappyPath), the
 // Threshold>=2-without-officers fail-closed path
 // (TestCLI_Init_ShamirFlags_RequiresOfficers), the full M-of-N
-// officers+claim-cert+claim-share end-to-end flow
+// holders + envelope-claim + quorum end-to-end flow
 // (TestCLI_Init_ShamirWithOfficers_EndToEnd), and four local flag-validation
 // cases (TestCLI_Init_LocalFlagValidation: shamir without --shares, --shares
 // without shamir, missing --so-pin, invalid --barrier-strategy). This file's
@@ -316,7 +316,7 @@ func TestInit_CLI_HostnameSANs(t *testing.T) {
 	const wantHostname = "qrdb-init-hostname-test.example"
 	stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
 		"--output", "json",
-		"init", "--so-pin", "SO1", "--user-pin", "USR1",
+		"init", "--so-pin", "SOPIN1", "--user-pin", "USRPIN1",
 		"--hostname", wantHostname,
 		"--sans", "extra-san.example,127.0.0.1")...)
 	if err != nil {
@@ -358,29 +358,20 @@ func TestInit_CLI_HostnameSANs(t *testing.T) {
 // with ShareCount equal to the officer count over every CLI-selectable
 // protocol (REST, gRPC, native QUIC, MCP, and Unix; see
 // ceremonyInitProtocols' package-level doc comment above), in addition to
-// REST, already exhaustively covered end-to-end -- including the full
-// claim-cert/claim-share protocol per officer -- by
-// officer_ceremony_cli_test.go's TestCLI_Init_ShamirWithOfficers_EndToEnd.
-// Driving the full per-officer claim handshake a second time here would not
-// add parity value beyond what is asserted below (the ceremony-initialize
-// RPC itself is the only part of the flow that changes per transport;
-// claim-cert/claim-share are separate RPCs already proven reachable
-// multi-protocol by TestBarrierPermutations_ShamirLifecycle_PerProtocol's
-// officer register/claim flow in barrier_permutations_cli_test.go), so it
-// is intentionally left as a documented follow-up rather than repeated
-// here.
+// REST, already exhaustively covered end-to-end -- including each holder's
+// envelope claim and a quorum -- by officer_ceremony_cli_test.go's
+// TestCLI_Init_ShamirWithOfficers_EndToEnd. The claim and quorum are separate
+// RPCs already proven reachable multi-protocol by
+// TestBarrierPermutations_ShamirLifecycle_PerProtocol, so only the
+// ceremony-initialize RPC is looped here. The node boots with a Shamir
+// barrier left uninitialized: `qrdb init` runs against the sealed window and
+// the ceremony initializes the barrier over the named holders.
 func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 	for _, proto := range ceremonyInitProtocols {
 		t.Run(proto.name, func(t *testing.T) {
-			node := startFreshSealedNode(t, "none", 0, 0)
+			node := startFreshSealedNode(t, "shamir", 2, 2)
 			flags := node.flagsFor(proto)
 			waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
-
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-				t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			node.waitForFullBoot(t)
 
 			dir := t.TempDir()
 			aliceCSR, _ := generateOfficerCSR(t, dir, "alice")
@@ -388,9 +379,9 @@ func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 
 			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
 				"--output", "json",
-				"init", "--so-pin", "SO1", "--user-pin", "USR1",
+				"init", "--so-pin", "SOPIN1", "--user-pin", "USRPIN1",
 				"--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2",
-				"--officers", "alice="+aliceCSR, "--officers", "bob="+bobCSR)...)
+				"--officers", "alice="+aliceCSR, "--custodians", "bob="+bobCSR)...)
 			if err != nil {
 				t.Fatalf("[%s] qrdb init --barrier-strategy shamir --officers: %v\nstderr: %s", proto.name, err, stderr)
 			}
@@ -401,9 +392,11 @@ func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 			if resp.State != "enrolling" {
 				t.Errorf("[%s] expected State 'enrolling' for the M-of-N path, got %q", proto.name, resp.State)
 			}
-			if resp.ShareCount != 2 {
-				t.Errorf("[%s] expected ShareCount 2 (one per officer), got %d", proto.name, resp.ShareCount)
+			if resp.ShareCount != 2 || len(resp.Holders) != 2 {
+				t.Errorf("[%s] expected ShareCount 2 and 2 holder certificates, got %d and %d", proto.name, resp.ShareCount, len(resp.Holders))
 			}
+			// Initializing the barrier unseals it and brings up the full server.
+			node.waitForFullBoot(t)
 
 			out, err := runCLI(t, node.cli, append(append([]string{}, flags...), "ceremony", "status", "--output", "json")...)
 			if err != nil {

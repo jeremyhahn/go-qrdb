@@ -16,67 +16,13 @@ package ceremony
 
 import (
 	"crypto"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/elliptic"
-	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
-	"math/big"
 )
-
-// verifyNonceSignature verifies that the provided signature was produced
-// by the holder of the given public key over the nonce. Supports RSA
-// (PKCS1v15 with SHA-256), ECDSA (ASN.1 DER with SHA-256), and Ed25519.
-func verifyNonceSignature(pubKey crypto.PublicKey, nonce, signature []byte) error {
-	switch key := pubKey.(type) {
-	case *rsa.PublicKey:
-		digest := sha256.Sum256(nonce)
-		if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature); err != nil {
-			return ErrChallengeVerificationFailed
-		}
-		return nil
-
-	case *ecdsa.PublicKey:
-		digest := sha256.Sum256(nonce)
-		// Parse ASN.1 DER encoded ECDSA signature.
-		var sig struct {
-			R, S *big.Int
-		}
-		if _, err := asn1.Unmarshal(signature, &sig); err != nil {
-			return ErrChallengeVerificationFailed
-		}
-		if !ecdsa.Verify(key, digest[:], sig.R, sig.S) {
-			return ErrChallengeVerificationFailed
-		}
-		return nil
-
-	case ed25519.PublicKey:
-		if !ed25519.Verify(key, nonce, signature) {
-			return ErrChallengeVerificationFailed
-		}
-		return nil
-
-	default:
-		return ErrChallengeVerificationFailed
-	}
-}
-
-// ecdsaSignatureSize returns the maximum ASN.1 DER encoded signature
-// size for the given curve. This is used for pre-allocation but is not
-// currently exposed.
-func ecdsaSignatureSize(curve elliptic.Curve) int {
-	// ASN.1 DER: SEQUENCE { INTEGER r, INTEGER s }
-	// Each integer is at most (curve_bytes + 1) bytes plus 2 bytes tag+length.
-	// Sequence overhead is 2-4 bytes.
-	byteLen := (curve.Params().BitSize + 7) / 8
-	return 2 + 2 + (byteLen + 2) + 2 + (byteLen + 2)
-}
 
 // computeSPKIPin computes the SPKI pin for a certificate by taking the
 // SHA-256 hash of the DER-encoded SubjectPublicKeyInfo and returning
@@ -89,38 +35,17 @@ func computeSPKIPin(cert *x509.Certificate) (string, error) {
 	return base64.StdEncoding.EncodeToString(digest[:]), nil
 }
 
-// CertThumbprint returns the lowercase hex-encoded SHA-256 of the DER-encoded
-// certificate. It is the canonical thumbprint used by the officer claim flow
-// to match a presenting mTLS client certificate to its enrolled record.
-// Transport handlers call this to extract the caller's thumbprint from the
-// peer certificate before passing it to BeginClaimShare / CompleteClaimShare.
-func CertThumbprint(certDER []byte) string {
-	return certThumbprint(certDER)
-}
-
-// certThumbprint returns the lowercase hex SHA-256 of the DER-encoded
-// certificate.
-func certThumbprint(certDER []byte) string {
-	digest := sha256.Sum256(certDER)
-	return hex.EncodeToString(digest[:])
-}
-
-// marshalPublicKeyPEM encodes a crypto.PublicKey to a PKIX-form PEM string.
-// Supports the same key types we accept at signature verification time:
-// RSA, ECDSA, Ed25519.
-func marshalPublicKeyPEM(pubKey crypto.PublicKey) (string, error) {
-	der, err := x509.MarshalPKIXPublicKey(pubKey)
-	if err != nil {
-		return "", err
+// thumbprintsEqual compares two certificate thumbprints in constant time. An
+// empty presented thumbprint never matches: a caller with no verified client
+// certificate is not the enrolled holder.
+func thumbprintsEqual(presented, enrolled string) bool {
+	if presented == "" || enrolled == "" {
+		return false
 	}
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: der,
-	})), nil
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(enrolled)) == 1
 }
 
-// parsePublicKeyPEM is the inverse of marshalPublicKeyPEM. It accepts a
-// PKIX PUBLIC KEY block and returns the parsed crypto.PublicKey.
+// parsePublicKeyPEM parses a PKIX PUBLIC KEY block.
 func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
@@ -131,19 +56,4 @@ func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
 		return nil, err
 	}
 	return pub, nil
-}
-
-// authFactorFromAuthenticator translates a legacy AuthenticatorType into
-// the auth-factor string used by the persistent registry. PIV/FIDO2 map
-// directly; Software maps to "mtls" because that's the default factor we
-// expect for software-keyed officers using TLS client auth.
-func authFactorFromAuthenticator(t AuthenticatorType) string {
-	switch t.Normalized() {
-	case AuthenticatorPIV:
-		return "piv"
-	case AuthenticatorFIDO2:
-		return "webauthn"
-	default:
-		return "mtls"
-	}
 }

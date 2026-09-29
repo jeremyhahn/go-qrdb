@@ -20,8 +20,11 @@
 // the passphrase opens the enclave itself for exactly as long as the KDF runs.
 // A test asserting what a handler or service PASSED DOWN has no such path — it
 // captured a credential in a double and wants to compare its content — and
-// that is the one reading this package exists for. It is imported by tests
-// only; a production import of it is a defect.
+// that is the one reading this package exists for.
+//
+// It also holds in-memory custody doubles (Distributor, Verifier, Custody) for
+// tests that need a working Shamir share-holder quorum; see custody.go. It is
+// imported by tests only; a production import of it is a defect.
 package sealtest
 
 import (

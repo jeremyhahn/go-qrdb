@@ -69,7 +69,7 @@ func TestSOPINConformance_ConflictingPINsAreRefused(t *testing.T) {
 	tr := startSOConformance(t, f)
 	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()
-	_, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3, SOPin: "other"})
+	_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "other"})
 	var conflict *transport.SOPINConflictError
 	if !errors.As(err, &conflict) || conflict.Method != "BarrierRekey" {
 		t.Fatalf("err = %v, want *transport.SOPINConflictError", err)
@@ -78,7 +78,7 @@ func TestSOPINConformance_ConflictingPINsAreRefused(t *testing.T) {
 		t.Fatal("a refused rekey reached the service")
 	}
 	// The same PIN in both places is not a conflict.
-	if _, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3, SOPin: sotest.PIN}); err != nil {
+	if _, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: sotest.PIN}); err != nil {
 		t.Fatalf("matching PINs: %v", err)
 	}
 }

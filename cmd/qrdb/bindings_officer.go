@@ -1,10 +1,10 @@
-// Copyright 2026 Jeremy Hahn
+// Copyright (c) 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,50 +17,55 @@ package main
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// ---------------------------------------------------------------------------
-// Wire-shape DTOs
-//
-// PEM material crosses the Wails IPC boundary as plain text, mirroring the
-// REST wire contract (csr_pem / cert_pem are PEM strings, not base64). The
-// transport types use []byte for these fields, which encoding/json would
-// force into base64 — so registration ops use local DTOs and convert.
-// Signature and share bytes are base64 on both wires, so the claim and
-// seal-vote ops pass the transport types through unchanged.
-// ---------------------------------------------------------------------------
-
-// OfficerRegisterParams carries a Security Officer registration across the
-// Wails IPC boundary. CSRPEM is plain PEM text.
-type OfficerRegisterParams struct {
-	Username          string `json:"username"`
-	CSRPEM            string `json:"csr_pem"`
-	AuthenticatorType string `json:"authenticator_type,omitempty"`
-	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
+// HolderScope selects the barrier a desktop holder operation acts on: the
+// system barrier in Domain ("unseal" when empty), or the tenant barrier of
+// TenantID when it is set.
+type HolderScope struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	Domain   string `json:"domain,omitempty"`
 }
 
-// TenantOfficerRegisterParams carries a tenant-barrier Security Officer
-// registration across the Wails IPC boundary. CSRPEM is plain PEM text.
-type TenantOfficerRegisterParams struct {
-	TenantID          string `json:"tenant_id"`
-	Username          string `json:"username"`
-	CSRPEM            string `json:"csr_pem"`
-	AuthenticatorType string `json:"authenticator_type,omitempty"`
-	AuthenticatorRef  string `json:"authenticator_ref,omitempty"`
+// HolderClaimParams claims a holder's sealed envelope in the desktop app.
+// KeyPEM is the holder's certificate private key; it signs the claim nonce
+// in this process and is never sent anywhere.
+type HolderClaimParams struct {
+	HolderScope
+	Username string `json:"username"`
+	KeyPEM   string `json:"key_pem"`
 }
 
-// OfficerRegisterResult is the registration response returned to the
-// frontend. CertPEM is plain PEM text.
-type OfficerRegisterResult struct {
-	CertPEM    string `json:"cert_pem"`
-	ShareIndex int    `json:"share_index"`
+// HolderSubmitParams submits a holder's share to the open quorum round.
+// Envelope is the claimed envelope; KeyPEM is the certificate key that
+// answers the mtls factor and, without EncryptionKey, opens the envelope.
+// Keys stay in this process: only the factor response and the share leave.
+type HolderSubmitParams struct {
+	HolderScope
+	Op            string `json:"op"`
+	Username      string `json:"username"`
+	Envelope      string `json:"envelope"`
+	KeyPEM        string `json:"key_pem"`
+	EncryptionKey []byte `json:"encryption_key,omitempty"`
 }
 
-// OfficerBinding exposes Security Officer enrollment, the per-SO share
-// claim ceremony, and quorum seal voting to the Wails frontend for both
-// the system barrier and per-tenant barriers.
+// HolderRekeyParams opens a rekey round, or a revocation when Username is
+// set.
+type HolderRekeyParams struct {
+	HolderScope
+	Username  string `json:"username,omitempty"`
+	Threshold int    `json:"threshold"`
+	Policy    string `json:"policy,omitempty"`
+	SOPin     string `json:"so_pin,omitempty"`
+}
+
+// OfficerBinding exposes share-holder enrolment, the envelope claim, and
+// quorum submission to the Wails frontend for the system barrier and for
+// tenant barriers. It drives the same holderTarget the CLI does.
 type OfficerBinding struct {
 	logger *logger.Logger
 	conn   *ConnectionBinding
@@ -72,285 +77,130 @@ func NewOfficerBinding(log *logger.Logger, conn *ConnectionBinding) *OfficerBind
 	return &OfficerBinding{logger: log, conn: conn}
 }
 
-// RegisterOfficer registers a Security Officer for the system barrier and
-// returns the signed certificate PEM with the assigned share index.
-func (b *OfficerBinding) RegisterOfficer(req *OfficerRegisterParams) (*OfficerRegisterResult, error) {
-	b.logger.Debug("RegisterOfficer called", "username", req.Username)
+// target resolves the holderTarget for scope over the connected client.
+func (b *OfficerBinding) target(scope HolderScope) (holderTarget, error) {
 	cl, err := b.conn.loadClient()
 	if err != nil {
-		b.logger.Error("RegisterOfficer failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Barrier().OfficerRegister(context.Background(), &transport.OfficerRegisterRequest{
-		Username:          req.Username,
-		CSRPEM:            []byte(req.CSRPEM),
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
+	if scope.TenantID != "" {
+		return tenantHolders{cl: cl, tenantID: scope.TenantID}, nil
+	}
+	domain := scope.Domain
+	if domain == "" {
+		domain = transport.DomainUnseal
+	}
+	if domain != transport.DomainUnseal && domain != transport.DomainRecovery {
+		return nil, &InvalidArgError{Arg: "domain", Reason: "must be unseal or recovery"}
+	}
+	return systemHolders{cl: cl, domain: domain}, nil
+}
+
+// logged runs op, logging its outcome under name.
+func logged[T any](b *OfficerBinding, name string, op func() (T, error)) (T, error) {
+	b.logger.Debug(name + " called")
+	out, err := op()
+	if err != nil {
+		b.logger.Error(name+" failed", "error", err)
+		return out, err
+	}
+	b.logger.Debug(name + " completed")
+	return out, nil
+}
+
+// RegisterHolder enrols a share holder (Security Officer or key custodian).
+func (b *OfficerBinding) RegisterHolder(scope HolderScope, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	return logged(b, "RegisterHolder", func() (*transport.OfficerRegisterResponse, error) {
+		target, err := b.target(scope)
+		if err != nil {
+			return nil, err
+		}
+		return target.register(context.Background(), req)
 	})
-	if err != nil {
-		b.logger.Error("RegisterOfficer failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("RegisterOfficer completed", "username", req.Username, "shareIndex", resp.ShareIndex)
-	return &OfficerRegisterResult{CertPEM: string(resp.CertPEM), ShareIndex: resp.ShareIndex}, nil
 }
 
-// ListOfficers lists all registered Security Officers for the system
-// barrier.
-func (b *OfficerBinding) ListOfficers() ([]*transport.OfficerStatus, error) {
-	b.logger.Debug("ListOfficers called")
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("ListOfficers failed", "error", err)
-		return nil, err
-	}
-	officers, err := cl.Barrier().OfficerList(context.Background())
-	if err != nil {
-		b.logger.Error("ListOfficers failed", "error", err)
-		return nil, err
-	}
-	b.logger.Debug("ListOfficers completed", "count", len(officers))
-	return officers, nil
-}
-
-// OfficerClaimStatus returns the per-officer claim status for the system
-// barrier (no share material).
-func (b *OfficerBinding) OfficerClaimStatus() ([]*transport.OfficerStatus, error) {
-	b.logger.Debug("OfficerClaimStatus called")
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("OfficerClaimStatus failed", "error", err)
-		return nil, err
-	}
-	officers, err := cl.Barrier().OfficerClaimStatus(context.Background())
-	if err != nil {
-		b.logger.Error("OfficerClaimStatus failed", "error", err)
-		return nil, err
-	}
-	b.logger.Debug("OfficerClaimStatus completed", "count", len(officers))
-	return officers, nil
-}
-
-// ClaimBegin issues a challenge nonce to the named Security Officer.
-func (b *OfficerBinding) ClaimBegin(req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	b.logger.Debug("ClaimBegin called", "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("ClaimBegin failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().ShareClaimBegin(context.Background(), req)
-	if err != nil {
-		b.logger.Error("ClaimBegin failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("ClaimBegin completed", "username", req.Username)
-	return resp, nil
-}
-
-// ClaimComplete verifies the officer's nonce signature and returns the
-// share bytes exactly once. The frontend must wipe the share after use.
-func (b *OfficerBinding) ClaimComplete(req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	b.logger.Debug("ClaimComplete called", "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("ClaimComplete failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().ShareClaimComplete(context.Background(), req)
-	if err != nil {
-		b.logger.Error("ClaimComplete failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("ClaimComplete completed", "username", req.Username, "shareIndex", resp.ShareIndex)
-	return resp, nil
-}
-
-// RegisterRecoveryOfficer registers a Security Officer for the system
-// barrier's recovery key set.
-func (b *OfficerBinding) RegisterRecoveryOfficer(req *OfficerRegisterParams) (*OfficerRegisterResult, error) {
-	b.logger.Debug("RegisterRecoveryOfficer called", "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("RegisterRecoveryOfficer failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().RecoveryOfficerRegister(context.Background(), &transport.OfficerRegisterRequest{
-		Username:          req.Username,
-		CSRPEM:            []byte(req.CSRPEM),
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
+// ListHolders lists the holders of scope and their claim state.
+func (b *OfficerBinding) ListHolders(scope HolderScope) ([]*transport.OfficerStatus, error) {
+	return logged(b, "ListHolders", func() ([]*transport.OfficerStatus, error) {
+		target, err := b.target(scope)
+		if err != nil {
+			return nil, err
+		}
+		return target.list(context.Background())
 	})
-	if err != nil {
-		b.logger.Error("RegisterRecoveryOfficer failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("RegisterRecoveryOfficer completed", "username", req.Username, "shareIndex", resp.ShareIndex)
-	return &OfficerRegisterResult{CertPEM: string(resp.CertPEM), ShareIndex: resp.ShareIndex}, nil
 }
 
-// RecoveryClaimBegin issues a challenge nonce for a recovery officer.
-func (b *OfficerBinding) RecoveryClaimBegin(req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	b.logger.Debug("RecoveryClaimBegin called", "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("RecoveryClaimBegin failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().RecoveryShareClaimBegin(context.Background(), req)
-	if err != nil {
-		b.logger.Error("RecoveryClaimBegin failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("RecoveryClaimBegin completed", "username", req.Username)
-	return resp, nil
-}
-
-// RecoveryClaimComplete verifies the recovery officer's nonce signature and
-// returns the recovery share bytes exactly once.
-func (b *OfficerBinding) RecoveryClaimComplete(req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	b.logger.Debug("RecoveryClaimComplete called", "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("RecoveryClaimComplete failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().RecoveryShareClaimComplete(context.Background(), req)
-	if err != nil {
-		b.logger.Error("RecoveryClaimComplete failed", "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("RecoveryClaimComplete completed", "username", req.Username, "shareIndex", resp.ShareIndex)
-	return resp, nil
-}
-
-// SubmitSealVote submits a Shamir share as a seal vote for the system
-// barrier. When the threshold is met the barrier seals automatically.
-func (b *OfficerBinding) SubmitSealVote(req *transport.ShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	b.logger.Debug("SubmitSealVote called")
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("SubmitSealVote failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Barrier().ShamirSealVote(context.Background(), req)
-	if err != nil {
-		b.logger.Error("SubmitSealVote failed", "error", err)
-		return nil, err
-	}
-	b.logger.Debug("SubmitSealVote completed", "submitted", resp.Submitted, "required", resp.Required, "complete", resp.Complete)
-	return resp, nil
-}
-
-// ListTenantOfficers lists all registered Security Officers for the given
-// tenant's barrier.
-func (b *OfficerBinding) ListTenantOfficers(tenantID string) ([]*transport.OfficerStatus, error) {
-	b.logger.Debug("ListTenantOfficers called", "tenantID", tenantID)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("ListTenantOfficers failed", "error", err)
-		return nil, err
-	}
-	officers, err := cl.Tenants().TenantBarrierOfficerList(context.Background(), tenantID)
-	if err != nil {
-		b.logger.Error("ListTenantOfficers failed", "tenantID", tenantID, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("ListTenantOfficers completed", "tenantID", tenantID, "count", len(officers))
-	return officers, nil
-}
-
-// TenantOfficerClaimStatus returns per-officer claim status for the given
-// tenant's barrier (no share material).
-func (b *OfficerBinding) TenantOfficerClaimStatus(tenantID string) ([]*transport.OfficerStatus, error) {
-	b.logger.Debug("TenantOfficerClaimStatus called", "tenantID", tenantID)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("TenantOfficerClaimStatus failed", "error", err)
-		return nil, err
-	}
-	officers, err := cl.Tenants().TenantBarrierOfficerClaimStatus(context.Background(), tenantID)
-	if err != nil {
-		b.logger.Error("TenantOfficerClaimStatus failed", "tenantID", tenantID, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("TenantOfficerClaimStatus completed", "tenantID", tenantID, "count", len(officers))
-	return officers, nil
-}
-
-// RegisterTenantOfficer registers a Security Officer for the given tenant's
-// barrier and returns the signed certificate PEM with the share index.
-func (b *OfficerBinding) RegisterTenantOfficer(req *TenantOfficerRegisterParams) (*OfficerRegisterResult, error) {
-	b.logger.Debug("RegisterTenantOfficer called", "tenantID", req.TenantID, "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("RegisterTenantOfficer failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Tenants().TenantBarrierOfficerRegister(context.Background(), &transport.TenantOfficerRegisterRequest{
-		TenantID:          req.TenantID,
-		Username:          req.Username,
-		CSRPEM:            []byte(req.CSRPEM),
-		AuthenticatorType: req.AuthenticatorType,
-		AuthenticatorRef:  req.AuthenticatorRef,
+// ClaimEnvelope runs the claim handshake, signing the nonce with the
+// holder's certificate key, and returns the sealed envelope. The connection
+// must present the holder's certificate.
+func (b *OfficerBinding) ClaimEnvelope(req *HolderClaimParams) (*transport.ShareClaimCompleteResponse, error) {
+	return logged(b, "ClaimEnvelope", func() (*transport.ShareClaimCompleteResponse, error) {
+		target, err := b.target(req.HolderScope)
+		if err != nil {
+			return nil, err
+		}
+		keyPEM := []byte(req.KeyPEM)
+		defer secure.Wipe(keyPEM)
+		signer, err := mtls.ParseSignerPEM(keyPEM)
+		if err != nil {
+			return nil, err
+		}
+		ctx := context.Background()
+		begin, err := target.claimBegin(ctx, req.Username)
+		if err != nil {
+			return nil, err
+		}
+		sig, err := signHexNonce(signer, begin.NonceHex)
+		if err != nil {
+			return nil, err
+		}
+		return target.claimComplete(ctx, req.Username, begin.NonceHex, sig)
 	})
-	if err != nil {
-		b.logger.Error("RegisterTenantOfficer failed", "tenantID", req.TenantID, "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("RegisterTenantOfficer completed", "tenantID", req.TenantID, "username", req.Username, "shareIndex", resp.ShareIndex)
-	return &OfficerRegisterResult{CertPEM: string(resp.CertPEM), ShareIndex: resp.ShareIndex}, nil
 }
 
-// TenantClaimBegin issues a challenge nonce for a tenant barrier officer.
-func (b *OfficerBinding) TenantClaimBegin(req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	b.logger.Debug("TenantClaimBegin called", "tenantID", req.TenantID, "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("TenantClaimBegin failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Tenants().TenantBarrierShareClaimBegin(context.Background(), req)
-	if err != nil {
-		b.logger.Error("TenantClaimBegin failed", "tenantID", req.TenantID, "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("TenantClaimBegin completed", "tenantID", req.TenantID, "username", req.Username)
-	return resp, nil
+// SubmitShare answers the mtls factor, opens the holder's envelope and
+// submits its share to the open round for the operation.
+func (b *OfficerBinding) SubmitShare(req *HolderSubmitParams) (*transport.QuorumOutcome, error) {
+	return logged(b, "SubmitShare", func() (*transport.QuorumOutcome, error) {
+		target, err := b.target(req.HolderScope)
+		if err != nil {
+			return nil, err
+		}
+		keyPEM := []byte(req.KeyPEM)
+		defer secure.Wipe(keyPEM)
+		defer secure.Wipe(req.EncryptionKey)
+		signer, err := mtls.ParseSignerPEM(keyPEM)
+		if err != nil {
+			return nil, err
+		}
+		return submitHolderShare(context.Background(), target, &holderSubmission{
+			Op:       req.Op,
+			Username: req.Username,
+			Envelope: []byte(req.Envelope),
+			CertKey:  signer,
+			EncKey:   req.EncryptionKey,
+		})
+	})
 }
 
-// TenantClaimComplete verifies the tenant officer's nonce signature and
-// returns the share bytes exactly once.
-func (b *OfficerBinding) TenantClaimComplete(req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	b.logger.Debug("TenantClaimComplete called", "tenantID", req.TenantID, "username", req.Username)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("TenantClaimComplete failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Tenants().TenantBarrierShareClaimComplete(context.Background(), req)
-	if err != nil {
-		b.logger.Error("TenantClaimComplete failed", "tenantID", req.TenantID, "username", req.Username, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("TenantClaimComplete completed", "tenantID", req.TenantID, "username", req.Username, "shareIndex", resp.ShareIndex)
-	return resp, nil
+// StartRekey opens a quorum-gated rekey round.
+func (b *OfficerBinding) StartRekey(req *HolderRekeyParams) (*transport.QuorumRound, error) {
+	return logged(b, "StartRekey", func() (*transport.QuorumRound, error) {
+		target, err := b.target(req.HolderScope)
+		if err != nil {
+			return nil, err
+		}
+		return target.rekey(context.Background(), req.Threshold, req.Policy, req.SOPin)
+	})
 }
 
-// SubmitTenantSealVote submits a Shamir share as a seal vote for the given
-// tenant's barrier.
-func (b *OfficerBinding) SubmitTenantSealVote(req *transport.TenantShamirSealVoteRequest) (*transport.ShamirSealVoteResponse, error) {
-	b.logger.Debug("SubmitTenantSealVote called", "tenantID", req.TenantID)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("SubmitTenantSealVote failed", "error", err)
-		return nil, err
-	}
-	resp, err := cl.Tenants().TenantBarrierShamirSealVote(context.Background(), req)
-	if err != nil {
-		b.logger.Error("SubmitTenantSealVote failed", "tenantID", req.TenantID, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("SubmitTenantSealVote completed", "tenantID", req.TenantID, "submitted", resp.Submitted, "required", resp.Required, "complete", resp.Complete)
-	return resp, nil
+// RevokeHolder revokes a holder through a quorum-gated rekey.
+func (b *OfficerBinding) RevokeHolder(req *HolderRekeyParams) (*transport.QuorumRound, error) {
+	return logged(b, "RevokeHolder", func() (*transport.QuorumRound, error) {
+		target, err := b.target(req.HolderScope)
+		if err != nil {
+			return nil, err
+		}
+		return target.revoke(context.Background(), req.Username, req.Threshold, req.SOPin)
+	})
 }

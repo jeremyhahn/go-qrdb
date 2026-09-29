@@ -22,12 +22,13 @@ import (
 // Compile-time interface check.
 var _ SealingStrategy = (*ShamirStrategy)(nil)
 
-// ShamirStrategy is the Shamir M-of-N sealing strategy. The root key IS the
-// Shamir secret: at initialization it is split into N shares (threshold M),
-// which are returned to the Security Officers exactly once and **never
-// persisted server-side**. Unsealing requires the SOs to re-submit a quorum of
-// shares to the in-memory accumulator (see StorageBarrier.UnsealWithShare);
-// there is no disk auto-unseal path.
+// ShamirStrategy is the Shamir M-of-N sealing strategy. The root key is
+// wrapped under a random unseal key, and the unseal key — never the root key —
+// is split into N shares (threshold M), one sealed into an envelope to each
+// enrolled share holder. Shares are never persisted server-side in plaintext.
+// Unsealing requires M authenticated holders to submit their shares to the
+// in-memory quorum (StorageBarrier.SubmitHolderShare with OpUnseal); there is
+// no disk auto-unseal path.
 //
 // Domain ownership: this custody concern lives in go-qrdb (the database
 // server), not the go-quicraft consensus engine. go-quicraft owns only the L1
@@ -35,11 +36,11 @@ var _ SealingStrategy = (*ShamirStrategy)(nil)
 // the SealingStrategy/ShareSplitter/ShareAccumulator interfaces this type
 // satisfies. The Shamir GF(256) math is go-quicraft/pkg/crypto/shamir.
 //
-// The split itself is performed by StorageBarrier.initializeShamirDirect /
-// Rekey using the in-memory ShareSplitter against the already-unsealed root
-// key; this strategy's SealRootKey only produces the (key-material-free)
-// SealedRootKey envelope. There is no share-storage surface: shares are never
-// written to or read from any backend.
+// The split and the wrapped-root-key blob are produced by
+// StorageBarrier.InitializeShamir and by a completed rekey quorum; this
+// strategy's SealRootKey only produces the (key-material-free) SealedRootKey
+// envelope. There is no share-storage surface: shares are never written to or
+// read from any backend.
 type ShamirStrategy struct {
 	threshold int
 	total     int
@@ -69,9 +70,9 @@ func (s *ShamirStrategy) HardwareBacked() bool { return false }
 func (s *ShamirStrategy) Close() error { return nil }
 
 // SealRootKey returns the (key-material-free) SealedRootKey envelope recording
-// the Shamir threshold/total. It does NOT split or persist the root key: the
-// split is performed in memory by the StorageBarrier and the resulting shares
-// are handed to the Security Officers, never stored.
+// the Shamir threshold/total. It does NOT split or persist any key: the
+// StorageBarrier splits the unseal key in memory and seals each share to its
+// holder.
 func (s *ShamirStrategy) SealRootKey(_ context.Context, _ []byte, _ Credentials) (*SealedRootKey, error) {
 	return &SealedRootKey{
 		Version:         1,
@@ -83,16 +84,17 @@ func (s *ShamirStrategy) SealRootKey(_ context.Context, _ []byte, _ Credentials)
 }
 
 // UnsealRootKey always fails closed: a Shamir barrier cannot be unsealed from
-// persisted shares (there are none). The barrier is unsealed exclusively via
-// StorageBarrier.UnsealWithShare(s), where the SOs re-submit their shares to an
-// in-memory quorum accumulator. This guarantees there is no disk auto-unseal.
+// a credential, only by a quorum of authenticated share holders through
+// StorageBarrier.SubmitHolderShare. This guarantees there is no disk
+// auto-unseal and no unauthenticated share path.
 func (s *ShamirStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ Credentials) ([]byte, error) {
 	return nil, ErrShamirUnsealRequiresQuorum
 }
 
 // BarrierEncryptor returns (nil, nil): the Shamir strategy uses the
-// EpochBarrier's epoch-based HKDF DEKs. The root key is reconstructed from the
-// SOs' shares and fed to the EpochBarrier for DEK derivation.
+// EpochBarrier's epoch-based HKDF DEKs. The root key, unwrapped with the
+// unseal key the holders' shares reconstruct, is fed to the EpochBarrier for
+// DEK derivation.
 func (s *ShamirStrategy) BarrierEncryptor(_ context.Context, _ []byte) (SymmetricEncrypter, error) {
 	return nil, nil
 }

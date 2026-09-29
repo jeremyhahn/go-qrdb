@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -37,6 +38,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockTenantSvc struct {
+	tenant.TenantServicer
 	createFn func(ctx context.Context, id, name string, iso tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error)
 	getFn    func(ctx context.Context, id string) (*tenantpkg.TenantInfo, error)
 	listFn   func(ctx context.Context) ([]tenantpkg.TenantInfo, error)
@@ -99,9 +101,6 @@ func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id string, _ []byte
 func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
-func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, id, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{TenantID: id}, nil
-}
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
@@ -125,17 +124,11 @@ func (m *mockTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string
 func (m *mockTenantSvc) TenantBarrierOfficerList(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
 	return nil, nil
 }
-func (m *mockTenantSvc) TenantBarrierOfficerClaimStatus(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-	return nil, nil
-}
 func (m *mockTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, _ string) (*ceremony.ChallengeResponse, error) {
 	return &ceremony.ChallengeResponse{}, nil
 }
 func (m *mockTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, _ string) (*ceremony.ShareClaimResult, error) {
 	return &ceremony.ShareClaimResult{}, nil
-}
-func (m *mockTenantSvc) TenantBarrierShamirSealVote(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {
-	return &tenantpkg.TenantBarrierUnsealProgress{}, nil
 }
 
 var _ tenantpkg.TenantServicer = (*mockTenantSvc)(nil)

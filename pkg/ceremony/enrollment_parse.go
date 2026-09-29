@@ -20,11 +20,11 @@ import (
 // EnrollmentKind names how an operator supplies the key material that an
 // identity will authenticate with.
 //
-// The same three kinds serve the platform administrator and every security
-// officer, because they are the same question asked of two roles: does this
-// person want a certificate issued to them, or do they already hold one? An
-// operator who can bring their own credential to one role can bring it to the
-// other.
+// The three kinds serve the platform administrator: does this person want a
+// certificate issued to them, or do they already hold one? A share holder
+// (Security Officer or key custodian) is always enrolled from a CSR, because
+// the ceremony CA must assign the holder's certificate identity; the holder
+// enrolment APIs take a CSR and nothing else.
 type EnrollmentKind string
 
 const (
@@ -40,8 +40,8 @@ const (
 
 	// EnrollmentKindPubKey supplies a bare PEM public key. No chain can be
 	// built from one, so trust is asserted by the administrator running the
-	// ceremony rather than derived. It exists for holders whose token cannot
-	// export a certificate.
+	// ceremony rather than derived. It exists for administrators whose token
+	// cannot export a certificate.
 	EnrollmentKindPubKey EnrollmentKind = "pubkey"
 )
 

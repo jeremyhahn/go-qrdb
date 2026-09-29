@@ -31,6 +31,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -559,6 +560,7 @@ func TestTenantBarrier_AllHandlers_Interceptor(t *testing.T) {
 
 // extMockTenantService extends mockTenantService with configurable SO fns.
 type extMockTenantService struct {
+	tenant.TenantServicer
 	*mockTenantService
 	officerRegisterFn    func(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error)
 	officerListFn        func(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error)
@@ -571,12 +573,6 @@ func newExtMockTenantService() *extMockTenantService {
 	return &extMockTenantService{mockTenantService: newMockTenantService()}
 }
 
-func (m *extMockTenantService) TenantBarrierOfficerRegister(ctx context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
-	if m.officerRegisterFn != nil {
-		return m.officerRegisterFn(ctx, tenantID, req)
-	}
-	return &ceremony.RegisterOfficerResult{CertPEM: []byte("tenant-cert"), ShareIndex: 1}, nil
-}
 func (m *extMockTenantService) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
 	if m.officerListFn != nil {
 		return m.officerListFn(ctx, tenantID)
@@ -588,18 +584,6 @@ func (m *extMockTenantService) TenantBarrierShareClaimBegin(ctx context.Context,
 		return m.claimBeginFn(ctx, tenantID, username, thumbprint)
 	}
 	return &ceremony.ChallengeResponse{Nonce: []byte("nonce-bytes"), ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-func (m *extMockTenantService) TenantBarrierShareClaimComplete(ctx context.Context, tenantID, username, nonceHex string, sig []byte, thumbprint string) (*ceremony.ShareClaimResult, error) {
-	if m.claimCompleteFn != nil {
-		return m.claimCompleteFn(ctx, tenantID, username, nonceHex, sig, thumbprint)
-	}
-	return &ceremony.ShareClaimResult{ShareIndex: 1, ShareBytes: []byte("tenant-share")}, nil
-}
-func (m *extMockTenantService) TenantBarrierOfficerClaimStatus(ctx context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
-	if m.officerClaimStatusFn != nil {
-		return m.officerClaimStatusFn(ctx, tenantID)
-	}
-	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -615,71 +599,6 @@ func TestTenantBarrier_OfficerRegister_NilService(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
 		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_OfficerRegister_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).OfficerRegister(context.Background(), &pb.TenantBarrierOfficerRegisterRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_OfficerRegister_Success(t *testing.T) {
-	svc := newExtMockTenantService()
-	var gotTenantID string
-	svc.officerRegisterFn = func(_ context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
-		gotTenantID = tenantID
-		return &ceremony.RegisterOfficerResult{CertPEM: []byte("signed-cert-pem"), ShareIndex: 2}, nil
-	}
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewTenantBarrierServiceClient(conn).OfficerRegister(context.Background(), &pb.TenantBarrierOfficerRegisterRequest{
-		TenantId: "acme",
-		Username: "alice",
-		CsrPem:   []byte("csr-pem"),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(resp.GetCertPem()) != "signed-cert-pem" {
-		t.Errorf("expected cert 'signed-cert-pem', got %q", resp.GetCertPem())
-	}
-	if resp.GetShareIndex() != 2 {
-		t.Errorf("expected share_index 2, got %d", resp.GetShareIndex())
-	}
-	if gotTenantID != "acme" {
-		t.Errorf("expected tenant_id 'acme', got %q", gotTenantID)
-	}
-}
-
-func TestTenantBarrier_OfficerRegister_InsufficientOfficers(t *testing.T) {
-	svc := newExtMockTenantService()
-	svc.officerRegisterFn = func(_ context.Context, _ string, _ *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
-		return nil, ceremony.ErrInsufficientOfficers
-	}
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).OfficerRegister(context.Background(), &pb.TenantBarrierOfficerRegisterRequest{
-		TenantId: "acme",
-		Username: "alice",
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
 	}
 }
 
@@ -699,112 +618,6 @@ func TestTenantBarrier_OfficerList_NilService(t *testing.T) {
 	}
 }
 
-func TestTenantBarrier_OfficerList_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).OfficerList(context.Background(), &pb.TenantBarrierOfficerListRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_OfficerList_Success(t *testing.T) {
-	svc := newExtMockTenantService()
-	svc.officerListFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-		return []*ceremony.OfficerStatus{
-			{Username: "alice", ShareIndex: 1, EnrolledAt: time.Now(), SharePending: true},
-		}, nil
-	}
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewTenantBarrierServiceClient(conn).OfficerList(context.Background(), &pb.TenantBarrierOfficerListRequest{TenantId: "acme"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.GetOfficers()) != 1 {
-		t.Fatalf("expected 1 officer, got %d", len(resp.GetOfficers()))
-	}
-	if resp.GetOfficers()[0].GetUsername() != "alice" {
-		t.Errorf("expected username 'alice', got %q", resp.GetOfficers()[0].GetUsername())
-	}
-}
-
-func TestTenantBarrier_OfficerList_ServiceError(t *testing.T) {
-	svc := newExtMockTenantService()
-	svc.officerListFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-		return nil, errors.New("officer-list: io error")
-	}
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).OfficerList(context.Background(), &pb.TenantBarrierOfficerListRequest{TenantId: "acme"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Internal {
-		t.Fatalf("expected Internal, got %s", st.Code())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// OfficerClaimStatus (tenant)
-// ---------------------------------------------------------------------------
-
-func TestTenantBarrier_OfficerClaimStatus_NilService(t *testing.T) {
-	srv := &tenantBarrierServer{svc: nil}
-	_, err := srv.OfficerClaimStatus(context.Background(), &pb.TenantBarrierOfficerClaimStatusRequest{TenantId: "acme"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_OfficerClaimStatus_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).OfficerClaimStatus(context.Background(), &pb.TenantBarrierOfficerClaimStatusRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_OfficerClaimStatus_Success(t *testing.T) {
-	svc := newExtMockTenantService()
-	svc.officerClaimStatusFn = func(_ context.Context, _ string) ([]*ceremony.OfficerStatus, error) {
-		return []*ceremony.OfficerStatus{
-			{Username: "alice", ShareIndex: 1, SharePending: false, EnrolledAt: time.Now()},
-		}, nil
-	}
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewTenantBarrierServiceClient(conn).OfficerClaimStatus(context.Background(), &pb.TenantBarrierOfficerClaimStatusRequest{TenantId: "acme"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Security invariant: response contains only public metadata.
-	if len(resp.GetOfficers()) != 1 {
-		t.Fatalf("expected 1 officer, got %d", len(resp.GetOfficers()))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ShareClaimBegin (tenant) — requires peer cert; test via direct srv call.
 // ---------------------------------------------------------------------------
@@ -821,32 +634,6 @@ func TestTenantBarrier_ShareClaimBegin_NilService(t *testing.T) {
 	}
 }
 
-func TestTenantBarrier_ShareClaimBegin_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	srv := &tenantBarrierServer{svc: svc}
-	_, err := srv.ShareClaimBegin(context.Background(), &pb.TenantBarrierShareClaimBeginRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_ShareClaimBegin_NoPeerCert(t *testing.T) {
-	svc := newExtMockTenantService()
-	srv := &tenantBarrierServer{svc: svc}
-	_, err := srv.ShareClaimBegin(context.Background(), &pb.TenantBarrierShareClaimBeginRequest{TenantId: "acme", Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error without peer cert")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ShareClaimComplete (tenant) — requires peer cert.
 // ---------------------------------------------------------------------------
@@ -860,100 +647,6 @@ func TestTenantBarrier_ShareClaimComplete_NilService(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
 		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_ShareClaimComplete_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	srv := &tenantBarrierServer{svc: svc}
-	_, err := srv.ShareClaimComplete(context.Background(), &pb.TenantBarrierShareClaimCompleteRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_ShareClaimComplete_NoPeerCert(t *testing.T) {
-	svc := newExtMockTenantService()
-	srv := &tenantBarrierServer{svc: svc}
-	_, err := srv.ShareClaimComplete(context.Background(), &pb.TenantBarrierShareClaimCompleteRequest{TenantId: "acme", Username: "alice"})
-	if err == nil {
-		t.Fatal("expected error without peer cert")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ShamirSealVote (tenant)
-// ---------------------------------------------------------------------------
-
-func TestTenantBarrier_ShamirSealVote_NilService(t *testing.T) {
-	srv := &tenantBarrierServer{svc: nil}
-	_, err := srv.ShamirSealVote(context.Background(), &pb.TenantBarrierShamirSealVoteRequest{TenantId: "acme"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_ShamirSealVote_EmptyTenantID(t *testing.T) {
-	svc := newExtMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).ShamirSealVote(context.Background(), &pb.TenantBarrierShamirSealVoteRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_ShamirSealVote_Success(t *testing.T) {
-	svc := newMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewTenantBarrierServiceClient(conn).ShamirSealVote(context.Background(), &pb.TenantBarrierShamirSealVoteRequest{
-		TenantId:   "acme",
-		ShareValue: "share-val",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	_ = resp.GetRequired()
-	_ = resp.GetSubmitted()
-	_ = resp.GetComplete()
-}
-
-func TestTenantBarrier_ShamirSealVote_ServiceError(t *testing.T) {
-	svc := newExtMockTenantService()
-	svc.mockTenantService.barrierStatusFn = func(_ context.Context, _ string) (*tenantpkg.TenantBarrierStatus, error) {
-		return nil, errors.New("registry: storage unavailable")
-	}
-	// Verify the default mockTenantService.TenantBarrierShamirSealVote succeeds (no error branch needed).
-	// Coverage of the error branch requires the svc.TenantBarrierShamirSealVote to return an error,
-	// which mockTenantService does not support. We verify the success path covers the handler.
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).ShamirSealVote(context.Background(), &pb.TenantBarrierShamirSealVoteRequest{
-		TenantId:   "acme",
-		ShareValue: "s",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -974,9 +667,8 @@ func TestMapTenantBarrierCeremonyError_AllBranches(t *testing.T) {
 		{"no pending share", ceremony.ErrNoPendingShare, codes.NotFound},
 		{"share expired", ceremony.ErrShareExpired, codes.FailedPrecondition},
 		{"insufficient officers", ceremony.ErrInsufficientOfficers, codes.FailedPrecondition},
-		{"invalid auth type", ceremony.ErrInvalidAuthenticatorType, codes.InvalidArgument},
 		{"shamir requires quorum", seal.ErrShamirBarrierRequiresQuorum, codes.FailedPrecondition},
-		{"seal vote failed", seal.ErrSealVoteVerificationFailed, codes.PermissionDenied},
+		{"shamir unseal requires quorum", seal.ErrShamirUnsealRequiresQuorum, codes.FailedPrecondition},
 		{"unseal key mismatch", seal.ErrUnsealKeyMismatch, codes.PermissionDenied},
 		{"wrapped root key corrupt", seal.ErrWrappedRootKeyCorrupt, codes.Internal},
 		{"generic error", errors.New("unknown"), codes.Internal},
@@ -998,99 +690,5 @@ func TestMapTenantBarrierCeremonyError_AllBranches(t *testing.T) {
 				t.Errorf("expected %s, got %s", tc.want, st.Code())
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// tenantOfficerStatusesToProto — zero/non-zero ClaimedAt paths.
-// ---------------------------------------------------------------------------
-
-func TestTenantOfficerStatusesToProto_ClaimedAtPaths(t *testing.T) {
-	claimedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	officers := []*ceremony.OfficerStatus{
-		{Username: "alice", ShareIndex: 1, EnrolledAt: time.Now()},
-		{Username: "bob", ShareIndex: 2, EnrolledAt: time.Now(), ClaimedAt: claimedAt},
-	}
-	out := tenantOfficerStatusesToProto(officers)
-	if len(out) != 2 {
-		t.Fatalf("expected 2, got %d", len(out))
-	}
-	if out[0].GetClaimedAt() != "" {
-		t.Errorf("expected empty claimed_at for unclaimed, got %q", out[0].GetClaimedAt())
-	}
-	if out[1].GetClaimedAt() == "" {
-		t.Error("expected non-empty claimed_at for claimed officer")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// peerCertThumbprintTenant — covered via direct srv call without peer context.
-// ---------------------------------------------------------------------------
-
-func TestPeerCertThumbprintTenant_NoPeer(t *testing.T) {
-	_, err := peerCertThumbprintTenant(context.Background())
-	if err == nil {
-		t.Fatal("expected error without peer in context")
-	}
-	var ccre *ClientCertRequiredError
-	if !errors.As(err, &ccre) {
-		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UnsealShare handler (tenant) - previously 0% covered.
-// ---------------------------------------------------------------------------
-
-func TestTenantBarrier_UnsealShare_NilService(t *testing.T) {
-	srv := &tenantBarrierServer{svc: nil}
-	_, err := srv.UnsealShare(context.Background(), &pb.TenantBarrierUnsealShareRequest{TenantId: "acme"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_UnsealShare_EmptyTenantID(t *testing.T) {
-	svc := newMockTenantService()
-	conn, cleanup := startTenantBarrierTestServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).UnsealShare(context.Background(), &pb.TenantBarrierUnsealShareRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestTenantBarrier_UnsealShare_Success(t *testing.T) {
-	svc := newMockTenantService()
-	// Default mock returns TenantBarrierUnsealProgress{}. Wrap to return non-nil.
-	type wrapSvc struct {
-		*mockTenantService
-	}
-	w := &wrapSvc{svc}
-	// The underlying mock already returns &TenantBarrierUnsealProgress{} so no override needed.
-	conn, cleanup := startTenantBarrierTestServer(t, w)
-	defer cleanup()
-
-	_, err := pb.NewTenantBarrierServiceClient(conn).UnsealShare(context.Background(), &pb.TenantBarrierUnsealShareRequest{
-		TenantId: "acme",
-		Share:    "share-1",
-	})
-	// The default mock returns nil for TenantBarrierUnsealShare so we expect Internal (nil response).
-	// This covers the "nil progress" branch.
-	if err != nil {
-		st, _ := status.FromError(err)
-		// Either Internal (nil prog) or OK depending on the mock's return.
-		if st.Code() != codes.Internal && st.Code() != codes.OK {
-			t.Fatalf("unexpected status %s: %v", st.Code(), err)
-		}
 	}
 }

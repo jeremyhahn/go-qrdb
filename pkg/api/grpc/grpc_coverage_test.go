@@ -18,9 +18,7 @@ package grpc
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +35,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -49,26 +46,19 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockBarrierService struct {
-	initErr            error
-	unsealErr          error
-	sealErr            error
-	statusResult       *service.BarrierStatusInfo
-	statusErr          error
-	shamirInitResult   *service.ShamirInitInfo
-	shamirInitErr      error
-	unsealShareResult  *service.UnsealShareProgress
-	unsealShareErr     error
-	unsealSharesErr    error
-	rekeyResult        *service.ShamirInitInfo
-	rekeyErr           error
-	recoveryGenResult  *service.RecoveryKeysInfo
-	recoveryGenErr     error
-	recoveryRecoverErr error
-	recoveryDeleteErr  error
-	recoveryHasResult  bool
-	recoveryHasErr     error
-	rootTokenResult    *service.RootTokenInfo
-	rootTokenErr       error
+	service.BarrierServicer
+	initErr           error
+	unsealErr         error
+	sealErr           error
+	statusResult      *service.BarrierStatusInfo
+	statusErr         error
+	shamirInitResult  *service.ShamirInitInfo
+	shamirInitErr     error
+	recoveryGenResult *service.RecoveryKeysInfo
+	recoveryGenErr    error
+	recoveryDeleteErr error
+	recoveryHasResult bool
+	recoveryHasErr    error
 }
 
 func newMockBarrierService() *mockBarrierService {
@@ -80,10 +70,7 @@ func newMockBarrierService() *mockBarrierService {
 			InitializedAt:  time.Now(),
 		},
 		shamirInitResult:  &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
-		unsealShareResult: &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false},
-		rekeyResult:       &service.ShamirInitInfo{Threshold: 2, TotalShares: 3, ShareCount: 2},
 		recoveryGenResult: &service.RecoveryKeysInfo{Threshold: 1, Total: 1, ShareCount: 1},
-		rootTokenResult:   &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Now()},
 	}
 }
 
@@ -102,36 +89,12 @@ func (m *mockBarrierService) BarrierStatus(_ context.Context) (*service.BarrierS
 	}
 	return m.statusResult, nil
 }
-func (m *mockBarrierService) BarrierInitializeShamir(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
-	if m.shamirInitErr != nil {
-		return nil, m.shamirInitErr
-	}
-	return m.shamirInitResult, nil
-}
-func (m *mockBarrierService) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	if m.unsealShareErr != nil {
-		return nil, m.unsealShareErr
-	}
-	return m.unsealShareResult, nil
-}
-func (m *mockBarrierService) BarrierUnsealWithShares(_ context.Context, _ []string) error {
-	return m.unsealSharesErr
-}
 
-func (m *mockBarrierService) BarrierRekey(_ context.Context, _, _ int) (*service.ShamirInitInfo, error) {
-	if m.rekeyErr != nil {
-		return nil, m.rekeyErr
-	}
-	return m.rekeyResult, nil
+func (m *mockBarrierService) BarrierInitializeShamir(_ context.Context, _, _ int, _ seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+	return m.shamirInitResult, m.shamirInitErr
 }
-func (m *mockBarrierService) BarrierGenerateRecoveryKeys(_ context.Context, _, _ int) (*service.RecoveryKeysInfo, error) {
-	if m.recoveryGenErr != nil {
-		return nil, m.recoveryGenErr
-	}
-	return m.recoveryGenResult, nil
-}
-func (m *mockBarrierService) BarrierRecoverWithKeys(_ context.Context, _ []string) error {
-	return m.recoveryRecoverErr
+func (m *mockBarrierService) BarrierGenerateRecoveryKeys(_ context.Context, _ int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
+	return m.recoveryGenResult, m.recoveryGenErr
 }
 func (m *mockBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return m.recoveryDeleteErr
@@ -141,39 +104,6 @@ func (m *mockBarrierService) BarrierHasRecoveryKeys(_ context.Context) (bool, er
 		return false, m.recoveryHasErr
 	}
 	return m.recoveryHasResult, nil
-}
-func (m *mockBarrierService) BarrierGenerateRootToken(_ context.Context, _ []string) (*service.RootTokenInfo, error) {
-	if m.rootTokenErr != nil {
-		return nil, m.rootTokenErr
-	}
-	return m.rootTokenResult, nil
-}
-func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -187,9 +117,7 @@ type mockCeremonyService struct {
 	capturedCA       ceremony.CeremonyCA
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
-	beginResult      *service.CeremonyChallenge
 	beginErr         error
-	completeResult   *service.CeremonyClaimCertResult
 	completeErr      error
 	claimShareResult []byte
 	claimShareErr    error
@@ -206,12 +134,7 @@ func newMockCeremonyService() *mockCeremonyService {
 			State:      "initialized",
 			ShareCount: 3,
 		},
-		statusResult: &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"},
-		beginResult:  &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Now().Add(time.Minute)},
-		completeResult: &service.CeremonyClaimCertResult{
-			CertPEM:   []byte("officer-cert"),
-			CACertPEM: []byte("ca-cert"),
-		},
+		statusResult:     &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"},
 		claimShareResult: []byte("share-value"),
 		signCSRResult:    &service.CeremonySignCSRResult{CertPEM: []byte("signed-cert")},
 	}
@@ -225,30 +148,6 @@ func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, ca ceremony.
 	}
 	return m.initResult, nil
 }
-func (m *mockCeremonyService) CeremonyBeginClaimCert(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-	if m.beginErr != nil {
-		return nil, m.beginErr
-	}
-	return m.beginResult, nil
-}
-func (m *mockCeremonyService) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.completeErr != nil {
-		return nil, m.completeErr
-	}
-	return m.completeResult, nil
-}
-func (m *mockCeremonyService) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-func (m *mockCeremonyService) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareErr != nil {
-		return nil, m.claimShareErr
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
-}
 func (m *mockCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRErr != nil {
 		return nil, m.signCSRErr
@@ -260,28 +159,6 @@ func (m *mockCeremonyService) CeremonyStatus(_ context.Context) (*service.Ceremo
 		return nil, m.statusErr
 	}
 	return m.statusResult, nil
-}
-
-// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
-// extension of service.CeremonyServicer. The gRPC coverage tests do not
-// exercise factor-based claim flows.
-func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
-func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
-func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
-func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1143,6 @@ func TestGRPC_BarrierShamirInitialize_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret:      []byte("secret"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -1292,98 +1168,13 @@ func TestGRPC_BarrierShamirInitialize_NilService(t *testing.T) {
 	}
 }
 
-func TestGRPC_BarrierShamirUnsealShare_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	resp, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{Share: "share1"})
-	if err != nil {
-		t.Fatalf("BarrierShamirUnsealShare failed: %v", err)
-	}
-	if resp.GetRequired() != 2 {
-		t.Fatalf("expected required=2, got %d", resp.GetRequired())
-	}
-}
-
-func TestGRPC_BarrierShamirUnsealShare_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShare(context.Background(), &pb.BarrierShamirUnsealShareRequest{Share: "s"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierShamirUnsealShares_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{
-		Shares: []string{"share1", "share2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierShamirUnsealShares failed: %v", err)
-	}
-}
-
-func TestGRPC_BarrierShamirUnsealShares_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierShamirUnsealShares(context.Background(), &pb.BarrierShamirUnsealSharesRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierRekey_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	resp, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
-	if err != nil {
-		t.Fatalf("BarrierRekey failed: %v", err)
-	}
-	// INV-1/INV-11: shares never in rekey response; assert share_count only.
-	if resp.GetShareCount() != 2 {
-		t.Fatalf("expected share_count=2, got %d", resp.GetShareCount())
-	}
-}
-
-func TestGRPC_BarrierRekey_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRekey(context.Background(), &pb.BarrierRekeyRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
 func TestGRPC_BarrierRecoveryGenerate_Success(t *testing.T) {
 	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
+	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc), WithPINBackend(newStubPINBackend()))
 	defer cleanup()
 
 	resp, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
 		Threshold: 1,
-		Total:     1,
 	})
 	if err != nil {
 		t.Fatalf("BarrierRecoveryGenerate failed: %v", err)
@@ -1399,31 +1190,6 @@ func TestGRPC_BarrierRecoveryGenerate_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierRecoveryRecover_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{Keys: []string{"k1"}})
-	if err != nil {
-		t.Fatalf("BarrierRecoveryRecover failed: %v", err)
-	}
-}
-
-func TestGRPC_BarrierRecoveryRecover_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRecoveryRecover(context.Background(), &pb.BarrierRecoveryRecoverRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1478,36 +1244,6 @@ func TestGRPC_BarrierRecoveryStatus_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierRecoveryStatus(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_BarrierRootToken_Success(t *testing.T) {
-	barrierSvc := newMockBarrierService()
-	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
-	defer cleanup()
-
-	resp, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{
-		Shares: []string{"s1", "s2"},
-	})
-	if err != nil {
-		t.Fatalf("BarrierRootToken failed: %v", err)
-	}
-	if resp.GetToken() != "root-token-hex" {
-		t.Fatalf("expected token 'root-token-hex', got %q", resp.GetToken())
-	}
-}
-
-func TestGRPC_BarrierRootToken_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.BarrierRootToken(context.Background(), &pb.BarrierRootTokenRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1652,147 +1388,6 @@ func TestGRPC_CeremonyStatus_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.CeremonyStatus(context.Background(), &emptypb.Empty{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_CeremonyClaimCertBegin_Success(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	resp, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{Username: "officer1"})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertBegin failed: %v", err)
-	}
-	if resp.GetNonceHex() != "deadbeef" {
-		t.Fatalf("expected nonce 'deadbeef', got %q", resp.GetNonceHex())
-	}
-}
-
-func TestGRPC_CeremonyClaimCertBegin_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertBegin(context.Background(), &pb.CeremonyClaimCertBeginRequest{Username: "u"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-func TestGRPC_CeremonyClaimCertComplete_Success(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	sig := base64.StdEncoding.EncodeToString([]byte("fake-signature"))
-	resp, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username:  "officer1",
-		NonceHex:  "deadbeef",
-		Signature: sig,
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertComplete failed: %v", err)
-	}
-	if string(resp.GetCertPem()) != "officer-cert" {
-		t.Fatalf("expected cert 'officer-cert', got %q", resp.GetCertPem())
-	}
-}
-
-func TestGRPC_CeremonyClaimCertComplete_InvalidSignature(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	_, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username:  "officer1",
-		NonceHex:  "deadbeef",
-		Signature: "not-valid-base64!!!",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid base64 signature, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.InvalidArgument {
-		t.Fatalf("expected InvalidArgument, got %s", st.Code())
-	}
-}
-
-func TestGRPC_CeremonyClaimCertComplete_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
-	_, err := client.CeremonyClaimCertComplete(context.Background(), &pb.CeremonyClaimCertCompleteRequest{
-		Username: "u", NonceHex: "nonce", Signature: sig,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-// TestGRPC_CeremonyBeginClaimShare_RefusesWithoutClientCert proves the share
-// claim is unreachable over a connection that carries no mTLS peer
-// certificate: the caller thumbprint cannot be derived, so the handler fails
-// closed before the ceremony service is consulted.
-func TestGRPC_CeremonyBeginClaimShare_RefusesWithoutClientCert(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "officer1"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-}
-
-// TestGRPC_CeremonyCompleteClaimShare_RefusesWithoutClientCert proves the
-// completing half is equally unreachable and, critically, that no share bytes
-// are returned on the refusal path.
-func TestGRPC_CeremonyCompleteClaimShare_RefusesWithoutClientCert(t *testing.T) {
-	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
-	defer cleanup()
-
-	resp, err := client.CeremonyCompleteClaimShare(context.Background(), &pb.CeremonyCompleteClaimShareRequest{
-		Username:  "officer1",
-		NonceHex:  "abcd",
-		Signature: []byte("sig"),
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if resp.GetShare() != "" {
-		t.Fatalf("share bytes leaked on refusal: %q", resp.GetShare())
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unauthenticated {
-		t.Fatalf("expected Unauthenticated, got %s", st.Code())
-	}
-}
-
-func TestGRPC_CeremonyClaimShare_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "u"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

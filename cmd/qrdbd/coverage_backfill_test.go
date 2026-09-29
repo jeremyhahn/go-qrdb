@@ -160,7 +160,8 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
-	// nil complianceAudit → custodian.NewService returns ErrNilAuditLogger.
+	// nil complianceAudit → the SO authenticator, the first audit-bound step,
+	// refuses to start without an audit sink.
 	_, err = bootstrapAuthEnforcement(
 		context.Background(), mgmt, dataDir, node,
 		nil, // nil complianceAudit
@@ -174,7 +175,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
-	assert.Equal(t, "custodian service", abe.Step)
+	assert.Equal(t, "SO authenticator", abe.Step)
 }
 
 // ---------------------------------------------------------------------------

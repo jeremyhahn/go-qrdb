@@ -65,68 +65,6 @@ func TestE2E_CeremonyStatus_HappyPath(t *testing.T) {
 	}
 }
 
-func TestE2E_CeremonyClaimCertBegin_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimCertBegin", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyClaimCertBeginResponse{
-			NonceHex: "deadbeef", ExpiresAt: "2026-12-31T00:00:00Z",
-		})
-	})
-	resp, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{Username: "alice"})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertBegin: %v", err)
-	}
-	if resp.NonceHex != "deadbeef" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_CeremonyClaimCertComplete_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimCertComplete", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyClaimCertCompleteResponse{
-			CertPem: "cert", CaCertPem: "ca",
-		})
-	})
-	resp, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{
-		Username: "alice", NonceHex: "deadbeef", Signature: "deadbeef",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimCertComplete: %v", err)
-	}
-	if resp.CertPEM != "cert" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_CeremonyClaimShare_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.BeginClaimShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyBeginClaimShareResponse{NonceHex: "abcd"})
-	})
-	srv.SetResponder("ceremony.CompleteClaimShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyCompleteClaimShareResponse{ShareIndex: 1, Share: "{\"share\":1}"})
-	})
-
-	begun, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "alice"})
-	if err != nil {
-		t.Fatalf("CeremonyBeginClaimShare: %v", err)
-	}
-	if begun.NonceHex != "abcd" {
-		t.Fatalf("begun = %+v", begun)
-	}
-
-	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{
-		Username: "alice", NonceHex: begun.NonceHex, Signature: []byte("sig"),
-	})
-	if err != nil {
-		t.Fatalf("CeremonyCompleteClaimShare: %v", err)
-	}
-	if resp.ShareJSON == "" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
 func TestE2E_CeremonySignCSR_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("ceremony.SignCSR", func(_ []byte) (uint16, []byte) {
@@ -139,22 +77,6 @@ func TestE2E_CeremonySignCSR_HappyPath(t *testing.T) {
 		t.Fatalf("CeremonySignCSR: %v", err)
 	}
 	if resp.CertPEM != "signed-cert" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
-func TestE2E_CeremonyEnrollExternalOfficer_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.EnrollExternalOfficer", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyEnrollExternalOfficerResponse{SealedShare: "deadbeef"})
-	})
-	resp, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{
-		Username: "bob", CertPEM: "cert", PubKeyPEM: "pub", ShareIndex: 1, AuthFactor: "yubikey", ShareBytes: []byte{0x02},
-	})
-	if err != nil {
-		t.Fatalf("CeremonyEnrollExternalOfficer: %v", err)
-	}
-	if resp.SealedShare != "deadbeef" {
 		t.Fatalf("resp = %+v", resp)
 	}
 }

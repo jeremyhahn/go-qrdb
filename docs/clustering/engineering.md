@@ -272,7 +272,7 @@ Noise_NK_25519_ChaChaPoly_SHA256 mandates X25519 key agreement, which is not an
 approved scheme under SP 800-56A Rev. 3. Under `GODEBUG=fips140=only` the Go
 Cryptographic Module refuses it outright; under `GODEBUG=fips140=on` the module
 permits it and **this package still declines to use it**, for the reason
-`pkg/ceremony` declines an Ed25519 external officer: a deployment that has ASKED
+`pkg/keydelivery` declines an X25519 share-holder envelope suite: a deployment that has ASKED
 for FIPS mode should not be handed non-approved cryptography because the runtime
 tolerates it. The predicate is therefore `crypto/fips140.Enabled()`, not
 `Enforced()`, and it is read through `clusterenroll.NoiseAvailable()`.

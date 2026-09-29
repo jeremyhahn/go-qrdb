@@ -1,7 +1,14 @@
 # Security Officer Share Distribution Design
 
-**Status:** Design — Implementation Contract
+**Status:** Superseded design record — history, **not** shipped behaviour
 **Date:** 2026-06-10
+
+> **Superseded.** This record describes the Security-Officer-only share
+> distribution that preceded unified share holders. Its claim flow returned
+> raw share bytes, its quorum counted shares rather than authenticated
+> holders, and it kept a separate custodian subsystem; all three are gone.
+> The contract is [../shamir-custody/](../shamir-custody/). Where this record
+> and that folder disagree, the folder is right.
 **Applies to:** go-qrdb (all transports, Go SDK, TS SDK, frontend), go-quicbaas (broker + TS SDK + UI)
 
 ---

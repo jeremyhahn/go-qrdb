@@ -236,12 +236,6 @@ func (c *Client) UserAuthFactors() transport.UserAuthFactorClient {
 	return nil
 }
 
-// CustodianGroups returns a CustodianGroupClient for managing custodian
-// groups used in Shamir secret sharing.
-func (c *Client) CustodianGroups() transport.CustodianGroupClient {
-	return capability[transport.CustodianGroupClient](c, "CustodianGroups")
-}
-
 // Tenants returns a TenantClient for multi-tenant operations and
 // per-tenant barrier management.
 func (c *Client) Tenants() transport.TenantClient {

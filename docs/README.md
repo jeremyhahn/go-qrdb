@@ -141,7 +141,7 @@ They are listed below and are linked from the feature folder that owns them.
 | [databases/README.md](databases/README.md) | [databases](databases/) |
 | [capabilities/README.md](capabilities/README.md) | [run-modes](run-modes/) |
 | [auth/](auth/) — README, roles, abac, layering, custom-authorizers | [identity-rbac](identity-rbac/) |
-| [seal/](seal/) — README, shamir, custodians, sealed-window, compliance, multi-tenant, enabling-encryption, so-dual-factor, auth-factors, and the design records | [barrier-seal](barrier-seal/), [shamir-custody](shamir-custody/) |
+| [seal/](seal/) — README, sealed-window, compliance, multi-tenant, enabling-encryption, so-dual-factor, auth-factors, and the design records | [barrier-seal](barrier-seal/), [shamir-custody](shamir-custody/) |
 | [sql/gorm.md](sql/gorm.md), [sql/upstream-gaps.md](sql/upstream-gaps.md), [sql/constraint-column-usage-duplication.md](sql/constraint-column-usage-duplication.md) | [sql](sql/) |
 | [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
 | [gui/README.md](gui/README.md), [typescript-sdk/README.md](typescript-sdk/README.md) | [desktop-gui](desktop-gui/) |

@@ -170,7 +170,6 @@ func (t *Transport) cloneShared() *Transport {
 		sealStoreSvc:      t.sealStoreSvc,
 		tenantSvc:         t.tenantSvc,
 		lockSvc:           t.lockSvc,
-		custodianGroupSvc: t.custodianGroupSvc,
 		authFactorSvc:     t.authFactorSvc,
 		auditLogger:       t.auditLogger,
 		encMigrator:       t.encMigrator,

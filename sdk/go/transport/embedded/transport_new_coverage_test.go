@@ -37,7 +37,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -1261,110 +1260,9 @@ func TestEmbedded_DatabaseBarrierStatus_NilService(t *testing.T) {
 // Ceremony custodian nil-service guards + custodianToInfo
 // ===========================================================================
 
-func TestEmbedded_CeremonyClaimShareBegin_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CeremonyClaimShareBegin_Closed(t *testing.T) {
-	tr := closedExtTransport(t)
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CeremonyClaimShareComplete_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CeremonyClaimShareComplete_Closed(t *testing.T) {
-	tr := closedExtTransport(t)
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CeremonySubmitUnsealShare_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CeremonySubmitUnsealShare_Closed(t *testing.T) {
-	tr := closedExtTransport(t)
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ===========================================================================
 // Ceremony custodian success paths (using existing mockCeremonyService)
 // ===========================================================================
-
-func TestEmbedded_CeremonyClaimShareBegin_ServiceReachable(t *testing.T) {
-	// mockCeremonyService.CeremonyClaimShareBegin returns error "not implemented in mock".
-	// We verify the transport delegates to the service (not nil-guard).
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimShareBegin(context.Background(), &transport.CeremonyClaimShareBeginRequest{
-		CustodianID: "cust-1",
-	})
-	var ne *NilServiceError
-	if errors.As(err, &ne) {
-		t.Fatalf("expected service-delegated error, got NilServiceError")
-	}
-}
-
-func TestEmbedded_CeremonyClaimShareComplete_ServiceReachable(t *testing.T) {
-	// mockCeremonyService.CeremonyClaimShareComplete returns error "not implemented
-	// in mock". We verify the transport delegates to the service (not nil-guard).
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimShareComplete(context.Background(), &transport.CeremonyClaimShareCompleteRequest{
-		CustodianID:    "cust-1",
-		ChallengeID:    "ch-1",
-		FactorResponse: []byte("response"),
-	})
-	var ne *NilServiceError
-	if errors.As(err, &ne) {
-		t.Fatalf("expected service-delegated error, got NilServiceError")
-	}
-}
-
-func TestEmbedded_CeremonySubmitUnsealShare_ServiceReachable(t *testing.T) {
-	// The mock CeremonySubmitUnsealShare returns an error ("not implemented in mock").
-	// That is fine — we're testing that the transport reaches the service (i.e.,
-	// does NOT return NilServiceError or ClosedError), meaning the success branch's
-	// service-delegation code is exercised.
-	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonySubmitUnsealShare(context.Background(), &transport.CeremonySubmitUnsealShareRequest{
-		CustodianID:    "cust-1",
-		ChallengeID:    "ch-1",
-		FactorResponse: []byte("response"),
-		ShareBytes:     []byte("share"),
-	})
-	// The error should come from the mock service, not from nil-service guard.
-	var ne *NilServiceError
-	if errors.As(err, &ne) {
-		t.Fatalf("expected service-delegated error (not NilServiceError), got NilServiceError")
-	}
-}
 
 // ===========================================================================
 // userAuthRecordToDomain / domainToUserAuthRecord pure functions
@@ -1452,42 +1350,6 @@ func TestMergeLoginMetadata_ReqWins(t *testing.T) {
 	got := mergeLoginMetadata(stored, req)
 	if got["key"] != "new-val" {
 		t.Errorf("expected req to win, got %q", got["key"])
-	}
-}
-
-func TestCustodianToInfo_Nil(t *testing.T) {
-	info := custodianToInfo(nil)
-	if info == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if info.ID != "" {
-		t.Errorf("expected empty ID for nil input, got %q", info.ID)
-	}
-}
-
-func TestCustodianToInfo_Full(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
-	revoked := now.Add(time.Hour)
-	c := &custodian.Custodian{
-		ID:           "cust-1",
-		Username:     "alice",
-		TenantID:     "t1",
-		EnrollmentID: "enroll-1",
-		PublicKeyPEM: "PEM",
-		ShareIndex:   2,
-		EnrolledAt:   now,
-		RevokedAt:    &revoked,
-		ShareClaimed: true,
-	}
-	info := custodianToInfo(c)
-	if info.ID != "cust-1" {
-		t.Errorf("ID: got %q want cust-1", info.ID)
-	}
-	if info.RevokedAt == nil || !info.RevokedAt.Equal(revoked) {
-		t.Errorf("RevokedAt mismatch: got %v want %v", info.RevokedAt, revoked)
-	}
-	if !info.ShareClaimed {
-		t.Error("expected ShareClaimed=true")
 	}
 }
 

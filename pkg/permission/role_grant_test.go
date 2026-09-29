@@ -292,7 +292,7 @@ func TestRegisterRoleGrant_SOAllowsKeyLifecycleOperations(t *testing.T) {
 func TestRegisterRoleGrant_SOAllowsModuleLifecycleCrypto(t *testing.T) {
 	probes := []Permission{
 		SealBootstrap, SealUnseal, SealSeal, SealRotateRootKey, SealRekey,
-		SealGenerateRecovery, SealRecoverWithKeys, CeremonySignCSR, CertsGenerate,
+		SealGenerateRecovery, CeremonySignCSR, CertsGenerate,
 	}
 	defer func() {
 		if r := recover(); r != nil {

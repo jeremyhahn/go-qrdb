@@ -33,14 +33,14 @@ func (f *fakeSOVerifier) VerifySOPIN(_ context.Context, _ string, _ []byte) erro
 }
 
 // TestSODualFactor_Disabled_NoGate verifies the default posture: without
-// WithSODualFactor, an SO-permission route (POST /v1/barrier/rekey) is
+// WithSODualFactor, an SO-permission route (POST /v1/barrier/rekey/start) is
 // NOT gated by the SO middleware even when a verifier is wired — the
 // request reaches the normal handler chain.
 func TestSODualFactor_Disabled_NoGate(t *testing.T) {
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithSOAuthenticator(&fakeSOVerifier{}))
 
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey", nil)
+	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey/start", nil)
 	// Plain HTTP, no SO PIN header: with the gate absent this must NOT
 	// produce the SO middleware's 401/403 envelopes.
 	srv.server.Handler.ServeHTTP(rr, r)
@@ -58,7 +58,7 @@ func TestSODualFactor_EnabledWithoutVerifier_NoGate(t *testing.T) {
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithSODualFactor())
 
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey", nil)
+	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey/start", nil)
 	srv.server.Handler.ServeHTTP(rr, r)
 
 	if strings.Contains(rr.Body.String(), "SO PIN") || strings.Contains(rr.Body.String(), "SO role") {
@@ -76,7 +76,7 @@ func TestSODualFactor_Enabled_PlainHTTP_Unauthorized(t *testing.T) {
 	)
 
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey", nil) // r.TLS == nil
+	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey/start", nil) // r.TLS == nil
 	srv.server.Handler.ServeHTTP(rr, r)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -97,7 +97,7 @@ func TestSODualFactor_Enabled_NoSOIdentity_Forbidden(t *testing.T) {
 	)
 
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey", nil)
+	r := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey/start", nil)
 	r.TLS = &tls.ConnectionState{}
 	srv.server.Handler.ServeHTTP(rr, r)
 

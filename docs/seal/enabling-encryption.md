@@ -58,7 +58,7 @@ life of that barrier.
 
 | Operation | Changes the unseal credential? | Re-encrypts stored data? | Changes the strategy? |
 |---|---|---|---|
-| **Rekey** (`pkg/seal/rekey.go`) | Yes (re-wraps the root key; new Shamir params) | No | No |
+| **Rekey** (`StorageBarrier.StartRekey`, completed by a holder quorum) | Yes (re-wraps the root key; new Shamir params) | No | No |
 | **Re-initialize** (uninitialized barrier only) | Sets it for the first time | n/a (no data yet) | Sets it for the first time |
 | **Enable encryption** (`qrdb barrier enable-encryption`) | Sets it (the new keyed credential) | **Yes** (full at-rest re-encryption) | `none` → `passphrase`/`shamir` |
 | **Disable / downgrade to plaintext in place** | — | — | **Not supported** (see below) |
@@ -330,10 +330,10 @@ deliberately ships no key-extraction primitive). Instead you:
 
 For disaster recovery to a *fresh* cluster, the barrier key must be recoverable
 there. That is the job of the **Shamir recovery-officer quorum**
-(`pkg/seal/recovery.go` + recovery Security Officers) — the supported "get my
+(`pkg/seal/recovery.go` + recovery-domain share holders) — the supported "get my
 data back" path — or, for cluster expansion, the node-to-node key transport
 (`pkg/keydelivery` + `pkg/clusterkeys`). See
-[custodians.md](custodians.md) for the share-delivery protocol.
+[shamir-custody](../shamir-custody/) for share holders and the recovery domain.
 
 ## Why "disable encryption" is not a toggle
 
@@ -360,9 +360,8 @@ Seal Manager toggle. This is not implemented; request it explicitly if needed.
 - [README.md](README.md) — Seal subsystem overview
 - [compliance.md](compliance.md) — FIPS/PCI/HIPAA/FedRAMP capability matrix
   (see the `StrategyNone` row)
-- [custodians.md](custodians.md) — Custodian lifecycle, Shamir recovery quorum,
-  share-delivery protocol
-- [shamir.md](shamir.md) — Shamir M-of-N unsealing
+- [shamir-custody](../shamir-custody/) — share holders, the recovery domain and the
+  authenticated quorum
 - [backup/README.md](../backup-restore/architecture.md) — Backup & restore
 - [../cli/barrier.md](../barrier-seal/cli.md) — `qrdb barrier` CLI (init, unseal,
   rekey, status)

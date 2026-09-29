@@ -66,12 +66,9 @@ func (c *capturingQUICBarrierSvc) BarrierUnseal(_ context.Context, secret []byte
 	return c.err
 }
 
-func (c *capturingQUICBarrierSvc) BarrierInitializeShamir(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
-	c.seen = secret
-	if c.err != nil {
-		return nil, c.err
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
+func (c *capturingQUICBarrierSvc) BarrierQuorumSubmit(_ context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
+	c.seen = req.Share
+	return nil, c.err
 }
 
 type capturingQUICTenantSvc struct {
@@ -80,6 +77,11 @@ type capturingQUICTenantSvc struct {
 }
 
 var _ tenant.TenantServicer = (*capturingQUICTenantSvc)(nil)
+
+func (c *capturingQUICTenantSvc) TenantBarrierQuorumSubmit(_ context.Context, _ string, sub *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
+	c.seen = sub.Share
+	return nil, errors.New("factor verification failed")
+}
 
 func (c *capturingQUICTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	c.seen = passphrase
@@ -148,20 +150,35 @@ func TestQUICBarrierUnseal_WipesOnWrongSecret(t *testing.T) {
 	assertQUICWiped(t, "BarrierUnseal (rejected)", svc.seen)
 }
 
-func TestQUICBarrierShamirInitialize_WipesDecodedSecret(t *testing.T) {
-	svc := &capturingQUICBarrierSvc{}
+// TestQUICBarrierQuorumSubmit_WipesShare proves the decoded share is
+// zeroized when the service refuses the submission without consuming it.
+func TestQUICBarrierQuorumSubmit_WipesShare(t *testing.T) {
+	svc := &capturingQUICBarrierSvc{err: errors.New("factor verification failed")}
 	srv := NewServer(nil, nil, "localhost:0", WithBarrierService(svc))
 
-	payload, err := proto.Marshal(&pb.BarrierShamirInitializeRequest{
-		Secret: []byte("shamir-seed"), Threshold: 2, TotalShares: 3,
-	})
+	payload, err := proto.Marshal(&pb.BarrierQuorumSubmitRequest{Domain: "unseal", Op: "unseal", Username: "alice", Share: []byte("share-bytes")})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if _, err := srv.handleBarrierShamirInitialize(context.Background(), payload); err != nil {
-		t.Fatalf("handleBarrierShamirInitialize: %v", err)
+	if _, err := srv.handleBarrierQuorumSubmit(context.Background(), payload); err == nil {
+		t.Fatal("expected the refusal to surface")
 	}
-	assertQUICWiped(t, "BarrierInitializeShamir", svc.seen)
+	assertQUICWiped(t, "BarrierQuorumSubmit (refused)", svc.seen)
+}
+
+// TestQUICTenantBarrierQuorumSubmit_WipesShare is the tenant form.
+func TestQUICTenantBarrierQuorumSubmit_WipesShare(t *testing.T) {
+	svc := &capturingQUICTenantSvc{}
+	srv := NewServer(nil, nil, "localhost:0", WithTenantService(svc))
+
+	payload, err := proto.Marshal(&pb.TenantBarrierQuorumSubmitRequest{TenantId: "acme", Op: "unseal", Username: "alice", Share: []byte("share-bytes")})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := srv.handleTenantBarrierQuorumSubmit(context.Background(), payload); err == nil {
+		t.Fatal("expected the refusal to surface")
+	}
+	assertQUICWiped(t, "TenantBarrierQuorumSubmit (refused)", svc.seen)
 }
 
 func TestQUICTenantBarrierInit_WipesDecodedPassphrase(t *testing.T) {

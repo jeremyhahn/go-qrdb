@@ -26,7 +26,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -37,12 +36,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type covMockCeremonySvc struct {
-	initializeFn        func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
-	statusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
-	beginClaimCertFn    func(ctx context.Context, username string) (*service.CeremonyChallenge, error)
-	completeClaimCertFn func(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error)
-	claimShareFn        func(ctx context.Context, username string) ([]byte, error)
-	signCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
+	initializeFn func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
+	statusFn     func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	claimShareFn func(ctx context.Context, username string) ([]byte, error)
+	signCSRFn    func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 }
 
 var _ service.CeremonyServicer = (*covMockCeremonySvc)(nil)
@@ -61,53 +58,11 @@ func (m *covMockCeremonySvc) CeremonyStatus(ctx context.Context) (*service.Cerem
 	}
 	return &service.CeremonyStatusInfo{SPKIPin: "pin123"}, nil
 }
-func (m *covMockCeremonySvc) CeremonyBeginClaimCert(ctx context.Context, username string) (*service.CeremonyChallenge, error) {
-	if m.beginClaimCertFn != nil {
-		return m.beginClaimCertFn(ctx, username)
-	}
-	return &service.CeremonyChallenge{NonceHex: "aabbcc"}, nil
-}
-func (m *covMockCeremonySvc) CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.completeClaimCertFn != nil {
-		return m.completeClaimCertFn(ctx, username, nonceHex, sig)
-	}
-	return &service.CeremonyClaimCertResult{CertPEM: []byte("-----BEGIN CERTIFICATE-----")}, nil
-}
-func (m *covMockCeremonySvc) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareFn != nil {
-		if _, err := m.claimShareFn(ctx, username); err != nil {
-			return nil, err
-		}
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-func (m *covMockCeremonySvc) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareFn != nil {
-		share, err := m.claimShareFn(ctx, username)
-		if err != nil {
-			return nil, err
-		}
-		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("share-data")}, nil
-}
 func (m *covMockCeremonySvc) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRFn != nil {
 		return m.signCSRFn(ctx, username, soPin, csrPEM, role)
 	}
 	return &service.CeremonySignCSRResult{CertPEM: []byte("-----BEGIN CERTIFICATE-----")}, nil
-}
-func (m *covMockCeremonySvc) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, nil
-}
-func (m *covMockCeremonySvc) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, nil
-}
-func (m *covMockCeremonySvc) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, nil
-}
-func (m *covMockCeremonySvc) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +272,8 @@ func (m *covMockPINBackend) VerifyUserPIN(userPin string) error {
 func TestCovCeremonyTools_Registration(t *testing.T) {
 	svc := newCovMockCeremonySvc()
 	tools := ceremonyTools(svc, nil)
-	if len(tools) != 10 {
-		t.Fatalf("expected 10 tools, got %d", len(tools))
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
 	}
 }
 
@@ -389,185 +344,6 @@ func TestCovHandleCeremonyStatus_ServiceError(t *testing.T) {
 	handler := handleCeremonyStatus(svc)
 	req := buildCallToolRequest(t, "qrdb_ceremony_status", map[string]any{})
 	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertBegin_Success(t *testing.T) {
-	handler := handleCeremonyClaimCertBegin(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{"username": "alice"})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertBegin_MissingUsername(t *testing.T) {
-	handler := handleCeremonyClaimCertBegin(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertBegin_ServiceError(t *testing.T) {
-	svc := newCovMockCeremonySvc()
-	svc.beginClaimCertFn = func(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-		return nil, errors.New("not found")
-	}
-	handler := handleCeremonyClaimCertBegin(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{"username": "alice"})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_Success(t *testing.T) {
-	// signature must be valid base64: "hello" base64-encoded
-	sigB64 := "aGVsbG8="
-	handler := handleCeremonyClaimCertComplete(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "aabb",
-		"signature": sigB64,
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_MissingUsername(t *testing.T) {
-	handler := handleCeremonyClaimCertComplete(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"nonce_hex": "aa", "signature": "aGVsbG8=",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_MissingNonce(t *testing.T) {
-	handler := handleCeremonyClaimCertComplete(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username": "alice", "signature": "aGVsbG8=",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_MissingSignature(t *testing.T) {
-	handler := handleCeremonyClaimCertComplete(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username": "alice", "nonce_hex": "aa",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_BadBase64(t *testing.T) {
-	handler := handleCeremonyClaimCertComplete(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username": "alice", "nonce_hex": "aa", "signature": "!!!bad!!!",
-	})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result for bad base64")
-	}
-}
-
-func TestCovHandleCeremonyClaimCertComplete_ServiceError(t *testing.T) {
-	svc := newCovMockCeremonySvc()
-	svc.completeClaimCertFn = func(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-		return nil, errors.New("sig mismatch")
-	}
-	handler := handleCeremonyClaimCertComplete(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username": "alice", "nonce_hex": "aa", "signature": "aGVsbG8=",
-	})
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestCovHandleCeremonyBeginClaimShare_Success(t *testing.T) {
-	handler := handleCeremonyBeginClaimShare(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{"username": "alice"})
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected error result")
-	}
-	var resp struct {
-		NonceHex string `json:"nonce_hex"`
-	}
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &resp); jerr != nil {
-		t.Fatalf("unmarshal: %v", jerr)
-	}
-	if resp.NonceHex == "" {
-		t.Error("expected non-empty nonce")
-	}
-}
-
-func TestCovHandleCeremonyBeginClaimShare_MissingUsername(t *testing.T) {
-	handler := handleCeremonyBeginClaimShare(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{})
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
-	handler := handleCeremonyCompleteClaimShare(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
-		"username": "alice", "nonce_hex": "abcd", "signature": "c2ln",
-	})
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected error result")
-	}
-	var resp struct {
-		Share string `json:"share"`
-	}
-	if jerr := json.Unmarshal([]byte(resultText(t, result)), &resp); jerr != nil {
-		t.Fatalf("unmarshal: %v", jerr)
-	}
-	if resp.Share == "" {
-		t.Error("expected non-empty share")
-	}
-}
-
-func TestCovHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
-	svc := newCovMockCeremonySvc()
-	svc.claimShareFn = func(_ context.Context, _ string) ([]byte, error) {
-		return nil, errors.New("not found")
-	}
-	handler := handleCeremonyCompleteClaimShare(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
-		"username": "alice", "nonce_hex": "abcd", "signature": "c2ln",
-	})
-	_, err := handler(ctxWithFakeTLS(), req)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1197,15 +973,17 @@ func TestCovHandleLockList_ServiceError(t *testing.T) {
 // tools_barrier_pin.go
 // ===========================================================================
 
+// TestCovApplyBarrierInitializePINs_NilBackend proves PINs supplied with no
+// backend are refused, never silently dropped.
 func TestCovApplyBarrierInitializePINs_NilBackend(t *testing.T) {
-	if err := applyBarrierInitializePINs(nil, "so", "user"); err != nil {
-		t.Fatalf("expected nil error for nil backend, got %v", err)
+	if err := pin.Provision(nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("Provision with no backend = %v, want ErrBackendNotConfigured", err)
 	}
 }
 
 func TestCovApplyBarrierInitializePINs_SetBoth(t *testing.T) {
 	backend := &covMockPINBackend{}
-	if err := applyBarrierInitializePINs(backend, "sopin123", "userpin456"); err != nil {
+	if err := pin.Provision(backend, "sopin123", "userpin456"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if backend.soPIN != "sopin123" {
@@ -1220,7 +998,7 @@ func TestCovApplyBarrierInitializePINs_SetSOPINError(t *testing.T) {
 	backend := &covMockPINBackend{
 		setSOPINFn: func(_, _ string) error { return errors.New("set failed") },
 	}
-	if err := applyBarrierInitializePINs(backend, "sopin", ""); err == nil {
+	if err := pin.Provision(backend, "sopin", ""); err == nil {
 		t.Fatal("expected error from SetSOPIN")
 	}
 }
@@ -1229,34 +1007,35 @@ func TestCovApplyBarrierInitializePINs_SetUserPINError(t *testing.T) {
 	backend := &covMockPINBackend{
 		setUserFn: func(_, _ string) error { return errors.New("set user failed") },
 	}
-	if err := applyBarrierInitializePINs(backend, "sopin", "userpin"); err == nil {
+	if err := pin.Provision(backend, "sopin", "userpin"); err == nil {
 		t.Fatal("expected error from SetUserPIN")
 	}
 }
 
+// TestCovVerifyBarrierSOPIN_NilBackend proves the SO PIN gate fails closed.
 func TestCovVerifyBarrierSOPIN_NilBackend(t *testing.T) {
-	if err := verifyBarrierSOPIN(nil, "anypin"); err != nil {
-		t.Fatalf("expected nil error for nil backend, got %v", err)
+	if err := pin.RequireSOPIN(nil, "anypin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+		t.Fatalf("RequireSOPIN with no backend = %v, want ErrBackendNotConfigured", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_NotSet(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: false}
-	if err := verifyBarrierSOPIN(backend, "anypin"); err != nil {
+	if err := pin.RequireSOPIN(backend, "anypin"); err != nil {
 		t.Fatalf("expected nil error when SO PIN not set, got %v", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_Correct(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: true, soPIN: "correct"}
-	if err := verifyBarrierSOPIN(backend, "correct"); err != nil {
+	if err := pin.RequireSOPIN(backend, "correct"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_Wrong(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: true, soPIN: "correct"}
-	if err := verifyBarrierSOPIN(backend, "wrong"); err == nil {
+	if err := pin.RequireSOPIN(backend, "wrong"); err == nil {
 		t.Fatal("expected error for wrong PIN")
 	}
 }

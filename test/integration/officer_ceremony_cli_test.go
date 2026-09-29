@@ -55,22 +55,11 @@
 //     succeeding via the single-admin path with ShareCount 0. See
 //     TestCLI_Init_ShamirFlags_RequiresOfficers.
 //
-// A related non-obvious (but NOT buggy) wire convention, confirmed by
-// reading pkg/seal/shamir.go UnsealWithShares and pkg/seal/recovery.go
-// RecoverWithKeys: the `--share` value a caller feeds to
-// `barrier unseal-shares` / `barrier recovery recover` /
-// `barrier root-token` must be the BARE base64 "value" field, not the
-// full JSON envelope `barrier officer claim-complete` /
-// `barrier recovery officer claim-complete` returns
-// (`{"index":N,"threshold":M,"total":T,"value":"..."}`). Both functions
-// reconstruct each shamir.Share with `Index: i+1` -- the polynomial
-// x-coordinate is inferred purely from the --share flags' SUBMISSION
-// ORDER, not from the envelope's own "index" field -- so shares must
-// also be passed in ascending share-index order. claimRecoveryShare
-// below unwraps to the bare value for exactly this reason; feeding the
-// full envelope would additionally fail pflag's CSV-based
-// StringSliceVar parsing (commas/quotes in the JSON), which is why this
-// unwrap step is load-bearing, not cosmetic.
+// Share holders follow docs/shamir-custody/: a claim delivers an HPKE
+// envelope sealed to the holder's key, once, over a connection presenting
+// the holder's certificate; `barrier quorum submit` opens it locally and
+// submits the share with the holder's factor proof. No raw share crosses the
+// CLI boundary anywhere in this file.
 //
 // Rules honored: no t.Skip, no -short gating, gofmt clean, this is the
 // only new file added.
@@ -83,7 +72,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -93,6 +81,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -356,35 +346,13 @@ func signNonceHex(t *testing.T, priv *ecdsa.PrivateKey, nonceHex string) []byte 
 // ---------------------------------------------------------------------------
 
 type officerRegisterJSON struct {
-	CertPEM    []byte `json:"cert_pem"`
-	ShareIndex int    `json:"share_index"`
+	CertPEM string `json:"cert_pem"`
+	Role    string `json:"role"`
 }
 
 type shareClaimBeginJSON struct {
 	NonceHex  string    `json:"nonce_hex"`
 	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type shareClaimCompleteJSON struct {
-	ShareIndex int    `json:"share_index"`
-	ShareBytes []byte `json:"share_bytes"`
-}
-
-// ceremonyClaimCertCompleteJSON decodes `ceremony claim-cert complete
-// --output json` (transport.ClaimCertCompleteResponse).
-type ceremonyClaimCertCompleteJSON struct {
-	CertPEM   string `json:"cert_pem"`
-	CACertPEM string `json:"ca_cert_pem"`
-}
-
-// ceremonyClaimShareCompleteJSON decodes `ceremony claim-share complete
-// --output json` (transport.CompleteClaimShareResponse). Unlike the
-// custodian-scoped shareClaimCompleteJSON above, the officer/M-of-N share
-// claim wire shape carries the share as a JSON string (share_json), not raw
-// bytes.
-type ceremonyClaimShareCompleteJSON struct {
-	ShareIndex int    `json:"share_index"`
-	ShareJSON  string `json:"share_json"`
 }
 
 type recoveryKeysJSON struct {
@@ -522,57 +490,65 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 }
 
 // TestCLI_Init_ShamirWithOfficers_EndToEnd is the SUCCESS case companion to
-// TestCLI_Init_ShamirFlags_RequiresOfficers, proving cmd/qrdb/init.go's new
-// --officers flag (repeatable "username=path/to/csr.pem") actually unblocks
-// the M-of-N enrollment path: `qrdb init --barrier-strategy shamir
-// --officers ...` reaches ceremony.StateEnrolling (not StateOperational,
-// not a failure) with ShareCount equal to the officer count, and driving
-// the full claim-cert (begin/complete) + claim-share protocol for every
-// officer -- the "legacy Officers list" enrollment path described in
-// TestCLI_Ceremony_StatusAndSubcommands's doc comment, unreachable before
-// this flag existed -- brings the ceremony to StateOperational.
+// TestCLI_Init_ShamirFlags_RequiresOfficers: against a node whose barrier is
+// configured for Shamir and not yet initialized, `qrdb init
+// --barrier-strategy shamir --officers ... --custodians ...` enrols every
+// named holder, has the barrier split its unseal key to them, and reaches
+// ceremony.StateEnrolling with one sealed envelope per holder. Each holder
+// then claims its envelope over its own certificate, which brings the
+// ceremony to StateOperational, and a quorum of those envelopes seals and
+// unseals the barrier.
 func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-shamir-officers] ")
+	node := bootSelfGenCANode(t, bin,
+		"seal:\n  enabled: true\n  strategy: shamir\n  shamir_threshold: 2\n  shamir_total: 3\n",
+		"[init-shamir-officers] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
+	type initHolder struct {
+		username, role, keyPath, certPath, envelope string
 	}
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	type initOfficer struct {
-		username string
-		key      *ecdsa.PrivateKey
-	}
-	var officers []initOfficer
-	var officerFlags []string
-	for _, name := range []string{"alice", "bob", "carol"} {
-		csrPEM, key := generateCeremonyCSR(t, name)
-		csrPath := writeTempFile(t, name+".csr", csrPEM)
-		officers = append(officers, initOfficer{username: name, key: key})
-		officerFlags = append(officerFlags, "--officers", name+"="+csrPath)
+	holders := []*initHolder{{username: "alice", role: "so"}, {username: "bob", role: "so"}, {username: "carol", role: "custodian"}}
+	var holderFlags []string
+	for _, h := range holders {
+		csrPEM, key := generateCeremonyCSR(t, h.username)
+		h.keyPath = writeECPrivateKeyPEM(t, h.username+"-key.pem", key)
+		flag := "--officers"
+		if h.role == "custodian" {
+			flag = "--custodians"
+		}
+		holderFlags = append(holderFlags, flag, h.username+"="+writeTempFile(t, h.username+".csr", csrPEM))
 	}
 
 	initArgs := append([]string{
 		"init",
 		"--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345",
 		"--barrier-strategy", "shamir", "--shares", "3", "--threshold", "2",
-	}, officerFlags...)
-
+		"--output", "json",
+	}, holderFlags...)
 	out, err := runQRDB(t, cli, node.restArgsAdmin(), initArgs...)
 	if err != nil {
-		t.Fatalf("qrdb init --officers: %v\noutput: %s", err, out)
+		t.Fatalf("qrdb init --officers --custodians: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "State:       enrolling") {
-		t.Errorf("expected State: enrolling for a successful M-of-N init, got: %s", out)
+	var initResp transport.CeremonyInitializeResponse
+	decodeJSON(t, out, &initResp)
+	if initResp.State != "enrolling" || initResp.ShareCount != 3 || len(initResp.Holders) != 3 {
+		t.Fatalf("init = state %q, share_count %d, %d holders; want enrolling, 3, 3: %s",
+			initResp.State, initResp.ShareCount, len(initResp.Holders), out)
 	}
-	if !strings.Contains(out, "ShareCount:  3") {
-		t.Errorf("expected ShareCount: 3 (one per officer), got: %s", out)
+	for i, h := range holders {
+		got := initResp.Holders[i]
+		if got.Username != h.username || got.Role != h.role || !strings.Contains(got.CertPEM, "-----BEGIN CERTIFICATE-----") {
+			t.Fatalf("holder %d = %+v, want %s (%s) with a certificate", i, got, h.username, h.role)
+		}
+		h.certPath = writeTempFile(t, h.username+"-cert.pem", []byte(got.CertPEM))
 	}
+
+	// Initializing the barrier unseals it and brings up the full server.
+	waitForHealthy(t, node.dataDir, 60*time.Second)
+	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
 	statusOut, err := runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "status", "--output", "json")
 	if err != nil {
@@ -584,97 +560,11 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 		t.Fatalf("expected ceremony state enrolling after M-of-N init, got: %q", status.State)
 	}
 
-	// Drive the full claim-cert (begin/complete) + claim-share (begin/
-	// complete) protocol for every officer. verifyNonceSignature
-	// (pkg/ceremony/crypto.go) uses the same ECDSA-P256/SHA-256/ASN.1-DER
-	// scheme as the barrier officer claim flow; only the transport differs
-	// (--signature is base64 on the CLI flag here, not a --sig-file).
-	//
-	// claim-share is identity-gated over mTLS: beginClaimShareLocked/
-	// completeClaimShareLocked (pkg/ceremony/ceremony_officer.go) derive the
-	// caller's certificate thumbprint from the TLS peer chain and reject it
-	// unless it matches the officer's PersistentOfficer.CertThumbprint --
-	// which initializeMofN (pkg/ceremony/ceremony.go) computed from the very
-	// certificate claim-cert complete issues below. So, unlike claim-cert
-	// (which only checks a CSR-key signature, not the connection identity),
-	// claim-share must be driven with the officer's own freshly claimed
-	// certificate + matching private key as the mTLS client identity
-	// (node.restArgsIdentity), exactly as claimRecoveryShare does for the
-	// recovery-officer analogue above; presenting it with the admin identity
-	// used for claim-cert would fail closed with
-	// ceremony.ErrCertThumbprintMismatch.
-	for i, off := range officers {
-		beginOut, err := runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "claim-cert", "begin",
-			"--username", off.username, "--output", "json")
-		if err != nil {
-			t.Fatalf("claim-cert begin for %s: %v\noutput: %s", off.username, err, beginOut)
-		}
-		var begin shareClaimBeginJSON
-		decodeJSON(t, beginOut, &begin)
-		if begin.NonceHex == "" {
-			t.Fatalf("claim-cert begin for %s: empty nonce_hex: %s", off.username, beginOut)
-		}
-
-		sig := signNonceHex(t, off.key, begin.NonceHex)
-		sigB64 := base64.StdEncoding.EncodeToString(sig)
-
-		completeOut, err := runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "claim-cert", "complete",
-			"--username", off.username, "--nonce", begin.NonceHex, "--signature", sigB64, "--output", "json")
-		if err != nil {
-			t.Fatalf("claim-cert complete for %s: %v\noutput: %s", off.username, err, completeOut)
-		}
-		var certResult ceremonyClaimCertCompleteJSON
-		decodeJSON(t, completeOut, &certResult)
-		if !strings.Contains(certResult.CertPEM, "-----BEGIN CERTIFICATE-----") {
-			t.Errorf("claim-cert complete for %s: expected a signed certificate, got: %s", off.username, completeOut)
-		}
-
-		// Present the just-claimed certificate + the officer's original CSR
-		// private key as the mTLS client identity for the share claim.
-		certPath := writeTempFile(t, off.username+"-claimed-cert.pem", []byte(certResult.CertPEM))
-		keyPath := writeECPrivateKeyPEM(t, off.username+"-claim-key.pem", off.key)
-		identityArgs := node.restArgsIdentity(certPath, keyPath)
-
-		shareBeginOut, err := runQRDB(t, cli, identityArgs, "ceremony", "claim-share", "begin",
-			"--username", off.username, "--output", "json")
-		if err != nil {
-			t.Fatalf("claim-share begin for %s: %v\noutput: %s", off.username, err, shareBeginOut)
-		}
-		var shareBegin shareClaimBeginJSON
-		decodeJSON(t, shareBeginOut, &shareBegin)
-		if shareBegin.NonceHex == "" {
-			t.Fatalf("claim-share begin for %s: empty nonce_hex: %s", off.username, shareBeginOut)
-		}
-
-		shareSig := signNonceHex(t, off.key, shareBegin.NonceHex)
-		shareSigB64 := base64.StdEncoding.EncodeToString(shareSig)
-
-		shareOut, err := runQRDB(t, cli, identityArgs, "ceremony", "claim-share", "complete",
-			"--username", off.username, "--nonce", shareBegin.NonceHex, "--signature", shareSigB64,
-			"--output", "json")
-		if err != nil {
-			t.Fatalf("claim-share complete for %s: %v\noutput: %s", off.username, err, shareOut)
-		}
-		var shareResult ceremonyClaimShareCompleteJSON
-		decodeJSON(t, shareOut, &shareResult)
-		if shareResult.ShareIndex != i+1 {
-			t.Errorf("claim-share complete for %s: share_index = %d, want %d", off.username, shareResult.ShareIndex, i+1)
-		}
-		if shareResult.ShareJSON == "" {
-			t.Fatalf("claim-share complete for %s: empty share_json: %s", off.username, shareOut)
-		}
-		var shareShape struct {
-			Index int    `json:"index"`
-			Value string `json:"value"`
-		}
-		if err := json.Unmarshal([]byte(shareResult.ShareJSON), &shareShape); err != nil {
-			t.Fatalf("claimed share for %s is not the expected shamir.Share JSON shape: %v\nraw: %s", off.username, err, shareResult.ShareJSON)
-		}
-		if shareShape.Value == "" {
-			t.Fatalf("claimed share for %s has an empty value field: %s", off.username, shareResult.ShareJSON)
-		}
-		if shareShape.Index != i+1 {
-			t.Errorf("claimed share for %s: envelope index = %d, want %d", off.username, shareShape.Index, i+1)
+	for _, h := range holders {
+		h.envelope = filepath.Join(t.TempDir(), h.username+".env")
+		if out, err := runQRDB(t, cli, node.restArgsIdentity(h.certPath, h.keyPath),
+			"barrier", "officer", "claim", "--username", h.username, "--key", h.keyPath, "--out", h.envelope); err != nil {
+			t.Fatalf("claim for %s: %v\noutput: %s", h.username, err, out)
 		}
 	}
 
@@ -684,7 +574,28 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 	}
 	decodeJSON(t, statusOut, &status)
 	if status.State != "operational" {
-		t.Errorf("expected ceremony state operational once every officer has claimed cert+share, got: %q", status.State)
+		t.Errorf("expected ceremony state operational once every holder has claimed, got: %q", status.State)
+	}
+
+	// The claimed envelopes work: an officer and a custodian seal, then
+	// unseal, the barrier.
+	for _, op := range []string{"seal", "unseal"} {
+		for _, h := range []*initHolder{holders[0], holders[2]} {
+			if out, err := runQRDB(t, cli, node.restArgsIdentity(h.certPath, h.keyPath),
+				"barrier", "quorum", "submit", "--op", op, "--username", h.username,
+				"--envelope", h.envelope, "--key", h.keyPath); err != nil {
+				t.Fatalf("quorum submit --op %s %s: %v\noutput: %s", op, h.username, err, out)
+			}
+		}
+		out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "status", "--output", "json")
+		if err != nil {
+			t.Fatalf("barrier status after %s: %v\noutput: %s", op, err, out)
+		}
+		var bs transport.BarrierStatusResponse
+		decodeJSON(t, out, &bs)
+		if bs.Sealed != (op == "seal") {
+			t.Fatalf("after the %s quorum: sealed = %v", op, bs.Sealed)
+		}
 	}
 }
 
@@ -784,8 +695,8 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	}
 	var regGRPC officerRegisterJSON
 	decodeJSON(t, out, &regGRPC)
-	if regGRPC.ShareIndex != 1 {
-		t.Errorf("expected the first registered officer to get ShareIndex 1, got %d: %s", regGRPC.ShareIndex, out)
+	if regGRPC.Role != "so" || !strings.Contains(regGRPC.CertPEM, "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("expected a Security Officer with a CA-issued certificate, got: %s", out)
 	}
 
 	// REST reaches the listener too, and the CSR round-trips as a plain PEM
@@ -799,10 +710,7 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	}
 	var reg officerRegisterJSON
 	decodeJSON(t, out, &reg)
-	if reg.ShareIndex != 2 {
-		t.Errorf("expected the second registered officer to get ShareIndex 2, got %d: %s", reg.ShareIndex, out)
-	}
-	if !strings.Contains(string(reg.CertPEM), "-----BEGIN CERTIFICATE-----") {
+	if !strings.Contains(reg.CertPEM, "-----BEGIN CERTIFICATE-----") {
 		t.Errorf("expected cert_pem to decode into a PEM certificate, got: %s", reg.CertPEM)
 	}
 
@@ -811,28 +719,6 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	// authenticated callers.
 	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json"); err == nil {
 		t.Fatalf("barrier officer list succeeded anonymously on the sealed-window listener: %s", out)
-	}
-
-	// The registry now carries exactly the two registered officers, as the
-	// first-boot claim-status view reports them: by share index, without
-	// their usernames, because the sealed-window listener answers anonymously.
-	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "claim-status", "--output", "json")
-	if err != nil {
-		t.Fatalf("barrier officer claim-status: %v\noutput: %s", err, out)
-	}
-	var officers []struct {
-		Username   string `json:"username"`
-		ShareIndex int    `json:"share_index"`
-	}
-	decodeJSON(t, out, &officers)
-	if len(officers) != 2 {
-		t.Fatalf("expected exactly 2 enrolled officers, got %d: %s", len(officers), out)
-	}
-	if officers[0].ShareIndex != 1 || officers[1].ShareIndex != 2 {
-		t.Errorf("expected share indexes 1 and 2; got %+v", officers)
-	}
-	if strings.Contains(out, "off1") || strings.Contains(out, "off2") {
-		t.Errorf("anonymous claim-status named an officer: %s", out)
 	}
 }
 
@@ -853,7 +739,7 @@ func TestCLI_BarrierInitShamir_InsufficientOfficers(t *testing.T) {
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
 	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init-shamir",
-		"--passphrase", "seed-value", "--threshold", "2", "--total", "3")
+		"--threshold", "2", "--total", "3")
 	if err == nil {
 		t.Fatalf("barrier init-shamir with zero enrolled officers should fail; output: %s", out)
 	}
@@ -863,41 +749,27 @@ func TestCLI_BarrierInitShamir_InsufficientOfficers(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Recovery officers (`barrier recovery officer ...`) -- the fully
-// working end-to-end proof of the officer-claim protocol.
+// 3. Recovery holders (`barrier officer ... --domain recovery`).
 //
-// Recovery keys are independent of the primary unseal strategy and are
-// generated/claimed AFTER the barrier is already unsealed, so this flow
-// runs against the normal, fully-booted, RBAC-enforced server rather
-// than the sealed-window listener. That sidesteps bug 1 entirely: gRPC
-// and unix transports work fine post-boot (Health is served), and the
-// unix transport (protobuf `bytes`) has no CSRPEM encoding bug, so
-// registration succeeds over unix using the admin identity (see
-// registerRecoveryOfficer / node.unixArgsAdmin: unix is "verified TLS 1.3
-// only", identical to TCP gRPC, and now carries the admin client
-// certificate). claim-begin/claim-complete are identity-gated
-// (permission.IdentityGated -- any trusted client cert, not an RBAC
-// role) and require the OFFICER's own freshly claimed TLS client
-// certificate to compute the thumbprint match; that identity is minted by
-// `ca issue`-style CSR signing and is only plumbed through the REST
-// harness helpers (restArgsIdentity) in this file, so the claim handshake
-// runs over REST here as a matter of harness convenience, not because
-// unix cannot carry client certificates.
+// The recovery key is independent of the primary unseal strategy and is
+// generated AFTER the barrier is unsealed, so this flow runs against the
+// normal, fully-booted, RBAC-enforced server. Registration runs over the unix
+// transport with the admin identity; the claim and quorum submissions are
+// identity-gated and present each holder's own certificate over REST.
 // ---------------------------------------------------------------------------
 
 // registeredRecoveryOfficer bundles what's needed to drive a recovery
-// officer's own claim handshake after registration.
+// holder's claim and quorum submissions after registration.
 type registeredRecoveryOfficer struct {
-	username   string
-	certPath   string
-	keyPath    string
-	shareIndex int
+	username string
+	certPath string
+	keyPath  string
+	envelope string
 }
 
-// registerRecoveryOfficer registers username against node's recovery
-// officer registry over the unix transport (protobuf bytes CSRPEM --
-// unaffected by bug 1), writes the CA-signed certificate PEM to a temp
-// file, and returns the officer's identity material.
+// registerRecoveryOfficer enrols username in node's recovery domain over
+// the unix transport and writes the CA-issued certificate beside the
+// holder's own key.
 func registerRecoveryOfficer(t *testing.T, cli string, node *selfGenCANode, unixSocket, username string) *registeredRecoveryOfficer {
 	t.Helper()
 
@@ -905,123 +777,50 @@ func registerRecoveryOfficer(t *testing.T, cli string, node *selfGenCANode, unix
 	csrPath := writeTempFile(t, username+".csr", csrPEM)
 	keyPath := writeECPrivateKeyPEM(t, username+"-key.pem", key)
 
-	unixArgs := node.unixArgsAdmin(unixSocket)
-	out, err := runQRDB(t, cli, unixArgs, "barrier", "recovery", "officer", "register",
+	out, err := runQRDB(t, cli, node.unixArgsAdmin(unixSocket), "barrier", "officer", "register", "--domain", "recovery",
 		"--username", username, "--csr-file", csrPath, "--output", "json")
 	if err != nil {
-		t.Fatalf("register recovery officer %s over unix transport: %v\noutput: %s", username, err, out)
+		t.Fatalf("register recovery holder %s over unix transport: %v\noutput: %s", username, err, out)
 	}
-
 	var resp officerRegisterJSON
 	decodeJSON(t, out, &resp)
-	if len(resp.CertPEM) == 0 {
-		t.Fatalf("register recovery officer %s: empty cert_pem in response: %s", username, out)
+	if resp.CertPEM == "" {
+		t.Fatalf("register recovery holder %s: empty cert_pem in response: %s", username, out)
 	}
-	certPath := writeTempFile(t, username+"-cert.pem", resp.CertPEM)
-
 	return &registeredRecoveryOfficer{
-		username:   username,
-		certPath:   certPath,
-		keyPath:    keyPath,
-		shareIndex: resp.ShareIndex,
+		username: username,
+		certPath: writeTempFile(t, username+"-cert.pem", []byte(resp.CertPEM)),
+		keyPath:  keyPath,
 	}
 }
 
-// claimRecoveryShare drives officer's own claim-begin/sign/claim-complete
-// handshake over REST (the only transport that both speaks TLS and
-// reaches the identity-gated claim endpoints with the officer's own
-// certificate), confirms the delivered share is a well-formed
-// shamir.Share JSON envelope (`{"index":N,"threshold":M,"total":T,
-// "value":"..."}`), and returns just the bare base64 "value" field --
-// the form `barrier recovery recover --share`/`barrier unseal-shares
-// --share` actually expect (see the package doc comment's wire-
-// convention note).
-func claimRecoveryShare(t *testing.T, cli string, node *selfGenCANode, officer *registeredRecoveryOfficer) string {
+// claimRecoveryEnvelope claims the holder's recovery envelope over its own
+// certificate and records where it was written.
+func claimRecoveryEnvelope(t *testing.T, cli string, node *selfGenCANode, off *registeredRecoveryOfficer) {
 	t.Helper()
-
-	identityArgs := node.restArgsIdentity(officer.certPath, officer.keyPath)
-
-	out, err := runQRDB(t, cli, identityArgs, "barrier", "recovery", "officer", "claim-begin",
-		"--username", officer.username, "--output", "json")
+	off.envelope = filepath.Join(t.TempDir(), off.username+".env")
+	out, err := runQRDB(t, cli, node.restArgsIdentity(off.certPath, off.keyPath),
+		"barrier", "officer", "claim", "--domain", "recovery",
+		"--username", off.username, "--key", off.keyPath, "--out", off.envelope)
 	if err != nil {
-		t.Fatalf("recovery officer claim-begin for %s: %v\noutput: %s", officer.username, err, out)
+		t.Fatalf("recovery claim for %s: %v\noutput: %s", off.username, err, out)
 	}
-	var begin shareClaimBeginJSON
-	decodeJSON(t, out, &begin)
-	if begin.NonceHex == "" {
-		t.Fatalf("recovery officer claim-begin for %s: empty nonce_hex: %s", officer.username, out)
-	}
-
-	// Re-derive the officer's private key from disk to sign the nonce --
-	// mirrors what a real, separate officer process would do.
-	keyPEM, err := os.ReadFile(officer.keyPath)
-	if err != nil {
-		t.Fatalf("read officer key: %v", err)
-	}
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		t.Fatalf("decode officer key PEM")
-	}
-	priv, err := x509.ParseECPrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("parse officer EC key: %v", err)
-	}
-
-	sig := signNonceHex(t, priv, begin.NonceHex)
-	sigPath := writeTempFile(t, officer.username+".sig", sig)
-
-	out, err = runQRDB(t, cli, identityArgs, "barrier", "recovery", "officer", "claim-complete",
-		"--username", officer.username, "--nonce-hex", begin.NonceHex, "--sig-file", sigPath, "--output", "json")
-	if err != nil {
-		t.Fatalf("recovery officer claim-complete for %s: %v\noutput: %s", officer.username, err, out)
-	}
-	var complete shareClaimCompleteJSON
-	decodeJSON(t, out, &complete)
-	if complete.ShareIndex != officer.shareIndex {
-		t.Errorf("claim-complete for %s: share_index = %d, want %d", officer.username, complete.ShareIndex, officer.shareIndex)
-	}
-	if len(complete.ShareBytes) == 0 {
-		t.Fatalf("claim-complete for %s: empty share_bytes: %s", officer.username, out)
-	}
-
-	var shareShape struct {
-		Index     int    `json:"index"`
-		Threshold int    `json:"threshold"`
-		Total     int    `json:"total"`
-		Value     string `json:"value"`
-	}
-	if err := json.Unmarshal(complete.ShareBytes, &shareShape); err != nil {
-		t.Fatalf("claimed share for %s is not the expected shamir.Share JSON shape: %v\nraw: %s", officer.username, err, complete.ShareBytes)
-	}
-	if shareShape.Value == "" {
-		t.Fatalf("claimed share for %s has an empty value field: %s", officer.username, complete.ShareBytes)
-	}
-	if shareShape.Index != officer.shareIndex {
-		t.Errorf("claimed share for %s: envelope index = %d, want %d", officer.username, shareShape.Index, officer.shareIndex)
-	}
-
-	return shareShape.Value
 }
 
-// TestCLI_RecoveryOfficerFlow_EndToEnd is the fully-driven officer-claim
-// protocol proof requested for this coverage gap: register (real CSR) ->
-// claim-begin -> sign the nonce -> claim-complete returns the share ->
-// the share is a well-formed shamir.Share JSON object -> the unwrapped
-// share VALUES actually unseal the barrier via `barrier recovery
-// recover`. It also verifies the CLI-level guardrails around the flow (a
-// claimed share cannot be claimed again; an unregistered officer cannot
-// claim-begin).
-//
-// This is the recovery-officer analogue of the SYSTEM barrier's
-// `barrier officer` Shamir flow requested by the task description. The
-// system-officer variant cannot be driven end-to-end at all right now
-// because it can only be registered while the barrier is sealed (see
-// bug 1 in the package doc comment and
-// TestCLI_BarrierOfficerRegister_SealedWindowCSRBug); this test proves
-// the identical claim protocol (register/list/claim-begin/sign/claim-
-// complete/verify-the-share-works) end-to-end using the recovery scope,
-// which is reachable over the unix transport for registration (no CSR
-// bug) and REST for the identity-gated claim handshake.
+// submitRecoveryShare submits off's recovery share to the recover round,
+// signing with keyPath (the holder's own key, or another to prove refusal).
+func submitRecoveryShare(t *testing.T, cli string, node *selfGenCANode, off *registeredRecoveryOfficer, keyPath string) (string, error) {
+	t.Helper()
+	return runQRDB(t, cli, node.restArgsIdentity(off.certPath, off.keyPath),
+		"barrier", "quorum", "submit", "--domain", "recovery", "--op", "recover",
+		"--username", off.username, "--envelope", off.envelope, "--key", keyPath, "--output", "json")
+}
+
+// TestCLI_RecoveryOfficerFlow_EndToEnd drives the recovery domain end to
+// end: enrol three recovery holders, generate a 2-of-3 recovery key, claim
+// two envelopes (a second claim and a claim for an unknown holder are
+// refused), seal the barrier, and recover it with a quorum of the two — a
+// submission answered with the wrong key being refused on the way.
 func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -1076,230 +875,58 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
-	// Register three recovery officers over the unix transport (bug-1
-	// free), then generate a 2-of-3 recovery key set. Recovery share
-	// distribution requires the enrolled officer count to already satisfy
-	// the requested threshold, so registration must happen first.
 	off1 := registerRecoveryOfficer(t, cli, node, unixSocket, "r1")
 	off2 := registerRecoveryOfficer(t, cli, node, unixSocket, "r2")
-	// r3 is enrolled only to satisfy sealSharesToOfficers' requirement that
-	// the enrolled officer count exactly equal --total; its share is never
-	// claimed (the 2-of-3 threshold is met by off1 + off2 alone).
-	_ = registerRecoveryOfficer(t, cli, node, unixSocket, "r3")
+	off3 := registerRecoveryOfficer(t, cli, node, unixSocket, "r3")
 
-	unixArgs := node.unixArgsAdmin(unixSocket)
-	out, err := runQRDB(t, cli, unixArgs, "barrier", "recovery", "generate",
-		"--threshold", "2", "--total", "3", "--output", "json")
+	out, err := runQRDB(t, cli, node.unixArgsAdmin(unixSocket), "barrier", "recovery", "generate",
+		"--threshold", "2", "--output", "json")
 	if err != nil {
 		t.Fatalf("barrier recovery generate: %v\noutput: %s", err, out)
 	}
 	var genResp recoveryKeysJSON
 	decodeJSON(t, out, &genResp)
 	if genResp.ShareCount != 3 {
-		t.Fatalf("barrier recovery generate: share_count = %d, want 3: %s", genResp.ShareCount, out)
+		t.Fatalf("barrier recovery generate: share_count = %d, want 3 (one per enrolled holder): %s", genResp.ShareCount, out)
 	}
 
-	// Full claim protocol for two of the three officers -- enough to
-	// satisfy the 2-of-3 threshold.
-	share1 := claimRecoveryShare(t, cli, node, off1)
-	share2 := claimRecoveryShare(t, cli, node, off2)
-	t.Logf("claimed share 1: %s", share1)
-	t.Logf("claimed share 2: %s", share2)
+	claimRecoveryEnvelope(t, cli, node, off1)
+	claimRecoveryEnvelope(t, cli, node, off2)
 
-	// Guardrail: the share was consumed exactly once. A second claim-begin
-	// for the same officer must fail (ErrNoPendingShare) rather than
-	// re-issue a nonce for an already-delivered share.
+	// An envelope is delivered once.
 	out, err = runQRDB(t, cli, node.restArgsIdentity(off1.certPath, off1.keyPath),
-		"barrier", "recovery", "officer", "claim-begin", "--username", off1.username, "--output", "json")
-	if err == nil {
-		t.Fatalf("re-claim of an already-delivered share should fail; output: %s", out)
+		"barrier", "officer", "claim-begin", "--domain", "recovery", "--username", off1.username)
+	if err == nil || !strings.Contains(out, "no pending share") {
+		t.Fatalf("a second claim was not refused with 'no pending share': %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "no pending share") {
-		t.Errorf("expected 'no pending share for officer', got: %s", out)
-	}
-
-	// Guardrail: an unregistered officer cannot claim-begin. The admin
-	// identity satisfies the "any trusted client cert" identity gate but
-	// the ceremony's officer registry lookup for the given username still
-	// fails.
+	// An unknown holder cannot claim.
 	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"barrier", "recovery", "officer", "claim-begin", "--username", "no-such-officer")
-	if err == nil {
-		t.Fatalf("claim-begin for an unregistered officer should fail; output: %s", out)
-	}
-	if !strings.Contains(out, "officer not found") {
-		t.Errorf("expected 'officer not found', got: %s", out)
+		"barrier", "officer", "claim-begin", "--domain", "recovery", "--username", "no-such-officer")
+	if err == nil || !strings.Contains(out, "officer not found") {
+		t.Fatalf("a claim for an unknown holder was not refused with 'officer not found': %v\noutput: %s", err, out)
 	}
 
-	// `barrier recovery recover` requires the barrier to be SEALED
-	// (pkg/seal/recovery.go RecoverWithKeys). This node's primary strategy
-	// is "none" (not Shamir), so the single-admin `barrier seal` path
-	// applies directly -- no quorum vote needed.
+	// The recover op requires the barrier SEALED; this node's primary
+	// strategy is "none", so the single-caller seal applies.
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "seal", "-y"); err != nil {
 		t.Fatalf("barrier seal: %v\noutput: %s", err, out)
 	}
 
-	// The final proof requested for this coverage gap: the two claimed
-	// shares, submitted in ascending share-index order as their bare
-	// base64 values, actually reconstruct the root key and unseal the
-	// barrier.
-	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"barrier", "recovery", "recover", "--share", share1, "--share", share2)
+	// Signing with another holder's key cannot answer r1's factor.
+	if out, err := submitRecoveryShare(t, cli, node, off1, off3.keyPath); err == nil {
+		t.Fatalf("a submission signed with another holder's key was accepted: %s", out)
+	}
+	if out, err := submitRecoveryShare(t, cli, node, off1, off1.keyPath); err != nil {
+		t.Fatalf("recover submission for r1: %v\noutput: %s", err, out)
+	}
+	out, err = submitRecoveryShare(t, cli, node, off2, off2.keyPath)
 	if err != nil {
-		t.Fatalf("barrier recovery recover with the claimed shares should succeed: %v\noutput: %s", err, out)
+		t.Fatalf("recover submission for r2: %v\noutput: %s", err, out)
 	}
-
-	statusOut, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "status", "--output", "json")
-	if err != nil {
-		t.Fatalf("barrier status after recovery: %v\noutput: %s", err, statusOut)
-	}
-	var status struct {
-		Sealed   bool   `json:"sealed"`
-		Strategy string `json:"strategy"`
-	}
-	decodeJSON(t, statusOut, &status)
-	if status.Sealed {
-		t.Errorf("expected the barrier to be unsealed after a successful recovery, got: %s", statusOut)
-	}
-}
-
-// TestCLI_OfficerShareEnvelopeRoundTrip proves the share-envelope UX fix
-// (cmd/qrdb/barrier.go resolveShareInput / renderShareClaimComplete)
-// against a real daemon: the RAW JSON shamir.Share envelope
-// `barrier recovery officer claim-complete` returns (decoded from its
-// --output json response's base64 share_bytes field -- ordinary JSON
-// decoding, not a manual "unwrap the value field" step) feeds straight
-// into `barrier recovery recover --share` with NO manual editing. Before
-// the fix, the consumer command required the caller to pre-extract the
-// envelope's bare "value" field; this test would fail against the old
-// behavior with a base64-decode error.
-func TestCLI_OfficerShareEnvelopeRoundTrip(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	dataDir := t.TempDir()
-	sockDir, err := os.MkdirTemp("", "qrdb-share-envelope-")
-	if err != nil {
-		t.Fatalf("socket dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(sockDir) })
-	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
-
-	cfgPath := writeSealYAML(t, "seal:\n  enabled: true\n  strategy: none\n")
-	raftPort := allocatePorts(t, 1)[0]
-	adminPort := allocateTCPPorts(t, 1)[0]
-	grpcPort := allocateTCPPorts(t, 1)[0]
-
-	args := []string{
-		"start",
-		"--config", cfgPath,
-		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
-		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
-		"--data-dir", dataDir,
-		"--sm", "pebble",
-		"--discovery", "static",
-		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
-		"--shard-id", "1",
-		"--replica-id", "1",
-		"--admin-port", fmt.Sprintf("%d", adminPort),
-		"--grpc-port", fmt.Sprintf("%d", grpcPort),
-		"--enable-unix", "--unix-socket-path", unixSocket,
-	}
-	startNode(t, bin, args, "[share-envelope-roundtrip] ")
-
-	node := &selfGenCANode{
-		dataDir:       dataDir,
-		adminPort:     adminPort,
-		grpcPort:      grpcPort,
-		raftPort:      raftPort,
-		caPath:        filepath.Join(dataDir, "ca.pem"),
-		adminCertPath: filepath.Join(dataDir, "admin-cert.pem"),
-		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
-	}
-	waitForFile(t, node.caPath, 30*time.Second)
-	waitForFile(t, node.adminCertPath, 30*time.Second)
-	waitForFile(t, node.adminKeyPath, 30*time.Second)
-
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
-	waitForHealthy(t, dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	// A 2-of-2 recovery key set so both claimed envelopes are required
-	// (and therefore both must round-trip correctly, not just one).
-	off1 := registerRecoveryOfficer(t, cli, node, unixSocket, "e1")
-	off2 := registerRecoveryOfficer(t, cli, node, unixSocket, "e2")
-
-	unixArgs := node.unixArgsAdmin(unixSocket)
-	genOut, err := runQRDB(t, cli, unixArgs, "barrier", "recovery", "generate",
-		"--threshold", "2", "--total", "2", "--output", "json")
-	if err != nil {
-		t.Fatalf("barrier recovery generate: %v\noutput: %s", err, genOut)
-	}
-
-	// claimRawEnvelope drives claim-begin/sign/claim-complete like
-	// claimRecoveryShare, but returns the RAW JSON envelope string
-	// (ordinary base64-field JSON decoding of --output json's
-	// share_bytes, nothing more) instead of manually extracting "value".
-	claimRawEnvelope := func(officer *registeredRecoveryOfficer) string {
-		identityArgs := node.restArgsIdentity(officer.certPath, officer.keyPath)
-
-		beginOut, err := runQRDB(t, cli, identityArgs, "barrier", "recovery", "officer", "claim-begin",
-			"--username", officer.username, "--output", "json")
-		if err != nil {
-			t.Fatalf("recovery officer claim-begin for %s: %v\noutput: %s", officer.username, err, beginOut)
-		}
-		var begin shareClaimBeginJSON
-		decodeJSON(t, beginOut, &begin)
-
-		keyPEM, err := os.ReadFile(officer.keyPath)
-		if err != nil {
-			t.Fatalf("read officer key: %v", err)
-		}
-		block, _ := pem.Decode(keyPEM)
-		if block == nil {
-			t.Fatalf("decode officer key PEM")
-		}
-		priv, err := x509.ParseECPrivateKey(block.Bytes)
-		if err != nil {
-			t.Fatalf("parse officer EC key: %v", err)
-		}
-		sig := signNonceHex(t, priv, begin.NonceHex)
-		sigPath := writeTempFile(t, officer.username+".sig", sig)
-
-		completeOut, err := runQRDB(t, cli, identityArgs, "barrier", "recovery", "officer", "claim-complete",
-			"--username", officer.username, "--nonce-hex", begin.NonceHex, "--sig-file", sigPath, "--output", "json")
-		if err != nil {
-			t.Fatalf("recovery officer claim-complete for %s: %v\noutput: %s", officer.username, err, completeOut)
-		}
-		var complete shareClaimCompleteJSON
-		decodeJSON(t, completeOut, &complete)
-		if len(complete.ShareBytes) == 0 {
-			t.Fatalf("claim-complete for %s: empty share_bytes: %s", officer.username, completeOut)
-		}
-		// Sanity: this must be the JSON envelope, not a bare base64 value.
-		if !strings.HasPrefix(strings.TrimSpace(string(complete.ShareBytes)), "{") {
-			t.Fatalf("claim-complete for %s: expected a JSON envelope, got: %s", officer.username, complete.ShareBytes)
-		}
-		return string(complete.ShareBytes)
-	}
-
-	envelope1 := claimRawEnvelope(off1)
-	envelope2 := claimRawEnvelope(off2)
-
-	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "seal", "-y"); err != nil {
-		t.Fatalf("barrier seal: %v\noutput: %s", err, out)
-	}
-
-	// The actual round-trip proof: the two RAW envelopes, with zero manual
-	// editing, feed straight into --share and successfully recover the
-	// barrier.
-	out, err := runQRDB(t, cli, node.restArgsAdmin(),
-		"barrier", "recovery", "recover", "--share", envelope1, "--share", envelope2)
-	if err != nil {
-		t.Fatalf("barrier recovery recover with raw envelopes should succeed with no manual unwrap: %v\noutput: %s", err, out)
+	var outcome transport.QuorumOutcome
+	decodeJSON(t, out, &outcome)
+	if !outcome.Complete {
+		t.Fatalf("the second recovery holder did not complete the round: %s", out)
 	}
 
 	statusOut, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "status", "--output", "json")
@@ -1311,46 +938,21 @@ func TestCLI_OfficerShareEnvelopeRoundTrip(t *testing.T) {
 	}
 	decodeJSON(t, statusOut, &status)
 	if status.Sealed {
-		t.Errorf("expected the barrier to be unsealed after recovering with raw envelopes, got: %s", statusOut)
+		t.Errorf("expected the barrier to be unsealed after a successful recovery, got: %s", statusOut)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 4. Ceremony command family (`ceremony status`, `ceremony claim-cert`,
-//    `ceremony claim-share`, `ceremony sign-csr`, `ceremony
-//    claim-share-begin/complete`, `ceremony submit-unseal-share`).
+// 4. Ceremony command family (`ceremony status`, `ceremony sign-csr`).
 // ---------------------------------------------------------------------------
 
-// TestCLI_Ceremony_StatusAndSubcommands drives every wired `ceremony`
-// subcommand against a real node and asserts on the server's actual,
-// verified response for each:
+// TestCLI_Ceremony_StatusAndSubcommands drives the `ceremony` subcommands
+// against a real node and asserts on the server's actual response:
 //
 //   - `ceremony status`: awaiting_init before `qrdb init`, operational after.
-//   - `ceremony claim-cert begin/complete`: the M-of-N/"Officers list"
-//     enrollment path (pkg/ceremony state machine StateEnrolling). Because
-//     `qrdb init` never populates that Officers list (bug 2), the ceremony
-//     always takes the single-admin branch and lands directly in
-//     StateOperational, so these two commands deterministically fail with
-//     the typed ceremony.ErrNotInEnrollingState (BeginClaimCert/
-//     CompleteClaimCert check `s.state != StateEnrolling` directly).
-//   - `ceremony claim-share begin`: the officer share-claim handshake
-//     (pkg/ceremony/ceremony_officer.go beginClaimShareLocked) is deliberately
-//     NOT gated on ceremony state -- it is gated on officer enrollment and
-//     mTLS certificate thumbprint instead (see
-//     TestCLI_Init_ShamirWithOfficers_EndToEnd for the full successful
-//     handshake). Since this node never enrolled an "off1" officer (single-
-//     admin path, no officerRegistry), it deterministically fails with the
-//     typed ceremony.ErrOfficerNotFound instead.
-//   - `ceremony claim-share-begin`, `claim-share-complete` and
-//     `submit-unseal-share`: the custodian/hardware-authenticator
-//     extension point (pkg/ceremony CeremonyExtension, wired via
-//     SetExtension). qrdbd's daemon boot never calls SetExtension --
-//     that lives in go-xkms, per the locked layer-ownership boundary in
-//     this repo's CLAUDE.md -- so these deterministically fail with the
-//     typed ceremony.ErrNotImplemented.
 //   - `ceremony sign-csr`: succeeds with the correct --so-pin (the one
-//     supplied to `qrdb init`) and fails with the typed
-//     ceremony.ErrSOPINMismatch for a wrong one.
+//     supplied to `qrdb init`) and is refused by the PIN backend for a wrong
+//     one.
 func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -1392,52 +994,6 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Errorf("ceremony status post-init: spki_pin should be non-empty")
 	}
 
-	// notEnrolling drives every wired ceremony subcommand that the
-	// single-admin (non-M-of-N) path leaves unreachable, each against its
-	// own specific typed error -- see the package/test doc comment above
-	// for why claim-share begin's failure mode (ErrOfficerNotFound) differs
-	// from claim-cert begin/complete's (ErrNotInEnrollingState).
-	notEnrolling := []struct {
-		name    string
-		args    []string
-		wantErr string
-	}{
-		{"claim-cert begin", []string{"ceremony", "claim-cert", "begin", "--username", "off1"}, "operation requires enrolling state"},
-		{"claim-cert complete", []string{"ceremony", "claim-cert", "complete", "--username", "off1", "--nonce", "deadbeef", "--signature", "AAAA"}, "operation requires enrolling state"},
-		{"claim-share begin", []string{"ceremony", "claim-share", "begin", "--username", "off1"}, "officer not found"},
-	}
-	for _, tc := range notEnrolling {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := runQRDB(t, cli, node.restArgsAdmin(), tc.args...)
-			if err == nil {
-				t.Fatalf("%s should fail once the ceremony is operational; output: %s", tc.name, out)
-			}
-			if !strings.Contains(out, tc.wantErr) {
-				t.Errorf("%s: expected %q, got: %s", tc.name, tc.wantErr, out)
-			}
-		})
-	}
-
-	notImplemented := []struct {
-		name string
-		args []string
-	}{
-		{"claim-share-begin", []string{"ceremony", "claim-share-begin", "--custodian-id", "cust1"}},
-		{"claim-share-complete", []string{"ceremony", "claim-share-complete", "--custodian-id", "cust1", "--challenge-id", "ch1", "--factor-response", "AAAA"}},
-		{"submit-unseal-share", []string{"ceremony", "submit-unseal-share", "--custodian-id", "cust1", "--share", "AAAA"}},
-	}
-	for _, tc := range notImplemented {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := runQRDB(t, cli, node.restArgsAdmin(), tc.args...)
-			if err == nil {
-				t.Fatalf("%s should fail: qrdbd never wires a ceremony.CeremonyExtension (that lives in go-xkms); output: %s", tc.name, out)
-			}
-			if !strings.Contains(out, "operation not implemented") {
-				t.Errorf("%s: expected ceremony.ErrNotImplemented, got: %s", tc.name, out)
-			}
-		})
-	}
-
 	csrPEM, _ := generateCeremonyCSR(t, "svc1")
 	csrPath := writeTempFile(t, "svc1.csr", csrPEM)
 
@@ -1457,7 +1013,7 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ceremony sign-csr with the wrong SO PIN should fail; output: %s", out)
 	}
-	if !strings.Contains(out, "SO PIN mismatch") {
-		t.Errorf("expected ceremony.ErrSOPINMismatch, got: %s", out)
+	if !strings.Contains(out, "invalid PIN") {
+		t.Errorf("expected pin.ErrPINInvalid from the PIN backend, got: %s", out)
 	}
 }

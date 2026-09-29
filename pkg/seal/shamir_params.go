@@ -14,10 +14,10 @@
 
 package seal
 
-// ShamirInitParams carries the threshold, total-share count, and officer
-// share count for a Shamir initialization or rekey. Unlike ShamirInitResult
-// it carries no share material; it is the share-free return type used after
-// share distribution has been delegated to the CeremonyDistributor.
+// ShamirInitParams carries the threshold, total-share count and sealed-share
+// count of a Shamir initialization or rekey. It carries no share material:
+// shares reach their holders only as envelopes sealed by the
+// CeremonyDistributor.
 type ShamirInitParams struct {
 	// Threshold is the minimum number of shares required to reconstruct the
 	// secret (M in M-of-N).
@@ -26,8 +26,9 @@ type ShamirInitParams struct {
 	// TotalShares is the total number of shares produced (N in M-of-N).
 	TotalShares int `json:"total_shares"`
 
-	// ShareCount is the number of officer shares that were sealed into
-	// ceremony enclaves. This equals TotalShares when all officers are
-	// enrolled; it may be less if enrollment is still in progress.
+	// ShareCount is the number of share envelopes the distributor sealed,
+	// one per holder in the roster. A distribution never seals fewer shares
+	// than TotalShares: a holder count that differs from the requested total
+	// is refused with HolderCountMismatchError.
 	ShareCount int `json:"share_count"`
 }

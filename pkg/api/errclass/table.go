@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -703,6 +704,8 @@ var pinRules = []rule{
 	// A corrupted PIN state file: restore from backup, do not retry.
 	is(pin.ErrStateCorrupted, DataLoss),
 	is(pin.ErrStrategyNotSet, PreconditionFailed),
+	// No PIN backend is wired, so every PIN-gated operation fails closed.
+	is(pin.ErrBackendNotConfigured, PreconditionFailed),
 }
 
 // authFactorRules are the hardware authentication-factor seam's conditions.
@@ -743,11 +746,68 @@ var userAuthFactorRules = []rule{
 	as(&service.FactorMigrationRefusedError{}, FailedPrecondition),
 }
 
+// holderRules are the share-holder, quorum and envelope conditions. They sit
+// ahead of the PIN, auth-factor and ceremony families: a holder's failed
+// authentication wraps its factor's own error, and a rekey that would break
+// the quorum also matches seal.ErrShamirThresholdInvalid.
+var holderRules = []rule{
+	as(&seal.HolderAuthenticationError{Holder: "h", Err: errHolderSample}, PermissionDenied),
+	as(&seal.HolderNotInRosterError{}, PermissionDenied),
+	as(&seal.HolderRevokedError{}, PermissionDenied),
+	as(&seal.ShareIndexMismatchError{}, PermissionDenied),
+	as(&seal.FactorNotAdmittedError{}, PermissionDenied),
+	as(&seal.HolderAlreadySubmittedError{}, AlreadyExists),
+	as(&seal.RevocationBreaksQuorumError{}, FailedPrecondition),
+	as(&seal.HolderCountMismatchError{}, FailedPrecondition),
+	as(&seal.QuorumOpInvalidError{}, InvalidArgument),
+	as(&seal.InvalidRosterError{}, InvalidArgument),
+	is(seal.ErrHolderRosterMissing, FailedPrecondition),
+	is(seal.ErrHolderVerifierNotConfigured, FailedPrecondition),
+	is(seal.ErrQuorumRoundNotOpen, FailedPrecondition),
+	is(seal.ErrQuorumRoundInProgress, AlreadyExists),
+	is(seal.ErrRecoveryKeysExist, AlreadyExists),
+	is(seal.ErrShamirQuorumExpired, FailedPrecondition),
+	is(seal.ErrShamirInitializeRequiresHolders, FailedPrecondition),
+	is(ceremony.ErrSelfEnrolment, PermissionDenied),
+	is(ceremony.ErrChallengeVerificationFailed, PermissionDenied),
+	is(ceremony.ErrChallengeExpired, PermissionDenied),
+	is(ceremony.ErrChallengeNotFound, FailedPrecondition),
+	is(ceremony.ErrQuorumChallengeNotFound, PermissionDenied),
+	is(ceremony.ErrQuorumChallengeMismatch, PermissionDenied),
+	is(ceremony.ErrDuplicateHolderKey, AlreadyExists),
+	is(ceremony.ErrDuplicateUsername, AlreadyExists),
+	is(ceremony.ErrNoOfficers, InvalidArgument),
+	is(ceremony.ErrInvalidThreshold, InvalidArgument),
+	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),
+	is(ceremony.ErrTooManyPendingChallenges, ResourceExhausted),
+	is(ceremony.ErrTrustDomainNotConfigured, FailedPrecondition),
+	is(ceremony.ErrCANotInitialized, FailedPrecondition),
+	is(ceremony.ErrInvalidHolderRole, InvalidArgument),
+	is(ceremony.ErrMissingUsername, InvalidArgument),
+	is(ceremony.ErrMissingCSRPEM, InvalidArgument),
+	is(ceremony.ErrShareEnvelopeMalformed, InvalidArgument),
+	as(&ceremony.InvalidHolderNameError{}, InvalidArgument),
+	as(&ceremony.EncryptionKeyRequiredError{Err: errHolderSample}, InvalidArgument),
+	as(&ceremony.DuplicateFactorError{}, InvalidArgument),
+	as(&ceremony.FactorNotEnrolledError{}, InvalidArgument),
+	as(&ceremony.HolderFactorEnrollmentError{Err: errHolderSample}, InvalidArgument),
+	as(&ceremony.CSRParseError{Err: errHolderSample}, InvalidArgument),
+	as(&keydelivery.UnsupportedKEMError{}, InvalidArgument),
+	as(&keydelivery.UnsupportedRecipientKeyError{}, InvalidArgument),
+	as(&keydelivery.SuiteNotApprovedError{}, InvalidArgument),
+	is(service.ErrNilRequest, InvalidArgument),
+}
+
+// errHolderSample is the cause the holder rows' wrapping samples carry, so
+// their Error methods have something to render.
+var errHolderSample = errors.New("sample cause")
+
 // ceremonyRules are the barrier seal/unseal and M-of-N ceremony conditions.
 var ceremonyRules = []rule{
 	is(service.ErrCeremonyNotConfigured, Unprocessable),
 	is(seal.ErrShamirBarrierRequiresQuorum, Unprocessable),
-	is(seal.ErrSealVoteVerificationFailed, PermissionDenied),
+	// A Shamir barrier is unsealed by a holder quorum, not by one caller.
+	is(seal.ErrShamirUnsealRequiresQuorum, Unprocessable),
 	is(seal.ErrUnsealKeyMismatch, PermissionDenied),
 	is(seal.ErrInvalidCredentials, PermissionDenied),
 	is(seal.ErrDecryptionFailed, PermissionDenied),
@@ -765,7 +825,6 @@ var ceremonyRules = []rule{
 	// deals a new one.
 	is(ceremony.ErrShareExpired, Gone),
 	is(ceremony.ErrInsufficientOfficers, Unprocessable),
-	is(ceremony.ErrInvalidAuthenticatorType, InvalidArgument),
 }
 
 // migrationRules are the enable-encryption migration conditions.

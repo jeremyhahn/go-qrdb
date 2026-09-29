@@ -16,7 +16,6 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
@@ -26,13 +25,6 @@ import (
 
 // Capabilities describes the feature set advertised by a backend.
 type Capabilities = capabilities.Capabilities
-
-// ---------------------------------------------------------------------------
-// Custodian
-// ---------------------------------------------------------------------------
-
-// Custodian is a registered ceremony custodian (share holder).
-type Custodian = custodian.Custodian
 
 // ---------------------------------------------------------------------------
 // Quota

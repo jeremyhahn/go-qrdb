@@ -345,7 +345,7 @@ func TestQuicTenantBarrierInitRequest_WireShape(t *testing.T) {
 }
 
 func TestQuicTenantBarrierUnsealRequest_WireShape(t *testing.T) {
-	in := quicTenantBarrierUnsealRequest{TenantID: "acme", Share: []byte("s"), Key: []byte("k")}
+	in := quicTenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("k")}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -357,8 +357,8 @@ func TestQuicTenantBarrierUnsealRequest_WireShape(t *testing.T) {
 	if as["tenant_id"] != "acme" {
 		t.Errorf("tenant_id = %v, want acme", as["tenant_id"])
 	}
-	if _, ok := as["share"]; !ok {
-		t.Error("expected share field in wire payload")
+	if _, ok := as["share"]; ok {
+		t.Error("the credential unseal must not carry a share field")
 	}
 	if _, ok := as["key"]; !ok {
 		t.Error("expected key field in wire payload")

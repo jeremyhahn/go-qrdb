@@ -16,7 +16,7 @@
 
 // barrier_permutations_cli_test.go extends barrier_cli_test.go's
 // exhaustive-but-https-only `barrier` lifecycle coverage (init, init-shamir,
-// unseal, unseal-shares, seal, shamir-seal-vote, rekey, root-token) to the
+// unseal, seal, and the share-holder quorum: seal, unseal, root-token) to the
 // other CLI-selectable transports, looping protocol tables exactly as
 // drain_test.go's TestAdminDrain_PerProtocol does.
 //
@@ -55,8 +55,8 @@
 // This file freely reuses the unexported fixtures barrier_cli_test.go
 // already built for the https-only lifecycle (writeSealConfig, testCA,
 // loadDaemonCA, waitForNonEmptyFile, runCLISplit, barrierStatus,
-// barrierHasRecoveryKeys, waitForBarrierReachable, sealViaVotes,
-// writeSharesFile, registerOfficer, claimShare) since every one of them
+// barrierHasRecoveryKeys, waitForBarrierReachable, quorumAll, quorumSubmit,
+// registerOfficer, claimEnvelope) since every one of them
 // already takes a transport-agnostic `flags []string` / `serverURL string`
 // parameter -- none of them hard-code https. Building a fresh per-protocol
 // node and threading its own --server/--ca-file/--cert-file/--key-file
@@ -65,7 +65,6 @@
 package integration_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,8 +72,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // coldSealedWindowProtocols is the set of CLI-selectable transports able to
@@ -423,9 +420,9 @@ func TestBarrierPermutations_PassphraseLifecycle_PerProtocol(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestBarrierPermutations_ShamirLifecycle_PerProtocol mirrors
-// barrier_cli_test.go's TestBarrierCLI_ShamirLifecycle's core (officer
-// enrollment, init-shamir, claim, quorum seal-vote, unseal-shares,
-// root-token) looped over every CLI-selectable protocol. Rekey and the
+// barrier_cli_test.go's TestBarrierCLI_ShamirLifecycle's core (holder
+// enrolment, init-shamir, claim, and the seal, unseal and root-token
+// quorums) looped over every CLI-selectable protocol. Rekey and the
 // independent recovery-key scope are exhaustively covered on REST already
 // (barrier_cli_test.go) and are intentionally left out of this per-protocol
 // loop to bound the number of daemons this file boots; see the file-level
@@ -452,7 +449,6 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 
 			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
 				"barrier", "init-shamir",
-				"--passphrase", "unused-in-direct-shamir-mode",
 				"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total))...); err != nil {
 				t.Fatalf("[%s] barrier init-shamir: %v\nstderr: %s", proto.name, err, stderr)
 			}
@@ -467,47 +463,36 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 
 			node.waitForFullBoot(t)
 
-			serverURL := node.serverURLFor(proto)
-			aliceShare := claimShare(t, node.cli, workDir, serverURL, node.ca.CertPath, alice, false)
-			bobShare := claimShare(t, node.cli, workDir, serverURL, node.ca.CertPath, bob, false)
+			ep := endpoint{serverURL: node.serverURLFor(proto), caFile: node.ca.CertPath}
+			claimEnvelope(t, node.cli, workDir, ep, alice, false)
+			claimEnvelope(t, node.cli, workDir, ep, bob, false)
 
-			sealViaVotes(t, node.cli, flags, aliceShare, bobShare)
+			quorumAll(t, node.cli, ep, "unseal", "seal", alice, bob)
 			status = barrierStatus(t, node.cli, flags)
 			if !status.Sealed {
-				t.Fatalf("[%s] expected barrier to be sealed after quorum seal-vote", proto.name)
+				t.Fatalf("[%s] expected barrier to be sealed after the seal quorum", proto.name)
 			}
 
-			// Negative: below-threshold shares must fail and leave the
-			// barrier sealed.
-			if _, _, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "unseal-shares", "--share", aliceShare)...); err == nil {
-				t.Fatalf("[%s] expected non-zero exit for below-threshold unseal-shares", proto.name)
+			// A below-threshold round is progress, not an error, and leaves
+			// the barrier sealed.
+			if out := quorumAll(t, node.cli, ep, "unseal", "unseal", alice); out.Complete {
+				t.Fatalf("[%s] one of two submissions completed the round: %+v", proto.name, out)
 			}
 			status = barrierStatus(t, node.cli, flags)
 			if !status.Sealed {
-				t.Fatalf("[%s] insufficient-share unseal-shares must not unseal the barrier", proto.name)
+				t.Fatalf("[%s] a below-threshold round must not unseal the barrier", proto.name)
 			}
 
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "unseal-shares", "--share", aliceShare, "--share", bobShare)...); err != nil {
-				t.Fatalf("[%s] barrier unseal-shares: %v\nstderr: %s", proto.name, err, stderr)
+			if out := quorumAll(t, node.cli, ep, "unseal", "unseal", bob); !out.Complete {
+				t.Fatalf("[%s] the second submission did not complete the round: %+v", proto.name, out)
 			}
 			status = barrierStatus(t, node.cli, flags)
 			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after quorum unseal-shares", proto.name)
+				t.Fatalf("[%s] expected barrier to be unsealed after the unseal quorum", proto.name)
 			}
 
-			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"--output", "json", "barrier", "root-token", "--share", aliceShare, "--share", bobShare)...)
-			if err != nil {
-				t.Fatalf("[%s] barrier root-token: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			var rootToken transport.BarrierRootTokenResponse
-			if err := json.Unmarshal([]byte(stdout), &rootToken); err != nil {
-				t.Fatalf("[%s] barrier root-token: decode JSON: %v\noutput: %s", proto.name, err, stdout)
-			}
-			if rootToken.Token == "" {
-				t.Fatalf("[%s] expected non-empty root token", proto.name)
+			if out := quorumAll(t, node.cli, ep, "unseal", "root-token", alice, bob); !out.Complete || out.RootToken == "" {
+				t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
 			}
 
 			key := "barrier-perm-shamir-" + proto.name
@@ -515,7 +500,7 @@ func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
 				"kv", "put", key, "shamir-value")...); err != nil {
 				t.Fatalf("[%s] kv put after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
 			}
-			stdout, stderr, err = runCLISplit(t, node.cli, append(append([]string{}, flags...), "kv", "get", key)...)
+			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "kv", "get", key)...)
 			if err != nil {
 				t.Fatalf("[%s] kv get after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
 			}

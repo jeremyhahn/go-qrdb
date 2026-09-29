@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -69,9 +70,9 @@ func TestSOVerifier_VerifiesTheCommittedPIN(t *testing.T) {
 
 func TestBarrier_CountsRekeys(t *testing.T) {
 	b := &authtest.Barrier{}
-	info, err := b.BarrierRekey(context.Background(), 2, 3)
-	if err != nil || info.Threshold != 2 || info.TotalShares != 3 {
-		t.Fatalf("BarrierRekey = %+v, %v", info, err)
+	info, err := b.BarrierRekeyStart(context.Background(), seal.DomainUnseal, 2, seal.FactorPolicyDesignated)
+	if err != nil || info.NewThreshold != 2 || info.Op != seal.OpRekey {
+		t.Fatalf("BarrierRekeyStart = %+v, %v", info, err)
 	}
 	if b.Rekeys() != 1 {
 		t.Fatalf("Rekeys = %d, want 1", b.Rekeys())
@@ -118,8 +119,8 @@ func TestBarrierPINBackend_VerifiesTheCommittedPIN(t *testing.T) {
 
 func TestBarrier_CountsRecoveryGenerations(t *testing.T) {
 	b := &authtest.Barrier{}
-	info, err := b.BarrierGenerateRecoveryKeys(context.Background(), 2, 3)
-	if err != nil || info.Threshold != 2 || info.Total != 3 {
+	info, err := b.BarrierGenerateRecoveryKeys(context.Background(), 2, seal.FactorPolicyDesignated)
+	if err != nil || info.Threshold != 2 {
 		t.Fatalf("BarrierGenerateRecoveryKeys = %+v, %v", info, err)
 	}
 	if b.RecoveryGenerations() != 1 {
@@ -129,7 +130,7 @@ func TestBarrier_CountsRecoveryGenerations(t *testing.T) {
 
 func TestBarrier_CountsShamirInits(t *testing.T) {
 	b := &authtest.Barrier{}
-	info, err := b.BarrierInitializeShamir(context.Background(), []byte("secret"), 2, 3)
+	info, err := b.BarrierInitializeShamir(context.Background(), 2, 3, seal.FactorPolicyDesignated)
 	if err != nil || info.Threshold != 2 || info.TotalShares != 3 {
 		t.Fatalf("BarrierInitializeShamir = %+v, %v", info, err)
 	}

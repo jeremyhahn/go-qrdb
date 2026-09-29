@@ -161,7 +161,7 @@ srv := server.New(cfg, kvSvc, adminSvc, server.WithFactorRegistry(reg))
 ## See Also
 
 - [../auth/roles.md](../auth/roles.md) — Custodian role and permissions
-- [custodians.md](custodians.md) — Custodian lifecycle and share-delivery protocol
+- [shamir-custody](../shamir-custody/) — share holders and the factors that authenticate their quorum submissions
 - [../ceremony/README.md](../ceremony/architecture.md) — How the ceremony consumes factors during enrolment
 - [go-xkms docs](https://github.com/jeremyhahn/go-xkms/tree/main/docs/authfactors) — Hardware factor implementations (FIDO2, PIV, PKCS#11) with attestation
 - [NIST SP 800-73-4](https://csrc.nist.gov/publications/detail/sp/800-73/4/final) — PIV standard

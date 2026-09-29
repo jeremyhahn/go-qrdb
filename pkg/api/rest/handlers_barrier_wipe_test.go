@@ -154,25 +154,39 @@ func TestHandleBarrierUnseal_WipesOnWrongSecret(t *testing.T) {
 	assertWiped(t, "BarrierUnseal (rejected)", retained)
 }
 
-func TestHandleBarrierShamirInitialize_WipesDecodedSecret(t *testing.T) {
-	var retained []byte
-	svc := &mockBarrierService{
-		initializeShamirFn: func(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
-			retained = secret
-			return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
-		},
+// TestHandleBarrierQuorumSubmit_WipesShare proves a holder's share is
+// zeroized once the submission returns, on the counted path and on the
+// refused path alike: the share leaves the holder's envelope only to be
+// counted and must not outlive the request in the daemon's heap.
+func TestHandleBarrierQuorumSubmit_WipesShare(t *testing.T) {
+	for name, svcErr := range map[string]error{"counted": nil, "refused": errors.New("factor verification failed")} {
+		t.Run(name, func(t *testing.T) {
+			var retained []byte
+			svc := &mockBarrierService{
+				quorumSubmitFn: func(_ context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
+					retained = req.Share
+					if string(req.Share) != "share-bytes" {
+						t.Fatalf("share = %q, want %q", req.Share, "share-bytes")
+					}
+					if svcErr != nil {
+						return nil, svcErr
+					}
+					return &service.QuorumOutcomeInfo{Domain: req.Domain, Op: req.Op, Required: 3, Submitted: 1}, nil
+				},
+			}
+			srv := newBarrierTestServer(t, svc)
+
+			body := `{"domain":"unseal","op":"unseal","username":"alice","challenge_id":"c1","factor":"mtls","response":"` + b64("sig") + `","share":"` + b64("share-bytes") + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/barrier/quorum/submit", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, req)
+
+			if (svcErr == nil) != (rec.Code == http.StatusOK) {
+				t.Fatalf("status = %d for the %s path", rec.Code, name)
+			}
+			assertWiped(t, "BarrierQuorumSubmit ("+name+")", retained)
+		})
 	}
-	srv := newBarrierTestServer(t, svc)
-
-	body := `{"secret":"` + b64("shamir-seed") + `","threshold":2,"total_shares":3}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/initialize",
-		strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
-	assertStatus(t, rec, http.StatusOK)
-	assertWiped(t, "BarrierInitializeShamir", retained)
 }
 
 func TestHandleTenantBarrierInit_WipesDecodedPassphrase(t *testing.T) {

@@ -52,8 +52,10 @@ const (
 	// to audit logs and system state (FIPS 140-3 AS10.10).
 	RoleNameAuditor = "auditor"
 
-	// RoleNameCustodian is the Custodian role name. Custodians hold one Shamir
-	// share and can only submit barrier:unseal-share (FIPS 140-3 AS10.06).
+	// RoleNameCustodian is the Custodian role name. It grants nothing: a key
+	// custodian is a share holder enrolled in the ceremony registry, and its
+	// only act — submitting its share — is authenticated by its enrolled
+	// factor, not by RBAC (FIPS 140-3 AS10.06).
 	RoleNameCustodian = "custodian"
 
 	// RoleNameOwner is the Owner role name. Owner is the standard-posture

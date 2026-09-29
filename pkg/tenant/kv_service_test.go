@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -789,13 +790,6 @@ func TestKVTenantBarrierStatus_NotEnabled2(t *testing.T) {
 	}
 }
 
-func TestKVTenantBarrierUnsealShare_NotEnabled(t *testing.T) {
-	svc := newKVServiceForBarrierTest(t)
-	if _, err := svc.TenantBarrierUnsealShare(context.Background(), "t", "share"); !errors.Is(err, ErrBarrierNotEnabled) {
-		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
-	}
-}
-
 func TestKVTenantBarrierOfficerRegister_NotEnabled(t *testing.T) {
 	svc := newKVServiceForBarrierTest(t)
 	_, err := svc.TenantBarrierOfficerRegister(context.Background(), "t", nil)
@@ -828,18 +822,21 @@ func TestKVTenantBarrierShareClaimComplete_NotEnabled(t *testing.T) {
 	}
 }
 
-func TestKVTenantBarrierOfficerClaimStatus_NotEnabled(t *testing.T) {
+// TestKVTenantBarrierHolderQuorum_NotEnabled pins the no-seal service's
+// refusal of every quorum operation.
+func TestKVTenantBarrierHolderQuorum_NotEnabled(t *testing.T) {
 	svc := newKVServiceForBarrierTest(t)
-	_, err := svc.TenantBarrierOfficerClaimStatus(context.Background(), "t")
-	if !errors.Is(err, ErrBarrierNotEnabled) {
-		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	ctx := context.Background()
+	if _, err := svc.TenantBarrierQuorumBegin(ctx, "t", seal.OpUnseal, "u", ""); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("QuorumBegin: %v", err)
 	}
-}
-
-func TestKVTenantBarrierShamirSealVote_NotEnabled(t *testing.T) {
-	svc := newKVServiceForBarrierTest(t)
-	_, err := svc.TenantBarrierShamirSealVote(context.Background(), "t", "share")
-	if !errors.Is(err, ErrBarrierNotEnabled) {
-		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
+	if _, err := svc.TenantBarrierQuorumSubmit(ctx, "t", &seal.HolderSubmission{}); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("QuorumSubmit: %v", err)
+	}
+	if _, err := svc.TenantBarrierRekeyStart(ctx, "t", 2, ""); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("RekeyStart: %v", err)
+	}
+	if _, err := svc.TenantBarrierOfficerRevoke(ctx, "t", "u", 0); !errors.Is(err, ErrBarrierNotEnabled) {
+		t.Errorf("OfficerRevoke: %v", err)
 	}
 }

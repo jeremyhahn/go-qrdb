@@ -21,6 +21,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
+// ErrShamirAutoUnseal is returned when a Shamir barrier is configured to
+// auto-unseal. A Shamir barrier opens only when an authenticated quorum of its
+// enrolled share holders submits; no configuration may carry their shares.
+var ErrShamirAutoUnseal = errors.New("embedded: a shamir barrier cannot auto-unseal; it is unsealed by a share-holder quorum")
+
 // NilServiceError is returned when a nil service is passed to New or
 // when an operation requires a service that was not injected.
 type NilServiceError struct {

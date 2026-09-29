@@ -292,7 +292,7 @@ func TestE2E_TenantBarrierUnseal_HappyPath(t *testing.T) {
 		return wire.StatusOK, nil
 	})
 	if err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
-		TenantID: "t1", Share: []byte("s"),
+		TenantID: "t1", Key: []byte("k"),
 	}); err != nil {
 		t.Fatalf("TenantBarrierUnseal: %v", err)
 	}

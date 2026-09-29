@@ -458,8 +458,8 @@ func TestCLI_BarrierEnableEncryption_SystemScope_MechanismAvailabilityMatrix(t *
 // ---------------------------------------------------------------------------
 
 // registerShamirOfficer registers username as a system-barrier Security
-// Officer (using the ADMIN identity `connArgs`) and returns the registered
-// ShareIndex. The officer's own CSR/key are generated locally; only the CSR
+// Officer (using the ADMIN identity `connArgs`). The officer's own CSR/key
+// are generated locally; only the CSR
 // (public) ever leaves this process. Registration requires a daemon that
 // retains its own CA private key (a self-generated CA — see
 // bootSelfGenCANode), since the ceremony signs the officer's certificate;
@@ -467,16 +467,15 @@ func TestCLI_BarrierEnableEncryption_SystemScope_MechanismAvailabilityMatrix(t *
 // node identity) the daemon has no CA key and registration fails closed with
 // ceremony.ErrCANotInitialized (verified: this is the same precondition
 // officer_ceremony_cli_test.go documents and exercises).
-func registerShamirOfficer(t *testing.T, cli string, connArgs []string, username string) int {
+func registerShamirOfficer(t *testing.T, cli string, connArgs []string, username string) {
 	t.Helper()
-	idx, _, _ := registerShamirOfficerWithIdentity(t, cli, connArgs, username)
-	return idx
+	registerShamirOfficerWithIdentity(t, cli, connArgs, username)
 }
 
 // registerShamirOfficerWithIdentity is registerShamirOfficer plus the
 // officer's own cert/key file paths, for callers that also need to drive the
 // officer's own mTLS-authenticated share-claim handshake.
-func registerShamirOfficerWithIdentity(t *testing.T, cli string, connArgs []string, username string) (shareIndex int, certPath, keyPath string) {
+func registerShamirOfficerWithIdentity(t *testing.T, cli string, connArgs []string, username string) (certPath, keyPath string) {
 	t.Helper()
 	csrPEM, key := generateCeremonyCSR(t, username)
 	csrPath := writeTempFile(t, username+".csr", csrPEM)
@@ -487,14 +486,14 @@ func registerShamirOfficerWithIdentity(t *testing.T, cli string, connArgs []stri
 	}
 	var reg officerRegisterJSON
 	decodeJSON(t, out, &reg)
-	certPath = writeTempFile(t, username+"-cert.pem", reg.CertPEM)
+	certPath = writeTempFile(t, username+"-cert.pem", []byte(reg.CertPEM))
 	keyDER, kerr := x509.MarshalECPrivateKey(key)
 	if kerr != nil {
 		t.Fatalf("marshal officer key: %v", kerr)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	keyPath = writeTempFile(t, username+"-key.pem", keyPEM)
-	return reg.ShareIndex, certPath, keyPath
+	return certPath, keyPath
 }
 
 // waitForCLIBarrierSealed polls `qrdb --output json barrier status` (through
@@ -582,7 +581,7 @@ func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testi
 	// operational precondition a fresh `barrier init-shamir` already
 	// enforces (pkg/ceremony's sealSharesToOfficers requires the enrolled
 	// count to exactly satisfy the request).
-	_, off1Cert, off1Key := registerShamirOfficerWithIdentity(t, cli, node.restArgsAdmin(), "off1")
+	off1Cert, off1Key := registerShamirOfficerWithIdentity(t, cli, node.restArgsAdmin(), "off1")
 	registerShamirOfficer(t, cli, node.restArgsAdmin(), "off2")
 	registerShamirOfficer(t, cli, node.restArgsAdmin(), "off3")
 

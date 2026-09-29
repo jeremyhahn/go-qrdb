@@ -32,7 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -98,22 +97,6 @@ var _ audit.AuditLogger = (*extraAuditLogger)(nil)
 
 // extraAuthFactorService satisfies service.AuthFactorServicer via embedding.
 type extraAuthFactorService struct{ service.AuthFactorServicer }
-
-// extraCustodianService is a minimal custodian.Servicer.
-type extraCustodianService struct{}
-
-func (s *extraCustodianService) RegisterCustodian(_ context.Context, _ custodian.RegisterRequest) (*custodian.RegisterResponse, error) {
-	return nil, nil
-}
-func (s *extraCustodianService) GetCustodian(_ context.Context, _ string) (*custodian.Custodian, error) {
-	return nil, nil
-}
-func (s *extraCustodianService) ListCustodians(_ context.Context, _ string) ([]*custodian.Custodian, error) {
-	return nil, nil
-}
-func (s *extraCustodianService) RevokeCustodian(_ context.Context, _ string) error { return nil }
-
-var _ custodian.Servicer = (*extraCustodianService)(nil)
 
 // extraKVPassthrough is a KVServicer that records the last key for assertions.
 type extraKVPassthrough struct {
@@ -1045,29 +1028,6 @@ func TestExtraWithAuthFactorService_ViaNewServer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// server.go — WithCustodianService
-// ---------------------------------------------------------------------------
-
-func TestExtraWithCustodianService_StoresOnOpts(t *testing.T) {
-	t.Parallel()
-	svc := &extraCustodianService{}
-	var opts serverOptions
-	WithCustodianService(svc)(&opts)
-	if opts.custodianSvc != svc {
-		t.Error("WithCustodianService did not store the provided service")
-	}
-}
-
-func TestExtraWithCustodianService_ViaNewServer(t *testing.T) {
-	svc := &extraCustodianService{}
-	cfg := testConfig(t, false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCustodianService(svc))
-	if srv.opts.custodianSvc != svc {
-		t.Error("WithCustodianService not propagated via New()")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // server.go — WithSOAuthenticator (nil accepted; concrete type not accessible
 // without a full auth subsystem, so nil-path is the practical test)
 // ---------------------------------------------------------------------------
@@ -1280,7 +1240,7 @@ func TestExtraNew_BothPositionalNilWithOptions(t *testing.T) {
 // server.go startREST/startGRPC/startQUIC/startUnix/startMCP —
 // exercise the remaining if-branches for sealedWindowProbe, lockSvc,
 // embeddingSvc, ragSvc, pinBackend, tenantSvc, authFactorSvc, webUI,
-// auditLogger, custodianSvc, dbRegistry by starting all five protocols
+// auditLogger, dbRegistry by starting all five protocols
 // with those options set.
 // ---------------------------------------------------------------------------
 
@@ -1302,7 +1262,6 @@ func TestStart_AllFiveProtocols_WithRemainingBranchOptions(t *testing.T) {
 	auditLog := &extraAuditLogger{}
 	webUI := &extraWebUI{}
 	authFactorSvc := &extraAuthFactorService{}
-	custodianSvc := &extraCustodianService{}
 	tenantSvc := &mockTenantServicer{}
 	dbReg := newExtraFilledRegistry()
 	barrierReg := &fakeBarrierRegistry{}
@@ -1316,7 +1275,6 @@ func TestStart_AllFiveProtocols_WithRemainingBranchOptions(t *testing.T) {
 		WithAuditLogger(auditLog),
 		WithWebUI(webUI),
 		WithAuthFactorService(authFactorSvc),
-		WithCustodianService(custodianSvc),
 		WithTenantService(tenantSvc),
 		WithDatabaseServiceRegistry(dbReg),
 		WithBarrierRegistry(barrierReg),

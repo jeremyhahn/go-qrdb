@@ -991,6 +991,25 @@ func (c AuthConfig) IsEnabled() bool {
 // (AuthConfig.Enabled).
 func BoolPtr(b bool) *bool { return &b }
 
+// DefaultClusterTrustDomain is the cluster trust domain when none is
+// configured.
+const DefaultClusterTrustDomain = "qrdb.cluster"
+
+// HolderTrustDomain returns the SPIFFE trust domain share-holder
+// certificates are issued in. It is the configured SPIFFE trust domain when
+// there is one — the mTLS authenticator pins it, so a holder certificate in
+// any other domain could not authenticate — and otherwise the cluster trust
+// domain, falling back to DefaultClusterTrustDomain.
+func HolderTrustDomain(spiffeTrustDomain, clusterTrustDomain string) string {
+	if spiffeTrustDomain != "" {
+		return spiffeTrustDomain
+	}
+	if clusterTrustDomain != "" {
+		return clusterTrustDomain
+	}
+	return DefaultClusterTrustDomain
+}
+
 // AuthABACConfig configures the ABAC authorization decorator.
 type AuthABACConfig struct {
 	// Enabled activates ABAC policy evaluation on top of RBAC.
@@ -1106,7 +1125,7 @@ type SealConfig struct {
 	// ShamirTotal is the total number of Shamir shares to generate.
 	ShamirTotal int `yaml:"shamir_total"`
 
-	// ShareTTL is how long a Shamir unseal-share quorum session stays open
+	// ShareTTL is how long a Shamir share-holder quorum round stays open
 	// before submitted shares expire and must be resubmitted. Accepts a Go
 	// duration string (e.g. "15m", "30s"). Default: "15m". Overridable via
 	// QRDB_SEAL_SHARE_TTL.

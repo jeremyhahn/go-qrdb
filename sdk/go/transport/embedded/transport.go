@@ -49,29 +49,28 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ transport.Transport            = (*Transport)(nil)
-	_ transport.KVClient             = (*Transport)(nil)
-	_ transport.GuardedKVClient      = (*Transport)(nil)
-	_ transport.AdminClient          = (*Transport)(nil)
-	_ transport.MVCCClient           = (*Transport)(nil)
-	_ transport.TransactionClient    = (*Transport)(nil)
-	_ transport.BatchClient          = (*Transport)(nil)
-	_ transport.WatchClient          = (*Transport)(nil)
-	_ transport.LeaseClient          = (*Transport)(nil)
-	_ transport.IndexClient          = (*Transport)(nil)
-	_ transport.TimeSeriesClient     = (*Transport)(nil)
-	_ transport.VectorClient         = (*Transport)(nil)
-	_ transport.CeremonyClient       = (*Transport)(nil)
-	_ transport.CredentialClient     = (*Transport)(nil)
-	_ transport.BackupClient         = (*Transport)(nil)
-	_ transport.RebalanceClient      = (*Transport)(nil)
-	_ transport.DEKClient            = (*Transport)(nil)
-	_ transport.CollectionClient     = (*Transport)(nil)
-	_ transport.SealStoreClient      = (*Transport)(nil)
-	_ transport.CustodianGroupClient = (*Transport)(nil)
-	_ transport.TenantClient         = (*Transport)(nil)
-	_ transport.LockClient           = (*Transport)(nil)
-	_ transport.Client               = (*Transport)(nil)
+	_ transport.Transport         = (*Transport)(nil)
+	_ transport.KVClient          = (*Transport)(nil)
+	_ transport.GuardedKVClient   = (*Transport)(nil)
+	_ transport.AdminClient       = (*Transport)(nil)
+	_ transport.MVCCClient        = (*Transport)(nil)
+	_ transport.TransactionClient = (*Transport)(nil)
+	_ transport.BatchClient       = (*Transport)(nil)
+	_ transport.WatchClient       = (*Transport)(nil)
+	_ transport.LeaseClient       = (*Transport)(nil)
+	_ transport.IndexClient       = (*Transport)(nil)
+	_ transport.TimeSeriesClient  = (*Transport)(nil)
+	_ transport.VectorClient      = (*Transport)(nil)
+	_ transport.CeremonyClient    = (*Transport)(nil)
+	_ transport.CredentialClient  = (*Transport)(nil)
+	_ transport.BackupClient      = (*Transport)(nil)
+	_ transport.RebalanceClient   = (*Transport)(nil)
+	_ transport.DEKClient         = (*Transport)(nil)
+	_ transport.CollectionClient  = (*Transport)(nil)
+	_ transport.SealStoreClient   = (*Transport)(nil)
+	_ transport.TenantClient      = (*Transport)(nil)
+	_ transport.LockClient        = (*Transport)(nil)
+	_ transport.Client            = (*Transport)(nil)
 
 	// Phase 3 provider assertions.
 	_ transport.PermissionProvider = (*Transport)(nil)
@@ -88,38 +87,37 @@ var (
 // performed, making this the fastest possible transport for embedded
 // usage.
 type Transport struct {
-	kvSvc             service.KVServicer
-	adminSvc          service.AdminServicer
-	mvccSvc           service.MVCCKVServicer
-	txSvc             service.TransactionServicer
-	batchSvc          service.BatchServicer
-	watchSvc          service.WatchServicer
-	leaseSvc          service.LeaseServicer
-	indexSvc          service.IndexServicer
-	tsSvc             service.TimeSeriesServicer
-	vectorSvc         service.VectorServicer
-	userSvc           user.UserServicer
-	roleSvc           role.RoleServicer
-	certProv          cert.CertProvider
-	dbSvc             service.DatabaseServicer
-	barrierSvc        service.BarrierServicer
-	pinBackend        pin.PINBackend
-	dekSvc            service.DEKServicer
-	ceremonySvc       service.CeremonyServicer
-	ceremonyCA        ceremony.CeremonyCA
-	credentialSvc     service.CredentialServicer
-	backupSvc         service.BackupServicer
-	rebalanceSvc      service.RebalanceServicer
-	embeddingSvc      service.EmbeddingServicer
-	ragSvc            service.RAGServicer
-	collectionSvc     service.CollectionServicer
-	sealStoreSvc      *seal.SealStore
-	tenantSvc         tenant.TenantServicer
-	lockSvc           service.LockServicer
-	custodianGroupSvc ceremony.CustodianGroupServicer
-	authFactorSvc     service.AuthFactorServicer
-	auditLogger       audit.AuditLogger
-	encMigrator       service.EncryptionMigrator
+	kvSvc         service.KVServicer
+	adminSvc      service.AdminServicer
+	mvccSvc       service.MVCCKVServicer
+	txSvc         service.TransactionServicer
+	batchSvc      service.BatchServicer
+	watchSvc      service.WatchServicer
+	leaseSvc      service.LeaseServicer
+	indexSvc      service.IndexServicer
+	tsSvc         service.TimeSeriesServicer
+	vectorSvc     service.VectorServicer
+	userSvc       user.UserServicer
+	roleSvc       role.RoleServicer
+	certProv      cert.CertProvider
+	dbSvc         service.DatabaseServicer
+	barrierSvc    service.BarrierServicer
+	pinBackend    pin.PINBackend
+	dekSvc        service.DEKServicer
+	ceremonySvc   service.CeremonyServicer
+	ceremonyCA    ceremony.CeremonyCA
+	credentialSvc service.CredentialServicer
+	backupSvc     service.BackupServicer
+	rebalanceSvc  service.RebalanceServicer
+	embeddingSvc  service.EmbeddingServicer
+	ragSvc        service.RAGServicer
+	collectionSvc service.CollectionServicer
+	sealStoreSvc  *seal.SealStore
+	tenantSvc     tenant.TenantServicer
+	lockSvc       service.LockServicer
+	authFactorSvc service.AuthFactorServicer
+	auditLogger   audit.AuditLogger
+	encMigrator   service.EncryptionMigrator
 
 	// registry is the node's per-(tenant, database) service registry, the
 	// seam WithDatabase scopes the data plane through and every named-
@@ -408,20 +406,11 @@ var requestHandlers = map[string]requestHandler{
 	"BarrierSeal":                 handleBarrierSeal,
 	"BarrierStatus":               handleBarrierStatus,
 	"BarrierInitializeShamir":     handleBarrierInitializeShamir,
-	"BarrierUnsealWithShare":      handleBarrierUnsealWithShare,
-	"BarrierUnsealWithShares":     handleBarrierUnsealWithShares,
-	"BarrierRekey":                handleBarrierRekey,
 	"BarrierGenerateRecoveryKeys": handleBarrierGenerateRecoveryKeys,
-	"BarrierRecoverWithKeys":      handleBarrierRecoverWithKeys,
 	"BarrierDeleteRecoveryKeys":   handleBarrierDeleteRecoveryKeys,
 	"BarrierHasRecoveryKeys":      handleBarrierHasRecoveryKeys,
-	"BarrierGenerateRootToken":    handleBarrierGenerateRootToken,
 	"CeremonyInitialize":          handleCeremonyInitialize,
 	"CeremonyStatus":              handleCeremonyStatus,
-	"CeremonyClaimCertBegin":      handleCeremonyClaimCertBegin,
-	"CeremonyClaimCertComplete":   handleCeremonyClaimCertComplete,
-	"CeremonyBeginClaimShare":     handleCeremonyBeginClaimShare,
-	"CeremonyCompleteClaimShare":  handleCeremonyCompleteClaimShare,
 	"CeremonySignCSR":             handleCeremonySignCSR,
 	"CredentialSubmit":            handleCredentialSubmit,
 	"CredentialStrategy":          handleCredentialStrategy,

@@ -55,11 +55,9 @@ import (
 )
 
 // expectedMethodPerms is the authoritative method -> permission table for the
-// native QUIC transport: exactly the permissions the deleted quicPermissions
-// table carried for every dispatchable method, plus ceremony.BeginClaimShare
-// and ceremony.CompleteClaimShare at permission.IdentityGated (cross-transport
-// parity with their gRPC proto options and REST routes; the old table omitted
-// them, leaving the two methods unconditionally denied over QUIC).
+// native QUIC transport. The share-holder quorum methods (barrier.QuorumBegin,
+// barrier.QuorumSubmit and their tenant forms) are permission.IdentityGated:
+// the holder's factor proof is the credential, checked by the service.
 var expectedMethodPerms = map[string]permission.Permission{
 	"kv.Put":    permission.KVPut,
 	"kv.Get":    permission.KVGet,
@@ -163,34 +161,35 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"barrier.Seal":                       permission.SealSeal,
 	"barrier.Status":                     permission.SealStatus,
 	"barrier.ShamirInitialize":           permission.SealInitializeShamir,
-	"barrier.Rekey":                      permission.SealRekey,
 	"barrier.EnableEncryption":           permission.SealEnableEncryption,
-	"barrier.RootToken":                  permission.SealBootstrap,
 	"barrier.OfficerRegister":            permission.SealOfficerRegister,
 	"barrier.OfficerList":                permission.SealOfficerList,
 	"barrier.ShareClaimBegin":            permission.IdentityGated,
 	"barrier.ShareClaimComplete":         permission.IdentityGated,
-	"barrier.OfficerClaimStatus":         permission.SealOfficerList,
-	"barrier.ShamirSealVote":             permission.SealSubmitSealVote,
 	"barrier.RecoveryOfficerRegister":    permission.SealOfficerRegister,
 	"barrier.RecoveryShareClaimBegin":    permission.IdentityGated,
 	"barrier.RecoveryShareClaimComplete": permission.IdentityGated,
-	// Init/Unseal/UnsealShare/Status are IdentityGated at dispatch — the
+	"barrier.QuorumBegin":                permission.IdentityGated,
+	"barrier.QuorumSubmit":               permission.IdentityGated,
+	"barrier.RekeyStart":                 permission.SealRekey,
+	"barrier.OfficerRevoke":              permission.SealOfficerRevoke,
+	// Init/Unseal/Status are IdentityGated at dispatch — the
 	// RBAC check runs inside the handlers with the shared
 	// trust-on-first-init / sealed-window fallbacks (see
 	// middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp),
 	// identical to REST, gRPC, and MCP.
 	"tenant.BarrierInit":               permission.IdentityGated,
 	"tenant.BarrierUnseal":             permission.IdentityGated,
-	"tenant.BarrierUnsealShare":        permission.IdentityGated,
 	"tenant.BarrierSeal":               permission.TenantBarrierSeal,
 	"tenant.BarrierStatus":             permission.IdentityGated,
 	"tenant.BarrierOfficerRegister":    permission.TenantBarrierOfficerRegister,
 	"tenant.BarrierOfficerList":        permission.TenantBarrierOfficerList,
 	"tenant.BarrierShareClaimBegin":    permission.IdentityGated,
 	"tenant.BarrierShareClaimComplete": permission.IdentityGated,
-	"tenant.BarrierOfficerClaimStatus": permission.TenantBarrierOfficerList,
-	"tenant.BarrierShamirSealVote":     permission.TenantBarrierSealVote,
+	"tenant.BarrierQuorumBegin":        permission.IdentityGated,
+	"tenant.BarrierQuorumSubmit":       permission.IdentityGated,
+	"tenant.BarrierRekeyStart":         permission.TenantBarrierRekey,
+	"tenant.BarrierOfficerRevoke":      permission.TenantBarrierOfficerRevoke,
 	"admin.StartShard":                 permission.AdminStartShard,
 	"admin.StopShard":                  permission.AdminStopShard,
 	"admin.GetShardState":              permission.AdminShardState,
@@ -205,20 +204,10 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"authfactor.Revoke":                permission.AuthFactorRevoke,
 	"barrier.RecoveryDelete":           permission.SealGenerateRecovery,
 	"barrier.RecoveryGenerate":         permission.SealGenerateRecovery,
-	"barrier.RecoveryRecover":          permission.SealRecoverWithKeys,
 	"barrier.RecoveryStatus":           permission.SealStatus,
-	"barrier.ShamirUnsealShare":        permission.BarrierUnsealShare,
-	"barrier.ShamirUnsealShares":       permission.BarrierUnsealShare,
-	"ceremony.ClaimCertBegin":          permission.CeremonyClaimCert,
-	"ceremony.ClaimCertComplete":       permission.CeremonyClaimCert,
-	"ceremony.ClaimShareBegin":         permission.IdentityGated,
-	"ceremony.ClaimShareComplete":      permission.IdentityGated,
-	"ceremony.SubmitUnsealShare":       permission.BarrierUnsealShare,
 	"ceremony.Initialize":              permission.CeremonyInitialize,
 	"ceremony.SignCSR":                 permission.CeremonySignCSR,
 	"ceremony.Status":                  permission.CeremonyStatus,
-	"ceremony.BeginClaimShare":         permission.IdentityGated,
-	"ceremony.CompleteClaimShare":      permission.IdentityGated,
 	"collection.Create":                permission.CollectionsCreate,
 	"collection.Drop":                  permission.CollectionsDrop,
 	"collection.GetInfo":               permission.CollectionsRead,
@@ -344,8 +333,9 @@ func TestMethodMappingGuard_RegistryMatchesExpectations(t *testing.T) {
 }
 
 // TestMethodMappingGuard_DeadAliasesGone pins the cutover cleanup: the old
-// table's five dead aliases (methods that never had a dispatch handler) must
-// NOT reappear in the registry — a request for them is denied at
+// table's five dead aliases (methods that never had a dispatch handler), and
+// the share verbs the unified holder quorum retired, must NOT reappear in the
+// registry — a request for them is denied at
 // authorization instead of authorized and then StatusUnimplemented.
 func TestMethodMappingGuard_DeadAliasesGone(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
@@ -355,6 +345,21 @@ func TestMethodMappingGuard_DeadAliasesGone(t *testing.T) {
 		"barrier.GenerateRecovery",
 		"barrier.RecoverWithKeys",
 		"ceremony.ClaimShare",
+		// Retired by the unified share-holder quorum: every share now goes
+		// through barrier.QuorumSubmit from an authenticated holder.
+		"barrier.ShamirUnsealShare",
+		"barrier.ShamirUnsealShares",
+		"barrier.RecoveryRecover",
+		"barrier.RootToken",
+		"barrier.Rekey",
+		"barrier.ShamirSealVote",
+		"ceremony.SubmitUnsealShare",
+		"ceremony.ClaimCertBegin",
+		"ceremony.ClaimCertComplete",
+		"ceremony.ClaimShareBegin",
+		"ceremony.ClaimShareComplete",
+		"tenant.BarrierUnsealShare",
+		"tenant.BarrierShamirSealVote",
 	} {
 		if srv.methodPerms.Covered(method) {
 			t.Errorf("dead alias %q reappeared in the registry", method)
@@ -504,13 +509,10 @@ func TestMethodMappingGuard_QUICPermissionsHaveGRPCCounterparts(t *testing.T) {
 		permission.SealSeal:             {},
 		permission.SealStatus:           {},
 		permission.SealInitializeShamir: {},
-		permission.BarrierUnsealShare:   {},
 		permission.SealRekey:            {},
 		permission.SealGenerateRecovery: {},
-		permission.SealRecoverWithKeys:  {},
 		permission.CeremonyInitialize:   {},
 		permission.CeremonyStatus:       {},
-		permission.CeremonyClaimCert:    {},
 		permission.CeremonySignCSR:      {},
 		permission.AuditQuery:           {},
 		permission.AuthFactorEnroll:     {},

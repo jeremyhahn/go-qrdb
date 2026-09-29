@@ -195,13 +195,24 @@ func (e *InvalidLogLevelError) Error() string {
 	return "qrdb: unknown log level: " + e.Level
 }
 
-// TenantUnsealInputError is returned when neither --share nor --key is
-// provided to the tenant barrier-unseal command.
+// TenantUnsealInputError is returned when --key is not provided to the
+// tenant barrier-unseal command.
 type TenantUnsealInputError struct{}
 
 // Error returns a human-readable description.
 func (e *TenantUnsealInputError) Error() string {
-	return "qrdb: tenant barrier-unseal: provide --share or --key"
+	return "qrdb: tenant barrier-unseal: provide --key (a shamir tenant barrier is unsealed by its holders with 'tenant barrier-quorum submit')"
+}
+
+// ShamirHolderUnsealError is returned when a Shamir barrier is asked to
+// unseal from a single credential. Its shares are submitted one
+// authenticated holder at a time ("qrdb barrier quorum submit", or
+// OfficerBinding.SubmitShare in the desktop app).
+type ShamirHolderUnsealError struct{}
+
+// Error returns a human-readable description.
+func (e *ShamirHolderUnsealError) Error() string {
+	return "qrdb: a shamir barrier is unsealed by its share holders, one authenticated submission each"
 }
 
 // Base64DecodeError is returned when a base64-encoded flag value cannot

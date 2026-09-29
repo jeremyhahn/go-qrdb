@@ -36,12 +36,6 @@ var (
 	// ErrCeremonyAlreadyInitialized is returned when the ceremony is already complete.
 	ErrCeremonyAlreadyInitialized = ceremony.ErrAlreadyInitialized
 
-	// ErrCeremonyNotInEnrollingState is returned when not in enrolling state.
-	ErrCeremonyNotInEnrollingState = ceremony.ErrNotInEnrollingState
-
-	// ErrCeremonyNotInOperationalState is returned when not in operational state.
-	ErrCeremonyNotInOperationalState = ceremony.ErrNotInOperationalState
-
 	// ErrCeremonyInvalidSOPIN is returned when the SO PIN is invalid.
 	ErrCeremonyInvalidSOPIN = ceremony.ErrInvalidSOPIN
 
@@ -59,12 +53,6 @@ var (
 
 	// ErrCeremonyDuplicateUsername is returned when an officer username is duplicated.
 	ErrCeremonyDuplicateUsername = ceremony.ErrDuplicateUsername
-
-	// ErrCeremonyPendingCertNotFound is returned when no pending cert exists.
-	ErrCeremonyPendingCertNotFound = ceremony.ErrPendingCertNotFound
-
-	// ErrCeremonyCertAlreadyClaimed is returned when a cert is already claimed.
-	ErrCeremonyCertAlreadyClaimed = ceremony.ErrCertAlreadyClaimed
 
 	// ErrCeremonyShareAlreadyClaimed is returned when a share is already claimed.
 	ErrCeremonyShareAlreadyClaimed = ceremony.ErrShareAlreadyClaimed
@@ -111,9 +99,6 @@ var (
 	// ErrCeremonyNotImplemented is returned when an operation is not implemented.
 	ErrCeremonyNotImplemented = ceremony.ErrNotImplemented
 
-	// ErrCeremonySOPINMismatch is returned when the SO PIN does not match.
-	ErrCeremonySOPINMismatch = ceremony.ErrSOPINMismatch
-
 	// ErrCeremonyCANotInitialized is returned when the CA is not initialized.
 	ErrCeremonyCANotInitialized = ceremony.ErrCANotInitialized
 
@@ -136,47 +121,11 @@ var (
 	// enrolling or operational state.
 	ErrCeremonyNotInitializedOrEnrolling = ceremony.ErrNotInitializedOrEnrolling
 
-	// ErrCeremonyNilCredentialService is returned when credential service is nil.
-	ErrCeremonyNilCredentialService = ceremony.ErrNilCredentialService
-
 	// ErrCeremonyChallengeExpired is returned when a challenge has expired.
 	ErrCeremonyChallengeExpired = ceremony.ErrChallengeExpired
 
 	// ErrCeremonyChallengeNotFound is returned when no active challenge exists.
 	ErrCeremonyChallengeNotFound = ceremony.ErrChallengeNotFound
-
-	// ErrCeremonyGroupNotFound is returned when a custodian group is not found.
-	ErrCeremonyGroupNotFound = ceremony.ErrGroupNotFound
-
-	// ErrCeremonyGroupAlreadyExists is returned when a group already exists.
-	ErrCeremonyGroupAlreadyExists = ceremony.ErrGroupAlreadyExists
-
-	// ErrCeremonyGroupFull is returned when a group has reached capacity.
-	ErrCeremonyGroupFull = ceremony.ErrGroupFull
-
-	// ErrCeremonyMemberNotFound is returned when a member is not found.
-	ErrCeremonyMemberNotFound = ceremony.ErrMemberNotFound
-
-	// ErrCeremonyMemberAlreadyExists is returned when a member already exists.
-	ErrCeremonyMemberAlreadyExists = ceremony.ErrMemberAlreadyExists
-
-	// ErrCeremonyEmptyGroupID is returned when a group ID is empty.
-	ErrCeremonyEmptyGroupID = ceremony.ErrEmptyGroupID
-
-	// ErrCeremonyShareAlreadySubmitted is returned when a share is already submitted.
-	ErrCeremonyShareAlreadySubmitted = ceremony.ErrShareAlreadySubmitted
-
-	// ErrCeremonyEmptyShareData is returned when share data is empty.
-	ErrCeremonyEmptyShareData = ceremony.ErrEmptyShareData
-
-	// ErrCeremonyInsufficientMembers is returned when there are not enough members.
-	ErrCeremonyInsufficientMembers = ceremony.ErrInsufficientMembers
-
-	// ErrCeremonyEmptyGroupName is returned when a group name is empty.
-	ErrCeremonyEmptyGroupName = ceremony.ErrEmptyGroupName
-
-	// ErrCeremonyInvalidTotal is returned when the total member count is invalid.
-	ErrCeremonyInvalidTotal = ceremony.ErrInvalidTotal
 )
 
 // ---------------------------------------------------------------------------
@@ -200,6 +149,3 @@ type CeremonyCABundleError = ceremony.CABundleError
 
 // CeremonySPKIPinError wraps an error from SPKI pin computation.
 type CeremonySPKIPinError = ceremony.SPKIPinError
-
-// CeremonyGroupStoreError wraps an error from custodian group storage.
-type CeremonyGroupStoreError = ceremony.GroupStoreError

@@ -217,11 +217,11 @@ Supported transports:
 	rootCmd.AddCommand(newRolesCmd())
 
 	// The tenant command tree is assembled here (rather than inside
-	// newTenantCmd itself) so the tenant-scoped Security Officer surface
-	// (barrier.go's newTenantBarrierOfficerCmd/newTenantBarrierShamirSealVoteCmd)
-	// can be grafted on without editing tenant.go.
+	// newTenantCmd itself) so the tenant-scoped share-holder surface
+	// (barrier_holders.go's newTenantBarrierHolderCmds) can be grafted on
+	// without editing tenant.go.
 	tenantCmd := newTenantCmd()
-	tenantCmd.AddCommand(newTenantBarrierOfficerCmd(), newTenantBarrierShamirSealVoteCmd())
+	tenantCmd.AddCommand(newTenantBarrierHolderCmds()...)
 	rootCmd.AddCommand(tenantCmd)
 
 	rootCmd.AddCommand(newInitCmd())

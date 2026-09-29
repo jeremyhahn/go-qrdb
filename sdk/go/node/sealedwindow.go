@@ -58,6 +58,27 @@ func ServeSealedWindow(ctx context.Context, n *Node, extraOpts ...server.ServerO
 		return &ConfigError{Field: "node", Message: "sealed node has no pending boot configuration"}
 	}
 
+	return server.ServeSealedWindow(ctx, cfg, n.barrier.Load(), n.sealedWindowOptions(extraOpts)...)
+}
+
+// sealedWindowConfig returns the *qrdbconfig.Config captured by the
+// pending (sealed) boot, or nil when the node has no pending boot.
+func (n *Node) sealedWindowConfig() *qrdbconfig.Config {
+	if n.pendingStandalone != nil {
+		return n.pendingStandalone.cfg
+	}
+	if n.pendingClustered != nil {
+		return n.pendingClustered.cfg
+	}
+	return nil
+}
+
+// sealedWindowOptions assembles the sealed-window listener's options: the
+// node's own seal-service instances, its barrier registry and PIN backend —
+// what the daemon's sealed window serves — then the caller's extraOpts.
+// Without the PIN backend every SO-PIN-gated endpoint on the listener would
+// fail closed.
+func (n *Node) sealedWindowOptions(extraOpts []server.ServerOption) []server.ServerOption {
 	var opts []server.ServerOption
 	if svcNode := n.svcNode.Load(); svcNode != nil {
 		if svcNode.Barrier != nil {
@@ -73,19 +94,8 @@ func ServeSealedWindow(ctx context.Context, n *Node, extraOpts ...server.ServerO
 	if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
 		opts = append(opts, server.WithBarrierRegistry(barrierRegistry))
 	}
-	opts = append(opts, extraOpts...)
-
-	return server.ServeSealedWindow(ctx, cfg, n.barrier.Load(), opts...)
-}
-
-// sealedWindowConfig returns the *qrdbconfig.Config captured by the
-// pending (sealed) boot, or nil when the node has no pending boot.
-func (n *Node) sealedWindowConfig() *qrdbconfig.Config {
-	if n.pendingStandalone != nil {
-		return n.pendingStandalone.cfg
+	if backend := n.pinBackend(extraOpts); backend != nil {
+		opts = append(opts, server.WithPINBackend(backend))
 	}
-	if n.pendingClustered != nil {
-		return n.pendingClustered.cfg
-	}
-	return nil
+	return append(opts, extraOpts...)
 }

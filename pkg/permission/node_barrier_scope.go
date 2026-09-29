@@ -16,12 +16,12 @@ package permission
 
 // nodeBarrierSOPermissions are the operations on the NODE barrier that
 // change its state: initializing it and minting its root token
-// (seal:bootstrap), unsealing and recovering it, rekeying it, rotating its
-// root key, generating (and deleting) its recovery keys, initializing its
-// Shamir sealing, migrating it to an encrypting strategy, sealing it, voting
-// to seal it, and submitting an unseal share toward its quorum. Sealing and unsealing are operational verbs Admin and
-// Operator hold, not SO-exclusive ones, but sealing stops every tenant's data
-// plane at once and unsealing opens it.
+// (seal:bootstrap), unsealing it, rekeying it, revoking one of its share
+// holders (a rekey that removes them), rotating its root key, generating (and
+// deleting) its recovery keys, initializing its Shamir sealing, migrating it
+// to an encrypting strategy, and sealing it. Sealing and unsealing are
+// operational verbs Admin and Operator hold, not SO-exclusive ones, but
+// sealing stops every tenant's data plane at once and unsealing opens it.
 //
 // The node barrier is a platform singleton. There is one per node, it
 // protects every tenant's data, and no tenant owns it. These permissions were
@@ -40,32 +40,20 @@ package permission
 // tenant-side route for it: a tenant cannot migrate even its own barrier.
 // tenant_barrier:enable_encryption is declared, but no handler checks it.
 //
-// barrier:unseal-share submits one Shamir share to the node barrier's unseal
-// accumulator. Every tenant's built-in Custodian role grants it, but a tenant
-// custodian's shares belong to its tenant's barrier, whose unseal-share
-// routes are identity-gated and bound to the tenant they name. The node
-// barrier's custodians are enrolled only through ceremony:enroll_custodian,
-// which is ScopeCross, by the system tenant's Security Officer. Admitting a
-// tenant's Custodian here let it submit shares into an in-progress node
-// unseal, so one wrong share poisoned the accumulation every node custodian
-// was contributing to.
-//
 // They are ScopeCross: only an identity of the system tenant may exercise
 // them, on every transport, with the SO dual-factor gate on or off -- the
 // platform-operator scope the tenant-administration rulings assign to
 // platform-wide state.
 func nodeBarrierSOPermissions() []Permission {
 	return []Permission{
-		BarrierUnsealShare,
 		SealBootstrap,
 		SealEnableEncryption,
 		SealGenerateRecovery,
 		SealInitializeShamir,
-		SealRecoverWithKeys,
+		SealOfficerRevoke,
 		SealRekey,
 		SealRotateRootKey,
 		SealSeal,
-		SealSubmitSealVote,
 		SealUnseal,
 	}
 }
@@ -75,7 +63,7 @@ func nodeBarrierSOPermissions() []Permission {
 // (seal:officer_register, POST /v1/barrier/officers) or its recovery domain
 // (the same permission, POST /v1/barrier/recovery/officers), listing those
 // officers with their certificate thumbprints, and the node key ceremony's
-// custodian enrollment, revocation, initialization and CSR signing.
+// initialization and CSR signing.
 //
 // Membership of that set is the node key itself, by another route. Every
 // distribution -- rekey, revocation, recovery-key generation -- sends a share
@@ -97,9 +85,7 @@ func nodeBarrierSOPermissions() []Permission {
 // path tenant.
 func nodeBarrierShareHolderPermissions() []Permission {
 	return []Permission{
-		CeremonyEnrollCustodian,
 		CeremonyInitialize,
-		CeremonyRevokeCustodian,
 		CeremonySignCSR,
 		SealOfficerList,
 		SealOfficerRegister,

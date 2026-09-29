@@ -122,29 +122,9 @@ type ServiceCeremonyServicer = service.CeremonyServicer
 // initialization including certificates, keys, and enrollment state.
 type CeremonyInitResult = service.CeremonyInitResult
 
-// CeremonyChallenge contains the challenge nonce issued during the
-// certificate claim handshake.
-type CeremonyChallenge = service.CeremonyChallenge
-
-// CeremonyClaimCertResult contains the output of a successful certificate
-// claim operation.
-type CeremonyClaimCertResult = service.CeremonyClaimCertResult
-
 // CeremonySignCSRResult contains the output of a successful CSR signing
 // operation during the ceremony.
 type CeremonySignCSRResult = service.CeremonySignCSRResult
-
-// CeremonyEnrollExternalOfficerRequest carries the inputs for
-// CeremonyServicer.CeremonyEnrollExternalOfficer. Either CertPEM
-// (validated against the configured CA pools) or PubKeyPEM
-// (admin-asserted trust) MUST be supplied, but not both.
-type CeremonyEnrollExternalOfficerRequest = service.CeremonyEnrollExternalOfficerRequest
-
-// CeremonyEnrollExternalOfficerResponse carries the result of a
-// successful CeremonyEnrollExternalOfficer call. SealedShare is the
-// base64-encoded share envelope when ShareBytes was supplied; empty
-// when only the trust record was persisted.
-type CeremonyEnrollExternalOfficerResponse = service.CeremonyEnrollExternalOfficerResponse
 
 // CeremonyStatusInfo describes the current state of the initialization
 // ceremony.
@@ -194,11 +174,6 @@ type ServiceTenantBarrierStatus = tenantpkg.TenantBarrierStatus
 // re-exported so an SDK consumer that implements or wraps the
 // ServiceTenantServicer can name the return type without importing pkg/tenant.
 type ServiceTenantBarrierInitResult = tenantpkg.TenantBarrierInitResult
-
-// ServiceTenantBarrierUnsealProgress reports quorum progress while submitting
-// Shamir shares to unseal a per-tenant barrier (TenantBarrierUnsealShare /
-// TenantBarrierShamirSealVote).
-type ServiceTenantBarrierUnsealProgress = tenantpkg.TenantBarrierUnsealProgress
 
 // NewServiceTenantService creates a new service-layer TenantServicer
 // backed by a metadata store and a BarrierRegistry.

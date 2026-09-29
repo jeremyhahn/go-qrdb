@@ -26,76 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
-
-// ---------------------------------------------------------------------------
-// ceremony_service.go – CeremonyClaimShareBegin, CeremonyClaimShareComplete,
-//                        CeremonySubmitUnsealShare, CeremonyEnrollExternalOfficer
-//                        (all 0%)
-// ---------------------------------------------------------------------------
-
-// CeremonyClaimShareBegin on a non-initialized ceremony returns an error from
-// the underlying ceremony.ClaimShareChallenge (wrong state). This covers the
-// error-return branch of the service wrapper.
-func TestCeremonyService_CeremonyClaimShareBegin_Error(t *testing.T) {
-	svc, _ := newTestCeremonyService(t)
-	ctx := context.Background()
-
-	// Ceremony is in "awaiting_init" state → ClaimShareChallenge returns error.
-	ch, err := svc.CeremonyClaimShareBegin(ctx, "custodian-1")
-	require.Error(t, err, "expected error before initialization")
-	assert.Nil(t, ch)
-}
-
-// CeremonyClaimShareComplete on a non-initialized ceremony returns an error.
-func TestCeremonyService_CeremonyClaimShareComplete_Error(t *testing.T) {
-	svc, _ := newTestCeremonyService(t)
-	ctx := context.Background()
-
-	cust, err := svc.CeremonyClaimShareComplete(ctx, "custodian-1", "challenge-1", []byte("response"))
-	require.Error(t, err, "expected error before initialization")
-	assert.Nil(t, cust)
-}
-
-// CeremonySubmitUnsealShare on a non-initialized ceremony returns an error.
-func TestCeremonyService_CeremonySubmitUnsealShare_Error(t *testing.T) {
-	svc, _ := newTestCeremonyService(t)
-	ctx := context.Background()
-
-	result, err := svc.CeremonySubmitUnsealShare(ctx, "custodian-1", "challenge-1", []byte("response"), []byte("share"))
-	require.Error(t, err, "expected error before initialization")
-	assert.Nil(t, result)
-}
-
-// CeremonyEnrollExternalOfficer with nil request returns ErrInvalidOfficerRecord.
-func TestCeremonyService_CeremonyEnrollExternalOfficer_NilRequest(t *testing.T) {
-	svc, _ := newTestCeremonyService(t)
-	ctx := context.Background()
-
-	resp, err := svc.CeremonyEnrollExternalOfficer(ctx, nil)
-	require.Error(t, err)
-	assert.Nil(t, resp)
-	assert.ErrorIs(t, err, ceremony.ErrInvalidOfficerRecord)
-}
-
-// CeremonyEnrollExternalOfficer with non-nil request delegates to the underlying
-// ceremony (which returns an error when not yet initialized).
-func TestCeremonyService_CeremonyEnrollExternalOfficer_NotInitialized(t *testing.T) {
-	svc, _ := newTestCeremonyService(t)
-	ctx := context.Background()
-
-	req := &CeremonyEnrollExternalOfficerRequest{
-		Username:   "external-officer",
-		PubKeyPEM:  "-----BEGIN PUBLIC KEY-----\nnotvalid\n-----END PUBLIC KEY-----",
-		ShareIndex: 1,
-		AuthFactor: "mtls",
-	}
-	resp, err := svc.CeremonyEnrollExternalOfficer(ctx, req)
-	// The inner ceremony will reject because it is not initialized.
-	require.Error(t, err)
-	assert.Nil(t, resp)
-}
 
 // ---------------------------------------------------------------------------
 // rag_errors.go – RAGServiceClosedError.Error() (0%)

@@ -343,9 +343,6 @@ var NewSealStore = seal.NewSealStore
 // NewStorageAdapter creates a StorageBackend from a LegacyStorage.
 var NewStorageAdapter = seal.NewStorageAdapter
 
-// NewShamirShareAccumulator creates a new share accumulator for Shamir quorum.
-var NewShamirShareAccumulator = seal.NewShamirShareAccumulator
-
 // NewShamirShareSplitter creates a ShareSplitter that divides a secret into
 // threshold-of-total Shamir shares.
 var NewShamirShareSplitter = seal.NewShamirShareSplitter

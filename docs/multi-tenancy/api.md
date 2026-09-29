@@ -94,20 +94,22 @@ Served by `qrdb.v1.TenantBarrierService`.
 
 | Capability | REST | gRPC / Unix (`TenantBarrierService/`) | QUIC | MCP tool | `scp` permission |
 |---|---|---|---|---|---|
-| Init | `POST /v1/tenants/{id}/barrier/init` | `Init` | `tenantbarrier.Init` | `qrdb_tenant_barrier_init` | **identity-gated** |
-| Status | `GET /v1/tenants/{id}/barrier/status` | `Status` | `tenantbarrier.Status` | `qrdb_tenant_barrier_status` | **identity-gated** |
-| Unseal | `POST /v1/tenants/{id}/barrier/unseal` | `Unseal` | `tenantbarrier.Unseal` | `qrdb_tenant_barrier_unseal` | **identity-gated** |
-| Unseal share | `POST /v1/tenants/{id}/barrier/unseal-share` | `UnsealShare` | `tenantbarrier.UnsealShare` | `qrdb_tenant_barrier_unseal_share` | **identity-gated** |
-| Seal | `POST /v1/tenants/{id}/barrier/seal` | `Seal` | `tenantbarrier.Seal` | `qrdb_tenant_barrier_seal` | `TenantBarrierSeal` |
-| Shamir seal vote | `POST /v1/tenants/{id}/barrier/seal-vote` | `ShamirSealVote` | `tenantbarrier.ShamirSealVote` | `qrdb_tenant_barrier_shamir_seal_vote` | `TenantBarrierSealVote` |
-| Officer register | `POST /v1/tenants/{id}/barrier/officers` | `OfficerRegister` | `tenantbarrier.OfficerRegister` | `qrdb_tenant_barrier_officer_register` | `TenantBarrierOfficerRegister` |
-| Officer list | `GET /v1/tenants/{id}/barrier/officers` | `OfficerList` | `tenantbarrier.OfficerList` | `qrdb_tenant_barrier_officer_list` | `TenantBarrierOfficerList` |
-| Officer claim status | `GET /v1/tenants/{id}/barrier/officers/claim-status` | `OfficerClaimStatus` | `tenantbarrier.OfficerClaimStatus` | `qrdb_tenant_barrier_officer_claim_status` | `TenantBarrierOfficerList` |
-| Share claim begin | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` | `ShareClaimBegin` | `tenantbarrier.ShareClaimBegin` | `qrdb_tenant_barrier_share_claim_begin` | **identity-gated** |
-| Share claim complete | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete` | `ShareClaimComplete` | `tenantbarrier.ShareClaimComplete` | `qrdb_tenant_barrier_share_claim_complete` | **identity-gated** |
+| Init | `POST /v1/tenants/{id}/barrier/init` | `Init` | `tenant.BarrierInit` | `qrdb_tenant_barrier_init` | **identity-gated** |
+| Status | `GET /v1/tenants/{id}/barrier/status` | `Status` | `tenant.BarrierStatus` | `qrdb_tenant_barrier_status` | **identity-gated** |
+| Unseal | `POST /v1/tenants/{id}/barrier/unseal` | `Unseal` | `tenant.BarrierUnseal` | `qrdb_tenant_barrier_unseal` | **identity-gated** |
+| Seal | `POST /v1/tenants/{id}/barrier/seal` | `Seal` | `tenant.BarrierSeal` | `qrdb_tenant_barrier_seal` | `TenantBarrierSeal` |
+| Officer register | `POST /v1/tenants/{id}/barrier/officers` | `OfficerRegister` | `tenant.BarrierOfficerRegister` | `qrdb_tenant_barrier_officer_register` | `TenantBarrierOfficerRegister` |
+| Officer list | `GET /v1/tenants/{id}/barrier/officers` | `OfficerList` | `tenant.BarrierOfficerList` | `qrdb_tenant_barrier_officer_list` | `TenantBarrierOfficerList` |
+| Share claim begin | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` | `ShareClaimBegin` | `tenant.BarrierShareClaimBegin` | `qrdb_tenant_barrier_share_claim_begin` | **identity-gated** |
+| Share claim complete | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete` | `ShareClaimComplete` | `tenant.BarrierShareClaimComplete` | `qrdb_tenant_barrier_share_claim_complete` | **identity-gated** |
+
+Share-holder quorum rounds, rekey and revocation are listed in
+[../shamir-custody/api.md](../shamir-custody/api.md#capability-matrix--tenant-barrier-share-holders).
+A Shamir tenant barrier is unsealed and sealed only through its holder quorum.
 
 **Identity-gated** means the caller's own authenticated identity authorizes the
-call — a tenant acts on its own barrier. Seal and officer registration carry
+call — a tenant acts on its own barrier, and a share holder authorizes itself
+with its certificate or factor proof. Seal and officer registration carry
 named permissions because they are administrative acts on the tenant.
 
 These endpoints apply only to tenants with a **dedicated** isolation type. A

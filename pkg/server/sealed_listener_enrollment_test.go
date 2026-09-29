@@ -29,7 +29,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -37,24 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
-
-// memCredentials is an in-memory ceremony.CredentialServicer.
-type memCredentials struct {
-	mu    sync.Mutex
-	creds map[string][]byte
-}
-
-func (m *memCredentials) StoreCredential(_ context.Context, name string, value []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.creds == nil {
-		m.creds = map[string][]byte{}
-	}
-	m.creds[name] = append([]byte(nil), value...)
-	return nil
-}
-
-var _ ceremony.CredentialServicer = (*memCredentials)(nil)
 
 // enrollmentFixture is a boot-time sealed-window listener over a real
 // barrier and ceremony core, answering on REST.
@@ -95,7 +76,7 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 		t.Fatal("prepare must leave the barrier sealed")
 	}
 
-	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, &memCredentials{}, logger)
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, logger)
 	if err != nil {
 		t.Fatalf("NewCeremonyService: %v", err)
 	}

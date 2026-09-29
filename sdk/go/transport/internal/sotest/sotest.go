@@ -133,8 +133,8 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		defer release()
-		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err != nil {
-			t.Fatalf("BarrierRekey with the SO PIN: %v", err)
+		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
+			t.Fatalf("BarrierRekeyStart with the SO PIN: %v", err)
 		}
 		if got := f.Barrier.Rekeys(); got != 1 {
 			t.Fatalf("rekeys = %d, want 1", got)
@@ -155,8 +155,8 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 	t.Run("SO without the PIN is refused", func(t *testing.T) {
 		f := NewFixture(t)
 		c := start(t, f)
-		if _, err := c.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err == nil {
-			t.Fatal("BarrierRekey without the SO PIN succeeded")
+		if _, err := c.BarrierRekeyStart(context.Background(), &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err == nil {
+			t.Fatal("BarrierRekeyStart without the SO PIN succeeded")
 		}
 		if f.Barrier.Rekeys() != 0 {
 			t.Fatal("a refused rekey reached the service")
@@ -191,14 +191,14 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 			t.Fatal("a refused seal reached the service")
 		}
 	})
-	t.Run("BarrierRekey fills so_pin from the bound PIN", func(t *testing.T) {
+	t.Run("BarrierRekeyStart fills so_pin from the bound PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		f.PINs = authtest.BarrierPINBackend(t, PIN)
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		defer release()
-		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err != nil {
-			t.Fatalf("BarrierRekey with the SO PIN bound: %v", err)
+		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
+			t.Fatalf("BarrierRekeyStart with the SO PIN bound: %v", err)
 		}
 		if got := f.Barrier.Rekeys(); got != 1 {
 			t.Fatalf("rekeys = %d, want 1", got)
@@ -210,7 +210,7 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		defer release()
-		if _, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, Total: 3}); err != nil {
+		if _, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2}); err != nil {
 			t.Fatalf("BarrierGenerateRecoveryKeys with the SO PIN bound: %v", err)
 		}
 		if got := f.Barrier.RecoveryGenerations(); got != 1 {
@@ -224,16 +224,16 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 		ctx, release := BindPIN(t, PIN)
 		defer release()
 		calls := map[string]func() error{
-			"BarrierRekey": func() error {
-				_, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3, SOPin: "other"})
+			"BarrierRekeyStart": func() error {
+				_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "other"})
 				return err
 			},
 			"BarrierGenerateRecoveryKeys": func() error {
-				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, Total: 3, SOPin: "other"})
+				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "other"})
 				return err
 			},
 			"BarrierInitializeShamir": func() error {
-				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Secret: []byte("secret"), Threshold: 2, TotalShares: 3, SOPin: "other"})
+				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: "other"})
 				return err
 			},
 			"CeremonyInitialize": func() error {
@@ -262,7 +262,7 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		defer release()
-		if _, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Secret: []byte("secret"), Threshold: 2, TotalShares: 3}); err != nil {
+		if _, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3}); err != nil {
 			t.Fatalf("BarrierInitializeShamir with the SO PIN bound: %v", err)
 		}
 		if got := f.Barrier.ShamirInits(); got != 1 {
@@ -292,8 +292,8 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		release()
-		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err == nil {
-			t.Fatal("BarrierRekey after release succeeded")
+		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err == nil {
+			t.Fatal("BarrierRekeyStart after release succeeded")
 		}
 		if f.Barrier.Rekeys() != 0 {
 			t.Fatal("a refused rekey reached the service")

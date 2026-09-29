@@ -39,19 +39,14 @@ func newTestBarrier(t *testing.T) *StorageBarrier {
 }
 
 // TestNewBarrierServiceWithCeremony_WiresDistributors proves the re-exported
-// constructor installs the ceremony service as both the CeremonyDistributor
-// and the RecoveryDistributor on the barrier — the wiring qrdbd relies on and
-// that composing projects (quicbaas) consume through this re-export.
+// constructors install the ceremony service as the barrier's
+// CeremonyDistributor — the wiring qrdbd relies on and that composing
+// projects (quicbaas) consume through these re-exports. One distributor now
+// serves both key domains (unseal and recovery).
 func TestNewBarrierServiceWithCeremony_WiresDistributors(t *testing.T) {
 	barrier := newTestBarrier(t)
 
-	cred, err := NewVersionedCredentialService(
-		&CredentialConfig{Strategy: CredentialStrategyManual}, barrier, slog.Default())
-	if err != nil {
-		t.Fatalf("NewVersionedCredentialService: %v", err)
-	}
-	ceremonyCore, err := NewCeremonyService(
-		&CeremonyConfig{DataDir: t.TempDir()}, barrier, cred, slog.Default())
+	ceremonyCore, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.Default())
 	if err != nil {
 		t.Fatalf("NewCeremonyService: %v", err)
 	}
@@ -62,9 +57,6 @@ func TestNewBarrierServiceWithCeremony_WiresDistributors(t *testing.T) {
 	}
 	if barrier.CeremonyDistributor() == nil {
 		t.Error("ceremony distributor not installed on the barrier")
-	}
-	if barrier.RecoveryDistributor() == nil {
-		t.Error("recovery distributor not installed on the barrier")
 	}
 }
 

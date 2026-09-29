@@ -258,26 +258,6 @@ func TestE2E_BarrierInitializeShamir_UnmarshalError(t *testing.T) {
 	}
 }
 
-func TestE2E_BarrierUnsealWithShare_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.ShamirUnsealShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.BarrierUnsealWithShare(context.Background(), &transport.BarrierUnsealShareRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
-func TestE2E_BarrierRekey_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.Rekey", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.BarrierRekey(context.Background(), &transport.BarrierRekeyRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
 func TestE2E_BarrierGenerateRecoveryKeys_UnmarshalError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.RecoveryGenerate", func(_ []byte) (uint16, []byte) {
@@ -294,16 +274,6 @@ func TestE2E_BarrierHasRecoveryKeys_UnmarshalError(t *testing.T) {
 		return wire.StatusOK, garbageProto
 	})
 	if _, err := tr.BarrierHasRecoveryKeys(context.Background()); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
-func TestE2E_BarrierGenerateRootToken_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.RootToken", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.BarrierGenerateRootToken(context.Background(), &transport.BarrierGenerateRootTokenRequest{}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
@@ -332,58 +302,12 @@ func TestE2E_CeremonyStatus_UnmarshalError(t *testing.T) {
 	}
 }
 
-func TestE2E_CeremonyClaimCertBegin_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimCertBegin", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.CeremonyClaimCertBegin(context.Background(), &transport.ClaimCertBeginRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
-func TestE2E_CeremonyClaimCertComplete_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimCertComplete", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.CeremonyClaimCertComplete(context.Background(), &transport.ClaimCertCompleteRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
-func TestE2E_CeremonyClaimShare_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.BeginClaimShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	srv.SetResponder("ceremony.CompleteClaimShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-	if _, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
 func TestE2E_CeremonySignCSR_UnmarshalError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("ceremony.SignCSR", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
 	if _, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}
-
-func TestE2E_CeremonyEnrollExternalOfficer_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.EnrollExternalOfficer", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageProto
-	})
-	if _, err := tr.CeremonyEnrollExternalOfficer(context.Background(), &transport.EnrollExternalOfficerRequest{}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

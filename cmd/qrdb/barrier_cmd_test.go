@@ -24,14 +24,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -47,28 +47,26 @@ type mockBarrierService struct {
 	unsealFn           func(ctx context.Context, secret []byte) error
 	sealFn             func(ctx context.Context) error
 	statusFn           func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn func(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error)
-	unsealShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
-	unsealSharesFn     func(ctx context.Context, shares []string) error
-	rekeyFn            func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
-	genRecoveryKeysFn  func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
-	recoverFn          func(ctx context.Context, keys []string) error
+	initializeShamirFn func(ctx context.Context, threshold, total int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
+	genRecoveryKeysFn  func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
 	deleteRecoveryFn   func(ctx context.Context) error
 	hasRecoveryKeysFn  func(ctx context.Context) (bool, error)
-	genRootTokenFn     func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 
-	officerRegisterFn         func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
-	officerListFn             func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
-	officerClaimStatusFn      func(ctx context.Context) ([]*service.BarrierOfficerStatus, error)
-	shareClaimBeginFn         func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
-	shareClaimCompleteFn      func(ctx context.Context, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
-	shamirSealVoteFn          func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
-	recoveryOfficerRegisterFn func(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
-	recoveryClaimBeginFn      func(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
-	recoveryClaimCompleteFn   func(ctx context.Context, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+	officerRegisterFn    func(ctx context.Context, domain seal.QuorumDomain, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error)
+	officerListFn        func(ctx context.Context, domain seal.QuorumDomain) ([]*service.BarrierOfficerStatus, error)
+	shareClaimBeginFn    func(ctx context.Context, domain seal.QuorumDomain, username, thumbprint string) (*service.BarrierShareClaimChallenge, error)
+	shareClaimCompleteFn func(ctx context.Context, domain seal.QuorumDomain, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error)
+	quorumBeginFn        func(ctx context.Context, req *service.QuorumBeginRequest) (*service.QuorumChallengeInfo, error)
+	quorumSubmitFn       func(ctx context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error)
+	rekeyStartFn         func(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error)
+	officerRevokeFn      func(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error)
 }
 
 var _ service.BarrierServicer = (*mockBarrierService)(nil)
+
+// errBarrierMockUnset answers a holder method the test did not configure, so
+// an unexpected call fails loudly instead of answering a zero value.
+var errBarrierMockUnset = errors.New("mockBarrierService: holder method not configured by this test")
 
 func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.initializeFn != nil {
@@ -103,121 +101,18 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, threshold, total int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
-		return m.initializeShamirFn(ctx, secret, threshold, total)
+		return m.initializeShamirFn(ctx, threshold, total, policy)
 	}
-	return &service.ShamirInitInfo{
-		ShareCount:  3,
-		Threshold:   threshold,
-		TotalShares: total,
-	}, nil
+	return &service.ShamirInitInfo{ShareCount: total, Threshold: threshold, TotalShares: total}, nil
 }
 
-func (m *mockBarrierService) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
-	if m.unsealShareFn != nil {
-		return m.unsealShareFn(ctx, share)
-	}
-	return &service.UnsealShareProgress{Required: 2, Submitted: 1, Complete: false}, nil
-}
-
-func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
-	if m.unsealSharesFn != nil {
-		return m.unsealSharesFn(ctx, shares)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	if m.rekeyFn != nil {
-		return m.rekeyFn(ctx, threshold, total)
-	}
-	return &service.ShamirInitInfo{
-		ShareCount:  2,
-		Threshold:   threshold,
-		TotalShares: total,
-	}, nil
-}
-
-func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
 	if m.genRecoveryKeysFn != nil {
-		return m.genRecoveryKeysFn(ctx, threshold, total)
+		return m.genRecoveryKeysFn(ctx, threshold, policy)
 	}
-	return &service.RecoveryKeysInfo{
-		ShareCount: 2,
-		Threshold:  threshold,
-		Total:      total,
-	}, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	if m.officerRegisterFn != nil {
-		return m.officerRegisterFn(ctx, req)
-	}
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerList(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
-	if m.officerListFn != nil {
-		return m.officerListFn(ctx)
-	}
-	return nil, nil
-}
-
-func (m *mockBarrierService) BarrierOfficerClaimStatus(ctx context.Context) ([]*service.BarrierOfficerStatus, error) {
-	if m.officerClaimStatusFn != nil {
-		return m.officerClaimStatusFn(ctx)
-	}
-	return nil, nil
-}
-
-func (m *mockBarrierService) BarrierShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
-	if m.shareClaimBeginFn != nil {
-		return m.shareClaimBeginFn(ctx, username, thumbprint)
-	}
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierService) BarrierShareClaimComplete(ctx context.Context, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
-	if m.shareClaimCompleteFn != nil {
-		return m.shareClaimCompleteFn(ctx, username, nonceHex, signature, thumbprint)
-	}
-	return &service.BarrierShareClaimResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierShamirSealVote(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
-	if m.shamirSealVoteFn != nil {
-		return m.shamirSealVoteFn(ctx, share)
-	}
-	return &service.UnsealShareProgress{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryOfficerRegister(ctx context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	if m.recoveryOfficerRegisterFn != nil {
-		return m.recoveryOfficerRegisterFn(ctx, req)
-	}
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(ctx context.Context, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
-	if m.recoveryClaimBeginFn != nil {
-		return m.recoveryClaimBeginFn(ctx, username, thumbprint)
-	}
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(ctx context.Context, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
-	if m.recoveryClaimCompleteFn != nil {
-		return m.recoveryClaimCompleteFn(ctx, username, nonceHex, signature, thumbprint)
-	}
-	return &service.BarrierShareClaimResult{}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
-	if m.recoverFn != nil {
-		return m.recoverFn(ctx, keys)
-	}
-	return nil
+	return &service.RecoveryKeysInfo{ShareCount: threshold + 1, Threshold: threshold, Total: threshold + 1}, nil
 }
 
 func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) error {
@@ -234,18 +129,68 @@ func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, 
 	return false, nil
 }
 
-func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, shares []string) (*service.RootTokenInfo, error) {
-	if m.genRootTokenFn != nil {
-		return m.genRootTokenFn(ctx, shares)
+func (m *mockBarrierService) BarrierOfficerRegister(ctx context.Context, domain seal.QuorumDomain, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	if m.officerRegisterFn != nil {
+		return m.officerRegisterFn(ctx, domain, req)
 	}
-	return &service.RootTokenInfo{Token: "root-token-abc", CreatedAt: time.Now()}, nil
+	return nil, errBarrierMockUnset
 }
 
-// newBarrierTestRoot builds a root command with an injected barrier service.
+func (m *mockBarrierService) BarrierOfficerList(ctx context.Context, domain seal.QuorumDomain) ([]*service.BarrierOfficerStatus, error) {
+	if m.officerListFn != nil {
+		return m.officerListFn(ctx, domain)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierShareClaimBegin(ctx context.Context, domain seal.QuorumDomain, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
+	if m.shareClaimBeginFn != nil {
+		return m.shareClaimBeginFn(ctx, domain, username, thumbprint)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierShareClaimComplete(ctx context.Context, domain seal.QuorumDomain, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
+	if m.shareClaimCompleteFn != nil {
+		return m.shareClaimCompleteFn(ctx, domain, username, nonceHex, signature, thumbprint)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierQuorumBegin(ctx context.Context, req *service.QuorumBeginRequest) (*service.QuorumChallengeInfo, error) {
+	if m.quorumBeginFn != nil {
+		return m.quorumBeginFn(ctx, req)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierQuorumSubmit(ctx context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
+	if m.quorumSubmitFn != nil {
+		return m.quorumSubmitFn(ctx, req)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+	if m.rekeyStartFn != nil {
+		return m.rekeyStartFn(ctx, domain, threshold, policy)
+	}
+	return nil, errBarrierMockUnset
+}
+
+func (m *mockBarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error) {
+	if m.officerRevokeFn != nil {
+		return m.officerRevokeFn(ctx, domain, username, threshold)
+	}
+	return nil, errBarrierMockUnset
+}
+
+// newBarrierTestRoot builds a root command with an injected barrier service
+// and a real PIN backend, as every composer wires one.
 func newBarrierTestRoot(t *testing.T, svc service.BarrierServicer) *cobra.Command {
 	t.Helper()
 	return newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(),
-		embedded.WithBarrierService(svc))
+		embedded.WithBarrierService(svc), embedded.WithPINBackend(pintest.NewBackend(t)))
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +293,26 @@ func TestBarrierInitCmd_InvalidStrategy(t *testing.T) {
 	}
 }
 
+// TestBarrierInitCmd_ShamirPointsAtInitShamir verifies `barrier init`
+// refuses the shamir strategy locally: a Shamir barrier is initialized over
+// its enrolled holders by `barrier init-shamir`, never from a passphrase.
+func TestBarrierInitCmd_ShamirPointsAtInitShamir(t *testing.T) {
+	called := false
+	root := newBarrierTestRoot(t, &mockBarrierService{initializeFn: func(context.Context, []byte) error {
+		called = true
+		return nil
+	}})
+	_, err := executeCommand(root, "barrier", "init",
+		"--barrier-strategy", "shamir", "--passphrase", "a passphrase")
+	var invalid *InvalidArgError
+	if !errors.As(err, &invalid) || invalid.Arg != "--barrier-strategy" || !strings.Contains(invalid.Reason, "init-shamir") {
+		t.Fatalf("err = %v, want an InvalidArgError on --barrier-strategy naming init-shamir", err)
+	}
+	if called {
+		t.Fatal("BarrierInitialize was called for the shamir strategy")
+	}
+}
+
 // TestBarrierInitCmd_UserPinRequiresSOPin verifies the dual-control
 // invariant: supplying --user-pin without --so-pin is rejected.
 func TestBarrierInitCmd_UserPinRequiresSOPin(t *testing.T) {
@@ -387,7 +352,7 @@ func TestBarrierInitCmd_NoneRejectsPINs(t *testing.T) {
 	}{
 		{"so_pin_only", []string{"--so-pin", "SO123"}},
 		{"user_pin_only", []string{"--user-pin", "USR123"}},
-		{"both_pins", []string{"--so-pin", "SO123", "--user-pin", "USR123"}},
+		{"both_pins", []string{"--so-pin", "SO1234", "--user-pin", "USR123"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -411,7 +376,7 @@ func TestBarrierInitCmd_ValidPINPairSuccess(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	out, err := executeCommand(root, "barrier", "init",
 		"--barrier-strategy", "passphrase", "--passphrase", "s",
-		"--so-pin", "SO123", "--user-pin", "USR123")
+		"--so-pin", "SO1234", "--user-pin", "USR123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -428,7 +393,7 @@ func TestBarrierInitCmd_ValidPINPairSuccess(t *testing.T) {
 func TestBarrierInitShamirCmd_Success(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	out, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "2", "--total", "3")
+		"--threshold", "2", "--total", "3")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,7 +408,7 @@ func TestBarrierInitShamirCmd_Success(t *testing.T) {
 func TestBarrierInitShamirCmd_JSONOutput(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	out, err := executeCommand(root, "--output", "json", "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "2", "--total", "3")
+		"--threshold", "2", "--total", "3")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -456,7 +421,7 @@ func TestBarrierInitShamirCmd_JSONOutput(t *testing.T) {
 func TestBarrierInitShamirCmd_ThresholdGate(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "1", "--total", "3")
+		"--threshold", "1", "--total", "3")
 	var invalid *InvalidArgError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected *InvalidArgError, got %T: %v", err, err)
@@ -468,7 +433,7 @@ func TestBarrierInitShamirCmd_ThresholdGate(t *testing.T) {
 func TestBarrierInitShamirCmd_TotalLessThanThreshold(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "3", "--total", "2")
+		"--threshold", "3", "--total", "2")
 	var invalid *InvalidArgError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected *InvalidArgError, got %T: %v", err, err)
@@ -481,7 +446,7 @@ func TestBarrierInitShamirCmd_TotalLessThanThreshold(t *testing.T) {
 func TestBarrierInitShamirCmd_UserPinRequiresSOPin(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "2", "--total", "3",
+		"--threshold", "2", "--total", "3",
 		"--user-pin", "USR123")
 	var invalid *InvalidArgError
 	if !errors.As(err, &invalid) {
@@ -498,7 +463,7 @@ func TestBarrierInitShamirCmd_UserPinRequiresSOPin(t *testing.T) {
 func TestBarrierInitShamirCmd_SOPinRequiresUserPin(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "2", "--total", "3",
+		"--threshold", "2", "--total", "3",
 		"--so-pin", "SO123")
 	var invalid *InvalidArgError
 	if !errors.As(err, &invalid) {
@@ -514,8 +479,8 @@ func TestBarrierInitShamirCmd_SOPinRequiresUserPin(t *testing.T) {
 func TestBarrierInitShamirCmd_ValidPINPairSuccess(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "init-shamir",
-		"--passphrase", "seed", "--threshold", "2", "--total", "3",
-		"--so-pin", "SO123", "--user-pin", "USR123")
+		"--threshold", "2", "--total", "3",
+		"--so-pin", "SO1234", "--user-pin", "USR123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,77 +506,6 @@ func TestBarrierUnsealCmd_MissingSecret(t *testing.T) {
 	_, err := executeCommand(root, "barrier", "unseal")
 	if err == nil {
 		t.Fatal("expected error for missing --passphrase flag")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Canonical surface: barrier unseal-shares
-// ---------------------------------------------------------------------------
-
-// TestBarrierUnsealSharesCmd_RepeatedFlag verifies the repeatable
-// --share form.
-func TestBarrierUnsealSharesCmd_RepeatedFlag(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	out, err := executeCommand(root, "barrier", "unseal-shares",
-		"--share", "s1", "--share", "s2")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "OK") {
-		t.Errorf("expected OK in output: %q", out)
-	}
-}
-
-// TestBarrierUnsealSharesCmd_FileForm verifies the --shares-file form.
-func TestBarrierUnsealSharesCmd_FileForm(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "shares.txt")
-	body := "# leading comment\nshare-a\n\nshare-b\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write shares file: %v", err)
-	}
-
-	got := make([][]string, 0, 1)
-	svc := &mockBarrierService{
-		unsealSharesFn: func(_ context.Context, shares []string) error {
-			got = append(got, append([]string(nil), shares...))
-			return nil
-		},
-	}
-	root := newBarrierTestRoot(t, svc)
-	_, err := executeCommand(root, "barrier", "unseal-shares", "--shares-file", path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("expected one server call, got %d", len(got))
-	}
-	want := []string{"share-a", "share-b"}
-	if len(got[0]) != len(want) || got[0][0] != want[0] || got[0][1] != want[1] {
-		t.Errorf("share contents mismatch: got %v want %v", got[0], want)
-	}
-}
-
-// TestBarrierUnsealSharesCmd_BothInputsRejected verifies that --share
-// and --shares-file are mutually exclusive.
-func TestBarrierUnsealSharesCmd_BothInputsRejected(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "unseal-shares",
-		"--share", "s1", "--shares-file", "/dev/null")
-	var invalid *InvalidArgError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("expected *InvalidArgError, got %T: %v", err, err)
-	}
-}
-
-// TestBarrierUnsealSharesCmd_NoInput verifies that at least one input
-// form must be supplied.
-func TestBarrierUnsealSharesCmd_NoInput(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "unseal-shares")
-	var missing *MissingArgError
-	if !errors.As(err, &missing) {
-		t.Fatalf("expected *MissingArgError, got %T: %v", err, err)
 	}
 }
 
@@ -689,31 +583,6 @@ func TestBarrierSealCmd_AcceptsSOPin(t *testing.T) {
 // Canonical surface: barrier rekey
 // ---------------------------------------------------------------------------
 
-func TestBarrierRekeyCmd_Success(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	out, err := executeCommand(root, "barrier", "rekey",
-		"--threshold", "2", "--total", "3")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "Threshold") {
-		t.Errorf("expected Threshold in output: %q", out)
-	}
-}
-
-// TestBarrierRekeyCmd_DefaultMN verifies rekey works without Shamir
-// flags (the server reuses the configured M/N).
-func TestBarrierRekeyCmd_DefaultMN(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	out, err := executeCommand(root, "barrier", "rekey")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "Threshold") {
-		t.Errorf("expected Threshold in output: %q", out)
-	}
-}
-
 // TestBarrierRekeyCmd_PassphraseFlagRemoved guards against the dead
 // new_secret field resurfacing: rekey carries no secret material, so
 // --passphrase must be an unknown flag.
@@ -725,30 +594,6 @@ func TestBarrierRekeyCmd_PassphraseFlagRemoved(t *testing.T) {
 	}
 }
 
-// TestBarrierRekeyCmd_UnpairedShamirFlags verifies --threshold without
-// --total is rejected.
-func TestBarrierRekeyCmd_UnpairedShamirFlags(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "rekey", "--threshold", "3")
-	var invalid *InvalidArgError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("expected *InvalidArgError, got %T: %v", err, err)
-	}
-}
-
-// TestBarrierRekeyCmd_JSONOutput verifies --output json is honored.
-func TestBarrierRekeyCmd_JSONOutput(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	out, err := executeCommand(root, "--output", "json", "barrier", "rekey",
-		"--threshold", "2", "--total", "3")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "shares") {
-		t.Errorf("expected shares in JSON output: %q", out)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Canonical surface: barrier recovery generate / recover
 // ---------------------------------------------------------------------------
@@ -756,7 +601,7 @@ func TestBarrierRekeyCmd_JSONOutput(t *testing.T) {
 func TestBarrierRecoveryGenerateCmd_Success(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	out, err := executeCommand(root, "barrier", "recovery", "generate",
-		"--threshold", "2", "--total", "3")
+		"--threshold", "2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -768,7 +613,7 @@ func TestBarrierRecoveryGenerateCmd_Success(t *testing.T) {
 func TestBarrierRecoveryGenerateCmd_JSONOutput(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	out, err := executeCommand(root, "--output", "json", "barrier", "recovery", "generate",
-		"--threshold", "2", "--total", "3")
+		"--threshold", "2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -780,41 +625,9 @@ func TestBarrierRecoveryGenerateCmd_JSONOutput(t *testing.T) {
 func TestBarrierRecoveryGenerateCmd_AcceptsSOPin(t *testing.T) {
 	root := newBarrierTestRoot(t, &mockBarrierService{})
 	_, err := executeCommand(root, "barrier", "recovery", "generate",
-		"--threshold", "2", "--total", "3", "--so-pin", "SO123")
+		"--threshold", "2", "--so-pin", "SO123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// TestBarrierRecoveryRecoverCmd_RepeatedShare verifies the repeatable
-// --share form.
-func TestBarrierRecoveryRecoverCmd_RepeatedShare(t *testing.T) {
-	got := make([][]string, 0, 1)
-	svc := &mockBarrierService{
-		recoverFn: func(_ context.Context, keys []string) error {
-			got = append(got, append([]string(nil), keys...))
-			return nil
-		},
-	}
-	root := newBarrierTestRoot(t, svc)
-	out, err := executeCommand(root, "barrier", "recovery", "recover",
-		"--share", "key-a", "--share", "key-b")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "OK") {
-		t.Errorf("expected OK in output: %q", out)
-	}
-	if len(got) != 1 || len(got[0]) != 2 || got[0][0] != "key-a" || got[0][1] != "key-b" {
-		t.Errorf("unexpected key payload: %v", got)
-	}
-}
-
-func TestBarrierRecoveryRecoverCmd_MissingShare(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "recovery", "recover")
-	if err == nil {
-		t.Fatal("expected error for missing --share")
 	}
 }
 
@@ -859,33 +672,14 @@ func TestBarrierRecoveryStatusCmd_HasKeys(t *testing.T) {
 	}
 }
 
-func TestBarrierRootTokenCmd_Success(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	out, err := executeCommand(root, "barrier", "root-token",
-		"--share", "s1", "--share", "s2")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "root-token-abc") {
-		t.Errorf("expected root token in output: %q", out)
-	}
-}
-
-func TestBarrierRootTokenCmd_MissingShare(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "root-token")
-	if err == nil {
-		t.Fatal("expected error for missing --share")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Canonical verb-tree wiring test
 // ---------------------------------------------------------------------------
 
-// canonicalBarrierVerbs enumerates the seven canonical verbs (plus the
-// two `recovery` sub-verbs) that every CLI binary in the stack MUST
-// expose. Tests pin both the path and the required flag set per verb.
+// canonicalBarrierVerbs enumerates the canonical barrier verbs, including
+// the share-holder officer and quorum verbs, that every CLI binary in the
+// stack MUST expose. Tests pin both the path and the required flag set per
+// verb.
 var canonicalBarrierVerbs = []struct {
 	path  []string
 	flags []string
@@ -897,15 +691,11 @@ var canonicalBarrierVerbs = []struct {
 	},
 	{
 		path:  []string{"barrier", "init-shamir"},
-		flags: []string{"passphrase", "threshold", "total", "so-pin", "user-pin"},
+		flags: []string{"threshold", "total", "policy", "so-pin", "user-pin"},
 	},
 	{
 		path:  []string{"barrier", "unseal"},
 		flags: []string{"passphrase"},
-	},
-	{
-		path:  []string{"barrier", "unseal-shares"},
-		flags: []string{"share", "shares-file"},
 	},
 	{
 		path:  []string{"barrier", "seal"},
@@ -913,15 +703,23 @@ var canonicalBarrierVerbs = []struct {
 	},
 	{
 		path:  []string{"barrier", "rekey"},
-		flags: []string{"so-pin", "threshold", "total"},
+		flags: []string{"domain", "threshold", "policy", "so-pin"},
 	},
 	{
 		path:  []string{"barrier", "recovery", "generate"},
-		flags: []string{"threshold", "total", "so-pin"},
+		flags: []string{"threshold", "policy", "so-pin"},
 	},
 	{
-		path:  []string{"barrier", "recovery", "recover"},
-		flags: []string{"share"},
+		path:  []string{"barrier", "officer", "register"},
+		flags: []string{"domain", "username", "role", "csr-file", "encryption-kem", "encryption-key-file", "designated", "factor"},
+	},
+	{path: []string{"barrier", "officer", "list"}, flags: []string{"domain"}},
+	{path: []string{"barrier", "officer", "claim"}, flags: []string{"domain", "username", "key", "out"}},
+	{path: []string{"barrier", "officer", "revoke"}, flags: []string{"domain", "username", "threshold", "so-pin"}},
+	{path: []string{"barrier", "quorum", "begin"}, flags: []string{"domain", "op", "username", "factor"}},
+	{
+		path:  []string{"barrier", "quorum", "submit"},
+		flags: []string{"domain", "op", "username", "envelope", "key", "encryption-key-file", "challenge-id", "factor", "response-file", "response-metadata"},
 	},
 }
 

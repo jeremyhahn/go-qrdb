@@ -30,37 +30,52 @@ import (
 // encrypts every value written under this prefix.
 const officerRegistryPrefix = "ceremony/officers/"
 
-// PersistentOfficer is the public, stable record persisted for each
-// enrolled officer. It captures both the trust material (certificate
-// thumbprint or public key) and the enrollment metadata (share index,
-// auth factor, timestamps) needed to re-hydrate the in-memory
-// state after a barrier unseal.
+// PersistentOfficer is the public, stable record persisted for each share
+// holder — Security Officer or key custodian — of one barrier scope. It holds
+// only public material: the issued certificate, the envelope recipient key
+// and each enrolled factor's public credential. No share, envelope or private
+// key is ever part of it.
 type PersistentOfficer struct {
-	// Username is the unique identifier for the officer.
+	// Username is the unique identifier for the holder within its scope.
 	Username string `json:"username"`
 
-	// CertThumbprint is the lowercase hex-encoded SHA-256 hash of the
-	// officer's X.509 certificate's DER bytes, when the officer was
-	// enrolled with a certificate. Empty when only PubKeyPEM was provided.
-	CertThumbprint string `json:"cert_thumbprint,omitempty"`
+	// Role is the holder's policy role (so or custodian).
+	Role seal.HolderRole `json:"role"`
 
-	// PubKeyPEM is the SPKI-encoded public key PEM. It is always present
-	// (extracted from the certificate when CertThumbprint is set, or
-	// supplied directly for pubkey-only enrollment).
+	// CertPEM is the certificate the ceremony CA issued to the holder.
+	CertPEM string `json:"cert_pem"`
+
+	// CertThumbprint is the lowercase hex SHA-256 of the certificate DER.
+	CertThumbprint string `json:"cert_thumbprint"`
+
+	// PubKeyPEM is the certificate's SPKI public key, PEM encoded.
 	PubKeyPEM string `json:"pubkey_pem"`
 
-	// ShareIndex is the 1-based Shamir share index assigned to this officer.
-	ShareIndex int `json:"share_index"`
+	// EncryptionKEM names the HPKE suite of the envelope recipient key.
+	EncryptionKEM string `json:"encryption_kem"`
 
-	// AuthFactor is the auth factor type the officer authenticates with
-	// ("mtls", "webauthn", "piv").
-	AuthFactor string `json:"auth_factor"`
+	// EncryptionKey is the envelope recipient public key in that suite's
+	// encoding. Each share is sealed to it.
+	EncryptionKey []byte `json:"encryption_key"`
 
-	// EnrolledAt is the UTC timestamp when the officer was enrolled.
+	// Factors is every factor the holder enrolled, "mtls" first.
+	Factors []seal.RosterFactor `json:"factors"`
+
+	// Designated names the factor admitted under the designated policy.
+	Designated string `json:"designated"`
+
+	// ShareIndex is the 1-based share index of the last distribution to the
+	// holder; zero until the holder first receives a share.
+	ShareIndex int `json:"share_index,omitempty"`
+
+	// Distribution identifies the distribution ShareIndex belongs to.
+	Distribution string `json:"distribution,omitempty"`
+
+	// EnrolledAt is the UTC timestamp when the holder was enrolled.
 	EnrolledAt time.Time `json:"enrolled_at"`
 
-	// ClaimedAt is the UTC timestamp when the officer claimed their
-	// share. Zero value when not yet claimed.
+	// ClaimedAt is the UTC timestamp when the holder claimed their current
+	// share envelope. Zero value when not yet claimed.
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
 }
 
@@ -240,29 +255,30 @@ func (r *OfficerRegistry) ListAll(ctx context.Context) ([]*PersistentOfficer, er
 	return out, nil
 }
 
-// MarkClaimed updates the ClaimedAt timestamp on the named officer's
-// record. The record must already exist.
-//
-// Returns ErrUserNotFound if the officer is not enrolled, or ErrSealed
-// if the underlying barrier is sealed.
-func (r *OfficerRegistry) MarkClaimed(ctx context.Context, username string, when time.Time) error {
+// Delete removes the named holder's record. A holder that does not exist is
+// not an error. Callers delete only while the barrier is unsealed (a rekey
+// always is).
+func (r *OfficerRegistry) Delete(ctx context.Context, username string) error {
 	if username == "" {
 		return ErrMissingUsername
 	}
-	if when.IsZero() {
-		when = time.Now().UTC()
-	} else {
-		when = when.UTC()
-	}
-
-	// Load through the public API so sealed-state semantics propagate.
-	current, err := r.Load(ctx, username)
-	if err != nil {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.backend.Delete(ctx, r.officerKey(username)); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
 		return err
 	}
+	delete(r.cache, username)
+	return nil
+}
 
-	current.ClaimedAt = when
-	return r.Save(ctx, current)
+// cacheOnly records officer in the in-memory cache without persisting it.
+// It is used while the backing barrier is sealed; the holder scope's sync
+// persists the cache once the barrier is unsealed.
+func (r *OfficerRegistry) cacheOnly(officer *PersistentOfficer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *officer
+	r.cache[officer.Username] = &cp
 }
 
 // Reload empties the in-memory cache and re-populates it from the backend.
@@ -299,32 +315,6 @@ func (r *OfficerRegistry) Reload(ctx context.Context) error {
 	return nil
 }
 
-// ResetClaimedAt clears the ClaimedAt timestamp on every enrolled officer,
-// marking a new share distribution round. Each officer record is updated in
-// the cache and persisted best-effort (sealed-barrier tolerance: a failed
-// write is logged but does not stop the reset). The cache is always updated
-// even when persistence fails so the in-memory view is immediately consistent.
-func (r *OfficerRegistry) ResetClaimedAt(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for username, officer := range r.cache {
-		if officer.ClaimedAt.IsZero() {
-			continue
-		}
-		officer.ClaimedAt = time.Time{}
-		cp := *officer
-		r.cache[username] = &cp
-
-		blob, err := json.Marshal(&cp)
-		if err != nil {
-			continue // best-effort
-		}
-		_ = r.backend.Put(ctx, r.officerKey(username), blob) // best-effort
-	}
-	return nil
-}
-
 // Cached returns a snapshot of the in-memory cache without consulting
 // the backend. Used by callers that need a synchronous view (for example
 // during barrier-sealed Status reporting). The returned slice is a
@@ -345,11 +335,6 @@ func (r *OfficerRegistry) Cached() []*PersistentOfficer {
 // registry's configured prefix.
 func (r *OfficerRegistry) officerKey(username string) string {
 	return r.prefix + username
-}
-
-// Prefix returns the storage prefix configured for this registry.
-func (r *OfficerRegistry) Prefix() string {
-	return r.prefix
 }
 
 // sortOfficersByEnrolledAt sorts officers in ascending enrolled-at order

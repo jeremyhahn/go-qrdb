@@ -120,20 +120,13 @@ func (e *CeremonyServiceError) Unwrap() error {
 	return e.Err
 }
 
-// CustodianGroupServiceError is returned when the custodian group service
-// fails to initialize.
-type CustodianGroupServiceError struct {
-	Err error
-}
+// NilSealStoreError is returned when the node-local seal store a PIN
+// backend is built over is nil.
+type NilSealStoreError struct{}
 
-// Error returns a human-readable description.
-func (e *CustodianGroupServiceError) Error() string {
-	return "lifecycle: custodian group service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CustodianGroupServiceError) Unwrap() error {
-	return e.Err
+// Error implements the error interface.
+func (e *NilSealStoreError) Error() string {
+	return "lifecycle: the node-local seal store must not be nil"
 }
 
 // TenantServiceError is returned when the tenant lifecycle service fails

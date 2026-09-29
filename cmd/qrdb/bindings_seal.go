@@ -80,12 +80,14 @@ func (b *SealBinding) Initialize(secret string) error {
 	return nil
 }
 
-// InitializeShamir initializes the encryption barrier using Shamir
-// secret sharing. The response is share-free: shares are sealed to
-// enrolled Security Officers and claimed via the officer ceremony, and
-// the root token requires a post-claim share quorum
-// (BarrierGenerateRootToken), so RootToken is always empty here.
-func (b *SealBinding) InitializeShamir(secret string, threshold, totalShares int) (*BootstrapResult, error) {
+// InitializeShamir initializes the encryption barrier under Shamir custody,
+// splitting the unseal key threshold-of-totalShares to the enrolled share
+// holders under the given factor policy ("designated" or "any-enrolled";
+// empty selects designated). The response is share-free: each share is
+// sealed to its holder and claimed through the holder claim flow, and a root
+// token needs a root-token quorum of holders, so RootToken is always empty
+// here.
+func (b *SealBinding) InitializeShamir(threshold, totalShares int, policy string) (*BootstrapResult, error) {
 	b.logger.Debug("InitializeShamir called", "threshold", threshold, "totalShares", totalShares)
 	cl, err := b.conn.loadClient()
 	if err != nil {
@@ -93,11 +95,10 @@ func (b *SealBinding) InitializeShamir(secret string, threshold, totalShares int
 		return nil, err
 	}
 	req := &transport.BarrierInitializeShamirRequest{
-		Secret:      secretBytes(secret),
 		Threshold:   threshold,
 		TotalShares: totalShares,
+		Policy:      policy,
 	}
-	defer secure.Wipe(req.Secret)
 	resp, err := cl.Barrier().BarrierInitializeShamir(context.Background(), req)
 	if err != nil {
 		b.logger.Error("InitializeShamir failed", "error", err)
@@ -116,11 +117,10 @@ func (b *SealBinding) InitializeShamir(secret string, threshold, totalShares int
 	}, nil
 }
 
-// Unseal submits unseal material toward unsealing the barrier. The
-// barrier strategy drives the routing: Shamir barriers accept a single
-// officer share toward the quorum threshold, while passphrase barriers
-// unseal in one call with the master passphrase.
-func (b *SealBinding) Unseal(share string) (*UnsealProgress, error) {
+// Unseal unseals a passphrase barrier with its master passphrase. A Shamir
+// barrier is refused with ShamirHolderUnsealError: its shares are submitted
+// one authenticated holder at a time through OfficerBinding.SubmitShare.
+func (b *SealBinding) Unseal(secret string) (*UnsealProgress, error) {
 	b.logger.Debug("Unseal called")
 	cl, err := b.conn.loadClient()
 	if err != nil {
@@ -136,22 +136,10 @@ func (b *SealBinding) Unseal(share string) (*UnsealProgress, error) {
 	}
 
 	if status.Strategy == "shamir" {
-		resp, err := cl.Barrier().BarrierUnsealWithShare(ctx, &transport.BarrierUnsealShareRequest{
-			Share: share,
-		})
-		if err != nil {
-			b.logger.Error("Unseal failed", "error", err)
-			return nil, err
-		}
-		b.logger.Debug("Unseal share accepted", "submitted", resp.Submitted, "required", resp.Required, "complete", resp.Complete)
-		return &UnsealProgress{
-			Sealed:         !resp.Complete,
-			SharesProvided: resp.Submitted,
-			SharesRequired: resp.Required,
-		}, nil
+		return nil, &ShamirHolderUnsealError{}
 	}
 
-	unsealReq := &transport.BarrierUnsealRequest{Secret: secretBytes(share)}
+	unsealReq := &transport.BarrierUnsealRequest{Secret: secretBytes(secret)}
 	defer secure.Wipe(unsealReq.Secret)
 	if err := cl.Barrier().BarrierUnseal(ctx, unsealReq); err != nil {
 		b.logger.Error("Unseal failed", "error", err)
@@ -163,9 +151,9 @@ func (b *SealBinding) Unseal(share string) (*UnsealProgress, error) {
 }
 
 // Seal seals the barrier, preventing further data access until it is
-// unsealed again. Shamir barriers reject direct sealing — a quorum of
-// officer seal votes (ShamirSealVote) is required — and that policy is
-// enforced by the barrier service, surfacing here as an error.
+// unsealed again. Shamir barriers reject direct sealing — a holder quorum
+// submitting to the seal op is required — and that policy is enforced by
+// the barrier service, surfacing here as an error.
 func (b *SealBinding) Seal() error {
 	b.logger.Debug("Seal called")
 	cl, err := b.conn.loadClient()

@@ -28,10 +28,10 @@ package permission
 // package must keep in sync by hand.
 //
 // The Custodian and Owner roles are NOT derived from this registry:
-// Custodian holds exactly the Shamir/barrier share-submission permissions
-// (a fixed, minimal set unrelated to the registry-driven roles below), and
-// Owner is the standard-posture convenience superuser defined as
-// permission.All() — see pkg/role.custodianPermissions / OwnerRole.
+// Custodian grants nothing (a key custodian is a share holder, whose every
+// operation is identity-gated rather than RBAC-gated), and Owner is the
+// standard-posture convenience superuser defined as permission.All() — see
+// pkg/role.custodianPermissions / OwnerRole.
 // ---------------------------------------------------------------------------
 
 // registerSOGrants places the Security Officer's default permissions. The SO
@@ -48,15 +48,12 @@ func registerSOGrants() {
 		// Seal management (SO-exclusive)
 		SealBootstrap, SealUnseal, SealSeal,
 		SealStatus, SealRotateRootKey, SealRekey,
-		SealGenerateRecovery, SealRecoverWithKeys,
+		SealGenerateRecovery,
 		SealInitializeShamir,
-		// Security Officer operations (SO-exclusive)
-		SealOfficerRegister, SealOfficerList,
-		SealSubmitSealVote,
+		// Share-holder enrolment and revocation (Admins enrol too)
+		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		// Ceremony (SO-exclusive)
-		CeremonyInitialize, CeremonyEnrollCustodian,
-		CeremonyRevokeCustodian, CeremonyClaimCert,
-		CeremonySignCSR, CeremonyStatus,
+		CeremonyInitialize, CeremonySignCSR, CeremonyStatus,
 		// Certificate management
 		CertsGenerate, CertsExport, CertsRevoke,
 		CertsList, CertsRead,
@@ -147,7 +144,10 @@ func registerAdminGrants() {
 		SSHRead, SSHWrite, SSHDelete,
 		// Seal management (operational subset: no bootstrap, rotate, rekey)
 		SealUnseal, SealSeal, SealStatus,
-		SealRecoverWithKeys,
+		// Share-holder enrolment and revocation. An Admin and a Security
+		// Officer both enrol holders; nobody enrols themselves, and a
+		// revocation completes only with a quorum of the remaining holders.
+		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
 		// Ceremony (status only)
 		CeremonyStatus,
 		// Tenant management (self-scope: act on own tenant)
@@ -159,9 +159,11 @@ func registerAdminGrants() {
 		// though the perm is present in the role).
 		TenantBarrierInit, TenantBarrierUnseal,
 		TenantBarrierSeal,
-		// Per-tenant Security Officer management (ScopeTenantOnly: tenant admin
-		// registers and lists officers for their OWN tenant's barrier only).
+		// Per-tenant share-holder management (ScopeTenantOnly: a tenant admin
+		// enrols, lists and revokes holders, and opens rekey rounds, for their
+		// OWN tenant's barrier only).
 		TenantBarrierOfficerRegister, TenantBarrierOfficerList,
+		TenantBarrierOfficerRevoke, TenantBarrierRekey,
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,

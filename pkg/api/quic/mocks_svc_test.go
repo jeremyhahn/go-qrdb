@@ -19,13 +19,11 @@ package quic
 import (
 	"context"
 	"crypto/x509"
-	"fmt"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -56,15 +54,14 @@ func (stubCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertR
 // ---------------------------------------------------------------------------
 
 type mockBarrierService struct {
+	service.BarrierServicer
 	barrierInitializeFn         func(ctx context.Context, secret []byte) error
 	barrierUnsealFn             func(ctx context.Context, secret []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	barrierInitializeShamirFn   func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
-	barrierUnsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
+	barrierInitializeShamirFn   func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
-	barrierRekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
-	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error)
+	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
 	barrierRecoverWithKeysFn    func(ctx context.Context, keys []string) error
 	barrierDeleteRecoveryKeysFn func(ctx context.Context) error
 	barrierHasRecoveryKeysFn    func(ctx context.Context) (bool, error)
@@ -92,6 +89,20 @@ func (m *mockBarrierService) BarrierSeal(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error) {
+	if m.barrierInitializeShamirFn != nil {
+		return m.barrierInitializeShamirFn(ctx, threshold, totalShares, policy)
+	}
+	return &service.ShamirInitInfo{ShareCount: totalShares, Threshold: threshold, TotalShares: totalShares}, nil
+}
+
+func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {
+	if m.barrierGenRecoveryKeysFn != nil {
+		return m.barrierGenRecoveryKeysFn(ctx, threshold, policy)
+	}
+	return &service.RecoveryKeysInfo{ShareCount: threshold + 1, Threshold: threshold, Total: threshold + 1}, nil
+}
+
 func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.BarrierStatusInfo, error) {
 	if m.barrierStatusFn != nil {
 		return m.barrierStatusFn(ctx)
@@ -102,48 +113,6 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 		HardwareBacked: false,
 		InitializedAt:  time.Now(),
 	}, nil
-}
-
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
-	if m.barrierInitializeShamirFn != nil {
-		return m.barrierInitializeShamirFn(ctx, secret, threshold, totalShares)
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
-}
-
-func (m *mockBarrierService) BarrierUnsealWithShare(ctx context.Context, share string) (*service.UnsealShareProgress, error) {
-	if m.barrierUnsealWithShareFn != nil {
-		return m.barrierUnsealWithShareFn(ctx, share)
-	}
-	return &service.UnsealShareProgress{Required: 3, Submitted: 1, Complete: false}, nil
-}
-
-func (m *mockBarrierService) BarrierUnsealWithShares(ctx context.Context, shares []string) error {
-	if m.barrierUnsealWithSharesFn != nil {
-		return m.barrierUnsealWithSharesFn(ctx, shares)
-	}
-	return nil
-}
-
-func (m *mockBarrierService) BarrierRekey(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error) {
-	if m.barrierRekeyFn != nil {
-		return m.barrierRekeyFn(ctx, threshold, total)
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
-}
-
-func (m *mockBarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
-	if m.barrierGenRecoveryKeysFn != nil {
-		return m.barrierGenRecoveryKeysFn(ctx, threshold, total)
-	}
-	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
-}
-
-func (m *mockBarrierService) BarrierRecoverWithKeys(ctx context.Context, keys []string) error {
-	if m.barrierRecoverWithKeysFn != nil {
-		return m.barrierRecoverWithKeysFn(ctx, keys)
-	}
-	return nil
 }
 
 func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) error {
@@ -160,53 +129,17 @@ func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, 
 	return true, nil
 }
 
-func (m *mockBarrierService) BarrierGenerateRootToken(ctx context.Context, shares []string) (*service.RootTokenInfo, error) {
-	if m.barrierGenerateRootTokenFn != nil {
-		return m.barrierGenerateRootTokenFn(ctx, shares)
-	}
-	return &service.RootTokenInfo{Token: "root-token-hex", CreatedAt: time.Now()}, nil
-}
-func (m *mockBarrierService) BarrierOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *mockBarrierService) BarrierOfficerList(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockBarrierService) BarrierOfficerClaimStatus(_ context.Context) ([]*service.BarrierOfficerStatus, error) {
-	return nil, nil
-}
-func (m *mockBarrierService) BarrierShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *mockBarrierService) BarrierShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-func (m *mockBarrierService) BarrierShamirSealVote(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
-	return &service.UnsealShareProgress{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	return &service.BarrierOfficerRegisterResult{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryShareClaimBegin(_ context.Context, _, _ string) (*service.BarrierShareClaimChallenge, error) {
-	return &service.BarrierShareClaimChallenge{}, nil
-}
-func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context, _, _ string, _ []byte, _ string) (*service.BarrierShareClaimResult, error) {
-	return &service.BarrierShareClaimResult{}, nil
-}
-
 // ---------------------------------------------------------------------------
 // mockCeremonyService
 // ---------------------------------------------------------------------------
 
 type mockCeremonyService struct {
-	ceremonyInitializeFn        func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
-	ceremonyBeginClaimCertFn    func(ctx context.Context, username string) (*service.CeremonyChallenge, error)
-	ceremonyCompleteClaimCertFn func(ctx context.Context, username, nonceHex string, signature []byte) (*service.CeremonyClaimCertResult, error)
-	ceremonyClaimShareFn        func(ctx context.Context, username string) ([]byte, error)
-	ceremonySignCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
-	ceremonyStatusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
-	capturedInitOpts            *service.CeremonyInitializeOptions
-	capturedCA                  ceremony.CeremonyCA
+	ceremonyInitializeFn func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
+	ceremonyClaimShareFn func(ctx context.Context, username string) ([]byte, error)
+	ceremonySignCSRFn    func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
+	ceremonyStatusFn     func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	capturedInitOpts     *service.CeremonyInitializeOptions
+	capturedCA           ceremony.CeremonyCA
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
@@ -224,40 +157,6 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 	}, nil
 }
 
-func (m *mockCeremonyService) CeremonyBeginClaimCert(ctx context.Context, username string) (*service.CeremonyChallenge, error) {
-	if m.ceremonyBeginClaimCertFn != nil {
-		return m.ceremonyBeginClaimCertFn(ctx, username)
-	}
-	return &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, signature []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.ceremonyCompleteClaimCertFn != nil {
-		return m.ceremonyCompleteClaimCertFn(ctx, username, nonceHex, signature)
-	}
-	return &service.CeremonyClaimCertResult{CertPEM: []byte("cert-pem"), CACertPEM: []byte("ca-cert-pem")}, nil
-}
-
-func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	if m.ceremonyClaimShareFn != nil {
-		if _, err := m.ceremonyClaimShareFn(ctx, username); err != nil {
-			return nil, err
-		}
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.ceremonyClaimShareFn != nil {
-		share, err := m.ceremonyClaimShareFn(ctx, username)
-		if err != nil {
-			return nil, err
-		}
-		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("shamir-share-value")}, nil
-}
-
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
 	if m.ceremonySignCSRFn != nil {
 		return m.ceremonySignCSRFn(ctx, username, soPin, csrPEM, role)
@@ -270,28 +169,6 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 		return m.ceremonyStatusFn(ctx)
 	}
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "sha256/abc123"}, nil
-}
-
-// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
-// extension of service.CeremonyServicer. The QUIC handler tests do not
-// exercise factor-based claim flows.
-func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
-func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
-func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
-func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
 }
 
 // ---------------------------------------------------------------------------

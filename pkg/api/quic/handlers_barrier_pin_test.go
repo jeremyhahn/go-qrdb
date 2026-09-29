@@ -18,7 +18,6 @@ package quic
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -128,65 +127,5 @@ func TestQUIC_HandleBarrierInitialize_PersistsPINs(t *testing.T) {
 	}
 	if !backend.UserPINSet() || backend.storedUserPIN != "u-5678" {
 		t.Fatalf("User PIN not persisted: set=%v stored=%q", backend.UserPINSet(), backend.storedUserPIN)
-	}
-}
-
-// TestQUIC_HandleBarrierRekey_BadSOPIN verifies that the QUIC rekey
-// handler refuses the rekey when the supplied SO PIN does not match.
-func TestQUIC_HandleBarrierRekey_BadSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	rekeyCalled := false
-	barrierSvc := &mockBarrierService{
-		// Use the rekeyFn signature exposed by the existing mock.
-	}
-	_ = rekeyCalled
-	srv := newTestServer(&mockKVService{}, &mockAdminService{},
-		WithBarrierService(barrierSvc),
-		WithPINBackend(backend))
-
-	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "wrong-pin",
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	_, err = srv.handleBarrierRekey(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error for bad SO PIN, got nil")
-	}
-	if !errors.Is(err, pin.ErrPINInvalid) {
-		t.Fatalf("expected ErrPINInvalid, got %v", err)
-	}
-	if backend.verifyCalls == 0 {
-		t.Fatal("VerifySOPIN was not invoked")
-	}
-}
-
-// TestQUIC_HandleBarrierRekey_GoodSOPIN verifies that the QUIC rekey
-// handler proceeds when the SO PIN matches.
-func TestQUIC_HandleBarrierRekey_GoodSOPIN(t *testing.T) {
-	backend := newStubPINBackend()
-	if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	barrierSvc := &mockBarrierService{}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{},
-		WithBarrierService(barrierSvc),
-		WithPINBackend(backend))
-
-	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{
-		Threshold: 2, Total: 3, SoPin: "correct-pin",
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	_, err = srv.handleBarrierRekey(context.Background(), payload)
-	if err != nil {
-		t.Fatalf("handleBarrierRekey: %v", err)
 	}
 }

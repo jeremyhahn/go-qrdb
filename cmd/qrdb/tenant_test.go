@@ -629,15 +629,21 @@ func TestTenantBarrierInitCmd_ServiceError(t *testing.T) {
 // tenant barrier-unseal tests
 // ---------------------------------------------------------------------------
 
-func TestTenantBarrierUnsealCmd_SuccessWithShare(t *testing.T) {
-	svc := &mockTenantService{}
+// TestTenantBarrierUnsealCmd_NoShareFlag proves the credential unseal takes
+// no share: a Shamir tenant barrier is unsealed by its holders through
+// 'tenant barrier-quorum submit', never from a raw share.
+func TestTenantBarrierUnsealCmd_NoShareFlag(t *testing.T) {
+	called := false
+	svc := &mockTenantService{barrierUnsealFn: func(context.Context, string, []byte) error {
+		called = true
+		return nil
+	}}
 	share := base64.StdEncoding.EncodeToString([]byte("shamirshare"))
-	out, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001", "--share", share)
-	if err != nil {
-		t.Fatalf("tenant barrier-unseal --share: %v", err)
+	if _, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001", "--share", share); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("err = %v, want an unknown --share flag", err)
 	}
-	if !strings.Contains(out, "OK") {
-		t.Fatalf("expected OK in output, got: %s", out)
+	if called {
+		t.Fatal("TenantBarrierUnseal was called with a share")
 	}
 }
 
@@ -653,30 +659,15 @@ func TestTenantBarrierUnsealCmd_SuccessWithKey(t *testing.T) {
 	}
 }
 
-func TestTenantBarrierUnsealCmd_NoShareOrKey(t *testing.T) {
+func TestTenantBarrierUnsealCmd_NoKey(t *testing.T) {
 	svc := &mockTenantService{}
 	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001")
 	if err == nil {
-		t.Fatal("expected error when neither --share nor --key is provided")
+		t.Fatal("expected error when --key is not provided")
 	}
 	var unsealErr *TenantUnsealInputError
 	if !errors.As(err, &unsealErr) {
 		t.Fatalf("expected TenantUnsealInputError, got %T: %v", err, err)
-	}
-}
-
-func TestTenantBarrierUnsealCmd_InvalidBase64Share(t *testing.T) {
-	svc := &mockTenantService{}
-	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001", "--share", "!!!notbase64!!!")
-	if err == nil {
-		t.Fatal("expected error for invalid base64 share")
-	}
-	var b64Err *Base64DecodeError
-	if !errors.As(err, &b64Err) {
-		t.Fatalf("expected Base64DecodeError, got %T: %v", err, err)
-	}
-	if b64Err.Field != "share" {
-		t.Fatalf("expected Field=share, got %s", b64Err.Field)
 	}
 }
 
@@ -697,8 +688,8 @@ func TestTenantBarrierUnsealCmd_InvalidBase64Key(t *testing.T) {
 
 func TestTenantBarrierUnsealCmd_MissingID(t *testing.T) {
 	svc := &mockTenantService{}
-	share := base64.StdEncoding.EncodeToString([]byte("share"))
-	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--share", share)
+	key := base64.StdEncoding.EncodeToString([]byte("key"))
+	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--key", key)
 	if err == nil {
 		t.Fatal("expected error when --id is missing")
 	}
@@ -710,8 +701,8 @@ func TestTenantBarrierUnsealCmd_ServiceError(t *testing.T) {
 			return &tenant.BarrierError{TenantID: "tenant-001", Op: "unseal", Err: errors.New("invalid key")}
 		},
 	}
-	share := base64.StdEncoding.EncodeToString([]byte("badshare"))
-	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001", "--share", share)
+	key := base64.StdEncoding.EncodeToString([]byte("badkey"))
+	_, err := executeTenantCmd(t, svc, "barrier-unseal", "--id", "tenant-001", "--key", key)
 	if err == nil {
 		t.Fatal("expected error from service")
 	}

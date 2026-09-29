@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 
@@ -61,12 +62,9 @@ func (c *capturingMCPBarrierSvc) BarrierUnseal(_ context.Context, secret []byte)
 	return c.err
 }
 
-func (c *capturingMCPBarrierSvc) BarrierInitializeShamir(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
-	c.seen = secret
-	if c.err != nil {
-		return nil, c.err
-	}
-	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
+func (c *capturingMCPBarrierSvc) BarrierQuorumSubmit(_ context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
+	c.seen = req.Share
+	return nil, c.err
 }
 
 // assertMCPWiped fails unless every byte of b is zero. An empty slice is a
@@ -120,17 +118,20 @@ func TestMCPBarrierUnseal_WipesOnWrongSecret(t *testing.T) {
 	assertMCPWiped(t, "BarrierUnseal (rejected)", svc.seen)
 }
 
-func TestMCPBarrierShamirInitialize_WipesSecretArg(t *testing.T) {
-	svc := &capturingMCPBarrierSvc{}
-	handler := handleBarrierShamirInitialize(svc, nil)
+// TestMCPQuorumSubmit_WipesShare proves the decoded share is zeroized when
+// the service refuses the submission without consuming it.
+func TestMCPQuorumSubmit_WipesShare(t *testing.T) {
+	svc := &capturingMCPBarrierSvc{err: errors.New("factor verification failed")}
+	handler := handleQuorumSubmit(svc)
 
-	req := buildCallToolRequest(t, "qrdb_barrier_shamir_initialize", map[string]any{
-		"secret": "shamir-seed", "threshold": 2, "total_shares": 3,
+	req := buildCallToolRequest(t, "qrdb_barrier_quorum_submit", map[string]any{
+		"domain": "unseal", "op": "unseal", "username": "alice",
+		"share": base64.StdEncoding.EncodeToString([]byte("share-bytes")),
 	})
-	if _, err := handler(context.Background(), req); err != nil {
-		t.Fatalf("handleBarrierShamirInitialize: %v", err)
+	if _, err := handler(context.Background(), req); err == nil {
+		t.Fatal("expected the refusal to surface")
 	}
-	assertMCPWiped(t, "BarrierInitializeShamir", svc.seen)
+	assertMCPWiped(t, "BarrierQuorumSubmit (refused)", svc.seen)
 }
 
 // TestSecretArg pins the one conversion point's contract: a present argument

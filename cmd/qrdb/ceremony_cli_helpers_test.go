@@ -24,14 +24,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"fmt"
 	"io"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -56,15 +53,10 @@ var _ ceremony.CeremonyCA = (*mockCeremonyCA)(nil)
 
 // mockCeremonyService implements service.CeremonyServicer for testing.
 type mockCeremonyService struct {
-	initFn              func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
-	statusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
-	claimCertBeginFn    func(ctx context.Context, username string) (*service.CeremonyChallenge, error)
-	claimCertCompleteFn func(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error)
-	claimShareFn        func(ctx context.Context, username string) ([]byte, error)
-	signCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
-	shareBeginFn        func(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error)
-	shareCompleteFn     func(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error)
-	submitUnsealFn      func(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*service.CeremonyUnsealShareResult, error)
+	initFn       func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
+	statusFn     func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	claimShareFn func(ctx context.Context, username string) ([]byte, error)
+	signCSRFn    func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, _ *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
@@ -87,82 +79,11 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 	return &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "abc123"}, nil
 }
 
-func (m *mockCeremonyService) CeremonyBeginClaimCert(ctx context.Context, username string) (*service.CeremonyChallenge, error) {
-	if m.claimCertBeginFn != nil {
-		return m.claimCertBeginFn(ctx, username)
-	}
-	return &service.CeremonyChallenge{
-		NonceHex:  "deadbeef",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, sig []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.claimCertCompleteFn != nil {
-		return m.claimCertCompleteFn(ctx, username, nonceHex, sig)
-	}
-	return &service.CeremonyClaimCertResult{
-		CertPEM:   []byte("---CERT---"),
-		CACertPEM: []byte("---CA---"),
-	}, nil
-}
-
-func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareFn != nil {
-		if _, err := m.claimShareFn(ctx, username); err != nil {
-			return nil, err
-		}
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareFn != nil {
-		share, err := m.claimShareFn(ctx, username)
-		if err != nil {
-			return nil, err
-		}
-		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"index":1,"share":"abc"}`)}, nil
-}
-
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRFn != nil {
 		return m.signCSRFn(ctx, username, soPin, csrPEM, role)
 	}
 	return &service.CeremonySignCSRResult{CertPEM: []byte("---CERT---")}, nil
-}
-
-// CeremonyClaimShareBegin is a stub satisfying the new custodian-ceremony
-// portion of service.CeremonyServicer. The CLI coverage tests do not exercise
-// factor-based claim flows, so the default implementation returns an error.
-func (m *mockCeremonyService) CeremonyClaimShareBegin(ctx context.Context, custodianID string) (*service.CeremonyCustodianChallenge, error) {
-	if m.shareBeginFn != nil {
-		return m.shareBeginFn(ctx, custodianID)
-	}
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
-func (m *mockCeremonyService) CeremonyClaimShareComplete(ctx context.Context, custodianID, challengeID string, factorResponse []byte) (*custodian.Custodian, error) {
-	if m.shareCompleteFn != nil {
-		return m.shareCompleteFn(ctx, custodianID, challengeID, factorResponse)
-	}
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
-func (m *mockCeremonyService) CeremonySubmitUnsealShare(ctx context.Context, custodianID, challengeID string, factorResponse, shareBytes []byte) (*service.CeremonyUnsealShareResult, error) {
-	if m.submitUnsealFn != nil {
-		return m.submitUnsealFn(ctx, custodianID, challengeID, factorResponse, shareBytes)
-	}
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
-func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
 }
 
 var _ service.CeremonyServicer = (*mockCeremonyService)(nil)

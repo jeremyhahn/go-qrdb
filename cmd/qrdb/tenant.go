@@ -407,14 +407,14 @@ func printTenantBarrierInitResponse(resp *transport.TenantBarrierInitResponse) e
 	}
 }
 
-// newTenantBarrierUnsealCmd creates the "tenant barrier-unseal" subcommand.
-// The --share flag accepts a base64-encoded Shamir share; --key accepts a
-// base64-encoded raw master key. Exactly one must be provided.
+// newTenantBarrierUnsealCmd creates the "tenant barrier-unseal" subcommand:
+// the credential unseal, with --key the base64 credential the barrier was
+// initialized with. A Shamir tenant barrier is unsealed by its share holders
+// through "tenant barrier-quorum submit".
 func newTenantBarrierUnsealCmd() *cobra.Command {
 	var (
-		tenantID  string
-		shareFlag string
-		keyFlag   string
+		tenantID string
+		keyFlag  string
 	)
 
 	cmd := &cobra.Command{
@@ -422,27 +422,15 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 		Short: "Unseal the per-tenant cryptographic barrier",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if shareFlag == "" && keyFlag == "" {
+			if keyFlag == "" {
 				return &TenantUnsealInputError{}
 			}
-
-			req := &transport.TenantBarrierUnsealRequest{
-				TenantID: tenantID,
+			decoded, err := base64.StdEncoding.DecodeString(keyFlag)
+			if err != nil {
+				return &Base64DecodeError{Field: "key", Err: err}
 			}
-
-			if shareFlag != "" {
-				decoded, err := base64.StdEncoding.DecodeString(shareFlag)
-				if err != nil {
-					return &Base64DecodeError{Field: "share", Err: err}
-				}
-				req.Share = decoded
-			} else {
-				decoded, err := base64.StdEncoding.DecodeString(keyFlag)
-				if err != nil {
-					return &Base64DecodeError{Field: "key", Err: err}
-				}
-				req.Key = decoded
-			}
+			req := &transport.TenantBarrierUnsealRequest{TenantID: tenantID, Key: decoded}
+			defer secure.Wipe(req.Key)
 
 			if err := client.Tenants().TenantBarrierUnseal(cmd.Context(), req); err != nil {
 				return err
@@ -455,8 +443,7 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&tenantID, "id", "", "Tenant ID")
 	_ = cmd.MarkFlagRequired("id")
-	cmd.Flags().StringVar(&shareFlag, "share", "", "Base64-encoded Shamir share")
-	cmd.Flags().StringVar(&keyFlag, "key", "", "Base64-encoded master key")
+	cmd.Flags().StringVar(&keyFlag, "key", "", "Base64-encoded barrier credential")
 
 	return cmd
 }

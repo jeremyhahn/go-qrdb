@@ -22,13 +22,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -37,13 +34,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockCeremonyService struct {
-	initializeFn        func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
-	beginClaimCertFn    func(ctx context.Context, username string) (*service.CeremonyChallenge, error)
-	completeClaimCertFn func(ctx context.Context, username, nonceHex string, signature []byte) (*service.CeremonyClaimCertResult, error)
-	claimShareFn        func(ctx context.Context, username string) ([]byte, error)
-	signCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
-	statusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
-	capturedInitOpts    *service.CeremonyInitializeOptions
+	initializeFn     func(ctx context.Context, ca ceremony.CeremonyCA) (*service.CeremonyInitResult, error)
+	claimShareFn     func(ctx context.Context, username string) ([]byte, error)
+	signCSRFn        func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
+	statusFn         func(ctx context.Context) (*service.CeremonyStatusInfo, error)
+	capturedInitOpts *service.CeremonyInitializeOptions
 }
 
 func newMockCeremonyService() *mockCeremonyService {
@@ -60,46 +55,6 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 		State:      "initialized",
 		ShareCount: 3,
 	}, nil
-}
-
-func (m *mockCeremonyService) CeremonyBeginClaimCert(ctx context.Context, username string) (*service.CeremonyChallenge, error) {
-	if m.beginClaimCertFn != nil {
-		return m.beginClaimCertFn(ctx, username)
-	}
-	return &service.CeremonyChallenge{
-		NonceHex:  "deadbeef1234",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, signature []byte) (*service.CeremonyClaimCertResult, error) {
-	if m.completeClaimCertFn != nil {
-		return m.completeClaimCertFn(ctx, username, nonceHex, signature)
-	}
-	return &service.CeremonyClaimCertResult{
-		CertPEM:   []byte("-----BEGIN CERTIFICATE-----\nfake-cert\n-----END CERTIFICATE-----"),
-		CACertPEM: []byte("-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----"),
-	}, nil
-}
-
-func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
-	if m.claimShareFn != nil {
-		if _, err := m.claimShareFn(ctx, username); err != nil {
-			return nil, err
-		}
-	}
-	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
-}
-
-func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
-	if m.claimShareFn != nil {
-		share, err := m.claimShareFn(ctx, username)
-		if err != nil {
-			return nil, err
-		}
-		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
-	}
-	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("shamir-share-data-for-" + username)}, nil
 }
 
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
@@ -119,28 +74,6 @@ func (m *mockCeremonyService) CeremonyStatus(ctx context.Context) (*service.Cere
 		State:   "initialized",
 		SPKIPin: "abc123pin",
 	}, nil
-}
-
-// CeremonyClaimShareBegin is a stub satisfying the Phase 4 custodian-ceremony
-// extension of service.CeremonyServicer. The MCP credential tests do not
-// exercise factor-based claim flows.
-func (m *mockCeremonyService) CeremonyClaimShareBegin(_ context.Context, _ string) (*service.CeremonyCustodianChallenge, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyClaimShareComplete is a stub for the custodian claim-complete flow.
-func (m *mockCeremonyService) CeremonyClaimShareComplete(_ context.Context, _, _ string, _ []byte) (*custodian.Custodian, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonySubmitUnsealShare is a stub for custodian unseal-share submission.
-func (m *mockCeremonyService) CeremonySubmitUnsealShare(_ context.Context, _, _ string, _, _ []byte) (*service.CeremonyUnsealShareResult, error) {
-	return nil, fmt.Errorf("not implemented in mock")
-}
-
-// CeremonyEnrollExternalOfficer is a stub for external-officer enrollment.
-func (m *mockCeremonyService) CeremonyEnrollExternalOfficer(_ context.Context, _ *service.CeremonyEnrollExternalOfficerRequest) (*service.CeremonyEnrollExternalOfficerResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
 }
 
 // ---------------------------------------------------------------------------
@@ -180,14 +113,7 @@ func TestCeremonyTools_Registration(t *testing.T) {
 	expectedNames := []string{
 		"qrdb_ceremony_initialize",
 		"qrdb_ceremony_status",
-		"qrdb_ceremony_claim_cert_begin",
-		"qrdb_ceremony_claim_cert_complete",
-		"qrdb_ceremony_begin_claim_share",
-		"qrdb_ceremony_complete_claim_share",
 		"qrdb_ceremony_sign_csr",
-		"qrdb_ceremony_claim_share_begin",
-		"qrdb_ceremony_claim_share_complete",
-		"qrdb_ceremony_submit_unseal_share",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -306,7 +232,7 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 // json.Marshals req.Officers/req.SANs into string args; tools_vector.go's
 // "ids" argument is the server-side precedent). A native []any argument
 // value (the old form this test used to send) is never what a real client
-// transmits and parseCeremonyOfficers/parseStringArray no longer accept it.
+// transmits and wire.DecodeArgs no longer accepts it.
 func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	svc := newMockCeremonyService()
 	ca := &mockCeremonyCA{}
@@ -442,360 +368,6 @@ func TestHandleCeremonyStatus_ServiceError(t *testing.T) {
 	}
 	if toolErr.Tool != "qrdb_ceremony_status" {
 		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_ceremony_status")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonyClaimCertBegin
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonyClaimCertBegin_Success(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertBegin(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{
-		"username": "alice",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleCeremonyClaimCertBegin: %v", err)
-	}
-
-	text := resultText(t, result)
-	var challenge service.CeremonyChallenge
-	if jsonErr := json.Unmarshal([]byte(text), &challenge); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if challenge.NonceHex != "deadbeef1234" {
-		t.Errorf("nonce_hex: got %q, want %q", challenge.NonceHex, "deadbeef1234")
-	}
-}
-
-func TestHandleCeremonyClaimCertBegin_MissingUsername(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertBegin(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing username")
-	}
-}
-
-func TestHandleCeremonyClaimCertBegin_ServiceError(t *testing.T) {
-	svc := newMockCeremonyService()
-	svc.beginClaimCertFn = func(_ context.Context, _ string) (*service.CeremonyChallenge, error) {
-		return nil, errors.New("user not found")
-	}
-	handler := handleCeremonyClaimCertBegin(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_begin", map[string]any{
-		"username": "unknown",
-	})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonyClaimCertComplete
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonyClaimCertComplete_Success(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	// Base64-encoded dummy signature: "signature-bytes"
-	sigB64 := "c2lnbmF0dXJlLWJ5dGVz"
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "deadbeef",
-		"signature": sigB64,
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleCeremonyClaimCertComplete: %v", err)
-	}
-
-	text := resultText(t, result)
-	var claimResult service.CeremonyClaimCertResult
-	if jsonErr := json.Unmarshal([]byte(text), &claimResult); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if len(claimResult.CertPEM) == 0 {
-		t.Error("expected non-empty CertPEM")
-	}
-}
-
-func TestHandleCeremonyClaimCertComplete_MissingUsername(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"nonce_hex": "deadbeef",
-		"signature": "c2lnbmF0dXJlLWJ5dGVz",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing username")
-	}
-}
-
-func TestHandleCeremonyClaimCertComplete_MissingNonce(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"signature": "c2lnbmF0dXJlLWJ5dGVz",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing nonce_hex")
-	}
-}
-
-func TestHandleCeremonyClaimCertComplete_MissingSignature(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "deadbeef",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing signature")
-	}
-}
-
-func TestHandleCeremonyClaimCertComplete_InvalidBase64(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "deadbeef",
-		"signature": "!!!invalid-base64!!!",
-	})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for invalid base64 signature")
-	}
-}
-
-func TestHandleCeremonyClaimCertComplete_ServiceError(t *testing.T) {
-	svc := newMockCeremonyService()
-	svc.completeClaimCertFn = func(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
-		return nil, errors.New("signature verification failed")
-	}
-	handler := handleCeremonyClaimCertComplete(svc)
-
-	sigB64 := "c2lnbmF0dXJlLWJ5dGVz"
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_cert_complete", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "deadbeef",
-		"signature": sigB64,
-	})
-
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleCeremonyBeginClaimShare / handleCeremonyCompleteClaimShare
-// ---------------------------------------------------------------------------
-
-func TestHandleCeremonyBeginClaimShare_Success(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyBeginClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{
-		"username": "alice",
-	})
-
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil {
-		t.Fatalf("handleCeremonyBeginClaimShare: %v", err)
-	}
-
-	text := resultText(t, result)
-	var resp struct {
-		NonceHex string `json:"nonce_hex"`
-	}
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if resp.NonceHex == "" {
-		t.Error("expected non-empty nonce")
-	}
-}
-
-// TestHandleCeremonyBeginClaimShare_RequiresClientCert proves an MCP session
-// with no mTLS peer certificate cannot start the share claim handshake.
-func TestHandleCeremonyBeginClaimShare_RequiresClientCert(t *testing.T) {
-	svc := newMockCeremonyService()
-	svc.claimShareFn = func(_ context.Context, _ string) ([]byte, error) {
-		t.Fatal("ceremony service must not be reached without a client certificate")
-		return nil, nil
-	}
-	handler := handleCeremonyBeginClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{
-		"username": "alice",
-	})
-
-	if _, err := handler(context.Background(), req); err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-}
-
-func TestHandleCeremonyBeginClaimShare_MissingUsername(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyBeginClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{})
-
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error result for missing username")
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyCompleteClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "abcd",
-		"signature": base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-
-	result, err := handler(ctxWithFakeTLS(), req)
-	if err != nil {
-		t.Fatalf("handleCeremonyCompleteClaimShare: %v", err)
-	}
-
-	text := resultText(t, result)
-	var resp struct {
-		Share string `json:"share"`
-	}
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if resp.Share == "" {
-		t.Error("expected non-empty share")
-	}
-}
-
-// TestHandleCeremonyCompleteClaimShare_RequiresClientCert proves the completing
-// half refuses a certificate-less session and returns no share material.
-func TestHandleCeremonyCompleteClaimShare_RequiresClientCert(t *testing.T) {
-	svc := newMockCeremonyService()
-	svc.claimShareFn = func(_ context.Context, _ string) ([]byte, error) {
-		t.Fatal("ceremony service must not be reached without a client certificate")
-		return nil, nil
-	}
-	handler := handleCeremonyCompleteClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
-		"username":  "alice",
-		"nonce_hex": "abcd",
-		"signature": base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-
-	result, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected refusal without a client certificate")
-	}
-	if result != nil {
-		t.Fatalf("expected no result payload on refusal, got %#v", result)
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_MissingArgs(t *testing.T) {
-	svc := newMockCeremonyService()
-	handler := handleCeremonyCompleteClaimShare(svc)
-
-	for name, args := range map[string]map[string]any{
-		"missing username":  {"nonce_hex": "abcd", "signature": "c2ln"},
-		"missing nonce":     {"username": "alice", "signature": "c2ln"},
-		"missing signature": {"username": "alice", "nonce_hex": "abcd"},
-		"bad signature":     {"username": "alice", "nonce_hex": "abcd", "signature": "!!!"},
-	} {
-		req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", args)
-		result, err := handler(ctxWithFakeTLS(), req)
-		if err != nil {
-			t.Fatalf("%s: unexpected error: %v", name, err)
-		}
-		if !result.IsError {
-			t.Errorf("%s: expected error result", name)
-		}
-	}
-}
-
-func TestHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
-	svc := newMockCeremonyService()
-	svc.claimShareFn = func(_ context.Context, _ string) ([]byte, error) {
-		return nil, errors.New("share not assigned")
-	}
-	handler := handleCeremonyCompleteClaimShare(svc)
-
-	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
-		"username":  "bob",
-		"nonce_hex": "abcd",
-		"signature": base64.StdEncoding.EncodeToString([]byte("sig")),
-	})
-
-	_, err := handler(ctxWithFakeTLS(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
-
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
 	}
 }
 

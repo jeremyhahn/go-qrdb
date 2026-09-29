@@ -604,9 +604,11 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 //
 // The barrier is registered with explicit strategies (NOT
 // RegisterTenantDefault) so the tenant chooses its own strategy independent of
-// the system barrier. For passphrase, creds.Secret must be non-empty. For
-// shamir, creds.Secret carries the M-of-N configuration through the shamir
-// strategy already registered on the barrier.
+// the system barrier. For passphrase, creds.Secret must be non-empty. A Shamir
+// tenant barrier cannot be initialized here: it is initialized over the
+// tenant's enrolled share holders (tenant.TenantService's holder path), and a
+// pre-registered Shamir barrier is refused with
+// seal.ErrShamirInitializeRequiresHolders.
 //
 // Authorization — who may call this (the tenant-admin role for THIS tenant) —
 // is enforced at the API / transport layer, NOT here. This entry point assumes
@@ -740,11 +742,9 @@ func validateStrategy(strategy seal.StrategyID) error {
 }
 
 // buildTenantStrategy constructs the sealing strategy implementation for a
-// tenant barrier. Shamir requires a configured threshold/total; since the
-// tenant self-service signature carries only Credentials, shamir tenant
-// barriers must be registered by the caller (with an explicit ShamirStrategy)
-// before InitializeTenantBarrier is invoked. Here we support none and
-// passphrase (deferred software) directly.
+// tenant barrier: none and passphrase (deferred software). Shamir is never
+// built here — a Shamir tenant barrier is initialized over its enrolled
+// share holders, not from Credentials.
 func buildTenantStrategy(strategy seal.StrategyID) (seal.SealingStrategy, error) {
 	switch strategy {
 	case StrategyNone:
@@ -754,10 +754,8 @@ func buildTenantStrategy(strategy seal.StrategyID) (seal.SealingStrategy, error)
 		// from Credentials.Secret.
 		return seal.NewDeferredSoftwareStrategy(), nil
 	case StrategyShamir:
-		// Shamir needs a threshold/total + a share-persistence backend, which
-		// are not expressible through the self-service Credentials-only
-		// signature. The caller pre-registers the tenant barrier with an
-		// explicit ShamirStrategy; reaching here means it was not registered.
+		// A Shamir barrier needs its holders and a threshold, neither of
+		// which the Credentials-only signature carries.
 		return nil, &MissingShamirConfigError{}
 	default:
 		return nil, &UnsupportedStrategyError{Strategy: string(strategy)}

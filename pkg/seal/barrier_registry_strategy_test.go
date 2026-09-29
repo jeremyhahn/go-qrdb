@@ -105,10 +105,10 @@ func TestRegisterTenantPooled_InheritsSystemStrategy(t *testing.T) {
 
 // TestRegisterTenantPooledShamir_InitUnsealRoundTrip exercises the full
 // per-tenant Shamir vertical: register a Shamir tenant barrier, wire a
-// CaptureDistributor, initialize (shares sealed to distributor; none returned
-// in result), seal via quorum vote, then unseal by submitting a quorum of
-// shares one at a time. The barrier must report incomplete progress until the
-// threshold is met, then unseal.
+// distributor and a holder verifier, initialize (shares sealed to the
+// holders; none returned), seal through a holder quorum, then unseal through
+// one. The barrier must report incomplete progress until the threshold is
+// met, then unseal.
 func TestRegisterTenantPooledShamir_InitUnsealRoundTrip(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 	ctx := context.Background()
@@ -122,49 +122,50 @@ func TestRegisterTenantPooledShamir_InitUnsealRoundTrip(t *testing.T) {
 		t.Fatalf("tenant barrier missing StrategyShamir; have %v", keysOf(tb.Barrier().Strategies()))
 	}
 
-	// Wire a CaptureDistributor so InitializeTenantShamir can seal shares.
-	dist := newCaptureDistributor()
+	dist := newCaptureDistributor("h1", "h2", "h3")
+	verifier := newTestVerifier()
 	tb.Barrier().SetCeremonyDistributor(dist)
+	tb.Barrier().SetHolderVerifier(verifier)
 
-	res, err := reg.InitializeTenantShamir(ctx, "alpha", Credentials{})
+	res, err := reg.InitializeTenantShamir(ctx, "alpha", "")
 	if err != nil {
 		t.Fatalf("InitializeTenantShamir(alpha): %v", err)
 	}
-	if res.Threshold != threshold || res.TotalShares != total {
-		t.Fatalf("unexpected init result: threshold=%d total=%d", res.Threshold, res.TotalShares)
-	}
-	if res.ShareCount != total {
-		t.Fatalf("unexpected ShareCount: got %d, want %d", res.ShareCount, total)
-	}
-	shares := dist.Shares()
-	if len(shares) != total {
-		t.Fatalf("expected %d captured shares, got %d", total, len(shares))
+	if res.Threshold != threshold || res.TotalShares != total || res.ShareCount != total {
+		t.Fatalf("unexpected init result: %+v", res)
 	}
 
-	// Initialization leaves the barrier unsealed; seal it so the quorum unseal
-	// path is exercised from a sealed state.
-	if err := reg.SealTenant("alpha"); err != nil {
-		t.Fatalf("SealTenant(alpha): %v", err)
+	submit := func(op QuorumOp, holder string) *QuorumOutcome {
+		t.Helper()
+		_, digest, err := tb.Barrier().HolderRoster(ctx, DomainUnseal)
+		if err != nil {
+			t.Fatalf("HolderRoster: %v", err)
+		}
+		out, err := tb.Barrier().SubmitHolderShare(ctx, &HolderSubmission{
+			Domain: DomainUnseal,
+			Op:     op,
+			Holder: holder,
+			Proof:  verifier.issue(DomainUnseal, op, holder, digest),
+			Share:  []byte(dist.share(DomainUnseal, holder)),
+		})
+		if err != nil {
+			t.Fatalf("%s by %s: %v", op, holder, err)
+		}
+		return out
+	}
+
+	submit(OpSeal, "h1")
+	if !submit(OpSeal, "h3").Complete {
+		t.Fatal("seal quorum not complete")
 	}
 	if st, _ := reg.TenantStatus("alpha"); st == nil || !st.Sealed {
-		t.Fatal("expected tenant barrier to be sealed after SealTenant")
+		t.Fatal("expected tenant barrier to be sealed after the seal quorum")
 	}
 
-	// First share: below threshold, must report incomplete and stay sealed.
-	prog, err := reg.UnsealTenantWithShare(ctx, "alpha", shares[0])
-	if err != nil {
-		t.Fatalf("UnsealTenantWithShare(first): %v", err)
+	if submit(OpUnseal, "h2").Complete {
+		t.Fatal("quorum reported complete after a single holder")
 	}
-	if prog.Complete {
-		t.Fatal("quorum reported complete after a single share")
-	}
-
-	// Second share meets the 2-of-3 threshold and unseals the barrier.
-	prog, err = reg.UnsealTenantWithShare(ctx, "alpha", shares[1])
-	if err != nil {
-		t.Fatalf("UnsealTenantWithShare(second): %v", err)
-	}
-	if !prog.Complete {
+	if !submit(OpUnseal, "h3").Complete {
 		t.Fatal("quorum not complete after reaching the threshold")
 	}
 	if st, _ := reg.TenantStatus("alpha"); st == nil || st.Sealed {

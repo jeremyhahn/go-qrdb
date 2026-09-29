@@ -151,28 +151,3 @@ func TestMCP_Auth_GetUserByUsername_AllParams(t *testing.T) {
 	_, err := tr.GetUserByUsername(context.Background(), "", "alice")
 	_ = err
 }
-
-// ---------------------------------------------------------------------------
-// Ceremony closed paths
-// ---------------------------------------------------------------------------
-
-func TestMCP_Ceremony_ClosedPaths(t *testing.T) {
-	tr := newClosedTransport()
-	ctx := context.Background()
-
-	if _, err := tr.CeremonyClaimCertBegin(ctx, &transport.ClaimCertBeginRequest{}); err == nil {
-		t.Logf("CeremonyClaimCertBegin: no error (no closed guard)")
-	}
-	if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
-		t.Logf("CeremonyClaimCertComplete: no error (no closed guard)")
-	}
-	if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
-		t.Logf("CeremonyBeginClaimShare: no error (no closed guard)")
-	}
-	if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
-		t.Logf("CeremonySignCSR: no error (no closed guard)")
-	}
-	if _, err := tr.CeremonyEnrollExternalOfficer(ctx, &transport.EnrollExternalOfficerRequest{}); err == nil {
-		t.Logf("CeremonyEnrollExternalOfficer: no error (no closed guard)")
-	}
-}
