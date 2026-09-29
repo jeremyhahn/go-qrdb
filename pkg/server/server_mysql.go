@@ -50,7 +50,9 @@ func startMySQL(s *Server) error {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithDatabaseService(s.opts.databaseSvc))
 	}
 	if s.config.SQL.DefaultDatabase != "" {
-		mysqlOpts = append(mysqlOpts, mysqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase))
+		mysqlOpts = append(mysqlOpts,
+			mysqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase),
+			mysqlapi.WithSharedDefaultDatabase(s.config.SQL.DefaultDatabase))
 	}
 	if s.opts.collectionSvc != nil {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithCollectionService(s.opts.collectionSvc))

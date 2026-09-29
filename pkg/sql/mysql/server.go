@@ -57,8 +57,12 @@ type Server struct {
 	tlsConfig *tls.Config
 	authMW    *authmw.AuthMiddleware
 	dbName    string
-	logger    *slog.Logger
-	dbManager *database.Manager
+
+	// sharedDefaultDB is the configured default SQL database, which exists
+	// for every tenant (WithSharedDefaultDatabase). Empty shares nothing.
+	sharedDefaultDB string
+	logger          *slog.Logger
+	dbManager       *database.Manager
 	// databaseSvc is the tenant-scoped database lifecycle behind CREATE
 	// DATABASE and DROP DATABASE (see WithDatabaseService).
 	databaseSvc service.DatabaseServicer
@@ -107,6 +111,16 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 func WithDatabaseName(name string) ServerOption {
 	return func(s *Server) {
 		s.dbName = name
+	}
+}
+
+// WithSharedDefaultDatabase marks name -- the configured default SQL
+// database -- as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Each tenant session sees its own
+// namespace of it; every other database is visible only to its owner.
+func WithSharedDefaultDatabase(name string) ServerOption {
+	return func(s *Server) {
+		s.sharedDefaultDB = name
 	}
 }
 
@@ -234,6 +248,9 @@ func (s *Server) Start() error {
 	var prov *provider.Provider
 	if s.dbManager != nil {
 		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolMySQL)}, svcOpts...)
+		if s.sharedDefaultDB != "" {
+			managerOpts = append(managerOpts, provider.WithSharedDefaultDatabase(s.sharedDefaultDB))
+		}
 		prov = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		prov = provider.NewProvider(s.dbName, s.kvSvc)

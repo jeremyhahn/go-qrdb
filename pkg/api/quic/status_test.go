@@ -35,7 +35,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -351,7 +350,6 @@ var conditions = []conditionRow{
 	// --- authority --------------------------------------------------------
 	{"not the lock holder", &lock.NotLockHolderError{Key: "k", ExpectedToken: 1}, wire.StatusPermissionDenied, codes.PermissionDenied},
 	{"compaction is system only", &service.CompactSystemOnlyError{TenantID: "t"}, wire.StatusPermissionDenied, codes.PermissionDenied},
-	{"database owned by another tenant", &database.TenantAccessDeniedError{}, wire.StatusPermissionDenied, codes.PermissionDenied},
 	{"restore reached an internal key", &service.RestoreInternalKeyError{}, wire.StatusPermissionDenied, codes.PermissionDenied},
 
 	// --- identity ----------------------------------------------------------

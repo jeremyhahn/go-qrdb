@@ -345,19 +345,6 @@ func (e *MigrationError) Unwrap() error {
 	return e.Err
 }
 
-// TenantAccessDeniedError is returned when a tenant attempts to access
-// a database that belongs to a different tenant.
-type TenantAccessDeniedError struct {
-	TenantID     string
-	DatabaseName string
-}
-
-// Error returns a human-readable description of the access denial.
-func (e *TenantAccessDeniedError) Error() string {
-	return "database: tenant " + strconv.Quote(e.TenantID) +
-		" access denied for database " + strconv.Quote(e.DatabaseName)
-}
-
 // TenantIDRequiredError is returned when a tenant-scoped operation is
 // called without a tenant ID in the context.
 type TenantIDRequiredError struct {

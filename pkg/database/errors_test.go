@@ -650,28 +650,6 @@ func TestWrappingErrors_UnwrapReturnsCorrectCause(t *testing.T) {
 	}
 }
 
-func TestTenantAccessDeniedError_Message(t *testing.T) {
-	err := &TenantAccessDeniedError{TenantID: "tenant-b", DatabaseName: "mydb"}
-	want := `database: tenant "tenant-b" access denied for database "mydb"`
-	if got := err.Error(); got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}
-
-func TestTenantAccessDeniedError_TypeAssertion(t *testing.T) {
-	var err error = &TenantAccessDeniedError{TenantID: "t1", DatabaseName: "db1"}
-	var target *TenantAccessDeniedError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *TenantAccessDeniedError")
-	}
-	if target.TenantID != "t1" {
-		t.Errorf("TenantID = %q, want %q", target.TenantID, "t1")
-	}
-	if target.DatabaseName != "db1" {
-		t.Errorf("DatabaseName = %q, want %q", target.DatabaseName, "db1")
-	}
-}
-
 func TestTenantIDRequiredError_Message(t *testing.T) {
 	err := &TenantIDRequiredError{Operation: "CreateForTenant"}
 	want := "database: tenant ID required for operation: CreateForTenant"

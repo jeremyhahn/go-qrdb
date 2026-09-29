@@ -611,7 +611,10 @@ func TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing
 	mgr := database.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
+	// Owned by the tenant the query runs as: a session sees only its own
+	// tenant's databases.
 	_, err := mgr.Create(database.DatabaseConfig{
+		TenantID: "acme",
 		Name:     "testdb",
 		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
@@ -649,7 +652,10 @@ func TestServer_StartStop_WithCollectionService_ListsCollection(t *testing.T) {
 	mgr := database.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
+	// Owned by the tenant the query runs as: a session sees only its own
+	// tenant's databases.
 	_, err := mgr.Create(database.DatabaseConfig{
+		TenantID: "acme",
 		Name:     "testdb",
 		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,

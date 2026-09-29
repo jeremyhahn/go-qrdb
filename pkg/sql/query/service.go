@@ -140,18 +140,6 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 		return nil, &service.SQLEmptyDatabaseError{}
 	}
 
-	// Resolve the database engine for table scoping. The resolver's typed
-	// error (e.g. *database.NotFoundError) is returned unwrapped so that
-	// transports can map it to their not-found status.
-	var engineType database.EngineType
-	if s.dbSvc != nil {
-		info, err := s.dbSvc.Get(dbName)
-		if err != nil {
-			return nil, err
-		}
-		engineType = info.Engine
-	}
-
 	tenantID := tenant.FromContext(ctx)
 
 	kvSvc := s.kvSvc
@@ -166,6 +154,11 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 		// server) is propagated unwrapped rather than silently falling back
 		// to the shared store, which would downgrade the tenant's isolation
 		// guarantee.
+		//
+		// The registry is asked before the catalog below. Database names are
+		// one node-wide catalog, so the catalog knows another tenant's
+		// database; asking it first answered that name differently from a
+		// name nobody holds, which told the caller what other tenants have.
 		scoped, err := s.registry.KVService(tenantID, dbName)
 		if err != nil {
 			return nil, err
@@ -176,6 +169,18 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 		// the registry's TableService/MVCCService, scoped exactly like the
 		// KV service above -- see provider.WithRegistry.
 		provOpts = append(provOpts, provider.WithRegistry(s.registry))
+	}
+
+	// Resolve the database engine for table scoping. The resolver's typed
+	// error (e.g. *database.NotFoundError) is returned unwrapped so that
+	// transports can map it to their not-found status.
+	var engineType database.EngineType
+	if s.dbSvc != nil {
+		info, err := s.dbSvc.Get(dbName)
+		if err != nil {
+			return nil, err
+		}
+		engineType = info.Engine
 	}
 
 	// Reuse the cached engine for this (tenant, database) scope when one

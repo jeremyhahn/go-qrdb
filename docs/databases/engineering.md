@@ -206,6 +206,7 @@ Deliberately finer than one grant per verb:
 |---|---|---|
 | Database name already exists | `database.AlreadyExistsError` | yes |
 | Unknown database on any operation | not-found | **yes** — never implicitly created |
+| Another tenant's database on any tenant-scoped operation | the same `database.NotFoundError` as a missing one | **yes** — no access denial that would reveal the name is held |
 | Barrier enabled on a shared store | `database.SharedStoreBarrierUnsupportedError` | **yes** |
 | Barrier enabled where the data is served from another store (raft backend, volume/raft-isolated tenant) | `database.BarrierOffDataPathError` | **yes** |
 | `--cluster-mode` / `--replicas` on a non-raft backend | invalid-argument | **yes** |

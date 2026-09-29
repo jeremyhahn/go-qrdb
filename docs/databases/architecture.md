@@ -152,6 +152,19 @@ satisfy the teardown's contract by accident.
 - **Databases live inside a tenant.** The tenant comes from the authenticated
   identity; the database name travels in the request. A database name cannot
   reach across tenants.
+- **Another tenant's database is answered as missing.** Database names are
+  still one node-wide namespace (keying the catalog by tenant and name is the
+  catalog lane's work), so every tenant-scoped operation, every data-plane
+  resolution and SQL `HasDatabase` / `USE` answer a database of another tenant
+  (other than the configured default SQL database, `sql.default_database`,
+  which every tenant has in its own namespace)
+  exactly as they answer a name nobody holds — `database.NotFoundError`, never
+  an access denial that would tell the caller the name is taken. The ad-hoc
+  SQL query (`POST /sql/query`, `SQLQuery`) asks the service registry before
+  the node-wide catalog, so another tenant's name and an unused name get the
+  registry's one not-found rather than two different errors. The one
+  remaining signal is creation: a name another tenant holds cannot be created
+  (`database.AlreadyExistsError`) until names are scoped per tenant.
 - **Privileged operations are separately gated.** Creating a Raft-backed
   database (`databases:create_raft`) and a volume-isolated one
   (`databases:create_volume`) are checked *in addition to* `databases:create`,

@@ -162,6 +162,9 @@ by the same code — the tenant-scoped `service.DatabaseServicer`:
 - `DROP DATABASE` needs `databases:delete`, and a non-system session can drop
   **only a database its own tenant owns**; another tenant's database is refused
   and left intact.
+- `HasDatabase`, `USE` and every database lookup answer only for the session
+  tenant's databases: another tenant's database looks exactly like a missing
+  one, as it already did in `SHOW DATABASES`.
 
 The privilege plane permits both statements (their target is server-level)
 precisely because RBAC decides them; the provider asks the authorizer, not a

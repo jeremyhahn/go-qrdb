@@ -87,6 +87,22 @@ type Provider struct {
 	// the lifecycle to system-tenant sessions, which only exist on a listener
 	// with no authentication configured.
 	lifecycleAuthz DatabaseLifecycleAuthorizer
+
+	// sharedDefaultDB is the configured default SQL database
+	// (sql.default_database), which exists for every tenant: each session
+	// sees its own tenant's "<tenant>/<db>/" namespace of it, exactly as the
+	// service registry resolves it. Empty shares nothing.
+	sharedDefaultDB string
+}
+
+// WithSharedDefaultDatabase marks name, the configured default SQL
+// database, as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Every other database is visible only
+// to the tenant that owns it.
+func WithSharedDefaultDatabase(name string) func(*Provider) {
+	return func(prov *Provider) {
+		prov.sharedDefaultDB = name
+	}
 }
 
 // DatabaseLifecycleAuthorizer authorizes a database lifecycle statement for
@@ -293,7 +309,7 @@ func (p *Provider) Registry() service.Registry {
 // plan builder resolves it while building every GRANT, REVOKE, and SHOW
 // GRANTS statement. CreateDatabase refuses the name for the same reason, so
 // the reservation cannot shadow a database a caller was allowed to create.
-func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error) {
+func (p *Provider) Database(ctx *sqle.Context, name string) (sqle.Database, error) {
 	if strings.EqualFold(name, MySQLSchemaName) {
 		return mysqlSchema{}, nil
 	}
@@ -301,8 +317,8 @@ func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error)
 		return pgcatalog.New(), nil
 	}
 	if p.manager != nil {
-		db, err := p.manager.Get(name)
-		if err != nil {
+		db, ok := p.sessionDatabase(ctx, name)
+		if !ok {
 			return nil, &DatabaseNotFoundError{Name: name}
 		}
 		if !p.isAllowed(db) {
@@ -330,20 +346,23 @@ func (p *Provider) servesPGCatalog() bool {
 	return p.protocol == ProtocolPostgreSQL
 }
 
-// HasDatabase reports whether the named database exists. When backed by
-// a manager, it checks all managed databases; otherwise it checks the
-// single legacy database name.
+// HasDatabase reports whether the named database exists for the session.
+// When backed by a manager it answers only for databases the session's
+// tenant owns -- another tenant's database is reported absent, exactly like a
+// name nobody holds, because database names are one node-wide namespace and
+// answering for every tenant told a session which names other tenants use.
+// Otherwise it checks the single legacy database name.
 //
 // pg_catalog answers true on a PostgreSQL provider for the same reason
 // Database resolves it: a schema a caller can select from is a schema that
 // exists.
-func (p *Provider) HasDatabase(_ *sqle.Context, name string) bool {
+func (p *Provider) HasDatabase(ctx *sqle.Context, name string) bool {
 	if p.servesPGCatalog() && strings.EqualFold(name, pgcatalog.SchemaName) {
 		return true
 	}
 	if p.manager != nil {
-		_, err := p.manager.Get(name)
-		return err == nil
+		_, ok := p.sessionDatabase(ctx, name)
+		return ok
 	}
 	return strings.EqualFold(name, p.dbName)
 }
@@ -373,7 +392,7 @@ func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 		infos := p.manager.List()
 		dbs := make([]sqle.Database, 0, len(infos))
 		for _, info := range infos {
-			if !strings.EqualFold(databaseOwner(info), tenantID) {
+			if !p.visibleTo(info, tenantID) {
 				continue
 			}
 			if p.protocol != ProtocolAny {
@@ -390,6 +409,28 @@ func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 		return dbs
 	}
 	return []sqle.Database{p.newDatabase(p.dbName, p.engine)}
+}
+
+// sessionDatabase returns the managed database name when the session's tenant
+// owns it, with the same ownership rule AllDatabases lists by.
+func (p *Provider) sessionDatabase(ctx *sqle.Context, name string) (*database.Database, bool) {
+	db, err := p.manager.Get(name)
+	if err != nil {
+		return nil, false
+	}
+	if !p.visibleTo(db.Info(), providerSessionTenantID(ctx)) {
+		return nil, false
+	}
+	return db, true
+}
+
+// visibleTo reports whether tenantID's sessions see the managed database
+// info: the tenant owns it, or it is the shared default SQL database.
+func (p *Provider) visibleTo(info database.DatabaseInfo, tenantID string) bool {
+	if p.sharedDefaultDB != "" && strings.EqualFold(info.Name, p.sharedDefaultDB) {
+		return true
+	}
+	return strings.EqualFold(databaseOwner(info), tenantID)
 }
 
 // databaseOwner returns the tenant a managed database belongs to, treating an

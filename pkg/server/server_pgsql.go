@@ -50,7 +50,9 @@ func startPgSQL(s *Server) error {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseService(s.opts.databaseSvc))
 	}
 	if s.config.SQL.DefaultDatabase != "" {
-		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase))
+		pgsqlOpts = append(pgsqlOpts,
+			pgsqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase),
+			pgsqlapi.WithSharedDefaultDatabase(s.config.SQL.DefaultDatabase))
 	}
 	if s.opts.collectionSvc != nil {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithCollectionService(s.opts.collectionSvc))

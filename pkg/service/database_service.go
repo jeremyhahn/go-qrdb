@@ -891,27 +891,22 @@ func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseC
 // The system tenant is the store-global admin and may target any database. A
 // non-system caller may target only a database whose owning TenantID matches
 // its own; any mismatch — including an unowned/legacy database with an empty
-// TenantID — fails closed with *database.TenantAccessDeniedError. A database
-// that does not exist surfaces the manager's typed NotFoundError unchanged.
+// TenantID — fails closed with the same *database.NotFoundError a missing
+// database gets, so the answer does not tell the caller which names other
+// tenants hold.
 func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return nil
 	}
-	db, err := s.manager.Get(name)
-	if err != nil {
-		return err
-	}
-	if db.TenantID() != tenantID {
-		return &database.TenantAccessDeniedError{TenantID: tenantID, DatabaseName: name}
-	}
-	return nil
+	_, err := s.manager.GetForTenant(ctx, name)
+	return err
 }
 
 // SealDatabase seals the encryption barrier for the named database.
 func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	// Authorize ownership BEFORE consulting the barrier manager: a non-owning
-	// tenant must be refused with a cross-tenant access denial and must never
+	// tenant must be answered as if the database did not exist, and must never
 	// learn whether the target database or its barrier even exists.
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return err

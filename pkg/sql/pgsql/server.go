@@ -61,10 +61,14 @@ type Server struct {
 	tlsConfig *tls.Config
 	authMW    *authmw.AuthMiddleware
 	dbName    string
-	logger    *slog.Logger
-	cancel    context.CancelFunc
-	dbManager *database.Manager
-	done      chan struct{} // closed when Serve goroutine exits
+
+	// sharedDefaultDB is the configured default SQL database, which exists
+	// for every tenant (WithSharedDefaultDatabase). Empty shares nothing.
+	sharedDefaultDB string
+	logger          *slog.Logger
+	cancel          context.CancelFunc
+	dbManager       *database.Manager
+	done            chan struct{} // closed when Serve goroutine exits
 	// databaseSvc is the tenant-scoped database lifecycle behind CREATE
 	// DATABASE and DROP DATABASE (see WithDatabaseService).
 	databaseSvc service.DatabaseServicer
@@ -113,6 +117,16 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 func WithDatabaseName(name string) ServerOption {
 	return func(s *Server) {
 		s.dbName = name
+	}
+}
+
+// WithSharedDefaultDatabase marks name -- the configured default SQL
+// database -- as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Each tenant session sees its own
+// namespace of it; every other database is visible only to its owner.
+func WithSharedDefaultDatabase(name string) ServerOption {
+	return func(s *Server) {
+		s.sharedDefaultDB = name
 	}
 }
 
@@ -241,6 +255,9 @@ func (s *Server) Start() error {
 	var dbProvider *provider.Provider
 	if s.dbManager != nil {
 		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}, svcOpts...)
+		if s.sharedDefaultDB != "" {
+			managerOpts = append(managerOpts, provider.WithSharedDefaultDatabase(s.sharedDefaultDB))
+		}
 		dbProvider = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		dbProvider = provider.NewProvider(s.dbName, s.kvSvc)

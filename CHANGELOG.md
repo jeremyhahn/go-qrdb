@@ -55,6 +55,11 @@ are not reconstructed here — their history is in the git log.
 - **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
   `KVServicer`. RAG documents ingested before this release sit at the store
   root and are no longer read; re-ingest them.
+- **`database.TenantAccessDeniedError` is removed.** Nothing returns it: a
+  tenant addressing another tenant's database now gets
+  `database.NotFoundError` (`404` / `NOT_FOUND`) instead of `403` /
+  `PERMISSION_DENIED`. A SQL session sees only its own tenant's databases in
+  `HasDatabase` and `USE`, as it already did in `SHOW DATABASES`.
 
 ### Security
 
@@ -123,6 +128,22 @@ are not reconstructed here — their history is in the git log.
   RAG, an unknown or foreign `X-QRDB-Database` is a not-found, and vectors are
   per database. REST and gRPC/Unix now also bind the request's database as the
   canonical `tenant.DatabaseFromContext` scope, as QUIC and MCP already did.
+- **Another tenant's database is answered as missing (medium).** Database
+  names are one node-wide namespace, and a tenant addressing another tenant's
+  database got an access denial (`403` / `PERMISSION_DENIED`) where a missing
+  name got not-found, so it could probe which names other tenants hold; SQL
+  `HasDatabase` and `USE` also answered for every tenant's databases. Every
+  tenant-scoped database operation (get, drop, update, seal, unseal, barrier
+  status) now returns `database.NotFoundError` for another tenant's database,
+  and the SQL provider answers only for the session tenant's databases -- and
+  for the configured default SQL database (`sql.default_database`), which
+  every tenant has in its own namespace, exactly as the service registry
+  resolves it. The
+  ad-hoc SQL query (`/sql/query`, `SQLQuery`) resolves the database through
+  the service registry before the node-wide catalog, so an unused name and
+  another tenant's name get the same not-found. The
+  catalog re-key that scopes names per tenant — and closes the last signal, a
+  create colliding with another tenant's name — is separate work.
 
 ### Known limits
 
@@ -140,6 +161,9 @@ are not reconstructed here — their history is in the git log.
   its caller loses the permission, keeps running until it ends; every new RPC
   and stream is refused. gRPC and REST watch streams resolve their database
   once when they open in the same way.
+- **Database names are still one node-wide namespace.** Another tenant's
+  database is answered as missing everywhere except creation: a create naming
+  a database another tenant holds fails with `database.AlreadyExistsError`.
 
 ## [0.23.0-alpha] - 2026-09-30
 

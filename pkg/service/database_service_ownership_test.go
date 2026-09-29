@@ -55,32 +55,32 @@ func newBarrierDBOwnedByTenant(t *testing.T, tenantID, dbName string) (*Database
 // a database owned by tenant B, even addressing it by its global name (the
 // SDK-side verifyOwnership check is bypassable over raw gRPC/REST, so this must
 // hold at the service layer). Every attempt fails closed with a typed
-// *database.TenantAccessDeniedError and never mutates the target's barrier.
+// *database.NotFoundError -- the same answer a missing database gets -- and never mutates the target's barrier.
 func TestDatabaseService_BarrierOps_CrossTenantDenied(t *testing.T) {
 	const owner, attacker, dbName = "tenant-b", "tenant-a", "b-db"
 	svc, _ := newBarrierDBOwnedByTenant(t, owner, dbName)
 	attackerCtx := tenant.WithTenantID(context.Background(), attacker)
 
-	var tade *database.TenantAccessDeniedError
+	var tade *database.NotFoundError
 
 	t.Run("BarrierStatus", func(t *testing.T) {
 		_, err := svc.DatabaseBarrierStatus(attackerCtx, dbName)
 		if !errors.As(err, &tade) {
-			t.Fatalf("DatabaseBarrierStatus cross-tenant = %v, want *database.TenantAccessDeniedError", err)
+			t.Fatalf("DatabaseBarrierStatus cross-tenant = %v, want *database.NotFoundError", err)
 		}
 	})
 
 	t.Run("Unseal", func(t *testing.T) {
 		err := svc.UnsealDatabase(attackerCtx, dbName, seal.MustCredentials([]byte("s3cret-passphrase")))
 		if !errors.As(err, &tade) {
-			t.Fatalf("UnsealDatabase cross-tenant = %v, want *database.TenantAccessDeniedError", err)
+			t.Fatalf("UnsealDatabase cross-tenant = %v, want *database.NotFoundError", err)
 		}
 	})
 
 	t.Run("Seal_DoesNotMutateTarget", func(t *testing.T) {
 		err := svc.SealDatabase(attackerCtx, dbName)
 		if !errors.As(err, &tade) {
-			t.Fatalf("SealDatabase cross-tenant = %v, want *database.TenantAccessDeniedError", err)
+			t.Fatalf("SealDatabase cross-tenant = %v, want *database.NotFoundError", err)
 		}
 		// The attacker's seal must NOT have reached the barrier: the owner's
 		// database is still open.
@@ -147,10 +147,10 @@ func TestDatabaseService_BarrierOps_UnownedDatabaseSystemOnly(t *testing.T) {
 	}
 
 	// A non-system caller is denied even though the database has no owning tenant.
-	var tade *database.TenantAccessDeniedError
+	var tade *database.NotFoundError
 	nonSystem := tenant.WithTenantID(context.Background(), "some-tenant")
 	if _, err := svc.DatabaseBarrierStatus(nonSystem, dbName); !errors.As(err, &tade) {
-		t.Fatalf("non-system DatabaseBarrierStatus on unowned db = %v, want *database.TenantAccessDeniedError", err)
+		t.Fatalf("non-system DatabaseBarrierStatus on unowned db = %v, want *database.NotFoundError", err)
 	}
 
 	// The system tenant may read it.
