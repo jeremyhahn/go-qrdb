@@ -452,6 +452,32 @@ type DatabaseConfig struct {
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
 }
 
+// Directory names a volume-isolated tenant's own Raft host keeps under
+// {DataRoot}/databases, beside that tenant's per-database directories
+// ({DataRoot}/databases/<name>). They are the single source for both the host
+// layout and the names a database may not take.
+const (
+	// TenantHostWALDirName is the tenant host's WAL directory.
+	TenantHostWALDirName = "wal"
+	// TenantHostNodeHostDirName is the tenant host's node-host directory.
+	TenantHostNodeHostDirName = "nodehost"
+)
+
+// reservedNames is the set of database names that collide with a directory
+// the node keeps beside per-database directories, lower-cased so the check
+// also holds on a case-insensitive filesystem.
+var reservedNames = map[string]struct{}{
+	TenantHostWALDirName:      {},
+	TenantHostNodeHostDirName: {},
+}
+
+// IsReservedName reports whether name is reserved for node state and may not
+// name a database.
+func IsReservedName(name string) bool {
+	_, reserved := reservedNames[strings.ToLower(name)]
+	return reserved
+}
+
 // Validate checks that the configuration is complete and consistent.
 // It returns a typed error when any field is missing or invalid.
 //
@@ -461,6 +487,9 @@ type DatabaseConfig struct {
 func (c *DatabaseConfig) Validate() error {
 	if c.Name == "" || !namePattern.MatchString(c.Name) {
 		return &InvalidNameError{Name: c.Name}
+	}
+	if IsReservedName(c.Name) {
+		return &ReservedNameError{Name: c.Name}
 	}
 	if !c.Engine.Valid() {
 		return &InvalidEngineError{Engine: string(c.Engine)}

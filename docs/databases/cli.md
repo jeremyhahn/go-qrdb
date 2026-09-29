@@ -40,6 +40,9 @@ on any database of a volume- or raft-isolated tenant
 (`BarrierOffDataPathError`): each is served from a store the barrier would not
 wrap. Both refusals are `409` / `FAILED_PRECONDITION`.
 
+**Reserved names.** `wal` and `nodehost` (in any case) name node state and
+are refused for every database.
+
 ## `qrdb database info <name>` / `list`
 
 Show details, or list every database. No flags beyond the persistent set.

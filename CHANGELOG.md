@@ -60,6 +60,9 @@ are not reconstructed here — their history is in the git log.
   `database.NotFoundError` (`404` / `NOT_FOUND`) instead of `403` /
   `PERMISSION_DENIED`. A SQL session sees only its own tenant's databases in
   `HasDatabase` and `USE`, as it already did in `SHOW DATABASES`.
+- **`wal` and `nodehost` are no longer valid database names.** Creating one
+  fails with `database.ReservedNameError` (`400` / `INVALID_ARGUMENT`). A
+  database of either name created before this release still opens.
 
 ### Security
 
@@ -144,6 +147,15 @@ are not reconstructed here — their history is in the git log.
   another tenant's name get the same not-found. The
   catalog re-key that scopes names per tenant — and closes the last signal, a
   create colliding with another tenant's name — is separate work.
+- **Database names that collide with node state are reserved (medium).** A
+  volume-isolated tenant's database lives at `{DataRoot}/databases/<name>`,
+  beside the tenant's own Raft host, so a database named `wal` or `nodehost`
+  was created inside that host's WAL or node-host directory. Both names (any
+  case) are now refused for every database with `database.ReservedNameError`
+  before any directory is made. Database-catalog refusals also map to their
+  documented status on gRPC, Unix, QUIC and MCP, where they were answered as
+  internal errors: not found is `NOT_FOUND`, a taken name `ALREADY_EXISTS`, an
+  invalid or reserved name `INVALID_ARGUMENT`.
 
 ### Known limits
 

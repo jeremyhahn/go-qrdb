@@ -260,6 +260,7 @@ var databaseRules = []rule{
 	as(&database.AlreadyExistsError{}, AlreadyExists),
 	as(&database.NotFoundError{}, NotFound),
 	as(&database.InvalidNameError{}, InvalidArgument),
+	as(&database.ReservedNameError{}, InvalidArgument),
 	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
 	// A per-database barrier requested where it would not wrap the store the

@@ -30,6 +30,19 @@ func (e *InvalidNameError) Error() string {
 	return "database: invalid database name: " + strconv.Quote(e.Name)
 }
 
+// ReservedNameError is returned when a database name collides with a
+// directory the node keeps beside per-database directories (see
+// IsReservedName). A database of that name would be created inside that
+// state, so the name is refused before any directory is made.
+type ReservedNameError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the reserved name.
+func (e *ReservedNameError) Error() string {
+	return "database: database name is reserved: " + strconv.Quote(e.Name)
+}
+
 // InvalidEngineError is returned when an unrecognized engine type is specified.
 type InvalidEngineError struct {
 	Engine string

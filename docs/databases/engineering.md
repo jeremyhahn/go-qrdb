@@ -115,6 +115,14 @@ path, not the body.
   at boot by `service.WarnBarriersOffDataPath` once the tenant service exists,
   because the manager cannot see tenant isolation. Both log
   `database.BarrierOffDataPathWarning`.
+- **Names that collide with node state are reserved.** A volume-isolated
+  tenant's databases live at `{DataRoot}/databases/<name>`, beside the
+  tenant's own Raft host, whose WAL and node-host state are
+  `{DataRoot}/databases/wal` and `{DataRoot}/databases/nodehost`. Those names
+  (`database.TenantHostWALDirName`, `database.TenantHostNodeHostDirName`,
+  matched case-insensitively) are refused for every database by
+  `DatabaseConfig.Validate` with `database.ReservedNameError`, so no create
+  path can place a database inside that state.
 - **Engine and backend are creation-time and immutable.** Protocol, etcd, raft
   cluster mode, barrier state, connection and replica count are all updatable;
   engine and backend are not.
@@ -205,6 +213,7 @@ Deliberately finer than one grant per verb:
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Database name already exists | `database.AlreadyExistsError` | yes |
+| Database name reserved for node state (`wal`, `nodehost`, any case) | `database.ReservedNameError`, before any directory is made | **yes** |
 | Unknown database on any operation | not-found | **yes** — never implicitly created |
 | Another tenant's database on any tenant-scoped operation | the same `database.NotFoundError` as a missing one | **yes** — no access denial that would reveal the name is held |
 | Barrier enabled on a shared store | `database.SharedStoreBarrierUnsupportedError` | **yes** |

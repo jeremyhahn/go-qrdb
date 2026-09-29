@@ -79,6 +79,7 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 |---|---|---|
 | Success | 200 | `OK` |
 | Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
+| Name reserved for node state (`wal`, `nodehost`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
 | Barrier enabled on a shared store | 409 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; every failed precondition is 409 on REST)* |
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 409 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
