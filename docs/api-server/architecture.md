@@ -265,6 +265,16 @@ addressable is an open architecture question, not a decided one.
   rather than reported in a log line an operator would have to notice.
 - **Default deny.** A route, RPC or tool with no permission declaration fails the
   startup assertion rather than serving unauthenticated.
+- **The route that is authorized is the route that is served.** Authorization,
+  the sealed-window allowlist, the SO gate and every handler resolve the
+  request's decoded path; chi on its own would route on the raw, still-encoded
+  path whenever the request carried an escape such as `%2F`, so one request
+  could be authorized as one route and served by another. The outermost layer
+  of the REST handler — which the HTTP/3 listener shares — therefore
+  canonicalises every request to its decoded path before anything else sees
+  it. A name containing `/` is not addressable through a single-segment route
+  (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
+  the decoded key as it always did.
 - **Public routes are explicit and few** — `GET /health`,
   `GET /v1/config/initialized`, and `GET /v1/ca/bootstrap` when configured.
   `GET /metrics` requires authentication but no specific permission.

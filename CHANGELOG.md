@@ -11,6 +11,24 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **REST authorization and routing no longer disagree on percent-encoded
+  paths.** Authorization resolved the decoded `r.URL.Path`, but chi routed on
+  `r.URL.RawPath` whenever the request carried an escape such as `%2F`, so a
+  request could be authorized as one route and served by another. Proven on
+  v0.21.0-alpha: `DELETE /v1/databases/prod%2Fx` dropped database `prod` for
+  any authenticated caller under a deny-all authorizer (the same shape reached
+  `/admin/shards/{id}`, `/ts/series/{metric}` and `/users/{id}`); a module route
+  authorized under a weak permission could be served by a stronger route's
+  handler; and a public route's decoded path could open a protected handler
+  with no authentication. The REST handler chain (shared by the HTTP/3
+  listener) now canonicalises every request to its decoded path before the
+  sealed-window, authentication, SO and routing layers, so all of them resolve
+  the same route. Wildcard routes such as `/kv/*` still receive keys with
+  encoded characters, decoded, as before; a name containing `/` is not
+  addressable through a single-segment route. Upgrade immediately.
+
 ## [0.21.0-alpha] - 2026-09-29
 
 Merge train 1: go-enclave protected memory, atomic boot-time identity claims, QUIC qrdb-quic/2, per-tenant auth-factor challenges, PQ k-means empty-cluster repair.

@@ -766,6 +766,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.corsConfig != nil {
 		handler = corsMiddleware(*s.corsConfig, handler)
 	}
+	// OUTERMOST: every layer below -- sealed window, authentication and
+	// authorization, SO dual factor, and chi's routing -- must see the SAME
+	// path. See canonicalPathMiddleware. The HTTP/3 server serves this same
+	// handler, so both listeners get it.
+	handler = canonicalPathMiddleware(handler)
 
 	s.server = &http.Server{
 		Handler:      handler,

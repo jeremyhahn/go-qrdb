@@ -172,6 +172,14 @@ middleware's path means they inherit none of its checks, revocation included.
 | QUIC | method/frame dispatch — module unary RPCs are reached via `RegisterQUIC` projection |
 | MCP | Model Context Protocol tools |
 
+**One path per request on every HTTP surface.** The REST handler chain opens
+with `canonicalPathMiddleware`, which clears `r.URL.RawPath` so chi routes on
+the same decoded `r.URL.Path` that authorization, the sealed-window allowlist,
+the SO gate and the handlers read; the HTTP/3 server serves the same handler.
+The MCP HTTP listener routes only the exact paths `/mcp` and the
+protected-resource metadata document and authorizes by tool name from the
+request body, never by path, so it has no route/authorization split to close.
+
 Additionally, **per-database protocol listeners** run beside these: MySQL and
 PostgreSQL ([../sql/](../sql/)) and etcd v3
 ([../etcd-compatibility/](../etcd-compatibility/)). Those are separate servers
@@ -181,6 +189,7 @@ over the same services, not a seventh transport.
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
+| Request whose raw path differs from its decoded path (`%2F` and other escapes) | canonicalised to the decoded path by the outermost layer (`canonicalPathMiddleware`) before the sealed-window, auth, SO and routing layers, so all of them resolve one route | **yes** |
 | Route, RPC or tool with no permission declaration | **startup assertion fails** | **yes** |
 | Two modules claiming the same method+pattern | construction fails loudly | **yes** |
 | A module claiming a built-in's method+pattern | the built-in yields, debug-logged | n/a |
