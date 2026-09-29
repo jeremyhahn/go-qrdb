@@ -144,6 +144,15 @@ func (c *Challenge) Expired() bool {
 	return time.Now().UTC().After(c.ExpiresAt)
 }
 
+// ResponseMetaPeerCertThumbprint is the Response.Metadata key under which the
+// SERVER records the lowercase hex SHA-256 thumbprint of the client
+// certificate the caller presented on a verified TLS session. A factor that
+// binds to a certificate (the "mtls" factor) compares it against the enrolled
+// certificate. It is never taken from the client: the server deletes any
+// client-supplied value before it sets its own, and leaves it unset when the
+// transport carried no verified client certificate.
+const ResponseMetaPeerCertThumbprint = "peer_cert_thumbprint"
+
 // Response is submitted by the custodian after signing the Challenge nonce.
 type Response struct {
 	// Value holds the signature or assertion produced by the factor.
