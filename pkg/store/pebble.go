@@ -85,6 +85,11 @@ type PebbleStateMachine struct {
 	// indexes holds registered secondary indexes by name.
 	indexes map[string]index.Index
 
+	// indexOwners holds the owner recorded for each index by name
+	// (index.IndexConfig.Owner, go-qrdb#426). An absent entry is the empty
+	// owner, the explicit index API.
+	indexOwners map[string]string
+
 	// ts is the time-series storage engine. Nil if not configured.
 	ts *timeseries.Storage
 
@@ -104,8 +109,9 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 		opts = &pebble.Options{}
 	}
 	s := &PebbleStateMachine{
-		opts:    opts,
-		indexes: make(map[string]index.Index),
+		opts:        opts,
+		indexes:     make(map[string]index.Index),
+		indexOwners: make(map[string]string),
 	}
 	s.updateHandlers = s.buildUpdateHandlers()
 	return s
@@ -1612,10 +1618,17 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	if _, exists := s.indexes[name]; exists {
-		// Index already present — idempotent success so Raft Apply does not
-		// stall on duplicate create proposals. Existence is keyed by name only;
-		// a re-create with a divergent definition is a no-op (original wins) and
-		// must be rejected at the service layer before the proposal if desired.
+		// A create naming an index ANOTHER owner holds is refused rather than
+		// adopted (go-qrdb#426), as an application error so consensus advances.
+		owner := s.indexOwners[name]
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+		}
+		// Index already present under the same owner — idempotent success so
+		// Raft Apply does not stall on duplicate create proposals. Existence
+		// is keyed by name only; a same-owner re-create with a divergent
+		// definition is a no-op (original wins) and must be rejected at the
+		// service layer before the proposal if desired.
 		return sm.Result{Value: 1}, nil, nil
 	}
 
@@ -1638,11 +1651,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		Sparse:        opts.Sparse,
 		ValueType:     valueType,
 		CaseSensitive: !opts.CaseInsensitive,
+		Owner:         opts.Owner,
 	})
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
 	}
 	s.indexes[name] = idx
+	s.indexOwners[name] = opts.Owner
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -1652,7 +1667,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 // handlers must be idempotent so that cleanup proposals (e.g. deferred test
 // teardown) do not return a fatal Apply error that would stall consensus.
 func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -1662,6 +1677,10 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 		// Index already gone — idempotent success.
 		return sm.Result{Value: 1}, nil, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := s.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+	}
 
 	if err := idx.Clear(); err != nil {
 		return sm.Result{}, nil, err
@@ -1670,6 +1689,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 		return sm.Result{}, nil, err
 	}
 	delete(s.indexes, name)
+	delete(s.indexOwners, name)
 
 	return sm.Result{Value: 1}, nil, nil
 }

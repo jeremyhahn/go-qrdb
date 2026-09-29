@@ -213,6 +213,12 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // kept its shards running and its shard data dirs on disk on every replica --
 // which the local node's DataRoot removal cannot reach.
 //
+// It DOES return the tenant's collection work journal range,
+// "__sys:collection-work/{tenant}/" (CollectionWorkPrefix), for the same
+// reason: it is keyed by tenant outside the namespace, and an entry left
+// behind would wait for the collection sweeper to notice the tenant is gone
+// rather than going with the tenant.
+//
 // The SYSTEM tenant returns nil. "<tenant>/" for the system tenant is
 // "system/", which is where the bootstrap database and every system identity
 // record live; a reclamation that accepted it would empty the store it was
@@ -229,6 +235,7 @@ func TenantKeyPrefixes(tenantID string) []string {
 		timeseries.KeyPrefixMetricIndex + ns,
 		timeseries.KeyPrefixRetention + ns,
 		placement.PlacementPrefix + ns,
+		CollectionWorkPrefix + ns,
 	}
 }
 

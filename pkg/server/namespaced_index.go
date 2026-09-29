@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -55,12 +56,29 @@ func (s *namespacedIndexService) stripByteSlices(keys [][]byte) [][]byte {
 
 // CreateIndex creates a secondary index under the prefixed name.
 func (s *namespacedIndexService) CreateIndex(ctx context.Context, name, fieldName string, config index.IndexConfig) error {
-	return s.inner.CreateIndex(ctx, s.prefix+name, fieldName, config)
+	return s.unscopeOwnership(s.inner.CreateIndex(ctx, s.prefix+name, fieldName, config), name)
 }
 
 // DropIndex removes a secondary index by prefixed name.
 func (s *namespacedIndexService) DropIndex(ctx context.Context, name string) error {
 	return s.inner.DropIndex(ctx, s.prefix+name)
+}
+
+// DropOwnedIndex removes a secondary index by prefixed name when it is
+// recorded under owner.
+func (s *namespacedIndexService) DropOwnedIndex(ctx context.Context, name, owner string) error {
+	return s.unscopeOwnership(s.inner.DropOwnedIndex(ctx, s.prefix+name, owner), name)
+}
+
+// unscopeOwnership reports an ownership refusal under the name the caller
+// used. The inner service saw the namespaced name, and the namespace is this
+// wrapper's detail, not the caller's.
+func (s *namespacedIndexService) unscopeOwnership(err error, name string) error {
+	var own *index.OwnershipError
+	if !errors.As(err, &own) {
+		return err
+	}
+	return &index.OwnershipError{Name: name, Owner: own.Owner, Requested: own.Requested}
 }
 
 // Query returns the entry keys matching value in the prefixed index, with the

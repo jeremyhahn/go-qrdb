@@ -86,7 +86,11 @@ func TestDecodeIndexCreateOpts_PreKeyPrefixPayload(t *testing.T) {
 }
 
 func TestDecodeIndexCreateOpts_TruncatedKeyPrefix(t *testing.T) {
-	full := mustEncode(EncodeIndexCreateOpts("idx", "email", IndexCreateOptions{KeyPrefix: "users/"}))
+	// The owner extension (go-qrdb#426) trails the prefix; it is cut off here
+	// so the prefix is the last thing the payload carries, as in a command
+	// written before the owner existed.
+	withOwner := mustEncode(EncodeIndexCreateOpts("idx", "email", IndexCreateOptions{KeyPrefix: "users/"}))
+	full := withOwner[:len(withOwner)-2]
 
 	tests := []struct {
 		name    string

@@ -169,7 +169,7 @@ func TestCollectionService_BackwardCompatibility(t *testing.T) {
 	jsonBytes, err := json.Marshal(entity)
 	require.NoError(t, err)
 
-	docKey := collectionDataEntityType("mydb", "legacy") + "/42"
+	docKey := collectionDocumentKey(&CollectionInfo{Database: "mydb", Name: "legacy"}, 42)
 	require.NoError(t, kvSvc.Put(ctx, docKey, jsonBytes))
 
 	// Create a collection service with the msgpack codec configured on an

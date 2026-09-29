@@ -1038,6 +1038,8 @@ func TestMapHTTPError_CollectionErrors(t *testing.T) {
 		{&service.CollectionAlreadyExistsError{Database: "db", Collection: "c"}, http.StatusConflict},
 		{&service.CollectionNotFoundError{Database: "db", Collection: "c"}, http.StatusNotFound},
 		{&service.CollectionEmptyNameError{}, http.StatusBadRequest},
+		{&service.CollectionInvalidNameError{Name: "a#b", Reason: "x"}, http.StatusBadRequest},
+		{&service.CollectionReservedFieldError{Field: "id", Reason: "x"}, http.StatusBadRequest},
 		{&service.CollectionEmptyDatabaseError{}, http.StatusBadRequest},
 		{&service.CollectionInvalidIDStrategyError{}, http.StatusBadRequest},
 		{&service.CollectionMissingFieldHashError{}, http.StatusBadRequest},

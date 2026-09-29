@@ -43,6 +43,11 @@ func (k *putAlwaysFailKV) Put(_ context.Context, _ string, _ []byte) error {
 	return k.putErr
 }
 
+// PutIfAbsent fails like Put: CreateCollection claims the name with it.
+func (k *putAlwaysFailKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return false, k.putErr
+}
+
 // ---------------------------------------------------------------------------
 // collection_service.go – CreateCollection: Put metadata fails (line 190-192)
 // ---------------------------------------------------------------------------
@@ -79,6 +84,12 @@ func (f *failingIndexSvc) CreateIndex(_ context.Context, _, _ string, _ index.In
 func (f *failingIndexSvc) DropIndex(_ context.Context, name string) error {
 	f.dropAttempts = append(f.dropAttempts, name)
 	return f.dropErr
+}
+
+// DropOwnedIndex fails exactly as DropIndex does: the owner-checked drop is
+// the one a collection that records ownership issues.
+func (f *failingIndexSvc) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return f.DropIndex(ctx, name)
 }
 
 func TestCollectionService_CreateCollection_IndexCreationFails(t *testing.T) {

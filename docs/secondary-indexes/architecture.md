@@ -91,8 +91,8 @@ scope = {tenant}/{database}/   +   declared key prefix
   same string, so reading it back is the exact inverse of the wrapper, not an
   inference.
 - The **declared half** is what the name cannot say. A collection index
-  declares `__col:{database}:{collection}/`, the prefix its documents are
-  keyed under; a DAO entity index declares `{entityType}/`. It is declared
+  declares `__col:{database}:{collection}#{incarnation}/`, the prefix its
+  incarnation's documents are keyed under; a DAO entity index declares `{entityType}/`. It is declared
   **relative** to the namespace, so a declaration made below the registry stays
   correct whether or not a registry is in play — exactly like the key it
   describes.

@@ -182,6 +182,30 @@ are not reconstructed here — their history is in the git log.
   `wiring.AuthMiddlewareConfig.PeerAttestation`,
   `node.WithPeerAttestationGate`, and `sdk/go` re-exports. Docs:
   `docs/attested-caller/`.
+- **Collection lifecycle states.** A collection is `creating` until every
+  declared index exists, `active` while it serves documents, and `dropping`
+  from the moment a drop starts. Every state is reported by info and list; only
+  an `active` collection serves document reads and writes
+  (`service.CollectionNotActiveError`, 409 / `FAILED_PRECONDITION`).
+- **Collection sweeper.** The server finishes collections an interrupted create
+  or drop left `creating` or `dropping` for more than five minutes — a stuck
+  drop is completed, a stuck create is unwound — so nobody has to re-issue them
+  (`server.WithCollectionSweep` tunes it). The shared store's databases are
+  found from a replicated collection work journal and swept by the system
+  shard's leader (`server.WithCollectionSweepLeader`, wired by the daemon), so
+  a database only another node has catalogued is still finished after a
+  leadership change; a raft tenant's shard is swept by its leader, and volume
+  hosts and node-local dedicated stores on every node that holds them. A
+  record whose fields do not derive from one another is reported and left
+  alone rather than acted on, and a database with stuck work that stays
+  unresolvable is logged as a warning. Deleting a tenant removes its journal
+  entries (`__sys:collection-work/{tenant}/`) with the rest of its keyspace.
+- **Persisted secondary-index ownership.** Index-create commands carry the
+  creating object's owner and index-drop commands can be owner-checked
+  (`IndexServicer.DropOwnedIndex`), both as trailing wire extensions that
+  existing log entries decode unchanged.
+- `CollectionServicer.UpsertDocument`, a guarded insert-or-replace that
+  reports what it displaced.
 
 ### Changed — BREAKING
 
@@ -377,6 +401,62 @@ are not reconstructed here — their history is in the git log.
   (a seal-disabled daemon, the embedded SDK node, the desktop binding), so no
   node changes what it writes. **Wipe dev data directories before upgrading**:
   go-quicraft changed its WAL chunk and snapshot frame formats in place.
+- **A failed `CreateCollection` leaves nothing behind.** It used to publish the
+  collection before building its indexes, so a failed index build left a live,
+  partially indexed collection that could not be re-created. The create now
+  builds the indexes first and unwinds on failure; a retry succeeds.
+- **A collection never adopts an index it did not create**, and its drop
+  removes only the indexes it owns. A declared index whose name is already
+  held by another index refuses the create (409 / `FAILED_PRECONDITION`). Index
+  definitions on a service without an index service are refused instead of
+  being recorded and silently not built.
+- **Collection document writes count against `MaxStorageBytes`**, by body
+  bytes, on every transport including SQL. Enforcement is immediate: a tenant
+  already over its limit through documents has its next document write
+  refused. Every release is of exactly what its own guarded write removed, so
+  concurrent updates and deletes never leak or double-release bytes; a drop —
+  a caller's or the sweeper's — releases exactly the bytes its teardown
+  removed, and a `field_hash` re-insert of an existing natural key is charged
+  once, not once per insert. The remaining drift is an over-count from writes
+  that race a drop or have an unknown outcome; it is permanent for prefix and
+  raft tenants (docs/collections/engineering.md).
+- **Each create of a collection keeps its documents and its `increment`
+  counter in a keyspace of its own**
+  (`__col:{database}:{collection}#{incarnation}/`,
+  `__collection:{collection}#{incarnation}`). A collection created before this
+  release keeps the unsuffixed keys it already has; no migration is needed.
+  A new collection's name may no longer contain `#`
+  (`service.CollectionInvalidNameError`, 400 / `INVALID_ARGUMENT`); an existing
+  collection with such a name keeps working.
+- **A document field named `id`, or an object-valued `fields` as a
+  document's only field, is refused** (`service.CollectionReservedFieldError`,
+  400 / `INVALID_ARGUMENT`) instead of being accepted, charged against quota,
+  and stored as something else -- the `id` field silently dropped, the
+  `fields` object unwrapped into the document.
+- **`DeleteDocument` refuses a collection that is being created or dropped**,
+  like every other document verb (409 / `FAILED_PRECONDITION`); the drop
+  removes every document itself.
+- **`REPLACE INTO`, `INSERT … ON DUPLICATE KEY UPDATE` and `UPDATE` on a
+  collection table are guarded writes.** A concurrent writer's value is never
+  lost silently; the losing statement fails with MySQL 1213 / `SQLSTATE 40001`
+  and can be retried. An `UPDATE` that changes `_id` and cannot tell whether
+  its release of the old `_id` took effect leaves both documents and says so
+  (`provider.DocumentMoveOutcomeUnknownError`) instead of withdrawing the new
+  copy.
+- **Breaking (embedders):** `statemachine.IndexManager.DropIndex` takes
+  `protocol.IndexDropOptions`, and an `IndexManager` must enforce the owner
+  carried in `IndexCreateOptions.Owner`; `index.IndexServicer` gains
+  `DropOwnedIndex`; `service.CollectionServicer` gains `UpsertDocument`, so
+  every implementation or test double of it must add the method.
+- **The explicit index API can no longer drop an index a collection owns**;
+  it is refused with 409 / `FAILED_PRECONDITION`. Drop the collection instead.
+  Explicit and pre-ownership indexes drop as before.
+- **Upgrade every node before issuing collection creates or drops.** The
+  collection lifecycle, index ownership and the owner-checked index drop are
+  decided on every replica's apply path; a node still running an earlier
+  release ignores the owner on an index command and would apply an
+  owner-checked drop unconditionally. Rolling upgrades are safe while no
+  collection is created or dropped.
 
 ### Removed
 
@@ -546,6 +626,20 @@ are not reconstructed here — their history is in the git log.
   before anything is provisioned. `seal.MemoryBackend`, `seal.StorageAdapter`,
   `seal.StorageBarrier` and `kvstore.MemoryKVStore` implement it; the
   seal-disabled tenant service now runs over a transaction-backed adapter.
+- A write into a collection that was being dropped could land after the drop
+  had listed its documents and outlive it; document writes are now fenced
+  against a concurrent drop and retracted if they lose.
+- The schema discovery an insert performs could write a dropped collection's
+  metadata back into existence, or revert a drop in progress; metadata writes
+  are now guarded swaps.
+- A drop that resumed after the collection had been dropped by someone else and
+  created again could delete the new collection's documents, restart its
+  counter and remove its metadata, and a write decided against the old
+  collection could overwrite and then delete a document of the new one. Every
+  create now has its own document keyspace and counter, so nothing working on
+  an earlier incarnation of a name can reach a later one.
+- Listing a collection's documents sorted every key with an insertion sort,
+  quadratic in the collection's size; it now uses the standard library's sort.
 
 ## [0.21.3-alpha] - 2026-09-30
 

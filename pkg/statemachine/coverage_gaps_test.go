@@ -46,7 +46,9 @@ type gapErrIndexManager struct {
 func (m *gapErrIndexManager) CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error {
 	return m.createErr
 }
-func (m *gapErrIndexManager) DropIndex(name string) error { return m.dropErr }
+func (m *gapErrIndexManager) DropIndex(name string, _ protocol.IndexDropOptions) error {
+	return m.dropErr
+}
 func (m *gapErrIndexManager) Query(indexName string, value []byte) ([][]byte, error) {
 	return nil, nil
 }

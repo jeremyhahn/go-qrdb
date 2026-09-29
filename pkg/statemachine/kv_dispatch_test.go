@@ -79,7 +79,7 @@ func (m *kvMockIndexManager) CreateIndex(name, fieldName string, opts protocol.I
 	return nil
 }
 
-func (m *kvMockIndexManager) DropIndex(name string) error {
+func (m *kvMockIndexManager) DropIndex(name string, _ protocol.IndexDropOptions) error {
 	m.dropCalled = true
 	return nil
 }

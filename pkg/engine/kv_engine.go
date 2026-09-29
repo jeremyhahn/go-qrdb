@@ -61,7 +61,12 @@ type KVEngine struct {
 	// every key it indexes must carry (see ComposeIndexScope). A nil entry is
 	// an index with no derivable and no declared scope, which covers the whole
 	// state machine.
-	indexScopes   map[string][]byte
+	indexScopes map[string][]byte
+	// indexOwners holds the owner recorded for each index created through
+	// OpIndexCreate (index.IndexConfig.Owner, go-qrdb#426). An absent entry
+	// is the empty owner: the explicit index API, and every index registered
+	// locally rather than through a command.
+	indexOwners   map[string]string
 	entityIndexes map[string][]EntityIndex
 	// compoundIndexes stores compound (multi-field) indexes keyed by
 	// their fully-qualified name (e.g., "mydb.messages.ConversationID_Timestamp").
@@ -128,6 +133,7 @@ func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 		indexes:             make(map[string]index.Index),
 		indexFields:         make(map[string]string),
 		indexScopes:         make(map[string][]byte),
+		indexOwners:         make(map[string]string),
 		entityIndexes:       make(map[string][]EntityIndex),
 		compoundIndexes:     make(map[string]*index.CompoundIndex),
 		compoundIndexFields: make(map[string][]string),
@@ -801,8 +807,14 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 
-	// Do not recreate an existing index.
+	// Do not recreate an existing index, and do not let a different owner
+	// adopt it either: a create naming an index another owner holds is
+	// refused as an application error (go-qrdb#426).
 	if _, exists := e.indexes[name]; exists {
+		owner := e.indexOwners[name]
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
+		}
 		return sm.Result{}, nil
 	}
 
@@ -823,6 +835,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		// The key scope the creator declared, relative to the namespace the
 		// name carries (go-qrdb#410).
 		KeyPrefix: opts.KeyPrefix,
+		Owner:     opts.Owner,
 	}
 	if opts.Unique {
 		cfg.Type = index.IndexTypeUnique
@@ -846,6 +859,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
+	e.indexOwners[name] = opts.Owner
 
 	// Backfill the index with the existing data INSIDE its scope. An unscoped
 	// backfill would seed the new index with every matching key in the state
@@ -857,7 +871,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 
 // handleIndexDrop removes a secondary index by name.
 func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
@@ -866,11 +880,16 @@ func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
 	if !exists {
 		return sm.Result{}, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := e.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
+	}
 
 	_ = idx.Close()
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
 
 	return sm.Result{}, nil
 }

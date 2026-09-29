@@ -202,7 +202,7 @@ leave a tenant's data behind with nothing left to name it.
 
 ### What a tenant owns
 
-`service.TenantKeyPrefixes` is the declaration. Five ranges, not one:
+`service.TenantKeyPrefixes` is the declaration. Six ranges, not one:
 
 | Range | Why it is separate |
 |---|---|
@@ -211,6 +211,7 @@ leave a tenant's data behind with nothing left to name it.
 | `idx:metric:{tenant}/` | Time-series metric index, same reason. |
 | `retention:{tenant}/` | Time-series retention policies, same reason. |
 | `__sys:placement/{tenant}/` | A dedicated-raft database's replica assignment: keyed by tenant, OUTSIDE the namespace. The per-node reconciler watches this range, so removing an entry is what stops the shard and purges its data dir on **every** node holding a replica — which the local node's `DataRoot` removal cannot reach. |
+| `__sys:collection-work/{tenant}/` | The collection work journal: one entry per collection in a transitional state, keyed by tenant OUTSIDE the namespace so the collection sweeper can find work without a database catalog. Removing the range means a deleted tenant's entries go with it instead of waiting for the sweeper. |
 
 Plus the secondary-index catalog and the vector namespaces, which are
 namespaces of their own rather than ranges of keys and are enumerated

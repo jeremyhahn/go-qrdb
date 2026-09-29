@@ -64,7 +64,7 @@ func (t *Transport) IndexDrop(ctx context.Context, name string) error {
 	if t.indexSvc == nil {
 		return &NilServiceError{Service: "IndexServicer"}
 	}
-	return translateError(t.indexSvc.DropIndex(ctx, name))
+	return translateError(t.indexSvc.DropOwnedIndex(ctx, name, index.ExplicitOwner))
 }
 
 // IndexQuery returns entity keys matching an exact value in an index by

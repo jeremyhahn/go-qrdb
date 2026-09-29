@@ -174,9 +174,12 @@ func TestCollectionDocumentsAreNamespacedPerTenant(t *testing.T) {
 
 	// 5. The physical separation, pinned. Every key written through either
 	//    tenant's collection service carries that tenant's composite prefix,
-	//    and no bare "__col:"/"__sys:collections/" key survives.
+	//    and no bare "__col:"/"__sys:collections/" key survives. The one key
+	//    outside the namespace is the collection work journal entry, which
+	//    names its tenant and database and holds no document data.
 	for _, k := range storeKeys(kv) {
-		if strings.HasPrefix(k, "tenant-a/appdb/") || strings.HasPrefix(k, "tenant-b/appdb/") {
+		if strings.HasPrefix(k, "tenant-a/appdb/") || strings.HasPrefix(k, "tenant-b/appdb/") ||
+			strings.HasPrefix(k, collectionWorkPrefix+"tenant-a/appdb/") || strings.HasPrefix(k, collectionWorkPrefix+"tenant-b/appdb/") {
 			continue
 		}
 		t.Fatalf("unnamespaced collection key in the shared store: %q (all keys: %v)", k, storeKeys(kv))
@@ -288,8 +291,8 @@ func TestApplyCompositeNamespacesTheCollectionEngines(t *testing.T) {
 	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
 	ctx := context.Background()
 
-	a := reg.applyComposite(svcs, tenant.ComposeNamespace("tenant-a", "appdb"))
-	b := reg.applyComposite(svcs, tenant.ComposeNamespace("tenant-b", "appdb"))
+	a := reg.applyComposite(svcs, "tenant-a", "appdb")
+	b := reg.applyComposite(svcs, "tenant-b", "appdb")
 
 	if _, err := a.Collection.CreateCollection(ctx, &service.CreateCollectionRequest{
 		Database: "appdb", Name: "users",
@@ -312,7 +315,7 @@ func TestApplyCompositeNamespacesTheCollectionEngines(t *testing.T) {
 
 	keys := storeKeys(kv)
 	for _, k := range keys {
-		if !strings.HasPrefix(k, "tenant-a/appdb/") {
+		if !strings.HasPrefix(k, "tenant-a/appdb/") && !strings.HasPrefix(k, collectionWorkPrefix+"tenant-a/appdb/") {
 			t.Fatalf("collection key written outside tenant-a's namespace: %q (all keys: %v)", k, keys)
 		}
 	}
@@ -383,7 +386,7 @@ func TestCollectionIndexScopeMatchesTheNamespacedDocumentKeys(t *testing.T) {
 	if !strings.HasPrefix(docKey, scope) {
 		t.Fatalf("index scope %q does not cover the document key %q", scope, docKey)
 	}
-	if want := tenant.ComposeNamespace("tenant-a", "appdb") + "__col:appdb:users/"; scope != want {
+	if want := tenant.ComposeNamespace("tenant-a", "appdb") + "__col:appdb:users#"; !strings.HasPrefix(scope, want) || !strings.HasSuffix(scope, "/") || len(scope) != len(want)+16+1 {
 		t.Fatalf("index scope = %q, want %q", scope, want)
 	}
 }

@@ -105,11 +105,11 @@ projection guards it rather than assuming.
 | `SELECT * FROM <collection>` | `collectionSvc.ListDocuments` |
 | `INSERT INTO <collection> (_id, …) VALUES (N, …)` | `collectionSvc.InsertDocument` with `_id = N` — a **claim** |
 | `INSERT INTO <collection> (…) VALUES (…)` | `collectionSvc.InsertDocument` with no `_id` — an **allocation** |
-| `UPDATE <collection> SET … WHERE _id = N` | `collectionSvc.UpdateDocument` |
-| `UPDATE <collection> SET _id = M WHERE _id = N` | `InsertDocument` claiming `M`, then `DeleteDocument(N)` — refused with `InvalidKeyError` when `M` is 0 |
+| `UPDATE <collection> SET … WHERE _id = N` | `GetDocument(N)` compared with the row read, then `UpsertDocument` guarded by its revision |
+| `UPDATE <collection> SET _id = M WHERE _id = N` | `InsertDocument` claiming `M`, then `DeleteDocument(N)` guarded by the revision read — refused with `InvalidKeyError` when `M` is 0. A release refused because `N` changed or is gone withdraws `M` (MySQL 1213); a release that fails with an unknown outcome leaves both and returns `provider.DocumentMoveOutcomeUnknownError` |
 | `DELETE FROM <collection> WHERE _id = N` | `collectionSvc.DeleteDocument` |
-| `REPLACE INTO <collection> …` | `InsertDocument`; on a primary-key violation, `DeleteDocument` then `InsertDocument` |
-| `INSERT … ON DUPLICATE KEY UPDATE` | `InsertDocument`; on a primary-key violation, `UpdateDocument` |
+| `REPLACE INTO <collection> …` | `UpsertDocument` — one guarded write per row |
+| `INSERT … ON DUPLICATE KEY UPDATE` | `InsertDocument`; on a primary-key violation, the guarded `UPDATE` above |
 
 ### `_id` on INSERT
 
@@ -144,11 +144,19 @@ already had them. A backend that still lacks them — the remote proxy, whose
 wire protocol does not carry the verbs — refuses the insert rather than
 degrading to the weaker shape.
 
-**What is still not atomic: `REPLACE` and `ON DUPLICATE KEY UPDATE`.** Each is
-an insert, a refusal and a second statement-level write, with no lock across
-the three, and a collection table is autocommit-only so neither can be widened
-into a transaction. Closing that needs a statement-level guarded upsert, which
-is a different primitive from the three single-key verbs the KV plane carries.
+**`REPLACE` and `ON DUPLICATE KEY UPDATE` are guarded writes too.** Each used
+to be an insert, a refusal and a second statement-level write with no lock
+across the three, on a table that is autocommit-only. `REPLACE INTO` is now one
+`CollectionService.UpsertDocument` per row — insert or replace decided and
+written in the same guarded write — and still reports the primary-key
+violation, carrying exactly the document it displaced, so go-mysql-server
+counts two affected rows for a replacement; the delete and re-insert it issues
+next for that row write nothing. The update half of `ON DUPLICATE KEY UPDATE`,
+like every `UPDATE`, reads the stored document back, compares it with the row
+its expressions were evaluated over, and replaces it only while it carries the
+revision read. A lost race writes nothing and is reported as
+`sql.ErrLockDeadlock` — **MySQL 1213** / `SQLSTATE 40001`, the code clients
+retry on — exactly as a relational table's lost optimistic commit is.
 
 ## Index-Accelerated WHERE Clauses
 

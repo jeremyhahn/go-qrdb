@@ -2543,11 +2543,12 @@ func TestEncodeLeaseKeepAlive_BufferSize(t *testing.T) {
 func TestEncodeIndexCreate_BufferSize(t *testing.T) {
 	encoded := mustEncode(EncodeIndexCreate("idx", "fld", false, false, false))
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) + 2 (fieldLen) + 3 (field)
-	// + 1 (flags) + 2 (keyPrefixLen) + 0 (keyPrefix) = 14. The trailing
-	// key-scope prefix arrived with go-qrdb#410; its length is always
-	// written, so an empty scope costs two bytes.
-	if len(encoded) != 14 {
-		t.Errorf("encoded length = %d, want 14", len(encoded))
+	// + 1 (flags) + 2 (keyPrefixLen) + 0 (keyPrefix) + 2 (ownerLen) + 0
+	// (owner) = 16. The trailing key-scope prefix arrived with go-qrdb#410
+	// and the owner with go-qrdb#426; both lengths are always written, so an
+	// empty scope and an empty owner cost two bytes each.
+	if len(encoded) != 16 {
+		t.Errorf("encoded length = %d, want 16", len(encoded))
 	}
 }
 
@@ -2638,8 +2639,9 @@ func TestIndexCreate_FlagEncoding(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded := mustEncode(EncodeIndexCreate("n", "f", tt.unique, tt.sparse, tt.numeric))
 			// Flags byte precedes the trailing [keyPrefixLen:2][keyPrefix]
-			// block (go-qrdb#410), which is empty here.
-			gotFlag := encoded[len(encoded)-3]
+			// (go-qrdb#410) and [ownerLen:2][owner] (go-qrdb#426) blocks,
+			// both empty here.
+			gotFlag := encoded[len(encoded)-5]
 			if gotFlag != tt.wantFlag {
 				t.Errorf("flags = %d, want %d", gotFlag, tt.wantFlag)
 			}

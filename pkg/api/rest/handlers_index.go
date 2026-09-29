@@ -121,7 +121,7 @@ func (s *Server) handleIndexDrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := indexSvc.DropIndex(ctx, req.Name); err != nil {
+	if err := indexSvc.DropOwnedIndex(ctx, req.Name, index.ExplicitOwner); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

@@ -170,6 +170,12 @@ var collectionRules = []rule{
 	as(&service.CollectionAlreadyExistsError{}, AlreadyExists),
 	as(&service.CollectionNotFoundError{}, NotFound),
 	as(&service.CollectionEmptyNameError{}, InvalidArgument),
+	// A new collection name containing '#', which separates a name from its
+	// incarnation in every per-incarnation key.
+	as(&service.CollectionInvalidNameError{}, InvalidArgument),
+	// A document field named "id", or a lone object-valued "fields": the
+	// stored layout would read either back as something else.
+	as(&service.CollectionReservedFieldError{}, InvalidArgument),
 	as(&service.CollectionEmptyDatabaseError{}, InvalidArgument),
 	as(&service.CollectionInvalidIDStrategyError{}, InvalidArgument),
 	as(&service.CollectionMissingFieldHashError{}, InvalidArgument),

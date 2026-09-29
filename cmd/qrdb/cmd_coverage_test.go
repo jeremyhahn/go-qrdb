@@ -49,6 +49,12 @@ func (m *mockIndexService) DropIndex(_ context.Context, _ string) error {
 	return nil
 }
 
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
+
 func (m *mockIndexService) Query(_ context.Context, _ string, _ []byte) ([][]byte, error) {
 	return m.keys, nil
 }

@@ -93,6 +93,12 @@ func (f *fakeIndexServicer) CreateIndex(_ context.Context, _, _ string, _ index.
 func (f *fakeIndexServicer) DropIndex(_ context.Context, _ string) error {
 	return nil
 }
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (f *fakeIndexServicer) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return f.DropIndex(ctx, name)
+}
 func (f *fakeIndexServicer) Query(_ context.Context, _ string, _ []byte) ([][]byte, error) {
 	return [][]byte{[]byte("k1")}, nil
 }

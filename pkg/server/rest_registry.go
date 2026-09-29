@@ -262,8 +262,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		if err != nil {
 			return nil, err
 		}
-		prefix := tenant.ComposeNamespace(tenantID, db)
-		svcs := r.applyQuota(r.applyComposite(base, prefix), tenantID, info)
+		svcs := r.applyQuota(r.applyComposite(base, tenantID, db), tenantID, info)
 		svcs.Placement = service.StorePlacementNode
 		return svcs, nil
 	}
@@ -352,8 +351,7 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 	// which yields "system/system/". Every engine is wrapped so that keys are
 	// transparently scoped, which keeps each database's keyspace disjoint from
 	// every other database and every other tenant.
-	prefix := tenant.ComposeNamespace(tenantID, db)
-	out := r.applyQuota(r.applyComposite(svcs, prefix), tenantID, info)
+	out := r.applyQuota(r.applyComposite(svcs, tenantID, db), tenantID, info)
 	out.Placement = service.StorePlacementShared
 	return out, nil
 }
@@ -401,19 +399,22 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 	}
 
 	cfg := dbase.Config()
-	if cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.HasDedicatedStore() {
-		return nil, errNotDedicatedDatabaseBarrier
-	}
-
-	// Raft-backed isolation is never resolved here: it comes exclusively from
-	// an IsolationRaft tenant's dedicated shard (handled above by the
-	// tenant.IsolationRaft branch in resolve), never from a per-database
-	// barrier layered onto a shared/prefix tenant's database.
-	if cfg.Backend == database.BackendRaft {
+	if !servesFromNodeLocalStore(&cfg) {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
 	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
+}
+
+// servesFromNodeLocalStore reports whether a catalogued database is served
+// from its own encrypting store on this node (resolveDedicatedDatabaseBarrier)
+// rather than from the shared replicated store: a barrier-enabled database
+// with a dedicated store that is not raft-backed. Raft-backed isolation is
+// never served that way: it comes exclusively from an IsolationRaft tenant's
+// dedicated shard, never from a per-database barrier layered onto a
+// shared/prefix tenant's database.
+func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.HasDedicatedStore() && cfg.Backend != database.BackendRaft
 }
 
 // applyQuota wraps the resolved KV and MVCC servicers with storage-byte quota
@@ -455,6 +456,14 @@ func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string
 	}
 	if out.Vector != nil {
 		out.Vector = newQuotaVectorService(out.Vector, r.accountant, tenantID, limit)
+	}
+	// Collection documents are tenant payload too, and the collection service
+	// writes them through the KV servicer it was BUILT over -- which, for the
+	// cached composite service, is the pre-quota one -- so the KV wrapper above
+	// never sees them. Wrapping the collection surface here, per resolve, is
+	// what counts them against the CURRENT limit (go-qrdb#456).
+	if out.Collection != nil {
+		out.Collection = newQuotaCollectionService(out.Collection, r.accountant, tenantID, limit)
 	}
 	return &out
 }
@@ -593,7 +602,8 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // wrote the same "__col:{database}:{collection}/{id}" keys. A service inherits
 // isolation from the engines it HOLDS, never from the engines its neighbours
 // in the struct hold. See buildCompositeCollectionService.
-func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix string) *DatabaseServices {
+func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, db string) *DatabaseServices {
+	prefix := tenant.ComposeNamespace(tenantID, db)
 	out := *svcs
 	if svcs.KV != nil {
 		out.KV = &namespacedKVService{inner: svcs.KV, prefix: prefix}
@@ -622,7 +632,7 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix stri
 	if svcs.Vector != nil {
 		out.Vector = newNamespacedVectorService(svcs.Vector, prefix)
 	}
-	out.Collection = r.collections.getOrBuild(svcs, &out, prefix)
+	out.Collection = r.collections.getOrBuild(svcs, &out, tenantID, db)
 	return &out
 }
 

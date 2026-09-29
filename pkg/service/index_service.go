@@ -61,32 +61,54 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// declares nothing gets the scope its index NAME carries, which under
 		// a namespaced registry is its own (tenant, database).
 		KeyPrefix: config.KeyPrefix,
+		// The object whose lifecycle creates the index, recorded by the apply
+		// path so a colliding create is refused rather than adopted and an
+		// owner's teardown removes only its own indexes (go-qrdb#426).
+		Owner: config.Owner,
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
-	if err != nil {
-		return translateProposeError(err)
-	}
-	// The state machine encodes a not-configured subsystem into the RESULT
-	// rather than returning it to Raft, so discarding the result reports a
-	// missing subsystem as success (go-qrdb#62).
-	if resultErr := checkResultError(result); resultErr != nil {
-		return resultErr
-	}
-	return nil
+	return s.proposeIndexCommand(ctx, config.Owner, cmd)
 }
 
-// DropIndex removes a secondary index through Raft consensus.
+// DropIndex removes a secondary index through Raft consensus, whoever
+// created it. It is the explicit index API's drop and the one a whole-scope
+// teardown (DROP DATABASE, tenant deletion) issues: those remove everything in
+// their scope, and ownership is not theirs to consult.
 func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 	cmd, err := protocol.EncodeIndexDrop(name)
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
+	return s.proposeIndexCommand(ctx, "", cmd)
+}
+
+// DropOwnedIndex removes a secondary index through Raft consensus only when
+// it is recorded under owner. The decision is taken on the apply path, in the
+// same step as the removal, so no create can land between a check and the
+// drop (go-qrdb#426).
+func (s *IndexService) DropOwnedIndex(ctx context.Context, name, owner string) error {
+	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{CheckOwner: true, Owner: owner})
+	if err != nil {
+		return &EncodeRequestError{Err: err}
+	}
+	return s.proposeIndexCommand(ctx, owner, cmd)
+}
+
+// proposeIndexCommand proposes an index create or drop and decodes its
+// result. requested is the owner the command claims, reported on an ownership
+// refusal.
+func (s *IndexService) proposeIndexCommand(ctx context.Context, requested string, cmd []byte) error {
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
+	}
+	// An ownership refusal is decoded ahead of the generic result check so it
+	// arrives as its own type: a collection teardown leaves an index it does
+	// not own in place, and it must not have to read message text to know.
+	if name, owner, ok := protocol.DecodeIndexOwnershipError(result.Data); ok {
+		return &index.OwnershipError{Name: name, Owner: owner, Requested: requested}
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a

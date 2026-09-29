@@ -1,6 +1,6 @@
 # Document Collections — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
 
 ## Exported surface
 
@@ -30,41 +30,64 @@ type CollectionClient interface {
 
 ```go
 type CollectionInfo struct {
-	Name          string            `json:"name"`
-	Database      string            `json:"database"`
-	IDStrategy    string            `json:"id_strategy"`
-	FieldHash     string            `json:"field_hash,omitempty"`
-	Schema        map[string]string `json:"schema,omitempty"`
-	DocumentCount int64             `json:"document_count"`
-	StorageCodec  string            `json:"storage_codec,omitempty"`
-	CreatedAt     string            `json:"created_at"`
+	Name          string                      `json:"name"`
+	Database      string                      `json:"database"`
+	IDStrategy    string                      `json:"id_strategy"`
+	FieldHash     string                      `json:"field_hash,omitempty"`
+	Schema        map[string]string           `json:"schema,omitempty"`
+	Indexes       []CollectionIndexDefinition `json:"indexes,omitempty"`
+	DocumentCount int64                       `json:"document_count"`
+	StorageCodec  string                      `json:"storage_codec,omitempty"`
+	CreatedAt     string                      `json:"created_at"`
+	State         string                      `json:"state,omitempty"`       // active | creating | dropping
+	StateSince    string                      `json:"state_since,omitempty"` // RFC 3339
 }
 
 type CreateCollectionRequest struct {
-	Database     string `json:"database"`
-	Name         string `json:"name"`
-	IDStrategy   string `json:"id_strategy,omitempty"`   // unix_nano | increment | field_hash
-	FieldHash    string `json:"field_hash,omitempty"`    // required when IDStrategy == field_hash
-	StorageCodec string `json:"storage_codec,omitempty"`
+	Database     string                      `json:"database"`
+	Name         string                      `json:"name"`
+	IDStrategy   string                      `json:"id_strategy,omitempty"`   // unix_nano | increment | field_hash
+	FieldHash    string                      `json:"field_hash,omitempty"`    // required when IDStrategy == field_hash
+	StorageCodec string                      `json:"storage_codec,omitempty"`
+	Indexes      []CollectionIndexDefinition `json:"indexes,omitempty"`
 }
-```
 
-**Index definitions are not on the transport type.** `service.CollectionInfo`
-and `service.CreateCollectionRequest` both carry
-`Indexes []service.IndexDefinition`, and `CreateCollection` builds a secondary
-index per definition — but no transport request, protobuf field or CLI flag
-carries them, so only an in-process caller holding the `pkg/service` type can
-declare one. That is an exposure gap, not a design decision, and it is tracked
-separately; it is recorded here because it bounds who can reach the behaviour
-this contract describes.
-
-```go
-type IndexDefinition struct { // pkg/service only
+type CollectionIndexDefinition struct {
 	FieldName string `json:"field_name"`
 	Unique    bool   `json:"unique,omitempty"`
 	Sparse    bool   `json:"sparse,omitempty"`
 }
 
+const (
+	CollectionStateActive   = "active"
+	CollectionStateCreating = "creating"
+	CollectionStateDropping = "dropping"
+)
+```
+
+The index definitions and the lifecycle state are carried on every transport:
+the protobuf messages (`CollectionIndexDefinition`,
+`CreateCollectionRequest.indexes` and `.storage_codec`,
+`CollectionInfoResponse.indexes`, `.storage_codec`, `.state`, `.state_since`)
+for gRPC, Unix and QUIC; the JSON bodies for REST; the `indexes` and
+`storage_codec` arguments of `qrdb_collection_create` for MCP, `indexes` as a
+JSON-encoded array like every other array-valued MCP argument; the service
+types directly for the embedded transport. The protobuf conversion lives once
+per side (`pkg/api/internal/collectionpb` on the servers,
+`sdk/go/transport/internal/collectionconv` in the SDK), so a field added to a
+collection reaches every protobuf transport or none of them.
+
+The service-layer counterparts are `service.CollectionInfo`,
+`service.CreateCollectionRequest` and `service.IndexDefinition`, with
+`CreatedAt` and `StateSince` as `time.Time` and one more field the transports
+do not carry: `IndexOwner`, the owner recorded on the collection's indexes.
+
+`CollectionServicer` also carries `UpsertDocument` — the guarded
+insert-or-replace the SQL surface builds `REPLACE INTO`, `ON DUPLICATE KEY
+UPDATE` and `UPDATE` on — and `service.CollectionSweeper` is the interface the
+server's sweeper drives (`SweepStuckCollections`). Neither is a transport verb.
+
+```go
 type DocumentResponse struct {
 	ID       uint64                 `json:"id,string"`
 	Document map[string]interface{} `json:"document"`
@@ -105,7 +128,12 @@ const collectionDataPrefix     = "__col:"
 ```
 
 Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
-`__col:{database}:{collection}/{id}`. Both are relative to the
+`__col:{database}:{collection}#{incarnation}/{id}` (`CollectionInfo.documentPrefix`),
+and an `increment` collection's counter is the sequence
+`__collection:{collection}#{incarnation}` (`collectionSequenceName`). Metadata
+written before incarnations existed has none, and keeps the unsuffixed
+`__col:{database}:{collection}/{id}` and `__collection:{collection}` its data
+already has — no migration. All of them are relative to the
 `<tenant>/<database>/` namespace the resolved servicer applies — see
 [Tenant scoping](#tenant-scoping).
 
@@ -167,20 +195,130 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 - **An `UPDATE` that changes `_id` claims before it releases.**
   `collectionWriter.Update` inserts the document under its new ID and only then
   deletes the old one, so a move onto an occupied ID fails with nothing
-  destroyed.
-- **`DropCollection` deletes every document, drops every secondary index the
-  collection declared, reclaims the collection's replicated `increment`
-  counter, and is irreversible.** The order is documents → indexes → sequence →
-  metadata, and the metadata key is deleted **last** so the operation is
-  retryable at every interruption point — see the architecture note. A
-  collection recreated under a dropped name therefore issues ID 1 again; it does
-  not inherit the previous collection's high-water mark.
+  destroyed. The release is guarded by the revision the statement read. If the
+  release is refused because the old document changed or is gone
+  (`CollectionDocumentConflictError`, `CollectionDocumentNotFoundError`), the
+  new copy is withdrawn — guarded by the revision the claim wrote — and the
+  statement fails with MySQL 1213; a withdrawal that fails is joined into that
+  error. If the release fails any other way its outcome is unknown, so both
+  documents are left and the statement fails with
+  `provider.DocumentMoveOutcomeUnknownError`, which matches
+  `service.ErrOutcomeUnknown`.
+- **Every SQL write on a collection table that is computed from a row is
+  guarded by that row.** `collectionWriter.Update` — `UPDATE` and the update
+  half of `ON DUPLICATE KEY UPDATE` — reads the stored document back, compares
+  it with the row go-mysql-server handed it, and writes through
+  `UpsertDocument` with `IfRevision` set to the revision it read. A lost race
+  is `service.CollectionDocumentConflictError`, reported as
+  `sql.ErrLockDeadlock` — MySQL 1213 / `SQLSTATE 40001`.
+- **`REPLACE INTO` is one guarded write per row.** The replacer's `Insert` calls
+  `UpsertDocument`; when it replaced a document it reports the primary-key
+  violation carrying the displaced document (two affected rows) and the delete
+  and re-insert go-mysql-server issues next for that row are acknowledged
+  without writing. A row with no `_id` is an ordinary insert.
+- **`UpsertDocument` decides and writes in one guarded write.** An absent
+  document is stored with `PutIfAbsent`, a present one replaced with
+  `CompareAndSwap` against the bytes read; a guard lost to a concurrent writer
+  is re-decided, up to a bound, then refused with
+  `CollectionDocumentConflictError`. `Previous` is the document the write
+  displaced. With `IfRevision` it replaces only that revision and never
+  inserts. The ID is a claim: it reserves an `increment` counter.
+- **Only an `active` collection serves documents.** Every document verb —
+  `InsertDocument`, `UpdateDocument`, `UpsertDocument`, `DeleteDocument`,
+  `GetDocument` and `ListDocuments` — refuses a `creating` or `dropping`
+  collection with `service.CollectionNotActiveError`. `GetCollectionInfo` and
+  `ListCollections` report every state.
+- **A `field_hash` re-insert is a guarded upsert.** An insert whose generated
+  ID may overwrite (`generatedIDMayOverwrite`) writes through the same guarded
+  decide-and-write as `UpsertDocument`, and `InsertDocumentResponse` reports
+  `Replaced` and the exact `Previous` document it displaced (in-process
+  fields), which is what the quota wrapper releases. Like every insert it is
+  synchronous; `WriteMode` is not honoured.
+- **`CreateCollection` builds the indexes before the collection is active.**
+  Metadata is written `creating` with `PutIfAbsent` — the claim on the name —
+  the indexes are built, and a guarded swap makes it `active`. A create whose
+  indexes cannot all be built is unwound through the drop's teardown and
+  returns `CollectionMetadataError{Op: "create-index"}` wrapping the cause; a
+  failed unwind is joined to it and left to the sweeper. A create whose
+  activation swap loses — the collection was marked `dropping` meanwhile —
+  removes the indexes it built and returns
+  `service.CollectionStateConflictError{Op: "activate"}`.
+- **Index definitions are refused before anything is stored** when a
+  definition names no field, when two name the same field, or when the service
+  has no index service to build them with
+  (`service.CollectionInvalidIndexError`). Definitions used to be
+  recorded and silently not built on the second path.
+- **Every per-incarnation piece of state is in an incarnation-scoped
+  keyspace.** `CollectionInfo.Incarnation` is a random identifier drawn by every
+  create. The document prefix, the `increment` sequence name, the process-local
+  ID generator's cache key (`collectionIDGenKey`) and every index's owner and
+  `KeyPrefix` are derived from it; only the metadata key is shared by the
+  incarnations of a name. A write, create or teardown working on a dropped
+  incarnation therefore reaches only that incarnation's keys, whatever has
+  happened to the name since. There is no purge on create and no guard in the
+  teardown against another incarnation: neither has anything to protect.
+- **A document write is fenced against a concurrent drop.** After the write
+  commits, the metadata is re-read; a collection no longer `active`, no longer
+  present, or no longer the incarnation the write was decided from refuses the
+  caller (`CollectionNotActiveError`, `CollectionNotFoundError` or
+  `CollectionStateConflictError{Op: "write"}`, 409 / `ABORTED`) and retracts the
+  write from its own incarnation's keyspace with a compare-and-delete of the
+  bytes written, together with that incarnation's `increment` sequence and
+  cached generator, which a stale allocation may have recreated. A retraction
+  that finds the write already removed or replaced by somebody else — the
+  teardown, which counted it — returns the refusal wrapped in
+  `service.CollectionWriteSupersededError`, so the quota wrapper keeps the
+  write's reservation instead of releasing it twice. A re-read that fails for
+  any other reason than absence is reported (`CollectionMetadataError{Op:
+  "fence"}`) and the write stands: retracting on an unknown answer would undo a
+  write into a live collection. `CollectionMetadataError.OutcomeUnknown` is true
+  for `fence`, `retract-write` and the write operations themselves; transports
+  report those as internal errors ahead of any lifecycle refusal they wrap, and
+  the quota wrapper keeps their reservation. A failed sequence reclamation is
+  `CollectionMetadataError{Op: "retract-sequence"}` wrapping the refusal; the
+  write itself was retracted, so its outcome is known.
+- **A teardown reclaims one incarnation's keyspace and reports what it freed.**
+  `DropCollection`, the sweeper and a failed create's unwind run the same
+  teardown over a `dropping` record: `Scan` of the incarnation's document
+  prefix, then a `CompareAndDelete` of each scanned value in scan order — no
+  sort, no metadata re-read — checking its context before every delete, re-scanned
+  up to four passes if documents changed under it
+  (`CollectionDocumentsChangingError` inside `delete-document` after that). The
+  compare is how it counts: it sums `DocumentBodyBytes` of exactly the
+  documents its own deletes removed, and returns that sum even when a later
+  step fails. Then the indexes, the ledger entry, the incarnation's sequence,
+  and last the metadata with `CompareAndDelete` against the exact record, which
+  is the one step that can find the name taken over
+  (`CollectionStateConflictError{Op: "teardown"}`, which the sweeper treats as
+  done). `CollectionService.DropCollectionMetered`
+  (`service.CollectionDropMeter`) returns the freed bytes.
+- **The index ledger.** A create with indexes writes
+  `__sys:collection-index-ledger/{database}/{incarnation}` — owner, index
+  names, time — before building the first index; the teardown deletes it after
+  dropping the indexes. The sweeper drops the indexes of a stale entry whose
+  incarnation no metadata names, owner-checked, then compare-and-deletes the
+  entry. The ledger lies inside the database's namespace, so `DROP DATABASE`
+  reclaims it.
+- **Every metadata write is a guarded swap.** Lifecycle transitions and the
+  schema merge an insert performs swap against the bytes they were computed
+  from, re-reading on a lost swap; a schema merge never writes into a
+  collection that is not `active`, and is best effort — it never fails the
+  document write it describes.
+- **`DropCollection` marks the collection `dropping`, then deletes every
+  document, drops every secondary index the collection owns, reclaims the
+  collection's replicated `increment` counter, and is irreversible.** The order
+  is mark → documents → indexes → sequence → metadata, and the metadata key is
+  deleted **last** so the operation is retryable at every interruption point —
+  see the architecture note. Re-issuing it on a collection already `dropping`
+  resumes the teardown. A collection recreated under a dropped name therefore
+  issues ID 1 again; it does not inherit the previous collection's high-water
+  mark.
 - **A drop that cannot reclaim a step fails, and is retryable.** Every step
   returns `service.CollectionMetadataError` with the failing `Op`
-  (`list-documents`, `delete-document`, `drop-index`, `delete-sequence`,
-  `delete-metadata`), and the metadata — the record that makes the collection
-  resolvable — survives until the end, so re-issuing the same `DropCollection`
-  completes it. Each reclamation step is idempotent, so a retry costs nothing
+  (`mark-dropping`, `list-documents`, `delete-document`, `drop-index`,
+  `delete-sequence`, `delete-metadata`), and the metadata — the record that
+  makes the collection resolvable — survives until the end, so re-issuing the
+  same `DropCollection`, or the sweeper, completes it. Each reclamation step is idempotent, so a retry costs nothing
   where it already ran: a step reported as *already absent* is treated as
   success (`index.IndexServicer` permits `IndexNotFoundError` from `DropIndex`,
   and `SequenceServicer.Delete` requires not-found-is-success of
@@ -195,6 +333,62 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
   `{database}.{collection}.{field}`** — the same database-scoped hierarchical
   form the rest of the index subsystem uses, produced by one function shared by
   the create and drop paths.
+- **A collection's indexes are owned by that incarnation of it.** The create
+  records `index.CollectionOwner(database, name, incarnation)` — a fresh random
+  incarnation per create — on the metadata (`IndexOwner`) and on every index it
+  creates. A name another owner holds refuses the create
+  (`*index.OwnershipError`, reached through the `create-index` error); the drop
+  removes indexes with `DropOwnedIndex` and leaves one owned elsewhere in
+  place. Metadata with no `IndexOwner` predates ownership; its declared
+  indexes were created ownerless and are dropped with `DropOwnedIndex(name,
+  index.ExplicitOwner)`, so no collection drop is unconditional.
+- **Stuck collections are finished by the sweeper.**
+  `CollectionService.SweepStuckCollections(ctx, database, staleAfter)` tears
+  down every collection `dropping` for at least `staleAfter` and unwinds every
+  one `creating` that long (marking it `dropping` with a guarded swap first), and
+  returns `service.CollectionSweepResult{Swept, FreedBytes}`. A record whose key,
+  database, name, incarnation and index owner do not derive from one another —
+  or a ledger entry whose owner or index names do not derive from its own
+  collection and incarnation — is refused with
+  `service.CollectionInconsistentRecordError` and left in place. A collection
+  that fails does not stop the others; failures are returned joined.
+  The server drives it — `server.DefaultCollectionSweepInterval` (1 minute)
+  and `server.DefaultCollectionStaleAfter` (5 minutes), overridable with
+  `server.WithCollectionSweep` — over the databases the node already serves
+  and, where the store is replicated, leads:
+  - the shared store's databases, found from the **collection work journal**
+    (`service.CollectionWorkJournal`, keys
+    `__sys:collection-work/{tenant}/{database}/{name}` in the store's raw KV,
+    outside every namespace) where the `server.WithCollectionSweepLeader`
+    probe reports the system shard led here (the daemon wires it; without one
+    the server is a single node). Each is resolved through the registry's
+    journaled resolver, which applies tenant resolution and the quota wrapper
+    but not the node-local catalog, since only the creating node catalogues a
+    prefix tenant's named database;
+  - each started volume tenant Host's databases, from the journal in its own
+    store, on every node where it is started;
+  - a raft tenant's databases where `RaftBackendFactory.ListStarted` reports
+    the shard and `RaftBackendFactory.LeadsShard` reports this node's replica
+    leading it;
+  - every catalogued database served from its own node-local store
+    (`servesFromNodeLocalStore`), on every node, with no leadership gating.
+
+  The composite collection service records a journal entry — a fresh nonce
+  each time — before a create writes its `creating` record and before a drop
+  writes its `dropping` mark; a journal that cannot be written fails the
+  operation (`CollectionMetadataError{Op: "journal"}`). After sweeping a
+  journaled database the sweeper compare-and-deletes each entry whose
+  collection is active or gone, and an entry of a tenant absent from the
+  replicated tenant list once it is older than the staleness threshold.
+  Deleting a tenant removes its entries directly: `service.TenantKeyPrefixes`
+  includes `__sys:collection-work/{tenant}/`, so `ReclaimTenantKeyspace`
+  deletes them with the tenant's keyspace. A
+  journaled database that fails to resolve for `collectionSweepWarnAfter` (3)
+  consecutive passes is logged at Warn. Each database's sweep runs under
+  `server.DefaultCollectionSweepTargetTimeout` (30 seconds).
+  `StateSince` is the transitioning node's wall clock compared with the
+  sweeping node's, so clock skew moves when a stuck collection is swept by up
+  to the skew, and nothing else.
 - **`ListDocuments` is paginated** and must be driven to completion by following
   `NextPageToken`. A caller that reads one page and stops has read one page, not
   the collection.
@@ -217,6 +411,8 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Creating a collection that exists | `service.CollectionAlreadyExistsError` | yes |
+| A document field named `id`, or an object-valued `fields` as a document's only field | `service.CollectionReservedFieldError` — 400 / `INVALID_ARGUMENT`; nothing is stored. The stored layout keeps a document's identity under `id` and reads a lone `fields` object as the legacy wrapper, so either would be stored as something other than what was sent | **yes** |
+| Creating a collection whose name contains `#` | `service.CollectionInvalidNameError` — 400 / `INVALID_ARGUMENT`; nothing is stored. An existing collection with such a name keeps working | **yes** |
 | Operating on an unknown collection | not-found | **yes** — never auto-created |
 | `id_strategy: field_hash` without `field_hash` | invalid-argument | **yes** |
 | Unknown `id_strategy` value | invalid-argument | **yes** |
@@ -233,6 +429,21 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 | Index drop fails during `DropCollection` | `CollectionMetadataError{Op: "drop-index"}`; metadata survives, drop is retryable | **yes** |
 | Index already absent during `DropCollection` | success — a teardown asked to remove something that is not there has got what it asked for | n/a |
 | Unparseable collection metadata on drop | `CollectionMetadataError{Op: "unmarshal-metadata"}`; nothing is deleted | **yes** |
+| Document verb on a `creating` or `dropping` collection | `service.CollectionNotActiveError` — 409 / `FAILED_PRECONDITION` | **yes** |
+| A write whose collection was dropped while it ran | the write is retracted; `CollectionNotActiveError` or `CollectionNotFoundError` | **yes** |
+| A refused write whose document the teardown (or another writer) removed first | the refusal, wrapped in `service.CollectionWriteSupersededError`; the quota reservation is kept | **yes** |
+| Index definition naming no field, or indexes on a service without an index service | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is stored | **yes** |
+| A derived index name another owner holds | `CollectionMetadataError{Op: "create-index"}` wrapping `*index.OwnershipError` — 409 / `FAILED_PRECONDITION`; the create is unwound | **yes** |
+| Two index definitions naming one field | `service.CollectionInvalidIndexError` — 400 / `INVALID_ARGUMENT`; nothing is stored | **yes** |
+| A write decided against a collection since dropped and created again | the write is retracted; `CollectionStateConflictError{Op: "write"}` — 409 / `ABORTED` | **yes** |
+| A teardown whose record was finished by somebody else | reclaims only its own incarnation's keyspace; its metadata compare-and-delete finds a newer record and removes nothing of it — `CollectionStateConflictError{Op: "teardown"}`, treated as done by the sweeper | **yes** |
+| A stored record or ledger entry whose fields do not derive from one another | the sweeper refuses it with `service.CollectionInconsistentRecordError` and leaves it for an operator | **yes** |
+| SQL `UPDATE ... SET _id = N` whose release of the old `_id` fails with an unknown outcome | `provider.DocumentMoveOutcomeUnknownError` (matches `service.ErrOutcomeUnknown`); **both** documents are left | **yes** |
+| A fenced-out write that cannot be retracted, or a fence that cannot read the metadata | `CollectionMetadataError{Op: "retract-write"}` / `{Op: "fence"}` — 500 / `INTERNAL`: the document may be stored | **yes** |
+| Index build fails partway through a create | the create is unwound — nothing remains, a retry succeeds; `CollectionMetadataError{Op: "create-index"}` | **yes** |
+| Create's activation loses to a concurrent drop | `service.CollectionStateConflictError{Op: "activate"}` — 409 / `ABORTED`; its indexes are removed | **yes** |
+| Guarded write loses to a concurrent writer | `service.CollectionDocumentConflictError` — 409 / `ABORTED`; over SQL, MySQL 1213 / `SQLSTATE 40001` | **yes** |
+| Document body would exceed the tenant's `MaxStorageBytes` | `quota.ExceededError`; nothing is written | **yes** |
 | Missing `collections:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
 
@@ -242,7 +453,9 @@ that then diverges.
 
 ## Configuration
 
-No collection-specific configuration keys. `StorageCodec` is a per-collection
+No collection-specific configuration keys. The collection sweeper's interval
+and staleness threshold are `server.WithCollectionSweep` options for a
+composer, defaulting to one minute and five minutes. `StorageCodec` is a per-collection
 override chosen at creation; the available codecs are those compiled in
 (`codec_json` is always present; `codec_msgpack`, `codec_yaml`, `codec_bson`,
 `codec_protobuf` are build-tag gated — see the Makefile's `WITH_CODEC_*` flags).
@@ -260,7 +473,7 @@ built over. Two pieces make that hold:
    the shared-shard path the resolved bundle's `Collection` is constructed from
    the `<tenant>/<database>/`-namespaced KV and index servicers, not copied from
    the bundle the raw engines were bound into. The resulting physical key is
-   `<tenant>/<database>/__col:{database}:{collection}/{id}`.
+   `<tenant>/<database>/__col:{database}:{collection}#{incarnation}/{id}`.
 
 On a path that already reached a dedicated store — a `raft` tenant's
 per-database shard, a `volume` tenant's own Host, a database with its own
@@ -281,20 +494,76 @@ the composite one** — `WithDatabaseCodecLookup` and
 ENGINES rather than cloned from its collection service. No composer sets either
 today; one that starts to must teach the builder about it.
 
-**Collection document bytes are not counted against `MaxStorageBytes`.** The
-storage-byte quota wrapper is applied to the resolved KV servicer after the
-collection service has been built over it, so a document write bypasses it. This
-is unchanged by the tenant-scoping work — before it, the collection service
-bypassed the wrapper entirely — and it is recorded here rather than fixed in
-passing, because closing it changes quota accounting semantics. The
-`MaxCollections` count quota is enforced and unaffected.
+**Collection document bytes are counted against `MaxStorageBytes`, per call.**
+They were not: the collection service writes documents through the KV
+servicer it was built over, and the composite one is built — and cached, for
+its process-local increment generators — before `applyQuota` wraps the
+bundle's KV. `applyQuota` now also wraps the bundle's collection service
+(`quotaCollectionService`), on every resolve and with the tenant's CURRENT
+limit, so a changed limit is never pinned by the cache and every transport,
+the SQL surface included, is metered.
+
+- **The cost of a document is its body**: the JSON encoding of its fields,
+  `_id` excluded. The metadata a write touches (schema discovery) and an
+  `increment` collection's counter are not counted — a stated undercount.
+- **Enforcement is immediate.** A tenant already over its limit through
+  documents written before this accounting existed has its next document
+  write refused.
+- **Releases follow the KV wrapper's three-way rule.** A write refused or
+  failed before it could store anything releases its reservation; a write
+  whose outcome is unknown (`CollectionMetadataError.OutcomeUnknown`) retains
+  it, and so does a refused write whose document somebody else had already
+  removed and released (`service.CollectionWriteSupersededError`).
+- **Every release is of exactly what the release's own guarded write
+  removed.** An update is a guarded replace of the revision it just read and
+  releases the document that replace displaced; a delete is a guarded delete
+  of the revision it read and releases that document; an upsert, and a
+  `field_hash` insert that displaced a document, release the `Previous`
+  document the guarded write reports. A lost guard re-reads and tries again.
+  Every write the wrapper makes is guarded: a read that finds no document, or
+  no active collection, is returned as the refusal it is, never handed to the
+  service's unguarded update or delete, whose effect the wrapper could not
+  measure. So two concurrent callers never release one document twice, and
+  without drops in play the usage equals the stored body bytes exactly.
+- **A drop releases what its teardown removed.** `DropCollection` goes
+  through `service.CollectionDropMeter.DropCollectionMetered`, and the sweeper
+  through `service.CollectionSweepResult.FreedBytes`: the sum of
+  `DocumentBodyBytes` over exactly the documents the teardown's own
+  compare-and-deletes removed, reported and released even when the teardown
+  fails part-way. A document a concurrent guarded delete removed first is
+  released by that delete and not counted again. A wrapped service that
+  cannot report what its drop freed is refused rather than dropped unmetered.
+- **What can still be over-counted.** Every remaining drift charges the tenant
+  for MORE than is stored, never less, and comes from a write that raced a drop
+  of its collection or whose outcome is unknown:
+  - a write refused because its collection was dropped under it, that had
+    already displaced a document in the dropped incarnation before its fence
+    refused it: the displaced document's bytes are not released;
+  - a write whose outcome is unknown -- its own storage call, its fence's
+    metadata read, or its retraction failed -- that in fact stored nothing:
+    its reservation is kept;
+  - a writer that dies between its write and its fence, after the drop's
+    teardown scanned the keyspace: its document is left, unreachable, in the
+    dropped incarnation's keyspace, still charged.
+
+  For a `volume` tenant the reconciler corrects the counter from the store.
+  For a `prefix` or `raft` tenant nothing re-measures it: **the over-count is
+  permanent for prefix/raft tenants** until an operator raises the limit or
+  the tenant is recreated.
+- `MaxCollections` is enforced by the service itself and is unchanged.
 
 ## Persistence
 
-- Metadata: `__sys:collections/{database}/{name}` → `CollectionInfo`.
-- Documents: `__col:{database}:{collection}/{id}`, encoded with the collection's
-  storage codec.
-- Increment counters: `__seq:{database}:__collection:{name}`.
+- Metadata: `__sys:collections/{database}/{name}` → `CollectionInfo`, including
+  its lifecycle `state` and `state_since` and, for a collection with indexes,
+  its `index_owner`. A record without them predates them and reads as an
+  `active` collection whose indexes were created ownerless.
+- Documents: `__col:{database}:{collection}#{incarnation}/{id}`, encoded with
+  the collection's storage codec; `__col:{database}:{collection}/{id}` for a
+  collection created before incarnations existed.
+- Increment counters: `__seq:{database}:__collection:{name}#{incarnation}`;
+  `__seq:{database}:__collection:{name}` for a collection created before
+  incarnations existed.
 - All three are relative to the resolved servicer's `<tenant>/<database>/`
   namespace.
 - **Compatibility**: the storage codec is recorded on the collection, so a
@@ -387,7 +656,29 @@ is a separate capability rather than part of closing the isolation hole.
   because the resolution is per transport.
 - **Lifecycle symmetry**: what `CreateCollection` creates, `DropCollection`
   destroys — asserted on the index catalog, on the drop ORDER relative to the
-  metadata delete, and on the retryability of a failed drop. The engine
+  metadata delete, and on the retryability of a failed drop.
+- **Lifecycle states**, against faithful doubles whose guarded writes are
+  genuinely atomic: a create failing on its second of three indexes leaves
+  nothing and its retry succeeds; a `creating` collection is reported and
+  refused by every document verb; a drop landing between a write and its
+  fence retracts the write; a schema merge racing a drop does not revert the
+  mark; the sweeper finishes a stale `dropping` collection, unwinds a stale
+  `creating` one and leaves fresh and active ones alone. Each is
+  mutation-checked: disabling the fix makes its test fail.
+- **Ownership**, on every index-applying state machine and at the service: a
+  foreign owner's create is refused, an owner-checked drop by a stranger
+  removes nothing, a dotted-name collision is refused, a recreated collection
+  gets a new incarnation.
+- **The guarded upsert under concurrency**: N writers on one ID, and every
+  value written is displaced exactly once by a replace that reported it, or
+  survives. Over SQL, a forced interleaving that the three-call `REPLACE`
+  failed — the second statement reporting an insert over an existing document —
+  and N concurrent `REPLACE INTO`s that must all report a replacement or 1213.
+  Both fail against the previous writer.
+- **Quota**: a tenant at its limit is refused a document write of the size a KV
+  write is refused; a document's lifecycle is charged its body bytes exactly.
+- **Transports**: the index definitions and the state survive a round trip on
+  each of the six transports, and the CLI's `--index` flag. The engine
   behaviour that makes an orphaned index a correctness problem rather than a
   space leak (index creation is idempotent by name, so the surviving definition
   wins over a divergent re-create) is pinned separately in `pkg/engine`.

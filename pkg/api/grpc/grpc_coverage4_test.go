@@ -362,6 +362,12 @@ func (m *collectionSvcMini) GetDocument(_ context.Context, _ *service.GetDocumen
 func (m *collectionSvcMini) UpdateDocument(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
 	return &service.UpdateDocumentResponse{}, m.updateDocErr
 }
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *collectionSvcMini) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
 func (m *collectionSvcMini) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	return &service.DeleteDocumentResponse{}, m.deleteDocErr
 }

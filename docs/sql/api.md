@@ -85,10 +85,10 @@ wire protocols, and they are not equivalent:
 A collection table's first column is `_id`; naming it in an `INSERT` claims
 that document ID and is refused with **1062** if it is taken, while omitting it
 (or writing `0`) lets the collection allocate. `REPLACE INTO` and
-`INSERT … ON DUPLICATE KEY UPDATE` are implemented on that refusal and are
-therefore each an insert, a refusal and a second write, with no lock across the
-three — the claim itself is atomic, the two-statement upsert built on it is
-not. The row it produces is the same document a REST, gRPC, QUIC or MCP insert
+`INSERT … ON DUPLICATE KEY UPDATE` are guarded writes: `REPLACE` is one
+guarded upsert per row, and the update half of `ON DUPLICATE KEY UPDATE` is
+written only against the revision of the row it was computed from — a lost race
+is **1213** / `SQLSTATE 40001`, never a silent overwrite. The row it produces is the same document a REST, gRPC, QUIC or MCP insert
 of the same `_id` would produce. See
 [engineering.md](engineering.md#collection-table-schema).
 

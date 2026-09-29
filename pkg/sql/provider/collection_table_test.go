@@ -38,6 +38,7 @@ type mockCollectionService struct {
 	insertFn   func(ctx context.Context, req *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error)
 	getFn      func(ctx context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error)
 	updateFn   func(ctx context.Context, req *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error)
+	upsertFn   func(ctx context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error)
 	deleteFn   func(ctx context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error)
 	listDocsFn func(ctx context.Context, req *service.ListDocumentsRequest) (*service.ListDocumentsResponse, error)
 }
@@ -89,6 +90,13 @@ func (m *mockCollectionService) UpdateDocument(ctx context.Context, req *service
 		return m.updateFn(ctx, req)
 	}
 	return &service.UpdateDocumentResponse{ID: req.ID}, nil
+}
+
+func (m *mockCollectionService) UpsertDocument(ctx context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	if m.upsertFn != nil {
+		return m.upsertFn(ctx, req)
+	}
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
 }
 
 func (m *mockCollectionService) DeleteDocument(ctx context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
@@ -328,14 +336,22 @@ func TestCollectionTable_Delete_NilID(t *testing.T) {
 // Updater tests
 // ---------------------------------------------------------------------------
 
+// TestCollectionTable_Update pins the guarded shape of an UPDATE
+// (go-qrdb#497): the stored row is read back and the new document is written
+// only against the revision that read returned.
 func TestCollectionTable_Update(t *testing.T) {
 	var updatedID uint64
 	var updatedDoc map[string]interface{}
+	var guard string
 	svc := &mockCollectionService{
-		updateFn: func(_ context.Context, req *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
+		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Old"}, Revision: "r1"}, nil
+		},
+		upsertFn: func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
 			updatedID = req.ID
 			updatedDoc = req.Document
-			return &service.UpdateDocumentResponse{ID: req.ID}, nil
+			guard = req.IfRevision
+			return &service.UpsertDocumentResponse{ID: req.ID, Replaced: true}, nil
 		},
 	}
 	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
@@ -349,6 +365,58 @@ func TestCollectionTable_Update(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), updatedID)
 	assert.Equal(t, "New", updatedDoc["name"])
+	assert.Equal(t, "r1", guard, "the write must be guarded by the revision read")
+}
+
+// TestCollectionTable_Update_StaleRowIsADeadlock is the lost-update half of
+// #497: the stored document no longer matches the row the statement computed
+// its write from, so nothing is written and the client is told to retry with
+// MySQL 1213.
+func TestCollectionTable_Update_StaleRowIsADeadlock(t *testing.T) {
+	wrote := false
+	svc := &mockCollectionService{
+		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Changed"}, Revision: "r2"}, nil
+		},
+		upsertFn: func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+			wrote = true
+			return &service.UpsertDocumentResponse{ID: req.ID}, nil
+		},
+	}
+	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
+	ctx := newTestContext()
+
+	err := tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(1), "New"})
+	require.Error(t, err)
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "a lost race is MySQL 1213, got %v", err)
+	assert.False(t, wrote)
+
+	// A row that disappeared is the same lost race.
+	svc.getFn = func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+		return nil, &service.CollectionDocumentNotFoundError{Database: req.Database, Collection: req.Collection, ID: req.ID}
+	}
+	err = tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(1), "New"})
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "got %v", err)
+
+	// A document that gained a field outside the table's columns is not the
+	// document the row describes, even though every column matches.
+	svc.getFn = func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+		return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Old", "added": "later"}, Revision: "r3"}, nil
+	}
+	wrote = false
+	err = tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(1), "New"})
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "a field the row cannot see is a conflict, got %v", err)
+	assert.False(t, wrote, "the row-shaped write would have dropped the new field")
+
+	// And a guarded write that loses at the store is too.
+	svc.getFn = func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+		return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Old"}, Revision: "r1"}, nil
+	}
+	svc.upsertFn = func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+		return nil, &service.CollectionDocumentConflictError{Database: req.Database, Collection: req.Collection, ID: req.ID}
+	}
+	err = tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(1), "New"})
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "got %v", err)
 }
 
 // TestCollectionTable_Update_KeyChanged pins the ORDER of a
@@ -363,10 +431,15 @@ func TestCollectionTable_Update(t *testing.T) {
 func TestCollectionTable_Update_KeyChanged(t *testing.T) {
 	var calls []string
 	var deletedID, insertedID uint64
+	var deleteGuard string
 	svc := &mockCollectionService{
+		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Old"}, Revision: "r1"}, nil
+		},
 		deleteFn: func(_ context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 			calls = append(calls, "delete")
 			deletedID = req.ID
+			deleteGuard = req.IfRevision
 			return &service.DeleteDocumentResponse{Deleted: true}, nil
 		},
 		insertFn: func(_ context.Context, req *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
@@ -392,6 +465,41 @@ func TestCollectionTable_Update_KeyChanged(t *testing.T) {
 		"the new identity must be claimed before the old one is released")
 	assert.Equal(t, uint64(2), insertedID, "the new _id is claimed explicitly")
 	assert.Equal(t, uint64(1), deletedID)
+	assert.Equal(t, "r1", deleteGuard, "the old identity is released only if it is still the row read")
+}
+
+// TestCollectionTable_Update_KeyChanged_ConcurrentWriteWithdrawsTheCopy
+// covers the release losing its guard: the old document was written by
+// somebody else after the statement read it. The copy under the new _id is
+// withdrawn -- guarded by the revision the claim wrote -- and the statement
+// fails with 1213, so the move neither duplicates the document nor discards
+// the concurrent write.
+func TestCollectionTable_Update_KeyChanged_ConcurrentWriteWithdrawsTheCopy(t *testing.T) {
+	var deletes []service.DeleteDocumentRequest
+	svc := &mockCollectionService{
+		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Old"}, Revision: "r1"}, nil
+		},
+		insertFn: func(_ context.Context, req *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
+			return &service.InsertDocumentResponse{ID: 2, Revision: "claimed"}, nil
+		},
+		deleteFn: func(_ context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+			deletes = append(deletes, *req)
+			if req.ID == 1 {
+				return nil, &service.CollectionDocumentConflictError{Database: req.Database, Collection: req.Collection, ID: 1}
+			}
+			return &service.DeleteDocumentResponse{Deleted: true}, nil
+		},
+	}
+	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
+	ctx := newTestContext()
+
+	err := tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(2), "New"})
+	require.Error(t, err)
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "got %v", err)
+	require.Len(t, deletes, 2)
+	assert.Equal(t, uint64(2), deletes[1].ID, "the copy under the new _id is withdrawn")
+	assert.Equal(t, "claimed", deletes[1].IfRevision, "only the copy this statement wrote")
 }
 
 // TestCollectionTable_Update_KeyChanged_RefusedClaimLeavesTheDocument is the
@@ -405,6 +513,9 @@ func TestCollectionTable_Update_KeyChanged_RefusedClaimLeavesTheDocument(t *test
 			}
 		},
 		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			if req.ID == 1 {
+				return &service.GetDocumentResponse{ID: 1, Document: map[string]interface{}{"name": "Old"}, Revision: "r1"}, nil
+			}
 			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Occupant"}}, nil
 		},
 		deleteFn: func(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
@@ -457,6 +568,71 @@ func TestCollectionTable_Replacer(t *testing.T) {
 
 	err := replacer.Insert(ctx, sqle.Row{nil, "Alice"})
 	require.NoError(t, err)
+}
+
+// TestCollectionTable_Replacer_GuardedUpsert pins REPLACE INTO's shape on a
+// collection table (go-qrdb#497). The first insert is the guarded upsert and
+// does all the writing; when it replaced a document it reports the primary
+// key violation carrying exactly the displaced document -- which is how
+// go-mysql-server counts two affected rows -- and the delete and re-insert
+// go-mysql-server then issues for that row write nothing.
+func TestCollectionTable_Replacer_GuardedUpsert(t *testing.T) {
+	var upserts []service.UpsertDocumentRequest
+	deleted := false
+	svc := &mockCollectionService{
+		upsertFn: func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+			upserts = append(upserts, *req)
+			return &service.UpsertDocumentResponse{ID: req.ID, Replaced: true, Previous: map[string]interface{}{"name": "Before"}}, nil
+		},
+		deleteFn: func(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+			deleted = true
+			return &service.DeleteDocumentResponse{Deleted: true}, nil
+		},
+	}
+	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
+	ctx := newTestContext()
+	replacer := tbl.Replacer(ctx)
+
+	err := replacer.Insert(ctx, sqle.Row{uint64(5), "After"})
+	require.Error(t, err)
+	require.True(t, sqle.ErrPrimaryKeyViolation.Is(err))
+	var ue sqle.UniqueKeyError
+	require.True(t, extractUniqueKeyErr(err, &ue))
+	assert.Equal(t, sqle.Row{uint64(5), "Before"}, ue.Existing, "the violation carries the displaced document")
+
+	require.NoError(t, replacer.Delete(ctx, ue.Existing))
+	require.NoError(t, replacer.Insert(ctx, sqle.Row{uint64(5), "After"}))
+	assert.False(t, deleted, "the replacement was already stored; nothing may be deleted")
+	require.Len(t, upserts, 1, "exactly one guarded write for the row")
+	assert.Equal(t, "After", upserts[0].Document["name"])
+
+	// An insert-shaped outcome reports nothing and writes once.
+	svc.upsertFn = func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+		return &service.UpsertDocumentResponse{ID: req.ID}, nil
+	}
+	require.NoError(t, tbl.Replacer(ctx).Insert(ctx, sqle.Row{uint64(6), "New"}))
+
+	// A guarded write that loses is 1213.
+	svc.upsertFn = func(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+		return nil, &service.CollectionDocumentConflictError{ID: req.ID}
+	}
+	err = tbl.Replacer(ctx).Insert(ctx, sqle.Row{uint64(7), "X"})
+	assert.True(t, sqle.ErrLockDeadlock.Is(err), "got %v", err)
+}
+
+// extractUniqueKeyErr unwraps go-mysql-server's go-errors wrapper, which does
+// not take part in errors.As, to reach the UniqueKeyError it carries.
+func extractUniqueKeyErr(err error, out *sqle.UniqueKeyError) bool {
+	type causer interface{ Cause() error }
+	c, ok := err.(causer)
+	if !ok {
+		return false
+	}
+	ue, ok := c.Cause().(sqle.UniqueKeyError)
+	if ok {
+		*out = ue
+	}
+	return ok
 }
 
 // ---------------------------------------------------------------------------

@@ -582,7 +582,36 @@ type IndexCreateOptions struct {
 	// is the pre-go-qrdb#410 behaviour and is reachable only from a
 	// single-tenant, registry-less composition.
 	KeyPrefix string
+
+	// Owner records the object whose lifecycle created the index
+	// (go-qrdb#426). The empty string is the explicit index API, and it is
+	// also what every command written before the field existed decodes to.
+	//
+	// The apply path keeps it beside the index and consults it on both ends
+	// of the lifecycle: a create naming an index that already exists under a
+	// DIFFERENT owner is refused rather than silently adopted, and an
+	// owner-checked drop (IndexDropOptions.CheckOwner) removes the index only
+	// when the owner matches. See index.OwnershipError.
+	Owner string
 }
+
+// IndexDropOptions carries the properties an OpIndexDrop command encodes.
+// The zero value is an UNCONDITIONAL drop, which is what every drop command
+// written before the options existed means, so a Raft log containing both
+// shapes replays unchanged.
+type IndexDropOptions struct {
+	// CheckOwner makes the drop conditional on the index's recorded owner
+	// equalling Owner. A drop whose owner does not match changes nothing and
+	// is refused with an index-ownership application error (go-qrdb#426).
+	CheckOwner bool
+
+	// Owner is the owner the caller claims. Read only when CheckOwner is set.
+	Owner string
+}
+
+// indexDropFlagCheckOwner marks an owner-checked drop in the drop command's
+// flag byte.
+const indexDropFlagCheckOwner byte = 0x01
 
 // Flags renders the options as the command's flag byte.
 func (o IndexCreateOptions) Flags() byte {
@@ -628,16 +657,18 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]
 
 // EncodeIndexCreateOpts builds an Index Create command from opts.
 // Format:
-// [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1][prefixLen:2 LE][prefix].
+// [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1][prefixLen:2 LE][prefix][ownerLen:2 LE][owner].
 //
-// The key-scope prefix is a TRAILING extension (go-qrdb#410). Commands written
-// before it exists end after the flag byte, and DecodeIndexCreateOpts reads
-// them as an empty prefix, so a Raft log containing both shapes replays
-// without a migration.
+// The key-scope prefix (go-qrdb#410) and the owner (go-qrdb#426) are TRAILING
+// extensions. Commands written before the prefix existed end after the flag
+// byte, and commands written before the owner existed end after the prefix;
+// DecodeIndexCreateOpts reads a missing tail as empty, so a Raft log
+// containing every shape replays without a migration.
 func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]byte, error) {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
 	prefixBytes := []byte(opts.KeyPrefix)
+	ownerBytes := []byte(opts.Owner)
 	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
 		return nil, err
 	}
@@ -647,7 +678,10 @@ func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]b
 	if err := checkUint16Len(len(prefixBytes), "index key prefix"); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1+2+len(prefixBytes))
+	if err := checkUint16Len(len(ownerBytes), "index owner"); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1+2+len(prefixBytes)+2+len(ownerBytes))
 	off := 0
 
 	buf[off] = OpIndexCreate
@@ -675,11 +709,18 @@ func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]b
 	}
 	off += 2
 	copy(buf[off:], prefixBytes)
+	off += len(prefixBytes)
+
+	if err := putUint16Len(buf[off:], len(ownerBytes), "index owner"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], ownerBytes)
 
 	return buf, nil
 }
 
-// EncodeIndexDrop creates a binary Index Drop command.
+// EncodeIndexDrop creates a binary, UNCONDITIONAL Index Drop command.
 // Format: [op:1][nameLen:2 LE][name].
 func EncodeIndexDrop(name string) ([]byte, error) {
 	nameBytes := []byte(name)
@@ -692,6 +733,44 @@ func EncodeIndexDrop(name string) ([]byte, error) {
 		return nil, err
 	}
 	copy(buf[3:], nameBytes)
+	return buf, nil
+}
+
+// EncodeIndexDropOpts creates a binary Index Drop command carrying opts.
+// Format: [op:1][nameLen:2 LE][name][flags:1][ownerLen:2 LE][owner].
+//
+// The flag byte and the owner are a TRAILING extension (go-qrdb#426). A zero
+// opts encodes exactly what EncodeIndexDrop does, so an unconditional drop
+// keeps the shape every existing log entry has.
+func EncodeIndexDropOpts(name string, opts IndexDropOptions) ([]byte, error) {
+	if !opts.CheckOwner {
+		return EncodeIndexDrop(name)
+	}
+	nameBytes := []byte(name)
+	ownerBytes := []byte(opts.Owner)
+	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(ownerBytes), "index owner"); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, headerSize+2+len(nameBytes)+1+2+len(ownerBytes))
+	off := 0
+	buf[off] = OpIndexDrop
+	off++
+	if err := putUint16Len(buf[off:], len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], nameBytes)
+	off += len(nameBytes)
+	buf[off] = indexDropFlagCheckOwner
+	off++
+	if err := putUint16Len(buf[off:], len(ownerBytes), "index owner"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], ownerBytes)
 	return buf, nil
 }
 
@@ -1288,19 +1367,66 @@ func DecodeIndexCreateOpts(payload []byte) (name, fieldName string, opts IndexCr
 		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: key prefix length exceeds payload"}
 	}
 	opts.KeyPrefix = string(payload[off : off+prefixLen])
+	off += prefixLen
+
+	// The owner is a second trailing extension (go-qrdb#426). A payload that
+	// ends at the prefix was written before it existed and carries the empty
+	// owner -- the explicit index API -- which is what such a command meant.
+	if off == len(payload) {
+		return name, fieldName, opts, nil
+	}
+	if off+2 > len(payload) {
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: truncated owner length"}
+	}
+	ownerLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+ownerLen > len(payload) {
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: owner length exceeds payload"}
+	}
+	opts.Owner = string(payload[off : off+ownerLen])
 	return name, fieldName, opts, nil
 }
 
-// DecodeIndexDrop extracts the index name from an Index Drop payload.
+// DecodeIndexDrop extracts the index name from an Index Drop payload. It
+// ignores the trailing options; a handler that honours ownership decodes with
+// DecodeIndexDropOpts instead.
 func DecodeIndexDrop(payload []byte) (string, error) {
+	name, _, err := DecodeIndexDropOpts(payload)
+	return name, err
+}
+
+// DecodeIndexDropOpts extracts the index name and the drop options from an
+// Index Drop payload. A payload that ends after the name was written before
+// the options existed, or by EncodeIndexDrop, and decodes to the zero options:
+// an unconditional drop.
+func DecodeIndexDropOpts(payload []byte) (string, IndexDropOptions, error) {
 	if len(payload) < 2 {
-		return "", &InvalidCommandError{Reason: "index drop: payload too short"}
+		return "", IndexDropOptions{}, &InvalidCommandError{Reason: "index drop: payload too short"}
 	}
 	nameLen := int(binary.LittleEndian.Uint16(payload[0:2]))
-	if 2+nameLen > len(payload) {
-		return "", &InvalidCommandError{Reason: "index drop: name length exceeds payload"}
+	off := 2
+	if off+nameLen > len(payload) {
+		return "", IndexDropOptions{}, &InvalidCommandError{Reason: "index drop: name length exceeds payload"}
 	}
-	return string(payload[2 : 2+nameLen]), nil
+	name := string(payload[off : off+nameLen])
+	off += nameLen
+	if off == len(payload) {
+		return name, IndexDropOptions{}, nil
+	}
+	flags := payload[off]
+	off++
+	if off+2 > len(payload) {
+		return "", IndexDropOptions{}, &InvalidCommandError{Reason: "index drop: truncated owner length"}
+	}
+	ownerLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+ownerLen > len(payload) {
+		return "", IndexDropOptions{}, &InvalidCommandError{Reason: "index drop: owner length exceeds payload"}
+	}
+	return name, IndexDropOptions{
+		CheckOwner: flags&indexDropFlagCheckOwner != 0,
+		Owner:      string(payload[off : off+ownerLen]),
+	}, nil
 }
 
 // TSWriteParams holds decoded parameters for a time-series write.

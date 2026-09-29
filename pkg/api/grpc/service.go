@@ -1281,7 +1281,7 @@ func (s *qrdbServiceServer) IndexDrop(ctx context.Context, req *pb.IndexDropRequ
 		return nil, mapServiceError(svcErr)
 	}
 
-	if err := indexSvc.DropIndex(ctx, req.GetName()); err != nil {
+	if err := indexSvc.DropOwnedIndex(ctx, req.GetName(), index.ExplicitOwner); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil

@@ -69,7 +69,7 @@ func (s *Server) handleIndexDrop(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := indexSvc.DropIndex(ctx, req.GetName()); err != nil {
+	if err := indexSvc.DropOwnedIndex(ctx, req.GetName(), index.ExplicitOwner); err != nil {
 		return nil, err
 	}
 

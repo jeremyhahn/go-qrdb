@@ -110,11 +110,14 @@ type raftShard struct {
 	tenantID string
 	database string
 	shardID  uint64
-	dataDir  string // absolute shard DataDir (absDir); SM Pebble at {dataDir}/shard-{shardID}
-	hub      *watch.Hub
-	lessor   *lease.Lessor
-	services *DatabaseServices
-	cancel   context.CancelFunc
+	// replicaID is this node's replica ID in the shard -- the
+	// placement-assigned one, not necessarily the factory's localReplicaID.
+	replicaID uint64
+	dataDir   string // absolute shard DataDir (absDir); SM Pebble at {dataDir}/shard-{shardID}
+	hub       *watch.Hub
+	lessor    *lease.Lessor
+	services  *DatabaseServices
+	cancel    context.CancelFunc
 
 	// dedicatedWAL is the per-tenant-KEY WAL store registered in the shared
 	// host's multiplex for this shard (4d Option C), or nil when the shard uses
@@ -168,7 +171,10 @@ type raftDatabaseInfoSource interface {
 //
 // RaftBackendFactory is safe for concurrent use.
 type RaftBackendFactory struct {
-	host           *quicraft.Host
+	host *quicraft.Host
+	// leaderOf reads a shard's current leader replica. It is the host's
+	// GetLeaderID; LeadsShard reads leadership through it alone.
+	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
 	adapter        *raftbackend.HostAdapter
 	localReplicaID uint64
 	localRaftAddr  string
@@ -276,12 +282,17 @@ func NewRaftBackendFactory(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	var adapter *raftbackend.HostAdapter
+	var (
+		adapter  *raftbackend.HostAdapter
+		leaderOf func(uint64) (uint64, bool, error)
+	)
 	if host != nil {
 		adapter = raftbackend.New(host)
+		leaderOf = host.GetLeaderID
 	}
 	f := &RaftBackendFactory{
 		host:           host,
+		leaderOf:       leaderOf,
 		adapter:        adapter,
 		localReplicaID: localReplicaID,
 		localRaftAddr:  localRaftAddr,
@@ -547,6 +558,23 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	return out
 }
 
+// LeadsShard reports whether this node's replica currently leads the started
+// dedicated shard for (tenantID, db). False for a shard that is not started
+// here, and whenever leadership cannot be read. A background task that must
+// run once per shard rather than once per replica -- the collection sweeper --
+// asks this first, so its proposals come from the replica that would serve
+// them anyway.
+func (f *RaftBackendFactory) LeadsShard(tenantID, db string) bool {
+	f.mu.Lock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	f.mu.Unlock()
+	if !ok || f.leaderOf == nil {
+		return false
+	}
+	id, known, err := f.leaderOf(rs.shardID)
+	return err == nil && known && id == rs.replicaID
+}
+
 // StartedAsObserver reports whether the locally running shard for
 // (tenantID, db) was started with the observer role latched into its local
 // go-quicraft configuration. False for a shard that is not started. The
@@ -661,6 +689,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		tenantID:     tenantID,
 		database:     db,
 		shardID:      shardID,
+		replicaID:    replicaID,
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,

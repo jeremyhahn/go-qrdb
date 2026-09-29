@@ -308,6 +308,12 @@ func (m *mockCollectionSvc) UpdateDocument(ctx context.Context, req *service.Upd
 	}
 	return &service.UpdateDocumentResponse{ID: req.ID}, nil
 }
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *mockCollectionSvc) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
 func (m *mockCollectionSvc) DeleteDocument(ctx context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, req)

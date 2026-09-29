@@ -165,41 +165,35 @@ func (t *CollectionTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPar
 
 // Inserter returns a RowInserter for the collection table.
 func (t *CollectionTable) Inserter(_ *sqle.Context) sqle.RowInserter {
-	return &collectionWriter{
-		collectionSvc: t.collectionSvc,
-		database:      t.database,
-		collection:    t.collection,
-		fieldOrder:    t.fieldOrder,
-	}
+	return t.writer()
 }
 
 // Deleter returns a RowDeleter for the collection table.
 func (t *CollectionTable) Deleter(_ *sqle.Context) sqle.RowDeleter {
-	return &collectionWriter{
-		collectionSvc: t.collectionSvc,
-		database:      t.database,
-		collection:    t.collection,
-		fieldOrder:    t.fieldOrder,
-	}
+	return t.writer()
 }
 
 // Updater returns a RowUpdater for the collection table.
 func (t *CollectionTable) Updater(_ *sqle.Context) sqle.RowUpdater {
-	return &collectionWriter{
-		collectionSvc: t.collectionSvc,
-		database:      t.database,
-		collection:    t.collection,
-		fieldOrder:    t.fieldOrder,
-	}
+	return t.writer()
 }
 
-// Replacer returns a RowReplacer for the collection table.
+// Replacer returns a RowReplacer for the collection table. Its inserts are
+// guarded upserts; see collectionWriter.replaceInsert.
 func (t *CollectionTable) Replacer(_ *sqle.Context) sqle.RowReplacer {
+	w := t.writer()
+	w.replaced = make(map[uint64]bool)
+	return w
+}
+
+// writer returns a writer over this table's collection.
+func (t *CollectionTable) writer() *collectionWriter {
 	return &collectionWriter{
 		collectionSvc: t.collectionSvc,
 		database:      t.database,
 		collection:    t.collection,
 		fieldOrder:    t.fieldOrder,
+		schema:        t.schema,
 	}
 }
 
@@ -443,6 +437,15 @@ type collectionWriter struct {
 	database      string
 	collection    string
 	fieldOrder    []string
+	schema        sqle.Schema
+
+	// replaced is non-nil on a REPLACE INTO writer and records, per
+	// statement, the document IDs whose replacement the guarded upsert has
+	// already stored. go-mysql-server drives REPLACE as insert, delete the
+	// existing row, insert again; the first insert here already did all of it
+	// in one guarded write, so the delete and the second insert that follow
+	// for the same ID are acknowledged without writing (see replaceInsert).
+	replaced map[uint64]bool
 }
 
 // Compile-time interface assertions.
@@ -494,6 +497,9 @@ func (w *collectionWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	id, err := claimedDocID(row)
 	if err != nil {
 		return err
+	}
+	if w.replaced != nil && id != 0 {
+		return w.replaceInsert(ctx, id, doc)
 	}
 	if id != 0 {
 		doc[service.DocumentIDField] = id
@@ -556,6 +562,11 @@ func (w *collectionWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	if err != nil {
 		return err
 	}
+	if w.replaced[id] {
+		// The guarded upsert that reported this row as the one in the way
+		// has already replaced it; see replaceInsert.
+		return nil
+	}
 	_, delErr := w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
 		Collection: w.collection,
 		Database:   w.database,
@@ -564,13 +575,129 @@ func (w *collectionWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	return delErr
 }
 
+// replaceInsert is REPLACE INTO's insert, and it is the whole statement for
+// this row (go-qrdb#497).
+//
+// go-mysql-server implements REPLACE as three calls -- insert; on a primary
+// key violation, delete the existing row; insert again -- and a collection
+// table is autocommit-only, so nothing held those three together: two
+// concurrent REPLACEs on one `_id` could interleave, and one writer's value
+// could be lost with nobody told. Here the first insert is a guarded upsert
+// that decides "insert or replace" and stores the new document in one
+// guarded write. When it REPLACED a document, the violation is still
+// reported, carrying the exact document it displaced, because that is how
+// go-mysql-server counts the statement's affected rows -- two for a
+// replacement, one for an insert, as MySQL does. The delete and re-insert that
+// follow for this ID are then acknowledged without writing anything.
+func (w *collectionWriter) replaceInsert(ctx *sqle.Context, id uint64, doc map[string]interface{}) error {
+	if w.replaced[id] {
+		delete(w.replaced, id)
+		return nil
+	}
+	resp, err := w.collectionSvc.UpsertDocument(ctx, &service.UpsertDocumentRequest{
+		Collection: w.collection,
+		Database:   w.database,
+		ID:         id,
+		Document:   doc,
+	})
+	if err != nil {
+		return w.conflictAsDeadlock(err)
+	}
+	if !resp.Replaced {
+		return nil
+	}
+	w.replaced[id] = true
+	return sqle.NewUniqueKeyErr("PRIMARY", true, documentToRow(w.fieldOrder, id, resp.Previous))
+}
+
+// conflictAsDeadlock reports a lost guarded write the way the relational
+// tables report theirs: as MySQL error 1213 / SQLSTATE 40001, the code a
+// client retries on. Every other error is returned as it is.
+func (w *collectionWriter) conflictAsDeadlock(err error) error {
+	var conflict *service.CollectionDocumentConflictError
+	if !errors.As(err, &conflict) {
+		return err
+	}
+	return sqle.ErrLockDeadlock.Wrap(conflict, "document "+strconv.FormatUint(conflict.ID, 10)+" in collection "+w.collection)
+}
+
+// currentRow reads the stored document id and returns its revision, after
+// checking that it is still the WHOLE document the statement computed its
+// write from. A document that changed since -- or disappeared -- is a lost
+// race, reported as a conflict rather than overwritten.
+//
+// The row a statement read carries only the table's columns, which are the
+// collection's schema as it stood when the table was resolved. A document
+// that has since gained a field outside those columns is therefore not the
+// document the statement saw -- and the row-shaped write that follows would
+// drop the field -- so it is a conflict too, even when every column matches.
+// The client's retry resolves the table again, with the new column.
+func (w *collectionWriter) currentRow(ctx *sqle.Context, id uint64, expected sqle.Row) (string, error) {
+	conflict := &service.CollectionDocumentConflictError{Database: w.database, Collection: w.collection, ID: id}
+	resp, err := w.collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
+		Collection: w.collection,
+		Database:   w.database,
+		ID:         id,
+	})
+	if err != nil {
+		var notFound *service.CollectionDocumentNotFoundError
+		if errors.As(err, &notFound) {
+			return "", w.conflictAsDeadlock(conflict)
+		}
+		return "", err
+	}
+	if resp == nil {
+		return "", w.conflictAsDeadlock(conflict)
+	}
+	if !w.coversDocument(resp.Document) {
+		return "", w.conflictAsDeadlock(conflict)
+	}
+	same, err := documentToRow(w.fieldOrder, id, resp.Document).Equals(ctx, expected, w.schema)
+	if err != nil {
+		return "", err
+	}
+	if !same {
+		return "", w.conflictAsDeadlock(conflict)
+	}
+	return resp.Revision, nil
+}
+
+// coversDocument reports whether every field of doc is one of the table's
+// columns, so a row compared against it compares the whole document.
+func (w *collectionWriter) coversDocument(doc map[string]interface{}) bool {
+	if len(doc) > len(w.fieldOrder) {
+		return false
+	}
+	columns := make(map[string]bool, len(w.fieldOrder))
+	for _, f := range w.fieldOrder {
+		columns[f] = true
+	}
+	for k := range doc {
+		if !columns[k] {
+			return false
+		}
+	}
+	return true
+}
+
 // Update updates a document.
+//
+// It is a GUARDED write of the row the statement read (go-qrdb#497). The
+// stored document is read back and compared with `old`, and the new document
+// is written only while the stored one still carries the revision that read
+// returned. A document a concurrent writer changed in between -- the other
+// half of an ON DUPLICATE KEY UPDATE, whose expressions were evaluated over
+// the row the insert reported, or of any UPDATE -- is reported as MySQL 1213
+// instead of being overwritten with a value computed from what it used to be.
 //
 // An UPDATE that changes _id is a RE-IDENTIFICATION: the document has to be
 // stored under the new ID and released from the old one. The new ID is
 // claimed FIRST, through the same insert path an INSERT uses, so it reserves
 // the counter and is refused if another document already holds it; only once
-// the document is safely under its new ID is the old one released.
+// the document is safely under its new ID is the old one released -- and the
+// release is guarded too: if the old document changed after the statement
+// read it, the new copy is withdrawn and the statement fails, so a move never
+// duplicates a document or discards a concurrent write to it.
 //
 // The order matters and was previously the other way round. `UPDATE events
 // SET _id = 99 WHERE _id = 1` deleted document 1 and then called
@@ -600,25 +727,95 @@ func (w *collectionWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row)
 		return &InvalidKeyError{Key: "0"}
 	}
 
-	if oldID != newID {
-		if insErr := w.Insert(ctx, new); insErr != nil {
-			return insErr
-		}
-		_, delErr := w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
-			Collection: w.collection,
-			Database:   w.database,
-			ID:         oldID,
-		})
-		return delErr
+	revision, err := w.currentRow(ctx, oldID, old)
+	if err != nil {
+		return err
 	}
 
-	_, updateErr := w.collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
+	if oldID != newID {
+		return w.reidentify(ctx, oldID, revision, new)
+	}
+
+	_, upsertErr := w.collectionSvc.UpsertDocument(ctx, &service.UpsertDocumentRequest{
 		Collection: w.collection,
 		Database:   w.database,
 		ID:         newID,
 		Document:   w.rowToDocument(new),
+		IfRevision: revision,
 	})
-	return updateErr
+	return w.conflictAsDeadlock(upsertErr)
+}
+
+// reidentify moves the document read at oldRevision from oldID to the ID row
+// names: claim the new identity, then release the old one only if it is still
+// the document the statement read.
+//
+// What happens to the claim depends on what the release says:
+//
+//   - The release was REFUSED -- the old document changed after the statement
+//     read it, or is gone -- so the statement lost a race and moved nothing.
+//     The claim is withdrawn, guarded by the revision this call wrote so a
+//     document somebody else has since written there is left alone, and the
+//     statement reports the lost race as MySQL 1213 for the client to retry.
+//     A withdrawal that fails is joined into the statement's error, not
+//     dropped.
+//   - The release FAILED any other way, so it may or may not have removed the
+//     old document. Withdrawing the claim then could leave the document under
+//     neither ID, so both are left and the statement reports
+//     DocumentMoveOutcomeUnknownError.
+func (w *collectionWriter) reidentify(ctx *sqle.Context, oldID uint64, oldRevision string, row sqle.Row) error {
+	newID, err := extractDocID(row)
+	if err != nil {
+		return err
+	}
+	doc := w.rowToDocument(row)
+	doc[service.DocumentIDField] = newID
+	claimed, err := w.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+		Collection: w.collection,
+		Database:   w.database,
+		Document:   doc,
+	})
+	if err != nil {
+		var exists *service.CollectionDocumentExistsError
+		if errors.As(err, &exists) {
+			if dupErr := w.duplicateKeyError(ctx, exists.ID); dupErr != nil {
+				return dupErr
+			}
+		}
+		return err
+	}
+
+	_, delErr := w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+		Collection: w.collection,
+		Database:   w.database,
+		ID:         oldID,
+		IfRevision: oldRevision,
+	})
+	if delErr == nil {
+		return nil
+	}
+	if !releaseLostRace(delErr) {
+		return &DocumentMoveOutcomeUnknownError{Collection: w.collection, OldID: oldID, NewID: newID, Err: delErr}
+	}
+	lost := w.conflictAsDeadlock(&service.CollectionDocumentConflictError{Database: w.database, Collection: w.collection, ID: oldID})
+	if _, withdrawErr := w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+		Collection: w.collection,
+		Database:   w.database,
+		ID:         newID,
+		IfRevision: claimed.Revision,
+	}); withdrawErr != nil {
+		return errors.Join(lost, delErr, withdrawErr)
+	}
+	return lost
+}
+
+// releaseLostRace reports whether a guarded release of a document was refused
+// because the document is no longer the one the statement read -- it changed,
+// or it is gone -- rather than failing with an unknown outcome.
+func releaseLostRace(err error) bool {
+	var conflict *service.CollectionDocumentConflictError
+	var notFound *service.CollectionDocumentNotFoundError
+	return errors.As(err, &conflict) || errors.As(err, &notFound)
 }
 
 // rowToDocument converts a SQL row to a document field map.

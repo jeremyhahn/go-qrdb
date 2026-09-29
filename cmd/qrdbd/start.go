@@ -2090,6 +2090,17 @@ func runStart(f *startFlags) (err error) {
 					server.WithLockService(lockSvc),
 					server.WithWatch(watchSvc),
 				)
+				// The collection sweeper finishes interrupted creates and
+				// drops in the shared system store from the system shard's
+				// leader only, so a cluster sweeps each database once per pass
+				// rather than once per replica.
+				if host != nil {
+					sweepReplicaID := f.replicaID
+					serverOpts = append(serverOpts, server.WithCollectionSweepLeader(func() bool {
+						id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						return lerr == nil && ok && id == sweepReplicaID
+					}))
+				}
 			}
 			// User and role management services are always wired — they are
 			// organizational primitives independent of auth enforcement. The

@@ -121,12 +121,14 @@ type metadataProbeKV struct {
 	dropsAtMetaDelete []string
 }
 
-func (p *metadataProbeKV) Delete(ctx context.Context, key string) error {
+// CompareAndDelete is how the teardown removes the metadata: guarded by the
+// exact DROPPING record it started from.
+func (p *metadataProbeKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	if key == p.metaKey {
 		p.metaDeleted = true
 		p.dropsAtMetaDelete = p.idxSvc.dropCalls()
 	}
-	return p.memoryKVSvc.Delete(ctx, key)
+	return p.memoryKVSvc.CompareAndDelete(ctx, key, expected)
 }
 
 // TestCollectionService_DropCollection_IndexDropFailureIsFatal pins the
@@ -168,17 +170,18 @@ func TestCollectionService_DropCollection_IndexDropFailureIsFatal(t *testing.T) 
 }
 
 // TestCollectionService_DropCollection_WithoutIndexService covers the
-// NewCollectionService construction, which has no index service at all.
+// NewCollectionService construction, which has no index service at all,
+// dropping metadata that declares an index anyway -- a record another
+// composition wrote. The drop has nothing to drop indexes with and still
+// completes.
 func TestCollectionService_DropCollection_WithoutIndexService(t *testing.T) {
-	svc := newTestCollectionService()
+	kv := newMemoryKVSvc()
+	svc := NewCollectionService(kv)
 	ctx := context.Background()
 
-	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
-		Name:     "users",
-		Database: "mydb",
-		Indexes:  []IndexDefinition{{FieldName: "email"}},
-	})
-	require.NoError(t, err)
+	legacy := []byte(`{"name":"users","database":"mydb","id_strategy":"unix_nano",` +
+		`"indexes":[{"field_name":"email"}],"document_count":0,"created_at":"2026-01-01T00:00:00Z"}`)
+	require.NoError(t, kv.Put(ctx, collectionMetadataKey("mydb", "users"), legacy))
 
 	require.NoError(t, svc.DropCollection(ctx, &DropCollectionRequest{
 		Name:     "users",
@@ -286,7 +289,16 @@ func (f *faultKV) List(ctx context.Context, prefix string) ([]string, error) {
 	return f.memoryKVSvc.List(ctx, prefix)
 }
 
-func (f *faultKV) Delete(ctx context.Context, key string) error {
+// Scan is how the teardown enumerates documents (with their values, which
+// its guarded deletes compare against), so the listing fault applies to it.
+func (f *faultKV) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
+	if f.listErr != nil && prefix == f.listPrefix {
+		return nil, f.listErr
+	}
+	return f.memoryKVSvc.Scan(ctx, prefix)
+}
+
+func (f *faultKV) deleteFault(key string) error {
 	if f.deleteErr != nil {
 		if key == f.deleteKey {
 			return f.deleteErr
@@ -295,7 +307,23 @@ func (f *faultKV) Delete(ctx context.Context, key string) error {
 			return f.deleteErr
 		}
 	}
+	return nil
+}
+
+func (f *faultKV) Delete(ctx context.Context, key string) error {
+	if err := f.deleteFault(key); err != nil {
+		return err
+	}
 	return f.memoryKVSvc.Delete(ctx, key)
+}
+
+// CompareAndDelete is how the teardown removes documents and the metadata,
+// so the delete fault applies to it too.
+func (f *faultKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if err := f.deleteFault(key); err != nil {
+		return false, err
+	}
+	return f.memoryKVSvc.CompareAndDelete(ctx, key, expected)
 }
 
 // TestCollectionService_DropCollection_InterruptedAtEachStage walks the three
@@ -309,7 +337,7 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 	tests := []struct {
 		name string
 		// fault configures the injected failure on a freshly populated store.
-		fault  func(kv *faultKV)
+		fault  func(kv *faultKV, docPrefix string)
 		wantOp string
 		// wantDropsBeforeFailure is the index names already dropped when the
 		// failure surfaced.
@@ -317,16 +345,16 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 	}{
 		{
 			name: "listing the documents fails",
-			fault: func(kv *faultKV) {
+			fault: func(kv *faultKV, docPrefix string) {
 				kv.listErr = boom
-				kv.listPrefix = collectionDataEntityType("mydb", "users") + "/"
+				kv.listPrefix = docPrefix
 			},
 			wantOp:                 "list-documents",
 			wantDropsBeforeFailure: nil,
 		},
 		{
 			name: "deleting a document fails",
-			fault: func(kv *faultKV) {
+			fault: func(kv *faultKV, docPrefix string) {
 				kv.deleteErr = boom
 				kv.deleteSuffix = "/1"
 			},
@@ -335,7 +363,7 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 		},
 		{
 			name: "deleting the metadata fails",
-			fault: func(kv *faultKV) {
+			fault: func(kv *faultKV, docPrefix string) {
 				kv.deleteErr = boom
 				kv.deleteKey = metaKey
 			},
@@ -367,7 +395,7 @@ func TestCollectionService_DropCollection_InterruptedAtEachStage(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			tc.fault(kv)
+			tc.fault(kv, docPrefixForTest(t, svc, "mydb", "users"))
 
 			err = svc.DropCollection(ctx, &DropCollectionRequest{Name: "users", Database: "mydb"})
 			require.Error(t, err)
@@ -458,11 +486,26 @@ func (f *nthDropFailIndexSvc) DropIndex(ctx context.Context, name string) error 
 	return f.memoryIndexSvc.DropIndex(ctx, name)
 }
 
+// DropOwnedIndex counts toward the same Nth failure: a collection that
+// records ownership drops its indexes with it.
+func (f *nthDropFailIndexSvc) DropOwnedIndex(ctx context.Context, name, owner string) error {
+	f.n++
+	if f.n == f.failOn {
+		return f.err
+	}
+	return f.memoryIndexSvc.DropOwnedIndex(ctx, name, owner)
+}
+
 // TestCollectionService_DropCollection_PartialIndexDropIsWiderThanOneWrite
-// pins the widest interruption state the chosen ordering admits, because a
-// window that is documented has to be measured or the documentation is a
-// guess. With several indexes and a failure on a later one, the drop returns
-// leaving the collection LIVE and PARTIALLY indexed until someone retries.
+// pins the widest interruption state the teardown ordering admits. With
+// several indexes and a failure on a later one, the drop returns leaving the
+// collection PARTIALLY indexed until someone -- or the sweeper -- retries.
+//
+// It used to leave that collection LIVE, accepting writes with its declared
+// unique constraints unenforced, and this test asserted the insert
+// succeeded. Since go-qrdb#425 the drop marks the collection DROPPING before
+// it tears anything down, so the same interrupted state refuses the write
+// and reports itself.
 func TestCollectionService_DropCollection_PartialIndexDropIsWiderThanOneWrite(t *testing.T) {
 	ctx := context.Background()
 	idxSvc := &nthDropFailIndexSvc{
@@ -488,20 +531,22 @@ func TestCollectionService_DropCollection_PartialIndexDropIsWiderThanOneWrite(t 
 	require.ErrorAs(t, err, &metaErr)
 	assert.Equal(t, "drop-index", metaErr.Op)
 
-	// The first index is gone, the other two remain, and the collection is
-	// still live -- so it accepts writes while declaring an index that no
-	// longer exists. This is the state issue tracking says needs a persisted
-	// "dropping" marker to close.
+	// The first index is gone and the other two remain, but the collection
+	// is no longer live: it reports DROPPING and refuses the write that used
+	// to land here with its unique constraints unenforced.
 	assert.Equal(t, []string{"mydb.users.b", "mydb.users.c"}, idxSvc.names())
 	info, err := svc.GetCollectionInfo(ctx, "mydb", "users")
 	require.NoError(t, err)
 	assert.Len(t, info.Indexes, 3, "the metadata still declares all three")
+	assert.Equal(t, CollectionStateDropping, info.State)
 	_, err = svc.InsertDocument(ctx, &InsertDocumentRequest{
 		Database:   "mydb",
 		Collection: "users",
-		Document:   map[string]interface{}{"a": "still-writable"},
+		Document:   map[string]interface{}{"a": "no-longer-writable"},
 	})
-	require.NoError(t, err, "the collection keeps accepting writes in this state")
+	var notActive *CollectionNotActiveError
+	require.ErrorAs(t, err, &notActive, "a dropping collection must refuse writes")
+	assert.Equal(t, CollectionStateDropping, notActive.State)
 
 	// The retry converges: the already-dropped index is dropped again as a
 	// no-op and the drop completes.

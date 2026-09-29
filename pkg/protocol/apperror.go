@@ -107,6 +107,59 @@ func EncodeCapabilityError(msg string) []byte {
 	return EncodeAppError(AppErrorCapability, msg)
 }
 
+// ownershipMarker distinguishes an index-ownership refusal (go-qrdb#426) from
+// the other application errors. Like capabilityMarker it has to be carried
+// rather than inferred from message text: the service layer turns it into a
+// typed error that a collection teardown acts on -- an index it does not own
+// is left alone -- and a caller branching on prose is the defect #141 removed.
+//
+// The body after the marker is "<name>\x00<recorded owner>", neither of which
+// can contain NUL on the paths that reach it (both are length-prefixed
+// strings decoded from a command, and the names the service layer builds are
+// printable).
+var ownershipMarker = []byte("\x00own\x00")
+
+// EncodeIndexOwnershipError encodes the refusal of an index create or an
+// owner-checked index drop whose named index is recorded under a different
+// owner than the command claims. owner is the RECORDED owner, which the empty
+// string spells for the explicit index API.
+func EncodeIndexOwnershipError(name, owner string) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(ownershipMarker)+len(name)+1+len(owner))
+	out = append(out, appErrorPrefix...)
+	out = append(out, ownershipMarker...)
+	out = append(out, name...)
+	out = append(out, 0)
+	out = append(out, owner...)
+	return out
+}
+
+// DecodeIndexOwnershipError reports whether data carries an index-ownership
+// refusal and, if so, the index name and its recorded owner.
+func DecodeIndexOwnershipError(data []byte) (name, owner string, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return "", "", false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, ownershipMarker) {
+		return "", "", false
+	}
+	body = body[len(ownershipMarker):]
+	sep := bytes.IndexByte(body, 0)
+	if sep < 0 {
+		return string(body), "", true
+	}
+	return string(body[:sep]), string(body[sep+1:]), true
+}
+
+// indexOwnershipMessage renders an ownership refusal as the message a
+// generic DecodeAppError caller reads.
+func indexOwnershipMessage(name, owner string) string {
+	if owner == "" {
+		return "index " + name + " is owned by the explicit index API"
+	}
+	return "index " + name + " is owned by " + owner
+}
+
 // DecodeAppError reports whether data carries an encoded application error and,
 // if so, returns the error message with its kind marker stripped. Ordinary
 // result payloads (including the one-byte transaction success flag) do not
@@ -131,6 +184,13 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 		if bytes.HasPrefix(body, marker) {
 			return string(body[len(marker):]), k, true
 		}
+	}
+	// An index-ownership refusal carries its own marker and payload (see
+	// EncodeIndexOwnershipError). The index service decodes it into
+	// *index.OwnershipError before it gets here; a generic reader gets its
+	// message and the conflict kind -- the name is held by another owner.
+	if name, owner, own := DecodeIndexOwnershipError(data); own {
+		return indexOwnershipMessage(name, owner), AppErrorConflict, true
 	}
 	return string(body), AppErrorCorrupt, true
 }

@@ -179,10 +179,12 @@ before assuming the new error is wrong.
 
 **A collection table's `PRIMARY KEY` under two concurrent writers.** It holds:
 the insert behind it is a guarded write, so one writer is told it stored and
-the other gets the duplicate-key error. `REPLACE` and `ON DUPLICATE KEY UPDATE`
-are still each an insert, a refusal and a second write with no lock across the
-three, so two of *those* racing can interleave — use a relational table inside
-a transaction if you need a read-modify-write that holds end to end.
+the other gets the duplicate-key error. `REPLACE`, `ON DUPLICATE KEY UPDATE` and
+`UPDATE` are guarded writes too: two of them racing on one `_id` never lose a
+write silently — the loser fails with **1213** (serialization failure) and
+should retry. A read-modify-write spread over several statements is still not
+held together, because a collection table has no transactions; use a relational
+table inside a transaction for that.
 
 **A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.

@@ -315,6 +315,8 @@ var conditions = []conditionRow{
 	{"request will not encode", &service.EncodeRequestError{Err: errors.New("key too long")}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"vector dimension mismatch", &service.DimensionMismatchError{Expected: 3, Actual: 4}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"collection name empty", &service.CollectionEmptyNameError{}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"collection name invalid", &service.CollectionInvalidNameError{Name: "a#b", Reason: "x"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"document field reserved", &service.CollectionReservedFieldError{Field: "id", Reason: "x"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"restore request nil", &service.RestoreNilRequestError{}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"frame payload malformed", &InvalidArgumentError{Reason: "missing id"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"PIN too short", pin.ErrPINTooShort, wire.StatusInvalidArgument, codes.InvalidArgument},

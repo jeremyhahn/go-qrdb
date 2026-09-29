@@ -146,7 +146,7 @@ func handleIndexDrop(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		if err := indexSvc.DropIndex(ctx, name); err != nil {
+		if err := indexSvc.DropOwnedIndex(ctx, name, index.ExplicitOwner); err != nil {
 			return nil, &ToolError{Tool: "qrdb_index_drop", Err: err}
 		}
 

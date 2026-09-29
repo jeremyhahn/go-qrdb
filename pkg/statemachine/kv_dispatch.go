@@ -188,7 +188,7 @@ func (k *KVStateMachine) handleIndexCreate(payload []byte, revision uint64) (sm.
 	}
 
 	if createErr := k.indexManager.CreateIndex(name, fieldName, opts); createErr != nil {
-		return sm.Result{}, &StorageError{Op: "index-create", Inner: createErr}
+		return indexManagerFailure("index-create", createErr)
 	}
 
 	return sm.Result{Value: revision}, nil
@@ -201,13 +201,13 @@ func (k *KVStateMachine) handleIndexDrop(payload []byte, revision uint64) (sm.Re
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "index"}
 	}
 
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "index drop: " + err.Error()}
 	}
 
-	if dropErr := k.indexManager.DropIndex(name); dropErr != nil {
-		return sm.Result{}, &StorageError{Op: "index-drop", Inner: dropErr}
+	if dropErr := k.indexManager.DropIndex(name, dropOpts); dropErr != nil {
+		return indexManagerFailure("index-drop", dropErr)
 	}
 
 	return sm.Result{Value: revision}, nil

@@ -155,6 +155,35 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 	return th.services, nil
 }
 
+// Started reports whether tenantID's Host is already built on this node,
+// without building it. A background task that must not be the reason a
+// tenant's Host starts -- the collection sweeper -- asks this first.
+func (r *TenantHostRegistry) Started(tenantID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.hosts[tenantID]
+	return ok
+}
+
+// startedServices returns the service set of every tenant Host already built
+// on this node, keyed by tenant, without building any. The collection sweeper
+// reads each started Host's work journal through it.
+func (r *TenantHostRegistry) startedServices() map[string]*DatabaseServices {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]*DatabaseServices, len(r.hosts))
+	for id, th := range r.hosts {
+		out[id] = th.services
+	}
+	return out
+}
+
 // Attach builds (and caches) the per-tenant Host eagerly. It is used at boot to
 // re-attach IsolationVolume tenants before serving so the first request does
 // not pay the Host-construction cost. It is idempotent: an already-attached

@@ -559,6 +559,12 @@ func (m *indexRec) DropIndex(_ context.Context, name string) error {
 	m.lastName = name
 	return m.err
 }
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *indexRec) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
 func (m *indexRec) Query(_ context.Context, name string, _ []byte) ([][]byte, error) {
 	m.lastName = name
 	if m.err != nil {

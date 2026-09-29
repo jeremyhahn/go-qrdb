@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -149,12 +150,18 @@ type fakeRelationalRegistry struct {
 	collectionSvc service.CollectionServicer
 	collectionErr error
 
+	// mu guards calls: a registry is resolved from every concurrent
+	// statement a SQL engine runs, and this double must be as safe for that
+	// as the production registry.
+	mu    sync.Mutex
 	calls []relationalScopeCall
 }
 
 var _ service.Registry = (*fakeRelationalRegistry)(nil)
 
 func (r *fakeRelationalRegistry) record(svc, tenantID, db string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, relationalScopeCall{service: svc, tenant: tenantID, db: db})
 }
 

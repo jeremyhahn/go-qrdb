@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -134,6 +135,10 @@ type Server struct {
 	wg          sync.WaitGroup
 	logger      *slog.Logger
 	opts        serverOptions
+
+	// sweeperCancel stops the collection sweeper (see collection_sweeper.go);
+	// nil when none is running.
+	sweeperCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -194,17 +199,25 @@ type serverOptions struct {
 	backupSvc          service.BackupServicer
 	rebalanceSvc       service.RebalanceServicer
 	dbRegistry         *DatabaseServiceRegistry
-	keyspaceReclaim    *service.KeyspaceReclaimService
-	reclaimSweeper     *service.ReclaimSweeper
-	tenantHosts        *TenantHostRegistry
-	raftBackend        *RaftBackendFactory
-	quotaAccountant    *quota.Accountant
-	webUI              http.Handler
-	auditLogger        audit.AuditLogger
-	authFactorSvc      service.AuthFactorServicer
-	userAuthFactorSvc  service.UserAuthFactorServicer
-	custodianSvc       custodian.Servicer
-	soAuthenticator    *auth.SOAuthenticator
+
+	// collectionSweepInterval and collectionStaleAfter tune the collection
+	// sweeper; zero keeps the defaults. See WithCollectionSweep.
+	collectionSweepInterval time.Duration
+	collectionStaleAfter    time.Duration
+	// collectionSweepLeader reports whether this node leads the system
+	// shard; see WithCollectionSweepLeader. Nil means a single node.
+	collectionSweepLeader func() bool
+	keyspaceReclaim       *service.KeyspaceReclaimService
+	reclaimSweeper        *service.ReclaimSweeper
+	tenantHosts           *TenantHostRegistry
+	raftBackend           *RaftBackendFactory
+	quotaAccountant       *quota.Accountant
+	webUI                 http.Handler
+	auditLogger           audit.AuditLogger
+	authFactorSvc         service.AuthFactorServicer
+	userAuthFactorSvc     service.UserAuthFactorServicer
+	custodianSvc          custodian.Servicer
+	soAuthenticator       *auth.SOAuthenticator
 
 	// sealStrategy overrides the default seal strategy used when no
 	// strategyRegistry is configured. When both are nil the daemon
@@ -1124,6 +1137,10 @@ func (s *Server) start() error {
 		return err
 	}
 
+	// Collections an interrupted create or drop left CREATING or DROPPING
+	// are finished in the background, so nobody has to re-issue them.
+	s.startCollectionSweeper()
+
 	return nil
 }
 
@@ -1155,6 +1172,7 @@ func (s *Server) stopModules() {
 // order (etcd, PostgreSQL, MySQL, MCP, Unix, QUIC, gRPC, REST) and waits
 // for all background goroutines to complete.
 func (s *Server) Stop() {
+	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()
 	s.stopMySQL()

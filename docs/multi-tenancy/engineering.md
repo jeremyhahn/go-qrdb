@@ -204,6 +204,11 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 - **Entitlements are checked before quotas.** A plan that does not include a
   tier is refused without consulting counters.
 - **`Max*` semantics**: `-1` means unlimited, `0` means use the system default.
+- **`MaxStorageBytes` meters every data-plane write surface**, collection
+  documents included: the registry wraps the resolved KV, MVCC, batch,
+  transaction, time-series, vector and collection servicers on every resolve,
+  with the tenant's current limit. A collection document costs its body bytes
+  (see [../collections/engineering.md](../collections/engineering.md#tenant-scoping)).
 - **`MaxStorageBytes` for `volume` tenants is reconciled in the background** by
   a reconciler that walks each volume tenant's `DataRoot`, at
   `tenant.quota_reconcile_interval` (default `5m`), to correct drift.

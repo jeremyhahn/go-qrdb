@@ -84,6 +84,11 @@ type MVCCEngine struct {
 	// state machine. Guarded by indexMu with indexes and indexFields.
 	indexScopes map[string][]byte
 
+	// indexOwners holds the owner recorded for each index by name
+	// (index.IndexConfig.Owner, go-qrdb#426). The empty string is the
+	// explicit index API. Guarded by indexMu with the maps above.
+	indexOwners map[string]string
+
 	lessor   *lease.Lessor
 	hub      *watch.Hub
 	ts       *timeseries.Storage
@@ -139,6 +144,7 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 		indexes:     make(map[string]index.Index),
 		indexFields: make(map[string]string),
 		indexScopes: make(map[string][]byte),
+		indexOwners: make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -1403,14 +1409,21 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 
 	e.indexMu.Lock()
 	if _, exists := e.indexes[name]; exists {
-		// Index already present — idempotent success so Raft Apply does not
-		// stall on duplicate create proposals. NOTE: existence is keyed by name
-		// only; a re-create that reuses the name with a DIVERGENT definition
-		// (different field/uniqueness) is a no-op and the original definition
-		// wins. Reconciling a divergent re-create must be rejected at the
-		// service layer before the proposal (returning an error here would
-		// stall consensus).
+		owner := e.indexOwners[name]
 		e.indexMu.Unlock()
+		// A create naming an index ANOTHER owner holds is refused rather than
+		// adopted (go-qrdb#426). It is an application error, not a Go error:
+		// the outcome is a deterministic consequence of committed input, and
+		// returning an error here would stall consensus.
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+		}
+		// Index already present under the same owner — idempotent success so
+		// Raft Apply does not stall on duplicate create proposals. NOTE:
+		// existence is keyed by name only; a re-create by the SAME owner with
+		// a DIVERGENT definition (different field/uniqueness) is a no-op and
+		// the original definition wins. Reconciling a divergent re-create must
+		// be rejected at the service layer before the proposal.
 		return sm.Result{Value: 1}, nil, nil
 	}
 
@@ -1432,6 +1445,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		// complete; the apply path reads the composed scope out of
 		// e.indexScopes (go-qrdb#410).
 		KeyPrefix: opts.KeyPrefix,
+		Owner:     opts.Owner,
 		// Derived from the command instead of left at its zero value. This
 		// engine used to discard the flag, so an index:"case_insensitive"
 		// definition became a case-SENSITIVE index and a lookup for "Alpha"
@@ -1484,6 +1498,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
+	e.indexOwners[name] = opts.Owner
 	e.indexMu.Unlock()
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1494,7 +1509,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 // handlers must be idempotent so that cleanup proposals (e.g. deferred test
 // teardown) do not return a fatal Apply error that would stall consensus.
 func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -1506,9 +1521,15 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 		e.indexMu.Unlock()
 		return sm.Result{Value: 1}, nil, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := e.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		e.indexMu.Unlock()
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+	}
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
 	e.indexMu.Unlock()
 
 	if err := idx.Clear(); err != nil {
