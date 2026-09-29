@@ -131,7 +131,7 @@ func NewCeremonyService(
 		credService:       credService,
 		logger:            logger,
 		state:             StateAwaitingInit,
-		shareStore:        newSealedShareStore(),
+		shareStore:        newSealedShareStore(config.ShareTTL),
 		pendingCerts:      make(map[string]*PendingCert),
 		challenges:        make(map[string]*ChallengeResponse),
 		thresholdRegistry: NewThresholdRegistry(),

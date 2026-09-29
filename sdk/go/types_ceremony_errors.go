@@ -72,6 +72,10 @@ var (
 	// ErrCeremonyShareNotFound is returned when a share does not exist.
 	ErrCeremonyShareNotFound = ceremony.ErrShareNotFound
 
+	// ErrCeremonyShareExpired indicates a distributed share was wiped
+	// unclaimed at the end of its time-to-live.
+	ErrCeremonyShareExpired = ceremony.ErrShareExpired
+
 	// ErrCeremonyCertThumbprintMismatch is returned when the caller's mTLS
 	// certificate thumbprint does not match the enrolled officer record. It is
 	// the refusal that keeps a named-but-unauthenticated caller from taking an

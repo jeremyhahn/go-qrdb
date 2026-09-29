@@ -125,6 +125,11 @@ type CeremonyConfig struct {
 
 	// DataDir is the directory for ceremony-related data storage.
 	DataDir string
+
+	// ShareTTL bounds how long a distributed share is held for its holder to
+	// claim before it is wiped. Zero selects DefaultShareTTL. It applies to
+	// the system and recovery scopes; tenant scopes use DefaultShareTTL.
+	ShareTTL time.Duration
 }
 
 // InitializeOptions carries per-request parameters for an initialization

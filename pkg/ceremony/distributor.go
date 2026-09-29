@@ -202,7 +202,7 @@ func (s *CeremonyService) RecoveryOfficerClaimStatus(_ context.Context) ([]*Offi
 // officer registry. Must be called under s.mu.
 func (s *CeremonyService) ensureRecoveryState() error {
 	if s.recoveryShareStore == nil {
-		s.recoveryShareStore = newSealedShareStore()
+		s.recoveryShareStore = newSealedShareStore(s.config.ShareTTL)
 	}
 	if s.recoveryRegistry == nil {
 		reg, err := NewScopedOfficerRegistry(s.barrier, ScopeRecovery)

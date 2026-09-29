@@ -142,6 +142,7 @@ Root token response: `{"token": "<hex HMAC-SHA256>"}`.
 | Init/rekey before `SetCeremonyDistributor` | 503 | `FAILED_PRECONDITION` — `ErrCeremonyDistributorNotConfigured` |
 | Claim nonce expired or signature invalid | 403 | `PERMISSION_DENIED` |
 | Claim for an already-claimed share | 409 | `FAILED_PRECONDITION` — delivered exactly once |
+| Claim after the share's TTL elapsed unclaimed (default 24h) | 410 | `FAILED_PRECONDITION` — `ErrShareExpired`; a rekey redistributes |
 | No recovery key metadata | 404 | `NOT_FOUND` — `ErrRecoveryKeysNotFound` |
 | Root token share verification failed | 403 | `PERMISSION_DENIED` — `ErrRootTokenVerificationFailed` |
 

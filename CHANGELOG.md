@@ -3246,6 +3246,14 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
 
 ### Security
 
+- **A distributed Shamir share is destroyed if it is not claimed in time.**
+  Every share held for a Security Officer now carries its own expiry timer
+  (`CeremonyConfig.ShareTTL`, default `ceremony.DefaultShareTTL` = 24h) and is
+  wiped at its deadline. A late claim is refused with the new
+  `ceremony.ErrShareExpired` (`sdk/go.ErrCeremonyShareExpired`) at claim
+  begin and complete, mapped to REST 410 and gRPC/Unix `FAILED_PRECONDITION`;
+  the remedy is a rekey. Replacing a held share now destroys the old enclave
+  instead of dropping it for the collector.
 - **The barrier root key is decrypted straight into protected memory.**
   Unwrapping the Shamir-wrapped root key (unseal, root-token verification)
   now opens the AEAD in place into a `pkg/secure` buffer and hands it to the

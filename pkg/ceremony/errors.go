@@ -83,6 +83,11 @@ var (
 	// given username.
 	ErrShareNotFound = errors.New("ceremony: share not found")
 
+	// ErrShareExpired is returned when a share was distributed to a holder
+	// but was wiped unclaimed at the end of its time-to-live. Shares are never
+	// persisted, so the only remedy is a rekey, which distributes fresh ones.
+	ErrShareExpired = errors.New("ceremony: share expired unclaimed; a rekey is required to redistribute")
+
 	// ErrShareUnreadable is returned when a stored share's protected buffer
 	// yields no bytes — the shape a concurrent destroy (a shutdown
 	// enclave.WipeAll) leaves behind.

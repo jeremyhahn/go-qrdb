@@ -53,7 +53,9 @@ challenge/response claim. The full design contract is
    `POST /v1/barrier/officers/{username}/claim/begin` returns a nonce
    (5-minute TTL); the officer signs it with their private key and submits
    `POST /v1/barrier/officers/{username}/claim/complete`. The share bytes are
-   returned exactly once and the server-side enclave is destroyed.
+   returned exactly once and the server-side enclave is destroyed. An
+   unclaimed share is destroyed at the end of its time-to-live (24h by
+   default); a rekey is then the only way to redistribute it.
    The claim routes are **identity-gated** (`permission.IdentityGated`), not
    RBAC-gated: officers are ceremony-registry principals, not RBAC users (the
    user store does not yet exist when they are registered), so the middleware

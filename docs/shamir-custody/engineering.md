@@ -213,6 +213,14 @@ token, err := barrier.GenerateRootToken(ctx, shares[:3])
   `Threshold`/`TotalShares`/`ShareCount`.
 - **A share is claimed exactly once**; the server enclave is destroyed on
   success.
+- **An unclaimed share lives for a bounded time.** Every distributed share
+  carries its own timer (`CeremonyConfig.ShareTTL`, default
+  `ceremony.DefaultShareTTL` = 24h; tenant scopes use the default) and is
+  destroyed at its deadline whether or not anything touches the store. A late
+  claim fails with `ErrShareExpired`, at `claim/begin` and at
+  `claim/complete`; shares are never persisted, so the remedy is a rekey.
+  Storing a share for a holder who already has one destroys the old enclave
+  first.
 - **Claim nonces carry a 5-minute TTL.**
 - **Claim routes are identity-gated, not RBAC-gated.** Officers are ceremony
   principals registered before the user store exists. The handler enforces

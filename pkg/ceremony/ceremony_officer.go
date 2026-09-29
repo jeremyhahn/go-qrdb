@@ -438,8 +438,12 @@ func beginClaimShareLocked(
 		return nil, ErrCertThumbprintMismatch
 	}
 
-	// A share must exist and be unclaimed.
+	// A share must exist and be unclaimed. One that outlived its TTL is
+	// reported as such: the remedy is a rekey, not a retry.
 	if !store.Exists(username) {
+		if store.Expired(username) {
+			return nil, ErrShareExpired
+		}
 		return nil, ErrNoPendingShare
 	}
 

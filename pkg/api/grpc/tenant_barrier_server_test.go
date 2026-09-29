@@ -972,6 +972,7 @@ func TestMapTenantBarrierCeremonyError_AllBranches(t *testing.T) {
 		{"officer not found", ceremony.ErrOfficerNotFound, codes.NotFound},
 		{"share already claimed", ceremony.ErrShareAlreadyClaimed, codes.FailedPrecondition},
 		{"no pending share", ceremony.ErrNoPendingShare, codes.NotFound},
+		{"share expired", ceremony.ErrShareExpired, codes.FailedPrecondition},
 		{"insufficient officers", ceremony.ErrInsufficientOfficers, codes.FailedPrecondition},
 		{"invalid auth type", ceremony.ErrInvalidAuthenticatorType, codes.InvalidArgument},
 		{"shamir requires quorum", seal.ErrShamirBarrierRequiresQuorum, codes.FailedPrecondition},

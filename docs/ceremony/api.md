@@ -94,6 +94,7 @@ certificate.
 | Success | 200 | `OK` |
 | `threshold >= 2` with no officers | 400 | `INVALID_ARGUMENT` — `ErrNoOfficers` |
 | Share already claimed | 409 | `FAILED_PRECONDITION` — delivered exactly once |
+| Share wiped unclaimed at its TTL (default 24h) | 410 | `FAILED_PRECONDITION` — `ErrShareExpired` |
 | Nonce expired or signature invalid | 403 | `PERMISSION_DENIED` |
 | Auth-factor response invalid | 403 | `PERMISSION_DENIED` |
 | Invalid authenticator type | 400 | `INVALID_ARGUMENT` — `ErrInvalidAuthenticatorType` |

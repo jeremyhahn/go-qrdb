@@ -30,7 +30,7 @@ import (
 func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	const share = `{"index":1,"value":"abc123"}`
 	if err := store.Store("officer-1", []byte(share)); err != nil {
 		t.Fatalf("Store: %v", err)
@@ -56,7 +56,7 @@ func TestShareStoreClaim_TakesNoNestedBorrow(t *testing.T) {
 func TestShareStoreStore_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	for _, officer := range []string{"officer-1", "officer-2", "officer-3"} {
 		if err := store.Store(officer, []byte(`{"index":1,"value":"abc"}`)); err != nil {
 			t.Fatalf("Store(%s): %v", officer, err)

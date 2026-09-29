@@ -185,6 +185,7 @@ func TestMapBarrierCeremonyHTTPError(t *testing.T) {
 		{"OfficerNotFound", ceremony.ErrOfficerNotFound, http.StatusNotFound},
 		{"ShareAlreadyClaimed", ceremony.ErrShareAlreadyClaimed, http.StatusConflict},
 		{"NoPendingShare", ceremony.ErrNoPendingShare, http.StatusNotFound},
+		{"ShareExpired", ceremony.ErrShareExpired, http.StatusGone},
 		{"InsufficientOfficers", ceremony.ErrInsufficientOfficers, http.StatusUnprocessableEntity},
 		{"ShamirBarrierRequiresQuorum", seal.ErrShamirBarrierRequiresQuorum, http.StatusUnprocessableEntity},
 		{"SealVoteVerificationFailed", seal.ErrSealVoteVerificationFailed, http.StatusForbidden},

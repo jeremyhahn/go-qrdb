@@ -27,7 +27,7 @@ import (
 )
 
 func TestSealedShareStore_StoreAndClaim(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	shareData := []byte(`{"index":1,"value":"abc123"}`)
 	err := store.Store("alice", shareData)
@@ -46,14 +46,14 @@ func TestSealedShareStore_StoreAndClaim(t *testing.T) {
 }
 
 func TestSealedShareStore_ClaimNonexistent(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	_, err := store.Claim("nobody")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
 func TestSealedShareStore_DoubleClaim(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("bob", []byte(`{"index":2,"value":"def456"}`))
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestSealedShareStore_DoubleClaim(t *testing.T) {
 }
 
 func TestSealedShareStore_ExistsAndClaimed(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	// Before storing: not exists, not claimed.
 	assert.False(t, store.Exists("charlie"))
@@ -86,7 +86,7 @@ func TestSealedShareStore_ExistsAndClaimed(t *testing.T) {
 }
 
 func TestSealedShareStore_DestroyAll(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-a`))
 	require.NoError(t, err)
@@ -107,7 +107,7 @@ func TestSealedShareStore_DestroyAll(t *testing.T) {
 }
 
 func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-round-1`))
 	require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 }
 
 func TestSealedShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-a`))
 	require.NoError(t, err)
@@ -151,7 +151,7 @@ func TestSealedShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
 }
 
 func TestSealedShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-a`))
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestSealedShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
 }
 
 func TestSealedShareStore_StoreMultipleClaimOne(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-alice`))
 	require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestSealedShareStore_StoreMultipleClaimOne(t *testing.T) {
 }
 
 func TestSealedShareStore_StoreOverwrite(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 
 	err := store.Store("alice", []byte(`share-v1`))
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestSealedShareStore_StoreOverwrite(t *testing.T) {
 // exists to prevent. The share bytes are the root key: anything that lets a
 // threshold of them be recovered from a crashed process defeats the scheme.
 func TestSealedShareStore_ConsumesTheCallerSlice(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
 	shareJSON := []byte(`{"index":1,"value":"deadbeefdeadbeef"}`)
@@ -245,7 +245,7 @@ func TestSealedShareStore_ConsumesTheCallerSlice(t *testing.T) {
 // its own -- which is the precise property an M-of-N ceremony is chosen to
 // avoid.
 func TestSealedShareStore_ClaimDestroysTheEnclave(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	defer store.DestroyAll()
 
 	require.NoError(t, store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)))
@@ -320,7 +320,7 @@ func runShareStoreWipeAllChild() {
 		os.Exit(1)
 	}
 
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	if err := store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)); err != nil {
 		fail("Store: %v", err)
 	}

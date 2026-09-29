@@ -64,6 +64,10 @@ qrdb barrier officer claim-complete --username alice \
 before the terminal buffer scrolls away — there is no second retrieval. The
 nonce expires after five minutes.
 
+**Claim promptly.** A share nobody claims is destroyed after 24 hours by
+default. A late claim is refused with "share expired unclaimed", and the only
+way to get a new share is a rekey.
+
 **Check who has claimed.**
 
 ```bash

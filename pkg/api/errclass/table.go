@@ -761,6 +761,9 @@ var ceremonyRules = []rule{
 	is(ceremony.ErrOfficerNotFound, NotFound),
 	is(ceremony.ErrShareAlreadyClaimed, FailedPrecondition),
 	is(ceremony.ErrNoPendingShare, NotFound),
+	// A held share outlived its claim window and was destroyed; only a rekey
+	// deals a new one.
+	is(ceremony.ErrShareExpired, Gone),
 	is(ceremony.ErrInsufficientOfficers, Unprocessable),
 	is(ceremony.ErrInvalidAuthenticatorType, InvalidArgument),
 }

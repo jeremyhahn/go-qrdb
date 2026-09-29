@@ -543,7 +543,7 @@ func TestNewAESGCM_ValidKey(t *testing.T) {
 // TestSealedShareStore_Store_EmptyShare verifies that storing an empty share
 // returns an error from secure.NewSecret (length 0 is invalid).
 func TestSealedShareStore_Store_EmptyShare(t *testing.T) {
-	store := newSealedShareStore()
+	store := newSealedShareStore(DefaultShareTTL)
 	err := store.Store("alice", []byte{})
 	assert.Error(t, err)
 	// The share must not have been stored.

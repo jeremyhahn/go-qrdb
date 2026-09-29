@@ -75,7 +75,7 @@ func NewTenantCeremonyService(
 
 	return &TenantCeremonyService{
 		scope:      scope,
-		shareStore: newSealedShareStore(),
+		shareStore: newSealedShareStore(DefaultShareTTL),
 		registry:   reg,
 		ca:         ca,
 		challenges: make(map[string]*ChallengeResponse),

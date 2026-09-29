@@ -17,35 +17,60 @@ package ceremony
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
+
+// DefaultShareTTL is how long a distributed share is held for its holder to
+// claim before it is wiped, when the configuration does not say otherwise.
+const DefaultShareTTL = 24 * time.Hour
 
 // sealedShareStore provides secure in-memory storage for Shamir key
 // shares using *secure.Secret enclaves. Shares are NEVER persisted to
 // disk. Once claimed, the Secret is destroyed and the share bytes are
 // wiped from memory.
+//
+// Every held share carries its own expiry timer, so a share nobody claims is
+// wiped at its deadline whether or not anything else touches the store; a lazy
+// sweep on access would leave an abandoned ceremony's shares resident
+// indefinitely. A timer holds no goroutine until it fires.
 type sealedShareStore struct {
 	mu      sync.Mutex
-	shares  map[string]*secure.Secret
+	ttl     time.Duration
+	shares  map[string]*heldShare
 	claimed map[string]bool
+	expired map[string]bool
+}
+
+// heldShare is one sealed share and the timer that wipes it at its deadline.
+type heldShare struct {
+	secret *secure.Secret
+	timer  *time.Timer
 }
 
 // newSealedShareStore creates a new in-memory share store backed by
-// *secure.Secret enclaves.
-func newSealedShareStore() *sealedShareStore {
+// *secure.Secret enclaves. A non-positive ttl selects DefaultShareTTL.
+func newSealedShareStore(ttl time.Duration) *sealedShareStore {
+	if ttl <= 0 {
+		ttl = DefaultShareTTL
+	}
 	return &sealedShareStore{
-		shares:  make(map[string]*secure.Secret),
+		ttl:     ttl,
+		shares:  make(map[string]*heldShare),
 		claimed: make(map[string]bool),
+		expired: make(map[string]bool),
 	}
 }
 
 // Store securely stores share bytes for the given username. The input
 // slice is consumed — shareJSON is wiped before this function returns.
+//
+// A share already held for username is destroyed before it is replaced: a
+// holder has one share at a time, and dropping the old enclave without
+// destroying it would leave its pages locked and its plaintext recoverable
+// until the collector ran.
 func (s *sealedShareStore) Store(username string, shareJSON []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	sec, err := secure.NewSecret(shareJSON)
 	if err != nil {
 		// NewSecret wipes shareJSON only on success; defensively wipe on
@@ -53,15 +78,42 @@ func (s *sealedShareStore) Store(username string, shareJSON []byte) error {
 		secure.Wipe(shareJSON)
 		return err
 	}
-	s.shares[username] = sec
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if prior, ok := s.shares[username]; ok {
+		prior.timer.Stop()
+		prior.secret.Destroy()
+	}
+	held := &heldShare{secret: sec}
+	held.timer = time.AfterFunc(s.ttl, func() { s.expire(username, held) })
+	s.shares[username] = held
+	delete(s.expired, username)
 	return nil
+}
+
+// expire wipes held if it is still the share held for username. A timer that
+// fires after its share was claimed or replaced finds a different entry (or
+// none) and does nothing.
+func (s *sealedShareStore) expire(username string, held *heldShare) {
+	s.mu.Lock()
+	if s.shares[username] != held {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.shares, username)
+	s.expired[username] = true
+	s.mu.Unlock()
+	held.secret.Destroy()
 }
 
 // Claim retrieves and returns a copy of the share bytes for the given
 // username, then destroys the sealed material. After claiming, the
 // share is no longer available. Returns ErrShareAlreadyClaimed if the
-// share was previously claimed, or ErrShareNotFound if no share was
-// ever stored for the username.
+// share was previously claimed, ErrShareExpired if it was wiped unclaimed at
+// the end of its time-to-live, or ErrShareNotFound if no share was ever
+// stored for the username.
 func (s *sealedShareStore) Claim(username string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,10 +122,14 @@ func (s *sealedShareStore) Claim(username string) ([]byte, error) {
 		return nil, ErrShareAlreadyClaimed
 	}
 
-	sec, ok := s.shares[username]
+	held, ok := s.shares[username]
 	if !ok {
+		if s.expired[username] {
+			return nil, ErrShareExpired
+		}
 		return nil, ErrShareNotFound
 	}
+	sec := held.secret
 
 	buf, err := sec.Open()
 	if err != nil {
@@ -120,6 +176,7 @@ func (s *sealedShareStore) Claim(username string) ([]byte, error) {
 	}
 	buf.Destroy()
 
+	held.timer.Stop()
 	sec.Destroy()
 	delete(s.shares, username)
 	s.claimed[username] = true
@@ -134,6 +191,14 @@ func (s *sealedShareStore) Exists(username string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.shares[username]
 	return ok
+}
+
+// Expired reports whether a share distributed to username was wiped unclaimed
+// at the end of its time-to-live and has not been redistributed since.
+func (s *sealedShareStore) Expired(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.expired[username]
 }
 
 // Claimed reports whether a share was previously stored and has been
@@ -152,8 +217,9 @@ func (s *sealedShareStore) Claimed(username string) bool {
 func (s *sealedShareStore) DestroyAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for username, sec := range s.shares {
-		sec.Destroy()
+	for username, held := range s.shares {
+		held.timer.Stop()
+		held.secret.Destroy()
 		delete(s.shares, username)
 	}
 }
@@ -165,13 +231,13 @@ func (s *sealedShareStore) DestroyAll() {
 func (s *sealedShareStore) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for username, sec := range s.shares {
-		sec.Destroy()
+	for username, held := range s.shares {
+		held.timer.Stop()
+		held.secret.Destroy()
 		delete(s.shares, username)
 	}
-	for username := range s.claimed {
-		delete(s.claimed, username)
-	}
+	clear(s.claimed)
+	clear(s.expired)
 }
 
 // copyShareOut copies a share's bytes out of protected memory, refusing to
