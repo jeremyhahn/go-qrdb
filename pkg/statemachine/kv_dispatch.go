@@ -100,11 +100,20 @@ func (k *KVStateMachine) handleMVCCCompact(payload []byte, revision uint64) (sm.
 	return sm.Result{Value: revision}, nil
 }
 
-// handleTransaction decodes a Transaction command and delegates to the
-// configured MVCCStore.
-func (k *KVStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Result, error) {
+// handleTransaction applies a Transaction command.
+//
+// With an MVCCStore injected, the store evaluates it. Without one — every
+// state machine the registry builds — it runs on the NATIVE plane against the
+// backend's own keyspace, with the same compare semantics as the default
+// pebble state machine; see native_txn.go.
+func (k *KVStateMachine) handleTransaction(payload []byte, revision uint64) (sm.Result, error) {
 	if k.mvccStore == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
+		out, err := applyNativeTransaction(k.backend, payload)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		notifyMutations(k.watchManager, out.applied, revision)
+		return transactionResult(out, revision), nil
 	}
 
 	txn, err := protocol.DecodeTransaction(payload)

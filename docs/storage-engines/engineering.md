@@ -169,7 +169,11 @@ storage:
 Raft-mode state machines select their backend separately with
 `raft.sm_storage` (`pebble` default, `file`, `memory`) — see
 [../run-modes/engineering.md](../run-modes/engineering.md). Objstore is refused
-as a hot apply path.
+as a hot apply path. Every raft state machine commits a multi-key transaction
+or batch through `Backend.ApplyAtomic`, which each of the five backends
+implements all or nothing: one `storage.Batch` for `disk`, one acquisition of
+every touched shard's lock for `fast` and the in-memory ones
+([../key-value/engineering.md](../key-value/engineering.md)).
 
 Cloud object-storage backends come from go-objstore and are build-tag gated:
 `WITH_AWS_S3`, `WITH_MINIO`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
@@ -187,7 +191,8 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Iterator created before `Close` and advanced after it | serves its pinned version; never panics. `Close` reported the leak | — |
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
-| Non-pebble `sm_storage` with a pebble-native state machine | rejected | **yes** |
+| Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
+| A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
 | `VolumePools()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 | Pool `Pick` with an unknown pool name | not-found | yes |
 | Opcode an engine has no handler for | refused in the result payload; the apply loop keeps advancing | **yes** |

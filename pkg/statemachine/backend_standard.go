@@ -265,3 +265,23 @@ func (b *StandardBackend) PutDurable(key, value []byte) error { return b.Put(key
 
 // DeleteDurable delegates to Delete — see PutDurable.
 func (b *StandardBackend) DeleteDurable(key []byte) error { return b.Delete(key) }
+
+// ApplyAtomic applies the whole set under ONE acquisition of the map's write
+// lock, so a concurrent reader sees the map before the set or after it and
+// never in between. Values are copied before the lock is taken, which is also
+// the only step that could otherwise fail part-way: nothing inside the lock
+// can, so there is no partial state to roll back.
+func (b *StandardBackend) ApplyAtomic(muts []Mutation) error {
+	owned := ownMutations(muts)
+
+	b.mu.Lock()
+	for _, m := range owned {
+		if m.Delete {
+			delete(b.data, string(m.Key))
+			continue
+		}
+		b.data[string(m.Key)] = m.Value
+	}
+	b.mu.Unlock()
+	return nil
+}

@@ -40,6 +40,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -48,16 +49,16 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_MVCC(t *testing.T) {
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "mvcc factory should return a non-nil CreateFunc")
 }
 
 func TestResolveCreateFunc_MVCC_ReturnsDifferentFromPebble(t *testing.T) {
-	mvccFn, err := resolveCreateFunc("mvcc", "")
+	mvccFn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 
-	pebbleFn, err := resolveCreateFunc("pebble", "")
+	pebbleFn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 
 	// Both should be non-nil but distinct.

@@ -837,14 +837,14 @@ func (c *ConcurrentStateMachine) handleBatch(payload []byte, revision uint64) (s
 	for _, op := range ops {
 		key := string(op.Key)
 		switch op.Type {
-		case kv.OpPut:
+		case kv.OpPut, protocol.OpMVCCPut:
 			ownedValue := make([]byte, len(op.Value))
 			copy(ownedValue, op.Value)
 			c.concurrentCacheSet(key, ownedValue)
 			if c.watchManager != nil {
 				c.watchManager.Notify(key, ownedValue, revision, false)
 			}
-		case kv.OpDelete:
+		case kv.OpDelete, protocol.OpMVCCDelete:
 			c.concurrentCacheDelete(key)
 			if c.watchManager != nil {
 				c.watchManager.Notify(key, nil, revision, true)

@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -361,7 +362,7 @@ func TestInit_PebbleFactoryClosure_InvokedWhenResolved(t *testing.T) {
 	// Resolving "pebble" calls the outer factory func() → sm.CreateFunc.
 	// Then calling the returned CreateFunc with shard/replica IDs invokes
 	// the inner closure (store.NewPebbleStateMachine(nil)).
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 
@@ -371,7 +372,7 @@ func TestInit_PebbleFactoryClosure_InvokedWhenResolved(t *testing.T) {
 }
 
 func TestInit_MVCCFactoryClosure_InvokedWhenResolved(t *testing.T) {
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 
@@ -630,7 +631,7 @@ func TestRunStart_DuplicateDatabaseName_AlreadyExistsPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_MemoryType(t *testing.T) {
-	fn, err := resolveCreateFunc("memory", "")
+	fn, err := resolveCreateFunc("memory", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "memory state machine factory must be resolvable")
 }

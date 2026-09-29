@@ -67,12 +67,20 @@ transactions, etcd compatibility (`qrdb_etcd`), cluster
 membership/topology, rebalance, shard backup/restore, IsolationRaft and
 IsolationVolume tenancy.
 
-**Only `sm_type` `pebble` (the default), `mvcc` and `mvcc-fast` start a
-raft daemon today.** The other registered types serve KV and batch only, with
-no transaction subsystem, and `qrdbd start` refuses them on every start
-because role and user creation commits atomically through one — see
-[../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection). That
-includes the storage-generic `disk` and `fast` described next.
+**Every `sm_type` starts a raft daemon.** Each one — `pebble` (the default),
+`mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` and
+`regular` — serves KV, all-or-nothing batches, the guarded single-key verbs
+and transactions, decided inside apply against the state machine's own
+keyspace, so guarded batches and multi-key transactions behave the same on
+all of them. What differs is what else a type carries:
+
+| `sm_type` | Transactions and guarded batches | Revision compares, `--at-revision` | Lease, watch, lock, index, time series |
+|---|---|---|---|
+| `mvcc` | yes | yes | yes |
+| `pebble` (default) | yes | refused (value and version compares only) | yes |
+| `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | yes | refused (value and version compares only) | no |
+
+A node's capability report names exactly what its `sm_type` serves.
 
 `raft.sm_storage` selects the storage backend the storage-generic state
 machines (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`,
@@ -80,9 +88,8 @@ or `memory`. The file backend earned the hot-apply role with real
 durability: atomic temp-file+rename+fsync writes and an all-or-nothing
 commit journal replayed at open (`pkg/storage/file/journal.go`), plus the
 `storage.Syncer` seam. Objstore is a snapshot/backup tier and is refused
-as a hot apply path with a pointed validation error. The pebble-native
-state machines (`pebble`, `mvcc`) carry their own dedicated Pebble store
-and reject a non-pebble `sm_storage`.
+as a hot apply path with a pointed validation error. Every other state
+machine carries its own storage and rejects a non-pebble `sm_storage`.
 
 
 ## The feature model: three gates, one truth

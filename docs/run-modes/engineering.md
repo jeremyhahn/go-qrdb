@@ -260,12 +260,18 @@ security posture or breaks a dependency of everything else:
 `raft.sm_storage` selects the backend the storage-generic state machines
 (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`, or `memory`.
 
-- **`disk` and `fast` are refused by `qrdbd start` today**, on every start, as
-  is every `sm_type` other than `pebble`, `mvcc` and `mvcc-fast`: none of them
-  has the transaction subsystem atomic role and user creation needs. The check
-  is `requireGuardedBatch` in `cmd/qrdbd/start.go` over
-  `kvstore.ProbeGuardedBatch`; see
-  [../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection).
+- **Storage is passed per resolution, never held in package state.**
+  `statemachine.ResolveTypedWithStorage` takes a `StorageConfig` carrying
+  `raft.data_dir` and `raft.sm_storage`; `qrdbd` and
+  `sdk/go/node.NewClusteredNode` both pass it, so two nodes in one process each
+  keep their storage under their own data directory. Which types are
+  storage-generic is the registry's answer (`Descriptor.StorageGeneric`), and a
+  non-pebble `sm_storage` for any other type is refused at resolution
+  (`SMStorageNotApplicableError`) rather than ignored.
+- **Every `sm_type` passes the start-time guarded-batch probe**
+  (`requireGuardedBatch` in `cmd/qrdbd/start.go` over
+  `kvstore.ProbeGuardedBatch`). The probe stays: it is what refuses a state
+  machine registered without a transaction plane, and none in this tree is.
 
 - **The file backend earned the hot-apply role with real durability**: atomic
   temp-file + rename + fsync writes and an all-or-nothing commit journal
@@ -273,8 +279,8 @@ security posture or breaks a dependency of everything else:
   seam.
 - **Objstore is a snapshot/backup tier** and is **refused as a hot apply path**
   with a pointed validation error.
-- **The pebble-native state machines (`pebble`, `mvcc`) carry their own
-  dedicated Pebble store** and reject a non-pebble `sm_storage`.
+- **Every state machine other than `disk` and `fast` carries its own
+  storage** and rejects a non-pebble `sm_storage`.
 
 ## Configuration
 

@@ -316,24 +316,6 @@ func TestKVServiceAdapter_ScanIndex_UnexpectedResultType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: defaultMVCCFastStorageFactory inner closure (lines 215-228)
-// These test the inner factory closure specifically (different from the outer
-// function test in coverage_boost_test.go).
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory_ClosureCreatesDifferentInstances(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	require.NotNil(t, factory)
-
-	// Two different shard/replica IDs must produce distinct storage instances.
-	s1 := factory(1, 1)
-	s2 := factory(2, 2)
-	require.NotNil(t, s1)
-	require.NotNil(t, s2)
-	assert.NotSame(t, s1, s2)
-}
-
-// ---------------------------------------------------------------------------
 // tls.go: generateCA (lines 118-163) - additional coverage
 // ---------------------------------------------------------------------------
 

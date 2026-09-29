@@ -48,7 +48,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -125,8 +124,8 @@ var transportKinds = []transportKind{
 
 // THE EXCLUSION THAT USED TO LIVE HERE IS GONE (go-qrdb#438).
 //
-// A predicate carriesTypedCapabilityRefusal gated the typedRefusal cells and
-// returned false for exactly one transport. MCP could not carry the refusal
+// A predicate carriesTypedCapabilityRefusal gated the (then) typedRefusal
+// cells and returned false for exactly one transport. MCP could not carry the refusal
 // the MULTI-KEY transaction plane owes on a state machine with no MVCC store:
 // a qrdb tool reported a service-layer failure as prose, go-qrdb had no
 // JSON-RPC error-code mapping (conventions/errors.md §5), and classifyRefusal
@@ -144,10 +143,12 @@ var transportKinds = []transportKind{
 // transport.CapabilityUnsupportedError from the CODE.
 //
 // So the predicate is DELETED rather than made to return true everywhere: a
-// gate with no false case is an invitation to add one. MCP's three typedRefusal
-// cells are in the matrix on the same terms as every other transport's, and
-// classifyRefusal is unchanged — not one clause of it was relaxed to admit
-// them, which is the only way admitting them is worth anything.
+// gate with no false case is an invitation to add one. MCP's cells are in the
+// matrix on the same terms as every other transport's, and classifyRefusal is
+// unchanged — not one clause of it was relaxed to admit them, which is the
+// only way admitting them is worth anything. Since go-qrdb#136 the capability
+// refusal it classifies is the leased write the non-default raft sm_types
+// cannot honour (assertLeasedWriteRefusedSafely).
 
 // remote reports whether this transport crosses a real listener and therefore
 // needs TLS material and a seeded RBAC identity. Only the embedded transport
@@ -164,36 +165,20 @@ const (
 	// every other fullPassage cell.
 	fullPassage outcome = iota
 
-	// typedRefusal: this cell's state machine carries the SINGLE-KEY guarded
-	// verbs but not the multi-key transaction plane, so the transaction must
-	// refuse with a typed error AND leave the node serving. Refusing safely is
-	// a real conformance promise, and it is what pins go-qrdb#129 permanently:
-	// before that fix these cells did not refuse, they killed the shard.
-	//
-	// The name is kept although what a cell refuses has narrowed twice —
-	// PutIfAbsent, then the guarded delete and swap in go-qrdb#175, as these
-	// state machines gained the dispatch entries they were always credited
-	// with. What the gate measures is unchanged: some verb here refuses, and
-	// refusing does not cost the shard.
-	typedRefusal
-
-	// A third outcome, guardedWriteRefusal, existed here between go-qrdb#175
-	// and go-qrdb#216 for the one cell whose BACKEND could not carry a guarded
-	// result: sm_type "fast" is a KVStateMachine over FastBackend, which
-	// acknowledged a write before it was durable. Backend now requires a
-	// durable write pair of every implementation (owner ruling 2026-09-03), so
-	// no cell refuses for that reason and the outcome is DELETED rather than
-	// left unused — an outcome no cell can select is an invitation to select
-	// it, and the selection would look like a fix.
+	// Two more outcomes existed here and are DELETED rather than left unused
+	// — an outcome no cell can select is an invitation to select it, and the
+	// selection would look like a fix. guardedWriteRefusal (go-qrdb#175 to
+	// #216) was for the one backend that could not carry a guarded result;
+	// typedRefusal (go-qrdb#121 to #136) was for the raft sm_types with no
+	// multi-key plane, which refused transactions with a typed error and had
+	// to keep serving afterwards. Since go-qrdb#136 every sm_type serves
+	// transactions natively, so every cell passes in full. The keep-serving
+	// half of typedRefusal still runs, on the refusal those cells DO make — a
+	// revision compare (assertRevisionCompareBehaviour).
 )
 
 func (o outcome) String() string {
-	switch o {
-	case fullPassage:
-		return "full-passage"
-	default:
-		return "typed-refusal"
-	}
+	return "full-passage"
 }
 
 // cell is one square of the matrix.
@@ -244,18 +229,12 @@ func (c cell) name() string {
 // outcome its siblings have and a transport that quietly weakened a verb shows
 // up as a difference from them.
 //
-// The expected outcome per cell follows the scope ruled for v0.12: the
-// guarded/transaction plane under raft is promised on the DEFAULT sm_type
-// only. The non-default state machines never had a working MVCC store —
-// WithKVMVCCStore has no production caller — so scoping removes no working
-// promise, and giving them one is tracked post-v0.12 as go-qrdb#136. When that
-// lands, those four cells flip from typedRefusal to fullPassage, and the flip
-// is that issue's acceptance test.
-//
-// go-qrdb#175 already moved half of that flip: the four typedRefusal cells now
-// pass the whole single-key guarded battery, because the guarded delete and
-// swap needed no MVCC store — only the dispatch entries these state machines
-// were missing. What remains for #136 is the multi-key transaction plane.
+// Every cell expects full passage. The raft row's non-default sm_types were
+// scoped to a typed refusal of the multi-key plane for v0.12; go-qrdb#136 gave
+// every state machine a native transaction plane over its own keyspace, and
+// flipping those cells to full passage is that issue's acceptance test here.
+// pkg/server/lifecycle's TestGuardedPlaneConformsOnEverySMType walks every
+// sm_type over every sm_storage; this matrix walks the transports.
 func matrix() []cell {
 	var cells []cell
 	for _, tk := range transportKinds {
@@ -271,27 +250,15 @@ func matrix() []cell {
 		)
 
 		cells = append(cells,
-			// Raft, non-default sm_types: no MVCC store, so the multi-key
-			// transaction plane must refuse cleanly and keep serving.
-			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: typedRefusal,
+			// Raft, non-default sm_types: the native transaction plane over
+			// the state machine's own keyspace (go-qrdb#136), on a volatile
+			// map, on durable file storage, and on the sharded write-through
+			// cache.
+			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: fullPassage,
 				smType: "memory"},
-			cell{backend: database.BackendFile, mode: raft, transport: tk, want: typedRefusal,
+			cell{backend: database.BackendFile, mode: raft, transport: tk, want: fullPassage,
 				smType: "disk", smStorage: "file"},
-
-			// Raft, sm_type "fast": a KVStateMachine over FastBackend. It
-			// was the one composition whose BACKEND could not carry a guarded
-			// result — the write was acknowledged before it was durable and
-			// its storage failure was logged rather than returned — so the
-			// guarded delete and swap refused here while PutIfAbsent kept
-			// executing with the same hole open.
-			//
-			// go-qrdb#216 put the durable write pair on Backend itself, so
-			// this cell now carries the single-key guarded plane like every
-			// other non-default sm_type, and refuses only the MULTI-KEY
-			// transaction plane it has no MVCC store for. This cell is what
-			// pins that through every transport that can carry a typed
-			// refusal rather than only at the state machine.
-			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: typedRefusal,
+			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: fullPassage,
 				smType: "fast", smStorage: "memory"},
 		)
 	}
@@ -407,21 +374,16 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	return cfg
 }
 
-// applySMStorage installs the raft storage-backend selection, which
-// NewClusteredNode does not read from config — only the daemon calls these
-// setters. They are process-global and mutex-guarded, so cells that need them
-// must not run in parallel, and each restores the previous value.
-func applySMStorage(t *testing.T, cfg *qrdbconfig.Config) {
-	t.Helper()
-	if cfg.Raft.SMStorage == "" {
-		return
+// keepsRevisions reports whether the cell's engine keeps MVCC revisions and
+// so answers create_revision / mod_revision compares: the MVCC engine on a
+// standalone memory or pebble backend, and the default raft state machine.
+// The file engine and every other raft sm_type compare on value and version
+// only, and refuse revision compares.
+func (c cell) keepsRevisions() bool {
+	if c.mode == raft {
+		return c.smType == ""
 	}
-	statemachine.SetDataDirRoot(cfg.Raft.DataDir)
-	statemachine.SetSMStorage(cfg.Raft.SMStorage)
-	t.Cleanup(func() {
-		statemachine.SetDataDirRoot("")
-		statemachine.SetSMStorage("")
-	})
+	return c.backend != database.BackendFile
 }
 
 // clients is the guarded surface under test, however it was reached.
@@ -435,7 +397,6 @@ type clients struct {
 func (c cell) boot(t *testing.T) clients {
 	t.Helper()
 	cfg := c.config(t)
-	applySMStorage(t, cfg)
 
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA

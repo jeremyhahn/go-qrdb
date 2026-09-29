@@ -991,7 +991,7 @@ func TestValidate_TLSEnabled_ManualCerts_Valid(t *testing.T) {
 
 func TestValidate_AllValidSMTypes(t *testing.T) {
 	allTypes := []string{
-		"pebble", "memory", "mvcc", "mvcc-fast",
+		"pebble", "memory", "mvcc",
 		"standard", "concurrent", "fast", "disk", "highperf", "regular",
 	}
 	for _, smType := range allTypes {
@@ -1002,6 +1002,17 @@ func TestValidate_AllValidSMTypes(t *testing.T) {
 				t.Errorf("SMType %q should be valid, got %v", smType, err)
 			}
 		})
+	}
+}
+
+// TestValidate_MVCCFastIsRefused pins the removal of the mvcc-fast sm_type
+// (go-qrdb#136): a config naming it is refused at load, not at startup.
+func TestValidate_MVCCFastIsRefused(t *testing.T) {
+	cfg := validConfig()
+	cfg.Raft.SMType = "mvcc-fast"
+	var ve *ValidationError
+	if err := cfg.Validate(); !errors.As(err, &ve) || ve.Field != "raft.sm_type" {
+		t.Fatalf("Validate(sm_type mvcc-fast) = %v; want a raft.sm_type ValidationError", err)
 	}
 }
 

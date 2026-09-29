@@ -107,3 +107,24 @@ func (e *ServiceNotConfiguredError) Error() string {
 func (e *ServiceNotConfiguredError) Capability() string {
 	return e.Service
 }
+
+// InvalidKeyError refuses a write or compare naming a key no client may use:
+// an empty key, which no storage backend can hold, or a key the state machine
+// reserves for its own bookkeeping. Every replica detects it identically, so
+// it is a refusal on the request's merits (protocol.RefusalError), encoded
+// into the result rather than halting Apply.
+type InvalidKeyError struct {
+	Op     string
+	Reason string
+}
+
+// Error returns a human-readable description of the refused key.
+func (e *InvalidKeyError) Error() string {
+	return "statemachine: " + e.Op + ": invalid key: " + e.Reason
+}
+
+// Refusal declares the error a refusal of the request, not a fault. See
+// protocol.RefusalError.
+func (e *InvalidKeyError) Refusal() string {
+	return "invalid key"
+}

@@ -71,7 +71,6 @@ github.com/jeremyhahn/go-qrdb/pkg/lock 97.36
 github.com/jeremyhahn/go-qrdb/pkg/logger 97.95
 github.com/jeremyhahn/go-qrdb/pkg/messaging 98.66
 github.com/jeremyhahn/go-qrdb/pkg/mvcc 93.50
-github.com/jeremyhahn/go-qrdb/pkg/mvccadapter 92.13
 github.com/jeremyhahn/go-qrdb/pkg/permission 97.59
 github.com/jeremyhahn/go-qrdb/pkg/pin 96.63
 github.com/jeremyhahn/go-qrdb/pkg/placement 97.48

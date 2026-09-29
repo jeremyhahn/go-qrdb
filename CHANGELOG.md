@@ -29,6 +29,51 @@ are not reconstructed here — their history is in the git log.
   `RENAME TABLE` now fail with the rewrite-in-progress error, as `ALTER` and `TRUNCATE`
   already did, instead of committing a change the rewrite's completion would undo. `DROP
   TABLE` still works.
+- **Every `--sm` / `raft.sm_type` serves transactions and guarded batches, and
+  starts (go-qrdb#136).** `memory`, `standard`, `concurrent`, `fast`, `disk`,
+  `highperf` and `regular` now decide `OpTransaction` and `OpBatch` against
+  their own keyspace — the one `Put`, `Get` and the guarded verbs use — with the
+  default pebble state machine's compare semantics (value and version compares;
+  create/mod-revision compares refused with the same error). The start-time
+  refusal 0.21.0-alpha added for these types no longer fires, so a deployment
+  that stayed on an earlier release to keep one of them can upgrade.
+  `configs/qrdb-dev.yaml` is back on `sm_type: memory`.
+- **The `mvcc-fast` sm_type is removed, with `pkg/mvccadapter`.** Its MVCC
+  store lived in a keyspace separate from the KV plane — a transaction compare
+  could not see a plain `Put`, and the transaction service's opcodes were
+  refused outright — and it kept that store in a temporary directory. A config
+  naming it is refused at load. Use `mvcc` for revisions, or any other type
+  for transactions.
+- **`statemachine.Backend` gains a required `ApplyAtomic(muts []Mutation)
+  error`.** A transaction or batch commits all or nothing through it: one
+  `storage.Batch` on `DiskBackend`, one acquisition of every touched shard's
+  lock on `FastBackend` and the in-memory backends (`FastBackend` writes
+  through to storage asynchronously, in apply order, as `Put` does — its
+  durability is the Raft log's, since each replica is rebuilt from the log and
+  snapshots at start). A `Backend` implemented outside this repository must
+  add it.
+- **Empty keys are refused on every write path, and the disk state machine's
+  applied-index key is reserved.** `TransactionService` and `BatchService`
+  refuse an empty key before proposing it (`service.InvalidKeyError` inside
+  `EncodeRequestError`, invalid-argument on every transport); a state machine
+  that receives one anyway refuses it as an application result
+  (`statemachine.InvalidKeyError`, a new `protocol.RefusalError` declaration
+  the Apply classifier encodes) instead of halting Apply on every replica. A
+  client write to `"\x00__qrdb_sm_last_applied__"` is refused on every
+  registry state machine.
+- **`statemachine.SetDataDirRoot` and `SetSMStorage` are removed.** Storage is
+  passed per resolution: `statemachine.ResolveTypedWithStorage(smType,
+  smBackend, StorageConfig{Root, Kind})`, and storage-generic state machines
+  register through `RegisterStorageGeneric`. `sdk/go/node.NewClusteredNode`
+  now honours `raft.sm_storage` (it ignored it), and refuses a non-pebble
+  `sm_storage` for a state machine that carries its own storage.
+- **The node capability report names the real sm_type.** A raft node's profile
+  is narrowed by its state machine's descriptor
+  (`statemachine.NarrowCapabilities`): a node on `memory` no longer reports
+  MVCC, watch, lease, lock, index or time series, and the default `pebble`
+  node no longer reports MVCC, which it never served. Every descriptor —
+  the registry's and `store.PebbleDescriptor`/`MVCCDescriptor` — is held to
+  what its state machine does by a behaviour test.
 
 ### Changed
 
@@ -191,6 +236,18 @@ are not reconstructed here — their history is in the git log.
   sentinel storage raised rather than by the call site, so a storage fault during a lookup is
   no longer reported as "not found". Breaking for any caller that matched `QRDBError.Code` on a
   vector call; match the types with `errors.As`.
+- **Batches on the non-default state machines are all or nothing.** They were
+  applied key by key: a concurrent read could see part of one, a crash could
+  leave part of one on disk, and the service layer's batch opcodes were
+  refused.
+- **The `disk` state machine commits each entry's log index with its writes**
+  — single-key guarded verbs as well as transactions — and the `fast` state
+  machine starts each replica from an empty keyspace (one storage batch), so
+  neither can replay an entry over its own result after a restart and decide
+  it the other way.
+- **`List` and `Scan` on the `concurrent` and `highperf` state machines never
+  see part of a transaction or batch**: they hold every shard's read lock for
+  the whole sweep.
 
 ## [0.21.3-alpha] - 2026-09-30
 

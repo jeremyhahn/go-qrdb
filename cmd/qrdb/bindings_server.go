@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -55,39 +54,9 @@ import (
 const embeddedConfigFile = "embedded.json"
 
 func init() {
-	// Register "pebble" and "mvcc" state machine types in the centralized
-	// registry. These live in the store package which cannot be imported
-	// from statemachine (circular dependency), so they are registered here
-	// at program startup.
-	statemachine.RegisterWithDescriptor("pebble", func() sm.CreateFunc {
-		return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-			return store.NewPebbleStateMachine(nil)
-		})
-	}, statemachine.Descriptor{
-		Description: "PebbleDB-backed on-disk state machine",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-		},
-	})
-	statemachine.RegisterWithDescriptor("mvcc", func() sm.CreateFunc {
-		return store.NewMVCCCreateFunc()
-	}, statemachine.Descriptor{
-		Description: "MVCC state machine with transactions, leases, indexes, and time-series",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-			statemachine.CapabilityMVCC,
-			statemachine.CapabilityTransaction,
-			statemachine.CapabilityBatch,
-			statemachine.CapabilityLease,
-			statemachine.CapabilityIndex,
-			statemachine.CapabilityTimeSeries,
-			statemachine.CapabilityWatch,
-		},
-	})
+	// "pebble" and "mvcc" live in pkg/store, which pkg/statemachine cannot
+	// import, so they join the registry here at program startup.
+	store.RegisterStateMachines()
 }
 
 const (

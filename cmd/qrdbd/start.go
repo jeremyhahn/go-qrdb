@@ -72,8 +72,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/mvccadapter"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -287,93 +285,9 @@ type raftNode interface {
 }
 
 func init() {
-	// Register "pebble" and "mvcc" state machine types in the centralized
-	// registry. These live in the store package which cannot be imported
-	// from statemachine (circular dependency), so they are registered here
-	// at program startup.
-	statemachine.RegisterWithDescriptor("pebble", func() sm.CreateFunc {
-		return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-			return store.NewPebbleStateMachine(nil)
-		})
-	}, statemachine.Descriptor{
-		Description: "PebbleDB-backed on-disk state machine",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-		},
-	})
-	statemachine.RegisterWithDescriptor("mvcc", func() sm.CreateFunc {
-		return store.NewMVCCCreateFunc()
-	}, statemachine.Descriptor{
-		Description: "MVCC state machine with transactions, leases, indexes, and time-series",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-			statemachine.CapabilityMVCC,
-			statemachine.CapabilityTransaction,
-			statemachine.CapabilityBatch,
-			statemachine.CapabilityLease,
-			statemachine.CapabilityIndex,
-			statemachine.CapabilityTimeSeries,
-			statemachine.CapabilityWatch,
-		},
-	})
-
-	// Register "mvcc-fast" state machine type. This uses the
-	// mvccadapter package to bridge the statemachine.MVCCStore
-	// interface to mvcc.RaftStorage, avoiding the import cycle
-	// that prevents placing this in the statemachine package.
-	statemachine.RegisterWithDescriptor("mvcc-fast", func() sm.CreateFunc {
-		return mvccadapter.NewMVCCFastCreateFunc(
-			defaultMVCCFastStorageFactory(),
-			defaultMVCCFastLogger(),
-		)
-	}, statemachine.Descriptor{
-		Description: "High-performance fast SM with MVCC support, PebbleDB backing",
-		Persistence: statemachine.PersistenceHybrid,
-		Kind:        statemachine.SMKindRegular,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-			statemachine.CapabilityMVCC,
-			statemachine.CapabilityTransaction,
-		},
-	})
-}
-
-// defaultMVCCFastStorageFactory returns a storage factory that creates
-// PebbleDB storage instances using per-shard temp directories. This
-// is suitable for development and testing. Production deployments
-// should provide a factory with a configured data directory.
-func defaultMVCCFastStorageFactory() func(shardID, replicaID uint64) storage.Storage {
-	return func(shardID, replicaID uint64) storage.Storage {
-		dir, err := os.MkdirTemp("", fmt.Sprintf("qrdb-mvcc-fast-%d-%d-*", shardID, replicaID))
-		if err != nil {
-			panic("qrdbd: failed to create temp dir for mvcc-fast storage: " + err.Error())
-		}
-		cfg := pebblestore.TestConfig(filepath.Join(dir, "data"))
-		s, err := pebblestore.New(cfg)
-		if err != nil {
-			panic("qrdbd: failed to create pebble storage for mvcc-fast: " + err.Error())
-		}
-		return s
-	}
-}
-
-// defaultMVCCFastLogger creates a minimal logger for the mvcc-fast
-// state machine in the default registry. Production deployments
-// should provide a properly configured logger.
-func defaultMVCCFastLogger() *logger.Logger {
-	log, err := logger.New(logger.LogConfig{
-		Level:  "warn",
-		Format: "json",
-		Output: "stderr",
-	})
-	if err != nil {
-		panic("qrdbd: failed to create default mvcc-fast logger: " + err.Error())
-	}
-	return log
+	// "pebble" and "mvcc" live in pkg/store, which pkg/statemachine cannot
+	// import, so they join the registry here at program startup.
+	store.RegisterStateMachines()
 }
 
 // clusterOptions translates the parsed start flags into the transport-neutral
@@ -489,7 +403,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
-	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble (default), mvcc or mvcc-fast. The other registered types (memory, standard, concurrent, fast, disk, highperf, regular) have no transaction subsystem and are refused at every start")
+	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble (default), mvcc, memory, standard, concurrent, fast, disk, highperf or regular. Every type serves KV, batches, the guarded verbs and transactions; only mvcc keeps revisions")
 	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk")
 	cmd.Flags().StringVar(&f.smStorage, "sm-storage", "", "Storage backend for the storage-generic state machines (sm type disk/fast): pebble (default), file, memory")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
@@ -1595,6 +1509,15 @@ func runStart(f *startFlags) (err error) {
 				return err
 			}
 			profile := capCfg.EffectiveCapabilities()
+			if !standalone {
+				// A raft node serves what its state machine serves: the
+				// report names the real --sm, not every feature the binary
+				// could serve on some other one.
+				profile, err = statemachine.NarrowCapabilities(profile, f.smType, f.smBackend)
+				if err != nil {
+					return &UnknownSMError{Name: f.smType}
+				}
+			}
 			capabilities.Seal(profile)
 
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
@@ -2684,13 +2607,9 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// restart-stable per-replica paths instead of fresh temp directories.
 	createFn := f.createFn
 	if createFn == nil {
-		if err := validateSMStorageFlags(f.smType, f.smBackend, f.smStorage); err != nil {
-			return nil, err
-		}
-		statemachine.SetDataDirRoot(f.dataDir)
-		statemachine.SetSMStorage(f.smStorage)
 		var err error
-		createFn, err = resolveCreateFunc(f.smType, f.smBackend)
+		createFn, err = resolveCreateFunc(f.smType, f.smBackend,
+			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage})
 		if err != nil {
 			return nil, err
 		}
@@ -2941,39 +2860,33 @@ func shutdownNode(node io.Closer) error {
 	return nil
 }
 
-// resolveCreateFunc looks up the state machine factory by type and
-// optional backend in the centralized statemachine.Registry and returns
-// the CreateFunc, or a local UnknownSMError if the combination is not
-// registered.
-// validateSMStorageFlags mirrors config.validateSMStorage for flags-only
-// boots: --sm-storage must name a supported hot-apply backend (objstore
-// is a snapshot/backup tier) and a non-pebble selection only combines
-// with the storage-generic state machine families (disk, fast).
-func validateSMStorageFlags(smType, smBackend, smStorage string) error {
-	switch smStorage {
-	case "", "pebble", "file", "memory":
-	default:
-		return &UnknownSMStorageError{Name: smStorage}
+// resolveCreateFunc looks up the state machine factory by type and optional
+// backend in the centralized statemachine.Registry, building a
+// storage-generic state machine over sc (the data dir and --sm-storage), and
+// translates the registry's refusals into this command's errors: an
+// unregistered combination is UnknownSMError, an unknown --sm-storage is
+// UnknownSMStorageError, and a non-pebble --sm-storage for a state machine
+// that carries its own storage is SMStorageTypeMismatchError. Which types are
+// storage-generic is the registry's answer (Descriptor.StorageGeneric), not a
+// list kept here.
+func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig) (sm.CreateFunc, error) {
+	createFn, err := statemachine.ResolveTypedWithStorage(smType, smBackend, sc)
+	if err == nil {
+		return createFn, nil
 	}
-	if smStorage == "" || smStorage == "pebble" {
-		return nil
+	var unknownStorage *statemachine.UnknownSMStorageError
+	if errors.As(err, &unknownStorage) {
+		return nil, &UnknownSMStorageError{Name: sc.Kind}
 	}
-	if smType != "disk" && smType != "fast" && smBackend != "disk" && smBackend != "fast" {
-		return &SMStorageTypeMismatchError{Storage: smStorage, SMType: smType}
+	var notApplicable *statemachine.SMStorageNotApplicableError
+	if errors.As(err, &notApplicable) {
+		return nil, &SMStorageTypeMismatchError{Storage: sc.Kind, SMType: smType}
 	}
-	return nil
-}
-
-func resolveCreateFunc(smType, smBackend string) (sm.CreateFunc, error) {
-	createFn, err := statemachine.ResolveTyped(smType, smBackend)
-	if err != nil {
-		name := smType
-		if smBackend != "" {
-			name = smType + ":" + smBackend
-		}
-		return nil, &UnknownSMError{Name: name}
+	name := smType
+	if smBackend != "" {
+		name = smType + ":" + smBackend
 	}
-	return createFn, nil
+	return nil, &UnknownSMError{Name: name}
 }
 
 // buildHostConfig constructs a HostConfig from the parsed start flags.

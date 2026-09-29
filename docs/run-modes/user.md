@@ -98,8 +98,9 @@ to raft mode.
 
 **`raft.sm_storage` was rejected.** Objstore is a snapshot and backup tier and
 is refused as a hot apply path. Use `pebble` (the default), `file` or `memory`.
-Note also that the pebble-native state machines (`pebble`, `mvcc`) carry their
-own Pebble store and reject a non-pebble `sm_storage`.
+Note also that `sm_storage` applies only to `sm_type: disk` and `fast`; every
+other state machine carries its own storage and rejects a non-pebble
+`sm_storage`.
 
 **Time series or vector operations are unavailable even though the tags are
 compiled in.** Both need the MVCC-capable engine, so they do not work over the

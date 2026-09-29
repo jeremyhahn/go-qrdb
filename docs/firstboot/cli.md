@@ -71,29 +71,24 @@ In M-of-N the daemon stays in `enrolling` after start; officers claim their
 certificates and shares through the ceremony verbs before the system becomes
 `operational`. See [../ceremony/cli.md](../ceremony/cli.md).
 
-**Only `--sm pebble` (the default), `--sm mvcc` and `--sm mvcc-fast` can
-start.** Every other state machine type — `memory`, `standard`, `concurrent`,
-`fast`, `disk`, `highperf`, `regular` — serves KV and batch only, with no
-MVCC/transaction subsystem, and role and user creation commits atomically
-through one. `qrdbd start` asks the running shard on **every start**, not
-only the first — every role and user created later takes the same path —
-right after leader election and before any role or user is created, and
-exits with:
+**Every `--sm` state machine type can run first boot.** Role and user
+creation commits each identity claim and its records as one guarded batch, and
+every type — `pebble` (the default), `mvcc`, `memory`, `standard`,
+`concurrent`, `fast`, `disk`, `highperf`, `regular` — serves guarded batches.
+`qrdbd start` still confirms it on **every start**, right after leader election
+and before any role or user is created, by asking the running shard for a
+real no-op guarded batch. A state machine that could not answer it would stop
+the start with:
 
 ```text
 cli: auth bootstrap failed at "atomic role/user creation requires an --sm state machine with transaction support": kvstore: store does not support atomic conditional writes
 ```
 
-A fresh deployment wrote nothing, so restart it with one of the three
-supported types. **An existing deployment on one of the other types cannot
-start on this release**: its data belongs to that state machine, so changing
-`--sm` is not a way out. Stay on the previous release until that state
-machine gains transaction support.
-
-On a follower the check cannot be asked — only the leader proposes — so a
-follower defers to the leader's answer; every replica of a shard runs the same
-state machine. A probe that fails for any other reason after the leader wait
-also stops the start, at step `"guarded batch capability probe"`.
+No registered type does. On a follower the check cannot be asked — only the
+leader proposes — so a follower defers to the leader's answer; every replica of
+a shard runs the same state machine. A probe that fails for any other reason
+after the leader wait also stops the start, at step
+`"guarded batch capability probe"`.
 
 ## Checking the result
 

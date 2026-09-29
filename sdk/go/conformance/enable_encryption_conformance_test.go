@@ -78,7 +78,6 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	t.Helper()
 	c := cell{backend: backend, mode: standalone, transport: tk, want: fullPassage}
 	cfg := c.config(t)
-	applySMStorage(t, cfg)
 
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA

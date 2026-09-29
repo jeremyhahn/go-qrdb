@@ -27,14 +27,13 @@ raft:
 ```
 
 Objstore is a snapshot and backup tier and is **refused** as a hot apply path.
-The pebble-native state machines (`sm_type: pebble` or `mvcc`) carry their own
-Pebble store and reject a non-pebble `sm_storage`.
 
-`sm_storage` is read only by the storage-generic state machines
-(`sm_type: disk` or `fast`), and **`qrdbd start` currently refuses those on
-every start**: they have no transaction subsystem, and role and user creation
-commits atomically through one. See
-[../firstboot/cli.md](../firstboot/cli.md#daemon-side-mode-selection).
+`sm_storage` is read by the storage-generic state machines (`sm_type: disk` or
+`fast`), which keep their per-replica storage under
+`<data-dir>/sm/shard-<S>-replica-<R>`. Every other state machine carries its
+own storage and rejects a non-pebble `sm_storage`. On every combination the
+state machine serves KV, batches, the guarded verbs and transactions; see
+[../run-modes/architecture.md](../run-modes/architecture.md#raft--single--or-multi-node).
 
 ## Per-database storage — `qrdb database`
 

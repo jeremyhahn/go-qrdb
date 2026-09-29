@@ -126,6 +126,10 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
 - **`Responses` is positional** — one entry per op in the branch that ran, in
   order.
 - **A batch is unconditional and atomic.** All ops apply or none do.
+- **The same request answers the same on every `sm_type`**, except that only
+  `mvcc` accepts revision compares. `pkg/server/lifecycle`'s
+  `TestGuardedPlaneConformsOnEverySMType` holds every type to the default's
+  answers.
 - **`--transactional` import is all-or-nothing.** Any row error rolls back the
   entire import. Without it, rows are applied independently and `ImportResult`
   reports per-row failures.
@@ -143,6 +147,9 @@ Typed errors throughout; `fmt.Errorf` is not used.
 |---|---|---|
 | Compare does not hold | `Succeeded: false`, `FailureOps` applied, no error | n/a — this is a result |
 | Malformed request (unknown op type, missing key) | invalid-argument | yes |
+| Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
+| Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
+| Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular`) | whole transaction or batch refused as an unsupported capability, nothing written | **yes** |
 | Import file exceeds the transport ceiling | refused before parsing | **yes** |
 | Import format cannot be inferred and none given | refused | **yes** |
 | `--transactional` import, any row fails | whole import rolled back, `ImportResult.Failed > 0` | **yes** |
@@ -161,9 +168,15 @@ storage-layer concern rather than part of this API.
 
 ## Persistence
 
-Transactions and batches produce ordinary MVCC revisions. There is no separate
-transaction log and no distinct on-disk representation: after commit, a
-transaction is indistinguishable from the writes it made.
+On `sm_type: mvcc` transactions and batches produce ordinary MVCC revisions;
+on every other type they are ordinary writes to the state machine's keyspace.
+There is no separate transaction log and no distinct on-disk representation:
+after commit, a transaction is indistinguishable from the writes it made.
+
+A transaction or batch commits all or nothing (`statemachine.Backend.ApplyAtomic`
+on the `pkg/statemachine` types): no concurrent read sees part of it, and on
+`disk` the entry's applied index commits in the same storage batch, so a crash
+never replays it over its own result.
 
 ## Test strategy
 

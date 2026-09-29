@@ -47,7 +47,7 @@ file. Without one, only defaults and flags apply.
 | `--compaction-overhead` | `raft.compaction_overhead` |
 | `--max-in-mem-log-size` | `raft.max_in_mem_log_size` |
 | `--max-total-in-mem-log-size` | `raft.max_total_in_mem_log_size` |
-| `--sm` | `raft.sm_type` — only `pebble` (default), `mvcc`, `mvcc-fast` start; every other type is refused at every start ([why](../firstboot/cli.md#daemon-side-mode-selection)) |
+| `--sm` | `raft.sm_type` — `pebble` (default), `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` or `regular`; every type serves transactions and guarded batches ([what differs](../run-modes/architecture.md#raft--single--or-multi-node)) |
 | `--tls-ca-file` | `tls.ca_file` |
 | `--tls-cert-file` | `tls.cert_file` |
 | `--tls-key-file` | `tls.key_file` |

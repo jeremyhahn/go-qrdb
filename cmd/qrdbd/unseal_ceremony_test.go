@@ -97,11 +97,9 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 
 	f := &startFlags{
 		dataDir: dir,
-		// "pebble" (the production default), not "memory": first-boot's
-		// atomic role/user creation (go-qrdb#555) needs a state machine
-		// with MVCC/transaction support, which "memory" does not have.
-		// This test exercises the unseal-to-serving handover, which does
-		// not depend on which --sm backs it.
+		// "pebble", the production default. This test exercises the
+		// unseal-to-serving handover, which does not depend on which --sm
+		// backs it.
 		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},

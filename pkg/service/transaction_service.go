@@ -115,6 +115,9 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 	// Encode compares.
 	encodedCompares := make([][]byte, len(compares))
 	for i, c := range compares {
+		if len(c.Key) == 0 {
+			return nil, &InvalidKeyError{Field: "compare", Index: i}
+		}
 		encoded, err := protocol.EncodeCompare(
 			c.Key,
 			byte(c.Target),
@@ -311,10 +314,17 @@ var opTypeMap = map[OpType]byte{
 // value — fails closed with UnsupportedTransactionOpError rather than
 // silently defaulting to a write, which would otherwise let a caller's
 // read request corrupt the target key with an empty-value put.
+//
+// An empty key is refused here, before anything is proposed: no state machine
+// can store one, and refusing at the proposer is the early answer to the
+// refusal every state machine also makes at apply.
 func encodeServiceOp(op Op) ([]byte, error) {
 	protocolOp, ok := opTypeMap[op.Type]
 	if !ok {
 		return nil, &UnsupportedTransactionOpError{OpType: op.Type}
+	}
+	if len(op.Key) == 0 {
+		return nil, &InvalidKeyError{Field: "op"}
 	}
 	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
 }

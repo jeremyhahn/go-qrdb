@@ -75,7 +75,14 @@ func capabilityProbes(t *testing.T) []probeOp {
 			return mustCmd(protocol.EncodeBatch([][]byte{op}))
 		}},
 		{CapabilityMVCC, func() []byte { return []byte{protocol.OpMVCCPut} }},
-		{CapabilityTransaction, func() []byte { return []byte{protocol.OpTransaction} }},
+		// A REAL transaction, not a bare opcode: since go-qrdb#136 the
+		// registry's state machines serve transactions natively, and only a
+		// transaction that evaluates and commits proves it.
+		{CapabilityTransaction, func() []byte {
+			cmp := mustCmd(protocol.EncodeCompare([]byte("probe"), txnTargetVersion, txnResultEqual, nil, 0, 0, 0))
+			op := mustCmd(protocol.EncodeOp(protocol.OpMVCCPut, []byte("probe"), []byte("v"), nil, 0))
+			return mustCmd(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{op}, nil))
+		}},
 		{CapabilityLease, func() []byte { return []byte{protocol.OpLeaseGrant} }},
 		{CapabilityIndex, func() []byte { return []byte{protocol.OpIndexCreate} }},
 		{CapabilityTimeSeries, func() []byte { return []byte{protocol.OpTSWrite} }},
@@ -150,7 +157,11 @@ func TestRegistryDescriptorsMatchBehaviour(t *testing.T) {
 			for _, p := range probes {
 				// A fresh state machine per probe: an earlier probe's write must
 				// not decide a later one's answer.
-				createFn, resolveErr := ResolveTyped(name, "")
+				sc := StorageConfig{}
+				if desc.StorageGeneric {
+					sc = StorageConfig{Root: t.TempDir(), Kind: "memory"}
+				}
+				createFn, resolveErr := ResolveTypedWithStorage(name, "", sc)
 				if resolveErr != nil {
 					t.Fatalf("ResolveTyped(%q): %v", name, resolveErr)
 				}

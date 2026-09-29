@@ -79,6 +79,9 @@ func (k *KVStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.
 	if err != nil {
 		return sm.Result{}, err
 	}
+	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
+		return sm.Result{}, kerr
+	}
 
 	existing, gerr := k.backend.Get(key)
 	if gerr != nil {
@@ -116,6 +119,9 @@ func (r *RegularStateMachine) handlePutIfAbsent(payload []byte, revision uint64)
 	key, value, err := decodeKeyValuePayload(payload, "put_if_absent")
 	if err != nil {
 		return sm.Result{}, err
+	}
+	if kerr := validateClientKey("put_if_absent", key); kerr != nil {
+		return sm.Result{}, kerr
 	}
 	k := string(key)
 

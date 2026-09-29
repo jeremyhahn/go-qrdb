@@ -824,14 +824,14 @@ func (f *FastStateMachine) handleBatch(payload []byte, revision uint64) (sm.Resu
 	for _, op := range ops {
 		key := string(op.Key)
 		switch op.Type {
-		case kv.OpPut:
+		case kv.OpPut, protocol.OpMVCCPut:
 			ownedValue := make([]byte, len(op.Value))
 			copy(ownedValue, op.Value)
 			f.cacheSet(key, ownedValue)
 			if f.watchManager != nil {
 				f.watchManager.Notify(key, ownedValue, revision, false)
 			}
-		case kv.OpDelete:
+		case kv.OpDelete, protocol.OpMVCCDelete:
 			f.cacheDelete(key)
 			if f.watchManager != nil {
 				f.watchManager.Notify(key, nil, revision, true)

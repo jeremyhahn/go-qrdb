@@ -26,31 +26,17 @@ import (
 	memstore "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
-// resetSMStorageGlobals restores the registry's global anchors after a
-// test manipulates them.
-func resetSMStorageGlobals(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() {
-		SetDataDirRoot("")
-		SetSMStorage("")
-	})
-}
-
-// TestDefaultStorageFactory_SelectsBackend pins the raft.sm_storage seam:
-// the registry factory composes the selected storage backend in the
-// anchored per-replica directory.
-func TestDefaultStorageFactory_SelectsBackend(t *testing.T) {
-	resetSMStorageGlobals(t)
+// TestNewStorageFactory_SelectsBackend pins the raft.sm_storage seam: the
+// storage factory composes the selected storage backend in the anchored
+// per-replica directory.
+func TestNewStorageFactory_SelectsBackend(t *testing.T) {
 	root := t.TempDir()
-	SetDataDirRoot(root)
 
-	SetSMStorage("memory")
-	if _, ok := defaultStorageFactory()(1, 1).(*memstore.MemoryStorage); !ok {
+	if _, ok := newStorageFactory(StorageConfig{Root: root, Kind: "memory"})(1, 1).(*memstore.MemoryStorage); !ok {
 		t.Fatal("sm_storage memory must compose the memory backend")
 	}
 
-	SetSMStorage("file")
-	stg := defaultStorageFactory()(2, 3)
+	stg := newStorageFactory(StorageConfig{Root: root, Kind: "file"})(2, 3)
 	if _, ok := stg.(*filestore.Engine); !ok {
 		t.Fatalf("sm_storage file must compose the file backend, got %T", stg)
 	}
@@ -76,10 +62,7 @@ func TestDiskAdapter_RestartResumesOverFileStorage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open file storage: %v", err)
 		}
-		backend := NewDiskBackend(st)
-		kvsm := NewKVStateMachine(backend)
-		a := &DiskAdapter{KVStateMachine: kvsm, store: st}
-		return a, func() { _ = st.Close() }
+		return newDiskAdapter(st), func() { _ = st.Close() }
 	}
 
 	a, closeStore := open()
@@ -117,22 +100,20 @@ func TestDiskAdapter_RestartResumesOverFileStorage(t *testing.T) {
 	}
 }
 
-// TestDefaultStorageFactory_RestartReusesFilePath proves the whole seam
-// end to end at the registry level: two consecutive factory invocations
-// for the same (shard, replica) under sm_storage file open the SAME
-// durable directory, so a restarted replica sees its data.
-func TestDefaultStorageFactory_RestartReusesFilePath(t *testing.T) {
-	resetSMStorageGlobals(t)
-	SetDataDirRoot(t.TempDir())
-	SetSMStorage("file")
+// TestNewStorageFactory_RestartReusesFilePath proves the seam end to end at
+// the factory level: two consecutive invocations for the same (shard,
+// replica) under sm_storage file open the SAME durable directory, so a
+// restarted replica sees its data.
+func TestNewStorageFactory_RestartReusesFilePath(t *testing.T) {
+	sc := StorageConfig{Root: t.TempDir(), Kind: "file"}
 
-	s1 := defaultStorageFactory()(7, 1)
+	s1 := newStorageFactory(sc)(7, 1)
 	if err := s1.Set([]byte("survivor"), []byte("yes")); err != nil {
 		t.Fatal(err)
 	}
 	_ = s1.Close()
 
-	s2 := defaultStorageFactory()(7, 1)
+	s2 := newStorageFactory(sc)(7, 1)
 	defer func() { _ = s2.Close() }()
 	got, err := s2.Get([]byte("survivor"))
 	if err != nil || string(got) != "yes" {

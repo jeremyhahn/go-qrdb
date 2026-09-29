@@ -27,7 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// The typed-refusal cells of the matrix rest entirely on classifyRefusal. If
+// The matrix's capability refusals rest entirely on classifyRefusal. If
 // it accepted any non-nil error, those cells would be satisfied by a timeout,
 // an authorization failure or a lost connection — and the worst of those is a
 // timeout, because every call in the matrix is bounded, so a cell whose shard

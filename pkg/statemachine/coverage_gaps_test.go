@@ -113,6 +113,23 @@ func (b *gapErrBackend) Put(key, value []byte) error        { return b.putErr }
 func (b *gapErrBackend) Delete(key []byte) error            { return b.deleteErr }
 func (b *gapErrBackend) PutDurable(key, value []byte) error { return b.putErr }
 func (b *gapErrBackend) DeleteDurable(key []byte) error     { return b.deleteErr }
+
+// ApplyAtomic fails the set with the error its writes would meet one by one:
+// the put error if it puts, the delete error if it deletes.
+func (b *gapErrBackend) ApplyAtomic(muts []Mutation) error {
+	for _, m := range muts {
+		if m.Delete && b.deleteErr != nil {
+			return b.deleteErr
+		}
+		if !m.Delete && b.putErr != nil {
+			return b.putErr
+		}
+	}
+	return nil
+}
+
+var _ Backend = (*gapErrBackend)(nil)
+
 func (b *gapErrBackend) List(prefix []byte) ([][]byte, error) {
 	if b.listErr != nil {
 		return nil, b.listErr
@@ -643,6 +660,31 @@ func (s *diskFailStorage) Delete(key []byte) error {
 		return s.deleteErr
 	}
 	return s.memStorage.Delete(key)
+}
+
+// Batch meets the same faults a direct write would: a batched Set fails with
+// setErr and a batched Delete with deleteErr.
+func (s *diskFailStorage) Batch() storage.Batch {
+	return &diskFailBatch{memBatch: &memBatch{store: s.memStorage}, owner: s}
+}
+
+type diskFailBatch struct {
+	*memBatch
+	owner *diskFailStorage
+}
+
+func (b *diskFailBatch) Set(key, value []byte) error {
+	if b.owner.setErr != nil {
+		return b.owner.setErr
+	}
+	return b.memBatch.Set(key, value)
+}
+
+func (b *diskFailBatch) Delete(key []byte) error {
+	if b.owner.deleteErr != nil {
+		return b.owner.deleteErr
+	}
+	return b.memBatch.Delete(key)
 }
 
 func (s *diskFailStorage) List(prefix []byte) ([][]byte, error) {

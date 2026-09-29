@@ -167,13 +167,12 @@ An `admin` user for the system tenant is created alongside, bound to the
   with a guarded adapter, and construction refuses outright when no
   transaction plane backs it — a compile-time-shaped capability that would
   otherwise be present in the type and silently absent at run time.
-  That construction-time refusal is necessary but not sufficient: a
-  transaction plane exists for every `--sm` state machine type, but not
-  every one actually implements the MVCC/transaction subsystem
-  `PutAllIfUnchanged`/`PutAllIfAllUnchanged` need underneath it (`pebble`,
-  the default, and `mvcc`/`mvcc-fast` do; `memory`, `standard`,
-  `concurrent`, `fast`, `disk`, `highperf` and `regular` serve KV and batch
-  only). `cmd/qrdbd` closes that remaining gap with a genuine runtime probe —
+  That construction-time refusal is necessary but not sufficient: the
+  adapter's type says a transaction plane is wired, not that the state
+  machine behind it evaluates `PutAllIfUnchanged`/`PutAllIfAllUnchanged`.
+  Every registered `--sm` type does — each runs transactions against its own
+  keyspace — but `cmd/qrdbd` asks rather than assumes, with a genuine
+  runtime probe —
   `kvstore.ProbeGuardedBatch`, a real no-op guarded proposal against the
   shard the daemon just started, not a static capability query — immediately
   after leader election on **every start**, so an unsupported `--sm` value
@@ -182,8 +181,7 @@ An `admin` user for the system tenant is created alongside, bound to the
   probe also stops the start, with one exception: a follower's probe always
   answers `NotLeader`, because only the leader proposes, so a follower defers
   to the leader's probe — every replica of a shard runs the same state
-  machine. Giving every non-default state machine a real MVCC store, closing
-  this gap at its root, is tracked separately.
+  machine.
 - **The routed role/user services `pkg/server/lifecycle`/`sdk/go/node`
   expose are ALSO atomic for the one tenant where it is safe: the system
   tenant.** `role.NewRoutingService` / `user.NewRoutingService` resolve a

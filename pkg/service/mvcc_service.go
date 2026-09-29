@@ -138,7 +138,9 @@ type revisionNotFoundErr interface {
 
 // changeIndexUnsupportedErr matches the refusal a backend returns when it
 // maintains no durable revision index and therefore cannot report which keys
-// changed in a revision window (see mvccadapter.ScanChangesUnsupportedError).
+// changed in a revision window. It is the contract an MVCCStore injected into
+// a state machine (statemachine.WithKVMVCCStore) answers ScanChanges with when
+// it keeps no such index.
 type changeIndexUnsupportedErr interface {
 	error
 	// ScanChangesUnsupported marks the error as that refusal.

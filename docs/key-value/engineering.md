@@ -266,23 +266,57 @@ middle decided nowhere.
 - **They are not scoped to `mvcc`/`pebble`.** They are native opcodes
   (`kv.OpPutIfAbsent`, `protocol.OpCompareAndDelete` 66,
   `protocol.OpCompareAndSwap` 67) dispatched against the state machine's own
-  store, so they need no MVCC store behind them. This is the one part of the
-  guarded plane that is not confined to the default state machine: the
-  multi-key transaction plane still requires `sm_type: mvcc`.
+  store, so they need no MVCC store behind them.
 
   Availability by `raft.sm_type`, which is the row to read before choosing one:
 
-  | `sm_type` | `PutIfAbsent` | `CompareAndDelete` / `CompareAndSwap` |
-  |---|---|---|
-  | `pebble` (default), `mvcc`, `mvcc-fast` | yes | yes |
-  | `memory`, `standard`, `concurrent`, `highperf`, `disk`, `regular` | yes | yes |
-  | `fast` | yes | yes |
+  | `sm_type` | `PutIfAbsent` | `CompareAndDelete` / `CompareAndSwap` | Transactions, guarded batches, batches | Revision compares |
+  |---|---|---|---|---|
+  | `mvcc` | yes | yes | yes | yes |
+  | `pebble` (default) | yes | yes | yes | refused |
+  | `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk`, `regular` | yes | yes | yes | refused |
 
-  There is no longer a row that declines. `fast` refused the guarded delete and
+  There is no row that declines a guarded verb. `fast` refused the guarded delete and
   swap for one release, while its backend could not carry what their result
   promised — see the durability bullet below for what changed, and why the fix
   went into the `Backend` interface rather than into that backend's ordinary
   write path.
+- **Every state machine runs transactions against its OWN keyspace.** The
+  `pkg/statemachine` state machines have no MVCC store; `OpTransaction` and
+  `OpBatch` are decided against, and committed to, the same keyspace `Put`,
+  `Get` and the guarded verbs use (`pkg/statemachine/native_txn.go`), with the
+  default pebble state machine's compare semantics: value compares (an absent
+  key compares as the empty value), version compares that degrade to 0 when
+  absent and 1 when present, and create/mod-revision compares refused with the
+  same application error, because answering "revision 0" for every key would
+  let two read-then-CAS writers both win. A separate MVCC keyspace was the
+  alternative and was rejected: a compare there cannot see a plain `Put`, so a
+  guarded batch fenced on a claim would fence on nothing. A lease-bearing write
+  is refused, since none of these state machines can attach a key to a lease.
+- **The commit is all or nothing.** Transactions and batches commit through
+  `Backend.ApplyAtomic`, a required method. `disk` commits the set as one
+  `storage.Batch` carrying the entry's applied index; every other backend
+  applies it under every touched shard's lock at once, and `List`/`Scan` on the
+  sharded ones hold every shard's read lock for their whole sweep, so no
+  concurrent read sees part of a set. `fast` then writes through to storage
+  asynchronously, in apply order, as `Put` does: its durability is the Raft
+  log's, because every replica starts from an empty keyspace (reset in one
+  storage batch) and is rebuilt from the latest snapshot or a full replay, so
+  a synchronous batch would protect nothing a restart reads. Neither `disk`
+  nor `fast` can replay an entry over its own result, where a compare could
+  take the other branch and diverge from every other replica.
+- **Every write on `disk` carries its entry's applied index**, single-key
+  verbs included — `Put`, `Delete` and the guarded pair commit through the same
+  `ApplyAtomic`. A guarded single-key verb does not converge on replay either:
+  from an absent key, a `CompareAndSwap` expecting `a` declines and a
+  `PutIfAbsent` of `a` creates; replayed over that result, the swap succeeds and
+  the create declines. The disk state machine's applied-index key is reserved,
+  and a client write naming it is refused.
+- **An empty key is refused, never stored.** The transaction and batch services
+  refuse it before proposing; a state machine that receives one anyway refuses
+  it as an application result (`statemachine.InvalidKeyError`, declared a
+  `protocol.RefusalError`) and keeps applying, instead of passing it to storage
+  that refuses it with an error that would halt Apply on every replica.
 - **The comparison runs inside apply, never on the proposer.** Every replica
   evaluates the same entry against the state it has applied up to that entry's
   log position, so every replica reaches the same decision. Reading on the
@@ -371,7 +405,7 @@ middle decided nowhere.
 
 - **They cannot appear inside a batch.** The batch encoding carries no expected
   value, so a batched operation cannot express a guard. Multi-key atomicity is
-  [../transactions/](../transactions/), which does need `sm_type: mvcc`.
+  [../transactions/](../transactions/), which every `sm_type` serves.
 
 - **A database with its own store answers them too, without Raft.**
   `BackendKVService` — the servicer a database with a dedicated store or a
@@ -521,7 +555,7 @@ if err := kv.Put(ctx, key, value); err != nil {
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Only `mvcc` supports as-of reads, watch replay and selective restore. Every value supports the single-key guarded verbs EXCEPT `fast`, which refuses `CompareAndDelete`/`CompareAndSwap`; only `mvcc`/`pebble` support transactions. |
+| `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Every value supports the single-key guarded verbs, batches and transactions. Only `mvcc` keeps revisions, so only `mvcc` supports as-of reads, watch replay, selective restore and create/mod-revision compares. |
 | `storage.backend` | `pebble`, `file`, `memory` | `pebble` | Underlying storage engine. |
 | `mvcc.compaction_retention` | integer | — | Minimum revisions retained; sets the compaction floor. |
 

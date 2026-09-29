@@ -1353,7 +1353,7 @@ var validLogFormats = map[string]struct{}{
 
 // validSMTypes contains the accepted state machine type strings. This list
 // mirrors what the state machine registry actually provides (the registry's
-// built-ins plus the daemon-registered "pebble"/"mvcc"/"mvcc-fast") — a
+// built-ins plus the daemon-registered "pebble"/"mvcc") — a
 // value accepted here but absent from the registry would pass validation
 // and then fail at startup with UnknownSMError, which is exactly the
 // phantom-entry trap ("kv", "timeseries", "vector", "cached-disk") this
@@ -1362,7 +1362,6 @@ var validSMTypes = map[string]struct{}{
 	"pebble":     {},
 	"memory":     {},
 	"mvcc":       {},
-	"mvcc-fast":  {},
 	"standard":   {},
 	"concurrent": {},
 	"fast":       {},
@@ -1570,7 +1569,7 @@ func (c *Config) Validate() error {
 		if _, ok := validSMTypes[c.Raft.SMType]; !ok {
 			return &ValidationError{
 				Field:  "raft.sm_type",
-				Reason: "must be one of: pebble, memory, mvcc, mvcc-fast, standard, concurrent, fast, disk, highperf, regular",
+				Reason: "must be one of: pebble, memory, mvcc, standard, concurrent, fast, disk, highperf, regular",
 			}
 		}
 	}

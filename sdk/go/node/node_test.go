@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -204,6 +206,65 @@ func TestClusteredCreateFunc_UnknownSMTypeErrors(t *testing.T) {
 	var cfgErr *ConfigError
 	require.ErrorAs(t, err, &cfgErr)
 	assert.Equal(t, "raft.sm_type", cfgErr.Field)
+}
+
+// TestClusteredCreateFunc_HonoursSMStorage pins go-qrdb#136's plumbing: a
+// storage-generic sm_type composes the storage raft.sm_storage selects, in the
+// per-replica directory under raft.data_dir — as the daemon does — rather than
+// the SDK ignoring the setting.
+func TestClusteredCreateFunc_HonoursSMStorage(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Raft.SMType = "disk"
+	cfg.Raft.SMStorage = "file"
+	fn, err := clusteredCreateFunc(cfg, nil, nil, false)
+	require.NoError(t, err)
+
+	machine := fn(3, 4)
+	disk, ok := machine.(interface {
+		Open(context.Context, string, <-chan struct{}) (uint64, error)
+		Close(context.Context) error
+	})
+	require.True(t, ok, "sm_type disk must build a disk state machine, got %T", machine)
+	t.Cleanup(func() { _ = disk.Close(context.Background()) })
+
+	info, err := os.Stat(filepath.Join(cfg.Raft.DataDir, "sm", "shard-3-replica-4"))
+	require.NoError(t, err, "sm_storage file must root the replica under raft.data_dir")
+	assert.True(t, info.IsDir())
+}
+
+// TestClusteredCreateFunc_RefusesInapplicableSMStorage: a non-pebble
+// sm_storage for a state machine that carries its own storage is refused,
+// never silently ignored.
+func TestClusteredCreateFunc_RefusesInapplicableSMStorage(t *testing.T) {
+	for _, smType := range []string{"", "mvcc", "memory", "highperf"} {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Raft.DataDir = t.TempDir()
+		cfg.Raft.SMType = smType
+		cfg.Raft.SMStorage = "file"
+		_, err := clusteredCreateFunc(cfg, nil, nil, false)
+		var cfgErr *ConfigError
+		require.ErrorAs(t, err, &cfgErr, "sm_type %q over sm_storage file", smType)
+	}
+}
+
+// TestClusteredProfile_ReportsTheRealSMType pins the capability report: a node
+// on a registry state machine reports transactions and batches, and not the
+// watch / lease / MVCC / time-series families only the default MVCC store
+// serves; the default reports those.
+func TestClusteredProfile_ReportsTheRealSMType(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.SMType = "memory"
+	p, err := clusteredProfile(cfg)
+	require.NoError(t, err)
+	assert.True(t, p.KV && p.Batch && p.Transaction, "memory serves KV, batches and transactions")
+	assert.False(t, p.MVCC || p.Watch || p.Lease || p.Lock || p.TimeSeries,
+		"memory must not report families it does not serve: %+v", p)
+
+	cfg.Raft.SMType = ""
+	p, err = clusteredProfile(cfg)
+	require.NoError(t, err)
+	assert.True(t, p.MVCC && p.Watch && p.Lease && p.Transaction, "the default MVCC store serves them: %+v", p)
 }
 
 // ---------------------------------------------------------------------------

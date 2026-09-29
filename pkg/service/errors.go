@@ -1006,3 +1006,23 @@ func (e *CompactSystemOnlyError) Error() string {
 // ---------------------------------------------------------------------------
 // Codec errors
 // ---------------------------------------------------------------------------
+
+// InvalidKeyError is returned, before anything is proposed, for a transaction
+// compare or a transaction or batch operation that names an empty key. The
+// state machines refuse the same request at apply; this answers it without a
+// round through consensus. Callers see it wrapped in EncodeRequestError, which
+// every transport reports as an invalid argument.
+type InvalidKeyError struct {
+	// Field is what named the key: "compare" or "op".
+	Field string
+	// Index is the compare's position, when Field is "compare".
+	Index int
+}
+
+// Error returns a human-readable description of the refused key.
+func (e *InvalidKeyError) Error() string {
+	if e.Field == "compare" {
+		return "service: compare " + strconv.Itoa(e.Index) + " names an empty key"
+	}
+	return "service: " + e.Field + " names an empty key"
+}

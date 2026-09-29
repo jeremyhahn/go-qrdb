@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	stderrors "errors"
-	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -29,70 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
-
-// failSetStorage fails Set on demand while behaving normally otherwise.
-//
-// The failure is switchable rather than fixed because these tests need the
-// state machine to reach a given state through WORKING writes and only then
-// meet the fault -- a storage that failed every Set could never be seeded.
-type failSetStorage struct {
-	*memStorage
-	failing atomic.Bool
-	// failDelete makes Delete fail too. It exists so a test can leave a
-	// RETIRED VALUE in storage under a cache tombstone -- the state that makes
-	// the tombstone load-bearing. Delete is asynchronous and swallows its
-	// error, so this is a state a real deployment reaches, not a contrivance.
-	failDelete atomic.Bool
-	// failKey, when non-nil, narrows the Set failure to a single key so a
-	// multi-entry batch can commit an earlier entry and fault on a later one
-	// (go-qrdb#94 batch replay). It is written before the apply that reads it,
-	// on the same goroutine, since the guarded persist is synchronous.
-	failKey []byte
-	err     error
-
-	// holdSet parks the next Set until it is closed; setHeld announces that
-	// the Set is parked. Both are touched only by the test goroutine and the
-	// single parked writer, in that order.
-	holdSet chan struct{}
-	setHeld chan struct{}
-}
-
-func newFailSetStorage(err error) *failSetStorage {
-	return &failSetStorage{memStorage: newMemStorage(), err: err}
-}
-
-func (s *failSetStorage) Set(key, value []byte) error {
-	if s.holdSet != nil {
-		close(s.setHeld)
-		<-s.holdSet
-		s.holdSet = nil
-	}
-	if s.failing.Load() && (s.failKey == nil || bytes.Equal(key, s.failKey)) {
-		return s.err
-	}
-	return s.memStorage.Set(key, value)
-}
-
-// holdFirstSet makes the next Set block until the returned release function is
-// called, announcing on the returned channel that it is blocked.
-//
-// It is what makes the failure interleaving DETERMINISTIC: the guarded write
-// is parked inside storage, with the shard lock released, which is precisely
-// the window a later write has to land in. Racing two goroutines and hoping
-// would test the interleaving only some of the time.
-func (s *failSetStorage) holdFirstSet() (held <-chan struct{}, release func()) {
-	s.setHeld = make(chan struct{})
-	hold := make(chan struct{})
-	s.holdSet = hold
-	return s.setHeld, func() { close(hold) }
-}
-
-func (s *failSetStorage) Delete(key []byte) error {
-	if s.failDelete.Load() {
-		return s.err
-	}
-	return s.memStorage.Delete(key)
-}
 
 // TestShardedStateMachines_PutIfAbsent_IsDurableBeforeItAcknowledges is the
 // guarantee the owner ruled for on 2026-08-23 (go-qrdb#94, option 1).

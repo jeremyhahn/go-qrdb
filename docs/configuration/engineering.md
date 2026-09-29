@@ -93,7 +93,7 @@ flags alone.
 | MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
 | etcd enabled on a database that is not `engine: kv` + `backend: raft` | refused |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
-| Non-pebble `sm_storage` with a pebble-native state machine (`pebble`, `mvcc`) | refused |
+| Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
 | Per-database barrier on a database sharing the default store | refused |
 | Multicast discovery with no secret | the method does not run |
 
@@ -132,7 +132,7 @@ Viper-bound, equivalent to their flags:
 | `--compaction-overhead`         | `raft.compaction_overhead`         |
 | `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
 | `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
-| `--sm`                          | `raft.sm_type` (only `pebble`, `mvcc`, `mvcc-fast` start; the rest are refused at every start — see `../firstboot/cli.md`) |
+| `--sm`                          | `raft.sm_type` (`pebble` default; every registered type starts — see `../run-modes/architecture.md`) |
 | `--tls-ca-file`                 | `tls.ca_file`                      |
 | `--tls-cert-file`               | `tls.cert_file`                    |
 | `--tls-key-file`                | `tls.key_file`                     |

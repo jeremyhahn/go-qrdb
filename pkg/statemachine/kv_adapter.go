@@ -146,6 +146,32 @@ const diskMetaKeyLastApplied = "\x00__qrdb_sm_last_applied__"
 type DiskAdapter struct {
 	*KVStateMachine
 	store storage.Storage
+
+	// stamp is shared with the DiskBackend under the state machine, which
+	// commits the applied-index marker inside every atomic set; see
+	// DiskBackend.ApplyAtomic. newDiskAdapter wires it.
+	stamp *appliedIndexStamp
+}
+
+// newDiskAdapter composes the disk state machine over store: a DiskBackend
+// and a DiskAdapter sharing one applied-index stamp, so a transaction or batch
+// commits its writes and its log position in one storage batch.
+func newDiskAdapter(store storage.Storage, opts ...KVOption) *DiskAdapter {
+	stamp := &appliedIndexStamp{}
+	backend := NewDiskBackend(store)
+	backend.stamp = stamp
+	return &DiskAdapter{
+		KVStateMachine: NewKVStateMachine(backend, opts...),
+		store:          store,
+		stamp:          stamp,
+	}
+}
+
+// encodeAppliedIndex is the on-disk form of the applied-index marker.
+func encodeAppliedIndex(index uint64) []byte {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], index)
+	return buf[:]
 }
 
 // Compile-time interface assertions.
@@ -181,23 +207,37 @@ func (a *DiskAdapter) Open(_ context.Context, _ string, _ <-chan struct{}) (uint
 	return binary.BigEndian.Uint64(val), nil
 }
 
-// Update implements sm.DiskStateMachine.Update. After the entries apply it
-// persists the last entry's index under diskMetaKeyLastApplied. The marker
-// is written AFTER the data (the Backend interface offers no cross-key
-// batch), so a crash between the two leaves the marker at most one Update
-// batch behind — Raft then replays that suffix, and every KV operation this
-// state machine serves is an idempotent overwrite, so the replay converges
-// to the identical state.
+// Update implements sm.DiskStateMachine.Update, applying one entry at a time
+// with that entry's log index stamped on the backend.
+//
+// Every write the disk backend makes — Put, Delete, the durable pair behind
+// the guarded single-key verbs, and a transaction's or batch's whole set —
+// commits through DiskBackend.ApplyAtomic, which writes the stamped index in
+// the SAME storage batch. A crash therefore leaves each entry's writes and its
+// index together or neither, and Raft never replays an entry over its own
+// result. That matters for single-key verbs as much as for transactions: a
+// guarded write decides against state, and replayed over a later state it can
+// decide the other way (see DiskBackend.ApplyAtomic for a two-entry example).
+//
+// The index is written once more after the entries, so an entry that wrote
+// nothing (a declined guard, a refusal) still advances the marker.
 func (a *DiskAdapter) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
-	if err := a.KVStateMachine.Update(entries, results); err != nil {
-		return err
-	}
 	if len(entries) == 0 {
 		return nil
 	}
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], entries[len(entries)-1].Index)
-	return a.store.Set([]byte(diskMetaKeyLastApplied), buf[:])
+	for i := range entries {
+		if a.stamp != nil {
+			a.stamp.index = entries[i].Index
+		}
+		err := a.KVStateMachine.Update(entries[i:i+1], results[i:i+1])
+		if a.stamp != nil {
+			a.stamp.index = 0
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return a.store.Set([]byte(diskMetaKeyLastApplied), encodeAppliedIndex(entries[len(entries)-1].Index))
 }
 
 // Lookup implements sm.DiskStateMachine.Lookup.

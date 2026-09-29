@@ -184,7 +184,7 @@ func TestIsSingleNode_StaticInvalidPeer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_Memory(t *testing.T) {
-	fn, err := resolveCreateFunc("memory", "")
+	fn, err := resolveCreateFunc("memory", "", statemachine.StorageConfig{})
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(memory) error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestResolveCreateFunc_Memory(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Concurrent(t *testing.T) {
-	fn, err := resolveCreateFunc("concurrent", "")
+	fn, err := resolveCreateFunc("concurrent", "", statemachine.StorageConfig{})
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(concurrent) error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestResolveCreateFunc_Concurrent(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Pebble(t *testing.T) {
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	if err != nil {
 		t.Fatalf("resolveCreateFunc(pebble) error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestResolveCreateFunc_Pebble(t *testing.T) {
 }
 
 func TestResolveCreateFunc_Unknown(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-type", "")
+	_, err := resolveCreateFunc("unknown-type", "", statemachine.StorageConfig{})
 	if err == nil {
 		t.Fatal("resolveCreateFunc(unknown-type) expected error")
 	}
@@ -840,12 +840,12 @@ func TestNewPeersCmd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSMFactories_Keys(t *testing.T) {
-	// The init() function in start.go registers "pebble", "mvcc",
-	// and "mvcc-fast" in the centralized statemachine registry.
+	// The init() function in start.go registers "pebble" and "mvcc"
+	// in the centralized statemachine registry.
 	// The statemachine package itself registers "memory", "regular",
 	// "concurrent", and "fast". Verify all expected types are
 	// available after startup.
-	expected := []string{"memory", "regular", "concurrent", "fast", "pebble", "mvcc", "mvcc-fast"}
+	expected := []string{"memory", "standard", "regular", "concurrent", "fast", "disk", "highperf", "pebble", "mvcc"}
 	for _, key := range expected {
 		if !statemachine.Has(key) {
 			t.Fatalf("statemachine registry missing type %q", key)
@@ -2518,18 +2518,17 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// TLS generation, service creation, and server start. It will block on
 	// waitForSignal, so we send SIGINT shortly after to unblock.
 	//
-	// --sm pebble, not memory (despite the test's name, kept for the
-	// NoPeers sibling which fails before reaching first-boot and is
-	// unaffected): first-boot's atomic role/user creation (go-qrdb#555)
-	// needs a state machine with MVCC/transaction support, which "memory"
-	// does not have, and THIS test runs all the way through first-boot.
+	// --sm memory runs all the way through first boot, whose atomic
+	// role/user creation (go-qrdb#555) commits guarded batches: since
+	// go-qrdb#136 every state machine serves them natively, and this is the
+	// end-to-end proof that a non-default one does.
 	dir := t.TempDir()
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"--sm", "pebble",
+		"--sm", "memory",
 		"--discovery", "static",
 		"--peers", "1=127.0.0.1:63001",
 		"--data-dir", dir,

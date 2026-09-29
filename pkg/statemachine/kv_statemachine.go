@@ -163,6 +163,9 @@ func (k *KVStateMachine) handlePut(payload []byte, revision uint64) (sm.Result, 
 		return sm.Result{}, &IncompleteDataError{Reason: "put: key length exceeds payload"}
 	}
 	key := payload[2 : 2+keyLen]
+	if kerr := validateClientKey("put", key); kerr != nil {
+		return sm.Result{}, kerr
+	}
 	value := payload[2+keyLen:]
 
 	if err := k.backend.Put(key, value); err != nil {
@@ -189,6 +192,9 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 	}
 	key := payload[2 : 2+keyLen]
 
+	if kerr := validateClientKey("delete", key); kerr != nil {
+		return sm.Result{}, kerr
+	}
 	if err := k.backend.Delete(key); err != nil {
 		return sm.Result{}, &StorageError{Op: "delete", Inner: err}
 	}
@@ -200,41 +206,15 @@ func (k *KVStateMachine) handleDelete(payload []byte, revision uint64) (sm.Resul
 	return sm.Result{Value: revision}, nil
 }
 
-// handleBatch decodes and applies a batch of operations via the backend.
-// Payload format: [opCount:2 LE][ops...].
+// handleBatch applies a batch of put and delete operations all or nothing,
+// through Backend.ApplyAtomic: an unsupported operation refuses the whole
+// batch before any of it is applied, no concurrent Lookup sees part of it, and
+// a crash leaves all of it or none. Watchers are notified after the commit.
 func (k *KVStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
-	ops, err := protocol.DecodeBatch(payload)
+	muts, err := applyNativeBatch(k.backend, payload)
 	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
+		return sm.Result{}, err
 	}
-
-	// Refuse the whole batch before applying any of it: the loop below mutates
-	// as it goes, so validating inside it would leave earlier operations
-	// committed and notified for a batch the caller is told was refused.
-	if opErr := validateBatchOps(ops); opErr != nil {
-		return sm.Result{}, opErr
-	}
-
-	for _, op := range ops {
-		switch op.Type {
-		case kv.OpPut:
-			if putErr := k.backend.Put(op.Key, op.Value); putErr != nil {
-				return sm.Result{}, &StorageError{Op: "batch-put", Inner: putErr}
-			}
-			if k.watchManager != nil {
-				k.watchManager.Notify(string(op.Key), op.Value, revision, false)
-			}
-		case kv.OpDelete:
-			if delErr := k.backend.Delete(op.Key); delErr != nil {
-				return sm.Result{}, &StorageError{Op: "batch-delete", Inner: delErr}
-			}
-			if k.watchManager != nil {
-				k.watchManager.Notify(string(op.Key), nil, revision, true)
-			}
-		default:
-			return sm.Result{}, &InvalidOpcodeError{Op: op.Type}
-		}
-	}
-
+	notifyMutations(k.watchManager, muts, revision)
 	return sm.Result{Value: revision}, nil
 }

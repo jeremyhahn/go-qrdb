@@ -18,7 +18,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -35,8 +34,7 @@ import (
 // guarded verb SEQUENTIALLY -- once, observe the result, once more, observe
 // again -- and inspects the store afterward. That proves SEQUENTIAL
 // CONFORMANCE (the right answer, in the right order, on the right engine,
-// mode and transport) and TYPED REFUSAL (a cell without the multi-key plane
-// says so safely, per assertGuardedPlaneRefusesSafely). It does NOT prove
+// mode and transport). It does NOT prove
 // ATOMICITY. A handler that emulates a guarded verb with a Get followed by a
 // Put returns the correct booleans in sequence -- store-and-report-true when
 // called on an absent key, decline when called again -- so it satisfies every
@@ -48,28 +46,20 @@ import (
 // the cells that suite runs -- see its doc comment for which those are and
 // why running it on every cell here would not widen what gets caught.
 //
-// The cells are not parallel. Two of them drive process-global state-machine
-// storage selection (statemachine.SetSMStorage), and raft cells are expensive
-// enough that interleaving them would make the leader-election waits fight each
-// other for CPU on a shared runner.
+// The cells are not parallel: raft cells are expensive enough that
+// interleaving them would make the leader-election waits fight each other for
+// CPU on a shared runner.
 func TestGuardedVerbConformanceMatrix(t *testing.T) {
 	for _, c := range matrix() {
 		t.Run(c.name(), func(t *testing.T) {
 			t.Logf("cell %s: expecting %s", c.name(), c.want)
 			cl := c.boot(t)
 
-			// Every cell, both outcomes. Absence is not a guarded-verb
-			// capability — it is the read plane the guarded verbs are
-			// observed through, and a cell that cannot answer it makes every
-			// assertion below vacuous.
+			// Absence is not a guarded-verb capability — it is the read
+			// plane the guarded verbs are observed through, and a cell that
+			// cannot answer it makes every assertion below vacuous.
 			assertAbsenceIsObservable(t, cl)
-
-			switch c.want {
-			case fullPassage:
-				assertGuardedPlaneWorks(t, c, cl)
-			case typedRefusal:
-				assertGuardedPlaneRefusesSafely(t, c, cl)
-			}
+			assertGuardedPlaneWorks(t, c, cl)
 		})
 	}
 }
@@ -90,6 +80,44 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 
 	assertSingleKeyGuardedVerbsWork(t, cl)
 	assertTransactionsWork(t, c, cl)
+	if c.mode == raft && c.smType != "" {
+		assertLeasedWriteRefusedSafely(t, c, cl)
+	}
+}
+
+// assertLeasedWriteRefusedSafely pins the one write the non-default raft
+// sm_types refuse: a transaction write bound to a lease. No state machine in
+// pkg/statemachine can attach a key to a lease, and applying the write without
+// its lease would make a key meant to expire live forever, so the whole
+// transaction is refused with a typed capability error — on every transport —
+// and writes nothing.
+//
+// Refusing must not cost the shard. Before go-qrdb#129 a refused verb tripped
+// the shard's circuit breaker, after which every proposal failed including a
+// plain Put, and a linearizable read never returned; the Put and Get after the
+// refusal are that regression's pin.
+func assertLeasedWriteRefusedSafely(t *testing.T, c cell, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
+		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("leased"), Value: []byte("v"), LeaseID: 42}},
+	})
+	// /tx over REST is the go-qrdb#126 named exclusion: its refusal is
+	// excused from carrying the typed error; every other transport is not.
+	assertCapabilityRefusal(t, "ExecuteTransaction(leased write)", err, c.transport == restTransport)
+
+	if got, gerr := cl.kv.Get(ctx, "leased"); gerr == nil {
+		t.Errorf("%s: a refused leased write stored leased=%q", c.name(), got)
+	}
+	if err := cl.kv.Put(ctx, "after", []byte("2")); err != nil {
+		t.Fatalf("%s: a plain Put FAILED after the refusal (%v). Refusing an unsupported "+
+			"write must not cost the cluster its shard (go-qrdb#129)", c.name(), err)
+	}
+	got, err := cl.kv.Get(ctx, "after")
+	if err != nil || string(got) != "2" {
+		t.Fatalf("%s: read back %q err=%v after the refusal; want %q", c.name(), got, err, "2")
+	}
 }
 
 // assertSingleKeyGuardedVerbsWork is the acquire / edit / release battery for
@@ -296,14 +324,41 @@ func assertTransactionsWork(t *testing.T, c cell, cl clients) {
 	}
 
 	assertRevisionCompareBehaviour(t, c, cl)
+	assertEmptyKeyRefusedSafely(t, c, cl)
+}
+
+// assertEmptyKeyRefusedSafely: a transaction naming an empty key is refused —
+// by the service layer before it is proposed, and by every state machine at
+// apply — and refusing it costs nothing. Before go-qrdb#136's review fix the
+// empty key reached storage on the disk and fast state machines, and the
+// storage error halted Apply on every replica.
+func assertEmptyKeyRefusedSafely(t *testing.T, c cell, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
+		Compares:   []transport.Compare{{Target: transport.CompareVersion, Result: transport.CompareEqual}},
+		SuccessOps: []transport.Op{put("empty-key/written", "x")},
+	})
+	if err == nil {
+		t.Errorf("%s: a transaction comparing an empty key was accepted", c.name())
+	}
+	if got, gerr := cl.kv.Get(ctx, "empty-key/written"); gerr == nil {
+		t.Errorf("%s: a refused empty-key transaction wrote %q", c.name(), got)
+	}
+	if err := cl.kv.Put(ctx, "empty-key/after", []byte("ok")); err != nil {
+		t.Fatalf("%s: a plain Put FAILED after the empty-key refusal (%v)", c.name(), err)
+	}
 }
 
 // assertRevisionCompareBehaviour pins the one documented deviation in the
 // matrix, and pins it as a deviation rather than letting it pass unnoticed.
 //
 // create_revision and mod_revision compares need MVCC revisions to compare
-// against. The file engine keeps none, and refuses them explicitly rather than
-// reading revision 0 — because a client written for the MVCC engine does
+// against. The file engine keeps none, nor does any raft sm_type but the
+// default MVCC store (their transactions compare on value and version, as the
+// daemon's pebble state machine does), and they refuse them explicitly rather
+// than reading revision 0 — because a client written for the MVCC engine does
 // read-then-CAS on a revision, would read 0 here, compare equal, and commit, so
 // two concurrent writers both "succeed" and one update is lost with no signal
 // (go-qrdb#117 / the #120 engine work).
@@ -327,11 +382,22 @@ func assertRevisionCompareBehaviour(t *testing.T, c cell, cl clients) {
 	}
 	resp, err := cl.txn.ExecuteTransaction(ctx, req)
 
-	if c.backend == database.BackendFile {
+	if !c.keepsRevisions() {
 		if err == nil {
-			t.Errorf("a create_revision compare on the file engine returned %+v with no error; "+
-				"it must REFUSE, because reading a revision this engine does not keep would "+
-				"let two writers both believe they won and lose one update silently", resp)
+			t.Errorf("a create_revision compare on %s returned %+v with no error; it must "+
+				"REFUSE, because reading a revision this engine does not keep would let two "+
+				"writers both believe they won and lose one update silently", c.name(), resp)
+		}
+		if got, gerr := cl.kv.Get(ctx, "fresh"); gerr == nil {
+			t.Errorf("a refused revision compare wrote fresh=%q", got)
+		}
+		// The refusal must not cost the shard: before go-qrdb#129 a refused
+		// verb tripped the circuit breaker and every later call failed.
+		if err := cl.kv.Put(ctx, "after-refusal", []byte("2")); err != nil {
+			t.Fatalf("%s: a plain Put FAILED after the refusal (%v)", c.name(), err)
+		}
+		if got, err := cl.kv.Get(ctx, "after-refusal"); err != nil || string(got) != "2" {
+			t.Fatalf("%s: read back %q err=%v after the refusal; want %q", c.name(), got, err, "2")
 		}
 		return
 	}
@@ -444,97 +510,6 @@ func assertAbsenceIsObservable(t *testing.T, cl clients) {
 		t.Fatalf("Delete(%q): %v", key, err)
 	}
 	assertAbsent("after a Delete")
-}
-
-// ---------------------------------------------------------------------------
-// typed refusal
-// ---------------------------------------------------------------------------
-
-// assertGuardedPlaneRefusesSafely is the contract for a cell whose state
-// machine does not carry the MULTI-KEY half of the plane: refusing is allowed,
-// breaking is not.
-//
-// Both halves matter and the second is the one with history. Before
-// go-qrdb#129 these cells did not refuse — an unimplemented guarded verb
-// returned an error from SM.Update, go-quicraft treated it as a fatal Apply
-// failure, and the shard's circuit breaker tripped. After that ONE call, every
-// later proposal failed including plain Put, and a linearizable read never
-// returned at all. So "the node still serves afterwards" is not a courtesy
-// check; it is the regression, and asserting it here pins the fix permanently
-// across every remaining cell of this kind.
-func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
-	t.Helper()
-	ctx := boundedCtx(t)
-
-	// Prove the node works BEFORE the guarded verbs, so a failure afterwards
-	// is attributable to them rather than to a cell that never came up.
-	if err := cl.kv.Put(ctx, "before", []byte("1")); err != nil {
-		t.Fatalf("%s: plain Put failed before any guarded verb, so this cell never "+
-			"reached the state under test: %v", c.name(), err)
-	}
-
-	// The SINGLE-KEY verbs are not part of the refusal set, and this suite
-	// measures that rather than assuming it.
-	//
-	// PutIfAbsent never was: it is a native KV opcode handled against the
-	// state machine's own store, so it is present and genuinely atomic with no
-	// MVCC store behind it. go-qrdb#175 gave CompareAndDelete (opcode 66) and
-	// CompareAndSwap (67) exactly the same treatment — they were missing from
-	// these state machines' dispatch tables, not from their capabilities — so
-	// all three now belong on this side of the line and the same battery
-	// covers them.
-	//
-	// What is still absent here is the MULTI-KEY plane: ExecuteTransaction
-	// needs an MVCC store to evaluate its compares against, and these cells
-	// have none (WithKVMVCCStore has no production caller — go-qrdb#135/#136).
-	//
-	// So the capability on these cells is PARTIAL, not missing, and saying so
-	// matters: a consumer that needs a claim it can acquire, renew and release
-	// is now fully served here, and a matrix that lumped the single-key verbs
-	// in with the refusals would understate what works and could later be
-	// "fixed" by making a working verb refuse.
-	assertSingleKeyGuardedVerbsWork(t, cl)
-
-	refusals := []struct {
-		verb string
-		call func() error
-	}{
-		{verb: "ExecuteTransaction", call: func() error {
-			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
-				Compares:   []transport.Compare{valueEquals("before", "1")},
-				SuccessOps: []transport.Op{put("txn/x", "x")},
-			})
-			return err
-		}},
-	}
-
-	for _, r := range refusals {
-		// Not merely "an error". assertCapabilityRefusal rejects a deadline, a
-		// not-leader error, and a remote auth or availability failure, then
-		// requires the refusal to name the absent opcode or subsystem. Without
-		// that, a WEDGED cell — the go-qrdb#129 regression these cells exist to
-		// pin — returns DeadlineExceeded on its bounded context and would be
-		// scored as "refused as required", so the gate would go green on the
-		// very defect it was written to catch.
-		assertCapabilityRefusal(t, r.verb, r.call())
-	}
-
-	// The load-bearing assertion. A wedged shard fails these because the
-	// bounded context expires — which is precisely the pre-go-qrdb#129
-	// behaviour this pins against.
-	if err := cl.kv.Put(ctx, "after", []byte("2")); err != nil {
-		t.Fatalf("%s: a plain Put FAILED after the guarded verbs were refused (%v). "+
-			"Refusing an unsupported verb must not cost the cluster its shard "+
-			"(go-qrdb#129)", c.name(), err)
-	}
-	got, err := cl.kv.Get(ctx, "after")
-	if err != nil {
-		t.Fatalf("%s: a linearizable Get FAILED after the guarded verbs were refused (%v). "+
-			"Before go-qrdb#129 this call never returned at all", c.name(), err)
-	}
-	if string(got) != "2" {
-		t.Errorf("%s: read back %q after the refusals; want %q", c.name(), got, "2")
-	}
 }
 
 // ---------------------------------------------------------------------------

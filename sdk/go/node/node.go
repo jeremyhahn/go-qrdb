@@ -943,29 +943,66 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 // clusteredCreateFunc selects the Raft state-machine factory for a clustered
 // node. The default (empty, "pebble", or "mvcc") is the durable MVCC-over-Pebble
 // store wired with the supplied lessor / watch-hub / time-series / encryptor
-// options — the only state machine that carries full MVCC semantics. Any other
-// cfg.Raft.SMType (e.g. "memory", "concurrent", "fast") selects an alternate
-// factory from the statemachine registry, giving a replicated in-memory cache
-// that does NOT provide watch / lease / time-series. Memory-class state machines
-// are rejected when the seal barrier is enabled, since there is no durable
-// at-rest store to encrypt.
+// options — the only state machine that keeps revisions. Any other
+// cfg.Raft.SMType (e.g. "memory", "concurrent", "fast", "disk") selects that
+// factory from the statemachine registry: KV, batches, the guarded verbs and
+// transactions, without watch / lease / time-series (go-qrdb#136). A
+// storage-generic one ("disk", "fast") composes the storage raft.sm_storage
+// selects under raft.data_dir, exactly as the daemon does; a non-pebble
+// sm_storage for any other type is refused rather than ignored. Memory-class
+// state machines are rejected when the seal barrier is enabled, since there is
+// no durable at-rest store to encrypt.
 func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, sealed bool) (sm.CreateFunc, error) {
-	switch cfg.Raft.SMType {
-	case "", "pebble", "mvcc":
-		return store.NewMVCCCreateFuncWith(pebbleOpts, mvccOpts...), nil
-	default:
-		if sealed {
+	if usesClusteredMVCCStore(cfg) {
+		if cfg.Raft.SMStorage != "" && cfg.Raft.SMStorage != "pebble" {
 			return nil, &ConfigError{
-				Field:   "raft.sm_type",
-				Message: "state machine " + cfg.Raft.SMType + " is incompatible with an enabled seal barrier; use the default pebble store",
+				Field:   "raft.sm_storage",
+				Message: "sm_storage " + cfg.Raft.SMStorage + " applies to the storage-generic state machines only; set raft.sm_type to disk or fast",
 			}
 		}
-		fn, err := statemachine.ResolveTyped(cfg.Raft.SMType, cfg.Raft.SMBackend)
-		if err != nil {
-			return nil, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
-		}
-		return fn, nil
+		return store.NewMVCCCreateFuncWith(pebbleOpts, mvccOpts...), nil
 	}
+	if sealed {
+		return nil, &ConfigError{
+			Field:   "raft.sm_type",
+			Message: "state machine " + cfg.Raft.SMType + " is incompatible with an enabled seal barrier; use the default pebble store",
+		}
+	}
+	fn, err := statemachine.ResolveTypedWithStorage(cfg.Raft.SMType, cfg.Raft.SMBackend,
+		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage})
+	if err != nil {
+		return nil, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
+	}
+	return fn, nil
+}
+
+// usesClusteredMVCCStore reports whether a clustered node runs the MVCC store
+// rather than a registry state machine.
+func usesClusteredMVCCStore(cfg *qrdbconfig.Config) bool {
+	switch cfg.Raft.SMType {
+	case "", "pebble", "mvcc":
+		return true
+	default:
+		return false
+	}
+}
+
+// clusteredProfile is a clustered node's effective capability profile: the
+// raft composition's build-tag x config profile, narrowed to what the state
+// machine clusteredCreateFunc selects actually serves, so the node reports its
+// real sm_type rather than every feature the binary could serve on another.
+func clusteredProfile(cfg *qrdbconfig.Config) (capabilities.Capabilities, error) {
+	profileCfg := *cfg
+	profileCfg.Mode = capabilities.ModeRaft
+	profile := profileCfg.EffectiveCapabilities()
+	if usesClusteredMVCCStore(cfg) {
+		return store.MVCCDescriptor().Narrow(profile), nil
+	}
+	narrowed, err := statemachine.NarrowCapabilities(profile, cfg.Raft.SMType, cfg.Raft.SMBackend)
+	if err != nil {
+		return capabilities.Capabilities{}, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
+	}
+	return narrowed, nil
 }
 
 // background returns the node-lifetime context for long-running goroutines,
@@ -1111,12 +1148,14 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 
 	hostAdapter := raftbackend.New(host)
 
-	// Per-instance effective capability profile: the clustered node is the
-	// raft composition, so raft-mode semantics apply (config toggles can
-	// still narrow mvcc/watch/lease).
-	profileCfg := *pending.cfg
-	profileCfg.Mode = capabilities.ModeRaft
-	profile := profileCfg.EffectiveCapabilities()
+	// Per-instance effective capability profile: the raft composition,
+	// narrowed to the state machine this node runs.
+	profile, err := clusteredProfile(pending.cfg)
+	if err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return err
+	}
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              hostAdapter,
@@ -1766,11 +1805,20 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 	hostAdapter := raftbackend.New(host)
 
+	// Pinned per instance, as the sealed path pins it: without it the node
+	// would report the process-global profile, not its own state machine's.
+	profile, err := clusteredProfile(cfg)
+	if err != nil {
+		_ = host.Close()
+		return nil, err
+	}
+
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:        hostAdapter,
 		WatchHub:    watchHub,
 		DataDir:     dataDir,
 		ReplicaID:   cfg.Raft.ReplicaID,
+		Profile:     &profile,
 		Logger:      log,
 		SealEnabled: cfg.Seal.Enabled,
 	})

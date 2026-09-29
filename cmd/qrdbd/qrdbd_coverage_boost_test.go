@@ -207,17 +207,6 @@ func TestCertReloader_DifferentDirs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// defaultMVCCFastLogger – success (no panic)
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastLogger_Success(t *testing.T) {
-	log := defaultMVCCFastLogger()
-	if log == nil {
-		t.Error("expected non-nil logger from defaultMVCCFastLogger()")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Volume pool errors – additional error constructors
 // ---------------------------------------------------------------------------
 
@@ -300,22 +289,6 @@ func TestBuildLocalCandidates_Empty(t *testing.T) {
 	if len(candidates) != 0 {
 		t.Errorf("expected 0 candidates for empty paths, got %d", len(candidates))
 	}
-}
-
-// ---------------------------------------------------------------------------
-// defaultMVCCFastStorageFactory – call the returned factory
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory_CallsFactory(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	if factory == nil {
-		t.Fatal("expected non-nil factory")
-	}
-	stg := factory(1, 1)
-	if stg == nil {
-		t.Fatal("expected non-nil storage from factory")
-	}
-	_ = stg.Close()
 }
 
 // ---------------------------------------------------------------------------

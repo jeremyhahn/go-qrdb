@@ -40,7 +40,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -1600,40 +1599,6 @@ func TestInitializeNode_UnknownSMType(t *testing.T) {
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
 	assert.Equal(t, "nonexistent-sm", smErr.Name)
-}
-
-// ---------------------------------------------------------------------------
-// defaultMVCCFastLogger: returns a valid logger
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastLogger(t *testing.T) {
-	log := defaultMVCCFastLogger()
-	require.NotNil(t, log)
-}
-
-// ---------------------------------------------------------------------------
-// defaultMVCCFastStorageFactory: happy path
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	require.NotNil(t, factory)
-
-	s := factory(1, 1)
-	require.NotNil(t, s)
-	t.Cleanup(func() { _ = s.Close() })
-}
-
-// ---------------------------------------------------------------------------
-// init(): mvcc-fast registry factory is callable
-// ---------------------------------------------------------------------------
-
-func TestInitMVCCFastRegistered(t *testing.T) {
-	// Resolving "mvcc-fast" from the registry invokes the closure
-	// registered in init(), covering the factory call at start.go:151-155.
-	createFn, err := statemachine.Resolve("mvcc-fast")
-	require.NoError(t, err)
-	require.NotNil(t, createFn)
 }
 
 // ---------------------------------------------------------------------------

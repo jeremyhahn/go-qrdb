@@ -16,11 +16,7 @@ raft:
   listen_address: "0.0.0.0:63001"
   peers: "1=127.0.0.1:63001"
   join: false
-  # pebble, not memory: qrdbd refuses every sm_type without a transaction
-  # subsystem at every start, because role and user creation commits through
-  # one (see docs/firstboot/cli.md). This dev config returns to "memory" once
-  # every state machine supports guarded batches.
-  sm_type: "pebble"
+  sm_type: "memory"
   lease_read: true
   check_quorum: true
 

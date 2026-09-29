@@ -481,6 +481,9 @@ func (r *RegularStateMachine) handlePut(payload []byte, revision uint64) (sm.Res
 		return sm.Result{}, &IncompleteDataError{Reason: "put: key length exceeds payload"}
 	}
 	key := string(payload[2 : 2+keyLen])
+	if kerr := validateClientKey("put", []byte(key)); kerr != nil {
+		return sm.Result{}, kerr
+	}
 	value := payload[2+keyLen:]
 
 	// Make an owned copy of the value so it survives after the entry
@@ -511,6 +514,9 @@ func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.
 	}
 	key := string(payload[2 : 2+keyLen])
 
+	if kerr := validateClientKey("delete", []byte(key)); kerr != nil {
+		return sm.Result{}, kerr
+	}
 	r.mu.Lock()
 	delete(r.data, key)
 	r.mu.Unlock()
@@ -522,44 +528,49 @@ func (r *RegularStateMachine) handleDelete(payload []byte, revision uint64) (sm.
 	return sm.Result{Value: revision}, nil
 }
 
-// handleBatch decodes and applies a batch of operations atomically.
-// Payload format: [opCount:2 LE][ops...] (protocol.DecodeBatch format).
+// handleBatch applies a batch of put and delete operations all or nothing
+// against the map, through regularKeyspace.ApplyAtomic: an unsupported
+// operation refuses the whole batch before any of it is applied, and no
+// concurrent Lookup sees part of it. Watchers are notified after the commit.
 func (r *RegularStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result, error) {
-	ops, err := protocol.DecodeBatch(payload)
+	muts, err := applyNativeBatch(regularKeyspace{r}, payload)
 	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
+		return sm.Result{}, err
 	}
-
-	// Refuse the whole batch before applying any of it: the loop below mutates
-	// as it goes, so validating inside it would leave earlier operations
-	// committed and notified for a batch the caller is told was refused.
-	// Checked before the lock is taken — it reads only the decoded ops.
-	if opErr := validateBatchOps(ops); opErr != nil {
-		return sm.Result{}, opErr
-	}
-
-	r.mu.Lock()
-	for _, op := range ops {
-		key := string(op.Key)
-		switch op.Type {
-		case kv.OpPut:
-			ownedValue := make([]byte, len(op.Value))
-			copy(ownedValue, op.Value)
-			r.data[key] = ownedValue
-			if r.watchManager != nil {
-				r.watchManager.Notify(key, ownedValue, revision, false)
-			}
-		case kv.OpDelete:
-			delete(r.data, key)
-			if r.watchManager != nil {
-				r.watchManager.Notify(key, nil, revision, true)
-			}
-		default:
-			r.mu.Unlock()
-			return sm.Result{}, &InvalidOpcodeError{Op: op.Type}
-		}
-	}
-	r.mu.Unlock()
-
+	notifyMutations(r.watchManager, muts, revision)
 	return sm.Result{Value: revision}, nil
+}
+
+// regularKeyspace adapts RegularStateMachine's map to the keyspace the native
+// transaction and batch plane decides against and commits to.
+type regularKeyspace struct {
+	r *RegularStateMachine
+}
+
+// Get returns a copy of key's value, or nil when it is absent.
+func (ks regularKeyspace) Get(key []byte) ([]byte, error) {
+	ks.r.mu.RLock()
+	defer ks.r.mu.RUnlock()
+	val, ok := ks.r.data[string(key)]
+	if !ok {
+		return nil, nil
+	}
+	return append(make([]byte, 0, len(val)), val...), nil
+}
+
+// ApplyAtomic applies the whole set under ONE acquisition of r.mu, so a
+// concurrent Lookup sees the map before the set or after it. Nothing inside
+// the lock can fail, so there is no partial state to roll back.
+func (ks regularKeyspace) ApplyAtomic(muts []Mutation) error {
+	owned := ownMutations(muts)
+	ks.r.mu.Lock()
+	defer ks.r.mu.Unlock()
+	for _, m := range owned {
+		if m.Delete {
+			delete(ks.r.data, string(m.Key))
+			continue
+		}
+		ks.r.data[string(m.Key)] = m.Value
+	}
+	return nil
 }

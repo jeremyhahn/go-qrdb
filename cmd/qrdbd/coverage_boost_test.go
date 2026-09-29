@@ -40,6 +40,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -189,55 +190,21 @@ func TestKVServiceAdapter_Exists_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: defaultMVCCFastStorageFactory, defaultMVCCFastLogger —
-//           exercise the happy paths (panic branches cannot be unit-tested
-//           without mocking os.MkdirTemp/logger.New)
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory_ReturnsNonNilFactory(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	require.NotNil(t, factory, "defaultMVCCFastStorageFactory must return a non-nil factory function")
-}
-
-func TestDefaultMVCCFastStorageFactory_InvokeCreatesStorage(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	// Invoke the factory with shard 1, replica 1 to cover the inner closure.
-	s := factory(1, 1)
-	require.NotNil(t, s, "factory invocation must return a non-nil Storage")
-	// Close if the Storage implements io.Closer to avoid resource leaks.
-	if closer, ok := s.(interface{ Close() error }); ok {
-		_ = closer.Close()
-	}
-}
-
-func TestDefaultMVCCFastLogger_ReturnsNonNilLogger(t *testing.T) {
-	log := defaultMVCCFastLogger()
-	require.NotNil(t, log, "defaultMVCCFastLogger must return a non-nil Logger")
-}
-
-// ---------------------------------------------------------------------------
 // start.go: init — exercises the registered state machine types
 // ---------------------------------------------------------------------------
 
 func TestInit_PebbleStateMachineRegistered(t *testing.T) {
 	// "pebble" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "pebble state machine factory must be registered by init()")
 }
 
 func TestInit_MVCCStateMachineRegistered(t *testing.T) {
 	// "mvcc" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "mvcc state machine factory must be registered by init()")
-}
-
-func TestInit_MVCCFastStateMachineRegistered(t *testing.T) {
-	// "mvcc-fast" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("mvcc-fast", "")
-	require.NoError(t, err)
-	require.NotNil(t, fn, "mvcc-fast state machine factory must be registered by init()")
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +212,7 @@ func TestInit_MVCCFastStateMachineRegistered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_UnknownTypeWithBackend_ErrorIncludesBoth(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-sm", "mybackend")
+	_, err := resolveCreateFunc("unknown-sm", "mybackend", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
@@ -253,7 +220,7 @@ func TestResolveCreateFunc_UnknownTypeWithBackend_ErrorIncludesBoth(t *testing.T
 }
 
 func TestResolveCreateFunc_UnknownTypeNoBackend_ErrorIncludesType(t *testing.T) {
-	_, err := resolveCreateFunc("totally-unknown", "")
+	_, err := resolveCreateFunc("totally-unknown", "", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))

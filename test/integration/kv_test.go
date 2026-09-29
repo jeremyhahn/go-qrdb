@@ -34,10 +34,8 @@ import (
 // verification. It blocks until the node is healthy, the admin server is
 // accepting requests, and the node has been elected leader.
 //
-// smType must be one that implements kvstore.GuardedBatchKVStore ("pebble",
-// "mvcc", "mvcc-fast"): qrdbd's boot-time role/user stores require it
-// (go-qrdb#555), and "memory"/"concurrent" refuse at first boot rather than
-// ever becoming healthy.
+// smType is any registered raft.sm_type: every one serves the guarded batches
+// qrdbd's boot-time role/user stores require (go-qrdb#555, go-qrdb#136).
 func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *testCA) {
 	t.Helper()
 	bin := buildBinary(t)

@@ -126,8 +126,13 @@ func NewFastBackend(shardID, replicaID uint64, store storage.Storage, logger *sl
 
 // shardFor returns the cache shard for the given key.
 func (b *FastBackend) shardFor(key string) *kvFastShard {
-	h := xxhash.Sum64String(key)
-	return &b.shards[h%kvFastShardCount]
+	return &b.shards[b.shardIndex(key)]
+}
+
+// shardIndex is the index of the cache shard key belongs to. shardFor and
+// ApplyAtomic both resolve through it, so they cannot disagree about a key.
+func (b *FastBackend) shardIndex(key string) int {
+	return int(xxhash.Sum64String(key) % kvFastShardCount)
 }
 
 // Get retrieves the value for the given key. It checks the cache first
@@ -180,20 +185,7 @@ func (b *FastBackend) Put(key, value []byte) error {
 	delete(s.claims, k)
 	s.mu.Unlock()
 
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-		s.order.run(ticket, func() {
-			if err := b.storage.Set([]byte(k), owned); err != nil {
-				b.logger.Error("async storage set failed",
-					"key", k,
-					"error", err,
-					"shard_id", b.shardID,
-					"replica_id", b.replicaID)
-			}
-		})
-	}()
-
+	b.persistAsync(s, ticket, Mutation{Key: []byte(k), Value: owned})
 	return nil
 }
 
@@ -214,21 +206,35 @@ func (b *FastBackend) Delete(key []byte) error {
 	delete(s.claims, k)
 	s.mu.Unlock()
 
+	b.persistAsync(s, ticket, Mutation{Key: []byte(k), Delete: true})
+	return nil
+}
+
+// persistAsync writes m to storage on its own goroutine, in its shard's apply
+// order (ticket), logging rather than returning a storage failure: the
+// write-through contract of Put, Delete and ApplyAtomic. Close waits for it.
+func (b *FastBackend) persistAsync(s *kvFastShard, ticket uint64, m Mutation) {
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
 		s.order.run(ticket, func() {
-			if err := b.storage.Delete([]byte(k)); err != nil {
-				b.logger.Error("async storage delete failed",
-					"key", k,
+			var err error
+			op := "set"
+			if m.Delete {
+				op = "delete"
+				err = b.storage.Delete(m.Key)
+			} else {
+				err = b.storage.Set(m.Key, m.Value)
+			}
+			if err != nil {
+				b.logger.Error("async storage "+op+" failed",
+					"key", string(m.Key),
 					"error", err,
 					"shard_id", b.shardID,
 					"replica_id", b.replicaID)
 			}
 		})
 	}()
-
-	return nil
 }
 
 // PutDurable writes the cache shard and then persists SYNCHRONOUSLY, on the
@@ -603,10 +609,69 @@ func (b *FastBackend) clearStorage() error {
 		return err
 	}
 
-	for _, k := range keys {
-		if err := b.storage.Delete(k); err != nil {
-			return err
+	// One batch, not a delete per key: a reset that dies part-way leaves the
+	// storage it started from, not a mixture.
+	set := make([]Mutation, len(keys))
+	for i, k := range keys {
+		set[i] = Mutation{Key: k, Delete: true}
+	}
+	return commitMutations(b.storage, set)
+}
+
+// ApplyAtomic applies the set to the cache under every touched shard's lock at
+// once — taken in ascending order and released only after the last entry is
+// written — so a reader sees each key before the set or after it, never part
+// of it. The cache writes cannot fail, so there is nothing to roll back.
+//
+// Storage is then written through exactly as Put and Delete write it:
+// asynchronously, one ticket per mutation drawn under the shard lock, so each
+// key's writes reach storage in apply order. That is deliberately NOT a
+// synchronous storage commit. This backend's durability does not come from
+// its storage: the fast state machine is an in-memory one to Raft, which
+// rebuilds every replica from the latest snapshot or a full log replay at each
+// start, and NewKVFastCreateFunc resets the storage before that rebuild. A
+// committed transaction is durable because its log entry is; a synchronous
+// batch would buy an fsync on the apply path and protect nothing a restart
+// reads.
+func (b *FastBackend) ApplyAtomic(muts []Mutation) error {
+	set := ownMutations(lastWritePerKey(muts))
+	if len(set) == 0 {
+		return nil
+	}
+
+	var touched []int
+	seen := make(map[int]struct{}, len(set))
+	for _, m := range set {
+		i := b.shardIndex(string(m.Key))
+		if _, dup := seen[i]; !dup {
+			seen[i] = struct{}{}
+			touched = append(touched, i)
 		}
+	}
+	sort.Ints(touched)
+
+	tickets := make([]uint64, len(set))
+	for _, i := range touched {
+		b.shards[i].mu.Lock()
+	}
+	for j, m := range set {
+		s := &b.shards[b.shardIndex(string(m.Key))]
+		var next []byte // nil is the cache's delete tombstone
+		if !m.Delete {
+			next = m.Value
+		}
+		s.data[string(m.Key)] = next
+		tickets[j] = s.order.ticket()
+		// A later write retires any in-flight durable claim on the key, as
+		// Put's does.
+		delete(s.claims, string(m.Key))
+	}
+	for j := len(touched) - 1; j >= 0; j-- {
+		b.shards[touched[j]].mu.Unlock()
+	}
+
+	for j, m := range set {
+		b.persistAsync(&b.shards[b.shardIndex(string(m.Key))], tickets[j], m)
 	}
 	return nil
 }
