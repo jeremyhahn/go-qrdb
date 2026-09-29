@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.21.1-alpha] - 2026-09-29
+
+Security hotfix: REST percent-encoded path authorization bypass (authorize and route on the same decoded path).
+
 ### Security
 
 - **REST authorization and routing no longer disagree on percent-encoded
