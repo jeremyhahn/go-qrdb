@@ -488,22 +488,6 @@ func (e *GroupStoreError) Unwrap() error {
 	return e.Err
 }
 
-// ShareServiceError wraps an error from share service storage operations.
-type ShareServiceError struct {
-	Op  string
-	Err error
-}
-
-// Error returns a human-readable description of the share service failure.
-func (e *ShareServiceError) Error() string {
-	return fmt.Sprintf("ceremony: share %s failed: %v", e.Op, e.Err)
-}
-
-// Unwrap returns the underlying error.
-func (e *ShareServiceError) Unwrap() error {
-	return e.Err
-}
-
 // ErrNilFactorRegistry indicates an enrollment plan was checked against a nil
 // auth-factor registry.
 var ErrNilFactorRegistry = errors.New("ceremony: factor registry is nil")

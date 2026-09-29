@@ -251,25 +251,6 @@ func TestCustodianGroupServiceError_ErrorsAs(t *testing.T) {
 	}
 }
 
-func TestShareServiceError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("share service init failed")
-	err := &lifecycle.ShareServiceError{Err: inner}
-	if !strings.Contains(err.Error(), "share service") {
-		t.Errorf("unexpected message: %q", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Error("Unwrap did not return inner error")
-	}
-}
-
-func TestShareServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.ShareServiceError{Err: errors.New("x")}
-	var target *lifecycle.ShareServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
 // TestEmptyVectorDataDirError_Error verifies that the error message clearly
 // identifies the root cause (empty DataDir) and the subsystem (vector storage).
 func TestEmptyVectorDataDirError_Error(t *testing.T) {

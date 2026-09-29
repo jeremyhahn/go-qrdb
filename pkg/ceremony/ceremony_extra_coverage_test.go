@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -267,80 +266,6 @@ func TestCustodianGroupService_DeleteGroup_ExistsError(t *testing.T) {
 	var gse *GroupStoreError
 	assert.ErrorAs(t, err, &gse)
 	assert.Equal(t, "exists-check", gse.Op)
-}
-
-// ---------------------------------------------------------------------------
-// ShareService — SubmitShare put error
-// ---------------------------------------------------------------------------
-
-// TestShareService_SubmitShare_PutError exercises the branch in SubmitShare
-// where store.Put returns an error.
-func TestShareService_SubmitShare_PutError(t *testing.T) {
-	backend := &errorableBackend{inner: seal.NewMemoryBackend(), failPut: true}
-	svc, err := NewShareService(backend, nil, testLogger())
-	require.NoError(t, err)
-
-	_, err = svc.SubmitShare(context.Background(), &transport.SubmitShareRequest{
-		GroupID:    "g1",
-		ShareIndex: 0,
-		ShareData:  []byte("share-data"),
-	})
-	require.Error(t, err)
-	var sse *ShareServiceError
-	assert.ErrorAs(t, err, &sse)
-	assert.Equal(t, "put", sse.Op)
-}
-
-// ---------------------------------------------------------------------------
-// ShareService — ListShares scan error
-// ---------------------------------------------------------------------------
-
-// TestShareService_ListShares_ScanError exercises the branch in ListShares
-// where the store.Scan call returns an error.
-func TestShareService_ListShares_ScanError(t *testing.T) {
-	backend := &errorableBackend{inner: seal.NewMemoryBackend(), failScan: true}
-	svc, err := NewShareService(backend, nil, testLogger())
-	require.NoError(t, err)
-
-	_, err = svc.ListShares(context.Background())
-	require.Error(t, err)
-}
-
-// TestShareService_ListShares_UnmarshalError exercises the branch in
-// ListShares where an entry in the store contains corrupt JSON data.
-func TestShareService_ListShares_UnmarshalError(t *testing.T) {
-	store := seal.NewMemoryBackend()
-	svc, err := NewShareService(store, nil, testLogger())
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	// Inject corrupt JSON at a share key so Scan invokes fn with bad data.
-	key := sharePrefix + "g1/0"
-	require.NoError(t, store.Put(ctx, key, []byte("not-valid-json")))
-
-	_, err = svc.ListShares(ctx)
-	require.Error(t, err)
-	var sse *ShareServiceError
-	assert.ErrorAs(t, err, &sse)
-	assert.Equal(t, "unmarshal", sse.Op)
-}
-
-// ---------------------------------------------------------------------------
-// ShareService — GetShareCollectionStatus list error
-// ---------------------------------------------------------------------------
-
-// TestShareService_GetShareCollectionStatus_ListError exercises the branch
-// in GetShareCollectionStatus where store.List returns an error.
-func TestShareService_GetShareCollectionStatus_ListError(t *testing.T) {
-	backend := &errorableBackend{inner: seal.NewMemoryBackend(), failList: true}
-	svc, err := NewShareService(backend, nil, testLogger())
-	require.NoError(t, err)
-
-	_, err = svc.GetShareCollectionStatus(context.Background(), "g1")
-	require.Error(t, err)
-	var sse *ShareServiceError
-	assert.ErrorAs(t, err, &sse)
-	assert.Equal(t, "list", sse.Op)
 }
 
 // ---------------------------------------------------------------------------

@@ -69,7 +69,6 @@ var (
 	_ transport.CollectionClient     = (*Transport)(nil)
 	_ transport.SealStoreClient      = (*Transport)(nil)
 	_ transport.CustodianGroupClient = (*Transport)(nil)
-	_ transport.ShareClient          = (*Transport)(nil)
 	_ transport.TenantClient         = (*Transport)(nil)
 	_ transport.LockClient           = (*Transport)(nil)
 	_ transport.Client               = (*Transport)(nil)
@@ -118,7 +117,6 @@ type Transport struct {
 	tenantSvc         tenant.TenantServicer
 	lockSvc           service.LockServicer
 	custodianGroupSvc ceremony.CustodianGroupServicer
-	shareSvc          ceremony.ShareServicer
 	authFactorSvc     service.AuthFactorServicer
 	auditLogger       audit.AuditLogger
 	encMigrator       service.EncryptionMigrator

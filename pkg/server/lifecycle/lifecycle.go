@@ -281,7 +281,6 @@ type Node struct {
 	Barrier        service.BarrierServicer
 	Ceremony       service.CeremonyServicer
 	CustodianGroup ceremony.CustodianGroupServicer
-	Share          ceremony.ShareServicer
 	Credential     service.CredentialServicer
 	Tenant         tenant.TenantServicer
 	CertProv       cert.CertProvider
@@ -485,12 +484,6 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		return nil, &CustodianGroupServiceError{Err: err}
 	}
 	n.CustodianGroup = custodianGroupSvc
-
-	shareSvc, err := ceremony.NewShareService(custodianStore, custodianGroupSvc, log)
-	if err != nil {
-		return nil, &ShareServiceError{Err: err}
-	}
-	n.Share = shareSvc
 
 	// Database service. Use the caller-supplied manager when available
 	// (callers may have run migrations or created databases before calling

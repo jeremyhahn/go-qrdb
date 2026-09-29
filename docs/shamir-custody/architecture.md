@@ -197,6 +197,11 @@ primitive.**
 - **No share recovery.** A lost share is replaced by rekey, not by re-issuing
   the same one.
 - **No server-side recovery share storage.** Recovery keys are external escrow.
+- **No share storage of any kind.** No API accepts share bytes for storage and
+  no store holds them. The former `ShareService` (`SubmitShare`, `ListShares`,
+  `GetShare`, `DeleteShare`, `GetShareCollectionStatus`), which persisted raw
+  share bytes to the replicated store and served them back, has been removed
+  along with the SDK's `Client.Shares()` / `transport.ShareClient`.
 - **No hardware auth of its own.** PIV, FIDO2 and PKCS#11 custodian methods are
   go-xkms implementations reaching qrdb through the factor seam.
 - **No quorum requirement on `none` or `passphrase` barriers.** The quorum seal

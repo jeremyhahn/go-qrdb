@@ -3254,6 +3254,22 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   `seal.UnprotectedDecryptError`. Legacy direct-mode root keys are copied into
   protected memory as well.
 
+### Removed — BREAKING
+
+- **`ceremony.ShareService` is deleted.** It stored raw Shamir share bytes in
+  the replicated store (`SubmitShare`) and returned them (`ListShares`,
+  `GetShare`), contradicting the rule that share material is never persisted.
+  Removed with it: `ceremony.ShareServicer`, `ceremony.NewShareService`,
+  `ceremony.ShareServiceError`, `lifecycle.Node.Share`,
+  `lifecycle.ShareServiceError`, the embedded `WithShareService` option,
+  `transport.ShareClient` and its request/response types (`SubmitShareRequest`,
+  `SubmitShareResponse`, `ShareInfo`, `ListSharesResponse`,
+  `ShareCollectionStatus`), the MCP stubs, and the SDK's `Client.Shares()`,
+  `sdk/go.ShareServicer`, `sdk/go.ShareService`, `sdk/go.NewShareService` and
+  `sdk/go.CeremonyShareServiceError` aliases. There is no replacement: shares
+  leave the node only through the barrier's ceremony distributor and the
+  one-time claim.
+
 ## [0.21.3-alpha] - 2026-09-30
 
 Security hotfix: tenant isolation on the tenant-administration surface of every network transport (REST, gRPC, Unix socket, QUIC, MCP).

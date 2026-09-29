@@ -242,11 +242,6 @@ func (c *Client) CustodianGroups() transport.CustodianGroupClient {
 	return capability[transport.CustodianGroupClient](c, "CustodianGroups")
 }
 
-// Shares returns a ShareClient for submitting and tracking Shamir shares.
-func (c *Client) Shares() transport.ShareClient {
-	return capability[transport.ShareClient](c, "Shares")
-}
-
 // Tenants returns a TenantClient for multi-tenant operations and
 // per-tenant barrier management.
 func (c *Client) Tenants() transport.TenantClient {

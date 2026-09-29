@@ -883,30 +883,6 @@ type CustodianGroupClient interface {
 }
 
 // ---------------------------------------------------------------------------
-// Share operations
-// ---------------------------------------------------------------------------
-
-// ShareClient manages Shamir share submission and status tracking.
-type ShareClient interface {
-	// SubmitShare submits a received Shamir share back to the server.
-	SubmitShare(ctx context.Context, req *SubmitShareRequest) (*SubmitShareResponse, error)
-
-	// ListShares lists shares available for the authenticated user.
-	ListShares(ctx context.Context) (*ListSharesResponse, error)
-
-	// GetShare retrieves a single submitted share identified by its
-	// server URL, group ID, and share index.
-	GetShare(ctx context.Context, serverURL, groupID string, shareIndex int) (*ShareInfo, error)
-
-	// DeleteShare removes a single submitted share identified by its
-	// server URL, group ID, and share index.
-	DeleteShare(ctx context.Context, serverURL, groupID string, shareIndex int) error
-
-	// GetShareCollectionStatus returns the collection status for a group.
-	GetShareCollectionStatus(ctx context.Context, groupID string) (*ShareCollectionStatus, error)
-}
-
-// ---------------------------------------------------------------------------
 // Tenant operations
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +998,5 @@ type Client interface {
 	RebalanceClient
 	SealStoreClient
 	CustodianGroupClient
-	ShareClient
 	TenantClient
 }

@@ -140,16 +140,6 @@ type CustodianGroupServicer = ceremony.CustodianGroupServicer
 type CustodianGroupService = ceremony.CustodianGroupService
 
 // ---------------------------------------------------------------------------
-// Share service types
-// ---------------------------------------------------------------------------
-
-// ShareServicer manages Shamir share submission and tracking.
-type ShareServicer = ceremony.ShareServicer
-
-// ShareService is the concrete share service.
-type ShareService = ceremony.ShareService
-
-// ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
 
@@ -161,9 +151,6 @@ var NewThresholdRegistry = ceremony.NewThresholdRegistry
 
 // NewCustodianGroupService creates a new CustodianGroupService.
 var NewCustodianGroupService = ceremony.NewCustodianGroupService
-
-// NewShareService creates a new ShareService.
-var NewShareService = ceremony.NewShareService
 
 // AuthenticatorType identifies the hardware or software that backs an
 // officer's signing credential.

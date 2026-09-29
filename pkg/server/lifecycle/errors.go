@@ -136,22 +136,6 @@ func (e *CustodianGroupServiceError) Unwrap() error {
 	return e.Err
 }
 
-// ShareServiceError is returned when the Shamir share service fails to
-// initialize.
-type ShareServiceError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *ShareServiceError) Error() string {
-	return "lifecycle: share service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ShareServiceError) Unwrap() error {
-	return e.Err
-}
-
 // TenantServiceError is returned when the tenant lifecycle service fails
 // to initialize.
 type TenantServiceError struct {

@@ -322,26 +322,6 @@ func TestMCPVectorExtras_AfterClose(t *testing.T) {
 }
 
 // ===========================================================================
-// transport_share.go — NotImplemented stubs
-// ===========================================================================
-
-func TestMCPShare_NotImplemented(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	var nie *transport.NotImplementedError
-	ctx := context.Background()
-
-	if _, err := tr.SubmitShare(ctx, &transport.SubmitShareRequest{}); !errors.As(err, &nie) {
-		t.Errorf("SubmitShare: %v", err)
-	}
-	if _, err := tr.ListShares(ctx); !errors.As(err, &nie) {
-		t.Errorf("ListShares: %v", err)
-	}
-	if _, err := tr.GetShareCollectionStatus(ctx, "g1"); !errors.As(err, &nie) {
-		t.Errorf("GetShareCollectionStatus: %v", err)
-	}
-}
-
-// ===========================================================================
 // transport_custodian_group.go — NotImplemented stubs
 // ===========================================================================
 

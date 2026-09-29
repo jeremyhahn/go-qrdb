@@ -8,7 +8,6 @@
 
 ```go
 func (c *Client) CustodianGroups() transport.CustodianGroupClient
-func (c *Client) Shares()          transport.ShareClient
 func (c *Client) Barrier()         transport.BarrierClient   // quorum operations
 ```
 

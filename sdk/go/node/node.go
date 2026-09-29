@@ -2869,9 +2869,6 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	if svcNode.CustodianGroup != nil {
 		opts = append(opts, embedded.WithCustodianGroupService(svcNode.CustodianGroup))
 	}
-	if svcNode.Share != nil {
-		opts = append(opts, embedded.WithShareService(svcNode.Share))
-	}
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
 	}

@@ -199,6 +199,3 @@ type CeremonySPKIPinError = ceremony.SPKIPinError
 
 // CeremonyGroupStoreError wraps an error from custodian group storage.
 type CeremonyGroupStoreError = ceremony.GroupStoreError
-
-// CeremonyShareServiceError wraps an error from the share service.
-type CeremonyShareServiceError = ceremony.ShareServiceError
