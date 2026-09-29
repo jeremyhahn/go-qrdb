@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.21.0-alpha] - 2026-09-29
+
+Merge train 1: go-enclave protected memory, atomic boot-time identity claims, QUIC qrdb-quic/2, per-tenant auth-factor challenges, PQ k-means empty-cluster repair.
+
 ### Added
 
 - **`sdk/go/secret.SealFailedError`** re-exports `pkg/secret.SealFailedError`
