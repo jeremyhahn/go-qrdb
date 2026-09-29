@@ -174,6 +174,16 @@ are not reconstructed here — their history is in the git log.
   through the same registry: they used to read the node's default store under
   the database's prefix, which served a sealed database's data and, on a scoped
   transport, prefixed the already-scoped store a second time.
+- **A node reports, and warns at startup, when seal is enabled but its data
+  is stored unencrypted (high, report only).** The barrier's encrypted
+  filesystem covers a standalone node's `pebble` backend, not its `file` or
+  `objstore` backend, which kept data in plaintext with nothing saying so (a
+  raft node refuses at start any state machine storage that would persist
+  plaintext, so it reports no gap). Every
+  composition root now logs one WARNING per gap at boot, and the capability
+  report carries them as `UnencryptedAtRest` (`unencrypted_at_rest` field 20
+  in `CapabilitiesResponse`) on REST, gRPC, Unix, QUIC, MCP and embedded, and
+  in `qrdb admin capabilities`. Encrypting those stores is separate work.
 
 ### Known limits
 

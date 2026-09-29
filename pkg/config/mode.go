@@ -183,5 +183,37 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		MySQL:      capabilities.Has("mysql"),
 		PostgreSQL: capabilities.Has("pgsql"),
 		FTS:        capabilities.Has("fts"),
+
+		UnencryptedAtRest: c.unencryptedAtRest(raft),
 	}
+}
+
+// unencryptedLocalBackends are the standalone storage backends that keep
+// data on disk without the barrier's encrypted filesystem, which wraps
+// Pebble's file system only. The memory backend keeps nothing on disk.
+var unencryptedLocalBackends = map[string]struct{}{
+	"file":     {},
+	"objstore": {},
+}
+
+// unencryptedAtRest reports where, with seal enabled, the node's data plane
+// keeps data on disk unencrypted: a standalone node's file or objstore
+// backend (the backend of the first configured database, pebble when none is
+// set). A raft node reports nothing: every state machine it will start under
+// the barrier is encrypted at rest or persists nothing, and one whose storage
+// would persist plaintext is refused at start (SealedSMStoragePlaintextError,
+// statemachine.SMStorageUnencryptedError). It returns nil when seal is
+// disabled.
+func (c *Config) unencryptedAtRest(raft bool) []string {
+	if !c.Seal.Enabled || raft {
+		return nil
+	}
+	backend := "pebble"
+	if len(c.Databases) > 0 && c.Databases[0].Backend != "" {
+		backend = c.Databases[0].Backend
+	}
+	if _, ok := unencryptedLocalBackends[backend]; ok {
+		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble"`}
+	}
+	return nil
 }

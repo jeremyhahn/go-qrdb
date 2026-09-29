@@ -335,6 +335,9 @@ func newAdminCapabilitiesCmd() *cobra.Command {
 					{"etcd", strconv.FormatBool(resp.Etcd)},
 					{"fts", strconv.FormatBool(resp.FTS)},
 				}
+				for _, gap := range resp.UnencryptedAtRest {
+					rows = append(rows, []string{"unencryptedAtRest", gap})
+				}
 				printTable(headers, rows)
 				return nil
 			}

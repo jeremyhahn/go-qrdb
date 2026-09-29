@@ -1507,6 +1507,10 @@ func runStart(f *startFlags) (err error) {
 			if err != nil {
 				return err
 			}
+			// The at-rest report reads the seal posture and the standalone
+			// backend (databases[0]), which the server config does not carry.
+			capCfg.Seal = f.sealConfig
+			capCfg.Databases = f.databases
 			profile := capCfg.EffectiveCapabilities()
 			if !standalone {
 				// A raft node serves what its state machine serves: the
@@ -1517,6 +1521,7 @@ func runStart(f *startFlags) (err error) {
 					return &UnknownSMError{Name: f.smType}
 				}
 			}
+			profile.WarnUnencryptedAtRest(slog.Default())
 			capabilities.Seal(profile)
 
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{

@@ -109,6 +109,8 @@ type capabilitiesResponse struct {
 	PostgreSQL  bool   `json:"postgresql"`
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
+
+	UnencryptedAtRest []string `json:"unencryptedAtRest,omitempty"`
 }
 
 // drainResponse is the JSON payload returned by POST /drain.
@@ -301,6 +303,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		PostgreSQL:  caps.PostgreSQL,
 		Etcd:        caps.Etcd,
 		FTS:         caps.FTS,
+
+		UnencryptedAtRest: caps.UnencryptedAtRest,
 	})
 }
 

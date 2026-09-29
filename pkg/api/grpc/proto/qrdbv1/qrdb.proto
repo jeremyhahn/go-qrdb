@@ -2036,6 +2036,9 @@ message CapabilitiesResponse {
     bool postgresql = 17;
     bool etcd = 18;
     bool fts = 19;
+    // unencrypted_at_rest lists, when seal is enabled, where the node keeps
+    // data on disk outside the barrier's at-rest encryption. Empty otherwise.
+    repeated string unencrypted_at_rest = 20;
 }
 
 // StartShardRequest is the request payload for StartShard.

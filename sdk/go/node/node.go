@@ -923,6 +923,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	profileCfg := *pending.cfg
 	profileCfg.Mode = capabilities.ModeStandalone
 	profile := profileCfg.EffectiveCapabilities()
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              localHost,
@@ -1229,6 +1230,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		_ = dbManager.Close()
 		return err
 	}
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              hostAdapter,
@@ -1746,6 +1748,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	profileCfg := *cfg
 	profileCfg.Mode = capabilities.ModeStandalone
 	profile := profileCfg.EffectiveCapabilities()
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:        localHost,

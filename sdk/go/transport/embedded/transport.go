@@ -805,6 +805,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  caps.PostgreSQL,
 		Etcd:        caps.Etcd,
 		FTS:         caps.FTS,
+
+		UnencryptedAtRest: caps.UnencryptedAtRest,
 	}, nil
 }
 

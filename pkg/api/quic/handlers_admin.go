@@ -219,6 +219,8 @@ func (s *Server) handleCapabilities(ctx context.Context, _ []byte) ([]byte, erro
 		Postgresql:  caps.PostgreSQL,
 		Etcd:        caps.Etcd,
 		Fts:         caps.FTS,
+
+		UnencryptedAtRest: caps.UnencryptedAtRest,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

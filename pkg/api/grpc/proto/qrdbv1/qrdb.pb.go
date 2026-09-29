@@ -6558,18 +6558,21 @@ type CapabilitiesResponse struct {
 	TimeSeries  bool                   `protobuf:"varint,8,opt,name=time_series,json=timeSeries,proto3" json:"time_series,omitempty"`
 	Vector      bool                   `protobuf:"varint,9,opt,name=vector,proto3" json:"vector,omitempty"`
 	// mode is the run mode: "standalone" or "raft".
-	Mode          string `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
-	Lock          bool   `protobuf:"varint,11,opt,name=lock,proto3" json:"lock,omitempty"`
-	Cluster       bool   `protobuf:"varint,12,opt,name=cluster,proto3" json:"cluster,omitempty"`
-	Backup        bool   `protobuf:"varint,13,opt,name=backup,proto3" json:"backup,omitempty"`
-	Rebalance     bool   `protobuf:"varint,14,opt,name=rebalance,proto3" json:"rebalance,omitempty"`
-	Sql           bool   `protobuf:"varint,15,opt,name=sql,proto3" json:"sql,omitempty"`
-	Mysql         bool   `protobuf:"varint,16,opt,name=mysql,proto3" json:"mysql,omitempty"`
-	Postgresql    bool   `protobuf:"varint,17,opt,name=postgresql,proto3" json:"postgresql,omitempty"`
-	Etcd          bool   `protobuf:"varint,18,opt,name=etcd,proto3" json:"etcd,omitempty"`
-	Fts           bool   `protobuf:"varint,19,opt,name=fts,proto3" json:"fts,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Mode       string `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
+	Lock       bool   `protobuf:"varint,11,opt,name=lock,proto3" json:"lock,omitempty"`
+	Cluster    bool   `protobuf:"varint,12,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	Backup     bool   `protobuf:"varint,13,opt,name=backup,proto3" json:"backup,omitempty"`
+	Rebalance  bool   `protobuf:"varint,14,opt,name=rebalance,proto3" json:"rebalance,omitempty"`
+	Sql        bool   `protobuf:"varint,15,opt,name=sql,proto3" json:"sql,omitempty"`
+	Mysql      bool   `protobuf:"varint,16,opt,name=mysql,proto3" json:"mysql,omitempty"`
+	Postgresql bool   `protobuf:"varint,17,opt,name=postgresql,proto3" json:"postgresql,omitempty"`
+	Etcd       bool   `protobuf:"varint,18,opt,name=etcd,proto3" json:"etcd,omitempty"`
+	Fts        bool   `protobuf:"varint,19,opt,name=fts,proto3" json:"fts,omitempty"`
+	// unencrypted_at_rest lists, when seal is enabled, where the node keeps
+	// data on disk outside the barrier's at-rest encryption. Empty otherwise.
+	UnencryptedAtRest []string `protobuf:"bytes,20,rep,name=unencrypted_at_rest,json=unencryptedAtRest,proto3" json:"unencrypted_at_rest,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CapabilitiesResponse) Reset() {
@@ -6733,6 +6736,13 @@ func (x *CapabilitiesResponse) GetFts() bool {
 		return x.Fts
 	}
 	return false
+}
+
+func (x *CapabilitiesResponse) GetUnencryptedAtRest() []string {
+	if x != nil {
+		return x.UnencryptedAtRest
+	}
+	return nil
 }
 
 // StartShardRequest is the request payload for StartShard.
@@ -25896,7 +25906,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"replica_id\x18\x02 \x01(\x04R\treplicaId\"3\n" +
 	"\x16RequestSnapshotMessage\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\"\x15\n" +
-	"\x13CapabilitiesRequest\"\xd3\x03\n" +
+	"\x13CapabilitiesRequest\"\x83\x04\n" +
 	"\x14CapabilitiesResponse\x12\x0e\n" +
 	"\x02kv\x18\x01 \x01(\bR\x02kv\x12\x12\n" +
 	"\x04mvcc\x18\x02 \x01(\bR\x04mvcc\x12 \n" +
@@ -25920,7 +25930,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"postgresql\x18\x11 \x01(\bR\n" +
 	"postgresql\x12\x12\n" +
 	"\x04etcd\x18\x12 \x01(\bR\x04etcd\x12\x10\n" +
-	"\x03fts\x18\x13 \x01(\bR\x03fts\"\xe0\x01\n" +
+	"\x03fts\x18\x13 \x01(\bR\x03fts\x12.\n" +
+	"\x13unencrypted_at_rest\x18\x14 \x03(\tR\x11unencryptedAtRest\"\xe0\x01\n" +
 	"\x11StartShardRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +

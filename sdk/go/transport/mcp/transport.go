@@ -615,6 +615,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  raw.PostgreSQL,
 		Etcd:        raw.Etcd,
 		FTS:         raw.FTS,
+
+		UnencryptedAtRest: raw.UnencryptedAtRest,
 	}, nil
 }
 
@@ -793,6 +795,8 @@ type serverCapabilities struct {
 	PostgreSQL  bool   `json:"postgresql"`
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
+
+	UnencryptedAtRest []string `json:"unencryptedAtRest"`
 }
 
 // serverShardState mirrors service.ShardStateResponse for JSON decoding.

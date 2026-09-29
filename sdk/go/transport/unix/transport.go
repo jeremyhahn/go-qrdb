@@ -548,6 +548,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  resp.GetPostgresql(),
 		Etcd:        resp.GetEtcd(),
 		FTS:         resp.GetFts(),
+
+		UnencryptedAtRest: resp.GetUnencryptedAtRest(),
 	}, nil
 }
 

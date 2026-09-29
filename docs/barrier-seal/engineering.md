@@ -472,6 +472,44 @@ With strategy `none`, every one of those events is marked `strategy: none`, so
 the absence of encryption is permanently visible in the trail rather than
 inferable.
 
+### Seal enabled, storage not encrypted
+
+Enabling seal does not by itself encrypt every byte the node writes. The
+barrier's encrypted filesystem wraps Pebble's file system. On a raft node it
+covers every state machine that persists anything -- `mvcc` and `pebble`, and
+`disk` and `fast` over pebble storage -- and a state machine whose storage
+would persist plaintext (`disk` or `fast` over `file`) is refused at start
+(see [../storage-engines/](../storage-engines/engineering.md)), so a raft node reports no
+gap. On a standalone node it covers the `pebble` backend, not the `file` or
+`objstore` backend.
+
+Such a node still runs. It says so in two places, both computed once at boot
+from the configuration (`config.Config.EffectiveCapabilities`):
+
+- **A startup WARNING** per gap, logged by every composition root (the daemon
+  and `sdk/go/node`) before the node serves traffic:
+
+  ```
+  seal is enabled but data is stored unencrypted at rest  where="standalone backend \"file\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\""
+  ```
+
+- **The capability report**: `UnencryptedAtRest` (`unencryptedAtRest` in JSON,
+  `unencrypted_at_rest` in the protobuf) lists the same gaps on REST, gRPC,
+  Unix, QUIC, MCP and the embedded transport, and `qrdb admin capabilities`
+  prints one `unencryptedAtRest` row per gap. It is empty when seal is off or
+  everything on disk is encrypted.
+
+The report judges the node's own store, because that is where every
+database's data lives. A database is a namespace over the node's store
+whatever `backend` its catalog record names: the store the database manager
+opens for a `file` database holds no data unless the database carries a
+per-database barrier, and then the barrier encrypts its values (not its keys)
+separately. A configured database after the first, or one created at runtime,
+therefore adds no gap of its own; on a standalone node the first configured
+database's backend *is* the node's store. `objstore` is a node-store backend
+only: the database manager refuses to open a database with it
+(`database.InvalidBackendError`).
+
 ### `seal.enabled: false` startup warning
 
 `seal.enabled: false` is not a barrier operation — there is no barrier

@@ -43,6 +43,10 @@ type Capabilities struct {
     PostgreSQL  bool   `json:"postgresql"`
     Etcd        bool   `json:"etcd"`
     FTS         bool   `json:"fts"`
+
+    // UnencryptedAtRest lists, when seal is enabled, where the node keeps
+    // data on disk outside the barrier's at-rest encryption. Empty otherwise.
+    UnencryptedAtRest []string `json:"unencryptedAtRest,omitempty"`
 }
 
 // Register records a feature as compiled in. Called from init() in
