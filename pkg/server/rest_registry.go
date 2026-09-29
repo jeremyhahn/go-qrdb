@@ -655,7 +655,7 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 		out.Transaction = newNamespacedTransactionService(svcs.Transaction, prefix)
 	}
 	if svcs.Lease != nil {
-		out.Lease = newNamespacedLeaseService(svcs.Lease, prefix)
+		out.Lease = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
 	}
 	if svcs.TimeSeries != nil {
 		out.TimeSeries = newNamespacedTimeSeriesService(svcs.TimeSeries, prefix)

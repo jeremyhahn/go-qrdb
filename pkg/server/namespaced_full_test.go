@@ -683,39 +683,14 @@ func (m *leaseRec) Leases(_ context.Context) ([]*lease.Lease, error) {
 	return nil, m.err
 }
 
-func TestNamespacedLease_GrantRevokeKeepAlive(t *testing.T) {
-	rec := &leaseRec{}
-	w := newNamespacedLeaseService(rec, "p/")
-	ctx := context.Background()
-
-	l, err := w.Grant(ctx, 30)
-	if err != nil || l.ID != 9 || rec.lastTTL != 30 {
-		t.Fatalf("Grant = %+v, %v (ttl %d)", l, err, rec.lastTTL)
-	}
-	if err := w.Revoke(ctx, 5); err != nil || rec.lastID != 5 {
-		t.Fatalf("Revoke err=%v id=%d", err, rec.lastID)
-	}
-
-	// KeepAlive strips the in-namespace keys.
-	ka, err := w.KeepAlive(ctx, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ka.Keys) != 1 || string(ka.Keys[0]) != "k1" {
-		t.Errorf("KeepAlive keys = %v", ka.Keys)
-	}
-
-	// KeepAlive returning a nil lease is forwarded as nil (stripLease nil branch).
-	rec.nilL = true
-	ka, err = w.KeepAlive(ctx, 8)
-	if err != nil || ka != nil {
-		t.Fatalf("KeepAlive(nil) = %v, %v", ka, err)
-	}
-}
+// TestNamespacedLease_GrantRevokeKeepAlive used to pin that every namespaced
+// view operated on the global lease set, which is the cross-tenant flaw
+// namespaced_lease_owner_test.go now refutes; the ownership behaviour is
+// tested there.
 
 func TestNamespacedLease_ErrorPassthrough(t *testing.T) {
 	rec := &leaseRec{err: errBoom}
-	w := newNamespacedLeaseService(rec, "p/")
+	w := newNamespacedLeaseService(rec, newSharedLessor(), "p/")
 	ctx := context.Background()
 	if _, err := w.Grant(ctx, 1); !errors.Is(err, errBoom) {
 		t.Errorf("Grant err = %v", err)

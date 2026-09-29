@@ -17,25 +17,41 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// namespacedLeaseService wraps a LeaseServicer so that the keys attached to a
-// lease are presented within the composite (tenant, db) namespace: returned
-// leases have the namespace prefix stripped from their attached keys.
+// leaseOwnerKeyPrefix roots the ownership records of namespaced leases. It is
+// in the internal key namespace and outside every (tenant, database)
+// namespace, so no caller can read, write or forge one through a namespaced
+// view.
+const leaseOwnerKeyPrefix = service.InternalKeyPrefixSystem + "lease-owner/"
+
+// namespacedLeaseService confines leases to the composite (tenant, db)
+// namespace that granted them.
 //
 // Lease IDs are globally unique integers allocated by the shared Lessor inside
-// the state machine; they are NOT part of the key namespace. Grant, Revoke,
-// KeepAlive, TimeToLive and Leases() therefore operate on the global lease set
-// (a lease is a cluster-wide TTL handle, not a per-database object) — only the
-// VISIBILITY of each lease's attached keys is scoped to the namespace. A
-// freshly granted lease has no attached keys yet, so the list must not filter
-// leases by namespace membership (doing so hid keyless leases and was
-// inconsistent with the global Grant/Revoke/KeepAlive ID semantics).
+// the state machine, so the ID alone says nothing about who owns a lease. At
+// Grant the view therefore attaches an ownership record to the new lease: the
+// key leaseOwnerKeyPrefix + namespace + ID, written with the lease through the
+// MVCC engine. Because the record is attached, the lessor deletes it when the
+// lease is revoked or expires, and it is replicated with the lease -- every
+// node agrees on the owner.
+//
+// A lease is this namespace's only when its attached keys include this
+// namespace's record for its ID. Leases lists only those; KeepAlive and
+// TimeToLive answer any other ID -- another tenant's, another database's, or
+// one granted outside a namespaced view -- with the same
+// service.LeaseNotFoundError a missing lease gets, and Revoke with the same
+// idempotent success. Attached keys are presented with the namespace prefix
+// stripped, and keys outside the namespace, the ownership record among them,
+// are never shown.
 type namespacedLeaseService struct {
 	inner  service.LeaseServicer
+	mvcc   service.MVCCKVServicer
 	prefix string
 }
 
@@ -43,9 +59,29 @@ type namespacedLeaseService struct {
 var _ service.LeaseServicer = (*namespacedLeaseService)(nil)
 
 // newNamespacedLeaseService creates a LeaseServicer scoped to the given
-// composite namespace prefix.
-func newNamespacedLeaseService(inner service.LeaseServicer, prefix string) *namespacedLeaseService {
-	return &namespacedLeaseService{inner: inner, prefix: prefix}
+// composite namespace prefix. mvcc is the engine the ownership record is
+// written through; without one the view refuses to grant.
+func newNamespacedLeaseService(inner service.LeaseServicer, mvcc service.MVCCKVServicer, prefix string) *namespacedLeaseService {
+	return &namespacedLeaseService{inner: inner, mvcc: mvcc, prefix: prefix}
+}
+
+// ownerKey returns this namespace's ownership record for lease id.
+func (s *namespacedLeaseService) ownerKey(id int64) []byte {
+	return []byte(leaseOwnerKeyPrefix + s.prefix + strconv.FormatInt(id, 10))
+}
+
+// owns reports whether l carries this namespace's ownership record.
+func (s *namespacedLeaseService) owns(l *lease.Lease) bool {
+	if l == nil {
+		return false
+	}
+	record := s.ownerKey(l.ID)
+	for _, k := range l.Keys {
+		if bytes.Equal(k, record) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripLease returns a shallow copy of the lease with attached keys that fall
@@ -67,18 +103,62 @@ func (s *namespacedLeaseService) stripLease(l *lease.Lease) *lease.Lease {
 	return &out
 }
 
-// Grant creates a new lease with the specified TTL.
-func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.Lease, error) {
-	return s.inner.Grant(ctx, ttl)
+// owned returns lease id when this namespace owns it, and
+// service.LeaseNotFoundError otherwise.
+func (s *namespacedLeaseService) owned(ctx context.Context, id int64) (*lease.Lease, error) {
+	l, err := s.inner.TimeToLive(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !s.owns(l) {
+		return nil, &service.LeaseNotFoundError{LeaseID: id}
+	}
+	return l, nil
 }
 
-// Revoke immediately expires a lease and deletes all attached keys.
+// Grant creates a new lease with the specified TTL and records this namespace
+// as its owner. A lease whose ownership cannot be recorded is revoked and the
+// failure returned, so no lease exists that no namespace owns.
+func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.Lease, error) {
+	if s.mvcc == nil {
+		return nil, &service.CapabilityUnsupportedError{Message: "lease: this database has no MVCC engine to record lease ownership"}
+	}
+	l, err := s.inner.Grant(ctx, ttl)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.mvcc.PutWithLease(ctx, string(s.ownerKey(l.ID)), nil, l.ID); err != nil {
+		_ = s.inner.Revoke(ctx, l.ID)
+		return nil, err
+	}
+	return s.stripLease(l), nil
+}
+
+// Revoke immediately expires a lease this namespace owns and deletes all
+// attached keys.
+//
+// Revoking a lease that does not exist is an idempotent success, so revoking
+// a lease this namespace does not own is the same no-op: answering it
+// differently would tell the caller the ID is live elsewhere. The no-op is
+// answered here rather than by the inner service, because lease IDs are
+// allocated in sequence and a not-yet-granted ID passed through could revoke
+// another namespace's lease granted in between.
 func (s *namespacedLeaseService) Revoke(ctx context.Context, leaseID int64) error {
+	if _, err := s.owned(ctx, leaseID); err != nil {
+		var notFound *service.LeaseNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return err
+	}
 	return s.inner.Revoke(ctx, leaseID)
 }
 
-// KeepAlive resets the TTL on an existing lease.
+// KeepAlive resets the TTL on a lease this namespace owns.
 func (s *namespacedLeaseService) KeepAlive(ctx context.Context, leaseID int64) (*lease.Lease, error) {
+	if _, err := s.owned(ctx, leaseID); err != nil {
+		return nil, err
+	}
 	l, err := s.inner.KeepAlive(ctx, leaseID)
 	if err != nil {
 		return nil, err
@@ -86,20 +166,18 @@ func (s *namespacedLeaseService) KeepAlive(ctx context.Context, leaseID int64) (
 	return s.stripLease(l), nil
 }
 
-// TimeToLive returns the current state of a lease with attached keys presented
-// within the namespace.
+// TimeToLive returns the current state of a lease this namespace owns, with
+// attached keys presented within the namespace.
 func (s *namespacedLeaseService) TimeToLive(ctx context.Context, leaseID int64) (*lease.Lease, error) {
-	l, err := s.inner.TimeToLive(ctx, leaseID)
+	l, err := s.owned(ctx, leaseID)
 	if err != nil {
 		return nil, err
 	}
 	return s.stripLease(l), nil
 }
 
-// Leases returns the active leases (the global lease set), with each lease's
-// attached keys stripped to those under this namespace. Leases are global TTL
-// handles, so the set is not filtered by namespace membership — a keyless,
-// freshly granted lease is still reported.
+// Leases returns the active leases this namespace owns, each with its
+// attached keys presented within the namespace.
 func (s *namespacedLeaseService) Leases(ctx context.Context) ([]*lease.Lease, error) {
 	leases, err := s.inner.Leases(ctx)
 	if err != nil {
@@ -107,7 +185,9 @@ func (s *namespacedLeaseService) Leases(ctx context.Context) ([]*lease.Lease, er
 	}
 	out := make([]*lease.Lease, 0, len(leases))
 	for _, l := range leases {
-		out = append(out, s.stripLease(l))
+		if s.owns(l) {
+			out = append(out, s.stripLease(l))
+		}
 	}
 	return out, nil
 }

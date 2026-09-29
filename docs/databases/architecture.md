@@ -55,8 +55,9 @@ absent, the server's default (`system`) is used.
 - **Recreating a database to change its replication factor.** Rejected:
   `database scale` adds and removes voting replicas in place.
 - **A global etcd facade.** Rejected — see
-  [../etcd-compatibility/](../etcd-compatibility/architecture.md). etcd is
-  per database precisely because its revision counter is cluster-global.
+  [../etcd-compatibility/](../etcd-compatibility/architecture.md). An etcd
+  listener serves exactly one database's keys, watches and leases, resolved
+  through the service registry like every other transport.
 
 ## Component boundaries
 

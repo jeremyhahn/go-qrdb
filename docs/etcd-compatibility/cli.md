@@ -80,7 +80,7 @@ etcdctl endpoint status
 
 Set the client environment for mTLS as `etcdctl` normally expects
 (`ETCDCTL_API=3` plus `--cacert`, `--cert`, `--key`); there is no username or
-password, and `etcdctl user`/`role` commands return `Unimplemented`.
+password, and `etcdctl user`/`role` commands are refused with "permission denied".
 
 ## Parity
 

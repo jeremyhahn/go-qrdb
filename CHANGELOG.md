@@ -32,6 +32,17 @@ are not reconstructed here — their history is in the git log.
   `TenantID` alone, and the `barrier sealed for tenant: <id>` text, now mean
   the tenant's barrier. A client that took every `BarrierSealedError` to be the
   tenant's must check `Database` first.
+- **etcd listeners need TLS, the node's authentication and a client
+  certificate.** A listener no longer starts without TLS and authentication; a
+  client without a certificate, or from a tenant other than the database's
+  owner, is refused. Only the mapped RPCs are served: `Auth.*`, member
+  changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader` and
+  `Downgrade` are refused with `PERMISSION_DENIED` (previously stubs, no-ops or
+  `Unimplemented`). Keys are stored under the database's
+  `<tenant>/<database>/` namespace rather than at the shard root, so data
+  written through an etcd listener before this release is not visible through
+  it; export it with the previous binary and re-import it. `Compact` on the
+  shared shard is reserved to the system tenant, as on every other transport.
 
 ### Security
 
@@ -50,6 +61,28 @@ are not reconstructed here — their history is in the git log.
   `409` / `FAILED_PRECONDITION` on REST, gRPC, Unix, QUIC and MCP (the
   unified error table renders a failed precondition as `409` on REST; the
   documentation said `400`).
+- **The per-database etcd listener is confined to its database and
+  authenticates every request (high).** It was wired to the node's raw,
+  un-namespaced system-shard services, so any etcd client reaching the port
+  read and wrote every tenant's keys, and its only "authentication" was the
+  stub `Auth` service. The listener now resolves its MVCC, transaction, watch
+  and lease services through the per-(tenant, database) service registry for
+  the database's owning tenant, authenticates every RPC with the node's
+  authenticator chain, refuses callers from other tenants with a generic
+  `etcd: permission denied` that names neither the database nor its owner
+  (the detail is logged server-side), checks a
+  default-deny RPC-to-permission map, and re-resolves the database on every
+  RPC so a sealed or dropped database is refused. Leases are confined to the
+  (tenant, database) that granted them on every transport, etcd included: lease
+  IDs are global, and the lease view used to list, keep alive and revoke any
+  tenant's lease by ID; ownership is now recorded at grant and a foreign ID is
+  answered exactly as a missing one (not-found; `Revoke` is the idempotent
+  no-op success and revokes nothing). It refuses to start without
+  TLS and authentication (`etcd.AuthRequiredError`) or without a catalog and
+  registry to confine it (`etcd.ScopeUnavailableError`). Known limit: a
+  `Watch` or `LeaseKeepAlive` stream is authorized when it opens, so one
+  already open when its database is sealed or dropped, or its caller loses the
+  permission, keeps running until it ends; new RPCs and streams are refused.
 
 ### Known limits
 
@@ -62,6 +95,11 @@ are not reconstructed here — their history is in the git log.
   raft database's, or a volume- or raft-isolated tenant's) fails closed while
   sealed, and once unsealed its data is served unencrypted from the store the
   barrier does not wrap.
+- **etcd streams are authorized when they open.** A `Watch` or
+  `LeaseKeepAlive` stream open when its database is sealed or dropped, or when
+  its caller loses the permission, keeps running until it ends; every new RPC
+  and stream is refused. gRPC and REST watch streams resolve their database
+  once when they open in the same way.
 
 ## [0.23.0-alpha] - 2026-09-30
 

@@ -79,7 +79,12 @@ without anybody asking.
 ## Trust boundaries
 
 - Leases are scoped to a (tenant, database) pair like every other data-plane
-  object; a lease ID from one tenant is not resolvable in another.
+  object; a lease ID from one tenant is not resolvable in another -- it is
+  answered exactly as a missing lease is (not-found, or for `Revoke` the
+  idempotent success). *(Corrected: until this release the namespaced lease view
+  operated on the global lease set, so any tenant could list, keep alive and
+  revoke every tenant's leases by ID. Ownership is now recorded at grant; see
+  engineering.md.)*
 - Each verb carries its own permission (`lease:grant`, `lease:revoke`,
   `lease:keepalive`, `lease:ttl`, `lease:list`) — revoking somebody else's lease
   is a destructive act and is authorized separately from granting your own.

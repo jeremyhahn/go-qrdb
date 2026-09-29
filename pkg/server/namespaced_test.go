@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 
@@ -345,56 +346,47 @@ type recLease struct {
 	service.LeaseServicer
 }
 
+// owner is the ownership record namespace p/ attaches to lease id.
+func owner(id int64) []byte {
+	return []byte(leaseOwnerKeyPrefix + "p/" + strconv.FormatInt(id, 10))
+}
+
 func (recLease) TimeToLive(_ context.Context, id int64) (*lease.Lease, error) {
-	return &lease.Lease{ID: id, Keys: [][]byte{[]byte("p/k1"), []byte("other/k2")}}, nil
+	return &lease.Lease{ID: id, Keys: [][]byte{owner(id), []byte("p/k1"), []byte("other/k2")}}, nil
 }
 func (recLease) Leases(_ context.Context) ([]*lease.Lease, error) {
 	return []*lease.Lease{
-		{ID: 1, Keys: [][]byte{[]byte("p/k1")}},
-		{ID: 2, Keys: [][]byte{[]byte("other/k2")}},
-		{ID: 3, Keys: nil}, // freshly granted, no attached keys yet
+		{ID: 1, Keys: [][]byte{owner(1), []byte("p/k1")}},
+		{ID: 2, Keys: [][]byte{[]byte(leaseOwnerKeyPrefix + "other/2"), []byte("other/k2")}},
+		{ID: 3, Keys: nil}, // granted outside any namespaced view: nobody's
 	}, nil
 }
 
 func TestNamespacedLease_TimeToLiveStripsAndFiltersKeys(t *testing.T) {
-	w := newNamespacedLeaseService(recLease{}, "p/")
+	w := newNamespacedLeaseService(recLease{}, nil, "p/")
 	l, err := w.TimeToLive(context.Background(), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(l.Keys) != 1 || string(l.Keys[0]) != "k1" {
-		t.Errorf("TimeToLive keys = %v, want [k1]", l.Keys)
+		t.Errorf("TimeToLive keys = %v, want [k1] (the ownership record and other namespaces' keys hidden)", l.Keys)
 	}
 }
 
-// Leases are global TTL handles: the namespaced wrapper returns the full lease
-// set (it must NOT drop keyless or other-namespace leases — that broke the
-// basic grant→list flow), stripping each lease's attached keys to those under
-// the namespace.
-func TestNamespacedLease_LeasesReturnsAllWithStrippedKeys(t *testing.T) {
-	w := newNamespacedLeaseService(recLease{}, "p/")
+// Leases lists only the leases this namespace granted. It used to return the
+// global lease set, which let every tenant list -- and, by ID, revoke and
+// keep alive -- every other tenant's leases.
+func TestNamespacedLease_LeasesListsOnlyOwnedLeases(t *testing.T) {
+	w := newNamespacedLeaseService(recLease{}, nil, "p/")
 	ls, err := w.Leases(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ls) != 3 {
-		t.Fatalf("Leases len = %d, want 3 (global set, unfiltered)", len(ls))
+	if len(ls) != 1 || ls[0].ID != 1 {
+		t.Fatalf("Leases = %+v, want only lease 1", ls)
 	}
-	byID := map[int64]*lease.Lease{}
-	for _, l := range ls {
-		byID[l.ID] = l
-	}
-	// Lease 1's in-namespace key is stripped of its prefix.
-	if l := byID[1]; l == nil || len(l.Keys) != 1 || string(l.Keys[0]) != "k1" {
-		t.Errorf("lease 1 keys = %v, want [k1]", l.Keys)
-	}
-	// Lease 2's key is outside the namespace, so it is omitted from the view.
-	if l := byID[2]; l == nil || len(l.Keys) != 0 {
-		t.Errorf("lease 2 keys = %v, want [] (out-of-namespace key omitted)", l.Keys)
-	}
-	// Lease 3 is keyless (freshly granted) and must still appear.
-	if l := byID[3]; l == nil || len(l.Keys) != 0 {
-		t.Errorf("keyless lease 3 missing or has keys: %+v", l)
+	if len(ls[0].Keys) != 1 || string(ls[0].Keys[0]) != "k1" {
+		t.Errorf("lease 1 keys = %v, want [k1]", ls[0].Keys)
 	}
 }
 
