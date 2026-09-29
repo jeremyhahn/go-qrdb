@@ -15,7 +15,6 @@
 package keydelivery
 
 import (
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/hpke"
 	"crypto/rand"
@@ -34,35 +33,31 @@ const infoDomain = "qrdb/keydelivery/v1"
 // key (wrong curve or invalid point).
 var ErrUnsupportedKey = errors.New("keydelivery: recipient key is not a usable P-256 key")
 
-// hpkeKDF/hpkeAEAD pin the RFC 9180 ciphersuite alongside DHKEM(P-256):
-// HKDF-SHA256 + AES-256-GCM. AES-256-GCM matches the 256-bit barrier root keys.
-func hpkeKDF() hpke.KDF   { return hpke.HKDFSHA256() }
-func hpkeAEAD() hpke.AEAD { return hpke.AES256GCM() }
+// p256 is the node key-delivery suite: DHKEM(P-256)-HKDF-SHA256-AES-256-GCM.
+// Node certificates are ECDSA P-256, and the KEM is pinned so an unexpected
+// key type cannot downgrade it.
+var p256 = suites[KEMP256]
 
-// recipientPublicKey converts an ECDSA certificate public key to an HPKE
-// DHKEM(P-256) public key, rejecting any non-P-256 key fail-closed so the KEM
-// curve is pinned and cannot be downgraded by an unexpected key type.
-func recipientPublicKey(pub *ecdsa.PublicKey) (hpke.PublicKey, error) {
-	ecdhPub, err := pub.ECDH()
+// recipientPublicKey converts an ECDSA certificate public key to the P-256
+// suite's encoding, rejecting any non-P-256 key fail-closed.
+func recipientPublicKey(pub *ecdsa.PublicKey) ([]byte, error) {
+	name, raw, err := RecipientFromPublicKey(pub)
 	if err != nil {
 		return nil, errors.Join(ErrUnsupportedKey, err)
 	}
-	if ecdhPub.Curve() != ecdh.P256() {
+	if name != KEMP256 {
 		return nil, ErrUnsupportedKey
 	}
-	return hpke.NewDHKEMPublicKey(ecdhPub)
+	return raw, nil
 }
 
 // ownPrivateKey mirrors recipientPublicKey for the receiver's private key.
 func ownPrivateKey(priv *ecdsa.PrivateKey) (hpke.PrivateKey, error) {
-	ecdhPriv, err := priv.ECDH()
+	sk, err := PrivateKeyFor(KEMP256, priv)
 	if err != nil {
 		return nil, errors.Join(ErrUnsupportedKey, err)
 	}
-	if ecdhPriv.Curve() != ecdh.P256() {
-		return nil, ErrUnsupportedKey
-	}
-	return hpke.NewDHKEMPrivateKey(ecdhPriv)
+	return sk, nil
 }
 
 // sealInfo builds the canonical, unambiguous HPKE `info` binding the full
@@ -125,7 +120,7 @@ func Seal(recipientPub *ecdsa.PublicKey, meta Meta, plaintext []byte) (*Envelope
 	issuedAt := time.Now().UTC()
 
 	info := sealInfo(meta, nonce, issuedAt)
-	payload, err := hpke.Seal(pk, hpkeKDF(), hpkeAEAD(), info, plaintext)
+	payload, err := p256.Seal(pk, info, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +230,7 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 		return nil, err
 	}
 	info := sealInfo(env.Meta, env.Nonce, env.IssuedAt)
-	plaintext, err := hpke.Open(sk, hpkeKDF(), hpkeAEAD(), info, env.Payload)
+	plaintext, err := p256.Open(sk, info, env.Payload)
 	if err != nil {
 		return nil, ErrDecrypt
 	}
