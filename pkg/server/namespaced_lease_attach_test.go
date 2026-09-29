@@ -21,7 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -45,8 +45,8 @@ func leaseRegistry(t *testing.T, lessor *sharedLessor) *restServiceRegistry {
 	}
 	dbReg := NewDatabaseServiceRegistry("default")
 	dbReg.Register("default", &DatabaseServices{Name: "default", MVCC: lessor, Lease: lessor})
-	reg, ok := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)),
+	reg, ok := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
 		withDatabaseManager(mgr),
 	).(*restServiceRegistry)
 	if !ok {

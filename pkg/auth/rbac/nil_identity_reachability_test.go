@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestAuthorize_NilIdentityIsRejectedBeforeIsSystemTenant answers, in code,
@@ -67,16 +67,16 @@ func TestAuthorize_NilIdentityIsRejectedBeforeIsSystemTenant(t *testing.T) {
 //   - sdk/go/driver/session.go: a DSN with a user and no tenant.
 //
 // The fix is at the boundary (auth/middleware.finalizeIdentity now folds
-// identity.TenantID through tenant.Normalize), so this test asserts the
+// identity.TenantID through tenantid.Normalize), so this test asserts the
 // predicate's contract that the boundary depends on: a normalized identity
 // and its unnormalized twin must agree, which is what makes folding a safe
 // no-op rather than a policy change.
 func TestAuthorize_UnnormalizedEmptyTenantIsNotReachedViaTheMiddleware(t *testing.T) {
 	raw := &auth.Identity{Subject: "admin", TenantID: ""}
-	folded := &auth.Identity{Subject: "admin", TenantID: tenant.Normalize(raw.TenantID)}
+	folded := &auth.Identity{Subject: "admin", TenantID: tenantid.Normalize(raw.TenantID)}
 
-	if folded.TenantID != tenant.SystemTenantID {
-		t.Fatalf("tenant.Normalize(%q) = %q, want %q", raw.TenantID, folded.TenantID, tenant.SystemTenantID)
+	if folded.TenantID != tenantid.System {
+		t.Fatalf("tenantid.Normalize(%q) = %q, want %q", raw.TenantID, folded.TenantID, tenantid.System)
 	}
 	if IsSystemTenant(raw) != IsSystemTenant(folded) {
 		t.Fatalf("folding an absent tenant changed the authorization answer: %v -> %v",

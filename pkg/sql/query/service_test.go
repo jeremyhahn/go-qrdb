@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -121,7 +122,7 @@ func kvDB(name string) (*database.DatabaseInfo, error) {
 // tenant.ComposeNamespace).
 func seed(t *testing.T, kv *mockKV, dbName, key, value string) {
 	t.Helper()
-	prefixed := tenant.ComposeNamespace(tenant.SystemTenantID, dbName) + key
+	prefixed := tenant.ComposeNamespace(tenantid.System, dbName) + key
 	if err := kv.Put(context.Background(), prefixed, []byte(value)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -402,7 +403,7 @@ func TestExecute_TenantScoping_WritesOwnNamespaceNotSystem(t *testing.T) {
 	if _, err := kv.Get(context.Background(), acmeKey); err != nil {
 		t.Fatalf("write did not land under the acme tenant namespace: %v", err)
 	}
-	systemKey := tenant.ComposeNamespace(tenant.SystemTenantID, "testdb") + "k1"
+	systemKey := tenant.ComposeNamespace(tenantid.System, "testdb") + "k1"
 	if _, err := kv.Get(context.Background(), systemKey); err == nil {
 		t.Fatal("write leaked into the system tenant namespace (SYSTEM-tenant escalation regression)")
 	}
@@ -621,7 +622,7 @@ func TestExecute_NotReadOnly_DefaultAllowsWrite(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	key := tenant.ComposeNamespace(tenant.SystemTenantID, "testdb") + "k1"
+	key := tenant.ComposeNamespace(tenantid.System, "testdb") + "k1"
 	if _, err := kv.Get(context.Background(), key); err != nil {
 		t.Fatalf("expected write to land: %v", err)
 	}
@@ -665,7 +666,7 @@ func TestExecute_EngineCache_SameScopeReusesEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Execute: unexpected error: %v", err)
 	}
-	key := engineKey{tenant: tenant.SystemTenantID, db: "testdb"}
+	key := engineKey{tenant: tenantid.System, db: "testdb"}
 	first := cachedEngine(t, svc, key)
 	if first == nil {
 		t.Fatal("expected an engine cached for (system, testdb) after the first Execute")
@@ -692,8 +693,8 @@ func TestExecute_EngineCache_DifferentDatabasesGetDistinctEngines(t *testing.T) 
 		t.Fatalf("Execute(db2): unexpected error: %v", err)
 	}
 
-	eng1 := cachedEngine(t, svc, engineKey{tenant: tenant.SystemTenantID, db: "db1"})
-	eng2 := cachedEngine(t, svc, engineKey{tenant: tenant.SystemTenantID, db: "db2"})
+	eng1 := cachedEngine(t, svc, engineKey{tenant: tenantid.System, db: "db1"})
+	eng2 := cachedEngine(t, svc, engineKey{tenant: tenantid.System, db: "db2"})
 	if eng1 == nil || eng2 == nil {
 		t.Fatal("expected both scopes to be cached")
 	}

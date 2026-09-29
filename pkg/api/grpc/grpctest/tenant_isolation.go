@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -63,9 +65,9 @@ type fixture struct {
 
 func newFixture(t *testing.T, start StartFunc, opts ...authmw.Option) *fixture {
 	t.Helper()
-	tenants := authtest.NewTenants(t, tenant.SystemTenantID, "acme", "globex")
+	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme", "globex")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
 	conn := start(t, mw, tenants)
 	return &fixture{
@@ -78,7 +80,7 @@ func newFixture(t *testing.T, start StartFunc, opts ...authmw.Option) *fixture {
 
 func (f *fixture) as(id *auth.Identity) { f.caller.Set(id) }
 
-func (f *fixture) operator() { f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root")) }
+func (f *fixture) operator() { f.as(authtest.AdminIdentity(tenantid.System, "root")) }
 
 func callCtx(t *testing.T) context.Context {
 	t.Helper()

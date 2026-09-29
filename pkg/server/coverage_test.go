@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ func TestServiceRegistry_ResolvesThroughDatabaseRegistry(t *testing.T) {
 		t.Fatal("ServiceRegistry() = nil, want a registry")
 	}
 
-	resolved, err := reg.KVService(tenant.SystemTenantID, "system")
+	resolved, err := reg.KVService(tenantid.System, "system")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}

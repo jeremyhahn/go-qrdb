@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -110,7 +112,7 @@ func TestAdminService_NodeCompaction_RefusesATenantCaller(t *testing.T) {
 		t.Fatalf("a tenant caller wrote the node policy: %+v", table.states)
 	}
 
-	sys := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	sys := tenant.WithTenantID(context.Background(), tenantid.System)
 	if err := svc.SetNodeCompaction(sys, &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 1}); err != nil {
 		t.Fatalf("SetNodeCompaction as the system tenant: %v", err)
 	}

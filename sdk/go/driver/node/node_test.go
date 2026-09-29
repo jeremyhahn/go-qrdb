@@ -27,7 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
 )
 
@@ -429,8 +429,8 @@ func TestNode_DefaultTenantIsSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
-	if got := qrdbdriver.ConnectionTenant(cfg); got != tenant.SystemTenantID {
-		t.Errorf("ConnectionTenant = %q, want %q", got, tenant.SystemTenantID)
+	if got := qrdbdriver.ConnectionTenant(cfg); got != tenantid.System {
+		t.Errorf("ConnectionTenant = %q, want %q", got, tenantid.System)
 	}
 }
 

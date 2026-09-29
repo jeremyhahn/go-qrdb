@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // A database the manager opens over a file store of its own, with no
@@ -44,12 +45,12 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 		t.Fatalf("Create: %v", err)
 	}
 	nodeStore := newFilledRegistry()
-	reg := NewRESTServiceRegistry(nodeStore, nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)),
+	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
 		withDatabaseManager(mgr),
 	)
 
-	kv, err := reg.KVService(tenant.SystemTenantID, "files")
+	kv, err := reg.KVService(tenantid.System, "files")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	if err := kv.Put(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "files")+"k"); err != nil || string(got) != "v" {
+	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenantid.System, "files")+"k"); err != nil || string(got) != "v" {
 		t.Fatalf("the write is not in the node's store: %q, %v", got, err)
 	}
 	own, err := db.Backend().List(ctx, "")

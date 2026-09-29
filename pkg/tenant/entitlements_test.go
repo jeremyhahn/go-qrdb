@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestTenantService_ImplementsEntitlementChecker verifies the interface
@@ -89,11 +90,11 @@ func TestCheckIsolation_SystemTenantImplicitlyAllowed(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	for _, mode := range []string{quota.IsolationModePrefix, quota.IsolationModeRaft, quota.IsolationModeVolume} {
-		if err := svc.CheckIsolation(ctx, SystemTenantID, mode); err != nil {
+		if err := svc.CheckIsolation(ctx, tenantid.System, mode); err != nil {
 			t.Errorf("system tenant CheckIsolation(%q): %v", mode, err)
 		}
 	}
-	if err := svc.CheckFeature(ctx, SystemTenantID, quota.FeatureDedicatedRaft); err != nil {
+	if err := svc.CheckFeature(ctx, tenantid.System, quota.FeatureDedicatedRaft); err != nil {
 		t.Errorf("system tenant CheckFeature: %v", err)
 	}
 }

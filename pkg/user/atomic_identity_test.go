@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // go-qrdb#555's user-side sibling: CreateUser used to claim the identity
@@ -81,7 +82,7 @@ func TestCreateUser_Atomic_Success(t *testing.T) {
 
 	got, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
@@ -90,7 +91,7 @@ func TestCreateUser_Atomic_Success(t *testing.T) {
 	if got.Username != "admin" {
 		t.Errorf("Username: got %q, want %q", got.Username, "admin")
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", got.ID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", got.ID)
 }
 
 // TestCreateUser_Atomic_ConcurrentCreatesConverge reproduces go-qrdb#555's
@@ -113,7 +114,7 @@ func TestCreateUser_Atomic_ConcurrentCreatesConverge(t *testing.T) {
 			defer wg.Done()
 			users[i], results[i] = svc.CreateUser(ctx, &CreateUserRequest{
 				Username:             "admin",
-				TenantID:             tenant.SystemTenantID,
+				TenantID:             tenantid.System,
 				WithoutEmailLoginKey: true,
 			})
 		}(i)
@@ -138,7 +139,7 @@ func TestCreateUser_Atomic_ConcurrentCreatesConverge(t *testing.T) {
 	if wins != 1 {
 		t.Fatalf("wins = %d, want exactly 1 (losses = %d)", wins, losses)
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", winID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", winID)
 }
 
 // TestCreateUser_Atomic_GuardFailureRefusesCleanly is the sequential
@@ -150,7 +151,7 @@ func TestCreateUser_Atomic_GuardFailureRefusesCleanly(t *testing.T) {
 	svc := newAtomicTestStore(t, kv)
 	ctx := context.Background()
 
-	req := &CreateUserRequest{Username: "admin", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true}
+	req := &CreateUserRequest{Username: "admin", TenantID: tenantid.System, WithoutEmailLoginKey: true}
 	if _, err := svc.CreateUser(ctx, req); err != nil {
 		t.Fatalf("CreateUser(first): %v", err)
 	}
@@ -252,27 +253,27 @@ func TestCreateUser_Atomic_FaultLeavesNeitherClaimNorRecord(t *testing.T) {
 
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err == nil {
 		t.Fatal("expected the injected fault to surface as an error")
 	}
 
-	if v, _ := kv.Get(ctx, usernameIndexKey(tenant.SystemTenantID, "admin")); v != nil {
+	if v, _ := kv.Get(ctx, usernameIndexKey(tenantid.System, "admin")); v != nil {
 		t.Error("username index key exists after a failed atomic create")
 	}
 
 	// The retry succeeds cleanly: nothing was left behind to conflict with.
 	got, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser(retry): %v", err)
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", got.ID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", got.ID)
 }
 
 // TestCreateUser_Atomic_ReconcilesLostResponse covers the other half of
@@ -293,13 +294,13 @@ func TestCreateUser_Atomic_ReconcilesLostResponse(t *testing.T) {
 
 	got, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: expected the lost response to reconcile to success, got error: %v", err)
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", got.ID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", got.ID)
 }
 
 // TestCreateUser_Atomic_ReconcilesLostResponse_ContextAlreadyDone is the
@@ -335,13 +336,13 @@ func TestCreateUser_Atomic_ReconcilesLostResponse_ContextAlreadyDone(t *testing.
 
 	got, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: expected the lost response to reconcile to success despite a canceled ctx, got error: %v", err)
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", got.ID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", got.ID)
 
 	if _, ok := al.findByAction("create"); !ok {
 		t.Error("expected a create audit event despite the caller's context already being done")
@@ -383,13 +384,13 @@ func TestCreateUser_Atomic_ReconcilesLostResponse_StaleReadCatchesUp(t *testing.
 
 	got, err := svc.CreateUser(context.Background(), &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: expected reconciliation to retry past the stale-read window and succeed, got error: %v", err)
 	}
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", got.ID)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", got.ID)
 
 	if _, ok := al.findByAction("create"); !ok {
 		t.Error("expected a create audit event once reconciliation caught up with the stale-read lag")
@@ -479,7 +480,7 @@ func TestCreateUser_Atomic_IDCollisionOverwriteRefused(t *testing.T) {
 
 	first, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "alice",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
@@ -494,7 +495,7 @@ func TestCreateUser_Atomic_IDCollisionOverwriteRefused(t *testing.T) {
 	// through and overwrite the first user's primary record and claim.
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "bob",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	var target *UserIDExistsError
@@ -506,8 +507,8 @@ func TestCreateUser_Atomic_IDCollisionOverwriteRefused(t *testing.T) {
 	}
 
 	// The original record must be intact — untouched by the refused create.
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "alice", 42)
-	if _, err := svc.GetUserByUsername(ctx, tenant.SystemTenantID, "bob"); err == nil {
+	assertUserFullyIndexed(t, svc, tenantid.System, "alice", 42)
+	if _, err := svc.GetUserByUsername(ctx, tenantid.System, "bob"); err == nil {
 		t.Error("GetUserByUsername(bob) succeeded; want not-found since the create was refused")
 	}
 }
@@ -538,7 +539,7 @@ func TestCreateUser_Atomic_IDCollisionSameUsernameReportsUserIDExists(t *testing
 
 	first, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
@@ -553,7 +554,7 @@ func TestCreateUser_Atomic_IDCollisionSameUsernameReportsUserIDExists(t *testing
 	// occupied by the SAME winning record.
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	var target *UserIDExistsError
@@ -565,7 +566,7 @@ func TestCreateUser_Atomic_IDCollisionSameUsernameReportsUserIDExists(t *testing
 	}
 
 	// The original record must be intact.
-	assertUserFullyIndexed(t, svc, tenant.SystemTenantID, "admin", 42)
+	assertUserFullyIndexed(t, svc, tenantid.System, "admin", 42)
 }
 
 // TestNewStore_AtomicIdentityRequiresIdentityIndex covers NewStore's
@@ -627,7 +628,7 @@ func TestCreateUserAtomic_UnguardedStoreIsDefensive(t *testing.T) {
 		identity:       idx,
 		atomicIdentity: true,
 	}
-	_, err = s.createUserAtomic(context.Background(), &CreateUserRequest{Username: "admin"}, tenant.SystemTenantID, 1, encodeID(1), usernameIndexKey(tenant.SystemTenantID, "admin"), "", "", LifecycleActive, nil)
+	_, err = s.createUserAtomic(context.Background(), &CreateUserRequest{Username: "admin"}, tenantid.System, 1, encodeID(1), usernameIndexKey(tenantid.System, "admin"), "", "", LifecycleActive, nil)
 	var target *StoreError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
@@ -655,7 +656,7 @@ func TestCreateUser_Atomic_DefiniteRefusalSkipsReconciliation(t *testing.T) {
 				t.Fatalf("NewStore: %v", err)
 			}
 			start := time.Now()
-			_, err = svc.CreateUser(context.Background(), &CreateUserRequest{Username: "refused", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true})
+			_, err = svc.CreateUser(context.Background(), &CreateUserRequest{Username: "refused", TenantID: tenantid.System, WithoutEmailLoginKey: true})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("CreateUser err = %v, want it to carry the refusal", err)
 			}
@@ -680,7 +681,7 @@ func TestCreateUser_Atomic_GuardFailureDiagnosisSurvivesStaleRead(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewStore (winner): %v", err)
 	}
-	req := &CreateUserRequest{Username: "admin", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true}
+	req := &CreateUserRequest{Username: "admin", TenantID: tenantid.System, WithoutEmailLoginKey: true}
 	if _, err := winner.CreateUser(context.Background(), req); err != nil {
 		t.Fatalf("winner CreateUser: %v", err)
 	}

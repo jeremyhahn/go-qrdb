@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
@@ -164,7 +165,7 @@ func WithStrictTenantIsolation(strict bool) VectorServiceOption {
 // empty-segment form "\x1f" + logical so that the system namespace is stable
 // and distinct from any user-created tenant.
 func scopedNamespace(tenantID, logical string) string {
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return namespaceSep + logical
 	}
 	return tenantID + namespaceSep + logical
@@ -172,13 +173,13 @@ func scopedNamespace(tenantID, logical string) string {
 
 // unscopedNamespace splits a physical storage key produced by scopedNamespace
 // into its constituent tenant ID and logical name. The system namespace
-// ("\x1f" + logical) returns tenant.SystemTenantID as the tenant.
+// ("\x1f" + logical) returns tenantid.System as the tenant.
 func unscopedNamespace(physical string) (tenantID, logical string) {
 	for i := 0; i < len(physical); i++ {
 		if physical[i] == namespaceSep[0] {
 			prefix := physical[:i]
 			if prefix == "" {
-				tenantID = tenant.SystemTenantID
+				tenantID = tenantid.System
 			} else {
 				tenantID = prefix
 			}
@@ -187,7 +188,7 @@ func unscopedNamespace(physical string) (tenantID, logical string) {
 		}
 	}
 	// No separator found — treat as a legacy unscoped name owned by system.
-	return tenant.SystemTenantID, physical
+	return tenantid.System, physical
 }
 
 // scopedFromContext returns the physical namespace key for the given logical
@@ -460,7 +461,7 @@ func (v *vectorService) validateTenantCreate(ctx context.Context) error {
 	if !v.strictTenant {
 		return nil
 	}
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return &TenantRequiredError{Op: "CreateNamespace"}
 	}
 	return nil

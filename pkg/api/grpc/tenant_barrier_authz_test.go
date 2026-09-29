@@ -32,7 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // barrierGateRoleSvc is a minimal role.RoleServicer that resolves a fixed
@@ -132,8 +132,8 @@ func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
 // permission.
 func TestTenantBarrierGate_SystemAdmin_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
-	ctx := ctxWithIdentity(tenantpkg.SystemTenantID)
-	for _, target := range []string{"acme", tenantpkg.SystemTenantID} {
+	ctx := ctxWithIdentity(tenantid.System)
+	for _, target := range []string{"acme", tenantid.System} {
 		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: []byte("pw")}
 		_, err := srv.Init(ctx, req)
 		if err == nil {

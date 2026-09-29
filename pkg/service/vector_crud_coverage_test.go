@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // =============================================================================
@@ -189,7 +190,7 @@ func TestVectorCRUD_DeleteNamespace_RaftSuccess(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
-	scoped := scopedNamespace(tenant.SystemTenantID, "to-delete")
+	scoped := scopedNamespace(tenantid.System, "to-delete")
 
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
@@ -304,7 +305,7 @@ func TestVectorCRUD_UpsertVector_RaftSuccess(t *testing.T) {
 	storage := newVecMockStorage()
 	logger := newVecTestLogger()
 
-	scopedUpsert := scopedNamespace(tenant.SystemTenantID, "upsert-ns")
+	scopedUpsert := scopedNamespace(tenantid.System, "upsert-ns")
 
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{

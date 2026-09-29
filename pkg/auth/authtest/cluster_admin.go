@@ -19,10 +19,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // Admin is a service.AdminServicer that implements the platform-only methods
@@ -103,7 +104,7 @@ const ClusterAdminTenant = "acme"
 func ClusterAdminCallers(t testing.TB) []ClusterAdminCaller {
 	t.Helper()
 	return []ClusterAdminCaller{
-		{Name: "the system tenant's Admin is served", Identity: AdminIdentity(tenant.SystemTenantID, "operator"), Admitted: true},
+		{Name: "the system tenant's Admin is served", Identity: AdminIdentity(tenantid.System, "operator"), Admitted: true},
 		{Name: "a tenant's Admin is refused", Identity: AdminIdentity(ClusterAdminTenant, "acme-admin")},
 		{Name: "a tenant's SO is refused", Identity: SOIdentity(ClusterAdminTenant, "acme-officer")},
 	}

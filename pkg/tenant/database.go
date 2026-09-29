@@ -14,7 +14,11 @@
 
 package tenant
 
-import "context"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // DefaultDatabase is the reserved name of the platform's implicit bootstrap
 // database. It is the database the daemon auto-creates at boot and the
@@ -55,13 +59,13 @@ func DatabaseFromContext(ctx context.Context) string {
 // for a (tenant, db) pair. A database is a key-namespace layered over the
 // tenant's already-resolved store, so the physical key prefix is the
 // concatenation of a tenant segment and a database segment. The prefix is
-// ALWAYS non-empty and uniform — including for the bootstrap (SystemTenantID,
+// ALWAYS non-empty and uniform — including for the bootstrap (tenantid.System,
 // DefaultDatabase) pair, which resolves to "system/system/" rather than an
 // unprefixed keyspace. Special-casing any pair to an empty prefix would give
 // it the entire shared store root as its keyspace, leaking every other
 // database's and every other tenant's keys into a scan.
 //
-// An empty tenantID or db falls back to SystemTenantID / DefaultDatabase, so
+// An empty tenantID or db falls back to tenantid.System / DefaultDatabase, so
 // the result is always a complete "<tenant>/<db>/" with no empty or doubled
 // segment.
 //
@@ -73,7 +77,7 @@ func DatabaseFromContext(ctx context.Context) string {
 // pkg/sql/provider.
 func ComposeNamespace(tenantID, db string) string {
 	if tenantID == "" {
-		tenantID = SystemTenantID
+		tenantID = tenantid.System
 	}
 	if db == "" {
 		db = DefaultDatabase

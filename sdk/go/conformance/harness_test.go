@@ -47,7 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -403,7 +403,7 @@ func (c cell) boot(t *testing.T) clients {
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if c.transport.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenantid.System)
 	}
 
 	var n *node.Node
@@ -495,7 +495,7 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "conformance-matrix",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Permissions: []permission.Permission{
 			permission.KVPut, permission.KVGet, permission.KVDelete,
 			permission.KVList, permission.KVExists,
@@ -508,7 +508,7 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 	}
 	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "matrix",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		RoleIDs:  []string{r.ID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)

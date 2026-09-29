@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -76,13 +78,13 @@ func TestCertConfinement_SystemCallerCannotGenerateForAnotherTenant(t *testing.T
 	var reached []string
 	tr := newAuthTransport(t, WithCertProvider(confinementProvider(nil, &reached)))
 
-	_, err := tr.GenerateCert(callerCtx(tenant.SystemTenantID), &transport.GenerateCertRequest{Username: "alice", TenantID: "acme"})
+	_, err := tr.GenerateCert(callerCtx(tenantid.System), &transport.GenerateCertRequest{Username: "alice", TenantID: "acme"})
 	assertCrossTenantDenied(t, "system caller generating for acme", err)
 	if len(reached) != 0 {
 		t.Fatalf("the provider was reached (%v); a refused mint must sign nothing", reached)
 	}
 
-	if _, err := tr.GenerateCert(callerCtx(tenant.SystemTenantID), &transport.GenerateCertRequest{Username: "op", TenantID: tenant.SystemTenantID}); err != nil {
+	if _, err := tr.GenerateCert(callerCtx(tenantid.System), &transport.GenerateCertRequest{Username: "op", TenantID: tenantid.System}); err != nil {
 		t.Fatalf("system caller generating for its own tenant: %v", err)
 	}
 }
@@ -105,7 +107,7 @@ func TestCertConfinement_ListIsConfinedToTheCallersTenant(t *testing.T) {
 	var reached []string
 	tr := newAuthTransport(t, WithCertProvider(confinementProvider(nil, &reached)))
 
-	_, err := tr.ListCerts(callerCtx(tenant.SystemTenantID), "acme")
+	_, err := tr.ListCerts(callerCtx(tenantid.System), "acme")
 	assertCrossTenantDenied(t, "system caller listing acme", err)
 	if _, err := tr.ListCerts(callerCtx("acme"), "acme"); err != nil {
 		t.Fatalf("acme listing acme: %v", err)
@@ -120,7 +122,7 @@ func TestCertConfinement_RevokeIsConfinedToTheSerialsOwner(t *testing.T) {
 	owners := map[string]string{"acme-serial": "acme"}
 	tr := newAuthTransport(t, WithCertProvider(confinementProvider(owners, &reached)))
 
-	_, err := tr.RevokeCert(callerCtx(tenant.SystemTenantID), "acme-serial")
+	_, err := tr.RevokeCert(callerCtx(tenantid.System), "acme-serial")
 	assertCrossTenantDenied(t, "system caller revoking acme's serial", err)
 	_, err = tr.RevokeCert(callerCtx("globex"), "acme-serial")
 	assertCrossTenantDenied(t, "globex revoking acme's serial", err)
@@ -144,7 +146,7 @@ func TestCertConfinement_DenyBySerialIsSystemOnly(t *testing.T) {
 	_, err := tr.RevokeCert(callerCtx("acme"), "peer-serial")
 	assertCrossTenantDenied(t, "acme writing a deny-by-serial marker", err)
 
-	got, err := tr.RevokeCert(callerCtx(tenant.SystemTenantID), "peer-serial")
+	got, err := tr.RevokeCert(callerCtx(tenantid.System), "peer-serial")
 	if err != nil {
 		t.Fatalf("system caller writing a deny-by-serial marker: %v", err)
 	}
@@ -167,7 +169,7 @@ func TestCertConfinement_UnresolvableSerialIsRefused(t *testing.T) {
 		},
 	}))
 
-	_, err := tr.RevokeCert(callerCtx(tenant.SystemTenantID), "any")
+	_, err := tr.RevokeCert(callerCtx(tenantid.System), "any")
 	if !errors.Is(err, resolveErr) {
 		t.Fatalf("err = %v; want the resolver's error, since the revocation's tenant is unknown", err)
 	}

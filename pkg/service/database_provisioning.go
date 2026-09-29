@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // backendProvisioningPermission is the permission a database backend needs in
@@ -112,7 +113,7 @@ func NewProvisioningAuthorizedDatabaseService(inner DatabaseServicer, authz Prov
 func (s *provisioningAuthorizedDatabaseService) authorize(ctx context.Context, cfg database.DatabaseConfig) error {
 	tenantID := tenant.FromContext(ctx)
 	var isolation tenant.IsolationType
-	if s.tenants != nil && !tenant.IsSystemTenant(tenantID) {
+	if s.tenants != nil && !tenantid.IsSystem(tenantID) {
 		info, err := s.tenants.GetTenant(ctx, tenantID)
 		if err != nil {
 			return err

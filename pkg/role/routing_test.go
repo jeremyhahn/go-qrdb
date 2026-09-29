@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeKVStore is a minimal in-memory kvstore.KVStore for routing tests.
@@ -478,7 +479,7 @@ func TestRoutingRoleService_SameTenantRoutesToSelf(t *testing.T) {
 // A system-tenant caller MAY target another tenant.
 func TestRoutingRoleService_SystemCallerMayTargetTenant(t *testing.T) {
 	svc, _, storeB := crossTenantSetup(t)
-	sctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	sctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	created, err := svc.CreateRole(sctx, &CreateRoleRequest{Name: "provisioned", TenantID: "b"})
 	if err != nil {
@@ -1266,7 +1267,7 @@ func TestRoutingRoleService_SystemTenantGetsAtomicIdentityWhenCapable(t *testing
 	}
 
 	ctx := context.Background()
-	_, err = svc.CreateRole(ctx, &CreateRoleRequest{Name: "custom-system-role", TenantID: tenant.SystemTenantID})
+	_, err = svc.CreateRole(ctx, &CreateRoleRequest{Name: "custom-system-role", TenantID: tenantid.System})
 	if err == nil {
 		t.Fatal("expected the injected PutAllIfAllUnchanged fault to surface — the atomic path was never reached")
 	}
@@ -1336,7 +1337,7 @@ func TestRoutingRoleService_SystemTenantProbeFailsStaysSequential(t *testing.T) 
 	}
 
 	ctx := context.Background()
-	created, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "custom-system-role-2", TenantID: tenant.SystemTenantID})
+	created, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "custom-system-role-2", TenantID: tenantid.System})
 	if err != nil {
 		t.Fatalf("CreateRole: expected the sequential fallback to succeed after the probe fails, got: %v", err)
 	}
@@ -1384,7 +1385,7 @@ func TestRoutingRoleService_InconclusiveProbeFailsAndIsNotCached(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	_, err = svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-a", TenantID: tenant.SystemTenantID})
+	_, err = svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-a", TenantID: tenantid.System})
 	if !errors.Is(err, transient) {
 		t.Fatalf("CreateRole err = %v, want the inconclusive probe's error", err)
 	}
@@ -1393,10 +1394,10 @@ func TestRoutingRoleService_InconclusiveProbeFailsAndIsNotCached(t *testing.T) {
 		t.Errorf("CreateRole err = %T, want it typed as *StoreError", err)
 	}
 
-	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-b", TenantID: tenant.SystemTenantID}); err != nil {
+	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-b", TenantID: tenantid.System}); err != nil {
 		t.Fatalf("CreateRole after a conclusive probe: %v", err)
 	}
-	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-c", TenantID: tenant.SystemTenantID}); err != nil {
+	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-c", TenantID: tenantid.System}); err != nil {
 		t.Fatalf("CreateRole (third): %v", err)
 	}
 	if store.probes != 2 {
@@ -1418,7 +1419,7 @@ func TestRoutingRoleService_DefinitiveAbsenceIsCached(t *testing.T) {
 	ctx := context.Background()
 
 	for _, name := range []string{"seq-a", "seq-b"} {
-		if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: name, TenantID: tenant.SystemTenantID}); err != nil {
+		if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: name, TenantID: tenantid.System}); err != nil {
 			t.Fatalf("CreateRole(%s): %v", name, err)
 		}
 	}
@@ -1440,7 +1441,7 @@ func TestRoutingRoleService_ReadsNeverProbe(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	seeded, err := seed.CreateRole(context.Background(), &CreateRoleRequest{
-		Name: "reader", TenantID: tenant.SystemTenantID, Permissions: []permission.Permission{permission.KVGet},
+		Name: "reader", TenantID: tenantid.System, Permissions: []permission.Permission{permission.KVGet},
 	})
 	if err != nil {
 		t.Fatalf("seed CreateRole: %v", err)
@@ -1450,12 +1451,12 @@ func TestRoutingRoleService_ReadsNeverProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
-	if got, err := svc.GetRoleByName(ctx, tenant.SystemTenantID, "reader"); err != nil || got.ID != seeded.ID {
+	if got, err := svc.GetRoleByName(ctx, tenantid.System, "reader"); err != nil || got.ID != seeded.ID {
 		t.Fatalf("GetRoleByName = (%v, %v), want the seeded role", got, err)
 	}
-	if list, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: tenant.SystemTenantID}); err != nil || list.Total != 1 {
+	if list, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: tenantid.System}); err != nil || list.Total != 1 {
 		t.Fatalf("ListRoles = (%+v, %v), want the one seeded role", list, err)
 	}
 	perms, err := svc.ResolvePermissions(ctx, []string{seeded.ID})
@@ -1466,7 +1467,7 @@ func TestRoutingRoleService_ReadsNeverProbe(t *testing.T) {
 		t.Fatalf("probes = %d after reads only, want 0", store.probes)
 	}
 
-	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "writer", TenantID: tenant.SystemTenantID}); !errors.Is(err, noLeader) {
+	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "writer", TenantID: tenantid.System}); !errors.Is(err, noLeader) {
 		t.Fatalf("CreateRole err = %v, want the inconclusive probe's error", err)
 	}
 	if store.probes != 1 {

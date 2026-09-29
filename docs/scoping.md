@@ -24,7 +24,7 @@ time-series, and vector — operates within that tenant.
 | **Source** | The authenticated mTLS identity's `TenantID` (never a client header) |
 | **Default** | An identity with no tenant resolves to the structurally privileged `system` tenant |
 | **Scope** | All KV, watch, lease, index, time-series, and vector operations |
-| **"Is this system scope?"** | Use `tenant.IsSystemTenant(id string) bool` (or `rbac.IsSystemTenant(identity *auth.Identity) bool` for an `*auth.Identity`) — the canonical predicate, re-exported through `sdk/go` as `IsSystemTenant` / `IdentityIsSystemTenant`. Never re-derive `id == "" \|\| id == tenant.SystemTenantID` at a call site. |
+| **"Is this system scope?"** | Use `tenantid.IsSystem(id string) bool` (or `rbac.IsSystemTenant(identity *auth.Identity) bool` for an `*auth.Identity`) — the canonical predicate, re-exported through `sdk/go` as `IsSystemTenant` / `IdentityIsSystemTenant`. Never re-derive `id == "" \|\| id == tenantid.System` at a call site. |
 | **Cross-tenant** | Not selectable per-request. To act as another tenant, authenticate as an identity in that tenant. Administrative cross-tenant operations (user/role/cert management) take an explicit `tenantID` parameter and are gated by RBAC `ScopeCross` (system-tenant identities only). |
 
 > **Security note:** there is no `X-QRDB-Tenant` header. It was removed because it

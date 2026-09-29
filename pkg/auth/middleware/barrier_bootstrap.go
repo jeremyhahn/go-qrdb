@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // This file is the single home of the tenant-barrier BOOTSTRAP authorization
@@ -117,7 +118,7 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// tenant has no tenant barrier, and the tenant-scoped RBAC rule
 	// (ScopeTenantOnly) denies it deliberately — the fallback must never
 	// reopen that door.
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return rbacErr
 	}
 	caller := auth.IdentityFromContext(ctx)
@@ -164,7 +165,7 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 	}
 
 	// Never for the system tenant — see AuthorizeTenantBarrierInit.
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return rbacErr
 	}
 	caller := auth.IdentityFromContext(ctx)

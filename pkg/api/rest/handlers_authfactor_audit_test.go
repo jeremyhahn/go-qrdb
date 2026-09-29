@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
@@ -912,7 +914,7 @@ func TestHandleAuditQuery_ForeignTenantIsForbidden(t *testing.T) {
 	al := &stubAuditLogger{}
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
 
-	for _, foreign := range []string{"globex", tenant.SystemTenantID} {
+	for _, foreign := range []string{"globex", tenantid.System} {
 		req := httptest.NewRequest(http.MethodGet, "/v1/audit/events?tenant_id="+foreign, nil)
 		req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Subject: "a", TenantID: "acme"}))
 		rec := httptest.NewRecorder()

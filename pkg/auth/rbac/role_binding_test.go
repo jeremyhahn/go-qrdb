@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // bindingIdentity is a system-tenant identity (so the ScopeSelf system-tenant
@@ -37,7 +38,7 @@ import (
 func bindingIdentity(roleID, boundTenant string) *auth.Identity {
 	return &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenant.SystemTenantID,
+		TenantID:     tenantid.System,
 		RoleBindings: []auth.RoleBinding{{RoleID: roleID, TenantID: boundTenant}},
 	}
 }
@@ -185,13 +186,13 @@ func (m *tenantAwareRoleService) GetRoleByName(_ context.Context, _, name string
 // actually belong to, and unions the resulting permission sets.
 func TestRoleBinding_CrossTenantPermissionsAreUnionedNotCombined(t *testing.T) {
 	svc := &tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{
-		tenant.SystemTenantID: {"home-role": {permission.KVGet}},
-		"acme":                {"acme-role": {permission.KVPut}},
+		tenantid.System: {"home-role": {permission.KVGet}},
+		"acme":          {"acme-role": {permission.KVPut}},
 	}}
 	authz := New(svc)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenant.SystemTenantID,
+		TenantID:     tenantid.System,
 		Roles:        []string{"home-role"},
 		RoleBindings: []auth.RoleBinding{{RoleID: "acme-role", TenantID: "acme"}},
 	}
@@ -207,7 +208,7 @@ func TestRoleBinding_CrossTenantPermissionsAreUnionedNotCombined(t *testing.T) {
 	// The home role's own permission (kv:get) still resolves normally when
 	// targeting the system tenant, proving the split did not break ordinary
 	// same-tenant resolution.
-	if err := authz.Authorize(ctxFor(tenant.SystemTenantID), id, "kv", "get"); err != nil {
+	if err := authz.Authorize(ctxFor(tenantid.System), id, "kv", "get"); err != nil {
 		t.Fatalf("home role must still grant kv:get in its own tenant: %v", err)
 	}
 }
@@ -225,7 +226,7 @@ func TestAuthorize_SODenyList_AppliesToABoundGrant(t *testing.T) {
 	soRoleID := role.SystemRoleID("acme", role.RoleNameSO)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenant.SystemTenantID,
+		TenantID:     tenantid.System,
 		RoleBindings: []auth.RoleBinding{{RoleID: soRoleID, TenantID: "acme"}},
 	}
 
@@ -250,7 +251,7 @@ func TestStripOwnerRole_StripsBoundCrossTenantOwnerGrant(t *testing.T) {
 	ownerID := role.SystemRoleID("acme", role.RoleNameOwner)
 	id := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenant.SystemTenantID,
+		TenantID:     tenantid.System,
 		RoleBindings: []auth.RoleBinding{{RoleID: ownerID, TenantID: "acme"}},
 	}
 
@@ -288,7 +289,7 @@ func (nameLookupFailingRoleService) GetRoleByName(context.Context, string, strin
 func TestAuthorize_BoundGrantFailuresDeny(t *testing.T) {
 	bound := &auth.Identity{
 		Subject:      "svc-1",
-		TenantID:     tenant.SystemTenantID,
+		TenantID:     tenantid.System,
 		RoleBindings: []auth.RoleBinding{{RoleID: "acme-custom", TenantID: "acme"}},
 	}
 	failingNames := nameLookupFailingRoleService{&tenantAwareRoleService{perms: map[string]map[string][]permission.Permission{

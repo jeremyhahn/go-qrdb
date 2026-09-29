@@ -57,6 +57,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -1046,7 +1047,7 @@ func (s *Server) wireStoreResolver() {
 	}
 	resolver := &storeResolver{
 		tenantSvc:    s.opts.tenantSvc,
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 	if s.opts.tenantHosts != nil {
 		resolver.hosts = s.opts.tenantHosts
@@ -1083,7 +1084,7 @@ func (s *Server) wireReclaimStoreResolver() {
 	if s.opts.reclaimSweeper == nil || s.opts.dbRegistry == nil {
 		return
 	}
-	reg := newRESTRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+	reg := newRESTRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
 	var shards reclaimShardLeader
 	if s.opts.raftBackend != nil {
 		shards = s.opts.raftBackend
@@ -1223,7 +1224,7 @@ func (s *Server) start() error {
 	if binder, ok := s.opts.ragSvc.(service.RAGRegistryBinder); ok {
 		var opts []service.RAGBindOption
 		if s.opts.authMW == nil {
-			opts = append(opts, service.RAGUnauthenticatedTenant(tenant.SystemTenantID))
+			opts = append(opts, service.RAGUnauthenticatedTenant(tenantid.System))
 		}
 		binder.BindRegistry(s.buildServiceRegistry(), opts...)
 	}
@@ -1671,7 +1672,7 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
 	}
-	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
 }
 
 // restRegistryOptions is the one option list every restServiceRegistry this
@@ -1683,7 +1684,7 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 	}
 	if s.opts.dbManager != nil {
-		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager, tenant.SystemTenantID)))
+		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager, tenantid.System)))
 		regOpts = append(regOpts, withDatabaseManager(s.opts.dbManager))
 	}
 	if s.opts.tenantHosts != nil {

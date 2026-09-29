@@ -31,6 +31,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -55,9 +57,9 @@ type isolationFixture struct {
 
 func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture {
 	t.Helper()
-	tenants := authtest.NewTenants(t, tenant.SystemTenantID, "acme", "globex")
+	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme", "globex")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
 
 	// Mutual TLS, as in production: the QUIC server refuses a connection with
@@ -76,7 +78,7 @@ func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture 
 
 func (f *isolationFixture) as(id *auth.Identity) { f.caller.Set(id) }
 
-func (f *isolationFixture) operator() { f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root")) }
+func (f *isolationFixture) operator() { f.as(authtest.AdminIdentity(tenantid.System, "root")) }
 
 // call sends one frame and returns its status and payload.
 func (f *isolationFixture) call(t *testing.T, method string, req proto.Message) (uint16, []byte) {

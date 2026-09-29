@@ -17,6 +17,8 @@ package tenant
 import (
 	"bytes"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestPrefixKeyNormal(t *testing.T) {
@@ -28,7 +30,7 @@ func TestPrefixKeyNormal(t *testing.T) {
 }
 
 func TestPrefixKeyWithSystemTenant(t *testing.T) {
-	got := PrefixKey(SystemTenantID, "some-key")
+	got := PrefixKey(tenantid.System, "some-key")
 	want := "system/some-key"
 	if got != want {
 		t.Errorf("PrefixKey() = %q, want %q", got, want)
@@ -60,7 +62,7 @@ func TestPrefixKeyBytesEmptyKey(t *testing.T) {
 }
 
 func TestPrefixKeyBytesWithSystemTenant(t *testing.T) {
-	got := PrefixKeyBytes(SystemTenantID, []byte("data"))
+	got := PrefixKeyBytes(tenantid.System, []byte("data"))
 	want := []byte("system/data")
 	if !bytes.Equal(got, want) {
 		t.Errorf("PrefixKeyBytes() = %q, want %q", got, want)
@@ -140,7 +142,7 @@ func TestTenantPrefix(t *testing.T) {
 }
 
 func TestTenantPrefixSystemTenant(t *testing.T) {
-	got := TenantPrefix(SystemTenantID)
+	got := TenantPrefix(tenantid.System)
 	want := "system/"
 	if got != want {
 		t.Errorf("TenantPrefix() = %q, want %q", got, want)

@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -42,7 +43,7 @@ func (m *tenantRecordingUserServicer) GetUserByUsername(ctx context.Context, ten
 // for #188.
 //
 // finalizeIdentity is the funnel every authenticated identity crosses on every
-// transport, and tenant.IsSystemTenant names it ("auth/middleware's identity
+// transport, and tenantid.IsSystem names it ("auth/middleware's identity
 // normalization") as a reason its empty-string branch is safe. It previously
 // folded only the CONTEXT tenant and left identity.TenantID raw — and
 // rbac.IsSystemTenant reads the identity field, not the context. So the one
@@ -59,8 +60,8 @@ func TestFinalizeIdentity_FoldsAbsentTenantOnTheIdentity(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"absent tenant", "", tenant.SystemTenantID},
-		{"system tenant", tenant.SystemTenantID, tenant.SystemTenantID},
+		{"absent tenant", "", tenantid.System},
+		{"system tenant", tenantid.System, tenantid.System},
 		{"real tenant", "acme", "acme"},
 	}
 
@@ -111,11 +112,11 @@ func TestFinalizeIdentity_SealedWindowFoldsToo(t *testing.T) {
 	if !IdentityIAMSealed(out) {
 		t.Fatal("expected the sealed marker to be stamped; this test is not exercising the sealed exit")
 	}
-	if out.TenantID != tenant.SystemTenantID {
-		t.Fatalf("sealed-exit identity.TenantID = %q, want %q", out.TenantID, tenant.SystemTenantID)
+	if out.TenantID != tenantid.System {
+		t.Fatalf("sealed-exit identity.TenantID = %q, want %q", out.TenantID, tenantid.System)
 	}
-	if got := tenant.FromContext(ctx); got != tenant.SystemTenantID {
-		t.Fatalf("sealed-exit context tenant = %q, want %q", got, tenant.SystemTenantID)
+	if got := tenant.FromContext(ctx); got != tenantid.System {
+		t.Fatalf("sealed-exit context tenant = %q, want %q", got, tenantid.System)
 	}
 }
 
@@ -123,7 +124,7 @@ func TestFinalizeIdentity_SealedWindowFoldsToo(t *testing.T) {
 // happens BEFORE the IAM lookup, not after it.
 //
 // This is not cosmetic. Every tenant-scoped store in the repo already routes
-// "" to the system keyspace through tenant.IsSystemTenant (store_resolver,
+// "" to the system keyspace through tenantid.IsSystem (store_resolver,
 // identity_index, kv_service, database/manager_tenant), so looking a user up
 // under "" and under "system" reaches the same records — but only one of those
 // two spellings is the tenant the request is then authorized as. Folding first
@@ -139,8 +140,8 @@ func TestFinalizeIdentity_UserLookupUsesTheFoldedTenant(t *testing.T) {
 		&auth.Identity{Subject: "admin", TenantID: ""}, unknownMethod()); err != nil {
 		t.Fatalf("finalizeIdentity returned %v", err)
 	}
-	if users.lastTenant != tenant.SystemTenantID {
-		t.Fatalf("user lookup issued for tenant %q, want the folded %q", users.lastTenant, tenant.SystemTenantID)
+	if users.lastTenant != tenantid.System {
+		t.Fatalf("user lookup issued for tenant %q, want the folded %q", users.lastTenant, tenantid.System)
 	}
 }
 

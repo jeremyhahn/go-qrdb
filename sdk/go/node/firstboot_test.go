@@ -30,6 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -104,7 +106,7 @@ func TestFirstBootUnderPolicy_RequiredRaisesTheEmbeddersPolicy(t *testing.T) {
 	var refusal *firstboot.AdminCertBindingRequiredError
 	require.True(t, errors.As(err, &refusal), "err = %v", err)
 	assert.Equal(t, firstboot.AdminBindingNoBinder, refusal.Reason)
-	_, lerr := users.GetUserByUsername(context.Background(), tenant.SystemTenantID, "admin")
+	_, lerr := users.GetUserByUsername(context.Background(), tenantid.System, "admin")
 	assert.Error(t, lerr, "a refused first boot created the admin")
 }
 

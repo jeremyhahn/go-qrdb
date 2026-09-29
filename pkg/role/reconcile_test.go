@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // retiredPermission is a permission string that is deliberately NOT registered
@@ -346,10 +347,10 @@ func TestReconcileBuiltInRoles_DefaultsToSystemTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileBuiltInRoles: %v", err)
 	}
-	if report.TenantID != tenant.SystemTenantID {
-		t.Errorf("tenant = %q, want %q", report.TenantID, tenant.SystemTenantID)
+	if report.TenantID != tenantid.System {
+		t.Errorf("tenant = %q, want %q", report.TenantID, tenantid.System)
 	}
-	if _, err := svc.GetRoleByName(ctx, tenant.SystemTenantID, RoleNameAdmin); err != nil {
+	if _, err := svc.GetRoleByName(ctx, tenantid.System, RoleNameAdmin); err != nil {
 		t.Fatalf("system-tenant admin was not seeded: %v", err)
 	}
 }
@@ -793,7 +794,7 @@ func TestRoutingReconcileBuiltInRoles_RoutesToTenantStore(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	report, err := svc.ReconcileBuiltInRoles(ctx, "secure")
 	if err != nil {
 		t.Fatalf("ReconcileBuiltInRoles: %v", err)
@@ -848,7 +849,7 @@ func TestRoutingReconcileBuiltInRoles_SealedTenantFailsClosed(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	if _, err := svc.ReconcileBuiltInRoles(ctx, "sealed"); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("ReconcileBuiltInRoles(sealed) = %v, want ErrTenantSealed", err)
 	}

@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -102,7 +102,7 @@ func TestTenantFromClientCert_ResolvesProviderCertWithinItsTenant(t *testing.T) 
 func TestTenantFromClientCert_SystemTenantCertStillResolves(t *testing.T) {
 	ctx := context.Background()
 	n := newSharedTenantNode(ctx, t)
-	c, id := mintBoundUser(ctx, t, n, tenant.SystemTenantID, "operator")
+	c, id := mintBoundUser(ctx, t, n, tenantid.System, "operator")
 
 	u, err := resolve(ctx, n, c)
 	require.NoError(t, err)

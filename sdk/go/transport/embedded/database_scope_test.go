@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -91,7 +92,7 @@ func TestWithDatabase_NoRegistryRefuses(t *testing.T) {
 // the default store, and a sealed database is refused on the next call.
 func TestWithDatabase_ResolvesThroughRegistry(t *testing.T) {
 	defaultKV := newMockKVService()
-	reg := newScopeRegistry(tenant.SystemTenantID+"/ledger", "acme/ledger")
+	reg := newScopeRegistry(tenantid.System+"/ledger", "acme/ledger")
 	tr, err := New(defaultKV, &mockAdminService{}, WithServiceRegistry(reg))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -109,7 +110,7 @@ func TestWithDatabase_ResolvesThroughRegistry(t *testing.T) {
 	if _, ok := defaultKV.store["k"]; ok {
 		t.Fatal("the scoped write landed in the default database")
 	}
-	if got, _ := reg.stores[tenant.SystemTenantID+"/ledger"].Get(ctx, "k"); string(got) != "v" {
+	if got, _ := reg.stores[tenantid.System+"/ledger"].Get(ctx, "k"); string(got) != "v" {
 		t.Fatalf("the scoped write did not land in ledger: %q", got)
 	}
 
@@ -122,7 +123,7 @@ func TestWithDatabase_ResolvesThroughRegistry(t *testing.T) {
 	// Sealing the database refuses the next call on the already-scoped
 	// transport, because resolution is per call.
 	reg.mu.Lock()
-	reg.sealed[tenant.SystemTenantID+"/ledger"] = true
+	reg.sealed[tenantid.System+"/ledger"] = true
 	reg.mu.Unlock()
 	if err := scoped.Put(ctx, "k2", []byte("v")); err == nil {
 		t.Fatal("a sealed database accepted a write through a scoped transport")

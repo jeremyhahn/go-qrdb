@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // indexedMember is the entity the resolver-store index regression exercises.
@@ -101,7 +102,7 @@ func resolverStoreCases() []resolverStoreCase {
 	return []resolverStoreCase{
 		{
 			name:     "shared_store_system_tenant",
-			tenantID: tenant.SystemTenantID,
+			tenantID: tenantid.System,
 			setup:    func(context.Context, *testing.T, *Node) {},
 			// Flipped back by #40. The shared store carries the node's
 			// IndexServicer, reaching the same KVEngine that backs its

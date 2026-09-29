@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -521,8 +522,8 @@ func TestCreateUser_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if user.TenantID != tenant.SystemTenantID {
-		t.Errorf("TenantID: got %q, want %q", user.TenantID, tenant.SystemTenantID)
+	if user.TenantID != tenantid.System {
+		t.Errorf("TenantID: got %q, want %q", user.TenantID, tenantid.System)
 	}
 }
 
@@ -1991,8 +1992,8 @@ func TestKVUserStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser() returned unexpected error: %v", err)
 	}
-	if checkedTenantID != tenant.SystemTenantID {
-		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.SystemTenantID)
+	if checkedTenantID != tenantid.System {
+		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenantid.System)
 	}
 }
 

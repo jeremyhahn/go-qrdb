@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sqlScopeRegistry is a scopeRegistry that also answers the lookups the SQL
@@ -68,7 +69,7 @@ func newSQLScopeTransport(t *testing.T, defaultKV *mockKVService, reg sqlScopeRe
 // the plain transport read the shared store beside the database and a scoped
 // transport prefixed its already-scoped store a second time.
 func TestEmbeddedSQL_ResolvesThroughRegistry(t *testing.T) {
-	ledger := tenant.SystemTenantID + "/ledger"
+	ledger := tenantid.System + "/ledger"
 	reg := sqlScopeRegistry{newScopeRegistry(ledger)}
 	if err := reg.stores[ledger].Put(context.Background(), "k", []byte("v")); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -95,11 +96,11 @@ func TestEmbeddedSQL_ResolvesThroughRegistry(t *testing.T) {
 // registry, which refuses it, instead of reading the node's default store
 // under the database's prefix.
 func TestEmbeddedSQL_SealedDatabaseRefused(t *testing.T) {
-	ledger := tenant.SystemTenantID + "/ledger"
+	ledger := tenantid.System + "/ledger"
 	reg := sqlScopeRegistry{newScopeRegistry(ledger)}
 	reg.sealed[ledger] = true
 	defaultKV := newMockKVService()
-	defaultKV.store[tenant.ComposeNamespace(tenant.SystemTenantID, "ledger")+"raw"] = []byte("plaintext")
+	defaultKV.store[tenant.ComposeNamespace(tenantid.System, "ledger")+"raw"] = []byte("plaintext")
 	tr := newSQLScopeTransport(t, defaultKV, reg)
 
 	res, err := tr.Query(context.Background(), "ledger", "SELECT `key` FROM kv")

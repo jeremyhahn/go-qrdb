@@ -27,6 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/mark3labs/mcp-go/client"
 	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -45,7 +47,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -277,14 +278,14 @@ func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config))
 	ctx := context.Background()
 	statusRole, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        "bearer-status",
-		TenantID:    tenant.SystemTenantID,
+		TenantID:    tenantid.System,
 		Permissions: []permission.Permission{permission.AdminStatus},
 	})
 	require.NoError(t, err)
 	_, err = n.Services().User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             hostBearerSubject,
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		RoleIDs:              []string{statusRole.ID},
 		AuthMethods:          []string{auth.MethodWebAuthn},
 	})

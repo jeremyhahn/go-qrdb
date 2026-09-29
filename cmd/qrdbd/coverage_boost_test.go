@@ -41,7 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -1609,7 +1609,7 @@ func TestWaitForAdminReplication_ContextCanceled_ViaUserStore(t *testing.T) {
 	userSvc, err := user.NewStore(newKVServiceAdapter(mock, nil, nil), idGen)
 	require.NoError(t, err)
 
-	err = waitForAdminReplication(ctx, userSvc, tenant.SystemTenantID)
+	err = waitForAdminReplication(ctx, userSvc, tenantid.System)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

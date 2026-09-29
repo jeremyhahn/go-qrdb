@@ -51,13 +51,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Tenant and PIN the suite runs under.
 const (
-	Tenant = tenant.SystemTenantID
+	Tenant = tenantid.System
 	PIN    = "correct horse battery staple"
 )
 

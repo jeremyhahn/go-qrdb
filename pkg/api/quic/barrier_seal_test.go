@@ -33,7 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const sealTestPIN = "barrier-so-pin-1234"
@@ -44,7 +44,7 @@ const sealTestPIN = "barrier-so-pin-1234"
 func sealOverQUIC(t *testing.T, id *auth.Identity, soPIN string) (uint16, *authtest.Barrier) {
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(id)
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 	barrier := &authtest.Barrier{}
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
@@ -68,7 +68,7 @@ func sealOverQUIC(t *testing.T, id *auth.Identity, soPIN string) (uint16, *autht
 }
 
 func TestBarrierSeal(t *testing.T) {
-	operator := authtest.AdminIdentity(tenant.SystemTenantID, "root")
+	operator := authtest.AdminIdentity(tenantid.System, "root")
 	cases := []struct {
 		name   string
 		id     *auth.Identity

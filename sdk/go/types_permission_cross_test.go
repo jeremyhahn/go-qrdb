@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
@@ -236,7 +237,7 @@ func TestSDK_PermissionDeniedError_IsDistinguishable(t *testing.T) {
 		t.Fatalf("role.NewStore: %v", err)
 	}
 	auditors := map[string]string{}
-	for _, tid := range []string{tenant.SystemTenantID, "acme"} {
+	for _, tid := range []string{tenantid.System, "acme"} {
 		r, cerr := roles.CreateRole(tenant.WithTenantID(ctx, tid), &role.CreateRoleRequest{
 			Name:        "cross-auditor",
 			TenantID:    tid,
@@ -251,8 +252,8 @@ func TestSDK_PermissionDeniedError_IsDistinguishable(t *testing.T) {
 	resource := permission.Resource(sdk.PermissionCertsRevokeCross)
 	action := permission.Action(sdk.PermissionCertsRevokeCross)
 
-	system := &sdk.Identity{Subject: "ops", TenantID: tenant.SystemTenantID, Roles: []string{auditors[tenant.SystemTenantID]}}
-	if err := authz.Authorize(tenant.WithTenantID(ctx, tenant.SystemTenantID), system, resource, action); err != nil {
+	system := &sdk.Identity{Subject: "ops", TenantID: tenantid.System, Roles: []string{auditors[tenantid.System]}}
+	if err := authz.Authorize(tenant.WithTenantID(ctx, tenantid.System), system, resource, action); err != nil {
 		t.Fatalf("system-tenant CA operator refused %s: %v", sdk.PermissionCertsRevokeCross, err)
 	}
 
@@ -269,8 +270,8 @@ func TestSDK_PermissionDeniedError_IsDistinguishable(t *testing.T) {
 	// A failure to decide is NOT a denial: the consumer must be able to tell
 	// the two apart, which is the whole reason the type crosses the boundary.
 	// A role the store cannot resolve is the authorizer failing to decide.
-	ghost := &sdk.Identity{Subject: "ops", TenantID: tenant.SystemTenantID, Roles: []string{"no-such-role"}}
-	undecided := authz.Authorize(tenant.WithTenantID(ctx, tenant.SystemTenantID), ghost, resource, action)
+	ghost := &sdk.Identity{Subject: "ops", TenantID: tenantid.System, Roles: []string{"no-such-role"}}
+	undecided := authz.Authorize(tenant.WithTenantID(ctx, tenantid.System), ghost, resource, action)
 	if undecided == nil {
 		t.Fatal("an unresolvable role was admitted")
 	}

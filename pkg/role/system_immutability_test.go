@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The tests in this file cover go-qrdb#17: every seeded system role was
@@ -388,7 +388,7 @@ func TestCanonicalSystemRole_IsAccepted(t *testing.T) {
 // list — a duplicated list is the failure mode this derivation exists to
 // prevent, and repeating it in the test would reintroduce it.
 func TestIsSystemRoleName_DerivedFromConstructors(t *testing.T) {
-	for _, r := range append(BuiltInRoles(tenant.SystemTenantID), OwnerRole(tenant.SystemTenantID)) {
+	for _, r := range append(BuiltInRoles(tenantid.System), OwnerRole(tenantid.System)) {
 		if !IsSystemRoleName(r.Name) {
 			t.Errorf("IsSystemRoleName(%q) = false, want true", r.Name)
 		}

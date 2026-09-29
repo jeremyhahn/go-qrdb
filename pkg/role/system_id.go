@@ -20,6 +20,7 @@ import (
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // System role identifiers moved from RFC 4122 v5 (name-based, SHA-1) to
@@ -66,7 +67,7 @@ type NameResolver interface {
 // InvalidResolverResultError for the same reason.
 func ResolveSystemRoleID(ctx context.Context, svc NameResolver, tenantID, roleName string) (string, error) {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	canonical := deterministicUUID(tenantID, roleName)
 	if svc == nil {
@@ -106,7 +107,7 @@ func ResolveSystemRoleID(ctx context.Context, svc NameResolver, tenantID, roleNa
 // The canonical identifier is always first, so the result is never empty.
 func SystemRoleIDs(ctx context.Context, svc NameResolver, tenantID, roleName string) ([]string, error) {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	canonical := deterministicUUID(tenantID, roleName)
 
@@ -152,7 +153,7 @@ func HoldsSystemRole(ctx context.Context, svc NameResolver, tenantID string, rol
 		return false, nil
 	}
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	r, err := svc.GetRoleByName(tenant.WithTenantID(ctx, tenantID), tenantID, roleName)
 	if err != nil {

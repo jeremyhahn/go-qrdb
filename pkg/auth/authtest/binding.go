@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -31,7 +32,7 @@ import (
 // tenant, and a user in OtherTenant the binding does not reach. Every
 // transport's target-tenant test drives its own request shape through its own
 // route-level check against this one fixture, over a role store built by
-// BuiltInRoles(t, tenant.SystemTenantID, BindingTenant, OtherTenant), so the
+// BuiltInRoles(t, tenantid.System, BindingTenant, OtherTenant), so the
 // six transports are held to one answer: updating the BindingTenant user is
 // authorized, updating the OtherTenant user is refused.
 const (
@@ -53,7 +54,7 @@ const (
 // the middleware enriches it from the user store: a system-tenant subject
 // holding no roles of its own.
 func BindingOperator() *auth.Identity {
-	return &auth.Identity{Subject: BindingOperatorName, TenantID: tenant.SystemTenantID}
+	return &auth.Identity{Subject: BindingOperatorName, TenantID: tenantid.System}
 }
 
 // BindingUsers is the fixture's user store. GetUser answers as the routed
@@ -76,7 +77,7 @@ func NewBindingUsers() *BindingUsers {
 	rec := func(id uint64, name, tenantID string) *user.User {
 		return &user.User{ID: id, Username: name, TenantID: tenantID, Lifecycle: user.LifecycleActive, RoleIDs: []string{}, CreatedAt: now, UpdatedAt: now}
 	}
-	op := rec(BindingOperatorID, BindingOperatorName, tenant.SystemTenantID)
+	op := rec(BindingOperatorID, BindingOperatorName, tenantid.System)
 	op.RoleBindings = []user.RoleBinding{{RoleID: role.SystemRoleID(BindingTenant, role.RoleNameAdmin), TenantID: BindingTenant}}
 	return &BindingUsers{nextID: 1000, records: map[uint64]*user.User{
 		BindingOperatorID:   op,
@@ -91,7 +92,7 @@ func (u *BindingUsers) GetUser(ctx context.Context, id uint64) (*user.User, erro
 	defer u.mu.Unlock()
 	r, ok := u.records[id]
 	caller := tenant.FromContext(ctx)
-	if !ok || (!tenant.IsSystemTenant(caller) && r.TenantID != caller) {
+	if !ok || (!tenantid.IsSystem(caller) && r.TenantID != caller) {
 		return nil, &user.UserNotFoundError{ID: id}
 	}
 	cp := *r
@@ -103,7 +104,7 @@ func (u *BindingUsers) GetUserByUsername(_ context.Context, tenantID, username s
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for _, r := range u.records {
-		if r.Username == username && r.TenantID == tenant.Normalize(tenantID) {
+		if r.Username == username && r.TenantID == tenantid.Normalize(tenantID) {
 			cp := *r
 			return &cp, nil
 		}
@@ -208,5 +209,5 @@ func (u *BindingUsers) Updated() []uint64 {
 // the system tenant, BindingTenant and OtherTenant.
 func BindingRoles(t testing.TB) role.RoleServicer {
 	t.Helper()
-	return BuiltInRoles(t, tenant.SystemTenantID, BindingTenant, OtherTenant)
+	return BuiltInRoles(t, tenantid.System, BindingTenant, OtherTenant)
 }

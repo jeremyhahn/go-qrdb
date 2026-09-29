@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestSOIdentity_HoldsThePersistedSORole pins SOIdentity to what the role
@@ -44,9 +45,9 @@ func TestSOIdentity_HoldsThePersistedSORole(t *testing.T) {
 func TestGrantedNonSOIdentity_IsAdmittedWithoutTheSORole(t *testing.T) {
 	// seal:rekey is platform scope (ScopeCross), so the identity is the
 	// system tenant's.
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID)
-	id := authtest.GrantedNonSOIdentity(tenant.SystemTenantID, "token", permission.SealRekey)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	roles := authtest.BuiltInRoles(t, tenantid.System)
+	id := authtest.GrantedNonSOIdentity(tenantid.System, "token", permission.SealRekey)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	if err := rbac.New(roles).Authorize(ctx, id, "seal", "rekey"); err != nil {
 		t.Fatalf("RBAC refused the granted identity: %v", err)
 	}

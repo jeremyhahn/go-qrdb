@@ -43,11 +43,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
-	soTestTenant  = tenant.SystemTenantID
+	soTestTenant  = tenantid.System
 	soOtherTenant = "acme"
 	soTestPIN     = "correct horse battery staple"
 )
@@ -204,7 +204,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 	}
 	wantToolCode(t, "tenant admin seal", res, wire.CodePermissionDenied)
 
-	res, barrier = seal(t, authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	res, barrier = seal(t, authtest.AdminIdentity(tenantid.System, "root"))
 	if res.IsError || barrier.Seals() != 1 {
 		t.Fatalf("system Admin seal: %+v, seals=%d", res.Content, barrier.Seals())
 	}

@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // PromoteToSystemUser idempotently marks an existing record System: true.
@@ -81,7 +81,7 @@ func (s *kvUserStore) PromoteToSystemUser(ctx context.Context, id uint64) (*User
 		if cur.System && owner == id {
 			return cur, nil
 		}
-		if cur.TenantID != tenant.SystemTenantID {
+		if cur.TenantID != tenantid.System {
 			return nil, &SystemTenantRequiredError{TenantID: cur.TenantID}
 		}
 

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The bootstrap path builds its index over a directly-confined store before
@@ -33,7 +34,7 @@ func TestIdentityIndex_ResolvedAndDirectAgreeOnTheKey(t *testing.T) {
 	shared, _, _, resolver := newResolverFixture(t)
 	ctx := context.Background()
 
-	confined, err := kvstore.NewNamespacedKVStore(shared, IdentityNamespace(SystemTenantID))
+	confined, err := kvstore.NewNamespacedKVStore(shared, IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestIdentityIndex_KindsAreDisjoint(t *testing.T) {
 	}
 }
 
-// "" and SystemTenantID are the same tenant. Storing them as two different
+// "" and tenantid.System are the same tenant. Storing them as two different
 // values would route the same id two different ways depending on which call
 // wrote it — the split brain #41 already had to fix once in the namespace.
 func TestIdentityIndex_EmptyTenantCanonicalizes(t *testing.T) {
@@ -162,17 +163,17 @@ func TestIdentityIndex_EmptyTenantCanonicalizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
-	if !ok || gotClaim.Tenant != SystemTenantID {
-		t.Fatalf("Lookup = (%q, %v), want (%q, true)", gotClaim.Tenant, ok, SystemTenantID)
+	if !ok || gotClaim.Tenant != tenantid.System {
+		t.Fatalf("Lookup = (%q, %v), want (%q, true)", gotClaim.Tenant, ok, tenantid.System)
 	}
 
 	// The discriminating assertion: a claim taken as "" is STORED under
-	// SystemTenantID, so Lookup reports the canonical tenant and the token it
+	// tenantid.System, so Lookup reports the canonical tenant and the token it
 	// returns releases it. Without canonicalization the stored tenant would be
 	// "" and the two spellings would be different holders.
-	if gotClaim.Tenant != SystemTenantID {
+	if gotClaim.Tenant != tenantid.System {
 		t.Fatalf("claim taken as \"\" names tenant %q, want %q",
-			gotClaim.Tenant, SystemTenantID)
+			gotClaim.Tenant, tenantid.System)
 	}
 	if err := index.Forget(ctx, IdentityUser, "1", gotClaim.Token); err != nil {
 		t.Fatalf("Forget with the claim's own token: %v", err)
@@ -181,18 +182,18 @@ func TestIdentityIndex_EmptyTenantCanonicalizes(t *testing.T) {
 		t.Fatalf("claim after release = (ok=%v, err=%v), want released", ok, lerr)
 	}
 
-	// And the mirror image: taken as SystemTenantID, it is the same holder.
-	tok, rerr := index.Record(ctx, IdentityUser, "2", SystemTenantID)
+	// And the mirror image: taken as tenantid.System, it is the same holder.
+	tok, rerr := index.Record(ctx, IdentityUser, "2", tenantid.System)
 	if rerr != nil {
-		t.Fatalf("Record(%q): %v", SystemTenantID, rerr)
+		t.Fatalf("Record(%q): %v", tenantid.System, rerr)
 	}
 	claim2, ok2, lerr2 := index.Lookup(ctx, IdentityUser, "2")
-	if lerr2 != nil || !ok2 || claim2.Tenant != SystemTenantID {
+	if lerr2 != nil || !ok2 || claim2.Tenant != tenantid.System {
 		t.Fatalf("claim = (%q, %v, %v), want the canonical system tenant",
 			claim2.Tenant, ok2, lerr2)
 	}
 	if err := index.Forget(ctx, IdentityUser, "2", tok); err != nil {
-		t.Fatalf("Forget(%q): %v", SystemTenantID, err)
+		t.Fatalf("Forget(%q): %v", tenantid.System, err)
 	}
 }
 
@@ -247,7 +248,7 @@ func TestIdentityIndex_ClaimUsesCompareAndSetWhenAvailable(t *testing.T) {
 	// system store does (cmd/qrdbd's kvServiceAdapter and lifecycle's
 	// kvStoreAdapter both resolve PutIfAbsent inside the state machine).
 	backing, err := kvstore.NewNamespacedKVStore(
-		kvstore.NewMemoryKVStore(), IdentityNamespace(SystemTenantID))
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -309,7 +310,7 @@ func (c *countingAtomicStore) CompareAndSwap(ctx context.Context, key string, ex
 func TestIdentityIndex_ClaimRefusesAForeignHolderOnAnAtomicStore(t *testing.T) {
 	ctx := context.Background()
 	backing, err := kvstore.NewNamespacedKVStore(
-		kvstore.NewMemoryKVStore(), IdentityNamespace(SystemTenantID))
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestIdentityIndex_ClaimRefusesAForeignHolderOnAnAtomicStore(t *testing.T) {
 func TestIdentityIndex_ForgetRefusesANonHolderOnAnAtomicStore(t *testing.T) {
 	ctx := context.Background()
 	backing, err := kvstore.NewNamespacedKVStore(
-		kvstore.NewMemoryKVStore(), IdentityNamespace(SystemTenantID))
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -416,7 +417,7 @@ func (s *interleavingStore) CompareAndSwap(ctx context.Context, key string, expe
 func TestIdentityIndex_AStaleReleaseCannotDeleteARecreatedClaim(t *testing.T) {
 	ctx := context.Background()
 	backing, err := kvstore.NewNamespacedKVStore(
-		kvstore.NewMemoryKVStore(), IdentityNamespace(SystemTenantID))
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -479,7 +480,7 @@ func TestIdentityIndex_AStaleReleaseCannotDeleteARecreatedClaim(t *testing.T) {
 func TestIdentityIndex_AFailedGuardReadDoesNotRelease(t *testing.T) {
 	ctx := context.Background()
 	backing, err := kvstore.NewNamespacedKVStore(
-		kvstore.NewMemoryKVStore(), IdentityNamespace(SystemTenantID))
+		kvstore.NewMemoryKVStore(), IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -610,8 +611,8 @@ func TestIdentityIndex_PrepareClaimCanonicalizesSystemTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareClaim: %v", err)
 	}
-	if got := tenantFromClaimToken(token); got != SystemTenantID {
-		t.Errorf("tenant encoded in token = %q, want %q", got, SystemTenantID)
+	if got := tenantFromClaimToken(token); got != tenantid.System {
+		t.Errorf("tenant encoded in token = %q, want %q", got, tenantid.System)
 	}
 }
 

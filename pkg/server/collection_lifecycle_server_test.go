@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -229,7 +231,7 @@ func TestServer_CollectionSweepTargets_TenantsAndDatabases(t *testing.T) {
 		}
 	}
 	tenants := &listFnServicer{fn: func(context.Context) ([]tenant.TenantInfo, error) {
-		return []tenant.TenantInfo{{ID: tenant.SystemTenantID}, {ID: "acme"}}, nil
+		return []tenant.TenantInfo{{ID: tenantid.System}, {ID: "acme"}}, nil
 	}}
 	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
 		WithDatabaseServiceRegistry(NewDatabaseServiceRegistry("system")),

@@ -26,7 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // embeddedClientAddr is the client address reported for in-process sessions,
@@ -120,7 +120,7 @@ func ConnectionTenant(cfg *DSNConfig, opts ...EmbeddedOption) string {
 	if id := resolveIdentity(&o, cfg); id != nil && id.TenantID != "" {
 		return id.TenantID
 	}
-	return tenant.SystemTenantID
+	return tenantid.System
 }
 
 // newEmbeddedSession creates the single go-mysql-server session that backs one

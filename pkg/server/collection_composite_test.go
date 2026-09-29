@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // recordingIndexService is an IndexServicer that records the index names it is
@@ -189,7 +190,7 @@ func TestApplyCompositeReusesOneCollectionServicePerScope(t *testing.T) {
 	_, svcs := sharedCollectionStore()
 	dbReg := NewDatabaseServiceRegistry("appdb")
 	dbReg.Register("appdb", svcs)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
 
 	first, err := reg.CollectionService("tenant-a", "appdb")
 	if err != nil {

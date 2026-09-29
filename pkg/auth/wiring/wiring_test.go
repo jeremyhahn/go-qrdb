@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -143,7 +144,7 @@ func adminRoleService() *fakeRoleService {
 func adminIdentity() *auth.Identity {
 	return &auth.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{testAdminRoleID},
 	}
 }
@@ -170,7 +171,7 @@ func TestBuildAuthorizer_RBACOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, authorizer)
 
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	id := adminIdentity()
 
 	require.NoError(t, authorizer.Authorize(ctx, id, "admin", "status"))
@@ -204,7 +205,7 @@ spec:
 	})
 	require.NoError(t, err)
 
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	err = authorizer.Authorize(ctx, adminIdentity(), "admin", "status")
 	require.Error(t, err)
 	var denied *abac.PolicyDeniedError
@@ -247,7 +248,7 @@ func TestDecorateABAC_ProgrammaticPolicies(t *testing.T) {
 	policies := []*abac.Policy{{
 		APIVersion: "abac.qrdb.io/v1",
 		Kind:       abac.PolicyKind,
-		Metadata:   abac.PolicyMetadata{Name: "prog", Tenant: tenant.SystemTenantID},
+		Metadata:   abac.PolicyMetadata{Name: "prog", Tenant: tenantid.System},
 		Spec: abac.PolicySpec{
 			Subjects: abac.SubjectSelector{Any: true},
 			Rules: []abac.Rule{{
@@ -263,7 +264,7 @@ func TestDecorateABAC_ProgrammaticPolicies(t *testing.T) {
 	require.NoError(t, err)
 	require.NotSame(t, auth.Authorizer(inner), authorizer)
 
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	err = authorizer.Authorize(ctx, adminIdentity(), "keys", "destroy")
 	require.Error(t, err)
 	var denied *abac.PolicyDeniedError
@@ -324,10 +325,10 @@ func TestBuildAuthMiddleware_EnabledEnforcesRBAC(t *testing.T) {
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 
 	ctx2 := auth.WithIdentity(context.Background(), adminIdentity())
-	err = mw.AuthorizeTenant(ctx2, tenant.SystemTenantID, permission.SealRekey)
+	err = mw.AuthorizeTenant(ctx2, tenantid.System, permission.SealRekey)
 	require.Error(t, err)
 }
 
@@ -343,7 +344,7 @@ func TestBuildAuthMiddleware_UnauthenticatedRejected(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = mw.AuthorizeTenant(context.Background(), tenant.SystemTenantID, permission.AdminStatus)
+	err = mw.AuthorizeTenant(context.Background(), tenantid.System, permission.AdminStatus)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, auth.ErrUnauthenticated)
 }
@@ -363,7 +364,7 @@ func TestBuildAuthMiddleware_SPIFFETrustDomain(t *testing.T) {
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 }
 
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.

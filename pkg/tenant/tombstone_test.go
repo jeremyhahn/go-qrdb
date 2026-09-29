@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // recordingReclaimer is a KeyspaceReclaimer that counts calls and can fail.
@@ -791,7 +792,7 @@ var reservedIDs = []struct {
 	name string
 	id   string
 }{
-	{"system tenant", SystemTenantID},
+	{"system tenant", tenantid.System},
 	{"legacy default", legacyDefaultTenantID},
 	{"underscore prefix", "_internal"},
 	{"colon compound", "acme:eu"},

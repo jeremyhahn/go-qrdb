@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // WithIdentityIndex records every user id this store creates in the
@@ -141,8 +142,8 @@ func (s *kvUserStore) forgetIdentity(ctx context.Context, id uint64, tenantID st
 	if !held {
 		return nil
 	}
-	if tenant.IsSystemTenant(tenantID) {
-		tenantID = tenant.SystemTenantID
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
 	}
 	if claim.Tenant != tenantID {
 		return &tenant.IdentityClaimConflictError{Kind: tenant.IdentityUser, ID: identityID(id)}

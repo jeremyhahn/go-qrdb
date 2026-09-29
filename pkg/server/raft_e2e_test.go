@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // alwaysAbsentCatalog is a DatabaseCatalog that reports every database as
@@ -132,16 +133,16 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 
 	host, _ := newSharedTestHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(
-		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenant.SystemTenantID, volTestLogger())
+		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenantid.System, volTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	resolver := &restServiceRegistry{
 		dbReg:        NewDatabaseServiceRegistry("system"),
 		barrierReg:   reg,
 		tenantSvc:    tenants,
-		catalog:      newManagerCatalog(mgr, tenant.SystemTenantID),
+		catalog:      newManagerCatalog(mgr, tenantid.System),
 		raftBackend:  raftReg,
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 
 	return &raftE2EStack{

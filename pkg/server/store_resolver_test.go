@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -62,7 +64,7 @@ func TestStoreResolver_RoutesAVolumeTenantToItsOwnHost(t *testing.T) {
 	r := &storeResolver{
 		hosts:        &stubTenantServices{svcs: &DatabaseServices{KV: kv}},
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 
 	target, dedicated, err := r.ReclaimTarget(context.Background(), "acme")
@@ -93,7 +95,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			resolver: &storeResolver{
 				hosts:        hosts,
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationPrefix},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -102,7 +104,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			resolver: &storeResolver{
 				hosts:        hosts,
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationRaft},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -111,16 +113,16 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			resolver: &storeResolver{
 				hosts:        hosts,
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
-			tenantID: tenant.SystemTenantID,
+			tenantID: tenantid.System,
 		},
 		{
 			name: "an unknown tenant — a database outlives its tenant record exactly during a teardown",
 			resolver: &storeResolver{
 				hosts:        hosts,
 				tenantSvc:    &isolatedTenantServicer{err: tenant.ErrTenantNotFound},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -128,7 +130,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			name: "no host registry configured",
 			resolver: &storeResolver{
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -137,7 +139,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			resolver: &storeResolver{
 				hosts:        (*TenantHostRegistry)(nil),
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -145,7 +147,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			name: "no tenant service configured",
 			resolver: &storeResolver{
 				hosts:        hosts,
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "acme",
 		},
@@ -154,7 +156,7 @@ func TestStoreResolver_UsesTheSystemStoreEverywhereElse(t *testing.T) {
 			resolver: &storeResolver{
 				hosts:        hosts,
 				tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-				systemTenant: tenant.SystemTenantID,
+				systemTenant: tenantid.System,
 			},
 			tenantID: "",
 		},
@@ -182,7 +184,7 @@ func TestStoreResolver_AnUnreachableHostFailsTheDrop(t *testing.T) {
 	r := &storeResolver{
 		hosts:        &stubTenantServices{err: boom},
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationVolume},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 
 	_, dedicated, err := r.ReclaimTarget(context.Background(), "acme")
@@ -259,14 +261,14 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 	}{
 		{
 			name:          "volume isolation: the tenant's own Host",
-			resolver:      &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenant.SystemTenantID},
+			resolver:      &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenantid.System},
 			tenantID:      "acme",
 			wantKV:        volumeKV,
 			wantDedicated: true,
 		},
 		{
 			name:            "raft isolation: the database's own shard, which is its incarnation",
-			resolver:        &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenant.SystemTenantID},
+			resolver:        &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenantid.System},
 			tenantID:        "acme",
 			wantKV:          raftKV,
 			wantDedicated:   true,
@@ -274,22 +276,22 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 		},
 		{
 			name:     "prefix isolation: the system store",
-			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationPrefix}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationPrefix}, systemTenant: tenantid.System},
 			tenantID: "acme",
 		},
 		{
 			name:     "the system tenant",
-			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenant.SystemTenantID},
-			tenantID: tenant.SystemTenantID,
+			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenantid.System},
+			tenantID: tenantid.System,
 		},
 		{
 			name:     "a tenant that does not exist",
-			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{err: tenant.ErrTenantNotFound}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: hosts, raft: raft, tenantSvc: &isolatedTenantServicer{err: tenant.ErrTenantNotFound}, systemTenant: tenantid.System},
 			tenantID: "acme",
 		},
 		{
 			name:     "no tenant service",
-			resolver: &storeResolver{hosts: hosts, raft: raft, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: hosts, raft: raft, systemTenant: tenantid.System},
 			tenantID: "acme",
 		},
 	}
@@ -329,27 +331,27 @@ func TestStoreResolver_FenceTargetNeverFallsBackOnFailure(t *testing.T) {
 	}{
 		{
 			name:     "a tenant lookup that fails for any reason but not-found",
-			resolver: &storeResolver{hosts: &stubTenantServices{}, raft: &stubRaftFence{}, tenantSvc: &isolatedTenantServicer{err: lookupFailed}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: &stubTenantServices{}, raft: &stubRaftFence{}, tenantSvc: &isolatedTenantServicer{err: lookupFailed}, systemTenant: tenantid.System},
 			check:    func(err error) bool { return errors.Is(err, lookupFailed) },
 		},
 		{
 			name:     "a volume tenant whose Host cannot be resolved",
-			resolver: &storeResolver{hosts: &stubTenantServices{err: boom}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: &stubTenantServices{err: boom}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenantid.System},
 			check:    func(err error) bool { return errors.Is(err, boom) },
 		},
 		{
 			name:     "a volume tenant with no Host registry",
-			resolver: &storeResolver{tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationVolume}, systemTenant: tenantid.System},
 			check:    unavailable,
 		},
 		{
 			name:     "a raft tenant whose shard cannot be resolved",
-			resolver: &storeResolver{raft: &stubRaftFence{err: boom}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{raft: &stubRaftFence{err: boom}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenantid.System},
 			check:    func(err error) bool { return errors.Is(err, boom) },
 		},
 		{
 			name:     "a raft tenant with no raft backend",
-			resolver: &storeResolver{hosts: &stubTenantServices{}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenant.SystemTenantID},
+			resolver: &storeResolver{hosts: &stubTenantServices{}, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationRaft}, systemTenant: tenantid.System},
 			check:    unavailable,
 		},
 	}
@@ -372,7 +374,7 @@ func TestStoreResolver_FenceTargetMissingShard(t *testing.T) {
 	unknown := &storeResolver{
 		raft:         &stubRaftFence{err: &RaftBackendError{TenantID: "acme", Database: "orders", Op: "db-info", Err: ErrRaftDatabaseUnknown}},
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationRaft},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 	store, dedicated, err := unknown.FenceTarget(context.Background(), "acme", "orders")
 	if err != nil || !dedicated || store.KV != nil || !store.PerDatabase {
@@ -409,7 +411,7 @@ func TestStoreResolver_ReclaimTargetNeverFallsBackOnALookupFailure(t *testing.T)
 	r := &storeResolver{
 		hosts:        &stubTenantServices{svcs: &DatabaseServices{KV: newMockKVService()}},
 		tenantSvc:    &isolatedTenantServicer{err: lookupFailed},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 	_, dedicated, err := r.ReclaimTarget(context.Background(), "acme")
 	if !errors.Is(err, lookupFailed) || !dedicated {
@@ -419,7 +421,7 @@ func TestStoreResolver_ReclaimTargetNeverFallsBackOnALookupFailure(t *testing.T)
 	notFound := &storeResolver{
 		hosts:        &stubTenantServices{svcs: &DatabaseServices{KV: newMockKVService()}},
 		tenantSvc:    &isolatedTenantServicer{err: tenant.ErrTenantNotFound},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	}
 	if _, dedicated, err := notFound.ReclaimTarget(context.Background(), "acme"); err != nil || dedicated {
 		t.Fatalf("an unknown tenant: (dedicated=%v, %v), want the system store", dedicated, err)

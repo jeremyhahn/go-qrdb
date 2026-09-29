@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // CreateForTenant creates a new database scoped to the tenant from the context.
@@ -37,7 +38,7 @@ func (m *Manager) CreateForTenant(ctx context.Context, cfg DatabaseConfig) (*Dat
 // CreateWithCredentials.
 func (m *Manager) CreateForTenantWithCredentials(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "CreateForTenant"}
 	}
 	cfg.TenantID = tenantID
@@ -49,7 +50,7 @@ func (m *Manager) CreateForTenantWithCredentials(ctx context.Context, cfg Databa
 // missing one is (see getOwned).
 func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "GetForTenant"}
 	}
 
@@ -75,7 +76,7 @@ func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, err
 // (SEC-8(b)): the two must be indistinguishable to the caller.
 func (m *Manager) GetForTenantIgnoringFence(ctx context.Context, name string) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "GetForTenantIgnoringFence"}
 	}
 
@@ -98,7 +99,7 @@ func (m *Manager) GetForTenantIgnoringFence(ctx context.Context, name string) (*
 // Results are sorted by name.
 func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "ListForTenant"}
 	}
 
@@ -134,7 +135,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 		return err
 	}
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "DropForTenant"}
 	}
 
@@ -153,7 +154,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.
 func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, protocol ProtocolConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateProtocolForTenant"}
 	}
 
@@ -167,7 +168,7 @@ func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, prot
 // UpdateEtcdForTenant updates etcd config after verifying tenant ownership.
 func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *EtcdConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateEtcdForTenant"}
 	}
 
@@ -181,7 +182,7 @@ func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *Et
 // UpdateRaftForTenant updates Raft config after verifying tenant ownership.
 func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *DatabaseRaftConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateRaftForTenant"}
 	}
 
@@ -195,7 +196,7 @@ func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *Da
 // UpdateBarrierForTenant updates barrier config after verifying tenant ownership.
 func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barrier *DatabaseBarrierConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateBarrierForTenant"}
 	}
 
@@ -209,7 +210,7 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 // UpdateConnectionForTenant updates connection config after verifying tenant ownership.
 func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateConnectionForTenant"}
 	}
 
@@ -224,7 +225,7 @@ func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, co
 // ownership.
 func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *SQLConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateSQLForTenant"}
 	}
 
@@ -260,7 +261,7 @@ func (m *Manager) CompactionOwnerForTenant(ctx context.Context, name string) (st
 	}
 	owner := db.TenantID()
 	if owner == "" {
-		owner = tenant.SystemTenantID
+		owner = tenantid.System
 	}
 	return owner, nil
 }
@@ -269,8 +270,8 @@ func (m *Manager) CompactionOwnerForTenant(ctx context.Context, name string) (st
 // of a database owner owns: its own databases only, for every tenant. The
 // system tenant's own databases are those owned by it or by no tenant.
 func ownsCompactionPolicy(tenantID, owner string) bool {
-	if tenant.IsSystemTenant(tenantID) {
-		return tenant.IsSystemTenant(owner)
+	if tenantid.IsSystem(tenantID) {
+		return tenantid.IsSystem(owner)
 	}
 	return owner == tenantID
 }
@@ -332,7 +333,7 @@ func (m *Manager) TenantDatabases(_ context.Context, tenantID string) ([]string,
 	m.databases.Range(func(_, value any) bool {
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		owner := db.TenantID()
-		if owner == tenantID || (tenant.IsSystemTenant(tenantID) && tenant.IsSystemTenant(owner)) {
+		if owner == tenantID || (tenantid.IsSystem(tenantID) && tenantid.IsSystem(owner)) {
 			names = append(names, db.Name())
 		}
 		return true

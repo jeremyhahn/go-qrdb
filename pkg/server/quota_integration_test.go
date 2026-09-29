@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeTenantStore is an in-memory, stateful tenant.TenantServicer used by the
@@ -144,7 +145,7 @@ func buildQuotaStack(t *testing.T, store *fakeTenantStore) (*restServiceRegistry
 	dbReg := NewDatabaseServiceRegistry("default")
 	dbReg.Register("default", &DatabaseServices{KV: newMockKVService()})
 
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithTenantServicer(store),
 		withQuotaAccountant(acct),
 	).(*restServiceRegistry)

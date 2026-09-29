@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -150,18 +152,18 @@ func TestRaftBackendFactory_LeadsShard(t *testing.T) {
 func TestServer_CollectionSweepTargets_OnlyWhatThisNodeLeads(t *testing.T) {
 	tenants := &listFnServicer{fn: func(context.Context) ([]tenant.TenantInfo, error) {
 		return []tenant.TenantInfo{
-			{ID: tenant.SystemTenantID},
+			{ID: tenantid.System},
 			{ID: "prefix-t"},
 			{ID: "vol-up", IsolationType: tenant.IsolationVolume},
 		}, nil
 	}}
 	hosts := NewTenantHostRegistry(&seal.BarrierRegistry{}, staticDataRoot{}, volTestLogger())
 	hosts.hosts["vol-up"] = &tenantHost{tenantID: "vol-up", services: journalStore(t, time.Now(), [2]string{"vol-up", "system"})}
-	shared := journalStore(t, time.Now(), [2]string{tenant.SystemTenantID, "system"}, [2]string{"prefix-t", "system"})
+	shared := journalStore(t, time.Now(), [2]string{tenantid.System, "system"}, [2]string{"prefix-t", "system"})
 
 	for leads, want := range map[bool][]string{
 		false: {"vol-up/system"},
-		true:  {"prefix-t/system", tenant.SystemTenantID + "/system", "vol-up/system"},
+		true:  {"prefix-t/system", tenantid.System + "/system", "vol-up/system"},
 	} {
 		dbReg := NewDatabaseServiceRegistry("system")
 		dbReg.Register("system", shared)

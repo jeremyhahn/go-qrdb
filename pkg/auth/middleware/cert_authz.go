@@ -17,9 +17,10 @@ package middleware
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // The certificate-authority tenancy rule, in one place for every transport.
@@ -124,7 +125,7 @@ func CertRevokeTarget(ctx context.Context, serial string, resolver CertSerialRes
 		return "", "", err
 	}
 	if !found {
-		return tenant.SystemTenantID, permission.CertsRevokeCross, nil
+		return tenantid.System, permission.CertsRevokeCross, nil
 	}
 	return owner, permission.CertsRevoke, nil
 }

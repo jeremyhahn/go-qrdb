@@ -17,68 +17,9 @@ package tenant
 import (
 	"context"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
-
-// TestNormalize_FoldsAbsentTenantOnly pins the fold itself: "" — and only ""
-// — becomes SystemTenantID. Everything else is returned byte-for-byte,
-// because Normalize is a boundary fold, not a validator: a boundary that
-// silently rewrote a real tenant id would be a cross-tenant bug of its own.
-func TestNormalize_FoldsAbsentTenantOnly(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"absent tenant folds to system", "", SystemTenantID},
-		{"system tenant is already canonical", SystemTenantID, SystemTenantID},
-		{"real tenant passes through", "acme", "acme"},
-		{"whitespace is a real value, not absence", " ", " "},
-		{"a tenant named like system is not system", "system-2", "system-2"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := Normalize(tc.in); got != tc.want {
-				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestNormalize_IsIdempotent states the property every boundary relies on:
-// normalizing twice is normalizing once, so a value that crosses two folding
-// boundaries (context binding, then identity binding) is not disturbed by the
-// second.
-func TestNormalize_IsIdempotent(t *testing.T) {
-	for _, in := range []string{"", SystemTenantID, "acme"} {
-		once := Normalize(in)
-		if twice := Normalize(once); twice != once {
-			t.Fatalf("Normalize is not idempotent for %q: %q then %q", in, once, twice)
-		}
-	}
-}
-
-// TestNormalize_EstablishesIsSystemTenantPrecondition is the assertion #188
-// asked for and that nothing made before: whatever Normalize returns,
-// IsSystemTenant never observes the empty string.
-//
-// IsSystemTenant's doc comment argued its safety from a precondition — that
-// normalized paths have already folded "" — and the precondition was
-// documented and enforced nowhere. This ties the two together in code: the
-// predicate's empty branch survives for unscoped-store callers, and the fold
-// is what guarantees an authorization decision never reaches it.
-func TestNormalize_EstablishesIsSystemTenantPrecondition(t *testing.T) {
-	for _, in := range []string{"", SystemTenantID, "acme"} {
-		normalized := Normalize(in)
-		if normalized == "" {
-			t.Fatalf("Normalize(%q) returned the empty string; the precondition IsSystemTenant documents is not enforced", in)
-		}
-		// The fold must not change the answer, only the representation.
-		if IsSystemTenant(normalized) != IsSystemTenant(in) {
-			t.Fatalf("Normalize(%q) changed IsSystemTenant from %v to %v",
-				in, IsSystemTenant(in), IsSystemTenant(normalized))
-		}
-	}
-}
 
 // TestFromContext_FoldsAbsentTenant proves the FIRST of the two paths
 // IsSystemTenant's doc comment names as already folding "". It was true
@@ -94,9 +35,9 @@ func TestFromContext_FoldsAbsentTenant(t *testing.T) {
 		ctx  context.Context
 		want string
 	}{
-		{"unbound context", context.Background(), SystemTenantID},
-		{"explicitly bound empty string", WithTenantID(context.Background(), ""), SystemTenantID},
-		{"bound system tenant", WithTenantID(context.Background(), SystemTenantID), SystemTenantID},
+		{"unbound context", context.Background(), tenantid.System},
+		{"explicitly bound empty string", WithTenantID(context.Background(), ""), tenantid.System},
+		{"bound system tenant", WithTenantID(context.Background(), tenantid.System), tenantid.System},
 		{"bound real tenant", WithTenantID(context.Background(), "acme"), "acme"},
 	}
 	for _, tc := range cases {
@@ -138,8 +79,8 @@ func TestEffectiveTenant_AbsentTenantNeverArrivesUnnormalized(t *testing.T) {
 		{"explicitly bound empty string", boundEmpty},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if caller := FromContext(tc.ctx); caller != SystemTenantID {
-				t.Fatalf("caller tenant reached EffectiveTenant as %q, want it folded to %q", caller, SystemTenantID)
+			if caller := FromContext(tc.ctx); caller != tenantid.System {
+				t.Fatalf("caller tenant reached EffectiveTenant as %q, want it folded to %q", caller, tenantid.System)
 			}
 			got, err := EffectiveTenant(tc.ctx, "acme", "create user")
 			if err != nil {

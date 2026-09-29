@@ -19,6 +19,8 @@ import (
 	"crypto/tls"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -126,7 +128,7 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA
 	if tk.remote() {
-		ca, _, serverOpts = remoteServerTLS(t, tenant.SystemTenantID) // the cell dials each tenant with its own certificate
+		ca, _, serverOpts = remoteServerTLS(t, tenantid.System) // the cell dials each tenant with its own certificate
 	}
 	serverOpts = append(serverOpts, extra...)
 
@@ -146,7 +148,7 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 	}
 
 	out := &compactionCell{node: n, tk: tk, base: map[string]*sdk.Client{}}
-	for _, id := range append([]string{tenant.SystemTenantID}, compactionTenants...) {
+	for _, id := range append([]string{tenantid.System}, compactionTenants...) {
 		db := compactionDatabase(id)
 		if _, err := n.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, id),
 			database.DatabaseConfig{Name: db, Engine: database.EngineKV, Backend: database.BackendPebble}); err != nil {
@@ -292,7 +294,7 @@ func TestCompaction_NeverCrossesTenantsOnEveryTransport(t *testing.T) {
 
 			revA := c.writeHistory(t, "tenant-a", "k")
 			revB := c.writeHistory(t, "tenant-b", "k")
-			revSys := c.writeHistory(t, tenant.SystemTenantID, "k")
+			revSys := c.writeHistory(t, tenantid.System, "k")
 
 			// Tenant A compacts its own database: allowed, and A's old
 			// revision is gone while its current value stays ...
@@ -300,17 +302,17 @@ func TestCompaction_NeverCrossesTenantsOnEveryTransport(t *testing.T) {
 			c.requireCompacted(t, "tenant-a", "k", revA)
 			// ... and B's and the system tenant's history is untouched.
 			c.requireHistory(t, "tenant-b", "k", revB, "tenant-a's compaction")
-			c.requireHistory(t, tenant.SystemTenantID, "k", revSys, "tenant-a's compaction")
+			c.requireHistory(t, tenantid.System, "k", revSys, "tenant-a's compaction")
 
 			// The system tenant compacts its own database -- and only that.
-			c.compactNow(t, tenant.SystemTenantID)
-			c.requireCompacted(t, tenant.SystemTenantID, "k", revSys)
+			c.compactNow(t, tenantid.System)
+			c.requireCompacted(t, tenantid.System, "k", revSys)
 			c.requireHistory(t, "tenant-b", "k", revB, "the system tenant's compaction")
 
 			// Neither tenant-a nor the system tenant can aim a compaction at
 			// tenant-b's database.
 			cur := c.currentRevision(t, "tenant-b")
-			for _, intruder := range []string{"tenant-a", tenant.SystemTenantID} {
+			for _, intruder := range []string{"tenant-a", tenantid.System} {
 				h := c.on(t, intruder, compactionDatabase("tenant-b"))
 				if err := h.mvcc.Compact(h.ctx, cur); err == nil {
 					t.Fatalf("%s: %s compacted tenant-b's database", tk, intruder)
@@ -330,9 +332,9 @@ func TestCompaction_SystemTenantNeverDiscardsAnotherTenantsHistoryOnEveryTranspo
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootCompactionCell(t, tk)
 			revB := c.writeHistory(t, "tenant-b", "k")
-			c.writeHistory(t, tenant.SystemTenantID, "k")
+			c.writeHistory(t, tenantid.System, "k")
 
-			c.compactNow(t, tenant.SystemTenantID)
+			c.compactNow(t, tenantid.System)
 			c.requireHistory(t, "tenant-b", "k", revB, "the system tenant's compaction of its own database")
 		})
 	}

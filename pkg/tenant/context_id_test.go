@@ -34,7 +34,7 @@ func TestIDFromContextRoundTrip(t *testing.T) {
 }
 
 // TestIDFromContextMissing verifies comma-ok semantics when no tenant is
-// bound or the bound value is empty — no SystemTenantID fallback.
+// bound or the bound value is empty — no tenantid.System fallback.
 func TestIDFromContextMissing(t *testing.T) {
 	tests := []struct {
 		name string

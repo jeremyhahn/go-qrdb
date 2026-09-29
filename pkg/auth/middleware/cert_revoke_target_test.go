@@ -19,8 +19,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestCertRevokeTarget is the one statement of what a revocation targets,
@@ -34,7 +35,7 @@ func TestCertRevokeTarget(t *testing.T) {
 	}
 
 	target, perm, err = CertRevokeTarget(context.Background(), "unknown", res)
-	if err != nil || target != tenant.SystemTenantID || perm != permission.CertsRevokeCross {
+	if err != nil || target != tenantid.System || perm != permission.CertsRevokeCross {
 		t.Errorf("unowned serial = (%q, %q, %v); want the system tenant, certs:revoke:cross", target, perm, err)
 	}
 

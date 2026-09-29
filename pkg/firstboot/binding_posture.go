@@ -20,8 +20,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -52,7 +53,7 @@ func VerifyAdminCertBinding(ctx context.Context, users AdminLookup, now time.Tim
 	if users == nil {
 		return adminBindingRefusal(AdminBindingUnverifiable)
 	}
-	u, err := users.GetUserByUsername(ctx, tenant.SystemTenantID, adminUsername)
+	u, err := users.GetUserByUsername(ctx, tenantid.System, adminUsername)
 	if err != nil {
 		var unf *user.UserNotFoundError
 		if errors.As(err, &unf) {
@@ -161,7 +162,7 @@ func checkBindingPosture(ctx context.Context, deps Dependencies) error {
 	if !ok {
 		return adminBindingRefusal(AdminBindingUnverifiable)
 	}
-	u, err := lookup.GetUserByUsername(ctx, tenant.SystemTenantID, adminUsername)
+	u, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername)
 	if err == nil {
 		return verifyAdminBindings(u, time.Now().UTC())
 	}
@@ -203,7 +204,7 @@ func hasAdminCertPath(deps Dependencies) bool {
 
 func adminBindingRefusal(reason AdminCertBindingReason) error {
 	return &AdminCertBindingRequiredError{
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Username: adminUsername,
 		Reason:   reason,
 	}

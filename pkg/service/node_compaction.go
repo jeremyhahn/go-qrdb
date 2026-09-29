@@ -17,6 +17,8 @@ package service
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -75,7 +77,7 @@ func (s *AdminService) SetNodeCompaction(ctx context.Context, policy *compaction
 // system tenant (*tenant.CrossTenantDeniedError), and a node with no
 // compaction table for the node keyspace.
 func (s *AdminService) authorizeNodeCompaction(ctx context.Context, op string) error {
-	if _, err := tenant.EffectiveTenant(ctx, tenant.SystemTenantID, op); err != nil {
+	if _, err := tenant.EffectiveTenant(ctx, tenantid.System, op); err != nil {
 		return err
 	}
 	if s.nodeCompaction == nil {

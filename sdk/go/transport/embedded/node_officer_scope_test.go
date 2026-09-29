@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -35,7 +37,7 @@ import (
 // transport's own barrier methods run in-process for a trusted embedder and
 // authorize nothing themselves.
 func TestNodeOfficerScope(t *testing.T) {
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
+	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 	tr := newRBACTransport(t, roles)
 	callers := authtest.NodeOfficerCallers(t, roles)
 	for _, perm := range []permission.Permission{permission.SealOfficerRegister, permission.SealOfficerList} {

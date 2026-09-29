@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func init() {
@@ -68,7 +69,7 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	}
 	owner := db.TenantID()
 	if owner == "" {
-		owner = tenant.SystemTenantID
+		owner = tenantid.System
 	}
 	// The etcd compatibility listener is raft-only (capabilities.Etcd). A
 	// standalone node serves the MVCC, watch and lease families it would
@@ -191,9 +192,9 @@ func (a *etcdRequestAuthorizer) AuthorizeRequest(ctx context.Context, perm permi
 	}
 	callerTenant := identity.TenantID
 	if callerTenant == "" {
-		callerTenant = tenant.SystemTenantID
+		callerTenant = tenantid.System
 	}
-	if callerTenant != a.owner && !tenant.IsSystemTenant(callerTenant) {
+	if callerTenant != a.owner && !tenantid.IsSystem(callerTenant) {
 		if a.logger != nil {
 			a.logger.Warn("etcd request refused",
 				"subject", identity.Subject,

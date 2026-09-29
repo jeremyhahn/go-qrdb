@@ -17,6 +17,8 @@ package tenant
 import (
 	"context"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,12 +46,12 @@ func TestComposeNamespace(t *testing.T) {
 }
 
 // TestComposeNamespace_FallbacksUseCanonicalConstants pins the L5 fix: the
-// empty-input fallbacks are the package's own SystemTenantID/DefaultDatabase
+// empty-input fallbacks are the package's own tenantid.System/DefaultDatabase
 // constants, not caller-supplied values — this is what makes ComposeNamespace
 // the single canonical formula instead of one of two independently-configured
 // implementations that only happened to agree.
 func TestComposeNamespace_FallbacksUseCanonicalConstants(t *testing.T) {
-	want := SystemTenantID + "/" + DefaultDatabase + "/"
+	want := tenantid.System + "/" + DefaultDatabase + "/"
 	if got := ComposeNamespace("", ""); got != want {
 		t.Fatalf("ComposeNamespace(\"\",\"\") = %q, want %q", got, want)
 	}

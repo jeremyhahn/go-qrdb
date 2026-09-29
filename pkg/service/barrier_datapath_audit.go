@@ -19,7 +19,7 @@ import (
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // WarnBarriersOffDataPath logs database.BarrierOffDataPathWarning once for
@@ -42,7 +42,7 @@ func WarnBarriersOffDataPath(ctx context.Context, dbs []database.DatabaseInfo, t
 		return
 	}
 	for _, db := range dbs {
-		if db.Barrier == nil || !db.Barrier.Enabled || db.TenantID == "" || tenant.IsSystemTenant(db.TenantID) {
+		if db.Barrier == nil || !db.Barrier.Enabled || db.TenantID == "" || tenantid.IsSystem(db.TenantID) {
 			continue
 		}
 		info, err := tenants.GetTenant(ctx, db.TenantID)

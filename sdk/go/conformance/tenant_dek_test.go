@@ -19,9 +19,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -44,7 +45,7 @@ func seedDEKIdentity(t *testing.T, n *node.Node) {
 	ctx := boundedCtx(t)
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "dek-matrix",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Permissions: []permission.Permission{
 			permission.DEKEncrypt, permission.DEKDecrypt, permission.DEKRewrap,
 			permission.DEKRotate, permission.DEKRetire, permission.DEKStatus,
@@ -57,7 +58,7 @@ func seedDEKIdentity(t *testing.T, n *node.Node) {
 	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "matrix",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		RoleIDs:              []string{r.ID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
@@ -113,7 +114,7 @@ func TestTenantDEK_LifecycleOnEveryTransport(t *testing.T) {
 			if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) {
 				t.Fatalf("%s: rewrapped ciphertext after retire = %+v, %v", tk, dec, err)
 			}
-			if st, err = c.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); err != nil || st.TenantID != tenant.SystemTenantID || len(st.Versions) != 2 {
+			if st, err = c.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); err != nil || st.TenantID != tenantid.System || len(st.Versions) != 2 {
 				t.Fatalf("%s: status = %+v, %v", tk, st, err)
 			}
 		})

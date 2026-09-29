@@ -25,7 +25,7 @@ import (
 	gmssql "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestResolveIdentity_Precedence verifies the option wins over the DSN, and
@@ -149,8 +149,8 @@ func TestNewEmbeddedSession_NilIdentityIsSystemTenant(t *testing.T) {
 	if sess.Identity() != nil {
 		t.Errorf("Identity() = %+v, want nil", sess.Identity())
 	}
-	if sess.TenantID() != tenant.SystemTenantID {
-		t.Errorf("TenantID() = %q, want %q", sess.TenantID(), tenant.SystemTenantID)
+	if sess.TenantID() != tenantid.System {
+		t.Errorf("TenantID() = %q, want %q", sess.TenantID(), tenantid.System)
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -454,8 +455,8 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 		t.Fatalf("createCalls = %d, want 1", len(tenants.createCalls))
 	}
 	tc := tenants.createCalls[0]
-	if tc.id != tenant.SystemTenantID {
-		t.Errorf("CreateTenant id = %q, want %q", tc.id, tenant.SystemTenantID)
+	if tc.id != tenantid.System {
+		t.Errorf("CreateTenant id = %q, want %q", tc.id, tenantid.System)
 	}
 	if tc.isolationType != tenant.IsolationPrefix {
 		t.Errorf("CreateTenant isolation = %v, want IsolationPrefix (system tenant must be prefix)", tc.isolationType)
@@ -463,7 +464,7 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 
 	// Standard posture (default): the six canonical roles plus the Owner
 	// convenience role.
-	wantRoles := len(role.BuiltInRoles(tenant.SystemTenantID)) + 1
+	wantRoles := len(role.BuiltInRoles(tenantid.System)) + 1
 	if got := roles.createCount.Load(); got != int32(wantRoles) {
 		t.Errorf("roles created = %d, want %d (6 canonical + owner)", got, wantRoles)
 	}
@@ -475,12 +476,12 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 	if adminReq.Username != "admin" {
 		t.Errorf("admin Username = %q, want admin", adminReq.Username)
 	}
-	if adminReq.TenantID != tenant.SystemTenantID {
-		t.Errorf("admin TenantID = %q, want %q", adminReq.TenantID, tenant.SystemTenantID)
+	if adminReq.TenantID != tenantid.System {
+		t.Errorf("admin TenantID = %q, want %q", adminReq.TenantID, tenantid.System)
 	}
 	// Standard posture: admin holds Admin@system AND Owner@system.
-	wantAdminRoleID := role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)
-	wantOwnerRoleID := role.SystemRoleID(tenant.SystemTenantID, role.RoleNameOwner)
+	wantAdminRoleID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+	wantOwnerRoleID := role.SystemRoleID(tenantid.System, role.RoleNameOwner)
 	if len(adminReq.RoleIDs) != 2 || adminReq.RoleIDs[0] != wantAdminRoleID || adminReq.RoleIDs[1] != wantOwnerRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q %q]", adminReq.RoleIDs, wantAdminRoleID, wantOwnerRoleID)
 	}
@@ -493,7 +494,7 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 	if ca.called.Load() != 1 {
 		t.Errorf("CA called = %d, want 1", ca.called.Load())
 	}
-	if ca.lastID != tenant.SystemTenantID || ca.lastSubj != "admin" {
+	if ca.lastID != tenantid.System || ca.lastSubj != "admin" {
 		t.Errorf("CA invoked with (%q, %q), want (system, admin)", ca.lastID, ca.lastSubj)
 	}
 }
@@ -518,7 +519,7 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	wantRoles := len(role.BuiltInRoles(tenant.SystemTenantID))
+	wantRoles := len(role.BuiltInRoles(tenantid.System))
 	if got := roles.createCount.Load(); got != int32(wantRoles) {
 		t.Errorf("roles created = %d, want %d (6 canonical, no owner)", got, wantRoles)
 	}
@@ -532,7 +533,7 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 	if len(users.createCalls) != 1 {
 		t.Fatalf("user createCalls = %d, want 1", len(users.createCalls))
 	}
-	wantAdminRoleID := role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)
+	wantAdminRoleID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
 	adminReq := users.createCalls[0]
 	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantAdminRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q] (no owner under strict)", adminReq.RoleIDs, wantAdminRoleID)
@@ -554,7 +555,7 @@ func TestReconcileExistingAdmin_UnsupportedUserCreatorIsANoOp(t *testing.T) {
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
 		Users:  &fakeUsers{exists: true},
 		Logger: discardLogger(),
-	}, tenant.SystemTenantID)
+	}, tenantid.System)
 	if got != nil {
 		t.Errorf("reconcileExistingAdmin(unsupported UserCreator) = %+v, want nil", got)
 	}
@@ -591,7 +592,7 @@ func TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp(t *testing.T) {
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
 		Users:  &fakeSystemPromoter{getByUsernameErr: errors.New("transient lookup failure")},
 		Logger: discardLogger(),
-	}, tenant.SystemTenantID)
+	}, tenantid.System)
 	if got != nil {
 		t.Errorf("reconcileExistingAdmin(GetUserByUsername error) = %+v, want nil", got)
 	}
@@ -602,14 +603,14 @@ func TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp(t *testing.T) {
 // existing record was successfully resolved: the caller gets back the
 // record it already had (not System yet), not an error and not nil.
 func TestReconcileExistingAdmin_PromoteErrorReturnsTheUnpromotedRecord(t *testing.T) {
-	existing := &user.User{ID: 42, Username: adminUsername, TenantID: tenant.SystemTenantID}
+	existing := &user.User{ID: 42, Username: adminUsername, TenantID: tenantid.System}
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
 		Users: &fakeSystemPromoter{
 			getByUsernameResult: existing,
 			promoteErr:          errors.New("sentinel already held"),
 		},
 		Logger: discardLogger(),
-	}, tenant.SystemTenantID)
+	}, tenantid.System)
 	if got != existing {
 		t.Errorf("reconcileExistingAdmin(promote error) = %+v, want the unpromoted %+v", got, existing)
 	}
@@ -748,11 +749,11 @@ func TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &fakeUsers{exists: true}
 	roles := &fakeRoles{existsByID: map[string]role.Role{
-		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO): {
-			ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+		role.SystemRoleID(tenantid.System, role.RoleNameSO): {
+			ID:          role.SystemRoleID(tenantid.System, role.RoleNameSO),
 			Name:        role.RoleNameSO,
-			TenantID:    tenant.SystemTenantID,
-			Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+			TenantID:    tenantid.System,
+			Permissions: role.BuiltInRoles(tenantid.System)[0].Permissions,
 			System:      true,
 		},
 	}}
@@ -797,12 +798,12 @@ func TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 func TestInitialize_IDCollisionDifferentDefinitionRefused(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &fakeUsers{exists: true}
-	soID := role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO)
+	soID := role.SystemRoleID(tenantid.System, role.RoleNameSO)
 	roles := &fakeRoles{existsByID: map[string]role.Role{
 		soID: {
 			ID:       soID,
 			Name:     role.RoleNameSO,
-			TenantID: tenant.SystemTenantID,
+			TenantID: tenantid.System,
 			// Deliberately wrong: not the SO role's canonical permission set.
 			Permissions: []permission.Permission{permission.KVGet},
 		},
@@ -862,10 +863,10 @@ func TestInitialize_NameCollisionDifferentDefinitionRefused(t *testing.T) {
 		existsByName: map[string]bool{role.RoleNameSO: true},
 		existsByNameRecord: map[string]role.Role{
 			role.RoleNameSO: {
-				ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+				ID:          role.SystemRoleID(tenantid.System, role.RoleNameSO),
 				Name:        role.RoleNameSO,
-				TenantID:    tenant.SystemTenantID,
-				Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+				TenantID:    tenantid.System,
+				Permissions: role.BuiltInRoles(tenantid.System)[0].Permissions,
 				// Deliberately wrong: a "SO" role that is not marked System
 				// would be mutable and deletable through the ordinary APIs.
 				System: false,
@@ -898,22 +899,22 @@ func TestInitialize_NameCollisionDifferentDefinitionRefused(t *testing.T) {
 // first-boot run.
 func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	want := &role.Role{
-		ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+		ID:          role.SystemRoleID(tenantid.System, role.RoleNameSO),
 		Name:        role.RoleNameSO,
-		TenantID:    tenant.SystemTenantID,
-		Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+		TenantID:    tenantid.System,
+		Permissions: role.BuiltInRoles(tenantid.System)[0].Permissions,
 		System:      true,
 	}
 
 	t.Run("nil resolver", func(t *testing.T) {
-		if builtInRoleAlreadySeeded(context.Background(), nil, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), nil, tenantid.System, want, true) {
 			t.Error("expected false with a nil resolver")
 		}
 	})
 
 	t.Run("resolver cannot find the role", func(t *testing.T) {
 		roles := &fakeRoles{}
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
 			t.Error("expected false when GetRoleByName reports not-found")
 		}
 	})
@@ -922,7 +923,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// A resolver that violates the (record, nil) / (nil, typed-error)
 		// contract must not crash this function: it fails closed instead of
 		// dereferencing a nil *role.Role.
-		if builtInRoleAlreadySeeded(context.Background(), nilResultResolver{}, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), nilResultResolver{}, tenantid.System, want, true) {
 			t.Error("expected false when the resolver returns (nil, nil)")
 		}
 	})
@@ -930,7 +931,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	t.Run("persisted id differs, checkID=true", func(t *testing.T) {
 		roles := &fakeRoles{}
 		roles.remember(role.Role{ID: "a-different-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
 			t.Error("expected false when the persisted id differs from the canonical one and checkID is true")
 		}
 	})
@@ -943,7 +944,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// create — so an id mismatch here is expected, not a conflict.
 		roles := &fakeRoles{}
 		roles.remember(role.Role{ID: "a-legacy-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
-		if !builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, false) {
+		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, false) {
 			t.Error("expected true when only the id differs and checkID is false")
 		}
 	})
@@ -969,7 +970,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		resolver := mismatchedRoleResolver{role: &role.Role{
 			ID: want.ID, Name: "a-different-name", TenantID: want.TenantID, Permissions: want.Permissions, System: want.System,
 		}}
-		if builtInRoleAlreadySeeded(context.Background(), resolver, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), resolver, tenantid.System, want, true) {
 			t.Error("expected false when the persisted name differs from the canonical one")
 		}
 	})
@@ -982,10 +983,10 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 		// regardless of checkID.
 		roles := &fakeRoles{}
 		roles.remember(role.Role{ID: want.ID, Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: false})
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
 			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=true)")
 		}
-		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, false) {
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, false) {
 			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=false)")
 		}
 	})
@@ -993,7 +994,7 @@ func TestBuiltInRoleAlreadySeeded(t *testing.T) {
 	t.Run("identical", func(t *testing.T) {
 		roles := &fakeRoles{}
 		roles.remember(*want)
-		if !builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+		if !builtInRoleAlreadySeeded(context.Background(), roles, tenantid.System, want, true) {
 			t.Error("expected true when every field matches")
 		}
 	})
@@ -1245,12 +1246,12 @@ func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
 	}
 
 	// Round-trip: the real servicer should now expose the system tenant.
-	got, err := tenantSvc.GetTenant(context.Background(), tenant.SystemTenantID)
+	got, err := tenantSvc.GetTenant(context.Background(), tenantid.System)
 	if err != nil {
-		t.Fatalf("GetTenant(%q): %v", tenant.SystemTenantID, err)
+		t.Fatalf("GetTenant(%q): %v", tenantid.System, err)
 	}
-	if got.ID != tenant.SystemTenantID {
-		t.Errorf("got.ID = %q, want %q", got.ID, tenant.SystemTenantID)
+	if got.ID != tenantid.System {
+		t.Errorf("got.ID = %q, want %q", got.ID, tenantid.System)
 	}
 }
 
@@ -1283,8 +1284,8 @@ func TestInitialize_ReconcilesPreExistingAdminToSystem(t *testing.T) {
 	pre, err := userSvc.CreateUser(context.Background(), &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             adminUsername,
-		TenantID:             tenant.SystemTenantID,
-		RoleIDs:              []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+		TenantID:             tenantid.System,
+		RoleIDs:              []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)},
 	})
 	if err != nil {
 		t.Fatalf("seed CreateUser: %v", err)
@@ -1307,7 +1308,7 @@ func TestInitialize_ReconcilesPreExistingAdminToSystem(t *testing.T) {
 		t.Error("AdminCreated = true, want false: the admin already existed")
 	}
 
-	got, gerr := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	got, gerr := userSvc.GetUserByUsername(context.Background(), tenantid.System, adminUsername)
 	if gerr != nil {
 		t.Fatalf("GetUserByUsername: %v", gerr)
 	}
@@ -1349,7 +1350,7 @@ func TestInitialize_ReconciliationIsIdempotent(t *testing.T) {
 	if _, err := Initialize(context.Background(), deps); err != nil {
 		t.Fatalf("first Initialize: %v", err)
 	}
-	firstResult, err := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	firstResult, err := userSvc.GetUserByUsername(context.Background(), tenantid.System, adminUsername)
 	if err != nil {
 		t.Fatalf("GetUserByUsername after first Initialize: %v", err)
 	}
@@ -1360,7 +1361,7 @@ func TestInitialize_ReconciliationIsIdempotent(t *testing.T) {
 	if _, err := Initialize(context.Background(), deps); err != nil {
 		t.Fatalf("second Initialize: %v", err)
 	}
-	secondResult, err := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	secondResult, err := userSvc.GetUserByUsername(context.Background(), tenantid.System, adminUsername)
 	if err != nil {
 		t.Fatalf("GetUserByUsername after second Initialize: %v", err)
 	}

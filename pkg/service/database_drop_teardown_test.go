@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -181,7 +182,7 @@ func (s *dropTeardownStack) coll(name string) *CollectionService {
 	if c, ok := s.colls[name]; ok {
 		return c
 	}
-	c := NewCollectionService(newNamespacedKV(s.store, tenant.SystemTenantID, name))
+	c := NewCollectionService(newNamespacedKV(s.store, tenantid.System, name))
 	s.colls[name] = c
 	return c
 }
@@ -194,7 +195,7 @@ func (s *dropTeardownStack) populate(t *testing.T, ctx context.Context, name str
 		Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
 	})
 	require.NoError(t, err)
-	require.NoError(t, s.kv(ctx, tenant.SystemTenantID, name, "greeting", []byte("hello")))
+	require.NoError(t, s.kv(ctx, tenantid.System, name, "greeting", []byte("hello")))
 	_, err = s.coll(name).CreateCollection(ctx, &CreateCollectionRequest{Database: name, Name: "users"})
 	require.NoError(t, err)
 	_, err = s.coll(name).InsertDocument(ctx, &InsertDocumentRequest{
@@ -230,7 +231,7 @@ func TestDatabaseService_Drop_RecreatedNameInheritsNothing(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = s.store.Get(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "mydb")+"greeting")
+	_, err = s.store.Get(ctx, tenant.ComposeNamespace(tenantid.System, "mydb")+"greeting")
 	var notFound *KeyNotFoundError
 	assert.ErrorAs(t, err, &notFound, "a recreated database must not inherit its predecessor's keys")
 
@@ -251,7 +252,7 @@ func TestDatabaseService_Drop_LeavesEveryOtherDatabaseAlone(t *testing.T) {
 
 	require.NoError(t, s.db.Drop(ctx, "mydb"))
 
-	v, err := s.store.Get(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "otherdb")+"greeting")
+	v, err := s.store.Get(ctx, tenant.ComposeNamespace(tenantid.System, "otherdb")+"greeting")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("hello"), v)
 
@@ -277,7 +278,7 @@ func TestDatabaseService_Drop_ReclaimsTheDocumentsAndTheCatalog(t *testing.T) {
 	// collection surface has written since it moved behind the
 	// per-(tenant, database) resolver. Asserting the root-keyed prefixes here
 	// would be asserting a layout nothing writes any more.
-	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "mydb")
+	ns := tenant.ComposeNamespace(tenantid.System, "mydb")
 	meta, err := s.store.List(ctx, ns+collectionMetadataPrefix+"mydb/")
 	require.NoError(t, err)
 	require.Len(t, meta, 1)

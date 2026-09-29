@@ -25,7 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Before the server exists (or while it is recycled) every resolution is the
@@ -65,7 +65,7 @@ func TestNodeServiceRegistry_ResolvesThroughServer(t *testing.T) {
 	// A server with no database registry has nothing to scope through.
 	n.srv.Store(server.New(&config.Config{}, nil, nil))
 	var unsupported *service.CapabilityUnsupportedError
-	if _, err := r.KVService(tenant.SystemTenantID, "system"); !errors.As(err, &unsupported) {
+	if _, err := r.KVService(tenantid.System, "system"); !errors.As(err, &unsupported) {
 		t.Fatalf("KVService on a server without a registry = %v, want *service.CapabilityUnsupportedError", err)
 	}
 

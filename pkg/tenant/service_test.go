@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // errStoreFault is a sentinel error used by failingBackend.
@@ -1362,7 +1363,7 @@ func TestBarrierError(t *testing.T) {
 
 func TestTenantService_CreateRejectsSystemID(t *testing.T) {
 	svc, _ := newTestService(t)
-	_, err := svc.CreateTenant(context.Background(), SystemTenantID, "System", "")
+	_, err := svc.CreateTenant(context.Background(), tenantid.System, "System", "")
 	var rerr *ReservedTenantIDError
 	if !errors.As(err, &rerr) {
 		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
@@ -1399,12 +1400,12 @@ func TestTenantService_CreateRejectsColonInfix(t *testing.T) {
 func TestTenantService_CreateInternalCallAllowsSystemID(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := WithInternalCall(context.Background())
-	info, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	info, err := svc.CreateTenant(ctx, tenantid.System, "System", "")
 	if err != nil {
 		t.Fatalf("internal-call CreateTenant(system): %v", err)
 	}
-	if info.ID != SystemTenantID {
-		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
+	if info.ID != tenantid.System {
+		t.Errorf("ID = %q, want %q", info.ID, tenantid.System)
 	}
 }
 
@@ -1449,7 +1450,7 @@ func TestTenantService_CheckBarrierMode_Governance(t *testing.T) {
 	}
 
 	// The system tenant is exempt from all gates.
-	if err := svc.CheckBarrierMode(ctx, SystemTenantID, seal.StrategySystemBarrier); err != nil {
+	if err := svc.CheckBarrierMode(ctx, tenantid.System, seal.StrategySystemBarrier); err != nil {
 		t.Fatalf("system tenant must be exempt: %v", err)
 	}
 }

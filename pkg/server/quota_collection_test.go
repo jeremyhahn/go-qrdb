@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -32,7 +34,7 @@ func quotaBundle(t *testing.T, limit int64) (*DatabaseServices, *quota.Accountan
 	t.Helper()
 	kv := newMockKVService()
 	acct, _ := newTestAccountant(t, nil)
-	r := &restServiceRegistry{accountant: acct, systemTenant: tenant.SystemTenantID}
+	r := &restServiceRegistry{accountant: acct, systemTenant: tenantid.System}
 	svcs := &DatabaseServices{KV: kv, Collection: service.NewCollectionService(kv)}
 	info := &tenant.TenantInfo{ID: "t1", Quotas: &quota.Quotas{MaxStorageBytes: limit}}
 	return r.applyQuota(svcs, "t1", info), acct

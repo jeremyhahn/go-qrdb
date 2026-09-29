@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // recordingKVRegistry records the (tenant, database) every KV resolution asks
@@ -73,7 +74,7 @@ func TestRAGBinding_RefusesACallWithNoTenant(t *testing.T) {
 func TestRAGBinding_UnauthenticatedTenant(t *testing.T) {
 	reg := &recordingKVRegistry{}
 	b := NewRAGBinding()
-	b.Bind(reg, RAGUnauthenticatedTenant(tenant.SystemTenantID))
+	b.Bind(reg, RAGUnauthenticatedTenant(tenantid.System))
 
 	if _, err := b.KV(context.Background()); err != nil {
 		t.Fatalf("KV with no tenant on an unauthenticated composition: %v", err)
@@ -81,7 +82,7 @@ func TestRAGBinding_UnauthenticatedTenant(t *testing.T) {
 	if _, err := b.KV(tenant.WithTenantID(context.Background(), "acme")); err != nil {
 		t.Fatalf("KV for acme: %v", err)
 	}
-	want := []string{tenant.SystemTenantID + "/" + tenant.SystemTenantID, "acme/" + tenant.SystemTenantID}
+	want := []string{tenantid.System + "/" + tenantid.System, "acme/" + tenantid.System}
 	if len(reg.asked) != 2 || reg.asked[0] != want[0] || reg.asked[1] != want[1] {
 		t.Fatalf("resolved %v, want %v", reg.asked, want)
 	}

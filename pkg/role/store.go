@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -156,7 +157,7 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	if s.quotaChecker != nil {
@@ -553,7 +554,7 @@ func (s *kvRoleStore) GetRole(ctx context.Context, id string) (*Role, error) {
 	// (prefix-isolation) store; barrier-isolated tenants are already
 	// physically isolated by the routing layer. GetRoleByName and
 	// ResolvePermissions both funnel through here, so they inherit the check.
-	if ctxTenant := tenant.FromContext(ctx); !tenant.IsSystemTenant(ctxTenant) && r.TenantID != ctxTenant {
+	if ctxTenant := tenant.FromContext(ctx); !tenantid.IsSystem(ctxTenant) && r.TenantID != ctxTenant {
 		return nil, &RoleNotFoundError{ID: id}
 	}
 	return &r, nil
@@ -566,7 +567,7 @@ func (s *kvRoleStore) GetRoleByName(ctx context.Context, tenantID, name string) 
 		return nil, &ValidationError{Field: "name", Reason: "must not be empty"}
 	}
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	idBytes, err := s.store.Get(ctx, nameIndexKey(tenantID, name))
@@ -787,7 +788,7 @@ func (s *kvRoleStore) ListRoles(ctx context.Context, req *ListRolesRequest) (*Li
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	page := req.Page
@@ -898,7 +899,7 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 //     minimal set, not registry-derived — see custodianPermissions)
 func BuiltInRoles(tenantID string) []*Role {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	now := time.Now().UTC()
@@ -975,12 +976,12 @@ func BuiltInRoles(tenantID string) []*Role {
 // time — an ordering dependency this predicate does not need, since it reads
 // only the names.
 var systemRoleNames = sync.OnceValue(func() map[string]struct{} {
-	builtIn := BuiltInRoles(tenant.SystemTenantID)
+	builtIn := BuiltInRoles(tenantid.System)
 	names := make(map[string]struct{}, len(builtIn)+1)
 	for _, r := range builtIn {
 		names[r.Name] = struct{}{}
 	}
-	names[OwnerRole(tenant.SystemTenantID).Name] = struct{}{}
+	names[OwnerRole(tenantid.System).Name] = struct{}{}
 	return names
 })
 
@@ -1116,7 +1117,7 @@ func permissionSetsEqual(a, b []permission.Permission) bool {
 // SystemTenantID to match BuiltInRoles behavior.
 func OwnerRole(tenantID string) *Role {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	now := time.Now().UTC()
 	return &Role{
@@ -1154,7 +1155,7 @@ func ownerPermissions() []permission.Permission {
 // function directly.
 func SystemRoleID(tenantID, roleName string) string {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	return deterministicUUID(tenantID, roleName)
 }

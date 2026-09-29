@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // volumeEntitlements permits both volume isolation and dedicated volume storage.
@@ -167,7 +168,7 @@ func TestCreateTenant_Volume_DeniedWithoutEntitlement(t *testing.T) {
 // not use volume isolation.
 func TestCreateTenant_Volume_SystemTenantRejected(t *testing.T) {
 	svc, _ := newVolumeService(t)
-	_, err := svc.CreateTenant(context.Background(), SystemTenantID, "System", IsolationVolume)
+	_, err := svc.CreateTenant(context.Background(), tenantid.System, "System", IsolationVolume)
 	if err == nil {
 		t.Fatal("expected error creating system tenant with volume isolation, got nil")
 	}

@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -54,7 +55,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	soRESTTenant = tenant.SystemTenantID
+	soRESTTenant = tenantid.System
 	soRESTPIN    = "correct horse battery staple"
 )
 
@@ -245,10 +246,10 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		want int
 	}{
 		{authtest.AdminIdentity("acme", "acme-admin"), http.StatusForbidden},
-		{authtest.AdminIdentity(tenant.SystemTenantID, "root"), http.StatusNoContent},
+		{authtest.AdminIdentity(tenantid.System, "root"), http.StatusNoContent},
 	} {
 		caller := authtest.NewFixedAuthenticator(tc.id)
-		roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme")
+		roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 		srv := NewServer(nil, nil, "127.0.0.1:0",
 			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles), WithBarrierService(newExtBarrierSvc()))

@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeAuthorizer is a controllable inner authorizer that records whether
@@ -223,7 +224,7 @@ func TestDecorator_TenantScoping(t *testing.T) {
 func TestDecorator_SystemTenantGuardrail(t *testing.T) {
 	// A system-tenant policy applies platform-wide, to every target tenant.
 	inner := &fakeAuthorizer{}
-	policy := testPolicy("platform-guardrail", tenant.SystemTenantID, Rule{
+	policy := testPolicy("platform-guardrail", tenantid.System, Rule{
 		Name:      "no-raw-secrets",
 		Effect:    EffectDeny,
 		Actions:   []string{"read"},
@@ -252,7 +253,7 @@ func TestDecorator_SystemTargetEvaluatedOnce(t *testing.T) {
 	// Requests without a tenant binding resolve to the system tenant; the
 	// system policy set must not be evaluated twice, and its policies apply.
 	inner := &fakeAuthorizer{}
-	policy := testPolicy("sys", tenant.SystemTenantID, Rule{
+	policy := testPolicy("sys", tenantid.System, Rule{
 		Name:      "deny-drop",
 		Effect:    EffectDeny,
 		Actions:   []string{"drop"},
@@ -262,13 +263,13 @@ func TestDecorator_SystemTargetEvaluatedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decorate() error = %v", err)
 	}
-	err = authz.Authorize(context.Background(), testIdentity("root", tenant.SystemTenantID), "/db/main", "drop")
+	err = authz.Authorize(context.Background(), testIdentity("root", tenantid.System), "/db/main", "drop")
 	var denied *PolicyDeniedError
 	if !errors.As(err, &denied) {
 		t.Fatalf("system policy should deny a system-target request, got %v", err)
 	}
-	if denied.TenantID != tenant.SystemTenantID {
-		t.Errorf("TenantID = %q, want %q", denied.TenantID, tenant.SystemTenantID)
+	if denied.TenantID != tenantid.System {
+		t.Errorf("TenantID = %q, want %q", denied.TenantID, tenantid.System)
 	}
 }
 

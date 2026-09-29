@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -42,11 +44,11 @@ func authorizeAgainst(t *testing.T, tenantIDs []string, callerTenant, target str
 // came back not-found, so the operator's first decision against another
 // tenant failed.
 func TestAuthorize_ColdCacheResolvesRolesInTheIdentitysTenant(t *testing.T) {
-	tenants := []string{tenant.SystemTenantID, "acme"}
-	if err := authorizeAgainst(t, tenants, tenant.SystemTenantID, "acme", permission.TenantsRead); err != nil {
+	tenants := []string{tenantid.System, "acme"}
+	if err := authorizeAgainst(t, tenants, tenantid.System, "acme", permission.TenantsRead); err != nil {
 		t.Fatalf("system admin reading acme on a cold cache = %v, want nil", err)
 	}
-	if err := authorizeAgainst(t, tenants, tenant.SystemTenantID, "acme", permission.TenantsSetQuotas); err != nil {
+	if err := authorizeAgainst(t, tenants, tenantid.System, "acme", permission.TenantsSetQuotas); err != nil {
 		t.Fatalf("system admin setting acme's quotas on a cold cache = %v, want nil", err)
 	}
 }
@@ -76,13 +78,13 @@ func TestAuthorize_ForeignTenantIdentityCannotBorrowTheSystemAdminRole(t *testin
 	borrower := &auth.Identity{
 		Subject:  "acme-admin",
 		TenantID: "acme",
-		Roles:    []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+		Roles:    []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)},
 	}
 	for _, perm := range []permission.Permission{
 		permission.TenantsRead, permission.TenantsCreate, permission.TenantsSetQuotas, permission.TenantsListCross,
 	} {
-		a := New(authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme"))
-		ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+		a := New(authtest.BuiltInRoles(t, tenantid.System, "acme"))
+		ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 		if err := a.Authorize(ctx, borrower, permission.Resource(perm), permission.Action(perm)); err == nil {
 			t.Errorf("acme identity holding the system Admin role ID was granted %s against system", perm)
 		}

@@ -24,9 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // mintHolderCert issues a self-signed leaf CN=cn with the given OUs, each in
@@ -67,11 +68,11 @@ func mintHolderCert(t *testing.T, cn string, ous ...string) certKey {
 // identity-gated ceremony surface.
 func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 	svc := newRealUserStore(t)
-	createUser(t, svc, tenant.SystemTenantID, "admin", []string{"admin-role"})
+	createUser(t, svc, tenantid.System, "admin", []string{"admin-role"})
 	m := mtlsMiddleware(svc)
 
 	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
-		holder := mintHolderCert(t, "admin", tenant.SystemTenantID, profile)
+		holder := mintHolderCert(t, "admin", tenantid.System, profile)
 		_, identity, err := m.authenticate(mtlsContext(holder))
 		if err != nil {
 			t.Fatalf("%s: holder certificate refused outright: %v", profile, err)
@@ -85,7 +86,7 @@ func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 	}
 
 	// The control: the same name without a holder profile is the user.
-	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", tenant.SystemTenantID)))
+	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", tenantid.System)))
 	if err != nil {
 		t.Fatalf("user certificate refused: %v", err)
 	}

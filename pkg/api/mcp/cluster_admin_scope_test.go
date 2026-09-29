@@ -22,13 +22,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestClusterAdminScope: a tenant's Admin or SO may not add or remove a
@@ -49,7 +50,7 @@ func TestClusterAdminScope(t *testing.T) {
 		{"qrdb_node_compaction", nil},
 		{"qrdb_update_node_compaction", map[string]any{"mode": "revision", "retainRevisions": 10}},
 	}
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
+	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {
 		for _, c := range authtest.ClusterAdminCallers(t) {
 			t.Run(op.tool+"/"+c.Name, func(t *testing.T) {

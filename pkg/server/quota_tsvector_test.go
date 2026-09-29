@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -283,7 +284,7 @@ func TestQuotaVectorService_ReadPassthrough(t *testing.T) {
 func TestApplyQuota_TimeSeriesVectorGating(t *testing.T) {
 	acct, _ := newTestAccountant(t, nil)
 	dbReg := NewDatabaseServiceRegistry("default")
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		withQuotaAccountant(acct),
 	).(*restServiceRegistry)
 
@@ -302,7 +303,7 @@ func TestApplyQuota_TimeSeriesVectorGating(t *testing.T) {
 	}
 
 	// System tenant: passthrough, original instances returned.
-	sys := reg.applyQuota(base, tenant.SystemTenantID, limited)
+	sys := reg.applyQuota(base, tenantid.System, limited)
 	if sys.TimeSeries != service.TimeSeriesServicer(tsInner) || sys.Vector != service.VectorServicer(vecInner) {
 		t.Fatal("system tenant must not wrap TimeSeries/Vector")
 	}

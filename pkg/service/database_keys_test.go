@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -89,7 +90,7 @@ func TestLegacyCollectionKeyPrefixes_EmptyDatabaseYieldsNothing(t *testing.T) {
 // deletion of every tenant's.
 func TestLegacyCollectionKeyPrefixes_CarryNoTenant(t *testing.T) {
 	for _, p := range LegacyCollectionKeyPrefixes("reports") {
-		for _, tenantID := range []string{"acme", "globex", tenant.SystemTenantID} {
+		for _, tenantID := range []string{"acme", "globex", tenantid.System} {
 			assert.NotContains(t, p, tenantID,
 				"a prefix carrying a tenant could be scoped; this one deliberately cannot be")
 		}

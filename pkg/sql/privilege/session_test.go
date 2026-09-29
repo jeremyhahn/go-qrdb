@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeSession is a real go-mysql-server session carrying a qrdb identity: it
@@ -62,20 +62,20 @@ func TestPrincipalOf(t *testing.T) {
 		{
 			name:       "a session that is not a qrdb session is exempt",
 			session:    &plainSession{BaseSession: sqle.NewBaseSession()},
-			wantTenant: tenant.SystemTenantID,
+			wantTenant: tenantid.System,
 			wantExempt: true,
 		},
 		{
 			name:        "the system tenant is exempt permanently but still named",
-			session:     newFakeSession(tenant.SystemTenantID, "operator"),
-			wantTenant:  tenant.SystemTenantID,
+			session:     newFakeSession(tenantid.System, "operator"),
+			wantTenant:  tenantid.System,
 			wantGrantee: "operator@%",
 			wantExempt:  true,
 		},
 		{
 			name:        "an empty tenant resolves to the system tenant",
 			session:     newFakeSession("", "operator"),
-			wantTenant:  tenant.SystemTenantID,
+			wantTenant:  tenantid.System,
 			wantGrantee: "operator@%",
 			wantExempt:  true,
 		},

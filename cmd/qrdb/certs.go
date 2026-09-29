@@ -23,7 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -96,7 +96,7 @@ func newCertsGenerateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&username, "username", "", "Username for the certificate subject")
 	_ = cmd.MarkFlagRequired("username")
-	cmd.Flags().StringVar(&tenantID, "tenant-id", tenant.SystemTenantID, "Tenant ID")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", tenantid.System, "Tenant ID")
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Certificate validity duration (e.g. 8760h)")
 	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for cert.pem and key.pem")
 
@@ -229,7 +229,7 @@ func newCertsListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&tenantID, "tenant-id", tenant.SystemTenantID, "Filter by tenant ID")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", tenantid.System, "Filter by tenant ID")
 
 	return cmd
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -193,7 +194,7 @@ func TestQuotaKVService_DeleteMissingKeyNoUnderflow(t *testing.T) {
 func TestApplyQuota_InstallsForLimitedTenant(t *testing.T) {
 	inner := newMockKVService()
 	acct, _ := newTestAccountant(t, nil)
-	r := &restServiceRegistry{accountant: acct, systemTenant: tenant.SystemTenantID}
+	r := &restServiceRegistry{accountant: acct, systemTenant: tenantid.System}
 
 	svcs := &DatabaseServices{KV: inner}
 	info := &tenant.TenantInfo{ID: "t1", Quotas: &quota.Quotas{MaxStorageBytes: 100}}
@@ -207,11 +208,11 @@ func TestApplyQuota_InstallsForLimitedTenant(t *testing.T) {
 func TestApplyQuota_SkipsSystemTenant(t *testing.T) {
 	inner := newMockKVService()
 	acct, _ := newTestAccountant(t, nil)
-	r := &restServiceRegistry{accountant: acct, systemTenant: tenant.SystemTenantID}
+	r := &restServiceRegistry{accountant: acct, systemTenant: tenantid.System}
 
 	svcs := &DatabaseServices{KV: inner}
-	info := &tenant.TenantInfo{ID: tenant.SystemTenantID, Quotas: &quota.Quotas{MaxStorageBytes: 100}}
-	out := r.applyQuota(svcs, tenant.SystemTenantID, info)
+	info := &tenant.TenantInfo{ID: tenantid.System, Quotas: &quota.Quotas{MaxStorageBytes: 100}}
+	out := r.applyQuota(svcs, tenantid.System, info)
 
 	if out != svcs {
 		t.Fatal("system tenant must not be wrapped (passthrough)")
@@ -221,7 +222,7 @@ func TestApplyQuota_SkipsSystemTenant(t *testing.T) {
 func TestApplyQuota_SkipsUnlimitedTenant(t *testing.T) {
 	inner := newMockKVService()
 	acct, _ := newTestAccountant(t, nil)
-	r := &restServiceRegistry{accountant: acct, systemTenant: tenant.SystemTenantID}
+	r := &restServiceRegistry{accountant: acct, systemTenant: tenantid.System}
 
 	svcs := &DatabaseServices{KV: inner}
 	// MaxStorageBytes <= 0 means unlimited -> no wrapper, hot path untouched.
@@ -235,7 +236,7 @@ func TestApplyQuota_SkipsUnlimitedTenant(t *testing.T) {
 
 func TestApplyQuota_SkipsWhenNoAccountant(t *testing.T) {
 	inner := newMockKVService()
-	r := &restServiceRegistry{systemTenant: tenant.SystemTenantID}
+	r := &restServiceRegistry{systemTenant: tenantid.System}
 	svcs := &DatabaseServices{KV: inner}
 	info := &tenant.TenantInfo{ID: "t1", Quotas: &quota.Quotas{MaxStorageBytes: 100}}
 	if out := r.applyQuota(svcs, "t1", info); out != svcs {

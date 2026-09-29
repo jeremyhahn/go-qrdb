@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -537,7 +538,7 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 	// barrier tenant's record lives in its own store, never the shared system
 	// store. This is the load-bearing assertion that the routing decorator —
 	// not a plain shared-store service — is installed.
-	if _, err := node.User.GetUserByUsername(ctx, tenant.SystemTenantID, "alice"); err == nil {
+	if _, err := node.User.GetUserByUsername(ctx, tenantid.System, "alice"); err == nil {
 		t.Fatal("system-tenant lookup found a barrier-tenant user: routing decorator not installed (data leaked to shared store)")
 	} else {
 		var notFound *user.UserNotFoundError
@@ -1451,8 +1452,8 @@ func TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
-	other := tenant.ComposeNamespace(tenant.SystemTenantID, "ledger")
+	ns := tenant.ComposeNamespace(tenantid.System, "reports")
+	other := tenant.ComposeNamespace(tenantid.System, "ledger")
 
 	reclaimed := map[string]string{
 		"plain kv":               ns + "greeting",
@@ -1521,7 +1522,7 @@ func TestBuildServices_ReclaimerDoesNotDependOnTheDiscoveryFilter(t *testing.T) 
 	}
 	defer func() { _ = node.Stop(ctx) }()
 
-	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
+	ns := tenant.ComposeNamespace(tenantid.System, "reports")
 	prefix := timeseries.KeyPrefixPoints + ns
 	if err := node.KV.Put(ctx, prefix+"cpu:0001:abcd", []byte("v")); err != nil {
 		t.Fatalf("put: %v", err)

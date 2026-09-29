@@ -20,11 +20,11 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestQRDBSessionTenantID_FoldsAbsentTenant proves the third of the boundaries
-// tenant.IsSystemTenant's precondition depends on actually folds "".
+// tenantid.IsSystem's precondition depends on actually folds "".
 //
 // It matters more here than the name suggests: pkg/sql/privilege.principalOf
 // reads this method and marks the system tenant EXEMPT from every SQL grant
@@ -37,9 +37,9 @@ func TestQRDBSessionTenantID_FoldsAbsentTenant(t *testing.T) {
 		identity *auth.Identity
 		want     string
 	}{
-		{"nil identity", nil, tenant.SystemTenantID},
-		{"identity with no tenant", &auth.Identity{Subject: "u"}, tenant.SystemTenantID},
-		{"identity in the system tenant", &auth.Identity{Subject: "u", TenantID: tenant.SystemTenantID}, tenant.SystemTenantID},
+		{"nil identity", nil, tenantid.System},
+		{"identity with no tenant", &auth.Identity{Subject: "u"}, tenantid.System},
+		{"identity in the system tenant", &auth.Identity{Subject: "u", TenantID: tenantid.System}, tenantid.System},
 		{"identity in a real tenant", &auth.Identity{Subject: "u", TenantID: "acme"}, "acme"},
 	}
 	for _, tc := range cases {
@@ -52,7 +52,7 @@ func TestQRDBSessionTenantID_FoldsAbsentTenant(t *testing.T) {
 			if got == "" {
 				t.Fatal("TenantID() returned the empty string; the SQL privilege plane would fold it a second time")
 			}
-			if got != tenant.Normalize(got) {
+			if got != tenantid.Normalize(got) {
 				t.Fatalf("TenantID() = %q is not already normalized", got)
 			}
 		})

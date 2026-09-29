@@ -28,7 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -184,11 +184,11 @@ var singleSubjectCalls = []userNotFoundCall{
 		return err
 	}},
 	{"GetUserByUsername", 0, func(ctx context.Context, c userClients) error {
-		_, err := c.users.GetUserByUsername(ctx, tenant.SystemTenantID, "nope-nobody")
+		_, err := c.users.GetUserByUsername(ctx, tenantid.System, "nope-nobody")
 		return err
 	}},
 	{"GetUserByEmail", 0, func(ctx context.Context, c userClients) error {
-		_, err := c.users.GetUserByEmail(ctx, tenant.SystemTenantID, "nobody@example.com")
+		_, err := c.users.GetUserByEmail(ctx, tenantid.System, "nobody@example.com")
 		return err
 	}},
 	{"GetUserByCertThumbprint", 0, func(ctx context.Context, c userClients) error {
@@ -442,7 +442,7 @@ func (c userClients) callerCtx(t *testing.T, tk transportKind) context.Context {
 	if tk == embeddedTransport {
 		ctx = auth.WithIdentity(ctx, &auth.Identity{
 			Subject:  "conformance-embedded",
-			TenantID: tenant.SystemTenantID,
+			TenantID: tenantid.System,
 			Roles:    []string{c.roleID},
 		})
 	}
@@ -494,7 +494,7 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 // cell.
 func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *sdk.Client {
 	t.Helper()
-	return bootCellAs(t, tk, tenant.SystemTenantID, nil, seed)
+	return bootCellAs(t, tk, tenantid.System, nil, seed)
 }
 
 // bootCellAs is bootAuthorizedCell for a remote identity in callerTenant: the
@@ -590,7 +590,7 @@ func seedIdentityFixtures(t *testing.T, n *node.Node, extraPerms ...permission.P
 
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "notfound-matrix",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Permissions: append([]permission.Permission{
 			permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
 			permission.UsersDelete, permission.UsersList,
@@ -611,7 +611,7 @@ func seedIdentityFixtures(t *testing.T, n *node.Node, extraPerms ...permission.P
 	u, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "matrix",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		RoleIDs:              []string{r.ID},
 	})
 	if err != nil {

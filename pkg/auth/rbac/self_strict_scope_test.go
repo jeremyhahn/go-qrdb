@@ -14,7 +14,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,10 +38,10 @@ func TestAuthorize_SelfStrict_SystemIdentity_AdmittedForOwnTenant(t *testing.T) 
 	authz := New(svc)
 	sys := &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin"},
 	}
-	if err := authz.Authorize(ctxFor(tenant.SystemTenantID), sys, "escrow", "recover"); err != nil {
+	if err := authz.Authorize(ctxFor(tenantid.System), sys, "escrow", "recover"); err != nil {
 		t.Fatalf("system identity must reach its OWN escrowed material: %v", err)
 	}
 }
@@ -54,7 +54,7 @@ func TestAuthorize_SelfStrict_SystemIdentity_DeniedForAnotherTenant(t *testing.T
 	authz := New(svc)
 	sys := &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin"},
 	}
 	err := authz.Authorize(ctxFor("acme"), sys, "escrow", "recover")
@@ -97,7 +97,7 @@ func TestAuthorize_SelfStrict_TenantIdentity_DeniedForAnotherTenant(t *testing.T
 }
 
 // An identity with an EMPTY TenantID is system-scoped by omission
-// (tenant.IsSystemTenant treats "" as system), so it must be confined the same
+// (tenantid.IsSystem treats "" as system), so it must be confined the same
 // way. This is the system identity a caller reaches without meaning to.
 func TestAuthorize_SelfStrict_EmptyTenantIdentity_DeniedForAnotherTenant(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{

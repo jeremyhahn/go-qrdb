@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -240,7 +241,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	// System is the flag that makes a record undeletable. It has no wire
@@ -253,7 +254,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	// before anything is written: the flag only ever applies to the system
 	// tenant, and at most one such record may ever exist.
 	if req.System {
-		if tenantID != tenant.SystemTenantID {
+		if tenantID != tenantid.System {
 			return nil, &SystemTenantRequiredError{TenantID: tenantID}
 		}
 	}
@@ -706,7 +707,7 @@ func (s *kvUserStore) GetUserByUsername(ctx context.Context, tenantID, username 
 		return nil, &ValidationError{Field: "username", Reason: "must not be empty"}
 	}
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	indexKey := usernameIndexKey(tenantID, username)
@@ -750,7 +751,7 @@ func (s *kvUserStore) GetUserByEmail(ctx context.Context, tenantID, email string
 		return nil, &ValidationError{Field: "email", Reason: "must not be empty"}
 	}
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	idBytes, err := s.store.Get(ctx, emailIndexKey(tenantID, normalized))
@@ -1920,7 +1921,7 @@ func (s *kvUserStore) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 
 	tenantID := req.TenantID
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	page := req.Page

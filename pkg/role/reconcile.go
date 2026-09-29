@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -194,7 +195,7 @@ func (r *Role) RetiredPermissionError() error {
 // verbs and then report success.
 func (s *kvRoleStore) ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*ReconcileReport, error) {
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	report := &ReconcileReport{TenantID: tenantID}

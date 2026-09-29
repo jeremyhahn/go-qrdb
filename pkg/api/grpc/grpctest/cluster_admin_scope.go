@@ -17,6 +17,8 @@ package grpctest
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -25,7 +27,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ClusterStartFunc starts the transport under test with mw as its auth
@@ -74,7 +75,7 @@ func ClusterAdminScope(t *testing.T, start ClusterStartFunc) {
 			return err
 		}},
 	}
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
+	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {
 		for _, c := range authtest.ClusterAdminCallers(t) {
 			t.Run(op.name+"/"+c.Name, func(t *testing.T) {

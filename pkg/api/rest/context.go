@@ -53,7 +53,7 @@ func databaseFromContext(ctx context.Context) string {
 
 // tenantFromContext returns the tenant ID from the canonical tenant context
 // bound by the auth middleware from the authenticated mTLS identity. Returns
-// tenant.SystemTenantID when no tenant is bound (unauthenticated endpoints,
+// tenantid.System when no tenant is bound (unauthenticated endpoints,
 // embedded mode).
 func tenantFromContext(ctx context.Context) string {
 	return tenant.FromContext(ctx)

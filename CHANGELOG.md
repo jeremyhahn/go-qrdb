@@ -3264,6 +3264,13 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
 
 ### Removed — BREAKING
 
+- **`tenant.SystemTenantID`, `tenant.IsSystemTenant` and `tenant.Normalize`
+  moved to the new leaf package `pkg/tenantid`** as `tenantid.System`,
+  `tenantid.IsSystem` and `tenantid.Normalize`. `pkg/tenant` imports
+  `pkg/ceremony` and `pkg/auth`, so those packages could not name the system
+  tenant; the leaf package imports nothing from this module. The SDK aliases
+  (`sdk/go.SystemTenantID`, `IsSystemTenant`, `NormalizeTenantID`) are
+  unchanged.
 - **`ceremony.ShareService` is deleted.** It stored raw Shamir share bytes in
   the replicated store (`SubmitShare`) and returned them (`ListShares`,
   `GetShare`), contradicting the rule that share material is never persisted.

@@ -18,18 +18,20 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestValidateReservedTenantID_System verifies the system tenant id is
 // rejected for external callers.
 func TestValidateReservedTenantID_System(t *testing.T) {
-	err := validateReservedTenantID(context.Background(), SystemTenantID)
+	err := validateReservedTenantID(context.Background(), tenantid.System)
 	var rerr *ReservedTenantIDError
 	if !errors.As(err, &rerr) {
 		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
 	}
-	if rerr.TenantID != SystemTenantID {
-		t.Errorf("TenantID = %q, want %q", rerr.TenantID, SystemTenantID)
+	if rerr.TenantID != tenantid.System {
+		t.Errorf("TenantID = %q, want %q", rerr.TenantID, tenantid.System)
 	}
 }
 
@@ -90,7 +92,7 @@ func TestValidateReservedTenantID_OrdinaryID(t *testing.T) {
 // the charset validation which applies unconditionally.
 func TestValidateReservedTenantID_InternalCallBypass(t *testing.T) {
 	ctx := WithInternalCall(context.Background())
-	cases := []string{SystemTenantID, "default", "_internal", "acme:prod"}
+	cases := []string{tenantid.System, "default", "_internal", "acme:prod"}
 	for _, id := range cases {
 		t.Run(id, func(t *testing.T) {
 			if err := validateReservedTenantID(ctx, id); err != nil {

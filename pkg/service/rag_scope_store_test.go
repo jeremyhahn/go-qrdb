@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ragScopeRegistry is a Registry that resolves KV and vectors per (tenant,
@@ -74,7 +75,7 @@ func (r *ragScopeRegistry) VectorService(tenantID, db string) (VectorService, er
 // (tenant, database) to kv.
 func newBoundRAGStore(kv KVServicer) *ScopedRAGStore {
 	b := NewRAGBinding()
-	b.Bind(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
+	b.Bind(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenantid.System))
 	return NewScopedRAGStore(b)
 }
 
@@ -150,7 +151,7 @@ func TestRAGBinding_UnboundRefuses(t *testing.T) {
 	if _, err := b.Vector(context.Background()); !errors.As(err, &unsupported) {
 		t.Fatalf("Vector on an unbound binding = %v, want *CapabilityUnsupportedError", err)
 	}
-	b.Bind(&singleKVRegistry{kv: newRAGMockKV()}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
+	b.Bind(&singleKVRegistry{kv: newRAGMockKV()}, RAGUnauthenticatedTenant(tenantid.System))
 	if err := store.Put(context.Background(), "k", []byte("v")); err != nil {
 		t.Fatalf("Put once bound: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestRAGService_BindRegistry(t *testing.T) {
 		t.Fatal("the RAG service does not implement RAGRegistryBinder")
 	}
 	kv := newRAGMockKV()
-	binder.BindRegistry(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
+	binder.BindRegistry(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenantid.System))
 	if err := store.Put(context.Background(), "k", []byte("v")); err != nil || string(kv.kvStore["k"]) != "v" {
 		t.Fatalf("Put after BindRegistry = %v, store %v", err, kv.kvStore)
 	}

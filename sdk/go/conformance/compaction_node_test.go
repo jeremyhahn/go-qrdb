@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -74,7 +76,7 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootCompactionCell(t, tk, server.WithCompactionInterval(25*time.Millisecond))
 			revA := c.writeHistory(t, "tenant-a", "k")
-			revSys := c.writeHistory(t, tenant.SystemTenantID, "k")
+			revSys := c.writeHistory(t, tenantid.System, "k")
 
 			// The raw keyspace: the node's own client, unscoped.
 			ctx := boundedCtx(t)
@@ -110,7 +112,7 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			}
 
 			// The system tenant sets it, and reads it back.
-			sysAdmin, sysCtx := c.adminAs(t, tenant.SystemTenantID)
+			sysAdmin, sysCtx := c.adminAs(t, tenantid.System)
 			set, err := sysAdmin.SetNodeCompaction(sysCtx, policy)
 			if err != nil {
 				t.Fatalf("%s: the system tenant sets the node-keyspace policy: %v", tk, err)
@@ -140,7 +142,7 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			// Many more passes; no tenant database's history moved.
 			time.Sleep(250 * time.Millisecond)
 			c.requireHistory(t, "tenant-a", "k", revA, "node-keyspace compaction")
-			c.requireHistory(t, tenant.SystemTenantID, "k", revSys, "node-keyspace compaction")
+			c.requireHistory(t, tenantid.System, "k", revSys, "node-keyspace compaction")
 
 			// Off removes it.
 			if off, err := sysAdmin.SetNodeCompaction(sysCtx, nil); err != nil || off != nil {

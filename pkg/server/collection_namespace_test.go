@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sharedCollectionStore builds the service bundle exactly as production does
@@ -61,7 +62,7 @@ func twoTenantCollectionRegistry(t *testing.T) (*mockKVService, *restServiceRegi
 	kv, svcs := sharedCollectionStore()
 	dbReg := NewDatabaseServiceRegistry("appdb")
 	dbReg.Register("appdb", svcs)
-	return kv, NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
+	return kv, NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
 }
 
 // storeKeys returns the store's keys, sorted, for stable assertions.
@@ -263,8 +264,8 @@ func TestCollectionServiceResolvesThroughTheRegistryLikeItsSiblings(t *testing.T
 	t.Run("a bundle with no KV reports not implemented", func(t *testing.T) {
 		dbReg := NewDatabaseServiceRegistry("appdb")
 		dbReg.Register("appdb", &DatabaseServices{Name: "appdb"})
-		reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
-		if _, err := reg.CollectionService(tenant.SystemTenantID, "appdb"); err == nil {
+		reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
+		if _, err := reg.CollectionService(tenantid.System, "appdb"); err == nil {
 			t.Fatal("expected an error for a bundle with no collection surface")
 		} else if _, ok := err.(*service.CapabilityUnsupportedError); !ok {
 			t.Fatalf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
@@ -288,7 +289,7 @@ func TestApplyCompositeNamespacesTheCollectionEngines(t *testing.T) {
 	kv, svcs := sharedCollectionStore()
 	dbReg := NewDatabaseServiceRegistry("appdb")
 	dbReg.Register("appdb", svcs)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
 	ctx := context.Background()
 
 	a := reg.applyComposite(svcs, "tenant-a", "appdb", databaseFence{})
@@ -347,7 +348,7 @@ func TestCollectionIndexScopeMatchesTheNamespacedDocumentKeys(t *testing.T) {
 	}
 	dbReg := NewDatabaseServiceRegistry("appdb")
 	dbReg.Register("appdb", svcs)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
 
 	col, err := reg.CollectionService("tenant-a", "appdb")
 	if err != nil {
@@ -411,7 +412,7 @@ func TestRegistryImplementationsAnswerEveryAccessor(t *testing.T) {
 	_, svcs := sharedCollectionStore()
 	dbReg := NewDatabaseServiceRegistry("appdb")
 	dbReg.Register("appdb", svcs)
-	base := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID)
+	base := NewRESTServiceRegistry(dbReg, nil, tenantid.System)
 
 	impls := map[string]service.Registry{
 		"restServiceRegistry": base,

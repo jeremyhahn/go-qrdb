@@ -30,7 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -67,7 +67,7 @@ func newAuthEnforcedRESTNode(t *testing.T) (n *Node, ca *qrdbdharness.CA, adminK
 	serverCert, err := serverKP.TLSCertificate()
 	require.NoError(t, err)
 
-	adminKP, err = ca.Issue(certDir, qrdbdharness.WithSubject("admin", tenant.SystemTenantID))
+	adminKP, err = ca.Issue(certDir, qrdbdharness.WithSubject("admin", tenantid.System))
 	require.NoError(t, err)
 
 	// VerifyClientCertIfGiven (not RequireAndVerifyClientCert) mirrors
@@ -103,14 +103,14 @@ func newAuthEnforcedRESTNode(t *testing.T) (n *Node, ca *qrdbdharness.CA, adminK
 
 	adminRole, err := svcNode.Role.CreateRole(context.Background(), &role.CreateRoleRequest{
 		Name:        "auth-mw-test-admin",
-		TenantID:    tenant.SystemTenantID,
+		TenantID:    tenantid.System,
 		Permissions: []permission.Permission{permission.AdminStatus},
 	})
 	require.NoError(t, err)
 
 	_, err = svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		RoleIDs:  []string{adminRole.ID},
 	})
 	require.NoError(t, err)

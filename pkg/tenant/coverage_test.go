@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -113,7 +114,7 @@ func TestKVCheckIsolation(t *testing.T) {
 	svc, ec := newKVChecker(t)
 
 	// System tenant is implicitly entitled to every mode.
-	if err := ec.CheckIsolation(ctx, SystemTenantID, quota.IsolationModeRaft); err != nil {
+	if err := ec.CheckIsolation(ctx, tenantid.System, quota.IsolationModeRaft); err != nil {
 		t.Errorf("system CheckIsolation: %v", err)
 	}
 
@@ -154,7 +155,7 @@ func TestKVCheckFeature(t *testing.T) {
 	ctx := context.Background()
 	svc, ec := newKVChecker(t)
 
-	if err := ec.CheckFeature(ctx, SystemTenantID, quota.FeatureDedicatedRaft); err != nil {
+	if err := ec.CheckFeature(ctx, tenantid.System, quota.FeatureDedicatedRaft); err != nil {
 		t.Errorf("system CheckFeature: %v", err)
 	}
 	if err := ec.CheckFeature(ctx, "ghost", quota.FeatureDedicatedRaft); !errors.Is(err, ErrTenantNotFound) {

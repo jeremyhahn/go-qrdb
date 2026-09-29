@@ -44,6 +44,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -330,7 +331,7 @@ func TestBootstrapSystem_NoneStrategy(t *testing.T) {
 	if result.FirstBoot == nil || !result.FirstBoot.SystemTenantCreated {
 		t.Error("first-boot did not create the system tenant")
 	}
-	if len(tenants.createCalls) != 1 || tenants.createCalls[0].id != tenant.SystemTenantID {
+	if len(tenants.createCalls) != 1 || tenants.createCalls[0].id != tenantid.System {
 		t.Errorf("system tenant not created via first-boot: %+v", tenants.createCalls)
 	}
 }
@@ -524,8 +525,8 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 		Users: &fakeUsersWithLookup{
 			fakeUsers: fakeUsers{exists: true},
 			lookupUser: &user.User{
-				ID: 1, Username: "admin", TenantID: tenant.SystemTenantID,
-				RoleIDs:   []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+				ID: 1, Username: "admin", TenantID: tenantid.System,
+				RoleIDs:   []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)},
 				Lifecycle: user.LifecycleActive,
 			},
 		},
@@ -839,7 +840,7 @@ func (f *fakeUsersWithLookup) GetUserByUsername(_ context.Context, _, _ string) 
 func TestProvisionTenant_DeferredModeRejectedForSystemTenant(t *testing.T) {
 	tenants := &fakeTenants{}
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
-		TenantID:        tenant.SystemTenantID,
+		TenantID:        tenantid.System,
 		AdminEnrollment: AdminEnrollDeferred,
 	}, Dependencies{
 		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},

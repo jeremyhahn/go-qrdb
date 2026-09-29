@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -101,7 +102,7 @@ func TestFirstBoot_UnboundAdminStillAuthenticates(t *testing.T) {
 		t.Fatalf("firstboot.Initialize: %v", err)
 	}
 
-	admin, err := users.GetUserByUsername(context.Background(), tenant.SystemTenantID, "admin")
+	admin, err := users.GetUserByUsername(context.Background(), tenantid.System, "admin")
 	if err != nil {
 		t.Fatalf("GetUserByUsername(admin): %v", err)
 	}
@@ -111,7 +112,7 @@ func TestFirstBoot_UnboundAdminStillAuthenticates(t *testing.T) {
 	}
 
 	m := mtlsMiddleware(users)
-	_, identity, err := m.authenticate(mtlsContext(mintCert(t, "admin", tenant.SystemTenantID, nil, "")))
+	_, identity, err := m.authenticate(mtlsContext(mintCert(t, "admin", tenantid.System, nil, "")))
 	if err != nil {
 		t.Fatalf("bootstrapped admin refused: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestFirstBoot_UnboundAdminStillAuthenticates(t *testing.T) {
 // first request. No enrolment step, no window.
 func TestFirstBoot_BoundAdminAdmitsItsCertAndRefusesAnother(t *testing.T) {
 	users, deps := firstBootServices(t)
-	adminCert := mintCert(t, "admin", tenant.SystemTenantID, nil, "")
+	adminCert := mintCert(t, "admin", tenantid.System, nil, "")
 	deps.CA = &firstBootCA{certPEM: pemCert(adminCert)}
 	deps.Binder = &firstBootBinder{users: users}
 
@@ -146,7 +147,7 @@ func TestFirstBoot_BoundAdminAdmitsItsCertAndRefusesAnother(t *testing.T) {
 
 	// Same CN, same OU, a different key: the cross-tenant minting path,
 	// contained at the admin account itself.
-	forged := mintCert(t, "admin", tenant.SystemTenantID, nil, "")
+	forged := mintCert(t, "admin", tenantid.System, nil, "")
 	if _, _, err := m.authenticate(mtlsContext(forged)); err == nil {
 		t.Fatal("a certificate naming the enrolled admin authenticated as the admin")
 	}
@@ -165,19 +166,19 @@ func TestFirstBoot_BoundAdminAdmitsItsCertAndRefusesAnother(t *testing.T) {
 // unchanged by this gate.
 func TestFirstBoot_RecoveryIsEnrollingTheNewKey(t *testing.T) {
 	users, deps := firstBootServices(t)
-	oldCert := mintCert(t, "admin", tenant.SystemTenantID, nil, "")
+	oldCert := mintCert(t, "admin", tenantid.System, nil, "")
 	deps.CA = &firstBootCA{certPEM: pemCert(oldCert)}
 	deps.Binder = &firstBootBinder{users: users}
 	if _, err := firstboot.Initialize(context.Background(), deps); err != nil {
 		t.Fatalf("firstboot.Initialize: %v", err)
 	}
 
-	admin, err := users.GetUserByUsername(context.Background(), tenant.SystemTenantID, "admin")
+	admin, err := users.GetUserByUsername(context.Background(), tenantid.System, "admin")
 	if err != nil {
 		t.Fatalf("GetUserByUsername(admin): %v", err)
 	}
 
-	newKeyCert := mintCert(t, "admin", tenant.SystemTenantID, nil, "")
+	newKeyCert := mintCert(t, "admin", tenantid.System, nil, "")
 	m := mtlsMiddleware(users)
 	if _, _, err := m.authenticate(mtlsContext(newKeyCert)); err == nil {
 		t.Fatal("the new key authenticated before it was enrolled")

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -68,7 +68,7 @@ func newBindingTarget(t *testing.T, c userClients, name string) uint64 {
 	t.Helper()
 	u, err := c.users.CreateUser(boundedCtx(t), &transport.CreateUserRequest{
 		Username:             name,
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
@@ -290,7 +290,7 @@ func TestCertBindings_ListedOnEveryTransport(t *testing.T) {
 
 			// The listing carries the same set as the single read: a UI that
 			// enumerates accounts sees their keys without a read per account.
-			listed, err := c.users.ListUsers(ctx, &transport.ListUsersRequest{TenantID: tenant.SystemTenantID, PageSize: 100})
+			listed, err := c.users.ListUsers(ctx, &transport.ListUsersRequest{TenantID: tenantid.System, PageSize: 100})
 			if err != nil {
 				t.Fatalf("%s: ListUsers: %v", tk, err)
 			}

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	pkgmetrics "github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -182,7 +183,7 @@ func TestVectorCountMetric_SystemTenantLabel(t *testing.T) {
 	ten := labelValue(m, "tenant")
 
 	assert.Equal(t, "global", ns)
-	assert.Equal(t, tenant.SystemTenantID, ten, "system tenant must appear as its canonical ID, not empty string")
+	assert.Equal(t, tenantid.System, ten, "system tenant must appear as its canonical ID, not empty string")
 	assert.False(t, containsControlBytes(ns))
 	assert.False(t, containsControlBytes(ten))
 }
@@ -196,10 +197,10 @@ func TestNamespaceMetricLabels_NoControlBytes(t *testing.T) {
 		wantTenant    string
 	}{
 		{"alice\x1fembeddings", "embeddings", "alice"},
-		{"\x1fglobal", "global", tenant.SystemTenantID},
+		{"\x1fglobal", "global", tenantid.System},
 		{"tenant-b\x1fmy-vecs", "my-vecs", "tenant-b"},
 		// Legacy unscoped name (no separator) falls through to system.
-		{"legacy-ns", "legacy-ns", tenant.SystemTenantID},
+		{"legacy-ns", "legacy-ns", tenantid.System},
 	}
 
 	for _, tc := range cases {

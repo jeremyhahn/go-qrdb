@@ -29,7 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // SealStartFunc starts the transport under test with mw as its auth
@@ -60,14 +60,14 @@ func BarrierSeal(t *testing.T, start SealStartFunc) {
 	run := func(t *testing.T, id *auth.Identity, soPIN string) (*authtest.Barrier, error) {
 		t.Helper()
 		caller := authtest.NewFixedAuthenticator(id)
-		roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, soOtherTenant)
+		roles := authtest.BuiltInRoles(t, tenantid.System, soOtherTenant)
 		mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 		barrier := &authtest.Barrier{}
 		conn := start(t, mw, authtest.BarrierPINBackend(t, soPIN0), barrier)
 		err := conn.Invoke(callCtx(t), barrierSealMethod, sealRequest(soPIN), &emptypb.Empty{})
 		return barrier, err
 	}
-	operator := authtest.AdminIdentity(tenant.SystemTenantID, "root")
+	operator := authtest.AdminIdentity(tenantid.System, "root")
 
 	t.Run("seal with the barrier SO PIN is served", func(t *testing.T) {
 		b, err := run(t, operator, soPIN0)

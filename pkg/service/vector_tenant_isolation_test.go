@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // =============================================================================
@@ -41,7 +42,7 @@ func TestScopedNamespace_Format(t *testing.T) {
 	}{
 		{"explicit tenant", "alice", "docs", "alice\x1fdocs"},
 		{"explicit tenant", "bob", "docs", "bob\x1fdocs"},
-		{"system tenant", tenant.SystemTenantID, "docs", "\x1fdocs"},
+		{"system tenant", tenantid.System, "docs", "\x1fdocs"},
 		{"empty string tenant", "", "docs", "\x1fdocs"},
 	}
 	for _, tc := range tests {
@@ -61,7 +62,7 @@ func TestUnscopedNamespace_Roundtrip(t *testing.T) {
 	}{
 		{"alice", "docs"},
 		{"bob", "my-vectors"},
-		{tenant.SystemTenantID, "global"},
+		{tenantid.System, "global"},
 		{"", "legacy"},
 	}
 	for _, tc := range cases {
@@ -69,7 +70,7 @@ func TestUnscopedNamespace_Roundtrip(t *testing.T) {
 		gotTenant, gotLogical := unscopedNamespace(physical)
 		expectedTenant := tc.tenantID
 		if expectedTenant == "" {
-			expectedTenant = tenant.SystemTenantID
+			expectedTenant = tenantid.System
 		}
 		assert.Equal(t, expectedTenant, gotTenant, "tenant mismatch for %q/%q", tc.tenantID, tc.logical)
 		assert.Equal(t, tc.logical, gotLogical, "logical mismatch for %q/%q", tc.tenantID, tc.logical)

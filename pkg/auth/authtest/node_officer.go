@@ -18,6 +18,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -45,11 +47,11 @@ type NodeOfficerCaller struct {
 // that officer a share of the key protecting every tenant.
 //
 // roles must hold the built-in roles of the system tenant and of
-// NodeOfficerTenant: BuiltInRoles(t, tenant.SystemTenantID, NodeOfficerTenant).
+// NodeOfficerTenant: BuiltInRoles(t, tenantid.System, NodeOfficerTenant).
 func NodeOfficerCallers(t testing.TB, roles role.RoleServicer) []NodeOfficerCaller {
 	t.Helper()
 	return []NodeOfficerCaller{
-		{Name: "the system tenant's SO is served", Identity: SOIdentity(tenant.SystemTenantID, "officer"), Admitted: true},
+		{Name: "the system tenant's SO is served", Identity: SOIdentity(tenantid.System, "officer"), Admitted: true},
 		{Name: "a tenant's SO is refused", Identity: SOIdentity(NodeOfficerTenant, "acme-officer")},
 		{
 			Name:     "a tenant Admin granted the officer permissions is refused",

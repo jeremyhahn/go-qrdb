@@ -27,7 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -101,7 +101,7 @@ func TestHandler_NoRegistryPermitsEverything(t *testing.T) {
 }
 
 func TestHandler_SystemTenantIsExempt(t *testing.T) {
-	f := newFixture(t, tenant.SystemTenantID, "operator")
+	f := newFixture(t, tenantid.System, "operator")
 	f.grant(t, service.PrivilegeGrant{Table: "unrelated", Privileges: service.PrivilegeSelect})
 
 	state := f.state()

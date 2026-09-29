@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sealedIdentity returns an identity stamped exactly as finalizeIdentity
@@ -187,8 +188,8 @@ func TestAuthorizeTenantBarrierInit_CrossTenantRefused(t *testing.T) {
 func TestAuthorizeTenantBarrierInit_SystemTenantRefused(t *testing.T) {
 	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
 	m := New(deny)
-	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID})
-	if err := m.AuthorizeTenantBarrierInit(ctx, tenant.SystemTenantID, &fakeBarrierStatusReader{initialized: false}); err == nil {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: tenantid.System})
+	if err := m.AuthorizeTenantBarrierInit(ctx, tenantid.System, &fakeBarrierStatusReader{initialized: false}); err == nil {
 		t.Fatal("system-tenant trust-on-first-init must be refused")
 	}
 }
@@ -197,7 +198,7 @@ func TestAuthorizeTenantBarrierInit_SystemTenantRefused(t *testing.T) {
 // sealed-window fallback never opens for the system tenant either.
 func TestAuthorizeTenantBarrierSealedOp_SystemTenantRefused(t *testing.T) {
 	m := New(&mockAuthorizer{})
-	if err := m.AuthorizeTenantBarrierSealedOp(sealedCtx(tenant.SystemTenantID), tenant.SystemTenantID, permission.TenantBarrierUnseal); err == nil {
+	if err := m.AuthorizeTenantBarrierSealedOp(sealedCtx(tenantid.System), tenantid.System, permission.TenantBarrierUnseal); err == nil {
 		t.Fatal("system-tenant sealed-window fallback must be refused")
 	}
 }

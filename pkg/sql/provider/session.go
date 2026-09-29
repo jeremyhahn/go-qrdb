@@ -33,7 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // QRDBSession extends sql.BaseSession with QRDB identity and tenant context.
@@ -219,19 +219,19 @@ func (s *QRDBSession) Identity() *auth.Identity {
 }
 
 // TenantID returns the tenant namespace for this session. Returns
-// tenant.SystemTenantID if the identity is nil or has an empty TenantID —
+// tenantid.System if the identity is nil or has an empty TenantID —
 // callers without explicit tenant binding execute against the system tenant.
 //
-// The fold is tenant.Normalize, not an open-coded comparison: this is one of
-// the boundaries tenant.IsSystemTenant's precondition depends on (the SQL
+// The fold is tenantid.Normalize, not an open-coded comparison: this is one of
+// the boundaries tenantid.IsSystem's precondition depends on (the SQL
 // privilege plane reads it in privilege.principalOf and exempts the system
 // tenant from every grant check), so it must use the same single fold every
 // other boundary uses. See #188.
 func (s *QRDBSession) TenantID() string {
 	if s.identity == nil {
-		return tenant.SystemTenantID
+		return tenantid.System
 	}
-	return tenant.Normalize(s.identity.TenantID)
+	return tenantid.Normalize(s.identity.TenantID)
 }
 
 // ---------------------------------------------------------------------------

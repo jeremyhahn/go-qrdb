@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // StoreResolver maps a tenant ID to the kvstore.KVStore that backs that
@@ -183,7 +184,7 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 	// The system tenant and an empty/unset tenant always use the shared
 	// store. The system tenant is structurally a prefix tenant so the IAM
 	// stores work during bootstrap while tenant barriers are still sealed.
-	if IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return r.sharedFor(ctx, tenantID)
 	}
 
@@ -261,12 +262,12 @@ func (r *defaultStoreResolver) refuseIfDeleted(ctx context.Context, tenantID str
 // "{tenant}/{database}/". Identity is tenant-wide, because a user must
 // authenticate whichever database a request names.
 //
-// The empty id and SystemTenantID are the same tenant and yield the same
+// The empty id and tenantid.System are the same tenant and yield the same
 // prefix; IsSystemTenant is the authority on that, so callers cannot
 // disagree about it either.
 func IdentityNamespace(tenantID string) string {
-	if IsSystemTenant(tenantID) {
-		tenantID = SystemTenantID
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
 	}
 	return tenantID + "/"
 }
@@ -312,7 +313,7 @@ func (r *defaultStoreResolver) sharedFor(ctx context.Context, tenantID string) (
 	if err := validateTenantIDCharset(tenantID); err != nil {
 		return nil, err
 	}
-	// IdentityNamespace canonicalizes "" to SystemTenantID, so the two
+	// IdentityNamespace canonicalizes "" to tenantid.System, so the two
 	// representations of the system tenant cannot end up with two namespaces.
 	prefix := IdentityNamespace(tenantID)
 	if cached, ok := r.namespaced.Load(prefix); ok {

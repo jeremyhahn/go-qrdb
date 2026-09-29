@@ -50,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -227,7 +228,7 @@ func TestGRPCCertsRevoke_UnknownSerialPermittedToSystemTenant(t *testing.T) {
 	f := newCertScopeGRPCFixture(t)
 	const peerSerial = "fedcba9876543210fedcba9876543210"
 
-	resp, err := f.svc.RevokeCert(f.as(tenant.SystemTenantID, "platform-op"),
+	resp, err := f.svc.RevokeCert(f.as(tenantid.System, "platform-op"),
 		&pb.RevokeCertRequest{Serial: peerSerial})
 	if err != nil {
 		t.Fatalf("deny-by-serial must survive for the CA operator: %v", err)

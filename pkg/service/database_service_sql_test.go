@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestDatabaseService_UpdateSQL(t *testing.T) {
@@ -70,7 +71,7 @@ func TestDatabaseService_UpdateSQLForTenant(t *testing.T) {
 	}
 
 	// The system tenant may target any database.
-	system := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	system := tenant.WithTenantID(context.Background(), tenantid.System)
 	if _, err := svc.UpdateSQLForTenant(system, "acme-sql", nil); err != nil {
 		t.Fatalf("system UpdateSQLForTenant() error = %v", err)
 	}

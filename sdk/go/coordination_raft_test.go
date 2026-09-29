@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -410,11 +412,11 @@ func TestRaft_TruncateReclaimSweeperRuns(t *testing.T) {
 func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry, raw service.MVCCKVServicer) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenant.SystemTenantID), 90*time.Second)
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenantid.System), 90*time.Second)
 	defer cancel()
 
-	reg := server.NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID)
-	tables, err := reg.TableService(tenant.SystemTenantID, "system")
+	reg := server.NewRESTServiceRegistry(dbReg, nil, tenantid.System)
+	tables, err := reg.TableService(tenantid.System, "system")
 	if err != nil {
 		t.Fatalf("TableService: %v", err)
 	}
@@ -426,7 +428,7 @@ func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry
 	if err != nil {
 		t.Fatalf("CreateTable: %v", err)
 	}
-	kv, err := reg.KVService(tenant.SystemTenantID, "system")
+	kv, err := reg.KVService(tenantid.System, "system")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -438,7 +440,7 @@ func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry
 		t.Fatalf("TruncateTable: %v", err)
 	}
 
-	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "system")
+	ns := tenant.ComposeNamespace(tenantid.System, "system")
 	prefixes := []string{ns + oldRows, ns + "__reclaim:job/", "__reclaim:index/"}
 	remaining := func() map[string][]string {
 		left := map[string][]string{}

@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // serviceConnectorDSN is the DSN shape a caller-supplied-service connector
@@ -181,13 +181,13 @@ func TestConnectionTenant_EdgeCases(t *testing.T) {
 		{
 			name: "nil config defaults to system",
 			cfg:  nil,
-			want: tenant.SystemTenantID,
+			want: tenantid.System,
 		},
 		{
 			name: "identity without tenant falls back to system",
 			cfg:  &DSNConfig{Database: "db"},
 			opts: []EmbeddedOption{WithIdentity(&auth.Identity{Subject: "bob"})},
-			want: tenant.SystemTenantID,
+			want: tenantid.System,
 		},
 		{
 			name: "unrelated option does not change the tenant",

@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -266,14 +268,14 @@ func (s *collectionSweeper) settleWork(ctx context.Context, t collectionSweepTar
 // A journal entry whose tenant no longer exists, and that is older than the
 // staleness threshold, is removed: the tenant's data went with it.
 func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepTarget, error) {
-	isolation := map[string]tenant.IsolationType{tenant.SystemTenantID: tenant.IsolationPrefix}
+	isolation := map[string]tenant.IsolationType{tenantid.System: tenant.IsolationPrefix}
 	var known map[string]bool
 	if s.opts.tenantSvc != nil {
 		infos, err := s.opts.tenantSvc.ListTenants(ctx)
 		if err != nil {
 			return nil, err
 		}
-		known = map[string]bool{tenant.SystemTenantID: true}
+		known = map[string]bool{tenantid.System: true}
 		for i := range infos {
 			isolation[infos[i].ID] = infos[i].EffectiveIsolationType()
 			known[infos[i].ID] = true
@@ -320,7 +322,7 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 			}
 			owner := info.TenantID
 			if owner == "" {
-				owner = tenant.SystemTenantID
+				owner = tenantid.System
 			}
 			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
 		}

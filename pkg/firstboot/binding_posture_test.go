@@ -23,10 +23,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -82,7 +83,7 @@ func requireRefusal(t *testing.T, err error, want AdminCertBindingReason) {
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %T(%v), want *AdminCertBindingRequiredError(%s)", err, err, want)
 	}
-	if refusal.Reason != want || refusal.Username != adminUsername || refusal.TenantID != tenant.SystemTenantID {
+	if refusal.Reason != want || refusal.Username != adminUsername || refusal.TenantID != tenantid.System {
 		t.Fatalf("refusal = %+v, want reason %q for system/admin", refusal, want)
 	}
 	for _, s := range []string{`"required"`, `"enrolled"`, "users:add_cert_binding", string(want)} {
@@ -95,7 +96,7 @@ func requireRefusal(t *testing.T, err error, want AdminCertBindingReason) {
 func createAdmin(t *testing.T, users user.UserServicer) *user.User {
 	t.Helper()
 	u, err := users.CreateUser(context.Background(), &user.CreateUserRequest{
-		Username: adminUsername, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true,
+		Username: adminUsername, TenantID: tenantid.System, WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -188,7 +189,7 @@ func TestInitialize_Required_RefusesBeforeWriting(t *testing.T) {
 			if len(tenants.createCalls) != 0 || len(roles.createCalls) != 0 {
 				t.Fatalf("refused first boot wrote: tenants=%d roles=%d", len(tenants.createCalls), len(roles.createCalls))
 			}
-			if _, lerr := users.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername); lerr == nil {
+			if _, lerr := users.GetUserByUsername(context.Background(), tenantid.System, adminUsername); lerr == nil {
 				t.Fatal("refused first boot created the admin")
 			}
 		})
@@ -352,7 +353,7 @@ func TestVerifyAdminBindings_LoginGatesBeyondTheBinding(t *testing.T) {
 	now := time.Now().UTC()
 	live := []user.CertBinding{{Thumbprint: "t", NotAfter: now.Add(time.Hour)}}
 	admin := func(mut func(u *user.User)) *user.User {
-		u := &user.User{Username: adminUsername, TenantID: tenant.SystemTenantID, Lifecycle: user.LifecycleActive, CertBindings: live}
+		u := &user.User{Username: adminUsername, TenantID: tenantid.System, Lifecycle: user.LifecycleActive, CertBindings: live}
 		mut(u)
 		return u
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	embeddederr "github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -100,16 +101,16 @@ func TestEmbeddedNode_RBACAuthorize_Works(t *testing.T) {
 	require.NotNil(t, rbacClient)
 
 	// Seed an Admin role in the system tenant; the identity references it.
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 
 	adminID := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
 
 	// Permitted: self-scope tenants:read on the admin's own (system) tenant.
-	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	selfCtx := tenant.WithTenantID(ctx, tenantid.System)
 	err := rbacClient.Authorize(selfCtx, adminID, "tenants", "read")
 	require.NoError(t, err, "wired authorizer must admit admin@system for tenants:read")
 
@@ -126,19 +127,19 @@ func TestEmbeddedNode_RBACAuthorize_DeniesUnpermitted(t *testing.T) {
 	n := newMemoryNodeWithUser(t)
 	svcNode := n.Services()
 
-	roleID := seedNarrowRole(t, svcNode.Role, tenant.SystemTenantID, "reader",
+	roleID := seedNarrowRole(t, svcNode.Role, tenantid.System, "reader",
 		permission.TenantsRead)
 	rbacClient := n.Client().RBAC()
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{roleID},
 	}
 
 	// The seeded role holds tenants:read and nothing else, so keys:delete
 	// must be denied at the permission-resolution layer.
-	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	selfCtx := tenant.WithTenantID(ctx, tenantid.System)
 	err := rbacClient.Authorize(selfCtx, id, "keys", "delete")
 	require.Error(t, err, "unpermitted action must be denied")
 
@@ -161,17 +162,17 @@ func TestEmbeddedNode_RBACAuthorize_ScopeRule(t *testing.T) {
 	svcNode := n.Services()
 	rbacClient := n.Client().RBAC()
 
-	sysRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	sysRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 	acmeRoleID := seedAdminRole(t, svcNode.Role, "acme")
 
 	// System-tenant admin: ScopeCross tenants:list:cross is admitted because
 	// the identity sits in the structurally privileged system tenant.
 	sysID := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{sysRoleID},
 	}
-	sysCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	sysCtx := tenant.WithTenantID(ctx, tenantid.System)
 	require.NoError(t, rbacClient.Authorize(sysCtx, sysID, "tenants", "list:cross"),
 		"system-tenant admin must be admitted for the cross-scope permission")
 
@@ -197,10 +198,10 @@ func TestEmbeddedNode_RBACListPermissions_Works(t *testing.T) {
 	svcNode := n.Services()
 	rbacClient := n.Client().RBAC()
 
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
 

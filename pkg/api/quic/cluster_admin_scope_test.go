@@ -22,6 +22,8 @@ import (
 	"crypto/tls"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -29,7 +31,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestClusterAdminScope: a tenant's Admin or SO may not add or remove a
@@ -59,7 +60,7 @@ func TestClusterAdminScope(t *testing.T) {
 			Compaction: &pb.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 10},
 		})},
 	}
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
+	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {
 		for _, c := range authtest.ClusterAdminCallers(t) {
 			t.Run(op.method+"/"+c.Name, func(t *testing.T) {

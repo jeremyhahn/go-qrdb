@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestIsSystemTenant(t *testing.T) {
@@ -29,7 +29,7 @@ func TestIsSystemTenant(t *testing.T) {
 	}{
 		{"nil identity is system-scoped", nil, true},
 		{"empty TenantID resolves to system", &auth.Identity{Subject: "s", TenantID: ""}, true},
-		{"literal system tenant matches", &auth.Identity{Subject: "s", TenantID: tenant.SystemTenantID}, true},
+		{"literal system tenant matches", &auth.Identity{Subject: "s", TenantID: tenantid.System}, true},
 		{"ordinary tenant does not match", &auth.Identity{Subject: "s", TenantID: "acme-corp"}, false},
 		{"capitalized lookalike does not match", &auth.Identity{Subject: "s", TenantID: "System"}, false},
 		{"trailing-space lookalike does not match", &auth.Identity{Subject: "s", TenantID: "system "}, false},
@@ -47,16 +47,16 @@ func TestIsSystemTenant(t *testing.T) {
 
 // TestIsSystemTenantDelegatesToTenantPackage proves the identity-level
 // predicate never re-derives the string comparison: it must agree with
-// tenant.IsSystemTenant for every TenantID value, since tenant.IsSystemTenant
+// tenantid.IsSystem for every TenantID value, since tenantid.IsSystem
 // is the single source of truth.
 func TestIsSystemTenantDelegatesToTenantPackage(t *testing.T) {
-	ids := []string{"", tenant.SystemTenantID, "acme-corp", "System", "system "}
+	ids := []string{"", tenantid.System, "acme-corp", "System", "system "}
 	for _, id := range ids {
 		identity := &auth.Identity{Subject: "s", TenantID: id}
 		got := IsSystemTenant(identity)
-		want := tenant.IsSystemTenant(id)
+		want := tenantid.IsSystem(id)
 		if got != want {
-			t.Fatalf("IsSystemTenant(TenantID=%q) = %v, want %v (tenant.IsSystemTenant)", id, got, want)
+			t.Fatalf("IsSystemTenant(TenantID=%q) = %v, want %v (tenantid.IsSystem)", id, got, want)
 		}
 	}
 }

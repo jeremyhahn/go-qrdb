@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ValidateAssignable resolves roleID and confirms it may be granted within
@@ -47,7 +47,7 @@ func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID 
 		// reference is unresolved, so it is refused rather than dereferenced.
 		return &ReferenceError{RoleID: roleID, Err: &RoleNotFoundError{ID: roleID}}
 	}
-	if tenant.Normalize(r.TenantID) == tenant.Normalize(tenantID) {
+	if tenantid.Normalize(r.TenantID) == tenantid.Normalize(tenantID) {
 		return nil
 	}
 	return &NotAssignableError{RoleID: roleID, TenantID: tenantID}

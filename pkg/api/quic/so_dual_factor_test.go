@@ -37,11 +37,11 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
-	soTestTenant  = tenant.SystemTenantID
+	soTestTenant  = tenantid.System
 	soOtherTenant = "acme"
 	soTestPIN     = "correct horse battery staple"
 )

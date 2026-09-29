@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -34,7 +36,7 @@ import (
 // admin methods run in-process for a trusted embedder and authorize nothing
 // themselves.
 func TestClusterAdminScope(t *testing.T) {
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
+	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	tr := newRBACTransport(t, roles)
 	for _, perm := range []permission.Permission{
 		permission.AdminAddMember, permission.AdminRemoveMember,

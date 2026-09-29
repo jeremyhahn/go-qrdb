@@ -33,6 +33,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -57,9 +59,9 @@ type isolationFixture struct {
 
 func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture {
 	t.Helper()
-	tenants := authtest.NewTenants(t, tenant.SystemTenantID, "acme", "globex")
+	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme", "globex")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
 
 	tlsCfg := testTLSConfig(t)
@@ -101,7 +103,7 @@ func callCtx(t *testing.T) context.Context {
 
 func (f *isolationFixture) as(id *auth.Identity) { f.caller.Set(id) }
 
-func (f *isolationFixture) operator() { f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root")) }
+func (f *isolationFixture) operator() { f.as(authtest.AdminIdentity(tenantid.System, "root")) }
 
 // call invokes one tool and returns its result; a protocol-level failure is
 // fatal, because every refusal here must arrive as a coded tool result.

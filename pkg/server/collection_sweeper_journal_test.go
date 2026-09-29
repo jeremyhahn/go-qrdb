@@ -24,9 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestCollectionSweeper_LeaderWithoutTheCatalogEntryFinishesTheDrop: a named
@@ -43,9 +44,9 @@ func TestCollectionSweeper_LeaderWithoutTheCatalogEntryFinishesTheDrop(t *testin
 	// drop of it crashes after marking it DROPPING.
 	regA := NewDatabaseServiceRegistry("system")
 	regA.Register("system", svcs)
-	nodeA := NewRESTServiceRegistry(regA, nil, tenant.SystemTenantID,
+	nodeA := NewRESTServiceRegistry(regA, nil, tenantid.System,
 		WithDatabaseCatalog(staticCatalog{}))
-	coll, err := nodeA.CollectionService(tenant.SystemTenantID, "appdb")
+	coll, err := nodeA.CollectionService(tenantid.System, "appdb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +144,8 @@ func TestCollectionSweeper_SettlesOnlyFinishedWork(t *testing.T) {
 	kv, svcs := sharedCollectionStore()
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", svcs)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
-	coll, err := reg.journaledCollectionService(tenant.SystemTenantID, "appdb")
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
+	coll, err := reg.journaledCollectionService(tenantid.System, "appdb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestCollectionSweeper_SettlesOnlyFinishedWork(t *testing.T) {
 		kv.store[key] = data
 	}
 	// "gone" never existed; its entry is settled too.
-	j := &collectionWorkJournal{kv: kv, tenant: tenant.SystemTenantID}
+	j := &collectionWorkJournal{kv: kv, tenant: tenantid.System}
 	if err := j.Record(ctx, "appdb", "gone"); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestCollectionSweeper_SettlesOnlyFinishedWork(t *testing.T) {
 	sweeper.sweepOnce(ctx)
 
 	for name, want := range map[string]bool{"live": false, "gone": false, "fresh": true} {
-		if _, ok := kv.store[collectionWorkKey(tenant.SystemTenantID, "appdb", name)]; ok != want {
+		if _, ok := kv.store[collectionWorkKey(tenantid.System, "appdb", name)]; ok != want {
 			t.Errorf("work entry for %q present=%v, want %v", name, ok, want)
 		}
 	}
@@ -207,9 +208,9 @@ func TestServesFromNodeLocalStore(t *testing.T) {
 // TestJournaledCollectionService_NotServed covers the stores a journal entry
 // cannot be resolved against on this node.
 func TestJournaledCollectionService_NotServed(t *testing.T) {
-	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry("system"), nil, tenant.SystemTenantID).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry("system"), nil, tenantid.System).(*restServiceRegistry)
 	var notServed *CollectionWorkNotServedError
-	if _, err := reg.journaledCollectionService(tenant.SystemTenantID, "appdb"); !errors.As(err, &notServed) {
+	if _, err := reg.journaledCollectionService(tenantid.System, "appdb"); !errors.As(err, &notServed) {
 		t.Fatalf("a registry with no bundle serves nothing: %v", err)
 	}
 	if !strings.Contains(notServed.Error(), "not served by this node") {

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // compactRecordingMVCC is an inner MVCCKVServicer shaped like the raw shard
@@ -65,7 +66,7 @@ func (m *globalOnlyMVCC) Compact(context.Context, int64) error {
 // included -- compacts exactly its own (tenant, database) namespace through
 // the view, and the store-global compaction is never reached.
 func TestNamespacedMVCC_Compact_CompactsOnlyItsOwnPrefix(t *testing.T) {
-	for _, tenantID := range []string{"tenantA", "acme", tenant.SystemTenantID} {
+	for _, tenantID := range []string{"tenantA", "acme", tenantid.System} {
 		t.Run(tenantID, func(t *testing.T) {
 			inner := &compactRecordingMVCC{}
 			prefix := tenant.ComposeNamespace(tenantID, "db")

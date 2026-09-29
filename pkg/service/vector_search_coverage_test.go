@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // =============================================================================
@@ -89,7 +90,7 @@ func newSearchTestService(t *testing.T, namespace string, dimension uint32, mock
 	// The service scopes namespaces by tenant. Tests run without an explicit
 	// tenant ID so tenant.FromContext returns SystemTenantID. Pre-populate the
 	// storage using the scoped name so that init loads the index correctly.
-	scoped := scopedNamespace(tenant.SystemTenantID, namespace)
+	scoped := scopedNamespace(tenantid.System, namespace)
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
 		Name:      scoped,
 		Dimension: dimension,
@@ -419,7 +420,7 @@ func TestVectorSearchSimilar_SuccessWithResults(t *testing.T) {
 
 	// Populate storage with vectors for IncludeVectors/IncludeMetadata path.
 	// Use the scoped name — this is what SearchSimilar queries against.
-	scopedNS := scopedNamespace(tenant.SystemTenantID, "search-ns")
+	scopedNS := scopedNamespace(tenantid.System, "search-ns")
 	require.NoError(t, storage.UpsertVector(context.Background(), scopedNS, &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 0.0, 0.0},

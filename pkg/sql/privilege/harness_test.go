@@ -35,7 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -54,7 +54,7 @@ var benchConnID atomic.Uint32
 // benchSystemIdentity is a system-tenant identity: exempt from privilege
 // checks permanently, which is the posture of every deployment that has not
 // armed a privilege catalog.
-var benchSystemIdentity = &auth.Identity{Subject: "operator", TenantID: tenant.SystemTenantID}
+var benchSystemIdentity = &auth.Identity{Subject: "operator", TenantID: tenantid.System}
 
 // benchTenantIdentity is an ordinary tenant identity, subject to whatever the
 // database's privilege catalog says.

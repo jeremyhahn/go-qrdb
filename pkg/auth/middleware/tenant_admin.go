@@ -17,6 +17,8 @@ package middleware
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -75,7 +77,7 @@ func (m *AuthMiddleware) FilterTenantList(ctx context.Context, tenants []tenant.
 	if caller == nil {
 		return nil, auth.ErrUnauthenticated
 	}
-	err := m.decide(tenant.WithTenantID(ctx, tenant.SystemTenantID), caller, permission.TenantsListCross)
+	err := m.decide(tenant.WithTenantID(ctx, tenantid.System), caller, permission.TenantsListCross)
 	if err == nil {
 		return tenants, nil
 	}

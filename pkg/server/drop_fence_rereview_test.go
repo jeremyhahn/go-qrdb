@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -56,23 +58,23 @@ func TestDropFence_DropDuringResolutionNeverYieldsAnUnguardedHandle(t *testing.T
 	ctx := context.Background()
 	dbReg := NewDatabaseServiceRegistry(tenant.DefaultDatabase)
 	dbReg.Register(tenant.DefaultDatabase, f.raw)
-	catalog := &droppingCatalog{managerCatalog: newManagerCatalog(f.mgr, tenant.SystemTenantID)}
+	catalog := &droppingCatalog{managerCatalog: newManagerCatalog(f.mgr, tenantid.System)}
 	catalog.drop = func() {
 		if err := f.mgr.Drop(ctx, "orders"); err != nil {
 			t.Errorf("Drop: %v", err)
 		}
 	}
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithDatabaseCatalog(catalog), withDatabaseManager(f.mgr))
 
-	kv, err := reg.KVService(tenant.SystemTenantID, "orders")
+	kv, err := reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		return // refused at resolution: no handle, nothing to write through
 	}
 	if err := kv.Put(ctx, "k", []byte("orphan")); err == nil {
 		t.Fatal("a handle resolved across a completed drop wrote into the dropped database's reclaimed keyspace")
 	}
-	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "orders"))
+	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenantid.System, "orders"))
 	if err != nil {
 		t.Fatalf("ListAll: %v", err)
 	}
@@ -90,7 +92,7 @@ func TestDropFence_CollectionsWorkAfterDropAndRecreate(t *testing.T) {
 
 	collections := func() service.CollectionServicer {
 		t.Helper()
-		c, err := f.reg.CollectionService(tenant.SystemTenantID, "orders")
+		c, err := f.reg.CollectionService(tenantid.System, "orders")
 		if err != nil {
 			t.Fatalf("CollectionService: %v", err)
 		}
@@ -167,11 +169,11 @@ func TestRaftBackendFactory_ColdDedicatedDatabaseIsDroppable(t *testing.T) {
 	mgr := claimingManager(t, volTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	host, _ := newSharedTestHost(t)
-	raftReg := NewRaftBackendFactoryFromManager(host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenant.SystemTenantID, volTestLogger())
+	raftReg := NewRaftBackendFactoryFromManager(host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenantid.System, volTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	reclaim := service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: newMockKVService()})
-	reclaim.SetStoreResolver(&storeResolver{raft: raftReg, tenantSvc: tenants, systemTenant: tenant.SystemTenantID})
+	reclaim.SetStoreResolver(&storeResolver{raft: raftReg, tenantSvc: tenants, systemTenant: tenantid.System})
 	mgr.SetKeyspaceReclaimer(reclaim)
 	dbSvc := service.NewDatabaseService(mgr, service.WithEntitlementChecker(tenants), service.WithTenantInfoLookup(tenants))
 

@@ -21,12 +21,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestNodeBarrierRoutes_TenantHolderRefused pins the route-to-permission
@@ -57,9 +58,9 @@ func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 		{"/v1/barrier/unseal-share", permission.BarrierUnsealShare, custodian},
 	}
 	for _, rt := range routes {
-		for _, tid := range []string{authtest.NodeOfficerTenant, tenant.SystemTenantID} {
+		for _, tid := range []string{authtest.NodeOfficerTenant, tenantid.System} {
 			t.Run(rt.path+"/"+tid, func(t *testing.T) {
-				roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
+				roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 				id := authtest.Grant(t, roles, rt.who(tid), rt.perm)
 				barrier := &authtest.Barrier{}
 				ceremony := &authtest.Ceremony{}
@@ -72,7 +73,7 @@ func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 				rec := httptest.NewRecorder()
 				srv.server.Handler.ServeHTTP(rec, req)
 
-				if tid == tenant.SystemTenantID {
+				if tid == tenantid.System {
 					if rec.Code == http.StatusForbidden || rec.Code == http.StatusNotFound {
 						t.Fatalf("system-tenant holder of %s: status=%d body=%q; the route must exist and admit it", rt.perm, rec.Code, rec.Body.String())
 					}
@@ -107,7 +108,7 @@ func TestNodeOfficerScope(t *testing.T) {
 		{http.MethodGet, "/v1/barrier/officers/claim-status", "", (*authtest.Barrier).OfficerReads},
 	}
 	for _, op := range ops {
-		roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
+		roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 		for _, c := range authtest.NodeOfficerCallers(t, roles) {
 			t.Run(op.method+" "+op.path+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)

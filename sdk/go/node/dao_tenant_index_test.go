@@ -24,7 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // workItem stands in for the consumer's tenant-first entity: the SDLC fabric
@@ -229,7 +229,7 @@ func TestSharedPrefixTenants_ReservedKeysAreTenantConfined(t *testing.T) {
 	n := newSharedTenantNode(ctx, t)
 	resolver := n.Services().StoreResolver
 
-	sys, err := resolver.Resolve(ctx, tenant.SystemTenantID)
+	sys, err := resolver.Resolve(ctx, tenantid.System)
 	require.NoError(t, err)
 	acme, err := resolver.Resolve(ctx, "acme")
 	require.NoError(t, err)

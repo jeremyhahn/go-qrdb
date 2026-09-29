@@ -20,7 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -60,11 +60,11 @@ func TestAuthorize_NodeState_SystemAdmin_CanReadOrchestratorState(t *testing.T) 
 
 			identity := &auth.Identity{
 				Subject:  "platform-admin",
-				TenantID: tenant.SystemTenantID,
+				TenantID: tenantid.System,
 				Roles:    []string{"admin-role"},
 			}
 
-			if err := authz.Authorize(ctxFor(tenant.SystemTenantID), identity, v.resource, v.action); err != nil {
+			if err := authz.Authorize(ctxFor(tenantid.System), identity, v.resource, v.action); err != nil {
 				t.Fatalf("Admin@system must be able to read the node's own "+
 					"orchestrator %s, got: %v", v.action, err)
 			}
@@ -85,7 +85,7 @@ func TestAuthorize_NodeState_SystemAdmin_LiftsAcrossTenants(t *testing.T) {
 
 			identity := &auth.Identity{
 				Subject:  "platform-admin",
-				TenantID: tenant.SystemTenantID,
+				TenantID: tenantid.System,
 				Roles:    []string{"admin-role"},
 			}
 
@@ -144,11 +144,11 @@ func TestAuthorize_NodeState_WithoutTheGrant_IsStillDenied(t *testing.T) {
 
 			identity := &auth.Identity{
 				Subject:  "platform-reader",
-				TenantID: tenant.SystemTenantID,
+				TenantID: tenantid.System,
 				Roles:    []string{"reader-role"},
 			}
 
-			if err := authz.Authorize(ctxFor(tenant.SystemTenantID), identity, v.resource, v.action); err == nil {
+			if err := authz.Authorize(ctxFor(tenantid.System), identity, v.resource, v.action); err == nil {
 				t.Fatal("a principal without the permission must still be denied: " +
 					"the scope change must not bypass the grant check")
 			}
@@ -183,11 +183,11 @@ func TestAuthorize_NodeState_RestOfFamilyStillDeniedToSystemTenant(t *testing.T)
 
 			identity := &auth.Identity{
 				Subject:  "platform-admin",
-				TenantID: tenant.SystemTenantID,
+				TenantID: tenantid.System,
 				Roles:    []string{"admin-role"},
 			}
 
-			err := authz.Authorize(ctxFor(tenant.SystemTenantID), identity, v.resource, v.action)
+			err := authz.Authorize(ctxFor(tenantid.System), identity, v.resource, v.action)
 			if err == nil {
 				t.Fatalf("%q must remain denied to the system tenant: the #183 fix "+
 					"is scoped to health and status only", v.perm)

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestEnforceTenantScope_SystemCallerAllowed verifies a context with no
@@ -30,7 +31,7 @@ func TestEnforceTenantScope_SystemCallerAllowed(t *testing.T) {
 	if err := enforceTenantScope(context.Background(), "victim", "seal"); err != nil {
 		t.Errorf("unbound ctx (system fallback): unexpected error %v", err)
 	}
-	ctx := WithTenantID(context.Background(), SystemTenantID)
+	ctx := WithTenantID(context.Background(), tenantid.System)
 	if err := enforceTenantScope(ctx, "victim", "seal"); err != nil {
 		t.Errorf("explicit system binding: unexpected error %v", err)
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -1147,7 +1148,7 @@ func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 // tenants hold.
 func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	_, err := s.manager.GetForTenant(ctx, name)
@@ -1231,7 +1232,7 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 // This method is additive to DatabaseServicer (not part of the interface);
 // see CreateWithCredentials and DatabaseCredentialCreator.
 func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.CreateWithCredentials(ctx, cfg, creds)
 	}
 	tenantID := tenant.FromContext(ctx)
@@ -1623,7 +1624,7 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 // accurate cluster-wide after a ScaleForTenant call, which very often
 // executes on a different node than the one serving this read.
 func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		info, err := s.Get(name)
 		if err != nil {
 			return nil, err
@@ -1643,7 +1644,7 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 // context's tenant, sorted by name. Each dedicated-raft database's Replicas
 // is refreshed from the placement table; see refreshReplicasFromPlacement.
 func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.List()
 	}
 	infos, err := s.manager.ListForTenant(ctx)
@@ -1715,7 +1716,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		return err
 	}
 	tenantID := tenant.FromContext(ctx)
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return s.Drop(ctx, name)
 	}
 
@@ -1810,7 +1811,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 // UpdateProtocolForTenant updates the wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateProtocol(name, protocol)
 	}
 	if err := s.manager.UpdateProtocolForTenant(ctx, name, protocol); err != nil {
@@ -1822,7 +1823,7 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // UpdateEtcdForTenant updates the etcd wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateEtcd(name, etcd)
 	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
@@ -1834,7 +1835,7 @@ func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, 
 // UpdateRaftForTenant updates the Raft consensus configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateRaft(name, raft)
 	}
 	if err := s.manager.UpdateRaftForTenant(ctx, name, raft); err != nil {
@@ -1846,7 +1847,7 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // UpdateBarrierForTenant updates the encryption barrier configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateBarrier(name, barrier)
 	}
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
@@ -1858,7 +1859,7 @@ func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name strin
 // UpdateConnectionForTenant updates the remote connection configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateConnection(name, conn)
 	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
@@ -1870,7 +1871,7 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 // UpdateSQLForTenant updates the SQL settings of the named database with
 // tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
-	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		return s.UpdateSQL(name, sqlCfg)
 	}
 	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {
@@ -1926,7 +1927,7 @@ func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *databa
 	}
 	owner := info.TenantID
 	if owner == "" {
-		owner = tenant.SystemTenantID
+		owner = tenantid.System
 	}
 	policy, err := s.compactionPolicies.CompactionPolicy(ctx, owner, info.Name)
 	if err != nil {
@@ -2034,7 +2035,7 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 	// Update*ForTenant methods, since scaling was never available before
 	// placement existed -- reject the system tenant explicitly rather than
 	// relying on a manager lookup to do it implicitly (see below).
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil, &database.TenantIDRequiredError{Operation: "ScaleForTenant"}
 	}
 

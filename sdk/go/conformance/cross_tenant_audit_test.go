@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc/codes"
 
 	mcpwire "github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -72,7 +74,7 @@ type confinedCell struct {
 // transport encodes the tenant field.
 func seededAuditEvents() []audit.AuditEvent {
 	base := time.Now().UTC().Add(-time.Hour)
-	owners := []string{confineAcme, confineGlobex, tenant.SystemTenantID, ""}
+	owners := []string{confineAcme, confineGlobex, tenantid.System, ""}
 	events := make([]audit.AuditEvent, len(owners))
 	for i, owner := range owners {
 		// Distinct timestamps: the page cursor is a timestamp.
@@ -277,7 +279,7 @@ func TestAuditQuery_TenantAdminConfinedToOwnTenant(t *testing.T) {
 				}
 			}
 
-			for _, foreign := range []string{confineGlobex, tenant.SystemTenantID} {
+			for _, foreign := range []string{confineGlobex, tenantid.System} {
 				_, err := auditOwners(c.ctx, ac, transport.AuditFilter{TenantID: foreign})
 				assertCrossTenantRefused(t, tk, "audit query naming "+foreign, err)
 			}
@@ -291,7 +293,7 @@ func TestAuditQuery_TenantAdminConfinedToOwnTenant(t *testing.T) {
 func TestAuditQuery_SystemAdminConfinedToPlatformEvents(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootConfinedCell(t, tk, tenant.SystemTenantID)
+			c := bootConfinedCell(t, tk, tenantid.System)
 			ac := c.client.Audit()
 			if ac == nil {
 				t.Fatalf("%s: no audit client", tk)
@@ -301,7 +303,7 @@ func TestAuditQuery_SystemAdminConfinedToPlatformEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: query: %v", tk, err)
 			}
-			if want := []string{"platform", tenant.SystemTenantID}; !slices.Equal(got, want) {
+			if want := []string{"platform", tenantid.System}; !slices.Equal(got, want) {
 				t.Errorf("%s: an unfiltered query reached %v; want only %v", tk, got, want)
 			}
 

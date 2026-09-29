@@ -34,7 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // grantAuthorizer is an auth.Authorizer that grants exactly the
@@ -220,7 +220,7 @@ func TestMySQLWire_CreateDatabase_OwnedAndMetered(t *testing.T) {
 	db, getErr := f.mgr.Get("ledger_one")
 	require.NoError(t, getErr)
 	require.Equal(t, "acme", db.TenantID(), "the database is not owned by the tenant that created it")
-	require.NotEqual(t, tenant.SystemTenantID, db.TenantID())
+	require.NotEqual(t, tenantid.System, db.TenantID())
 
 	_, err = alice.Exec("CREATE DATABASE ledger_two")
 	require.Error(t, err, "CREATE DATABASE bypassed the tenant's database quota")

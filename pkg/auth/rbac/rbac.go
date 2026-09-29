@@ -60,6 +60,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -565,7 +566,7 @@ func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Iden
 // unauthenticated pipeline (platform boot, daemon-internal maintenance),
 // which by convention executes with system-tenant privilege — mirroring
 // tenant.FromContext's fallback for a context with no bound tenant. A
-// non-nil identity delegates to tenant.IsSystemTenant, the single source of
+// non-nil identity delegates to tenantid.IsSystem, the single source of
 // truth for the string-level comparison; this function does not re-derive
 // that comparison itself.
 //
@@ -577,7 +578,7 @@ func IsSystemTenant(identity *auth.Identity) bool {
 	if identity == nil {
 		return true
 	}
-	return tenant.IsSystemTenant(identity.TenantID)
+	return tenantid.IsSystem(identity.TenantID)
 }
 
 // resolveScope returns the scope governing the given permission for the

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -273,17 +274,17 @@ func TestAuthorize_RoleResolveFallbackOnTransientError(t *testing.T) {
 		"admin": {"admin:drain"},
 	})
 	// admin:drain is platform scope, so the drainer is the system tenant's.
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
 	// With a fallback, authorization succeeds despite the primary failure —
 	// this is what keeps an authorized Drain admissible on a draining node.
 	if err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain"); err != nil {
+		Authorize(ctxFor(tenantid.System), identity, "admin", "drain"); err != nil {
 		t.Fatalf("expected fallback to authorize, got %v", err)
 	}
 
 	// Without a fallback, the primary failure surfaces as ResolveError.
-	err := New(primary).Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
+	err := New(primary).Authorize(ctxFor(tenantid.System), identity, "admin", "drain")
 	if err == nil {
 		t.Fatal("expected ResolveError when primary fails and no fallback is set")
 	}
@@ -537,11 +538,11 @@ func TestAuthorize_SystemTenantRule_AdminAtSystem_CanCrossScope(t *testing.T) {
 
 	identity := &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin-role"},
 	}
 
-	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID, "anything"} {
+	for _, target := range []string{"acme", "bob-corp", tenantid.System, "anything"} {
 		err := authz.Authorize(ctxFor(target), identity, "tenants", "list:cross")
 		if err != nil {
 			t.Errorf("Admin@system should be allowed tenants:list:cross on target %q, got: %v", target, err)
@@ -642,11 +643,11 @@ func TestAuthorize_SystemTenantRule_AdminAtSystem_CanReadAnyTenant(t *testing.T)
 
 	identity := &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin-role"},
 	}
 
-	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID} {
+	for _, target := range []string{"acme", "bob-corp", tenantid.System} {
 		err := authz.Authorize(ctxFor(target), identity, "tenants", "read")
 		if err != nil {
 			t.Errorf("Admin@system should be allowed tenants:read on target %q, got: %v", target, err)
@@ -787,7 +788,7 @@ func TestAuthorize_CompileTimeInterface(t *testing.T) {
 	var authz auth.Authorizer = New(svc)
 	err := authz.Authorize(ctxFor("any-target"), &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin-role"},
 	}, "admin", "health")
 	if err != nil {
@@ -1063,8 +1064,8 @@ func TestAuthorize_SO_GovernanceActionsAllowed(t *testing.T) {
 		perm     permission.Permission
 		tenantID string
 	}{
-		{"seal", "bootstrap", permission.SealBootstrap, tenant.SystemTenantID},
-		{"ceremony", "initialize", permission.CeremonyInitialize, tenant.SystemTenantID},
+		{"seal", "bootstrap", permission.SealBootstrap, tenantid.System},
+		{"ceremony", "initialize", permission.CeremonyInitialize, tenantid.System},
 		{"roles", "create", permission.RolesCreate, "tenant-1"},
 		{"users", "create", permission.UsersCreate, "tenant-1"},
 		{"audit", "read", permission.AuditRead, "tenant-1"},
@@ -1125,11 +1126,11 @@ func TestAuthorize_Custodian_UnsealShareAllowed(t *testing.T) {
 
 	identity := &auth.Identity{
 		Subject:  "custodian-1",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"custodian-role"},
 	}
 
-	err := authz.Authorize(ctxFor(tenant.SystemTenantID), identity, "barrier", "unseal-share")
+	err := authz.Authorize(ctxFor(tenantid.System), identity, "barrier", "unseal-share")
 	if err != nil {
 		t.Fatalf("custodian should be allowed barrier:unseal-share, got: %v", err)
 	}
@@ -1359,11 +1360,11 @@ func TestAuthorize_TenantOnly_AdminAtSystem_CannotInitAnyBarrier(t *testing.T) {
 
 	identity := &auth.Identity{
 		Subject:  "platform-admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin-role"},
 	}
 
-	for _, target := range []string{"acme", "bob-corp", tenant.SystemTenantID} {
+	for _, target := range []string{"acme", "bob-corp", tenantid.System} {
 		err := authz.Authorize(ctxFor(target), identity, "tenant_barrier", "init")
 		if err == nil {
 			t.Fatalf("Admin@system must NOT init barrier on target %q", target)
@@ -1497,12 +1498,12 @@ func TestAuthorize_TenantOnly_OperatorTaskLifecycle_SystemTenantDenied(t *testin
 
 	sysOperator := &auth.Identity{
 		Subject:  "sys-operator",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"operator-role"},
 	}
 
 	for _, action := range []string{"task_readmit", "task_block"} {
-		for _, target := range []string{"acme", tenant.SystemTenantID} {
+		for _, target := range []string{"acme", tenantid.System} {
 			err := authz.Authorize(ctxFor(target), sysOperator, "orchestrator", action)
 			if err == nil {
 				t.Errorf("system tenant must NOT exercise orchestrator:%s on %q", action, target)
@@ -1561,7 +1562,7 @@ func TestAuthorize_TenantOnly_UnsealAndSeal(t *testing.T) {
 	authz := New(svc)
 
 	acmeAdmin := &auth.Identity{Subject: "acme-admin", TenantID: "acme", Roles: []string{"admin-role"}}
-	sysAdmin := &auth.Identity{Subject: "sys-admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin-role"}}
+	sysAdmin := &auth.Identity{Subject: "sys-admin", TenantID: tenantid.System, Roles: []string{"admin-role"}}
 
 	// Own-tenant unseal/seal allowed for tenant admin.
 	if err := authz.Authorize(ctxFor("acme"), acmeAdmin, "tenant_barrier", "unseal"); err != nil {

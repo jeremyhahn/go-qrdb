@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -173,7 +174,7 @@ func TestAuthorizeRoleAssignmentWrite_TargetTenantComesFromTheRecord(t *testing.
 	// The caller's AMBIENT tenant is "system"; the record being updated
 	// belongs to "acme". A role that belongs to "acme" must be admitted
 	// even though the ambient tenant names neither role's tenant.
-	ctx := roleAssignmentCtx(tenant.SystemTenantID)
+	ctx := roleAssignmentCtx(tenantid.System)
 	userSvc := &userTenantFixture{u: &user.User{ID: 42, TenantID: "acme"}}
 	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
 		"r-acme": {ID: "r-acme", TenantID: "acme"},
@@ -268,7 +269,7 @@ func TestAuthorizeRoleAssignmentWrite_BindingsValidateAgainstTheirOwnTenant(t *t
 	// tenant for it, isolating THIS test to the role-tenant VALIDATION rule
 	// rather than the separate roles:assign-per-binding-tenant rule (see
 	// TestAuthorizeRoleAssignmentWrite_BindingRequiresRolesAssignInItsOwnTenant).
-	ctx := roleAssignmentCtx(tenant.SystemTenantID)
+	ctx := roleAssignmentCtx(tenantid.System)
 	userSvc := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
 	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
 		"r-globex": {ID: "r-globex", TenantID: "globex"},
@@ -396,7 +397,7 @@ func TestAuthorizeRoleAssignmentWriteOnCreate_NilRoleSvcRefusesWhenRoleIDsPresen
 // must have its RoleIDs validated against "acme".
 func TestAuthorizeRoleAssignmentWriteOnCreate_UsesEffectiveTenant(t *testing.T) {
 	mw := mwWithPerms(permission.RolesAssign)
-	ctx := roleAssignmentCtx(tenant.SystemTenantID)
+	ctx := roleAssignmentCtx(tenantid.System)
 	roleSvc := &roleAssignmentFixture{roles: map[string]*role.Role{
 		"r-acme": {ID: "r-acme", TenantID: "acme"},
 	}}

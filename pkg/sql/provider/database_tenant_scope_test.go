@@ -21,7 +21,7 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestProvider_DatabaseLookupScopedToSessionTenant pins SEC-8(b) on the SQL
@@ -46,8 +46,8 @@ func TestProvider_DatabaseLookupScopedToSessionTenant(t *testing.T) {
 		{tenantSession("alice", "acme"), "acme_ledger", true, "owner"},
 		{tenantSession("mallory", "globex"), "acme_ledger", false, "other tenant"},
 		{tenantSession("mallory", "globex"), "ops", false, "system-owned, tenant session"},
-		{tenantSession("root", tenant.SystemTenantID), "ops", true, "system-owned, system session"},
-		{tenantSession("root", tenant.SystemTenantID), "acme_ledger", false, "tenant-owned, system session"},
+		{tenantSession("root", tenantid.System), "ops", true, "system-owned, system session"},
+		{tenantSession("root", tenantid.System), "acme_ledger", false, "tenant-owned, system session"},
 		{tenantSession("mallory", "globex"), "nobody_has_this", false, "missing"},
 	}
 	for _, c := range cases {

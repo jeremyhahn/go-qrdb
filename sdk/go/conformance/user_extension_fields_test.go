@@ -21,7 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -48,7 +48,7 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 
 			created, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 				Username:             "ext-fields-" + string(tk),
-				TenantID:             tenant.SystemTenantID,
+				TenantID:             tenantid.System,
 				WithoutEmailLoginKey: true,
 			})
 			if err != nil {
@@ -161,7 +161,7 @@ func TestUserExtensionFields_RealFactorMetadataAndMFAAcrossEveryTransport(t *tes
 
 			created, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 				Username:             "real-factor-" + string(tk),
-				TenantID:             tenant.SystemTenantID,
+				TenantID:             tenantid.System,
 				WithoutEmailLoginKey: true,
 			})
 			if err != nil {
@@ -228,7 +228,7 @@ func TestUserExtensionFields_RealFactorMetadataAndMFAAcrossEveryTransport(t *tes
 			// ListUsers must agree with GetUser -- a projection wired into one
 			// read path and not the other is exactly the kind of partial fix
 			// this suite exists to catch.
-			listed, err := c.users.ListUsers(ctx, &transport.ListUsersRequest{TenantID: tenant.SystemTenantID, PageSize: 200})
+			listed, err := c.users.ListUsers(ctx, &transport.ListUsersRequest{TenantID: tenantid.System, PageSize: 200})
 			if err != nil {
 				t.Fatalf("%s: ListUsers: %v", tk, err)
 			}

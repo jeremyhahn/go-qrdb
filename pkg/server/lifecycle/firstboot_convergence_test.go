@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -58,7 +60,7 @@ func TestFirstBoot_ConcurrentNodesConverge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGuardedKVStoreAdapter: %v", err)
 	}
-	system, err := kvstore.NewNamespacedKVStore(shared, tenant.IdentityNamespace(tenant.SystemTenantID))
+	system, err := kvstore.NewNamespacedKVStore(shared, tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +108,10 @@ func TestFirstBoot_ConcurrentNodesConverge(t *testing.T) {
 		}
 	}
 
-	if _, err := node.Tenant.GetTenant(ctx, tenant.SystemTenantID); err != nil {
+	if _, err := node.Tenant.GetTenant(ctx, tenantid.System); err != nil {
 		t.Errorf("system tenant missing: %v", err)
 	}
-	listed, err := roles.ListRoles(ctx, &role.ListRolesRequest{TenantID: tenant.SystemTenantID, PageSize: 100})
+	listed, err := roles.ListRoles(ctx, &role.ListRolesRequest{TenantID: tenantid.System, PageSize: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +119,7 @@ func TestFirstBoot_ConcurrentNodesConverge(t *testing.T) {
 	for _, r := range listed.Roles {
 		names[r.Name]++
 	}
-	want := append(role.BuiltInRoles(tenant.SystemTenantID), role.OwnerRole(tenant.SystemTenantID))
+	want := append(role.BuiltInRoles(tenantid.System), role.OwnerRole(tenantid.System))
 	for _, r := range want {
 		if names[r.Name] != 1 {
 			t.Errorf("role %q present %d times, want exactly once", r.Name, names[r.Name])
@@ -130,7 +132,7 @@ func TestFirstBoot_ConcurrentNodesConverge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := users.ListUsers(ctx, &user.ListUsersRequest{TenantID: tenant.SystemTenantID, PageSize: 100})
+	all, err := users.ListUsers(ctx, &user.ListUsersRequest{TenantID: tenantid.System, PageSize: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,8 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
 )
 
@@ -44,7 +45,7 @@ const BootstrapAdminUsername = "admin"
 // (The admin is not a System user: first boot creates it with System == false,
 // so that flag cannot identify it.)
 func IsBootstrapAdmin(u *User) bool {
-	return u != nil && u.Username == BootstrapAdminUsername && tenant.IsSystemTenant(u.TenantID)
+	return u != nil && u.Username == BootstrapAdminUsername && tenantid.IsSystem(u.TenantID)
 }
 
 // WithBootstrapAdminBindingRequired makes the store refuse every change that

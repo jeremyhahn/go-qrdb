@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -460,7 +460,7 @@ func TestGetUser_RecordWithoutLifecycleFailsClosed(t *testing.T) {
 	data, merr := json.Marshal(map[string]any{
 		"id":        uint64(4242),
 		"username":  "stateless",
-		"tenantID":  tenant.SystemTenantID,
+		"tenantID":  tenantid.System,
 		"roleIDs":   []string{"viewer"},
 		"enabled":   true,
 		"createdAt": time.Now().UTC(),
@@ -528,16 +528,16 @@ func TestUpdateUser_RefusedRequestNeverTouchesTheIndex(t *testing.T) {
 	}
 
 	// The old handles still resolve and the new ones were never reserved.
-	if _, gerr := svc.GetUserByUsername(ctx, tenant.SystemTenantID, "heidi"); gerr != nil {
+	if _, gerr := svc.GetUserByUsername(ctx, tenantid.System, "heidi"); gerr != nil {
 		t.Fatalf("the original username stopped resolving: %v", gerr)
 	}
-	if _, gerr := svc.GetUserByEmail(ctx, tenant.SystemTenantID, "heidi@example.com"); gerr != nil {
+	if _, gerr := svc.GetUserByEmail(ctx, tenantid.System, "heidi@example.com"); gerr != nil {
 		t.Fatalf("the original login key stopped resolving: %v", gerr)
 	}
-	if raw, gerr := kv.Get(ctx, usernameIndexKey(tenant.SystemTenantID, "heidi-renamed")); gerr != nil || raw != nil {
+	if raw, gerr := kv.Get(ctx, usernameIndexKey(tenantid.System, "heidi-renamed")); gerr != nil || raw != nil {
 		t.Fatalf("the refused username was reserved anyway (raw=%v err=%v)", raw, gerr)
 	}
-	if raw, gerr := kv.Get(ctx, emailIndexKey(tenant.SystemTenantID, "renamed@example.com")); gerr != nil || raw != nil {
+	if raw, gerr := kv.Get(ctx, emailIndexKey(tenantid.System, "renamed@example.com")); gerr != nil || raw != nil {
 		t.Fatalf("the refused login key was reserved anyway (raw=%v err=%v)", raw, gerr)
 	}
 

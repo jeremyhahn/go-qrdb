@@ -34,7 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // secretsScopeRoles is a role service granting the full secrets:* family, so
@@ -96,7 +96,7 @@ func TestAuthorizeTenant_Secrets_ForeignTenantIsRefused(t *testing.T) {
 func TestAuthorizeTenant_Secrets_SystemTenantOwnVaultIsAdmitted(t *testing.T) {
 	mw := newSecretsScopeMiddleware()
 
-	if err := mw.AuthorizeTenant(secretsIdentityCtx(tenant.SystemTenantID), tenant.SystemTenantID, permission.SecretsList); err != nil {
+	if err := mw.AuthorizeTenant(secretsIdentityCtx(tenantid.System), tenantid.System, permission.SecretsList); err != nil {
 		t.Fatalf("the system tenant must reach its own vault: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestAuthorizeTenant_Secrets_SystemTenantOwnVaultIsAdmitted(t *testing.T) {
 func TestAuthorizeTenant_Secrets_SystemTenantForeignVaultIsRefused(t *testing.T) {
 	mw := newSecretsScopeMiddleware()
 
-	err := mw.AuthorizeTenant(secretsIdentityCtx(tenant.SystemTenantID), "acme", permission.SecretsDelete)
+	err := mw.AuthorizeTenant(secretsIdentityCtx(tenantid.System), "acme", permission.SecretsDelete)
 	if err == nil {
 		t.Fatal("the system tenant must NOT reach another tenant's vault")
 	}

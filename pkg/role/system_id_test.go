@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // legacySystemRoleIDs are the identifiers the pre-FIPS UUIDv5 (name-based,
@@ -98,7 +98,7 @@ func seedLegacyRole(t *testing.T, kv *memKVStore, tenantID, roleName string, per
 
 func TestSystemRoleID_IsUUIDv8(t *testing.T) {
 	for _, name := range []string{RoleNameSO, RoleNameAdmin, RoleNameOperator, RoleNameUser, RoleNameAuditor, RoleNameCustodian, RoleNameOwner} {
-		got := SystemRoleID(tenant.SystemTenantID, name)
+		got := SystemRoleID(tenantid.System, name)
 
 		parsed, err := uuid.Parse(got)
 		if err != nil {
@@ -144,7 +144,7 @@ func TestSystemRoleID_DeterministicAndDistinct(t *testing.T) {
 }
 
 func TestSystemRoleID_EmptyTenantDefaultsToSystem(t *testing.T) {
-	if got, want := SystemRoleID("", RoleNameAdmin), SystemRoleID(tenant.SystemTenantID, RoleNameAdmin); got != want {
+	if got, want := SystemRoleID("", RoleNameAdmin), SystemRoleID(tenantid.System, RoleNameAdmin); got != want {
 		t.Errorf("empty tenant = %s, want %s", got, want)
 	}
 }
@@ -167,7 +167,7 @@ func TestGetRole_ResolvesLegacyPersistedIdentifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	want := seedLegacyRole(t, kv, tenant.SystemTenantID, RoleNameAdmin, []permission.Permission{permission.KeysList})
+	want := seedLegacyRole(t, kv, tenantid.System, RoleNameAdmin, []permission.Permission{permission.KeysList})
 	ctx := context.Background()
 
 	got, err := svc.GetRole(ctx, want.ID)
@@ -178,7 +178,7 @@ func TestGetRole_ResolvesLegacyPersistedIdentifier(t *testing.T) {
 		t.Errorf("GetRole = %+v, want ID %s name %s", got, want.ID, RoleNameAdmin)
 	}
 
-	byName, err := svc.GetRoleByName(ctx, tenant.SystemTenantID, RoleNameAdmin)
+	byName, err := svc.GetRoleByName(ctx, tenantid.System, RoleNameAdmin)
 	if err != nil {
 		t.Fatalf("GetRoleByName: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestGetRole_ResolvesLegacyPersistedIdentifier(t *testing.T) {
 		t.Errorf("ResolvePermissions = %v, want [%s]", perms, permission.KeysList)
 	}
 
-	list, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: tenant.SystemTenantID})
+	list, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: tenantid.System})
 	if err != nil {
 		t.Fatalf("ListRoles: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestResolveSystemRoleID_NilResolverYieldsCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveSystemRoleID: %v", err)
 	}
-	if want := SystemRoleID(tenant.SystemTenantID, RoleNameSO); got != want {
+	if want := SystemRoleID(tenantid.System, RoleNameSO); got != want {
 		t.Errorf("ResolveSystemRoleID = %s, want %s", got, want)
 	}
 }
@@ -309,10 +309,10 @@ func TestBuiltInRoles_SeedingKeepsLegacyRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	legacy := seedLegacyRole(t, kv, tenant.SystemTenantID, RoleNameAdmin, []permission.Permission{permission.KeysList}).ID
+	legacy := seedLegacyRole(t, kv, tenantid.System, RoleNameAdmin, []permission.Permission{permission.KeysList}).ID
 	ctx := context.Background()
 
-	for _, r := range BuiltInRoles(tenant.SystemTenantID) {
+	for _, r := range BuiltInRoles(tenantid.System) {
 		_, createErr := svc.CreateRole(ctx, &CreateRoleRequest{
 			ID:          r.ID,
 			Name:        r.Name,
@@ -325,18 +325,18 @@ func TestBuiltInRoles_SeedingKeepsLegacyRecord(t *testing.T) {
 		}
 	}
 
-	admin, err := svc.GetRoleByName(ctx, tenant.SystemTenantID, RoleNameAdmin)
+	admin, err := svc.GetRoleByName(ctx, tenantid.System, RoleNameAdmin)
 	if err != nil {
 		t.Fatalf("GetRoleByName after re-seed: %v", err)
 	}
 	if admin.ID != legacy {
 		t.Errorf("admin ID = %s, want the surviving legacy %s", admin.ID, legacy)
 	}
-	if _, err := svc.GetRole(ctx, SystemRoleID(tenant.SystemTenantID, RoleNameAdmin)); err == nil {
+	if _, err := svc.GetRole(ctx, SystemRoleID(tenantid.System, RoleNameAdmin)); err == nil {
 		t.Error("a duplicate Admin role was created under the canonical identifier")
 	}
 
-	resolved, err := ResolveSystemRoleID(ctx, svc, tenant.SystemTenantID, RoleNameAdmin)
+	resolved, err := ResolveSystemRoleID(ctx, svc, tenantid.System, RoleNameAdmin)
 	if err != nil {
 		t.Fatalf("ResolveSystemRoleID: %v", err)
 	}

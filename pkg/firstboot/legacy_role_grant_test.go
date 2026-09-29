@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // System role identifiers moved from UUIDv5 (SHA-1) to UUIDv8 (SHA-256) for
@@ -117,8 +117,8 @@ func TestInitialize_GrantsDerivedIdentifiersWithoutAResolver(t *testing.T) {
 
 	got := users.createCalls[0].RoleIDs
 	want := []string{
-		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin),
-		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameOwner),
+		role.SystemRoleID(tenantid.System, role.RoleNameAdmin),
+		role.SystemRoleID(tenantid.System, role.RoleNameOwner),
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("admin RoleIDs = %v, want %v", got, want)
@@ -249,8 +249,8 @@ func TestInitialize_DerivesWhenThisRunSeededTheRoles(t *testing.T) {
 
 	got := users.createCalls[0].RoleIDs
 	want := []string{
-		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin),
-		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameOwner),
+		role.SystemRoleID(tenantid.System, role.RoleNameAdmin),
+		role.SystemRoleID(tenantid.System, role.RoleNameOwner),
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("admin RoleIDs = %v, want %v", got, want)

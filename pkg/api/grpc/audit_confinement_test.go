@@ -20,13 +20,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestAuditQuery_ConfinedToCallersTenant: the AuditService (and the unix
@@ -41,7 +42,7 @@ func TestAuditQuery_ConfinedToCallersTenant(t *testing.T) {
 	}}}
 	acme := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "a", TenantID: "acme"})
 
-	for _, foreign := range []string{"globex", tenant.SystemTenantID} {
+	for _, foreign := range []string{"globex", tenantid.System} {
 		_, err := s.Query(acme, &pb.AuditQueryRequest{TenantId: foreign})
 		if status.Code(err) != codes.PermissionDenied {
 			t.Errorf("tenant_id=%s: code = %v (%v), want PermissionDenied", foreign, status.Code(err), err)
@@ -54,12 +55,12 @@ func TestAuditQuery_ConfinedToCallersTenant(t *testing.T) {
 	if _, err := s.Query(acme, &pb.AuditQueryRequest{}); err != nil {
 		t.Fatalf("unfiltered query: %v", err)
 	}
-	sys := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "op", TenantID: tenant.SystemTenantID})
+	sys := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "op", TenantID: tenantid.System})
 	if _, err := s.Query(sys, &pb.AuditQueryRequest{}); err != nil {
 		t.Fatalf("system query: %v", err)
 	}
 	if len(queried) != 2 || queried[0].TenantID != "acme" || queried[0].Untenanted ||
-		queried[1].TenantID != tenant.SystemTenantID || !queried[1].Untenanted {
+		queried[1].TenantID != tenantid.System || !queried[1].Untenanted {
 		t.Fatalf("logger queried with %+v; want acme alone, then the system tenant with platform events", queried)
 	}
 }

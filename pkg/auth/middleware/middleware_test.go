@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -606,8 +607,8 @@ func TestAuthenticate_EmptyTenantIDFallsBackToSystem(t *testing.T) {
 	}
 
 	got := tenant.FromContext(ctx)
-	if got != tenant.SystemTenantID {
-		t.Errorf("tenant.FromContext: got %q, want SystemTenantID %q", got, tenant.SystemTenantID)
+	if got != tenantid.System {
+		t.Errorf("tenant.FromContext: got %q, want SystemTenantID %q", got, tenantid.System)
 	}
 }
 

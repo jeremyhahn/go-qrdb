@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // =============================================================================
@@ -87,7 +88,7 @@ func newCoverageVecSvc(t *testing.T, namespace string, dimension uint32, storage
 	logger := newVecTestLogger()
 
 	// The scoped name used for system-tenant requests (no ctx tenant set).
-	scoped := scopedNamespace(tenant.SystemTenantID, namespace)
+	scoped := scopedNamespace(tenantid.System, namespace)
 
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		if namespace == "" {
@@ -605,7 +606,7 @@ func TestVectorPerformIndexRebuild_Success(t *testing.T) {
 	// Verify the index was stored
 	svc.indexMu.RLock()
 	defer svc.indexMu.RUnlock()
-	_, indexExists := svc.hnswIndexes[scopedNamespace(tenant.SystemTenantID, "rebuild-ns")]
+	_, indexExists := svc.hnswIndexes[scopedNamespace(tenantid.System, "rebuild-ns")]
 	assert.True(t, indexExists)
 }
 
@@ -770,7 +771,7 @@ func TestVectorRebuildIndex_SyncWithVectors(t *testing.T) {
 
 	// Update namespace info to show vector count. Use the scoped name
 	// since RebuildIndex passes the scoped key to storage.
-	scoped := scopedNamespace(tenant.SystemTenantID, "rebuild-ns")
+	scoped := scopedNamespace(tenantid.System, "rebuild-ns")
 	storage.getNamespaceInfoFn = func(ctx context.Context, ns string) (*vector.NamespaceInfo, error) {
 		if ns == scoped {
 			return &vector.NamespaceInfo{
@@ -1067,7 +1068,7 @@ func TestVectorGetIndexStats_WithHNSWIndex(t *testing.T) {
 		},
 	}
 	svc.indexMu.Lock()
-	svc.hnswIndexes[scopedNamespace(tenant.SystemTenantID, "stats-ns")] = mockIndex
+	svc.hnswIndexes[scopedNamespace(tenantid.System, "stats-ns")] = mockIndex
 	svc.indexMu.Unlock()
 
 	resp, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{
@@ -1138,7 +1139,7 @@ func TestVectorGetIndexStats_NilStats(t *testing.T) {
 		getStatsFn: func() *interfaces.HNSWStats { return nil },
 	}
 	svc.indexMu.Lock()
-	svc.hnswIndexes[scopedNamespace(tenant.SystemTenantID, "stats-ns")] = mockIndex
+	svc.hnswIndexes[scopedNamespace(tenantid.System, "stats-ns")] = mockIndex
 	svc.indexMu.Unlock()
 
 	resp, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{
@@ -1168,7 +1169,7 @@ func TestVectorGetIndexStats_ZeroNodeCountStats(t *testing.T) {
 		},
 	}
 	svc.indexMu.Lock()
-	svc.hnswIndexes[scopedNamespace(tenant.SystemTenantID, "stats-ns")] = mockIndex
+	svc.hnswIndexes[scopedNamespace(tenantid.System, "stats-ns")] = mockIndex
 	svc.indexMu.Unlock()
 
 	resp, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{
@@ -1197,7 +1198,7 @@ func TestVectorGetIndexStats_MaxLayerZero(t *testing.T) {
 		},
 	}
 	svc.indexMu.Lock()
-	svc.hnswIndexes[scopedNamespace(tenant.SystemTenantID, "stats-ns")] = mockIndex
+	svc.hnswIndexes[scopedNamespace(tenantid.System, "stats-ns")] = mockIndex
 	svc.indexMu.Unlock()
 
 	resp, err := svc.GetIndexStats(context.Background(), &GetIndexStatsRequest{

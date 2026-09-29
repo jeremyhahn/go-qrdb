@@ -29,7 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newAccessorRegistry builds a REST registry whose default database resolves
@@ -38,7 +38,7 @@ func newAccessorRegistry(t *testing.T, svcs *DatabaseServices) *restServiceRegis
 	t.Helper()
 	dbReg := NewDatabaseServiceRegistry("default")
 	dbReg.Register("default", svcs)
-	return NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
+	return NewRESTServiceRegistry(dbReg, nil, tenantid.System).(*restServiceRegistry)
 }
 
 // TestRelationalAccessorsRefuseAnIncompleteServiceSet covers the guard on each
@@ -61,7 +61,7 @@ func TestRelationalAccessorsRefuseAnIncompleteServiceSet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAccessorRegistry(t, tc.svcs)
 
-			if _, err := r.TableService(tenant.SystemTenantID, "default"); err == nil {
+			if _, err := r.TableService(tenantid.System, "default"); err == nil {
 				t.Error("TableService must refuse an incomplete service set")
 			} else {
 				var want *service.CapabilityUnsupportedError
@@ -72,7 +72,7 @@ func TestRelationalAccessorsRefuseAnIncompleteServiceSet(t *testing.T) {
 				}
 			}
 
-			if _, err := r.SequenceService(tenant.SystemTenantID, "default"); err == nil {
+			if _, err := r.SequenceService(tenantid.System, "default"); err == nil {
 				t.Error("SequenceService must refuse an incomplete service set")
 			} else {
 				var want *service.CapabilityUnsupportedError
@@ -83,7 +83,7 @@ func TestRelationalAccessorsRefuseAnIncompleteServiceSet(t *testing.T) {
 				}
 			}
 
-			if _, err := r.PrivilegeService(tenant.SystemTenantID, "default"); err == nil {
+			if _, err := r.PrivilegeService(tenantid.System, "default"); err == nil {
 				t.Error("PrivilegeService must refuse an incomplete service set")
 			} else {
 				var want *service.CapabilityUnsupportedError
@@ -110,13 +110,13 @@ func TestRelationalAccessorsPropagateAResolveFailure(t *testing.T) {
 
 	const missingDB = "no-such-database"
 
-	if _, err := r.TableService(tenant.SystemTenantID, missingDB); err == nil {
+	if _, err := r.TableService(tenantid.System, missingDB); err == nil {
 		t.Error("TableService must fail for an unresolvable database")
 	}
-	if _, err := r.SequenceService(tenant.SystemTenantID, missingDB); err == nil {
+	if _, err := r.SequenceService(tenantid.System, missingDB); err == nil {
 		t.Error("SequenceService must fail for an unresolvable database")
 	}
-	if _, err := r.PrivilegeService(tenant.SystemTenantID, missingDB); err == nil {
+	if _, err := r.PrivilegeService(tenantid.System, missingDB); err == nil {
 		t.Error("PrivilegeService must fail for an unresolvable database")
 	}
 }
@@ -131,7 +131,7 @@ func TestRelationalAccessorsBuildFromACompleteSet(t *testing.T) {
 		Transaction: &stubTransactionService{},
 	})
 
-	table, err := r.TableService(tenant.SystemTenantID, "default")
+	table, err := r.TableService(tenantid.System, "default")
 	if err != nil {
 		t.Fatalf("TableService: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestRelationalAccessorsBuildFromACompleteSet(t *testing.T) {
 		t.Error("TableService returned a nil service with a nil error")
 	}
 
-	seq, err := r.SequenceService(tenant.SystemTenantID, "default")
+	seq, err := r.SequenceService(tenantid.System, "default")
 	if err != nil {
 		t.Fatalf("SequenceService: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRelationalAccessorsBuildFromACompleteSet(t *testing.T) {
 		t.Error("SequenceService returned a nil service with a nil error")
 	}
 
-	priv, err := r.PrivilegeService(tenant.SystemTenantID, "default")
+	priv, err := r.PrivilegeService(tenantid.System, "default")
 	if err != nil {
 		t.Fatalf("PrivilegeService: %v", err)
 	}
@@ -167,11 +167,11 @@ func TestRelationalAccessorsAreBuiltPerCall(t *testing.T) {
 		Transaction: &stubTransactionService{},
 	})
 
-	first, err := r.TableService(tenant.SystemTenantID, "default")
+	first, err := r.TableService(tenantid.System, "default")
 	if err != nil {
 		t.Fatalf("first TableService: %v", err)
 	}
-	second, err := r.TableService(tenant.SystemTenantID, "default")
+	second, err := r.TableService(tenantid.System, "default")
 	if err != nil {
 		t.Fatalf("second TableService: %v", err)
 	}

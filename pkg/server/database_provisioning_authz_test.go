@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // provisioningRecorder is the database service behind the transports: it
@@ -97,7 +98,7 @@ func TestServer_DatabaseCreateChecksProvisioningPermissions(t *testing.T) {
 		missing  permission.Permission
 	}{
 		{"raft backend", "acme", database.BackendRaft, permission.DatabasesCreateRaft},
-		{"raft backend, system tenant", tenant.SystemTenantID, database.BackendRaft, permission.DatabasesCreateRaft},
+		{"raft backend, system tenant", tenantid.System, database.BackendRaft, permission.DatabasesCreateRaft},
 		{"volume-isolated tenant", "vol", database.BackendPebble, permission.DatabasesCreateVolume},
 		{"raft-isolated tenant", "rft", database.BackendPebble, permission.DatabasesCreateRaft},
 	}

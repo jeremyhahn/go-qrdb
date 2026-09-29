@@ -28,7 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // emptyAnalyzer is an analyzer whose catalog carries no service registry, so
@@ -116,7 +116,7 @@ func TestNodes_Schemas(t *testing.T) {
 
 func TestMutationNode_AppliesToEveryGrantee(t *testing.T) {
 	h := sqltest.NewHarness()
-	ctx := nodeContext(tenant.SystemTenantID, "operator", testDatabase)
+	ctx := nodeContext(tenantid.System, "operator", testDatabase)
 
 	node := &mutationNode{
 		registry: h.Registry,
@@ -137,7 +137,7 @@ func TestMutationNode_AppliesToEveryGrantee(t *testing.T) {
 
 func TestMutationNode_RevokeUndoesGrant(t *testing.T) {
 	h := sqltest.NewHarness()
-	ctx := nodeContext(tenant.SystemTenantID, "operator", testDatabase)
+	ctx := nodeContext(tenantid.System, "operator", testDatabase)
 	spec := &privilegeSpec{
 		grantees: []string{"bob@%"},
 		grants:   []service.PrivilegeGrant{{Table: "orders", Privileges: service.PrivilegeSelect}},
@@ -153,7 +153,7 @@ func TestMutationNode_RevokeUndoesGrant(t *testing.T) {
 
 func TestMutationNode_PropagatesServiceError(t *testing.T) {
 	h := sqltest.NewHarness()
-	ctx := nodeContext(tenant.SystemTenantID, "operator", testDatabase)
+	ctx := nodeContext(tenantid.System, "operator", testDatabase)
 
 	// A grantee the catalog cannot store is rejected by the service, and the
 	// node must surface that rather than swallow it.

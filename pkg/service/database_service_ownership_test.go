@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newBarrierDBOwnedByTenant builds a DatabaseService with a real barrier
@@ -117,7 +118,7 @@ func TestDatabaseService_BarrierOps_OwnerAllowed(t *testing.T) {
 func TestDatabaseService_BarrierOps_SystemAllowed(t *testing.T) {
 	const owner, dbName = "tenant-b", "b-db"
 	svc, secret := newBarrierDBOwnedByTenant(t, owner, dbName)
-	sysCtx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	sysCtx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	if _, err := svc.DatabaseBarrierStatus(sysCtx, dbName); err != nil {
 		t.Fatalf("system DatabaseBarrierStatus error: %v", err)
@@ -154,7 +155,7 @@ func TestDatabaseService_BarrierOps_UnownedDatabaseSystemOnly(t *testing.T) {
 	}
 
 	// The system tenant may read it.
-	sysCtx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	sysCtx := tenant.WithTenantID(context.Background(), tenantid.System)
 	if _, err := svc.DatabaseBarrierStatus(sysCtx, dbName); err != nil {
 		t.Fatalf("system DatabaseBarrierStatus on unowned db error: %v", err)
 	}

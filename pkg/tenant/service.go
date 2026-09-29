@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // metadataPrefix is the key prefix for all tenant metadata in the KV store.
@@ -583,7 +584,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	// barrier is still sealed. Reject barrier isolation for it. (External
 	// creation of the system tenant is already blocked by the reserved-id
 	// check above; this guards the internal-call bootstrap path too.)
-	if id == SystemTenantID && (isolationType == IsolationBarrier || isolationType == IsolationVolume || isolationType == IsolationRaft) {
+	if id == tenantid.System && (isolationType == IsolationBarrier || isolationType == IsolationVolume || isolationType == IsolationRaft) {
 		return nil, ErrSystemTenantMustBePrefix
 	}
 
@@ -1372,7 +1373,7 @@ func (s *TenantService) effectiveEntitlements(ctx context.Context, tenantID stri
 // mode, or a *quota.EntitlementError otherwise. The system tenant is implicitly
 // entitled to every mode. Implements quota.EntitlementChecker.
 func (s *TenantService) CheckIsolation(ctx context.Context, tenantID, mode string) error {
-	if IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	ents, err := s.effectiveEntitlements(ctx, tenantID)
@@ -1392,7 +1393,7 @@ func (s *TenantService) CheckIsolation(ctx context.Context, tenantID, mode strin
 // (0 ⇒ unavailable); every other (dedicated) mode is gated by AllowedBarrierModes.
 // Implements the barrier-mode half of the tenant governance plane.
 func (s *TenantService) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
-	if IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	if mode == seal.StrategySystemBarrier {
@@ -1419,7 +1420,7 @@ func (s *TenantService) CheckBarrierMode(ctx context.Context, tenantID string, m
 // *quota.EntitlementError otherwise. The system tenant is implicitly entitled
 // to every feature. Implements quota.EntitlementChecker.
 func (s *TenantService) CheckFeature(ctx context.Context, tenantID, feature string) error {
-	if IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	ents, err := s.effectiveEntitlements(ctx, tenantID)
@@ -1605,7 +1606,7 @@ func (s *TenantService) GetQuotaUsage(ctx context.Context, tenantID string, reso
 // that fails to bind the true target tenant must still fail closed here.
 func enforceTenantScope(ctx context.Context, targetTenantID, op string) error {
 	caller := FromContext(ctx)
-	if IsSystemTenant(caller) || caller == targetTenantID {
+	if tenantid.IsSystem(caller) || caller == targetTenantID {
 		return nil
 	}
 	return &TenantScopeError{

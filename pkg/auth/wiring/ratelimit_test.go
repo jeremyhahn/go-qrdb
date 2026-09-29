@@ -27,7 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestBuildAuthMiddleware_NoRateLimitPoliciesIsUnthrottled proves the
@@ -46,7 +46,7 @@ func TestBuildAuthMiddleware_NoRateLimitPoliciesIsUnthrottled(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		ctx := auth.WithIdentity(context.Background(), adminIdentity())
-		require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+		require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 	}
 }
 
@@ -69,10 +69,10 @@ func TestBuildAuthMiddleware_RateLimitPoliciesEnforced(t *testing.T) {
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 
 	ctx2 := auth.WithIdentity(context.Background(), adminIdentity())
-	err = mw.AuthorizeTenant(ctx2, tenant.SystemTenantID, permission.AdminStatus)
+	err = mw.AuthorizeTenant(ctx2, tenantid.System, permission.AdminStatus)
 	require.Error(t, err)
 	var rateLimited *middleware.RateLimitedError
 	assert.True(t, errors.As(err, &rateLimited), "want *middleware.RateLimitedError, got %T: %v", err, err)
@@ -98,7 +98,7 @@ func TestBuildAuthMiddleware_RateLimiterOverrideIsUsed(t *testing.T) {
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 
 	assert.Equal(t, int32(1), spy.calls, "want the supplied limiter, not a fresh default, to have been consulted")
 }

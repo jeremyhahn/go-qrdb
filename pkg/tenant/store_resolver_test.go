@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newResolverFixture builds a TenantService (with a pooled barrier
@@ -80,11 +81,11 @@ func TestStoreResolver_SystemTenantUsesSharedStore(t *testing.T) {
 	shared, _, _, resolver := newResolverFixture(t)
 	ctx := context.Background()
 
-	got, err := resolver.Resolve(ctx, SystemTenantID)
+	got, err := resolver.Resolve(ctx, tenantid.System)
 	if err != nil {
 		t.Fatalf("Resolve(system): %v", err)
 	}
-	requireBackedByShared(t, shared, got, SystemTenantID)
+	requireBackedByShared(t, shared, got, tenantid.System)
 
 	// Empty tenant ID also resolves to the shared store.
 	got, err = resolver.Resolve(ctx, "")
@@ -92,7 +93,7 @@ func TestStoreResolver_SystemTenantUsesSharedStore(t *testing.T) {
 		t.Fatalf("Resolve(empty): %v", err)
 	}
 	// An empty tenant ID resolves to the system tenant's namespace.
-	requireBackedByShared(t, shared, got, SystemTenantID)
+	requireBackedByShared(t, shared, got, tenantid.System)
 }
 
 // (b) A prefix tenant's data goes to the shared system store.
@@ -548,7 +549,7 @@ func TestStoreResolver_IdentityIsTenantWideNotPerDatabase(t *testing.T) {
 // finding, and it is the same split-brain class as per-database identity
 // reached through a different door.
 //
-// IsSystemTenant treats "" and SystemTenantID as the same tenant, so both
+// IsSystemTenant treats "" and tenantid.System as the same tenant, so both
 // route through sharedFor. Building the prefix from the RAW input gave them
 // two namespaces — "/" and "system/" — and system IAM written through one
 // representation was invisible through the other. tenant.ComposeNamespace
@@ -562,7 +563,7 @@ func TestStoreResolver_EmptyAndSystemTenantShareOneNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(empty): %v", err)
 	}
-	system, err := resolver.Resolve(ctx, SystemTenantID)
+	system, err := resolver.Resolve(ctx, tenantid.System)
 	if err != nil {
 		t.Fatalf("Resolve(system): %v", err)
 	}
@@ -586,12 +587,12 @@ func TestStoreResolver_EmptyAndSystemTenantShareOneNamespace(t *testing.T) {
 	}
 
 	// And it lands under the canonical prefix, not "/".
-	if _, ok := shared.data[SystemTenantID+"/__sys:users/id/admin"]; !ok {
+	if _, ok := shared.data[tenantid.System+"/__sys:users/id/admin"]; !ok {
 		keys := make([]string, 0, len(shared.data))
 		for k := range shared.data {
 			keys = append(keys, k)
 		}
-		t.Errorf("write landed at %v; want it under %q", keys, SystemTenantID+"/")
+		t.Errorf("write landed at %v; want it under %q", keys, tenantid.System+"/")
 	}
 }
 
@@ -617,7 +618,7 @@ func TestIdentityNamespace_ResolverAndDirectCallersAgree(t *testing.T) {
 
 	// The firstboot side: a store built directly, confined by the shared
 	// formula, with no resolver in existence yet.
-	direct, err := kvstore.NewNamespacedKVStore(shared, IdentityNamespace(SystemTenantID))
+	direct, err := kvstore.NewNamespacedKVStore(shared, IdentityNamespace(tenantid.System))
 	if err != nil {
 		t.Fatalf("NewNamespacedKVStore: %v", err)
 	}
@@ -627,7 +628,7 @@ func TestIdentityNamespace_ResolverAndDirectCallersAgree(t *testing.T) {
 	}
 
 	// The authorizer side: the resolver-routed store for the same tenant.
-	for _, id := range []string{SystemTenantID, ""} {
+	for _, id := range []string{tenantid.System, ""} {
 		routed, rerr := resolver.Resolve(ctx, id)
 		if rerr != nil {
 			t.Fatalf("Resolve(%q): %v", id, rerr)
@@ -645,7 +646,7 @@ func TestIdentityNamespace_ResolverAndDirectCallersAgree(t *testing.T) {
 	}
 
 	// And the reverse direction, since either side may write first.
-	routed, err := resolver.Resolve(ctx, SystemTenantID)
+	routed, err := resolver.Resolve(ctx, tenantid.System)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

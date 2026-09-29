@@ -704,7 +704,7 @@ wrong fails a test rather than passing a typed-in column.
 - **The system-tenant rule reads `identity.TenantID`, so that field must
   arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
-  to `tenant.IsSystemTenant`, whose empty-string branch is safe only because
+  to `tenantid.IsSystem`, whose empty-string branch is safe only because
   the boundary already folded `""`. `auth/middleware.finalizeIdentity` performs
   that fold — on the identity as well as the context, which is the fix for
   #188; folding only the context left the authorizer reading the raw value.

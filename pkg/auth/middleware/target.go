@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -111,7 +112,7 @@ func (m *AuthMiddleware) ResolveTarget(ctx context.Context, t Target) (string, e
 	self := tenant.FromContext(ctx)
 	switch t.kind {
 	case targetTenant:
-		return tenant.Normalize(t.tenantID), nil
+		return tenantid.Normalize(t.tenantID), nil
 	case targetUser:
 		return m.userTenant(ctx, t.userID, self)
 	case targetRole:
@@ -129,7 +130,7 @@ func (m *AuthMiddleware) userTenant(ctx context.Context, id uint64, self string)
 	}
 	u, err := m.users.GetUser(ctx, id)
 	if err == nil && u != nil {
-		return tenant.Normalize(u.TenantID), nil
+		return tenantid.Normalize(u.TenantID), nil
 	}
 	var notFound *user.UserNotFoundError
 	if err == nil || errors.As(err, &notFound) {
@@ -146,7 +147,7 @@ func (m *AuthMiddleware) roleTenant(ctx context.Context, id, self string) (strin
 	}
 	r, err := m.roles.GetRole(ctx, id)
 	if err == nil && r != nil {
-		return tenant.Normalize(r.TenantID), nil
+		return tenantid.Normalize(r.TenantID), nil
 	}
 	var notFound *role.RoleNotFoundError
 	if err == nil || errors.As(err, &notFound) {

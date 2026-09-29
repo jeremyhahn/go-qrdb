@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeReplicaQuota is both a quota.QuotaProvider and a QuotaUsageRecorder. It
@@ -258,7 +259,7 @@ func TestCreateForTenant_Replicas_DefaultsToOne(t *testing.T) {
 func TestCreateForTenant_Replicas_SystemTenantExempt(t *testing.T) {
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 1, MaxTotalReplicas: 1}}
 	svc := newReplicaDatabaseService(t, raftTenant(t), f)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	cfg := testDBConfig("sys")
 	cfg.Replicas = 999 // far above the caps; must be ignored for the system tenant

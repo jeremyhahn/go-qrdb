@@ -25,7 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -43,7 +43,7 @@ func seedBarrierIdentity(t *testing.T, n *node.Node) {
 
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        "conformance-barrier",
-		TenantID:    tenant.SystemTenantID,
+		TenantID:    tenantid.System,
 		Permissions: []permission.Permission{permission.SealEnableEncryption, permission.SealStatus},
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func seedBarrierIdentity(t *testing.T, n *node.Node) {
 	}
 	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "matrix",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		RoleIDs:  []string{r.ID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
@@ -83,7 +83,7 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if tk.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenantid.System)
 	}
 
 	n, err := node.NewStandaloneNode(context.Background(), cfg, serverOpts)

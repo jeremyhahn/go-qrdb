@@ -21,11 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -79,7 +80,7 @@ func seedCoordinationIdentity(t *testing.T, n *node.Node) {
 	ctx := boundedCtx(t)
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:        "coordination-matrix",
-		TenantID:    tenant.SystemTenantID,
+		TenantID:    tenantid.System,
 		Permissions: coordinationPermissions,
 	})
 	if err != nil {
@@ -88,7 +89,7 @@ func seedCoordinationIdentity(t *testing.T, n *node.Node) {
 	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "matrix",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		RoleIDs:              []string{r.ID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
@@ -105,7 +106,7 @@ func (c cell) bootClient(t *testing.T) *sdk.Client {
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if c.transport.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenantid.System)
 	}
 
 	var n *node.Node

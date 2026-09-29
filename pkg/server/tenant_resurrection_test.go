@@ -37,6 +37,7 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -109,7 +110,7 @@ func newTenantFixture(t *testing.T, wireTeardown bool) *tenantFixture {
 
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root, Index: idx})
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID, WithTenantServicer(svc))
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System, WithTenantServicer(svc))
 
 	return &tenantFixture{root: root, index: idx, tenants: svc, registry: reg}
 }
@@ -350,13 +351,13 @@ func TestTenantDelete_SystemTenantKeyspaceIsRefused(t *testing.T) {
 	ctx := context.Background()
 	f := newTenantFixture(t, true)
 
-	bootKey := tenant.ComposeNamespace(tenant.SystemTenantID, "system") + "boot"
+	bootKey := tenant.ComposeNamespace(tenantid.System, "system") + "boot"
 	if err := f.root.Put(ctx, bootKey, []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	reclaimer := service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: f.root, Index: f.index})
-	for _, id := range []string{tenant.SystemTenantID, ""} {
+	for _, id := range []string{tenantid.System, ""} {
 		var scope *service.ReclaimScopeError
 		if err := reclaimer.ReclaimTenantKeyspace(ctx, id); !errors.As(err, &scope) {
 			t.Errorf("ReclaimTenantKeyspace(%q) must be refused, got %v", id, err)
@@ -658,8 +659,8 @@ func TestTenantDelete_SystemTenantIsNotDeletable(t *testing.T) {
 	// The system tenant's own records: an identity record and a key in the
 	// bootstrap database. Both live under "system/", which is precisely the
 	// range a tenant reclamation would have walked.
-	bootKey := tenant.ComposeNamespace(tenant.SystemTenantID, "system") + "boot"
-	identityKey := tenant.IdentityNamespace(tenant.SystemTenantID) + "user/root"
+	bootKey := tenant.ComposeNamespace(tenantid.System, "system") + "boot"
+	identityKey := tenant.IdentityNamespace(tenantid.System) + "user/root"
 	for _, k := range []string{bootKey, identityKey} {
 		if err := f.root.Put(ctx, k, []byte("v")); err != nil {
 			t.Fatalf("Put(%s): %v", k, err)
@@ -667,7 +668,7 @@ func TestTenantDelete_SystemTenantIsNotDeletable(t *testing.T) {
 	}
 
 	var reserved *tenant.ReservedTenantIDError
-	if err := f.tenants.DeleteTenant(ctx, tenant.SystemTenantID); !errors.As(err, &reserved) {
+	if err := f.tenants.DeleteTenant(ctx, tenantid.System); !errors.As(err, &reserved) {
 		t.Fatalf("DeleteTenant(system) = %v, want a ReservedTenantIDError", err)
 	}
 
@@ -680,7 +681,7 @@ func TestTenantDelete_SystemTenantIsNotDeletable(t *testing.T) {
 	// consequence of retiring its id, and it is the half only this layer can
 	// see; that no tombstone was written is asserted in pkg/tenant, where the
 	// key formula lives and cannot be re-derived by hand.
-	kv, err := f.registry.KVService(tenant.SystemTenantID, "system")
+	kv, err := f.registry.KVService(tenantid.System, "system")
 	if err != nil {
 		t.Fatalf("the system tenant stopped resolving after a refused delete: %v", err)
 	}
@@ -697,7 +698,7 @@ func TestTenantDelete_ReservedIdsAreNotDeletable(t *testing.T) {
 	ctx := context.Background()
 	f := newTenantFixture(t, true)
 
-	for _, id := range []string{tenant.SystemTenantID, "default", "_internal", "acme:eu"} {
+	for _, id := range []string{tenantid.System, "default", "_internal", "acme:eu"} {
 		t.Run(id, func(t *testing.T) {
 			var reserved *tenant.ReservedTenantIDError
 			if err := f.tenants.DeleteTenant(ctx, id); !errors.As(err, &reserved) {

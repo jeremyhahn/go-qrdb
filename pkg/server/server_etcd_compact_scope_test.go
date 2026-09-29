@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -28,7 +30,6 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // An etcd listener admits a system-tenant caller to another tenant's
@@ -39,9 +40,9 @@ import (
 // tenant's listener, while the owner's own identity can.
 func TestEtcdRequestAuthorizer_CompactIsTheOwningTenantsAlone(t *testing.T) {
 	f := newEtcdScopeFixture(t, false)
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 	grant := []permission.Permission{permission.MVCCCompact, permission.KVRange}
-	operator := authtest.Grant(t, roles, &auth.Identity{Subject: "root", TenantID: tenant.SystemTenantID}, grant...)
+	operator := authtest.Grant(t, roles, &auth.Identity{Subject: "root", TenantID: tenantid.System}, grant...)
 	owner := authtest.Grant(t, roles, &auth.Identity{Subject: "alice", TenantID: "acme"}, grant...)
 
 	authorize := func(id *auth.Identity, perm permission.Permission) error {

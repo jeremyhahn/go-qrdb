@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // getWhenReadable performs a linearizable KV read, retrying while the shard's
@@ -84,7 +85,7 @@ func newRaftMigrateStack(t *testing.T) *raftMigrateStack {
 
 	host, _ := newSharedTestHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(
-		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenant.SystemTenantID, volTestLogger())
+		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenantid.System, volTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	return &raftMigrateStack{reg: reg, tenants: tenants, dbSvc: dbSvc, raftReg: raftReg}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // legacyDefaultTenantID is the legacy tenant id retired in Phase 0 of
@@ -83,7 +84,7 @@ func validateTenantIDCharset(id string) error {
 // reservedTenantIDReason returns the reason the platform reserves id, or nil
 // when the id is free. It is THE declaration of the reserved set:
 //
-//   - SystemTenantID ("system") — structurally privileged platform tenant.
+//   - tenantid.System ("system") — structurally privileged platform tenant.
 //   - legacyDefaultTenantID ("default") — retired; permanently reserved.
 //   - the holder certificate profiles ("custodian", "security-officer",
 //     holderprofile.Is) — a certificate issued before the ceremony CA set
@@ -94,7 +95,7 @@ func validateTenantIDCharset(id string) error {
 //   - any id containing ":" — reserved for compound-id schemes.
 func reservedTenantIDReason(id string) error {
 	switch {
-	case id == SystemTenantID:
+	case id == tenantid.System:
 		return &ReservedTenantIDError{
 			TenantID: id,
 			Reason:   "system tenant id is reserved for the platform",

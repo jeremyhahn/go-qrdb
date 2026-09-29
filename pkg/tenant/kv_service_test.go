@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -707,7 +708,7 @@ func TestKVCreateTenant_RejectsSystemID(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	_, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	_, err := svc.CreateTenant(ctx, tenantid.System, "System", "")
 	var rerr *ReservedTenantIDError
 	if !errors.As(err, &rerr) {
 		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
@@ -751,12 +752,12 @@ func TestKVCreateTenant_InternalCallAllowsSystemID(t *testing.T) {
 	ctx := WithInternalCall(context.Background())
 	svc := newKVService(t)
 
-	info, err := svc.CreateTenant(ctx, SystemTenantID, "System", "")
+	info, err := svc.CreateTenant(ctx, tenantid.System, "System", "")
 	if err != nil {
 		t.Fatalf("internal-call CreateTenant(system): %v", err)
 	}
-	if info.ID != SystemTenantID {
-		t.Errorf("ID = %q, want %q", info.ID, SystemTenantID)
+	if info.ID != tenantid.System {
+		t.Errorf("ID = %q, want %q", info.ID, tenantid.System)
 	}
 }
 

@@ -26,7 +26,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // certTools returns the MCP tool registrations for certificate management
@@ -271,7 +271,7 @@ func toolCertList() mcp.Tool {
 // handleCertList returns a tool handler that delegates to svc.ListCerts.
 func handleCertList(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		tenantID := mcp.ParseString(req, "tenant_id", tenant.SystemTenantID)
+		tenantID := mcp.ParseString(req, "tenant_id", tenantid.System)
 
 		if err := authorizeCertTenantTool(ctx, mw, tenantID, permission.CertsList); err != nil {
 			return nil, &ToolError{Tool: "qrdb_cert_list", Err: err}

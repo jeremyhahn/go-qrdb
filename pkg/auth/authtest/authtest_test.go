@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -61,13 +63,13 @@ func TestAdminIdentity_HoldsTheBuiltInAdminGrantInItsOwnTenant(t *testing.T) {
 }
 
 func TestAdminIdentity_CrossScopeRefusedOutsideTheSystemTenant(t *testing.T) {
-	authz := rbac.New(authtest.BuiltInRoles(t, "acme", tenant.SystemTenantID))
+	authz := rbac.New(authtest.BuiltInRoles(t, "acme", tenantid.System))
 	var denied *rbac.PermissionDeniedError
-	err := authorize(t, authz, authtest.AdminIdentity("acme", "a"), tenant.SystemTenantID, permission.TenantsCreateCross)
+	err := authorize(t, authz, authtest.AdminIdentity("acme", "a"), tenantid.System, permission.TenantsCreateCross)
 	if !errors.As(err, &denied) {
 		t.Fatalf("acme admin tenants:create:cross = %v, want *rbac.PermissionDeniedError", err)
 	}
-	if err := authorize(t, authz, authtest.AdminIdentity(tenant.SystemTenantID, "root"), tenant.SystemTenantID, permission.TenantsCreateCross); err != nil {
+	if err := authorize(t, authz, authtest.AdminIdentity(tenantid.System, "root"), tenantid.System, permission.TenantsCreateCross); err != nil {
 		t.Fatalf("system admin tenants:create:cross = %v, want nil", err)
 	}
 }
@@ -147,7 +149,7 @@ func TestOneToken_AdmitsOnceThenRefuses(t *testing.T) {
 }
 
 func TestNewTenants_HoldsTheNamedTenants(t *testing.T) {
-	svc := authtest.NewTenants(t, tenant.SystemTenantID, "acme")
+	svc := authtest.NewTenants(t, tenantid.System, "acme")
 	got, err := svc.ListTenants(context.Background())
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)

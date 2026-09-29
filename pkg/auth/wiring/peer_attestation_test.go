@@ -20,13 +20,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // The attested-caller gate as it is WIRED (go-qrdb#278): the middleware tests
@@ -58,7 +59,7 @@ func TestBuildAuthMiddleware_PeerAttestationGateInstalled(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	err = mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus)
+	err = mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus)
 	var refusal *middleware.PeerAttestationRefusedError
 	require.True(t, errors.As(err, &refusal), "err = %v, want the gate's refusal", err)
 	// No certificate on this context: refused before the verifier is asked.
@@ -73,5 +74,5 @@ func TestBuildAuthMiddleware_NoPeerAttestationGateGatesNothing(t *testing.T) {
 	})
 	require.NoError(t, err)
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	assert.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	assert.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 }

@@ -48,7 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The two tenants every test in this file uses. Neither is the system tenant,
@@ -295,7 +295,7 @@ func TestCertsRevoke_UnknownSerialPermittedToSystemTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
 	const peerSerial = "fedcba9876543210fedcba9876543210"
 
-	f.caller.as(tenant.SystemTenantID, "platform-op")
+	f.caller.as(tenantid.System, "platform-op")
 	rec := f.do(t, http.MethodPost, "/certs/revoke", map[string]string{"serial": peerSerial})
 
 	if rec.Code != http.StatusOK {
@@ -322,7 +322,7 @@ func TestCertsRevoke_SystemTenantCannotRevokeAnotherTenantsSerial(t *testing.T) 
 	f := newCertScopeFixture(t)
 	target := f.issue(t, certScopeTenantB, "b-user")
 
-	f.caller.as(tenant.SystemTenantID, "platform-op")
+	f.caller.as(tenantid.System, "platform-op")
 	rec := f.do(t, http.MethodPost, "/certs/revoke", map[string]string{"serial": target})
 
 	if rec.Code != http.StatusForbidden {
@@ -429,7 +429,7 @@ func TestCertsGenerate_OwnTenantStillSucceeds(t *testing.T) {
 func TestCertsGenerate_SystemTenantCannotTargetAnotherTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
 
-	f.caller.as(tenant.SystemTenantID, "platform-op")
+	f.caller.as(tenantid.System, "platform-op")
 	rec := f.do(t, http.MethodPost, "/certs/generate", map[string]string{
 		"username": "b-user",
 		"tenantID": certScopeTenantB,
@@ -441,7 +441,7 @@ func TestCertsGenerate_SystemTenantCannotTargetAnotherTenant(t *testing.T) {
 
 	rec = f.do(t, http.MethodPost, "/certs/generate", map[string]string{
 		"username": "op",
-		"tenantID": tenant.SystemTenantID,
+		"tenantID": tenantid.System,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: the platform operator mints for its own tenant (body %q)",
@@ -517,7 +517,7 @@ func TestCertsList_SystemTenantCannotListAnotherTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
 	f.issue(t, certScopeTenantB, "b-user")
 
-	f.caller.as(tenant.SystemTenantID, "platform-op")
+	f.caller.as(tenantid.System, "platform-op")
 	rec := f.do(t, http.MethodGet, "/certs/list?tenantID="+certScopeTenantB, nil)
 
 	if rec.Code != http.StatusForbidden {

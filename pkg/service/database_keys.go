@@ -18,6 +18,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -233,7 +234,7 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // asked to tidy. An empty tenantID returns nil for the same reason, since
 // tenant.IdentityNamespace canonicalizes it to the system tenant.
 func TenantKeyPrefixes(tenantID string) []string {
-	if tenantID == "" || tenant.IsSystemTenant(tenantID) {
+	if tenantID == "" || tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	ns := tenant.IdentityNamespace(tenantID)
@@ -260,7 +261,7 @@ func TenantKeyPrefixes(tenantID string) []string {
 // The system tenant and an empty id return nil, for the reason
 // TenantKeyPrefixes returns nil for them.
 func TenantIndexNamePrefixes(tenantID string) []string {
-	if tenantID == "" || tenant.IsSystemTenant(tenantID) {
+	if tenantID == "" || tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	return []string{tenant.IdentityNamespace(tenantID)}

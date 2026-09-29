@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestCreateUser_SystemRequestPersisted asserts CreateUser honors
@@ -191,7 +191,7 @@ func TestCreateUser_SystemRefusesSecondUser(t *testing.T) {
 
 	// The refused attempt's username must be genuinely unclaimed, not
 	// left behind by a partial commit.
-	if _, gerr := svc.GetUserByUsername(ctx, tenant.SystemTenantID, "another-admin"); gerr == nil {
+	if _, gerr := svc.GetUserByUsername(ctx, tenantid.System, "another-admin"); gerr == nil {
 		t.Fatal("refused second system-user create left a readable record behind")
 	}
 
@@ -678,7 +678,7 @@ func TestCreateUser_AtomicSystemClaimsSentinelInTheSameBatch(t *testing.T) {
 			tt.check(t, err)
 		})
 	}
-	if _, err := store.GetUserByUsername(ctx, tenant.SystemTenantID, "other"); err == nil {
+	if _, err := store.GetUserByUsername(ctx, tenantid.System, "other"); err == nil {
 		t.Fatal("the refused System create left a record behind")
 	}
 }

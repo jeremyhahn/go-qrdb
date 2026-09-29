@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -117,7 +118,7 @@ func TestReattachRaftTenants_AutoStartsShard_SelfStaysSealed(t *testing.T) {
 
 	host := newRaftReattachHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(
-		host, raftReattachReplicaID, raftReattachRaftAddr, reg, mgr, tenant.SystemTenantID, reattachTestLogger())
+		host, raftReattachReplicaID, raftReattachRaftAddr, reg, mgr, tenantid.System, reattachTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	if err := reattachRaftTenants(ctx, svc, reg, raftReg, mgr, reattachTestLogger()); err != nil {
@@ -185,7 +186,7 @@ func TestReattachRaftTenants_AttachError(t *testing.T) {
 	// ErrRaftBackendUnavailable without attempting shard start.
 	raftReg := NewRaftBackendFactoryFromManager(
 		(*quicraft.Host)(nil), 1, "127.0.0.1:0",
-		reg, mgr, tenant.SystemTenantID, slog.Default(),
+		reg, mgr, tenantid.System, slog.Default(),
 	)
 
 	// Seal the tenant barrier to simulate a daemon restart.

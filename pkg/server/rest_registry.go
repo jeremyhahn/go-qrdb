@@ -114,7 +114,7 @@ type restServiceRegistry struct {
 // When tenantSvc is nil, tenant lookup and unknown-tenant rejection are skipped
 // (backward-compatible with deployments that do not use the tenant service).
 // systemTenant is the canonical system tenant name (typically
-// tenant.SystemTenantID), used as the tenant-segment fallback for unscoped
+// tenantid.System), used as the tenant-segment fallback for unscoped
 // requests. It is prefixed like any other tenant — it does NOT bypass
 // namespace prefixing.
 func NewRESTServiceRegistry(

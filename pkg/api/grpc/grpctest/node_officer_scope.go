@@ -17,6 +17,8 @@ package grpctest
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -24,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // NodeOfficerScope is the node-officer scope conformance suite for the
@@ -59,7 +60,7 @@ func NodeOfficerScope(t *testing.T, start SOStartFunc) {
 		}, (*authtest.Barrier).OfficerReads},
 	}
 	for _, op := range ops {
-		roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
+		roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 		for _, c := range authtest.NodeOfficerCallers(t, roles) {
 			t.Run(op.name+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)

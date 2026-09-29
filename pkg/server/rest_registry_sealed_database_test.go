@@ -20,7 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sealedResolution is one data-plane accessor of the registry, reduced to the
@@ -65,8 +65,8 @@ func newSealedDatabaseRegistry(t *testing.T, owner, name string) (*restServiceRe
 	if err != nil {
 		t.Fatalf("Create(%q): %v", name, err)
 	}
-	reg, ok := NewRESTServiceRegistry(newFilledRegistry(), nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)),
+	reg, ok := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
 		withDatabaseManager(mgr),
 	).(*restServiceRegistry)
 	if !ok {
@@ -85,14 +85,14 @@ func TestRESTServiceRegistry_SealedDatabase_RefusedOnEveryEngine(t *testing.T) {
 	reg, db := newSealedDatabaseRegistry(t, "", "vault")
 
 	// Open: every accessor resolves.
-	if err := everyDataPlaneAccessor[0].resolve(reg, tenant.SystemTenantID, "vault"); err != nil {
+	if err := everyDataPlaneAccessor[0].resolve(reg, tenantid.System, "vault"); err != nil {
 		t.Fatalf("KVService on an open database: %v", err)
 	}
 
 	db.SetStatus(database.StatusSealed)
 	for _, a := range everyDataPlaneAccessor {
 		t.Run(a.engine, func(t *testing.T) {
-			err := a.resolve(reg, tenant.SystemTenantID, "vault")
+			err := a.resolve(reg, tenantid.System, "vault")
 			var sealed *service.BarrierSealedError
 			if !errors.As(err, &sealed) {
 				t.Fatalf("%s on a sealed database: err = %v (%T), want *service.BarrierSealedError", a.engine, err, err)
@@ -105,7 +105,7 @@ func TestRESTServiceRegistry_SealedDatabase_RefusedOnEveryEngine(t *testing.T) {
 
 	// Unsealing restores access.
 	db.SetStatus(database.StatusOpen)
-	if err := everyDataPlaneAccessor[0].resolve(reg, tenant.SystemTenantID, "vault"); err != nil {
+	if err := everyDataPlaneAccessor[0].resolve(reg, tenantid.System, "vault"); err != nil {
 		t.Fatalf("KVService after unseal: %v", err)
 	}
 }

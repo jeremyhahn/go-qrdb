@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -76,7 +77,7 @@ func TestRBACClient_Authorize_AdminAtSystem_CrossPermission(t *testing.T) {
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"role-admin"},
 	}
 	// Target tenant is bob-corp; identity is in system. ScopeCross
@@ -161,7 +162,7 @@ func TestRBACClient_ListPermissions_ResolvesScopes(t *testing.T) {
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"role-admin"},
 	}
 

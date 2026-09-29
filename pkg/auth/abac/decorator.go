@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Option configures the Decorator returned by Decorate.
@@ -212,8 +213,8 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 	// platform-wide guardrails. When the target IS the system tenant the
 	// two sets coincide and are evaluated once.
 	tenants := []string{target}
-	if !tenant.IsSystemTenant(target) {
-		tenants = append(tenants, tenant.SystemTenantID)
+	if !tenantid.IsSystem(target) {
+		tenants = append(tenants, tenantid.System)
 	}
 
 	resp, err := d.evaluator.Load().EvaluateTenants(ctx, req, tenants)

@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // raftEntitlements permits raft isolation and the dedicated-raft feature.
@@ -161,7 +162,7 @@ func TestCreateTenant_Raft_SystemManaged_DeniedWithoutEntitlement(t *testing.T) 
 // prefix-only system tenant cannot use raft isolation.
 func TestCreateTenant_Raft_SystemTenantRejected(t *testing.T) {
 	svc, _ := newRaftService(t)
-	_, err := svc.CreateTenant(context.Background(), SystemTenantID, "System", IsolationRaft)
+	_, err := svc.CreateTenant(context.Background(), tenantid.System, "System", IsolationRaft)
 	if err == nil {
 		t.Fatal("expected error creating system tenant with raft isolation, got nil")
 	}

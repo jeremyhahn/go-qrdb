@@ -14,38 +14,18 @@
 
 package tenant
 
-import "testing"
+import (
+	"testing"
 
-func TestIsSystemTenant(t *testing.T) {
-	tests := []struct {
-		name string
-		id   string
-		want bool
-	}{
-		{"empty string resolves to system", "", true},
-		{"literal system id matches", SystemTenantID, true},
-		{"ordinary tenant id does not match", "acme-corp", false},
-		{"capitalized lookalike does not match", "System", false},
-		{"trailing-space lookalike does not match", "system ", false},
-		{"suffixed lookalike does not match", "system-2", false},
-		{"leading-space lookalike does not match", " system", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := IsSystemTenant(tc.id)
-			if got != tc.want {
-				t.Fatalf("IsSystemTenant(%q) = %v, want %v", tc.id, got, tc.want)
-			}
-		})
-	}
-}
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // TestIsSystemTenantAgreesWithFromContextFallback proves the predicate's
 // empty-string case matches FromContext's documented fallback: a context
-// with no bound tenant resolves to SystemTenantID, so IsSystemTenant must
+// with no bound tenant resolves to tenantid.System, so IsSystemTenant must
 // treat "" as system-scoped or the two would disagree on the same input.
 func TestIsSystemTenantAgreesWithFromContextFallback(t *testing.T) {
-	if !IsSystemTenant("") {
-		t.Fatal("IsSystemTenant(\"\") = false, want true to agree with FromContext's empty-context fallback")
+	if !tenantid.IsSystem("") {
+		t.Fatal("tenantid.IsSystem(\"\") = false, want true to agree with FromContext's empty-context fallback")
 	}
 }

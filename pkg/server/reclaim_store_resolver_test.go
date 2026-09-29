@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -225,7 +227,7 @@ func TestReclaim_NamespacedTruncateIsDrainedThroughTheRegistry(t *testing.T) {
 	_, sys := newLockDataPlane(t, "system")
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", sys)
-	reg := newRESTRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := newRESTRegistry(dbReg, nil, tenantid.System,
 		WithSharedSQLDefaultDatabase("shop"), withReclaimOrigin("1"))
 
 	tables, err := reg.TableService("acme", "shop")
@@ -290,7 +292,7 @@ func TestRegistry_TableServicePublishesPlacementAndOrigin(t *testing.T) {
 	_, sys := newLockDataPlane(t, "system")
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", sys)
-	reg := newRESTRegistry(dbReg, nil, tenant.SystemTenantID, WithSharedSQLDefaultDatabase("shop"), withReclaimOrigin("7"))
+	reg := newRESTRegistry(dbReg, nil, tenantid.System, WithSharedSQLDefaultDatabase("shop"), withReclaimOrigin("7"))
 
 	tables, err := reg.TableService("acme", "shop")
 	if err != nil {
@@ -324,8 +326,8 @@ func TestRegistry_TableServiceWithoutASystemStoreRefusesToPublish(t *testing.T) 
 	_, sys := newLockDataPlane(t, "shop")
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("shop", sys)
-	reg := newRESTRegistry(dbReg, nil, tenant.SystemTenantID)
-	tables, err := reg.TableService(tenant.SystemTenantID, "shop")
+	reg := newRESTRegistry(dbReg, nil, tenantid.System)
+	tables, err := reg.TableService(tenantid.System, "shop")
 	if err != nil {
 		t.Fatalf("TableService: %v", err)
 	}
@@ -371,7 +373,7 @@ func TestServer_WiresTheReclaimStoreResolver(t *testing.T) {
 		t.Fatal("New returned nil")
 	}
 	op, err := service.ReclaimIndexOp(service.ReclaimIndexEntry{
-		JobID: "probe", TenantID: tenant.SystemTenantID, Database: "system",
+		JobID: "probe", TenantID: tenantid.System, Database: "system",
 		Placement: service.StorePlacementShared,
 		Fences:    []service.ReclaimFence{{Key: "never-written", ModRevision: 5}},
 	})

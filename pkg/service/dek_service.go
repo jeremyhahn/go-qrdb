@@ -17,6 +17,8 @@ package service
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -127,7 +129,7 @@ func (s *DEKService) Rewrap(ctx context.Context, tenantID string, ciphertext, aa
 // system-tenant exception.
 func dekTenant(ctx context.Context, requested string) (string, error) {
 	caller := tenant.FromContext(ctx)
-	if requested == "" || tenant.Normalize(requested) == caller {
+	if requested == "" || tenantid.Normalize(requested) == caller {
 		return caller, nil
 	}
 	return "", &dek.CrossTenantError{CallerTenant: caller, RequestedTenant: requested}

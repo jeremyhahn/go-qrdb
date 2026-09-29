@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // go-qrdb#555: CreateRole's identity claim and its three writes (primary
@@ -121,7 +122,7 @@ func TestCreateRole_Atomic_Success(t *testing.T) {
 	svc := newAtomicTestStore(t, kv)
 	ctx := context.Background()
 
-	want := BuiltInRoles(tenant.SystemTenantID)[0]
+	want := BuiltInRoles(tenantid.System)[0]
 	got, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          want.ID,
 		Name:        want.Name,
@@ -152,7 +153,7 @@ func TestCreateRole_Atomic_ConcurrentCreatesConverge(t *testing.T) {
 	kv := newMemKVStore()
 	svc := newAtomicTestStore(t, kv)
 	ctx := context.Background()
-	want := BuiltInRoles(tenant.SystemTenantID)[0]
+	want := BuiltInRoles(tenantid.System)[0]
 
 	const attempts = 20
 	var wg sync.WaitGroup
@@ -229,7 +230,7 @@ func TestCreateRole_Atomic_DifferentIDsSameNameRefused(t *testing.T) {
 			// the SAME name — the exact shape a claim-only guard cannot see.
 			roles[i], results[i] = svc.CreateRole(ctx, &CreateRoleRequest{
 				Name:     name,
-				TenantID: tenant.SystemTenantID,
+				TenantID: tenantid.System,
 			})
 		}(i)
 	}
@@ -257,7 +258,7 @@ func TestCreateRole_Atomic_DifferentIDsSameNameRefused(t *testing.T) {
 	// The name index must resolve to the WINNER's id, and the winner's own
 	// primary/tenant-index/claim records must all be present — no orphan
 	// left by a loser that raced past the (now-closed) claim-only guard.
-	byName, err := svc.GetRoleByName(ctx, tenant.SystemTenantID, name)
+	byName, err := svc.GetRoleByName(ctx, tenantid.System, name)
 	if err != nil {
 		t.Fatalf("GetRoleByName: %v", err)
 	}
@@ -282,7 +283,7 @@ func TestCreateRole_Atomic_GuardFailureRefusesCleanly(t *testing.T) {
 	kv := newMemKVStore()
 	svc := newAtomicTestStore(t, kv)
 	ctx := context.Background()
-	want := BuiltInRoles(tenant.SystemTenantID)[1]
+	want := BuiltInRoles(tenantid.System)[1]
 
 	req := &CreateRoleRequest{
 		ID:          want.ID,
@@ -407,7 +408,7 @@ func TestCreateRole_Atomic_FaultLeavesNeitherClaimNorRecord(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	want := BuiltInRoles(tenant.SystemTenantID)[2]
+	want := BuiltInRoles(tenantid.System)[2]
 
 	_, err = svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          want.ID,
@@ -463,7 +464,7 @@ func TestCreateRole_Atomic_ReconcilesLostResponse(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	want := BuiltInRoles(tenant.SystemTenantID)[3]
+	want := BuiltInRoles(tenantid.System)[3]
 
 	got, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          want.ID,
@@ -510,7 +511,7 @@ func TestCreateRole_Atomic_ReconcilesLostResponse_ContextAlreadyDone(t *testing.
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	want := BuiltInRoles(tenant.SystemTenantID)[4]
+	want := BuiltInRoles(tenantid.System)[4]
 
 	got, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          want.ID,
@@ -561,7 +562,7 @@ func TestCreateRole_Atomic_ReconcilesLostResponse_StaleReadCatchesUp(t *testing.
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	want := BuiltInRoles(tenant.SystemTenantID)[5]
+	want := BuiltInRoles(tenantid.System)[5]
 
 	got, err := svc.CreateRole(context.Background(), &CreateRoleRequest{
 		ID:          want.ID,
@@ -709,7 +710,7 @@ func TestCreateRole_Atomic_DefiniteRefusalSkipsReconciliation(t *testing.T) {
 				t.Fatalf("NewStore: %v", err)
 			}
 			start := time.Now()
-			_, err = svc.CreateRole(context.Background(), &CreateRoleRequest{Name: "refused", TenantID: tenant.SystemTenantID})
+			_, err = svc.CreateRole(context.Background(), &CreateRoleRequest{Name: "refused", TenantID: tenantid.System})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("CreateRole err = %v, want it to carry the refusal", err)
 			}
@@ -737,7 +738,7 @@ func TestCreateRole_Atomic_GuardFailureDiagnosisSurvivesStaleRead(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewStore (winner): %v", err)
 	}
-	want := BuiltInRoles(tenant.SystemTenantID)[0]
+	want := BuiltInRoles(tenantid.System)[0]
 	req := &CreateRoleRequest{ID: want.ID, Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions}
 	if _, err := winner.CreateRole(context.Background(), req); err != nil {
 		t.Fatalf("winner CreateRole: %v", err)

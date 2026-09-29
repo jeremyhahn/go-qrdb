@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Compile-time interface check.
@@ -120,7 +121,7 @@ func (r *routingRoleService) createStoreFor(ctx context.Context, tenantID string
 	// WithAtomicIdentity's same-physical-store precondition holds for
 	// EXACTLY one tenant here: tenant.NewResolvedIdentityIndex always
 	// resolves its own backing store via resolver.Resolve(ctx,
-	// tenant.SystemTenantID) (go-qrdb#555 review, round 3 — "the services
+	// tenantid.System) (go-qrdb#555 review, round 3 — "the services
 	// exposed afterward are routed stores... this misses the embedded
 	// transport/composer"). For any OTHER tenant, the identity index's
 	// store and this tenant's own resolved store are DIFFERENT physical
@@ -154,7 +155,7 @@ func (r *routingRoleService) createStoreFor(ctx context.Context, tenantID string
 	// role create would hard-fail instead of falling back. atomicCapable
 	// asks the state machine itself, with a genuine no-op guarded proposal,
 	// and caches only a definitive answer — see its doc.
-	if !tenant.IsSystemTenant(tenantID) {
+	if !tenantid.IsSystem(tenantID) {
 		return r.storeForKV(kv, &r.stores, r.opts)
 	}
 	multi, ok := kv.(kvstore.MultiGuardedBatchKVStore)

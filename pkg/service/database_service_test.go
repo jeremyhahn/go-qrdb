@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newTestDatabaseService creates a DatabaseService backed by a Manager
@@ -851,7 +852,7 @@ func TestCreateForTenant_SystemTenantBypassesChecks(t *testing.T) {
 		},
 	}
 	svc := NewDatabaseService(mgr, WithEntitlementChecker(entChecker))
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	if _, err := svc.CreateForTenant(ctx, testDBConfig("sysdb")); err != nil {
 		t.Fatalf("CreateForTenant(system) error = %v", err)
@@ -938,7 +939,7 @@ func TestDatabaseService_CreateWithCredentials_SharedStoreRejected(t *testing.T)
 
 func TestDatabaseService_CreateForTenantWithCredentials_SystemTenant(t *testing.T) {
 	svc, _ := newTestDatabaseServiceWithBarrier(t)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	cfg := testDBConfig("cred-sys-db")
 	cfg.DataDir = t.TempDir()

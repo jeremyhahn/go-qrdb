@@ -17,6 +17,8 @@ package tenant
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
@@ -32,7 +34,7 @@ import (
 // may carry an identity without a bound tenant.
 func CallerTenant(ctx context.Context) string {
 	if id := auth.IdentityFromContext(ctx); id != nil {
-		return Normalize(id.TenantID)
+		return tenantid.Normalize(id.TenantID)
 	}
 	return FromContext(ctx)
 }
@@ -47,7 +49,7 @@ func CallerTenant(ctx context.Context) string {
 // attempted operation for the error message (e.g. "query audit events").
 func Confine(ctx context.Context, requested, op string) (string, error) {
 	caller := CallerTenant(ctx)
-	if requested != "" && Normalize(requested) != caller {
+	if requested != "" && tenantid.Normalize(requested) != caller {
 		return "", &CrossTenantDeniedError{
 			IdentityTenantID:  caller,
 			RequestedTenantID: requested,
@@ -76,6 +78,6 @@ func ConfineAuditFilter(ctx context.Context, f audit.Filter) (audit.Filter, erro
 		return audit.Filter{}, err
 	}
 	f.TenantID = caller
-	f.Untenanted = IsSystemTenant(caller)
+	f.Untenanted = tenantid.IsSystem(caller)
 	return f, nil
 }

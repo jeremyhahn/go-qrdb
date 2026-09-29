@@ -13,7 +13,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestSystemRoleID_WithTenantID verifies that SystemRoleID returns
@@ -30,7 +30,7 @@ func TestSystemRoleID_WithTenantID(t *testing.T) {
 // result as passing SystemTenantID explicitly.
 func TestSystemRoleID_EmptyTenantDefaultsToSystemTenantID(t *testing.T) {
 	idEmpty := SystemRoleID("", RoleNameAdmin)
-	idSystem := SystemRoleID(tenant.SystemTenantID, RoleNameAdmin)
+	idSystem := SystemRoleID(tenantid.System, RoleNameAdmin)
 
 	if idEmpty == "" {
 		t.Fatal("SystemRoleID(\"\", admin) returned empty string")

@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	quicraftkv "github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -167,8 +169,8 @@ func newSharedStoreFixture(t *testing.T) *sharedStoreFixture {
 
 	dbReg := NewDatabaseServiceRegistry(tenant.DefaultDatabase)
 	dbReg.Register(tenant.DefaultDatabase, raw)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)),
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
 		withDatabaseManager(mgr)).(*restServiceRegistry)
 	return &sharedStoreFixture{host: host, raw: raw, mgr: mgr, reg: reg}
 }
@@ -199,7 +201,7 @@ func TestDropFence_WriteResolvedBeforeDropIsRejectedAtApply(t *testing.T) {
 	f := newSharedStoreFixture(t)
 	ctx := context.Background()
 
-	kv, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	kv, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -221,7 +223,7 @@ func TestDropFence_WriteResolvedBeforeDropIsRejectedAtApply(t *testing.T) {
 
 	assertDroppingError(t, <-errc, "orders")
 
-	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "orders"))
+	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenantid.System, "orders"))
 	if err != nil {
 		t.Fatalf("ListAll: %v", err)
 	}
@@ -238,7 +240,7 @@ func TestDropFence_WriteAppliedBeforeTheFenceIsReclaimed(t *testing.T) {
 	f := newSharedStoreFixture(t)
 	ctx := context.Background()
 
-	kv, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	kv, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -249,7 +251,7 @@ func TestDropFence_WriteAppliedBeforeTheFenceIsReclaimed(t *testing.T) {
 		t.Fatalf("Drop: %v", err)
 	}
 
-	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenant.SystemTenantID, "orders"))
+	keys, err := f.raw.KV.ListAll(ctx, tenant.ComposeNamespace(tenantid.System, "orders"))
 	if err != nil {
 		t.Fatalf("ListAll: %v", err)
 	}
@@ -267,7 +269,7 @@ func TestDropFence_HandlesAreIncarnationScoped(t *testing.T) {
 	f := newSharedStoreFixture(t)
 	ctx := context.Background()
 
-	stale, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	stale, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -281,7 +283,7 @@ func TestDropFence_HandlesAreIncarnationScoped(t *testing.T) {
 	}
 	assertDroppingError(t, stale.Put(ctx, "k", []byte("into the new database")), "orders")
 
-	fresh, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	fresh, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService after re-create: %v", err)
 	}
@@ -306,7 +308,7 @@ func TestDropFence_FailedReclamationRollsTheFenceBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	before, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	before, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService: %v", err)
 	}
@@ -317,7 +319,7 @@ func TestDropFence_FailedReclamationRollsTheFenceBack(t *testing.T) {
 		t.Fatalf("Drop error = %v, want *database.KeyspaceReclaimError", err)
 	}
 
-	marker, err := f.raw.KV.Get(ctx, service.DropFenceKey(tenant.SystemTenantID, "orders"))
+	marker, err := f.raw.KV.Get(ctx, service.DropFenceKey(tenantid.System, "orders"))
 	if err != nil || string(marker) != db.Incarnation() {
 		t.Fatalf("marker after a failed drop = (%q, %v), want the database's incarnation %q", marker, err, db.Incarnation())
 	}
@@ -327,7 +329,7 @@ func TestDropFence_FailedReclamationRollsTheFenceBack(t *testing.T) {
 	if err := before.Put(ctx, "k", []byte("v")); err != nil {
 		t.Fatalf("Put on a handle from before the failed drop = %v, want success", err)
 	}
-	kv, err := f.reg.KVService(tenant.SystemTenantID, "orders")
+	kv, err := f.reg.KVService(tenantid.System, "orders")
 	if err != nil {
 		t.Fatalf("KVService after a failed drop: %v", err)
 	}
@@ -372,7 +374,7 @@ func TestDropFence_DedicatedRaftWriteResolvedBeforeDropIsRejectedAtApply(t *test
 	reclaim.SetStoreResolver(&storeResolver{
 		raft:         &stubRaftFence{svcs: ded},
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationRaft},
-		systemTenant: tenant.SystemTenantID,
+		systemTenant: tenantid.System,
 	})
 	mgr := database.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(reclaim)
@@ -469,7 +471,7 @@ func TestDropFence_EveryWriteVerbCarriesTheGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatabaseFence: %v", err)
 	}
-	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry(tenant.DefaultDatabase), nil, tenant.SystemTenantID).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry(tenant.DefaultDatabase), nil, tenantid.System).(*restServiceRegistry)
 	views := reg.applyComposite(raw, "acme", "orders", fence)
 	ctx := context.Background()
 	now := time.Now()

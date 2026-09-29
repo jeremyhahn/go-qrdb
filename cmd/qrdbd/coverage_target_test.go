@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -73,7 +74,7 @@ func (m *quotaErrTenantSvc) SetQuotaUsage(_ context.Context, tenantID string, _ 
 
 // TestBuildQuotaReconciler_SystemTenantSkipped verifies that the Tenants
 // closure wired by buildQuotaReconciler filters out the system tenant
-// (ti.ID == tenant.SystemTenantID → continue, line 1725) so it is never
+// (ti.ID == tenantid.System → continue, line 1725) so it is never
 // included in the reconciler's volume-tenant list.
 func TestBuildQuotaReconciler_SystemTenantSkipped(t *testing.T) {
 	svc, _ := newReattachFixture(t)
@@ -82,7 +83,7 @@ func TestBuildQuotaReconciler_SystemTenantSkipped(t *testing.T) {
 	// Create the system tenant via the internal-call context so the
 	// reserved-ID rejection is bypassed (same path firstboot uses).
 	internalCtx := tenant.WithInternalCall(ctx)
-	if _, err := svc.CreateTenant(internalCtx, tenant.SystemTenantID, "System", tenant.IsolationPrefix); err != nil {
+	if _, err := svc.CreateTenant(internalCtx, tenantid.System, "System", tenant.IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant(system): %v", err)
 	}
 

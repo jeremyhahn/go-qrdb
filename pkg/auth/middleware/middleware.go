@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -359,7 +360,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// itself, before anything reads it. This function is the single funnel
 	// every authenticated identity passes through on every transport, and it
 	// is the "auth/middleware identity normalization" that
-	// tenant.IsSystemTenant names as the reason its empty-string branch is
+	// tenantid.IsSystem names as the reason its empty-string branch is
 	// safe.
 	//
 	// Until #188 it normalized only the CONTEXT tenant (below), leaving
@@ -381,7 +382,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// scope resolver and into the audit log is the tenant that was actually
 	// used. Making an absent tenant fail CLOSED instead is a separate
 	// decision; it is not this one, and it does not belong in a fold.
-	identity.TenantID = tenant.Normalize(identity.TenantID)
+	identity.TenantID = tenantid.Normalize(identity.TenantID)
 
 	// RoleBindings and Attributes are user-record state: the user store is
 	// their ONLY source. Clear whatever the authenticator carried in, before

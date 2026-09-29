@@ -23,7 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	qrdbdriver "github.com/jeremyhahn/go-qrdb/sdk/go/driver"
 )
 
@@ -78,9 +78,9 @@ func nodeWithRegistry(t *testing.T, dsn, database string) (*sql.DB, service.KVSe
 	if reg == nil {
 		t.Fatal("node has no service registry")
 	}
-	kvSvc, err := reg.KVService(tenant.SystemTenantID, database)
+	kvSvc, err := reg.KVService(tenantid.System, database)
 	if err != nil {
-		t.Fatalf("KVService(%q, %q): %v", tenant.SystemTenantID, database, err)
+		t.Fatalf("KVService(%q, %q): %v", tenantid.System, database, err)
 	}
 	return db, kvSvc
 }

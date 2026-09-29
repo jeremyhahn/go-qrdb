@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -45,7 +46,7 @@ func TestRoleAssignment_OnlyRolesTheRealResolverCanResolve(t *testing.T) {
 		ok     bool
 	}{
 		{name: "the tenant's own built-in", roleID: role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin), ok: true},
-		{name: "the system tenant's built-in", roleID: role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin), ok: false},
+		{name: "the system tenant's built-in", roleID: role.SystemRoleID(tenantid.System, role.RoleNameAdmin), ok: false},
 		{name: "another tenant's built-in", roleID: role.SystemRoleID(authtest.OtherTenant, role.RoleNameAdmin), ok: false},
 	}
 	authz := rbac.New(roles)

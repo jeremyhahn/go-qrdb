@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // =============================================================================
@@ -43,7 +44,7 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 	logger := newVecTestLogger()
 
 	// The scoped name used for system-tenant requests.
-	scoped := scopedNamespace(tenant.SystemTenantID, namespace)
+	scoped := scopedNamespace(tenantid.System, namespace)
 
 	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
 		return []vector.NamespaceInfo{
@@ -118,7 +119,7 @@ func TestVecCreateNamespace_MetadataConversionAndStorageWrite(t *testing.T) {
 
 	// Verify storage was called with the scoped name and converted metadata.
 	require.NotNil(t, createdInfo)
-	assert.Equal(t, scopedNamespace(tenant.SystemTenantID, "meta-ns"), createdInfo.Name)
+	assert.Equal(t, scopedNamespace(tenantid.System, "meta-ns"), createdInfo.Name)
 	assert.Equal(t, uint32(256), createdInfo.Dimension)
 	assert.Equal(t, "COSINE", createdInfo.DistanceMetric)
 	assert.Equal(t, "HNSW", createdInfo.IndexType)
@@ -672,7 +673,7 @@ func TestVecDeleteVector_OtherTenantUsesDifferentScopedKey(t *testing.T) {
 		return nil
 	}
 
-	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	ownerScoped := scopedNamespace(tenantid.System, "tenant-ns")
 	attackerScoped := scopedNamespace("attacker-tenant", "tenant-ns")
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker-tenant")
@@ -736,7 +737,7 @@ func TestVecBatchUpsert_OtherTenantUsesDifferentScopedKey(t *testing.T) {
 		return nil
 	}
 
-	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	ownerScoped := scopedNamespace(tenantid.System, "tenant-ns")
 	attackerScoped := scopedNamespace("attacker", "tenant-ns")
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")
@@ -1269,7 +1270,7 @@ func TestVecBatchDelete_AttackerUsesDifferentScopedKey(t *testing.T) {
 		return nil
 	}
 
-	ownerScoped := scopedNamespace(tenant.SystemTenantID, "tenant-ns")
+	ownerScoped := scopedNamespace(tenantid.System, "tenant-ns")
 	attackerScoped := scopedNamespace("attacker", "tenant-ns")
 
 	ctx := tenant.WithTenantID(context.Background(), "attacker")

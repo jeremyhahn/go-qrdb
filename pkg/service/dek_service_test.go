@@ -20,6 +20,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -87,7 +89,7 @@ func TestDEKServiceRefusesCrossTenantForEveryOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, caller := range []string{"globex", tenant.SystemTenantID} {
+	for _, caller := range []string{"globex", tenantid.System} {
 		ctx := asTenant(caller)
 		checks := map[string]error{}
 		_, checks["encrypt"] = svc.Encrypt(ctx, "acme", []byte("v"), nil)
@@ -110,7 +112,7 @@ func TestDEKServiceRefusesCrossTenantForEveryOperation(t *testing.T) {
 func TestDEKServiceUnboundCallerIsTheSystemTenant(t *testing.T) {
 	svc := newTestDEKService(t)
 	st, err := svc.Rotate(context.Background(), "")
-	if err != nil || st.TenantID != tenant.SystemTenantID {
+	if err != nil || st.TenantID != tenantid.System {
 		t.Fatalf("Rotate = %+v, %v", st, err)
 	}
 	if _, err := svc.Rotate(context.Background(), "acme"); !errors.Is(err, dek.ErrCrossTenant) {

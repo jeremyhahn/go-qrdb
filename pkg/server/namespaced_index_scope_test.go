@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ func TestNamespacedIndex_NameCarriesTheKeyNamespace(t *testing.T) {
 		database string
 	}{
 		{name: "ordinary pair", tenantID: "acme", database: "sales"},
-		{name: "bootstrap pair", tenantID: tenant.SystemTenantID, database: tenant.DefaultDatabase},
+		{name: "bootstrap pair", tenantID: tenantid.System, database: tenant.DefaultDatabase},
 		{name: "empty falls back to the bootstrap pair", tenantID: "", database: ""},
 		{name: "dotted database name", tenantID: "acme", database: "sales.v2"},
 		{name: "index name shape a collection produces", tenantID: "acme", database: "sales"},

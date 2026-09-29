@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -55,8 +57,8 @@ func TestManager_CompactionOwnerForTenant_OwnDatabasesOnly(t *testing.T) {
 		{"acme", "acme-db", "acme"},
 		{"acme", "beta-db", ""},
 		{"acme", "sys-db", ""},
-		{tenant.SystemTenantID, "sys-db", tenant.SystemTenantID},
-		{tenant.SystemTenantID, "acme-db", ""},
+		{tenantid.System, "sys-db", tenantid.System},
+		{tenantid.System, "acme-db", ""},
 		{"", "beta-db", ""},
 		{"acme", "nope", ""},
 	}

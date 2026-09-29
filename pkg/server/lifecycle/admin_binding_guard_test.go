@@ -27,9 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -74,7 +75,7 @@ func withdrawAdminsOnlyBinding(t *testing.T, node *lifecycle.Node) error {
 	t.Helper()
 	ctx := context.Background()
 	admin, err := node.User.CreateUser(ctx, &user.CreateUserRequest{
-		Username: user.BootstrapAdminUsername, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true,
+		Username: user.BootstrapAdminUsername, TenantID: tenantid.System, WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -100,7 +101,7 @@ func TestBuildServices_RequiredPolicyGuardsTheAdminsLastBinding(t *testing.T) {
 	}
 	// The same service refuses the other ways to lock the admin out.
 	ctx := context.Background()
-	admin, err := node.User.GetUserByUsername(ctx, tenant.SystemTenantID, user.BootstrapAdminUsername)
+	admin, err := node.User.GetUserByUsername(ctx, tenantid.System, user.BootstrapAdminUsername)
 	if err != nil {
 		t.Fatalf("GetUserByUsername: %v", err)
 	}

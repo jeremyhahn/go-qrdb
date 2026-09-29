@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // WithIdentityIndex records every role id this store creates in the
@@ -92,7 +93,7 @@ func WithReconcilePolling(interval, window time.Duration) Option {
 //     shared, namespaced KVStore.
 //   - routingRoleService, but ONLY for the SYSTEM tenant's own resolved
 //     store: tenant.NewResolvedIdentityIndex always resolves its backing
-//     store via resolver.Resolve(ctx, tenant.SystemTenantID)
+//     store via resolver.Resolve(ctx, tenantid.System)
 //     (go-qrdb#555 review, round 3), which is the EXACT SAME call — and,
 //     through the resolver's own namespace cache, the exact same physical
 //     object — that resolving the system tenant for an ordinary role
@@ -146,8 +147,8 @@ func (s *kvRoleStore) forgetIdentity(ctx context.Context, id string, tenantID st
 	if !held {
 		return nil
 	}
-	if tenant.IsSystemTenant(tenantID) {
-		tenantID = tenant.SystemTenantID
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
 	}
 	if claim.Tenant != tenantID {
 		return &tenant.IdentityClaimConflictError{Kind: tenant.IdentityRole, ID: id}

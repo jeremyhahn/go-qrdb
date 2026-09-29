@@ -21,7 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -114,7 +114,7 @@ func allBuiltInRolesPresent() *fakeRoles {
 // id that repeated some OTHER user's — no admin behind it — is retried with a
 // fresh id instead of aborting first boot.
 func TestCreateAdminUser_IDCollisionWithAnotherUserRetries(t *testing.T) {
-	users := &scriptedAdminUsers{createErrs: []error{&user.UserIDExistsError{ID: 7, TenantID: tenant.SystemTenantID}}}
+	users := &scriptedAdminUsers{createErrs: []error{&user.UserIDExistsError{ID: 7, TenantID: tenantid.System}}}
 	result, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
 		CA: &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}, Logger: discardLogger(),
@@ -130,7 +130,7 @@ func TestCreateAdminUser_IDCollisionWithAnotherUserRetries(t *testing.T) {
 // TestCreateAdminUser_IDCollisionRetriesAreBounded: a store that reports the
 // collision for every id cannot loop first boot forever.
 func TestCreateAdminUser_IDCollisionRetriesAreBounded(t *testing.T) {
-	collide := &user.UserIDExistsError{ID: 7, TenantID: tenant.SystemTenantID}
+	collide := &user.UserIDExistsError{ID: 7, TenantID: tenantid.System}
 	users := &scriptedAdminUsers{createErrs: []error{collide, collide, collide, collide, collide}}
 	_, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
@@ -149,8 +149,8 @@ func TestCreateAdminUser_IDCollisionRetriesAreBounded(t *testing.T) {
 // by a record that is not the admin is a squatter. A fresh id cannot fix it.
 func TestCreateAdminUser_UsernameSquatterIsRefusedWithoutRetry(t *testing.T) {
 	users := &scriptedAdminUsers{
-		createErrs: []error{&user.UsernameExistsError{Username: adminUsername, TenantID: tenant.SystemTenantID}},
-		lookup:     &user.User{ID: 5, Username: adminUsername, TenantID: tenant.SystemTenantID, RoleIDs: []string{"some-ordinary-role"}, Lifecycle: user.LifecycleActive},
+		createErrs: []error{&user.UsernameExistsError{Username: adminUsername, TenantID: tenantid.System}},
+		lookup:     &user.User{ID: 5, Username: adminUsername, TenantID: tenantid.System, RoleIDs: []string{"some-ordinary-role"}, Lifecycle: user.LifecycleActive},
 	}
 	_, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),

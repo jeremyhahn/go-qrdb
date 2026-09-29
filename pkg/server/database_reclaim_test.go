@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The collection surface is the one shape of owned data whose physical
@@ -48,8 +49,8 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root})
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)))
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)))
 
 	for _, name := range []string{"reports", "ledger"} {
 		if _, err := mgr.Create(database.DatabaseConfig{
@@ -57,7 +58,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 		}); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
-		coll, err := reg.CollectionService(tenant.SystemTenantID, name)
+		coll, err := reg.CollectionService(tenantid.System, name)
 		if err != nil {
 			t.Fatalf("CollectionService %s: %v", name, err)
 		}
@@ -92,8 +93,8 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ListAll: %v", err)
 	}
-	reportsNS := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
-	ledgerNS := tenant.ComposeNamespace(tenant.SystemTenantID, "ledger")
+	reportsNS := tenant.ComposeNamespace(tenantid.System, "reports")
+	ledgerNS := tenant.ComposeNamespace(tenantid.System, "ledger")
 	var survived, ledgerKeys int
 	for _, k := range after {
 		switch {
@@ -117,7 +118,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("recreate: %v", err)
 	}
-	coll, err := reg.CollectionService(tenant.SystemTenantID, "reports")
+	coll, err := reg.CollectionService(tenantid.System, "reports")
 	if err != nil {
 		t.Fatalf("CollectionService: %v", err)
 	}
@@ -150,15 +151,15 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root})
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenant.SystemTenantID)))
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)))
 
 	if _, err := mgr.Create(database.DatabaseConfig{
 		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	coll, err := reg.CollectionService(tenant.SystemTenantID, "reports")
+	coll, err := reg.CollectionService(tenantid.System, "reports")
 	if err != nil {
 		t.Fatalf("CollectionService: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 		t.Fatalf("CreateCollection: %v", err)
 	}
 
-	ns := tenant.ComposeNamespace(tenant.SystemTenantID, "reports")
+	ns := tenant.ComposeNamespace(tenantid.System, "reports")
 	inside, err := root.ListAll(ctx, ns)
 	if err != nil {
 		t.Fatalf("ListAll: %v", err)

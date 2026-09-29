@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // stubScopeResolver is a tenant-aware scope resolver test double. For each
@@ -83,14 +84,14 @@ func TestAuthorize_TenantResolvedScope_PerTenantCross(t *testing.T) {
 	})
 	resolver := newStubScopeResolver()
 	// Only the system tenant overrides this name to cross-scope.
-	resolver.set(tenant.SystemTenantID, perm, permission.ScopeCross)
+	resolver.set(tenantid.System, perm, permission.ScopeCross)
 
 	authz := New(svc, WithScopeResolver(resolver))
 
 	// A system identity with the cross-scope override passes for any target.
 	sysIdentity := &auth.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin"},
 	}
 	if err := authz.Authorize(ctxFor("acme"), sysIdentity, "billing", "export"); err != nil {
@@ -134,7 +135,7 @@ func TestAuthorize_TenantResolvedScope_PerTenantTenantOnly(t *testing.T) {
 	})
 	resolver := newStubScopeResolver()
 	// The system tenant's own store marks the name tenant-only.
-	resolver.set(tenant.SystemTenantID, perm, permission.ScopeTenantOnly)
+	resolver.set(tenantid.System, perm, permission.ScopeTenantOnly)
 
 	authz := New(svc, WithScopeResolver(resolver))
 
@@ -142,10 +143,10 @@ func TestAuthorize_TenantResolvedScope_PerTenantTenantOnly(t *testing.T) {
 	// -> denied (the system-tenant rule does NOT lift ScopeTenantOnly).
 	sysIdentity := &auth.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin"},
 	}
-	if err := authz.Authorize(ctxFor(tenant.SystemTenantID), sysIdentity, "billing", "export"); err == nil {
+	if err := authz.Authorize(ctxFor(tenantid.System), sysIdentity, "billing", "export"); err == nil {
 		t.Fatal("system identity must be denied a tenant-only permission resolved in its own store")
 	}
 
@@ -203,7 +204,7 @@ func TestAuthorize_NoResolverUsesGlobalLayer(t *testing.T) {
 
 	sysIdentity := &auth.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{"admin"},
 	}
 	if err := authz.Authorize(ctxFor("acme"), sysIdentity, "platform", "audit"); err != nil {

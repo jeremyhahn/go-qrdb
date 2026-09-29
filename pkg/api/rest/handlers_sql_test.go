@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newSQLTestServer builds a REST server whose SQL service is the canonical
@@ -99,7 +100,7 @@ func TestHandleSQLQuery_SelectSeededKVData(t *testing.T) {
 	// The SQL data path is scoped to the composite "<tenant>/<db>/" namespace,
 	// identical to every other transport (pkg/tenant.ComposeNamespace) — the
 	// query names database "testdb" under the default system tenant.
-	prefix := tenant.ComposeNamespace(tenant.SystemTenantID, "testdb")
+	prefix := tenant.ComposeNamespace(tenantid.System, "testdb")
 	kvSvc.scanFn = func(_ context.Context, p string) (map[string][]byte, error) {
 		if p != prefix {
 			t.Fatalf("scan prefix = %q, want %q", p, prefix)

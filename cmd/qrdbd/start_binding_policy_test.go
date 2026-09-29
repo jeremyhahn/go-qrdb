@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -77,7 +78,7 @@ func adminThumbprint(t *testing.T) string {
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenant.SystemTenantID}},
+		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System}},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 	}
@@ -131,14 +132,14 @@ func TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots(t *testing.T) {
 // particular replication point.
 func servingAdmin(t *testing.T, mgmt *mgmtBootstrapResult, bindings ...user.CertBinding) *mockUserServicer {
 	t.Helper()
-	admin, err := mgmt.bootUserSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, "admin")
+	admin, err := mgmt.bootUserSvc.GetUserByUsername(context.Background(), tenantid.System, "admin")
 	require.NoError(t, err)
 	for _, b := range bindings {
 		admin.AddCertBinding(b)
 	}
 	return &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
-			if tenantID != tenant.SystemTenantID || username != "admin" {
+			if tenantID != tenantid.System || username != "admin" {
 				return nil, &user.UserNotFoundError{Lookup: username}
 			}
 			clone := *admin

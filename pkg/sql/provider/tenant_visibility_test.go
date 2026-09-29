@@ -24,7 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestAllDatabasesIsScopedToTheSessionTenant pins the isolation guarantee of
@@ -81,7 +81,7 @@ func TestAllDatabasesIsScopedToTheSessionTenant(t *testing.T) {
 			// An untagged database is system-owned, not ownerless and not
 			// everyone's; the system tenant is the only one that sees it.
 			name:   "the system tenant owns the untagged bootstrap database",
-			tenant: tenant.SystemTenantID,
+			tenant: tenantid.System,
 			want:   []string{"bootstrap"},
 		},
 		{
@@ -99,7 +99,7 @@ func TestAllDatabasesIsScopedToTheSessionTenant(t *testing.T) {
 			for _, other := range created {
 				owner := other.tenant
 				if owner == "" {
-					owner = tenant.SystemTenantID
+					owner = tenantid.System
 				}
 				if owner == tt.tenant {
 					continue
@@ -139,7 +139,7 @@ func TestAllDatabasesWithoutASessionIsSystemScoped(t *testing.T) {
 
 // TestDatabaseOwner covers the empty-TenantID reading directly.
 func TestDatabaseOwner(t *testing.T) {
-	assert.Equal(t, tenant.SystemTenantID, databaseOwner(database.DatabaseInfo{}),
+	assert.Equal(t, tenantid.System, databaseOwner(database.DatabaseInfo{}),
 		"an untagged database is system-owned")
 	assert.Equal(t, "acme", databaseOwner(database.DatabaseInfo{TenantID: "acme"}))
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -69,7 +70,7 @@ func kvEngineDatabase(name string) (*database.DatabaseInfo, error) {
 // pkg/sql/query/service_test.go's seed helper.
 func seedSQLKV(t *testing.T, kv *mockKVService, dbName, key, value string) {
 	t.Helper()
-	prefixed := tenant.ComposeNamespace(tenant.SystemTenantID, dbName) + key
+	prefixed := tenant.ComposeNamespace(tenantid.System, dbName) + key
 	if err := kv.Put(context.Background(), prefixed, []byte(value)); err != nil {
 		t.Fatalf("seedSQLKV: %v", err)
 	}

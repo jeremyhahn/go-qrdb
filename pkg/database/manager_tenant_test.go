@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // tenantContext returns a context with the given tenant ID set.
@@ -797,7 +798,7 @@ func TestTenantDatabases_SystemTenantSeesUnownedDatabases(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	got, err := m.TenantDatabases(ctx, tenant.SystemTenantID)
+	got, err := m.TenantDatabases(ctx, tenantid.System)
 	if err != nil {
 		t.Fatalf("TenantDatabases: %v", err)
 	}

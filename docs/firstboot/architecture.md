@@ -214,7 +214,7 @@ An `admin` user for the system tenant is created alongside, bound to the
   `kvUserStore` per distinct store they see — WithAtomicIdentity's
   same-physical-store precondition holds for exactly one of those resolved
   stores, because `tenant.NewResolvedIdentityIndex` always backs the
-  identity claim with `resolver.Resolve(ctx, tenant.SystemTenantID)`, so
+  identity claim with `resolver.Resolve(ctx, tenantid.System)`, so
   only a role or user create ROUTED to the system tenant shares a physical
   store with the claim it makes. The router offers the option there, and
   ONLY there, and only when that resolved store is ALSO

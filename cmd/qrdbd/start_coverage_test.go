@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -1021,8 +1022,8 @@ func TestRunFirstBoot_UnseededRolesUseDerivedIDs(t *testing.T) {
 	err := runFirstBoot(context.Background(), &mockRaftNode{}, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
 
-	expectedAdminID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameAdmin)
-	expectedOwnerID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameOwner)
+	expectedAdminID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+	expectedOwnerID := role.SystemRoleID(tenantid.System, role.RoleNameOwner)
 	require.Len(t, capturedRoleIDs, 2)
 	assert.Equal(t, expectedAdminID, capturedRoleIDs[0])
 	assert.Equal(t, expectedOwnerID, capturedRoleIDs[1])

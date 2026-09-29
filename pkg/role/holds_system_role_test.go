@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // seededStore returns a real role store with the built-in roles reconciled
@@ -113,7 +114,7 @@ func TestHoldsSystemRole_UnseededTenantDoesNotHold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	got, err := HoldsSystemRole(context.Background(), svc, "", []string{SystemRoleID(tenant.SystemTenantID, RoleNameSO)}, RoleNameSO)
+	got, err := HoldsSystemRole(context.Background(), svc, "", []string{SystemRoleID(tenantid.System, RoleNameSO)}, RoleNameSO)
 	if err != nil || got {
 		t.Fatalf("HoldsSystemRole(unseeded) = %v, %v; want false", got, err)
 	}

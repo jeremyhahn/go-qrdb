@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // certAuthzRoles is a role service granting exactly what the built-in Admin
@@ -111,14 +112,14 @@ func TestAuthorizeCertTenant_ForeignTenantIsRefused(t *testing.T) {
 // the system tenant minted for globex's user would authenticate as that user.
 func TestAuthorizeCertTenant_SystemTenantIsConfinedToItself(t *testing.T) {
 	mw := newCertAuthzMiddleware()
-	sys := certAuthzCtx(tenant.SystemTenantID)
+	sys := certAuthzCtx(tenantid.System)
 
 	for _, perm := range []permission.Permission{permission.CertsGenerate, permission.CertsList} {
 		err := mw.AuthorizeCertTenant(sys, "globex", perm)
 		if !errors.Is(err, auth.ErrUnauthorized) {
 			t.Errorf("%s on globex from the system tenant: err = %v, want an authorization denial", perm, err)
 		}
-		if err := mw.AuthorizeCertTenant(sys, tenant.SystemTenantID, perm); err != nil {
+		if err := mw.AuthorizeCertTenant(sys, tenantid.System, perm); err != nil {
 			t.Errorf("%s on the system tenant's own certificates: %v", perm, err)
 		}
 	}
@@ -174,7 +175,7 @@ func TestAuthorizeCertRevoke_UnknownSerialRequiresTheSystemTenant(t *testing.T) 
 	if err := mw.AuthorizeCertRevoke(certAuthzCtx("acme"), "unknown", res); err == nil {
 		t.Fatal("a tenant-local caller must not write an unattributable deny marker")
 	}
-	if err := mw.AuthorizeCertRevoke(certAuthzCtx(tenant.SystemTenantID), "unknown", res); err != nil {
+	if err := mw.AuthorizeCertRevoke(certAuthzCtx(tenantid.System), "unknown", res); err != nil {
 		t.Fatalf("deny-by-serial must survive for the CA operator: %v", err)
 	}
 }
@@ -185,8 +186,8 @@ func TestAuthorizeCertRevoke_UnknownSerialRequiresTheSystemTenant(t *testing.T) 
 // with an owner is never the deny-by-serial case.
 func TestAuthorizeCertRevoke_SystemTenantCannotRevokeAnotherTenantsSerial(t *testing.T) {
 	mw := newCertAuthzMiddleware()
-	res := &stubSerialResolver{owners: map[string]string{"s-globex": "globex", "s-system": tenant.SystemTenantID}}
-	sys := certAuthzCtx(tenant.SystemTenantID)
+	res := &stubSerialResolver{owners: map[string]string{"s-globex": "globex", "s-system": tenantid.System}}
+	sys := certAuthzCtx(tenantid.System)
 
 	err := mw.AuthorizeCertRevoke(sys, "s-globex", res)
 	if !errors.Is(err, auth.ErrUnauthorized) {

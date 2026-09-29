@@ -127,7 +127,7 @@ import (
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -1523,7 +1523,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			Manager:        dbManager,
 			ReplicaID:      pending.cfg.Raft.ReplicaID,
 			RaftAddr:       pending.cfg.Raft.RaftAddress,
-			SystemTenant:   tenant.SystemTenantID,
+			SystemTenant:   tenantid.System,
 			PlacementStore: svcNode.PlacementStore,
 			FeatureGate:    n.featureGate,
 		})

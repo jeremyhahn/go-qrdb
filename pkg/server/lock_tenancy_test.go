@@ -63,6 +63,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -160,7 +161,7 @@ func prefixLockScene(t *testing.T) *lockScene {
 	stg, svcs := newLockDataPlane(t, lockTestDB)
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcs)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationPrefix}),
 	)
 	return &lockScene{
@@ -185,7 +186,7 @@ func volumeLockScene(t *testing.T) *lockScene {
 
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcsA)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume}),
 		withTenantHostRegistry(hosts),
 	)
@@ -236,7 +237,7 @@ func raftLockScene(t *testing.T) *lockScene {
 
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcsA)
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationRaft}),
 		withRaftBackendFactory(f),
 	)
@@ -648,7 +649,7 @@ func TestLockRaftIsolation_KeysAreSeparatedByStoreNotByPrefix(t *testing.T) {
 func TestLockService_RefusesWhenTheScopeHasNoLockEngines(t *testing.T) {
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, &DatabaseServices{Name: lockTestDB, KV: newMockKVService()})
-	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationPrefix}),
 	)
 
@@ -674,7 +675,7 @@ func TestLockService_PropagatesTenantAndDatabaseResolutionErrors(t *testing.T) {
 	dbReg.Register(lockTestDB, svcs)
 
 	t.Run("unknown_database", func(t *testing.T) {
-		reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+		reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 			WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationPrefix}),
 		)
 		if _, err := reg.LockService(lockTenantA, "nope"); err == nil {
@@ -688,7 +689,7 @@ func TestLockService_PropagatesTenantAndDatabaseResolutionErrors(t *testing.T) {
 	})
 
 	t.Run("isolation_backend_unwired", func(t *testing.T) {
-		reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
+		reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
 			WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume}),
 		)
 		_, err := reg.LockService(lockTenantA, lockTestDB)

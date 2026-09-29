@@ -28,7 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // testScopedNS returns the physical (scoped) storage key for a logical
@@ -36,7 +36,7 @@ import (
 // directly (bypassing the service) must use this to produce the key the
 // service will look up.
 func testScopedNS(logical string) string {
-	return scopedNamespace(tenant.SystemTenantID, logical)
+	return scopedNamespace(tenantid.System, logical)
 }
 
 // =============================================================================

@@ -49,6 +49,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -434,7 +435,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		// System-level enrollment is cert-only, always (company doc 08):
 		// a deferred, invitation-activated identity is not an acceptable
 		// bootstrap anchor for the tenant that guards barrier material.
-		if cfg.TenantID == tenant.SystemTenantID {
+		if cfg.TenantID == tenantid.System {
 			return nil, &SystemTenantDeferredEnrollmentError{}
 		}
 		// A CSR alongside deferred mode is refused rather than silently

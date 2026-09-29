@@ -215,22 +215,22 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 - **Tenant identity is sourced only from the authenticated mTLS identity**,
   never from a header or metadata field.
 - **An absent tenant is FOLDED at the boundary, never inferred at the
-  predicate.** `tenant.IsSystemTenant` answers true for both `SystemTenantID`
+  predicate.** `tenantid.IsSystem` answers true for both `tenantid.System`
   and `""`, because the unscoped keyspace and the system keyspace are the same
   keyspace — `StoreResolver`, `IdentityIndex`, `kv_service` and
   `database.manager_tenant` all ask it that question and all depend on the
   empty branch. That branch is safe only under a precondition: on an
-  AUTHORIZATION path the predicate must never be handed `""`. `tenant.Normalize`
+  AUTHORIZATION path the predicate must never be handed `""`. `tenantid.Normalize`
   is the single fold that establishes it, and every boundary that binds a
   tenant calls it — `FromContext` (context), `auth/middleware.finalizeIdentity`
   (identity **and** context), `sql/provider.QRDBSession.TenantID` (SQL
-  session). Open-coding `if id == "" { id = SystemTenantID }` at a new boundary
+  session). Open-coding `if id == "" { id = tenantid.System }` at a new boundary
   is the defect, not the fold: before #188 `auth/middleware` folded the context
   and left `identity.TenantID` raw, and `rbac.IsSystemTenant` reads the
   identity, so the one value the authorizer consumed was the one value the
   boundary did not normalize.
 - **The fold maps absence onto PRIVILEGE, and says so.** Folding `""` to
-  `SystemTenantID` preserves `IsSystemTenant`'s answer exactly — it is a
+  `tenantid.System` preserves `IsSystemTenant`'s answer exactly — it is a
   normalization, not a policy — so a principal that authenticates with no
   tenant binding is system-scoped both before and after. `pkg/auth/mtls.go`
   mints exactly that shape: a certificate that chains to the trusted CA but

@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // fakeKVStore is a minimal in-memory kvstore.KVStore for routing tests.
@@ -464,7 +465,7 @@ func TestRoutingUserService_GetUserByEmail(t *testing.T) {
 // honored and the record lands in that tenant's store.
 func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {
 	svc, _, storeB := crossTenantSetup(t)
-	sctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	sctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	created, err := svc.CreateUser(sctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "provisioned", TenantID: "b"})
 	if err != nil {
@@ -1094,7 +1095,7 @@ func TestRoutingUserService_SystemTenantGetsAtomicIdentityWhenCapable(t *testing
 	ctx := context.Background()
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err == nil {
@@ -1167,7 +1168,7 @@ func TestRoutingUserService_SystemTenantProbeFailsStaysSequential(t *testing.T) 
 	ctx := context.Background()
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username:             "admin2",
-		TenantID:             tenant.SystemTenantID,
+		TenantID:             tenantid.System,
 		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
@@ -1213,7 +1214,7 @@ func TestRoutingUserService_InconclusiveProbeFailsAndIsNotCached(t *testing.T) {
 	}
 	ctx := context.Background()
 	create := func(name string) error {
-		_, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true})
+		_, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenantid.System, WithoutEmailLoginKey: true})
 		return err
 	}
 
@@ -1249,7 +1250,7 @@ func TestRoutingUserService_DefinitiveAbsenceIsCached(t *testing.T) {
 	ctx := context.Background()
 
 	for _, name := range []string{"seq-a", "seq-b"} {
-		if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true}); err != nil {
+		if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenantid.System, WithoutEmailLoginKey: true}); err != nil {
 			t.Fatalf("CreateUser(%s): %v", name, err)
 		}
 	}
@@ -1269,7 +1270,7 @@ func TestRoutingUserService_ReadsNeverProbe(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	seeded, err := seed.CreateUser(context.Background(), &CreateUserRequest{
-		Username: "alice", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true,
+		Username: "alice", TenantID: tenantid.System, WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("seed CreateUser: %v", err)
@@ -1279,19 +1280,19 @@ func TestRoutingUserService_ReadsNeverProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
-	if got, err := svc.GetUserByUsername(ctx, tenant.SystemTenantID, "alice"); err != nil || got.ID != seeded.ID {
+	if got, err := svc.GetUserByUsername(ctx, tenantid.System, "alice"); err != nil || got.ID != seeded.ID {
 		t.Fatalf("GetUserByUsername = (%v, %v), want the seeded user", got, err)
 	}
-	if list, err := svc.ListUsers(ctx, &ListUsersRequest{TenantID: tenant.SystemTenantID}); err != nil || list.Total != 1 {
+	if list, err := svc.ListUsers(ctx, &ListUsersRequest{TenantID: tenantid.System}); err != nil || list.Total != 1 {
 		t.Fatalf("ListUsers = (%+v, %v), want the one seeded user", list, err)
 	}
 	if store.probes != 0 {
 		t.Fatalf("probes = %d after reads only, want 0", store.probes)
 	}
 
-	_, err = svc.CreateUser(ctx, &CreateUserRequest{Username: "bob", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true})
+	_, err = svc.CreateUser(ctx, &CreateUserRequest{Username: "bob", TenantID: tenantid.System, WithoutEmailLoginKey: true})
 	if !errors.Is(err, noLeader) {
 		t.Fatalf("CreateUser err = %v, want the inconclusive probe's error", err)
 	}
@@ -1316,7 +1317,7 @@ func TestRoutingUserService_PromoteToSystemUser_RoutesByID(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{
-		WithoutEmailLoginKey: true, Username: "legacy-admin", TenantID: tenant.SystemTenantID,
+		WithoutEmailLoginKey: true, Username: "legacy-admin", TenantID: tenantid.System,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

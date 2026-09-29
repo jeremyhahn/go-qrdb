@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -420,8 +421,8 @@ func TestCreateRole_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRole: %v", err)
 	}
-	if r.TenantID != tenant.SystemTenantID {
-		t.Errorf("TenantID: got %q, want %q", r.TenantID, tenant.SystemTenantID)
+	if r.TenantID != tenantid.System {
+		t.Errorf("TenantID: got %q, want %q", r.TenantID, tenantid.System)
 	}
 }
 
@@ -1284,8 +1285,8 @@ func TestBuiltInRoles_TenantID(t *testing.T) {
 func TestBuiltInRoles_DefaultTenant(t *testing.T) {
 	roles := BuiltInRoles("")
 	for _, r := range roles {
-		if r.TenantID != tenant.SystemTenantID {
-			t.Errorf("role %q: TenantID: got %q, want %q", r.Name, r.TenantID, tenant.SystemTenantID)
+		if r.TenantID != tenantid.System {
+			t.Errorf("role %q: TenantID: got %q, want %q", r.Name, r.TenantID, tenantid.System)
 		}
 	}
 }
@@ -2776,8 +2777,8 @@ func TestKVRoleStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRole() returned unexpected error: %v", err)
 	}
-	if checkedTenantID != tenant.SystemTenantID {
-		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenant.SystemTenantID)
+	if checkedTenantID != tenantid.System {
+		t.Errorf("quota.Check() tenantID = %q, want %q", checkedTenantID, tenantid.System)
 	}
 }
 

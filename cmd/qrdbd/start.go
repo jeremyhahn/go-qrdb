@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -1104,7 +1105,7 @@ func runStart(f *startFlags) (err error) {
 	// cert to authenticate. Deferring cert generation until after unseal
 	// would deadlock that bootstrap.
 	if f.authEnabled && len(bundle.CAKeyPEM) > 0 {
-		if err := generateAdminClientCert(bundle, f.dataDir, "admin", tenant.SystemTenantID); err != nil {
+		if err := generateAdminClientCert(bundle, f.dataDir, "admin", tenantid.System); err != nil {
 			return err
 		}
 	}
@@ -1755,7 +1756,7 @@ func runStart(f *startFlags) (err error) {
 				Manager:        dbManager,
 				ReplicaID:      f.replicaID,
 				RaftAddr:       f.raftAddress,
-				SystemTenant:   tenant.SystemTenantID,
+				SystemTenant:   tenantid.System,
 				PlacementStore: svcNode.PlacementStore,
 				MultiplexLogDB: f.walMux,
 				FeatureGate:    featureGate,
@@ -2512,7 +2513,7 @@ func buildQuotaReconciler(acct *quota.Accountant, tenantSvc tenant.TenantService
 			out := make([]quota.StorageTenant, 0, len(infos))
 			for i := range infos {
 				ti := &infos[i]
-				if ti.ID == tenant.SystemTenantID {
+				if ti.ID == tenantid.System {
 					continue
 				}
 				out = append(out, quota.StorageTenant{
@@ -3298,7 +3299,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	}
 	bootStore, err := kvstore.NewNamespacedKVStore(
 		guardedBootAdapter,
-		tenant.IdentityNamespace(tenant.SystemTenantID),
+		tenant.IdentityNamespace(tenantid.System),
 	)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot store namespace", Err: err}
@@ -3364,7 +3365,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		return nil, &AuthBootstrapError{Step: "runtime store adapter", Err: gerr}
 	}
 	systemStore, err := kvstore.NewNamespacedKVStore(
-		runtimeStore, tenant.IdentityNamespace(tenant.SystemTenantID))
+		runtimeStore, tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "system store namespace", Err: err}
 	}
@@ -3667,7 +3668,7 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// reconcileExistingAdmin. A cluster upgraded across #106 would keep an
 	// admin that was permanently System: false and therefore deletable,
 	// forever, because every subsequent start took this same early return.
-	if existingAdmin, ok := adminExists(ctx, userSvc, tenant.SystemTenantID); ok {
+	if existingAdmin, ok := adminExists(ctx, userSvc, tenantid.System); ok {
 		if existingAdmin.System {
 			slog.Debug("first-boot: admin user exists and is already the System user, skipping")
 			return nil
@@ -3683,7 +3684,7 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// all built-in roles, and creates the admin user with the Admin@system
 	// grant. Idempotent.
 	slog.Info("first-boot: bootstrapping system tenant + roles + admin user",
-		slog.String("tenant", tenant.SystemTenantID))
+		slog.String("tenant", tenantid.System))
 
 	runInit := func() error {
 		if barriers != nil {
@@ -3774,7 +3775,7 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 		}
 		slog.Info("first-boot: waiting for leader to replicate admin",
 			slog.Any("reason", firstBootErr))
-		return waitForAdminReplication(ctx, userSvc, tenant.SystemTenantID)
+		return waitForAdminReplication(ctx, userSvc, tenantid.System)
 	}
 	return nil
 }

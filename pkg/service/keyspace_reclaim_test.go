@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
 
@@ -937,7 +938,7 @@ func TestReclaimTenant_ReclaimsVectorNamespaces(t *testing.T) {
 // reclamation from emptying the store: "system/" holds the bootstrap database
 // and every system identity record.
 func TestReclaimTenant_RefusesTheSystemTenant(t *testing.T) {
-	for _, id := range []string{tenant.SystemTenantID, ""} {
+	for _, id := range []string{tenantid.System, ""} {
 		kv := tenantPopulatedStore()
 		before := allKeys(t, kv)
 		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
@@ -1057,9 +1058,9 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 // TestTenantKeyPrefixes_SystemTenantAndEmptyReturnNothing: an unscoped
 // reclamation must reclaim nothing, never everything.
 func TestTenantKeyPrefixes_SystemTenantAndEmptyReturnNothing(t *testing.T) {
-	assert.Nil(t, TenantKeyPrefixes(tenant.SystemTenantID))
+	assert.Nil(t, TenantKeyPrefixes(tenantid.System))
 	assert.Nil(t, TenantKeyPrefixes(""))
-	assert.Nil(t, TenantIndexNamePrefixes(tenant.SystemTenantID))
+	assert.Nil(t, TenantIndexNamePrefixes(tenantid.System))
 	assert.Nil(t, TenantIndexNamePrefixes(""))
 	assert.Equal(t, []string{tenant.IdentityNamespace("acme")}, TenantIndexNamePrefixes("acme"))
 }

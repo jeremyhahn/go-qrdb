@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -37,7 +38,7 @@ func abacGuardrailPolicy() *abac.Policy {
 	return &abac.Policy{
 		APIVersion: "abac.qrdb.io/v1",
 		Kind:       abac.PolicyKind,
-		Metadata:   abac.PolicyMetadata{Name: "node-guardrail", Tenant: tenant.SystemTenantID},
+		Metadata:   abac.PolicyMetadata{Name: "node-guardrail", Tenant: tenantid.System},
 		Spec: abac.PolicySpec{
 			Subjects: abac.SubjectSelector{Any: true},
 			Rules: []abac.Rule{
@@ -68,16 +69,16 @@ func TestEmbeddedNode_ABACDecoratesRBAC(t *testing.T) {
 	svcNode := n.Services()
 	require.NotNil(t, svcNode.Role)
 
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 	rbacClient := n.Client().RBAC()
 	require.NotNil(t, rbacClient)
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
-	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	selfCtx := tenant.WithTenantID(ctx, tenantid.System)
 
 	// ABAC deny: keys:destroy matched the deny rule, regardless of RBAC.
 	err := rbacClient.Authorize(selfCtx, id, "keys", "destroy")
@@ -152,16 +153,16 @@ func TestNode_ABACPolicyReloader_ReachesEmbeddedAuthorizer(t *testing.T) {
 	n := newMemoryNodeWithUser(t, WithABACPolicies(setA))
 	svcNode := n.Services()
 
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 	rbacClient := n.Client().RBAC()
 	require.NotNil(t, rbacClient)
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
-	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	selfCtx := tenant.WithTenantID(ctx, tenantid.System)
 
 	// Set A is in force: destroy denied, export allowed.
 	err := rbacClient.Authorize(selfCtx, id, "keys", "destroy")
@@ -177,7 +178,7 @@ func TestNode_ABACPolicyReloader_ReachesEmbeddedAuthorizer(t *testing.T) {
 	setB := []*abac.Policy{{
 		APIVersion: "abac.qrdb.io/v1",
 		Kind:       abac.PolicyKind,
-		Metadata:   abac.PolicyMetadata{Name: "node-guardrail-v2", Tenant: tenant.SystemTenantID},
+		Metadata:   abac.PolicyMetadata{Name: "node-guardrail-v2", Tenant: tenantid.System},
 		Spec: abac.PolicySpec{
 			Subjects: abac.SubjectSelector{Any: true},
 			Rules: []abac.Rule{
@@ -205,16 +206,16 @@ func TestNode_ABACPolicyReloader_LiveReloadFromZero(t *testing.T) {
 	n := newMemoryNodeWithUser(t, WithABACLiveReload())
 	svcNode := n.Services()
 
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenantid.System)
 	rbacClient := n.Client().RBAC()
 	require.NotNil(t, rbacClient)
 
 	id := &transport.Identity{
 		Subject:  "admin",
-		TenantID: tenant.SystemTenantID,
+		TenantID: tenantid.System,
 		Roles:    []string{adminRoleID},
 	}
-	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+	selfCtx := tenant.WithTenantID(ctx, tenantid.System)
 
 	// No ABAC policy exists yet: RBAC decides, and the seeded Admin role
 	// grants self-scope tenants:read.
@@ -222,7 +223,7 @@ func TestNode_ABACPolicyReloader_LiveReloadFromZero(t *testing.T) {
 
 	reloader := n.ABACPolicyReloader()
 	require.NotNil(t, reloader, "WithABACLiveReload must expose a reload seam even with zero initial policies")
-	denyRead := testPolicyForTenant("first-policy", tenant.SystemTenantID, abac.Rule{
+	denyRead := testPolicyForTenant("first-policy", tenantid.System, abac.Rule{
 		Name:      "deny-tenants-read",
 		Effect:    abac.EffectDeny,
 		Actions:   []string{"read"},

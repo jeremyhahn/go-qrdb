@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -73,8 +75,8 @@ func newCompactionDatabaseService(t *testing.T) (*DatabaseService, *policyRegist
 		}
 	}
 	reg := &policyRegistry{views: map[string]*policyView{
-		"acme/acme-db":                    {},
-		tenant.SystemTenantID + "/sys-db": {},
+		"acme/acme-db":              {},
+		tenantid.System + "/sys-db": {},
 	}}
 	svc := NewDatabaseService(mgr).(*DatabaseService)
 	svc.SetCompactionPolicies(NewCompactionPolicies(reg))
@@ -88,7 +90,7 @@ func TestDatabaseService_UpdateCompactionForTenant(t *testing.T) {
 	svc, reg, _ := newCompactionDatabaseService(t)
 	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 2}
 	acme := tenant.WithTenantID(context.Background(), "acme")
-	system := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	system := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	info, err := svc.UpdateCompactionForTenant(acme, "acme-db", policy)
 	if err != nil || info.Compaction == nil || info.Compaction.RetainRevisions != 2 {

@@ -26,7 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // tenantSession returns a SQL context whose session is authenticated as
@@ -123,7 +123,7 @@ func TestProvider_Lifecycle_AuthorizesAgainstSessionTenant(t *testing.T) {
 func TestProvider_Lifecycle_SystemSessionUsesManager(t *testing.T) {
 	mgr := newTestManager(t)
 	p := NewManagerProvider(mgr, &mockKVService{})
-	ctx := tenantSession("root", tenant.SystemTenantID)
+	ctx := tenantSession("root", tenantid.System)
 
 	require.NoError(t, p.CreateDatabase(ctx, "opsdb"))
 	require.NoError(t, p.DropDatabase(ctx, "opsdb"))

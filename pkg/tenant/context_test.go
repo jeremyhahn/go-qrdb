@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestWithTenantIDAndFromContextRoundTrip(t *testing.T) {
@@ -30,16 +32,16 @@ func TestWithTenantIDAndFromContextRoundTrip(t *testing.T) {
 
 func TestFromContextNoTenantReturnsDefault(t *testing.T) {
 	got := FromContext(context.Background())
-	if got != SystemTenantID {
-		t.Errorf("FromContext() = %q, want %q", got, SystemTenantID)
+	if got != tenantid.System {
+		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
 	}
 }
 
 func TestFromContextEmptyStringReturnsDefault(t *testing.T) {
 	ctx := WithTenantID(context.Background(), "")
 	got := FromContext(ctx)
-	if got != SystemTenantID {
-		t.Errorf("FromContext() = %q, want %q", got, SystemTenantID)
+	if got != tenantid.System {
+		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
 	}
 }
 
@@ -78,8 +80,8 @@ func TestEffectiveTenant(t *testing.T) {
 		want       string
 		wantDenied bool
 	}{
-		{"system caller empty request defaults to system", SystemTenantID, "", SystemTenantID, false},
-		{"system caller may target any tenant", SystemTenantID, "b", "b", false},
+		{"system caller empty request defaults to system", tenantid.System, "", tenantid.System, false},
+		{"system caller may target any tenant", tenantid.System, "b", "b", false},
 		{"tenant caller empty request resolves to identity", "a", "", "a", false},
 		{"tenant caller matching request resolves to identity", "a", "a", "a", false},
 		{"tenant caller cross-tenant request denied", "a", "b", "", true},

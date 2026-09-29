@@ -17,8 +17,9 @@ package conformance
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -36,14 +37,14 @@ func TestCerts_SystemAdminCannotActOnAnotherTenant(t *testing.T) {
 			continue
 		}
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootConfinedCell(t, tk, tenant.SystemTenantID)
+			c := bootConfinedCell(t, tk, tenantid.System)
 			certs := c.client.Certs()
 			if certs == nil {
 				t.Fatalf("%s: no cert client", tk)
 			}
 
 			own, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
-				Username: "operator", TenantID: tenant.SystemTenantID,
+				Username: "operator", TenantID: tenantid.System,
 			})
 			if err != nil {
 				t.Fatalf("%s: GenerateCert for the caller's own tenant: %v", tk, err)

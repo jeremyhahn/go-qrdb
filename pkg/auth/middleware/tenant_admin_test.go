@@ -25,6 +25,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -37,7 +39,7 @@ import (
 // globex and the system tenant.
 func builtInMiddleware(t *testing.T, opts ...Option) *AuthMiddleware {
 	t.Helper()
-	return New(rbac.New(authtest.BuiltInRoles(t, "acme", "globex", tenant.SystemTenantID)), opts...)
+	return New(rbac.New(authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)), opts...)
 }
 
 // as binds id as the authenticated caller, in its own tenant, the way
@@ -48,7 +50,7 @@ func as(id *auth.Identity) context.Context {
 
 func allTenants() []tenant.TenantInfo {
 	return []tenant.TenantInfo{
-		{ID: tenant.SystemTenantID},
+		{ID: tenantid.System},
 		{ID: "acme", DataRoot: "/srv/acme"},
 		{ID: "globex", DataRoot: "/srv/globex"},
 	}
@@ -82,7 +84,7 @@ func TestAuthorizeTenantUpdate_TenantAdminMayOnlyRenameItself(t *testing.T) {
 
 func TestAuthorizeTenantUpdate_SystemAdminMayChangeIsolation(t *testing.T) {
 	m := builtInMiddleware(t)
-	ctx := as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	ctx := as(authtest.AdminIdentity(tenantid.System, "root"))
 	if err := m.AuthorizeTenantUpdate(ctx, "acme", tenant.TenantPatch{Name: "Acme", IsolationType: tenant.IsolationBarrier}); err != nil {
 		t.Fatalf("system admin changing acme's isolation = %v, want nil", err)
 	}
@@ -93,7 +95,7 @@ func TestAuthorizeTenantUpdate_SystemAdminMayChangeIsolation(t *testing.T) {
 func TestTenantProvisioning_OnlyThePlatformOperator(t *testing.T) {
 	m := builtInMiddleware(t)
 	tenantAdmin := as(authtest.AdminIdentity("acme", "acme-admin"))
-	operator := as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	operator := as(authtest.AdminIdentity(tenantid.System, "root"))
 	for _, perm := range []permission.Permission{
 		permission.TenantsCreate, permission.TenantsSetQuotas,
 		permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
@@ -135,7 +137,7 @@ func TestFilterTenantList_TenantAdminSeesOnlyItsOwnTenant(t *testing.T) {
 
 func TestFilterTenantList_SystemAdminSeesEveryTenant(t *testing.T) {
 	m := builtInMiddleware(t)
-	got, err := m.FilterTenantList(as(authtest.AdminIdentity(tenant.SystemTenantID, "root")), allTenants())
+	got, err := m.FilterTenantList(as(authtest.AdminIdentity(tenantid.System, "root")), allTenants())
 	if err != nil {
 		t.Fatalf("FilterTenantList: %v", err)
 	}
@@ -177,7 +179,7 @@ func TestFilterTenantList_ProbeChargesNoToken(t *testing.T) {
 	l := ratelimit.NewTokenBucketLimiter()
 	t.Cleanup(func() { _ = l.Close() })
 	m := builtInMiddleware(t, WithRateLimiter(l), WithRateLimitPolicies(authtest.OneToken(permission.TenantsListCross)))
-	ctx := as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	ctx := as(authtest.AdminIdentity(tenantid.System, "root"))
 	for i := 0; i < 3; i++ {
 		if got, err := m.FilterTenantList(ctx, allTenants()); err != nil || len(got) != 3 {
 			t.Fatalf("operator list #%d = %d tenants, %v; want 3 and no rate limit", i+1, len(got), err)

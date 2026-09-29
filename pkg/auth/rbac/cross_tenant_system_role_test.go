@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Legacy (pre-UUIDv8) identifiers for the SYSTEM tenant's roles. Frozen
@@ -49,7 +50,7 @@ type tenantScopedRoleService struct {
 
 func (s tenantScopedRoleService) visible(ctx context.Context, r *role.Role) bool {
 	ctxTenant := tenant.FromContext(ctx)
-	return tenant.IsSystemTenant(ctxTenant) || r.TenantID == ctxTenant
+	return tenantid.IsSystem(ctxTenant) || r.TenantID == ctxTenant
 }
 
 func (s tenantScopedRoleService) GetRole(ctx context.Context, id string) (*role.Role, error) {
@@ -83,7 +84,7 @@ func (s tenantScopedRoleService) GetRoleByName(ctx context.Context, tenantID, na
 //
 // The identity's roles must be resolved under the identity's tenant.
 func TestAuthorize_SODenyList_AcrossTenantsWithLegacyIdentifier(t *testing.T) {
-	systemTenant := tenant.SystemTenantID
+	systemTenant := tenantid.System
 
 	svc := tenantScopedRoleService{
 		newMockRoleService(map[string][]permission.Permission{
@@ -121,7 +122,7 @@ func TestAuthorize_SODenyList_AcrossTenantsWithLegacyIdentifier(t *testing.T) {
 // identity's own tenant's Owner role, so it too must not be performed under
 // the target tenant's context.
 func TestEffectiveRoles_OwnerStripped_AcrossTenantsWithLegacyIdentifier(t *testing.T) {
-	systemTenant := tenant.SystemTenantID
+	systemTenant := tenantid.System
 
 	svc := tenantScopedRoleService{
 		newMockRoleService(map[string][]permission.Permission{

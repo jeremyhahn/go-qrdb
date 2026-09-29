@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TenantStoreResolver maps a tenant ID to the kvstore.KVStore that backs that
@@ -73,15 +74,15 @@ type CreateTenantOption = tenant.CreateTenantOption
 const TenantIsolationBarrier = tenant.IsolationBarrier
 
 // SystemTenantID is the identifier of the reserved system tenant.
-const SystemTenantID = tenant.SystemTenantID
+const SystemTenantID = tenantid.System
 
 // IsSystemTenant reports whether id denotes the structurally privileged
 // system tenant. It returns true for both SystemTenantID and the empty
 // string, since an unbound tenant resolves to the system tenant (see
 // TenantFromContext / ContextWithTenant). It is the canonical predicate for
 // "is this the system scope" and should be used instead of comparing
-// against SystemTenantID directly. (Aliases tenant.IsSystemTenant.)
-var IsSystemTenant = tenant.IsSystemTenant
+// against SystemTenantID directly. (Aliases tenantid.IsSystem.)
+var IsSystemTenant = tenantid.IsSystem
 
 // NormalizeTenantID folds an absent tenant ("" — no tenant binding) onto
 // SystemTenantID and returns every other value unchanged.
@@ -91,8 +92,8 @@ var IsSystemTenant = tenant.IsSystemTenant
 // that boundary, so IsSystemTenant is never asked about an unnormalized
 // value further in. A boundary that folds only one of the two — the context
 // but not the identity — is the defect #188 records, because the
-// authorization predicate reads the identity. (Aliases tenant.Normalize.)
-var NormalizeTenantID = tenant.Normalize
+// authorization predicate reads the identity. (Aliases tenantid.Normalize.)
+var NormalizeTenantID = tenantid.Normalize
 
 // ErrTenantExists is returned by the tenant store when creating a tenant whose
 // id already exists. (Aliases pkg/tenant.ErrTenantAlreadyExists; named

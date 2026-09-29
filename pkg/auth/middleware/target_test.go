@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -79,7 +80,7 @@ func TestResolveTarget(t *testing.T) {
 	users := &targetUsers{records: map[uint64]*user.User{7: {ID: 7, TenantID: "acme"}}}
 	roles := &targetRoles{records: map[string]*role.Role{"r": {ID: "r", TenantID: "globex"}}}
 	storeDown := errors.New("store down")
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 
 	tests := []struct {
 		name    string
@@ -88,18 +89,18 @@ func TestResolveTarget(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{name: "self", mw: New(nil), target: SelfTarget(), want: tenant.SystemTenantID},
-		{name: "empty tenant is self", mw: New(nil), target: TenantTarget(""), want: tenant.SystemTenantID},
-		{name: "zero user is self", mw: New(nil), target: UserTarget(0), want: tenant.SystemTenantID},
-		{name: "empty role is self", mw: New(nil), target: RoleTarget(""), want: tenant.SystemTenantID},
+		{name: "self", mw: New(nil), target: SelfTarget(), want: tenantid.System},
+		{name: "empty tenant is self", mw: New(nil), target: TenantTarget(""), want: tenantid.System},
+		{name: "zero user is self", mw: New(nil), target: UserTarget(0), want: tenantid.System},
+		{name: "empty role is self", mw: New(nil), target: RoleTarget(""), want: tenantid.System},
 		{name: "named tenant", mw: New(nil), target: TenantTarget("acme"), want: "acme"},
 		{name: "user's tenant", mw: New(nil, WithUserService(users)), target: UserTarget(7), want: "acme"},
-		{name: "unseen user is self", mw: New(nil, WithUserService(users)), target: UserTarget(8), want: tenant.SystemTenantID},
-		{name: "no user store is self", mw: New(nil), target: UserTarget(7), want: tenant.SystemTenantID},
+		{name: "unseen user is self", mw: New(nil, WithUserService(users)), target: UserTarget(8), want: tenantid.System},
+		{name: "no user store is self", mw: New(nil), target: UserTarget(7), want: tenantid.System},
 		{name: "user store failure", mw: New(nil, WithUserService(&targetUsers{err: storeDown})), target: UserTarget(7), wantErr: true},
 		{name: "role's tenant", mw: New(nil, WithRoleService(roles)), target: RoleTarget("r"), want: "globex"},
-		{name: "unseen role is self", mw: New(nil, WithRoleService(roles)), target: RoleTarget("x"), want: tenant.SystemTenantID},
-		{name: "no role store is self", mw: New(nil), target: RoleTarget("r"), want: tenant.SystemTenantID},
+		{name: "unseen role is self", mw: New(nil, WithRoleService(roles)), target: RoleTarget("x"), want: tenantid.System},
+		{name: "no role store is self", mw: New(nil), target: RoleTarget("r"), want: tenantid.System},
 		{name: "role store failure", mw: New(nil, WithRoleService(&targetRoles{err: storeDown})), target: RoleTarget("r"), wantErr: true},
 	}
 	for _, tt := range tests {
@@ -126,8 +127,8 @@ func TestResolveTarget(t *testing.T) {
 func TestAuthorizeTarget_DecidesAgainstTheTarget(t *testing.T) {
 	authz := &recordingAuthorizer{}
 	mw := New(authz, WithUserService(&targetUsers{records: map[uint64]*user.User{7: {ID: 7, TenantID: "acme"}}}))
-	id := &auth.Identity{Subject: "op", TenantID: tenant.SystemTenantID}
-	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), tenant.SystemTenantID)
+	id := &auth.Identity{Subject: "op", TenantID: tenantid.System}
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), tenantid.System)
 
 	if err := mw.AuthorizeTarget(ctx, permission.UsersUpdate, UserTarget(7)); err != nil {
 		t.Fatalf("AuthorizeTarget: %v", err)
@@ -135,7 +136,7 @@ func TestAuthorizeTarget_DecidesAgainstTheTarget(t *testing.T) {
 	if len(authz.tenants) != 1 || authz.tenants[0] != "acme" {
 		t.Fatalf("decided against %v, want [acme]", authz.tenants)
 	}
-	if got := tenant.FromContext(ctx); got != tenant.SystemTenantID {
+	if got := tenant.FromContext(ctx); got != tenantid.System {
 		t.Fatalf("caller context tenant = %q, want it untouched", got)
 	}
 
@@ -371,7 +372,7 @@ func TestAuthorizeQUIC_TargetErrorRefuses(t *testing.T) {
 	methods.SetTarget("user.Update", func([]byte) (Target, error) {
 		return SelfTarget(), &TargetBodyInvalidError{}
 	})
-	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "op", TenantID: tenant.SystemTenantID})
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "op", TenantID: tenantid.System})
 	var invalid *TargetBodyInvalidError
 	if err := mw.AuthorizeQUIC(ctx, methods, "user.Update", []byte("x")); !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want *TargetBodyInvalidError", err)

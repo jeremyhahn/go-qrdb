@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newKVBarrierService builds the embedded KV tenant service.
@@ -59,7 +60,7 @@ func TestCheckBarrierModeExemptsTheSystemTenant(t *testing.T) {
 		seal.StrategyPassphrase,
 		seal.StrategyShamir,
 	} {
-		if err := checker.CheckBarrierMode(context.Background(), SystemTenantID, mode); err != nil {
+		if err := checker.CheckBarrierMode(context.Background(), tenantid.System, mode); err != nil {
 			t.Errorf("system tenant refused mode %q: %v", mode, err)
 		}
 	}

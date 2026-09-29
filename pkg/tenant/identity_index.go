@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // IdentityID renders a numeric identity id as the index's key segment.
@@ -326,7 +327,7 @@ type kvIdentityIndex struct {
 // NewIdentityIndex returns an IdentityIndex over a store that is ALREADY
 // confined to the system tenant's identity namespace — the shape
 // cmd/qrdbd's bootstrap store has, built with
-// kvstore.NewNamespacedKVStore(raw, IdentityNamespace(SystemTenantID)).
+// kvstore.NewNamespacedKVStore(raw, IdentityNamespace(tenantid.System)).
 //
 // Passing an unconfined store puts the index at the root of the shared
 // keyspace instead of under "system/", where the resolver-backed readers
@@ -355,7 +356,7 @@ func NewResolvedIdentityIndex(resolver StoreResolver) (IdentityIndex, error) {
 	}
 	return &kvIdentityIndex{
 		store: func(ctx context.Context) (kvstore.KVStore, error) {
-			return resolver.Resolve(ctx, SystemTenantID)
+			return resolver.Resolve(ctx, tenantid.System)
 		},
 	}, nil
 }
@@ -387,10 +388,10 @@ func (i *kvIdentityIndex) Record(ctx context.Context, kind IdentityKind, id, ten
 	if id == "" {
 		return "", &IdentityIndexError{Op: "record", Kind: kind, ID: id, Err: ErrEmptyIdentityID}
 	}
-	// Canonicalize so the empty id and SystemTenantID — the same tenant —
+	// Canonicalize so the empty id and tenantid.System — the same tenant —
 	// cannot be stored as two different values and route two different ways.
-	if IsSystemTenant(tenantID) {
-		tenantID = SystemTenantID
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
 	}
 	store, err := i.store(ctx)
 	if err != nil {
@@ -524,8 +525,8 @@ func (i *kvIdentityIndex) PrepareClaim(kind IdentityKind, id, tenantID string) (
 	if id == "" {
 		return kvstore.KV{}, "", &IdentityIndexError{Op: "prepare_claim", Kind: kind, ID: id, Err: ErrEmptyIdentityID}
 	}
-	if IsSystemTenant(tenantID) {
-		tenantID = SystemTenantID
+	if tenantid.IsSystem(tenantID) {
+		tenantID = tenantid.System
 	}
 	token, err := newClaimToken(tenantID)
 	if err != nil {
@@ -572,8 +573,8 @@ func ReconcileDeletedIdentity(ctx context.Context, index IdentityIndex, kind Ide
 	if !held {
 		return false, nil
 	}
-	if IsSystemTenant(owner) {
-		owner = SystemTenantID
+	if tenantid.IsSystem(owner) {
+		owner = tenantid.System
 	}
 	if claim.Tenant != owner {
 		// Someone else holds it. Not ours to release, and Forget would refuse

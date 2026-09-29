@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -595,7 +596,7 @@ func TestRouting_AddCertBinding_Success(t *testing.T) {
 
 // EffectiveTenant honors an explicit tenant for a system-tenant caller.
 func TestEffectiveTenant_SystemExplicit(t *testing.T) {
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	got, err := tenant.EffectiveTenant(ctx, "my-tenant", "create user")
 	if err != nil {
 		t.Fatalf("EffectiveTenant: %v", err)

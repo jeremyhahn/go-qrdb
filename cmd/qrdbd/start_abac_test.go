@@ -29,7 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // abacTestInner is a minimal inner authorizer for decorateWithABAC tests.
@@ -90,7 +90,7 @@ spec:
 	authz, err := decorateWithABAC(inner, qrdbconfig.AuthABACConfig{Enabled: true, PolicyDir: dir})
 	require.NoError(t, err)
 
-	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin"}}
+	identity := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{"admin"}}
 
 	// Explicit deny overrides the inner allow; inner is never consulted.
 	err = authz.Authorize(context.Background(), identity, "/kv/orders", "purge")

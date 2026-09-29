@@ -19,7 +19,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestValidateAssignable_SameTenant asserts the common case: a role created
@@ -56,7 +56,7 @@ func TestValidateAssignable_WrongTenant(t *testing.T) {
 // tenant's id for one of its principals.
 func TestValidateAssignable_SystemRoleFromSystemTenant(t *testing.T) {
 	svc := newTestStore(t)
-	seeded := seedBuiltIns(t, svc, tenant.SystemTenantID)
+	seeded := seedBuiltIns(t, svc, tenantid.System)
 	if len(seeded) == 0 {
 		t.Fatal("seedBuiltIns returned no roles")
 	}
@@ -69,7 +69,7 @@ func TestValidateAssignable_SystemRoleFromSystemTenant(t *testing.T) {
 	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, "acme"); !errors.As(err, &na) {
 		t.Fatalf("ValidateAssignable(system role, foreign tenant) = %v, want *NotAssignableError", err)
 	}
-	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, tenant.SystemTenantID); err != nil {
+	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, tenantid.System); err != nil {
 		t.Fatalf("ValidateAssignable(system role, system tenant) = %v, want nil", err)
 	}
 }

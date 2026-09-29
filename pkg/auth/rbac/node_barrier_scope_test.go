@@ -19,6 +19,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -36,7 +38,7 @@ import (
 // this decision.
 func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 	const other = "acme"
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, other)
+	roles := authtest.BuiltInRoles(t, tenantid.System, other)
 	authz := rbac.New(roles)
 	nodePerms := []permission.Permission{
 		permission.SealBootstrap, permission.SealEnableEncryption, permission.SealGenerateRecovery,
@@ -56,8 +58,8 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 	}
 	exercised := 0
 	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator, role.RoleNameCustodian} {
-		held, err := roles.ResolvePermissions(tenant.WithTenantID(context.Background(), tenant.SystemTenantID),
-			[]string{role.SystemRoleID(tenant.SystemTenantID, name)})
+		held, err := roles.ResolvePermissions(tenant.WithTenantID(context.Background(), tenantid.System),
+			[]string{role.SystemRoleID(tenantid.System, name)})
 		if err != nil {
 			t.Fatalf("resolve %s: %v", name, err)
 		}
@@ -71,11 +73,11 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 			}
 			exercised++
 			t.Run(name+"/"+string(p), func(t *testing.T) {
-				for _, tid := range []string{tenant.SystemTenantID, other} {
+				for _, tid := range []string{tenantid.System, other} {
 					id := &auth.Identity{Subject: name + "@" + tid, TenantID: tid, Roles: []string{role.SystemRoleID(tid, name)}}
 					err := authz.Authorize(tenant.WithTenantID(context.Background(), tid), id,
 						permission.Resource(p), permission.Action(p))
-					if tid == tenant.SystemTenantID {
+					if tid == tenantid.System {
 						if err != nil {
 							t.Fatalf("system-tenant %s refused %s: %v", name, p, err)
 						}
@@ -114,13 +116,13 @@ func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
 		permission.BackupCreate, permission.BackupDelete, permission.BackupList,
 		permission.BackupRead, permission.BackupRestore, permission.BackupVerify,
 	}
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, other)
+	roles := authtest.BuiltInRoles(t, tenantid.System, other)
 	authz := rbac.New(roles)
-	for _, tid := range []string{tenant.SystemTenantID, other} {
+	for _, tid := range []string{tenantid.System, other} {
 		id := authtest.Grant(t, roles, authtest.SOIdentity(tid, "officer@"+tid), perms...)
 		for _, p := range perms {
 			err := authz.Authorize(tenant.WithTenantID(context.Background(), tid), id, permission.Resource(p), permission.Action(p))
-			if tid == tenant.SystemTenantID {
+			if tid == tenantid.System {
 				if err != nil {
 					t.Errorf("system-tenant holder refused %s: %v", p, err)
 				}

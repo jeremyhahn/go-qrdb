@@ -21,7 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // anyHost is the only host component a qrdb grantee may carry. qrdb
@@ -81,19 +81,19 @@ type principal struct {
 func principalOf(sess sqle.Session) principal {
 	ident, ok := sess.(identitySession)
 	if !ok {
-		return principal{tenant: tenant.SystemTenantID, exempt: true}
+		return principal{tenant: tenantid.System, exempt: true}
 	}
 
 	tenantID := ident.TenantID()
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 
 	p := principal{tenant: tenantID}
 	if id := ident.Identity(); id != nil && id.Subject != "" {
 		p.grantee = canonicalGrantee(id.Subject)
 	}
-	p.exempt = tenantID == tenant.SystemTenantID || p.grantee == ""
+	p.exempt = tenantID == tenantid.System || p.grantee == ""
 	return p
 }
 

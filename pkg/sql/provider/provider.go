@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/pgcatalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Compile-time interface assertions.
@@ -483,7 +484,7 @@ func (p *Provider) visibleTo(info database.DatabaseInfo, tenantID string) bool {
 // comparison.
 func databaseOwner(info database.DatabaseInfo) string {
 	if info.TenantID == "" {
-		return tenant.SystemTenantID
+		return tenantid.System
 	}
 	return info.TenantID
 }
@@ -493,12 +494,12 @@ func databaseOwner(info database.DatabaseInfo) string {
 // the same fallback, for the same reason, as Database.sessionTenantID.
 func providerSessionTenantID(ctx *sqle.Context) string {
 	if ctx == nil || ctx.Session == nil {
-		return tenant.SystemTenantID
+		return tenantid.System
 	}
 	if sess, ok := ctx.Session.(*QRDBSession); ok {
 		return sess.TenantID()
 	}
-	return tenant.SystemTenantID
+	return tenantid.System
 }
 
 // CreateDatabase creates a new database for the session's tenant. The
@@ -534,7 +535,7 @@ func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	switch {
 	case p.databaseSvc != nil:
 		_, err = p.databaseSvc.CreateForTenant(lctx, cfg)
-	case tenant.IsSystemTenant(tenantID):
+	case tenantid.IsSystem(tenantID):
 		_, err = p.manager.Create(cfg)
 	default:
 		err = &DatabaseLifecycleUnavailableError{Operation: "CREATE DATABASE", TenantID: tenantID}
@@ -568,7 +569,7 @@ func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation s
 	if p.lifecycleAuthz != nil {
 		return p.lifecycleAuthz.AuthorizeTenant(ctx, tenantID, perm)
 	}
-	if tenant.IsSystemTenant(tenantID) {
+	if tenantid.IsSystem(tenantID) {
 		return nil
 	}
 	return &DatabaseLifecycleUnavailableError{Operation: operation, TenantID: tenantID}
@@ -603,7 +604,7 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	switch {
 	case p.databaseSvc != nil:
 		err = p.databaseSvc.DropForTenant(lctx, name)
-	case tenant.IsSystemTenant(tenantID):
+	case tenantid.IsSystem(tenantID):
 		err = p.manager.Drop(lctx, name)
 	default:
 		err = &DatabaseLifecycleUnavailableError{Operation: "DROP DATABASE", TenantID: tenantID}
@@ -781,7 +782,7 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 }
 
 // sessionTenantID returns the tenant carried by the QRDBSession installed on
-// ctx, or tenant.SystemTenantID when no such session is present. It is a
+// ctx, or tenantid.System when no such session is present. It is a
 // thin wrapper over the package-level sessionTenantIDOf, which exists
 // because RelationalTable (relational_writer.go's Truncate, which has no
 // *Database to call this method on) needs the identical fallback rule.
@@ -790,7 +791,7 @@ func (d *Database) sessionTenantID(ctx *sqle.Context) string {
 }
 
 // sessionTenantIDOf returns the tenant carried by the QRDBSession installed
-// on ctx, or tenant.SystemTenantID when no such session is present. It is
+// on ctx, or tenantid.System when no such session is present. It is
 // the single place that fallback is applied, so every tenant-scoped
 // resolution path (Database.sessionTenantID, RelationalTable.Truncate)
 // agrees on it.
@@ -798,7 +799,7 @@ func sessionTenantIDOf(ctx *sqle.Context) string {
 	if sess, ok := ctx.Session.(*QRDBSession); ok {
 		return sess.TenantID()
 	}
-	return tenant.SystemTenantID
+	return tenantid.System
 }
 
 // collectionService returns the CollectionServicer this session's collection

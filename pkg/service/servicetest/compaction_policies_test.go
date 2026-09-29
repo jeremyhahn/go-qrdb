@@ -20,6 +20,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -31,7 +33,7 @@ func TestNewDatabaseService_InstallsThePort(t *testing.T) {
 	mgr := database.NewManager(slog.New(slog.DiscardHandler), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := NewDatabaseService(t, mgr)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
 	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}

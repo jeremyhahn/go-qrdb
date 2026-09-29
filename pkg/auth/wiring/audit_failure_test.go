@@ -33,7 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // brokenSink is a decision logger over a REAL ChainFileLogger whose file has
@@ -67,7 +67,7 @@ func TestBuildAuthMiddleware_AuditFailurePolicyDefaultsToFailClosed(t *testing.T
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	err = mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus)
+	err = mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus)
 	require.Error(t, err, "an unrecorded grant must be refused by default")
 
 	var auditErr *audit.GateError
@@ -91,7 +91,7 @@ func TestBuildAuthMiddleware_AuditFailurePolicyFailOpenIsHonoured(t *testing.T) 
 	require.NotNil(t, mw)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	assert.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus),
+	assert.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus),
 		"fail-open must permit the decision the sink could not record")
 }
 
@@ -109,6 +109,6 @@ func TestBuildAuthMiddleware_HealthyAuditSinkAuthorizes(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
+	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 	assert.Len(t, ring.Snapshot(), 1, "the decision must be in the trail")
 }

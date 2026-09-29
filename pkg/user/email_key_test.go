@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The email login key (#190). Each test names the property it protects and is
@@ -2339,7 +2339,7 @@ func TestCreateUser_AClaimThatCouldNotBeReleasedIsReported(t *testing.T) {
 	}
 
 	const addr = "stranded@example.com"
-	emailKey := emailIndexKey(tenant.SystemTenantID, addr)
+	emailKey := emailIndexKey(tenantid.System, addr)
 	kv.failReleaseKey = emailKey
 	kv.err = errUnreleasableClaim
 
@@ -2399,7 +2399,7 @@ func TestCreateUser_ACleanRollbackDoesNotReportCompensationFailure(t *testing.T)
 	}
 
 	// And the handle really is back: the address must be usable again.
-	emailKey := emailIndexKey(tenant.SystemTenantID, addr)
+	emailKey := emailIndexKey(tenantid.System, addr)
 	if raw, gErr := kv.Get(ctx, emailKey); gErr != nil || len(raw) != 0 {
 		t.Fatal("a cleanly rolled-back create left its email claim behind")
 	}

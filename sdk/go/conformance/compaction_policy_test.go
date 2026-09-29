@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -46,18 +48,18 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 
 			revA := c.writeHistory(t, "tenant-a", "k")
 			revB := c.writeHistory(t, "tenant-b", "k")
-			revSys := c.writeHistory(t, tenant.SystemTenantID, "k")
+			revSys := c.writeHistory(t, tenantid.System, "k")
 
 			// Nobody configured anything: ten scheduler passes later, every
 			// history is intact.
 			time.Sleep(250 * time.Millisecond)
-			for id, rev := range map[string]int64{"tenant-a": revA, "tenant-b": revB, tenant.SystemTenantID: revSys} {
+			for id, rev := range map[string]int64{"tenant-a": revA, "tenant-b": revB, tenantid.System: revSys} {
 				c.requireHistory(t, id, "k", rev, "scheduler passes with no policy configured")
 			}
 
 			// Neither another tenant nor the system tenant can configure a
 			// policy on tenant-a's database.
-			for _, intruder := range []string{"tenant-b", tenant.SystemTenantID} {
+			for _, intruder := range []string{"tenant-b", tenantid.System} {
 				if _, err := c.setPolicy(t, intruder, compactionDatabase("tenant-a"),
 					&transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 1}); err == nil {
 					t.Fatalf("%s: %s configured compaction on tenant-a's database", tk, intruder)
@@ -97,7 +99,7 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 			c.requireCompacted(t, "tenant-a", "k", revA)
 			// ... and nothing else.
 			c.requireHistory(t, "tenant-b", "k", revB, "tenant-a's scheduled compaction")
-			c.requireHistory(t, tenant.SystemTenantID, "k", revSys, "tenant-a's scheduled compaction")
+			c.requireHistory(t, tenantid.System, "k", revSys, "tenant-a's scheduled compaction")
 
 			// Turning it off returns the database to never-compacted.
 			info, err = c.setPolicy(t, "tenant-a", compactionDatabase("tenant-a"), &transport.DatabaseCompactionConfig{Mode: "off"})

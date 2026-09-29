@@ -20,7 +20,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // createInTenant creates a user in tenantID and returns it.
@@ -73,7 +73,7 @@ func TestUpdateUser_SystemBindingOnTenantUserRefused(t *testing.T) {
 	svc := newTestStore(t)
 	u := createInTenant(t, svc, "acme", "alice")
 
-	for _, bt := range []string{"", tenant.SystemTenantID} {
+	for _, bt := range []string{"", tenantid.System} {
 		_, err := svc.UpdateUser(context.Background(), &UpdateUserRequest{
 			ID:           u.ID,
 			RoleBindings: []RoleBinding{{RoleID: "admin", TenantID: bt}},
@@ -82,8 +82,8 @@ func TestUpdateUser_SystemBindingOnTenantUserRefused(t *testing.T) {
 		if !errors.As(err, &be) {
 			t.Fatalf("binding tenant %q: expected *RoleBindingTenantError, got %T: %v", bt, err, err)
 		}
-		if be.BindingTenantID != tenant.SystemTenantID {
-			t.Errorf("binding tenant %q: error names %q, want the normalized %q", bt, be.BindingTenantID, tenant.SystemTenantID)
+		if be.BindingTenantID != tenantid.System {
+			t.Errorf("binding tenant %q: error names %q, want the normalized %q", bt, be.BindingTenantID, tenantid.System)
 		}
 	}
 }
@@ -111,7 +111,7 @@ func TestUpdateUser_OwnTenantBindingOnTenantUserAccepted(t *testing.T) {
 // tenant is exactly the cross-tenant grant bindings exist to express.
 func TestUpdateUser_CrossTenantBindingOnSystemUserAccepted(t *testing.T) {
 	svc := newTestStore(t)
-	u := createInTenant(t, svc, tenant.SystemTenantID, "ops")
+	u := createInTenant(t, svc, tenantid.System, "ops")
 
 	got, err := svc.UpdateUser(context.Background(), &UpdateUserRequest{
 		ID:           u.ID,
@@ -131,7 +131,7 @@ func TestUpdateUser_CrossTenantBindingOnSystemUserAccepted(t *testing.T) {
 func TestUpdateUser_BindingTenantNormalizedOnWrite(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
-	u := createInTenant(t, svc, tenant.SystemTenantID, "ops")
+	u := createInTenant(t, svc, tenantid.System, "ops")
 
 	req := &UpdateUserRequest{
 		ID:           u.ID,
@@ -144,7 +144,7 @@ func TestUpdateUser_BindingTenantNormalizedOnWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	want := []RoleBinding{{RoleID: "admin", TenantID: tenant.SystemTenantID}, {RoleID: "admin", TenantID: "acme"}}
+	want := []RoleBinding{{RoleID: "admin", TenantID: tenantid.System}, {RoleID: "admin", TenantID: "acme"}}
 	if !reflect.DeepEqual(got.RoleBindings, want) {
 		t.Errorf("stored RoleBindings: got %+v, want %+v", got.RoleBindings, want)
 	}

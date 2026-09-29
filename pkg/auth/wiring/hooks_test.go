@@ -24,7 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // stubAuthenticator is an embedder-style credential authenticator: it
@@ -41,7 +41,7 @@ func (s *stubAuthenticator) Authenticate(ctx context.Context) (*auth.Identity, e
 	if auth.HTTPAuthorizationFromContext(ctx) != s.token {
 		return nil, auth.ErrUnauthenticated
 	}
-	return &auth.Identity{Subject: "bearer-subject", TenantID: tenant.SystemTenantID}, nil
+	return &auth.Identity{Subject: "bearer-subject", TenantID: tenantid.System}, nil
 }
 
 func (s *stubAuthenticator) Name() string { return "stub-bearer" }
@@ -134,7 +134,7 @@ func TestBuildAuthMiddleware_WrapAuthorizerComposes(t *testing.T) {
 	require.NotNil(t, sawInner, "wrapper must receive the built inner authorizer")
 
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	err = mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus)
+	err = mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus)
 	require.Error(t, err, "wrapped deny-all must override the RBAC allow")
 }
 

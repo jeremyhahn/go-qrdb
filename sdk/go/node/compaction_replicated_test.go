@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
@@ -122,15 +124,15 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	defer cancel()
 	dataDir := t.TempDir()
 	opts := []server.ServerOption{server.WithCompactionInterval(compactionTestInterval)}
-	key := tenant.ComposeNamespace(tenant.SystemTenantID, "events") + "k"
+	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
 
 	first, err := NewStandaloneNode(ctx, standaloneRestartConfig(dataDir), opts)
 	require.NoError(t, err)
-	_, err = first.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenant.SystemTenantID),
+	_, err = first.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenantid.System),
 		database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendPebble})
 	require.NoError(t, err)
 	period := 4 * time.Second
-	setPolicy(t, ctx, first, tenant.SystemTenantID, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
+	setPolicy(t, ctx, first, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
 	stop := keepWriting(t, first, key)
 	time.Sleep(period * 5 / 8) // the first node samples for most of a period
@@ -175,13 +177,13 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 
 	leader := awaitAgreedLeader(t, nodes)
 	a := nodes[leader-1]
-	key := tenant.ComposeNamespace(tenant.SystemTenantID, "events") + "k"
+	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
 	require.NoError(t, putUntilCommitted(ctx, a.Client().KV(), key, []byte("first")))
-	_, err = a.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenant.SystemTenantID),
+	_, err = a.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenantid.System),
 		database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendPebble})
 	require.NoError(t, err)
 	period := 6 * time.Second
-	setPolicy(t, ctx, a, tenant.SystemTenantID, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
+	setPolicy(t, ctx, a, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
 	stop := keepWriting(t, a, key)
 	time.Sleep(period * 5 / 8) // A samples for most of a period

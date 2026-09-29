@@ -23,8 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // markCollectionDropping rewrites every stored collection record in kv into
@@ -61,7 +62,7 @@ func markCollectionDropping(t *testing.T, kv *mockKVService) {
 func TestCollectionSweeper_FinishesAnAbandonedDrop(t *testing.T) {
 	ctx := context.Background()
 	kv, reg := twoTenantCollectionRegistry(t)
-	coll, err := reg.CollectionService(tenant.SystemTenantID, "appdb")
+	coll, err := reg.CollectionService(tenantid.System, "appdb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestCollectionSweeper_FinishesAnAbandonedDrop(t *testing.T) {
 		registry: reg,
 		targets: func(context.Context) ([]collectionSweepTarget, error) {
 			return []collectionSweepTarget{
-				{Tenant: tenant.SystemTenantID, Database: "appdb"},
+				{Tenant: tenantid.System, Database: "appdb"},
 				// An unresolvable target is skipped, not fatal.
 				{Tenant: "no-such-tenant/", Database: "appdb"},
 			}, nil
@@ -124,7 +125,7 @@ func TestServer_CollectionSweepTargets(t *testing.T) {
 	kv := newMockKVService()
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{KV: kv})
-	journal := &collectionWorkJournal{kv: kv, tenant: tenant.SystemTenantID}
+	journal := &collectionWorkJournal{kv: kv, tenant: tenantid.System}
 	for _, w := range [][2]string{{"sqldb", "a"}, {"sqldb", "b/with/slashes"}, {"appdb", "c"}} {
 		if err := journal.Record(ctx, w[0], w[1]); err != nil {
 			t.Fatal(err)
@@ -147,8 +148,8 @@ func TestServer_CollectionSweepTargets(t *testing.T) {
 		}
 		got[tgt.key()] = len(tgt.work)
 	}
-	want := map[string]int{tenant.SystemTenantID + "/sqldb": 2, tenant.SystemTenantID + "/appdb": 1}
-	if len(got) != len(want) || got[tenant.SystemTenantID+"/sqldb"] != 2 || got[tenant.SystemTenantID+"/appdb"] != 1 {
+	want := map[string]int{tenantid.System + "/sqldb": 2, tenantid.System + "/appdb": 1}
+	if len(got) != len(want) || got[tenantid.System+"/sqldb"] != 2 || got[tenantid.System+"/appdb"] != 1 {
 		t.Fatalf("targets = %v, want %v", got, want)
 	}
 

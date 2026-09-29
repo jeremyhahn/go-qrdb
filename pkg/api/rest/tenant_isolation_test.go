@@ -31,6 +31,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -49,9 +51,9 @@ type isolationFixture struct {
 
 func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture {
 	t.Helper()
-	tenants := authtest.NewTenants(t, tenant.SystemTenantID, "acme", "globex")
+	tenants := authtest.NewTenants(t, tenantid.System, "acme", "globex")
 	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "acme-admin"))
-	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme", "globex")
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
 	mw := authmw.New(rbac.New(roles), append([]authmw.Option{authmw.WithAuthenticator(caller)}, opts...)...)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithTenantService(tenants),
@@ -104,7 +106,7 @@ func TestTenantIsolation_OwnTenantAndSystemAdminStillServed(t *testing.T) {
 	if rec := f.do(http.MethodGet, "/v1/tenants/acme", ""); rec.Code != http.StatusOK {
 		t.Fatalf("acme admin GET acme = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
-	f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	f.as(authtest.AdminIdentity(tenantid.System, "root"))
 	if rec := f.do(http.MethodGet, "/v1/tenants/globex", ""); rec.Code != http.StatusOK {
 		t.Fatalf("system admin GET globex = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -147,7 +149,7 @@ func TestTenantIsolation_TenantAdminMayRenameItself(t *testing.T) {
 
 func TestTenantIsolation_PlatformOperatorSetsAPlan(t *testing.T) {
 	f := newIsolationFixture(t)
-	f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	f.as(authtest.AdminIdentity(tenantid.System, "root"))
 	if rec := f.do(http.MethodPost, "/v1/tenants/acme/quotas", `{"max_databases":1000}`); rec.Code != http.StatusOK {
 		t.Fatalf("operator setting acme's quotas = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -173,7 +175,7 @@ func TestTenantIsolation_TenantAdminCannotCreateATenant(t *testing.T) {
 		t.Fatal("a refused create left a tenant behind")
 	}
 
-	f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	f.as(authtest.AdminIdentity(tenantid.System, "root"))
 	if rec := f.do(http.MethodPost, "/v1/tenants", `{"id":"initech","name":"initech"}`); rec.Code != http.StatusCreated {
 		t.Fatalf("system admin create = %d, want 201 (%s)", rec.Code, rec.Body.String())
 	}
@@ -200,7 +202,7 @@ func TestTenantIsolation_ListShowsATenantAdminOnlyItsOwnTenant(t *testing.T) {
 	if ids := listedIDs(t, f.do(http.MethodGet, "/v1/tenants/list", "")); len(ids) != 1 || ids[0] != "acme" {
 		t.Fatalf("acme admin listed %v, want [acme]", ids)
 	}
-	f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	f.as(authtest.AdminIdentity(tenantid.System, "root"))
 	if ids := listedIDs(t, f.do(http.MethodGet, "/v1/tenants/list", "")); len(ids) != 3 {
 		t.Fatalf("system admin listed %v, want all three tenants", ids)
 	}
@@ -214,7 +216,7 @@ func TestTenantIsolation_ListShowsATenantAdminOnlyItsOwnTenant(t *testing.T) {
 // set, a control byte here, before any authorization or service call.
 func TestTenantIsolation_IllegalTenantIDIsBadRequest(t *testing.T) {
 	f := newIsolationFixture(t)
-	f.as(authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	f.as(authtest.AdminIdentity(tenantid.System, "root"))
 	if rec := f.do(http.MethodPost, "/v1/tenants", `{"id":"acme/evil","name":"x"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("create acme/evil = %d, want 400 (%s)", rec.Code, rec.Body.String())
 	}

@@ -20,7 +20,7 @@ import (
 	"encoding/base64"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -47,11 +47,11 @@ func NormalizeRoleBindings(userID uint64, userTenant string, bindings []RoleBind
 	if bindings == nil {
 		return nil, nil
 	}
-	userTenant = tenant.Normalize(userTenant)
-	inSystem := tenant.IsSystemTenant(userTenant)
+	userTenant = tenantid.Normalize(userTenant)
+	inSystem := tenantid.IsSystem(userTenant)
 	out := make([]RoleBinding, len(bindings))
 	for i, b := range bindings {
-		b.TenantID = tenant.Normalize(b.TenantID)
+		b.TenantID = tenantid.Normalize(b.TenantID)
 		if !inSystem && b.TenantID != userTenant {
 			return nil, &RoleBindingTenantError{UserID: userID, UserTenantID: userTenant, BindingTenantID: b.TenantID}
 		}

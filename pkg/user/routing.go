@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // Compile-time interface check.
@@ -151,7 +152,7 @@ func (r *routingUserService) createStoreFor(ctx context.Context, tenantID string
 	// identical note for the full reasoning; this is its pkg/user sibling. In
 	// short:
 	// tenant.NewResolvedIdentityIndex always resolves its own backing store via
-	// resolver.Resolve(ctx, tenant.SystemTenantID) (go-qrdb#555 review, round 3),
+	// resolver.Resolve(ctx, tenantid.System) (go-qrdb#555 review, round 3),
 	// so WithAtomicIdentity's same-physical-store precondition holds ONLY for
 	// the system tenant's own resolved store; every other tenant keeps the
 	// sequential path unconditionally.
@@ -164,7 +165,7 @@ func (r *routingUserService) createStoreFor(ctx context.Context, tenantID string
 	// transaction at RUN TIME. atomicCapable asks the state machine itself, with
 	// a genuine no-op guarded proposal, and caches only a definitive answer — see
 	// its doc.
-	if !tenant.IsSystemTenant(tenantID) {
+	if !tenantid.IsSystem(tenantID) {
 		return r.storeForKV(kv, &r.stores, r.opts)
 	}
 	multi, ok := kv.(kvstore.MultiGuardedBatchKVStore)

@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -275,7 +276,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	}
 
 	logger := deps.Logger
-	tenantID := tenant.SystemTenantID
+	tenantID := tenantid.System
 	result := &Result{}
 
 	// Step 1: system tenant. Internal-call context bypasses the
@@ -382,17 +383,17 @@ func validateDependencies(deps Dependencies) error {
 // Already-exists is treated as idempotent success.
 func createSystemTenant(ctx context.Context, deps Dependencies, result *Result) error {
 	internalCtx := tenant.WithInternalCall(ctx)
-	_, err := deps.Tenants.CreateTenant(internalCtx, tenant.SystemTenantID, systemTenantDisplayName, tenant.IsolationPrefix)
+	_, err := deps.Tenants.CreateTenant(internalCtx, tenantid.System, systemTenantDisplayName, tenant.IsolationPrefix)
 	if err == nil {
 		result.SystemTenantCreated = true
 		deps.Logger.Info("first-boot: system tenant created",
-			slog.String("tenant", tenant.SystemTenantID),
+			slog.String("tenant", tenantid.System),
 		)
 		return nil
 	}
 	if errors.Is(err, tenant.ErrTenantAlreadyExists) {
 		deps.Logger.Debug("first-boot: system tenant already exists",
-			slog.String("tenant", tenant.SystemTenantID),
+			slog.String("tenant", tenantid.System),
 		)
 		return nil
 	}

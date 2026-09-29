@@ -29,7 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // SOStartFunc starts the transport under test with mw as its auth
@@ -39,7 +39,7 @@ import (
 type SOStartFunc func(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn
 
 const (
-	soTenant      = tenant.SystemTenantID
+	soTenant      = tenantid.System
 	soOtherTenant = "acme"
 	soPIN         = "correct horse battery staple"
 )
