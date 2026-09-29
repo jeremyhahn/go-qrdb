@@ -17,11 +17,11 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -36,17 +36,12 @@ func (s *qrdbServiceServer) CreateCollection(ctx context.Context, req *pb.Create
 		return nil, mapServiceError(svcErr)
 	}
 
-	info, err := collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
-		Database:   req.GetDatabase(),
-		Name:       req.GetName(),
-		IDStrategy: req.GetIdStrategy(),
-		FieldHash:  req.GetFieldHash(),
-	})
+	info, err := collectionSvc.CreateCollection(ctx, collectionpb.CreateRequestFromProto(req))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	return collectionInfoToProto(info), nil
+	return collectionpb.InfoToProto(info), nil
 }
 
 // GetCollectionInfo returns metadata about a specific collection.
@@ -61,7 +56,7 @@ func (s *qrdbServiceServer) GetCollectionInfo(ctx context.Context, req *pb.GetCo
 		return nil, mapServiceError(err)
 	}
 
-	return collectionInfoToProto(info), nil
+	return collectionpb.InfoToProto(info), nil
 }
 
 // ListCollections returns all collections within a database.
@@ -81,7 +76,7 @@ func (s *qrdbServiceServer) ListCollections(ctx context.Context, req *pb.ListCol
 	pbCollections := make([]*pb.CollectionInfoResponse, len(resp.Collections))
 	for i, c := range resp.Collections {
 		ci := c
-		pbCollections[i] = collectionInfoToProto(&ci)
+		pbCollections[i] = collectionpb.InfoToProto(&ci)
 	}
 
 	return &pb.ListCollectionsResponse{Collections: pbCollections}, nil
@@ -236,20 +231,6 @@ func (s *qrdbServiceServer) ListDocuments(ctx context.Context, req *pb.ListDocum
 // ---------------------------------------------------------------------------
 // Collection type conversion helpers
 // ---------------------------------------------------------------------------
-
-// collectionInfoToProto converts a service CollectionInfo to its protobuf
-// representation.
-func collectionInfoToProto(info *service.CollectionInfo) *pb.CollectionInfoResponse {
-	return &pb.CollectionInfoResponse{
-		Name:          info.Name,
-		Database:      info.Database,
-		IdStrategy:    info.IDStrategy,
-		FieldHash:     info.FieldHash,
-		Schema:        info.Schema,
-		DocumentCount: info.DocumentCount,
-		CreatedAt:     info.CreatedAt.Format(time.RFC3339Nano),
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Collection error types

@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -583,7 +584,7 @@ func TestCollectionInfoToProto_FieldMapping(t *testing.T) {
 		DocumentCount: 100,
 		CreatedAt:     fixedTime,
 	}
-	got := collectionInfoToProto(info)
+	got := collectionpb.InfoToProto(info)
 	if got.GetName() != "mycol" {
 		t.Errorf("expected name 'mycol', got %q", got.GetName())
 	}

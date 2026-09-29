@@ -2784,12 +2784,26 @@ message ListCertsResponse {
 // Collection messages
 // ===========================================================================
 
+// CollectionIndexDefinition declares a secondary index on one collection
+// field. The collection creates the index, owns it, and drops it with the
+// collection.
+message CollectionIndexDefinition {
+    string field_name = 1;
+    bool unique = 2;
+    bool sparse = 3;
+}
+
 // CreateCollectionRequest contains parameters for creating a collection.
 message CreateCollectionRequest {
     string database = 1;
     string name = 2;
     string id_strategy = 3;
     string field_hash = 4;
+    // storage_codec overrides the database's default document codec.
+    string storage_codec = 5;
+    // indexes declares the collection's secondary indexes. The collection is
+    // reported active only once every one of them exists.
+    repeated CollectionIndexDefinition indexes = 6;
 }
 
 // GetCollectionInfoRequest retrieves metadata for a specific collection.
@@ -2818,6 +2832,14 @@ message CollectionInfoResponse {
     map<string, string> schema = 5;
     int64 document_count = 6;
     string created_at = 7;
+    string storage_codec = 8;
+    repeated CollectionIndexDefinition indexes = 9;
+    // state is the collection's lifecycle state: "active", "creating" (its
+    // indexes are being built) or "dropping" (it is being torn down). Only an
+    // active collection serves documents.
+    string state = 10;
+    // state_since is when the collection entered state (RFC 3339).
+    string state_since = 11;
 }
 
 // ListCollectionsResponse holds a list of collection metadata.

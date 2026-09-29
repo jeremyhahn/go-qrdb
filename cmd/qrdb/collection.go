@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -91,6 +92,7 @@ func newCollectionCreateCmd() *cobra.Command {
 		idStrategy   string
 		fieldHash    string
 		storageCodec string
+		indexSpecs   []string
 	)
 
 	cmd := &cobra.Command{
@@ -98,12 +100,17 @@ func newCollectionCreateCmd() *cobra.Command {
 		Short: "Create a new collection within a database",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			indexes, err := parseCollectionIndexFlags(indexSpecs)
+			if err != nil {
+				return err
+			}
 			req := transport.CreateCollectionRequest{
 				Database:     effectiveDatabaseScope(cmd, database),
 				Name:         args[0],
 				IDStrategy:   idStrategy,
 				FieldHash:    fieldHash,
 				StorageCodec: storageCodec,
+				Indexes:      indexes,
 			}
 
 			info, err := client.Collections().CreateCollection(cmd.Context(), req)
@@ -119,8 +126,43 @@ func newCollectionCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&idStrategy, "id-strategy", "", "Document ID strategy: unix_nano, increment, or field_hash (default: unix_nano)")
 	cmd.Flags().StringVar(&fieldHash, "field-hash", "", "Document field to hash (required when --id-strategy=field_hash)")
 	cmd.Flags().StringVar(&storageCodec, "storage-codec", "", "Document storage codec override")
+	cmd.Flags().StringArrayVar(&indexSpecs, "index", nil,
+		"Secondary index on a field, as FIELD[,unique][,sparse]; repeat for several (e.g. --index email,unique --index age)")
 
 	return cmd
+}
+
+// collectionIndexOptions maps each --index option to the definition field it
+// sets.
+var collectionIndexOptions = map[string]func(*transport.CollectionIndexDefinition){
+	"unique": func(d *transport.CollectionIndexDefinition) { d.Unique = true },
+	"sparse": func(d *transport.CollectionIndexDefinition) { d.Sparse = true },
+}
+
+// parseCollectionIndexFlags parses repeated --index FIELD[,unique][,sparse]
+// values. An unknown option or an empty field is refused: creating the
+// collection without a constraint the operator asked for would be silent.
+func parseCollectionIndexFlags(specs []string) ([]transport.CollectionIndexDefinition, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	defs := make([]transport.CollectionIndexDefinition, 0, len(specs))
+	for _, spec := range specs {
+		parts := strings.Split(spec, ",")
+		def := transport.CollectionIndexDefinition{FieldName: strings.TrimSpace(parts[0])}
+		if def.FieldName == "" {
+			return nil, &InvalidArgError{Arg: "--index", Reason: "a field name is required: " + strconv.Quote(spec)}
+		}
+		for _, opt := range parts[1:] {
+			set, ok := collectionIndexOptions[strings.ToLower(strings.TrimSpace(opt))]
+			if !ok {
+				return nil, &InvalidArgError{Arg: "--index", Reason: "unknown option " + strconv.Quote(opt) + " (want unique or sparse)"}
+			}
+			set(&def)
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
 }
 
 // newCollectionInfoCmd creates the "collection info" subcommand.
@@ -166,7 +208,7 @@ func newCollectionListCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				headers := []string{"NAME", "DATABASE", "ID_STRATEGY", "DOCUMENTS", "STORAGE_CODEC", "CREATED_AT"}
+				headers := []string{"NAME", "DATABASE", "STATE", "ID_STRATEGY", "DOCUMENTS", "STORAGE_CODEC", "CREATED_AT"}
 				rows := make([][]string, len(resp.Collections))
 				for i := range resp.Collections {
 					rows[i] = collectionRow(&resp.Collections[i])
@@ -442,6 +484,9 @@ func printCollectionInfo(info *transport.CollectionInfo) error {
 	default:
 		_, _ = fmt.Fprintf(outputWriter, "Name:          %s\n", info.Name)
 		_, _ = fmt.Fprintf(outputWriter, "Database:      %s\n", info.Database)
+		if info.State != "" {
+			_, _ = fmt.Fprintf(outputWriter, "State:         %s\n", collectionStateLabel(info))
+		}
 		_, _ = fmt.Fprintf(outputWriter, "IDStrategy:    %s\n", info.IDStrategy)
 		if info.FieldHash != "" {
 			_, _ = fmt.Fprintf(outputWriter, "FieldHash:     %s\n", info.FieldHash)
@@ -451,6 +496,12 @@ func printCollectionInfo(info *transport.CollectionInfo) error {
 		}
 		_, _ = fmt.Fprintf(outputWriter, "DocumentCount: %s\n", strconv.FormatInt(info.DocumentCount, 10))
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt:     %s\n", info.CreatedAt)
+		if len(info.Indexes) > 0 {
+			_, _ = fmt.Fprintf(outputWriter, "Indexes:\n")
+			for _, idx := range info.Indexes {
+				_, _ = fmt.Fprintf(outputWriter, "  %s%s\n", idx.FieldName, indexOptionSuffix(idx))
+			}
+		}
 		if len(info.Schema) > 0 {
 			_, _ = fmt.Fprintf(outputWriter, "Schema:\n")
 			for field, kind := range info.Schema {
@@ -466,6 +517,7 @@ func collectionRow(info *transport.CollectionInfo) []string {
 	return []string{
 		info.Name,
 		info.Database,
+		info.State,
 		info.IDStrategy,
 		strconv.FormatInt(info.DocumentCount, 10),
 		info.StorageCodec,
@@ -572,4 +624,27 @@ func (e *DocumentJSONError) Error() string {
 // Unwrap returns the underlying error.
 func (e *DocumentJSONError) Unwrap() error {
 	return e.Err
+}
+
+// collectionStateLabel renders a collection's state, with when it was
+// entered for a collection that is not active -- an operator looking at a
+// DROPPING collection wants to know whether it is stuck.
+func collectionStateLabel(info *transport.CollectionInfo) string {
+	if info.State == transport.CollectionStateActive || info.StateSince == "" {
+		return info.State
+	}
+	return info.State + " (since " + info.StateSince + ")"
+}
+
+// indexOptionSuffix renders an index definition's options as the --index
+// flag spells them.
+func indexOptionSuffix(d transport.CollectionIndexDefinition) string {
+	suffix := ""
+	if d.Unique {
+		suffix += ",unique"
+	}
+	if d.Sparse {
+		suffix += ",sparse"
+	}
+	return suffix
 }

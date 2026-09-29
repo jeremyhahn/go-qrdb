@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -95,6 +96,12 @@ func toolCollectionCreate() mcp.Tool {
 		mcp.WithString("field_hash",
 			mcp.Description("The document field to hash for ID generation. Required when id_strategy is field_hash."),
 		),
+		mcp.WithString("storage_codec",
+			mcp.Description("Document storage codec for this collection. Defaults to the database's codec."),
+		),
+		mcp.WithString("indexes",
+			mcp.Description(`JSON array of secondary index definitions, e.g. [{"field_name":"email","unique":true}]. The collection is active only once every index exists.`),
+		),
 	)
 }
 
@@ -122,17 +129,24 @@ func handleCollectionCreate(svc service.CollectionServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("field_hash is required when id_strategy is field_hash"), nil
 		}
 
+		indexes, idxErr := parseCollectionIndexes(req)
+		if idxErr != nil {
+			return mcp.NewToolResultError("indexes must be a JSON array of {field_name, unique, sparse} objects"), nil
+		}
+
 		resp, err := svc.CreateCollection(ctx, &service.CreateCollectionRequest{
-			Name:       name,
-			Database:   database,
-			IDStrategy: idStrategy,
-			FieldHash:  fieldHash,
+			Name:         name,
+			Database:     database,
+			IDStrategy:   idStrategy,
+			FieldHash:    fieldHash,
+			StorageCodec: mcp.ParseString(req, "storage_codec", ""),
+			Indexes:      indexes,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(collectionInfoResultOf(resp))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_create", Err: jsonErr}
 		}
@@ -215,7 +229,7 @@ func handleCollectionList(svc service.CollectionServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_collection_list", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(collectionListResultOf(resp))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_list", Err: jsonErr}
 		}
@@ -261,7 +275,7 @@ func handleCollectionInfo(svc service.CollectionServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_collection_info", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(collectionInfoResultOf(resp))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_info", Err: jsonErr}
 		}
@@ -580,4 +594,73 @@ func handleCollectionListDocuments(svc service.CollectionServicer) mcpserver.Too
 
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// parseCollectionIndexes reads the optional JSON-encoded "indexes" argument.
+// Like every array-valued argument on this surface it travels as a JSON
+// string (see parseStringArray); unlike most, a malformed value is refused
+// rather than read as absent, because creating the collection WITHOUT the
+// indexes -- and the unique constraints -- the caller declared would be a
+// silent substitution.
+func parseCollectionIndexes(req mcp.CallToolRequest) ([]service.IndexDefinition, error) {
+	raw := mcp.ParseString(req, "indexes", "")
+	if raw == "" {
+		return nil, nil
+	}
+	var defs []service.IndexDefinition
+	if err := json.Unmarshal([]byte(raw), &defs); err != nil {
+		return nil, err
+	}
+	return defs, nil
+}
+
+// collectionInfoResult is a collection as the MCP tools report it: the
+// service record without the server's own bookkeeping. IndexOwner and
+// Incarnation are persisted on the metadata so the server can tell its own
+// indexes and incarnations apart; they are not part of the collection
+// surface, so they are left out rather than published by marshalling the
+// stored record wholesale.
+type collectionInfoResult struct {
+	Name          string                    `json:"name"`
+	Database      string                    `json:"database"`
+	IDStrategy    string                    `json:"id_strategy"`
+	FieldHash     string                    `json:"field_hash,omitempty"`
+	Schema        map[string]string         `json:"schema,omitempty"`
+	Indexes       []service.IndexDefinition `json:"indexes,omitempty"`
+	DocumentCount int64                     `json:"document_count"`
+	StorageCodec  string                    `json:"storage_codec,omitempty"`
+	CreatedAt     time.Time                 `json:"created_at"`
+	State         string                    `json:"state,omitempty"`
+	StateSince    time.Time                 `json:"state_since,omitzero"`
+}
+
+// collectionInfoResultOf projects a service record onto the tool result.
+func collectionInfoResultOf(info *service.CollectionInfo) collectionInfoResult {
+	return collectionInfoResult{
+		Name:          info.Name,
+		Database:      info.Database,
+		IDStrategy:    info.IDStrategy,
+		FieldHash:     info.FieldHash,
+		Schema:        info.Schema,
+		Indexes:       info.Indexes,
+		DocumentCount: info.DocumentCount,
+		StorageCodec:  info.StorageCodec,
+		CreatedAt:     info.CreatedAt,
+		State:         info.State,
+		StateSince:    info.StateSince,
+	}
+}
+
+// collectionListResult is the qrdb_collection_list tool result.
+type collectionListResult struct {
+	Collections []collectionInfoResult `json:"collections"`
+}
+
+// collectionListResultOf projects a service listing onto the tool result.
+func collectionListResultOf(resp *service.ListCollectionsResponse) collectionListResult {
+	out := collectionListResult{Collections: make([]collectionInfoResult, len(resp.Collections))}
+	for i := range resp.Collections {
+		out.Collections[i] = collectionInfoResultOf(&resp.Collections[i])
+	}
+	return out
 }

@@ -22,6 +22,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/collectionconv"
 )
 
 // Compile-time interface assertion.
@@ -36,12 +37,7 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	payload, err := proto.Marshal(&pb.CreateCollectionRequest{
-		Database:   req.Database,
-		Name:       req.Name,
-		IdStrategy: req.IDStrategy,
-		FieldHash:  req.FieldHash,
-	})
+	payload, err := proto.Marshal(collectionconv.ToCreateRequest(req))
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
@@ -53,7 +49,7 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
-	return protoToCollectionInfo(&resp), nil
+	return collectionconv.ToCollectionInfo(&resp), nil
 }
 
 // GetCollectionInfo returns information about a specific collection.
@@ -76,7 +72,7 @@ func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
-	return protoToCollectionInfo(&resp), nil
+	return collectionconv.ToCollectionInfo(&resp), nil
 }
 
 // ListCollections returns all collections within a database.
@@ -100,7 +96,7 @@ func (t *Transport) ListCollections(ctx context.Context, database string) (*tran
 	}
 	collections := make([]transport.CollectionInfo, len(resp.GetCollections()))
 	for i, c := range resp.GetCollections() {
-		collections[i] = *protoToCollectionInfo(c)
+		collections[i] = *collectionconv.ToCollectionInfo(c)
 	}
 	return &transport.ListCollectionsResponse{Collections: collections}, nil
 }
@@ -260,17 +256,3 @@ func (t *Transport) ListDocuments(ctx context.Context, req transport.ListDocumen
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
-
-// protoToCollectionInfo converts a proto CollectionInfoResponse to a
-// transport CollectionInfo.
-func protoToCollectionInfo(p *pb.CollectionInfoResponse) *transport.CollectionInfo {
-	return &transport.CollectionInfo{
-		Name:          p.GetName(),
-		Database:      p.GetDatabase(),
-		IDStrategy:    p.GetIdStrategy(),
-		FieldHash:     p.GetFieldHash(),
-		Schema:        p.GetSchema(),
-		DocumentCount: p.GetDocumentCount(),
-		CreatedAt:     p.GetCreatedAt(),
-	}
-}

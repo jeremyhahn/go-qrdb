@@ -17,11 +17,11 @@ package quic
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -35,16 +35,11 @@ func (s *Server) handleCollectionCreate(ctx context.Context, payload []byte) ([]
 	if svcErr != nil {
 		return nil, svcErr
 	}
-	info, err := collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
-		Database:   req.GetDatabase(),
-		Name:       req.GetName(),
-		IDStrategy: req.GetIdStrategy(),
-		FieldHash:  req.GetFieldHash(),
-	})
+	info, err := collectionSvc.CreateCollection(ctx, collectionpb.CreateRequestFromProto(&req))
 	if err != nil {
 		return nil, err
 	}
-	resp, err := proto.Marshal(collectionInfoToProto(info))
+	resp, err := proto.Marshal(collectionpb.InfoToProto(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -65,7 +60,7 @@ func (s *Server) handleCollectionGetInfo(ctx context.Context, payload []byte) ([
 	if err != nil {
 		return nil, err
 	}
-	resp, err := proto.Marshal(collectionInfoToProto(info))
+	resp, err := proto.Marshal(collectionpb.InfoToProto(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -91,7 +86,7 @@ func (s *Server) handleCollectionList(ctx context.Context, payload []byte) ([]by
 	pbCollections := make([]*pb.CollectionInfoResponse, len(svcResp.Collections))
 	for i, c := range svcResp.Collections {
 		ci := c
-		pbCollections[i] = collectionInfoToProto(&ci)
+		pbCollections[i] = collectionpb.InfoToProto(&ci)
 	}
 	resp, err := proto.Marshal(&pb.ListCollectionsResponse{Collections: pbCollections})
 	if err != nil {
@@ -269,17 +264,3 @@ func (s *Server) handleCollectionListDocuments(ctx context.Context, payload []by
 // ---------------------------------------------------------------------------
 // Collection type conversion helpers
 // ---------------------------------------------------------------------------
-
-// collectionInfoToProto converts a service CollectionInfo to its protobuf
-// representation.
-func collectionInfoToProto(info *service.CollectionInfo) *pb.CollectionInfoResponse {
-	return &pb.CollectionInfoResponse{
-		Name:          info.Name,
-		Database:      info.Database,
-		IdStrategy:    info.IDStrategy,
-		FieldHash:     info.FieldHash,
-		Schema:        info.Schema,
-		DocumentCount: info.DocumentCount,
-		CreatedAt:     info.CreatedAt.Format(time.RFC3339Nano),
-	}
-}

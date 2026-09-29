@@ -36,14 +36,17 @@ var _ transport.CollectionClient = (*Transport)(nil)
 // without requiring a time import here, matching
 // transport.CollectionInfo's own string-typed CreatedAt.
 type serverCollectionInfo struct {
-	Name          string            `json:"name"`
-	Database      string            `json:"database"`
-	IDStrategy    string            `json:"id_strategy"`
-	FieldHash     string            `json:"field_hash,omitempty"`
-	Schema        map[string]string `json:"schema,omitempty"`
-	DocumentCount int64             `json:"document_count"`
-	StorageCodec  string            `json:"storage_codec,omitempty"`
-	CreatedAt     string            `json:"created_at"`
+	Name          string                                `json:"name"`
+	Database      string                                `json:"database"`
+	IDStrategy    string                                `json:"id_strategy"`
+	FieldHash     string                                `json:"field_hash,omitempty"`
+	Schema        map[string]string                     `json:"schema,omitempty"`
+	Indexes       []transport.CollectionIndexDefinition `json:"indexes,omitempty"`
+	DocumentCount int64                                 `json:"document_count"`
+	StorageCodec  string                                `json:"storage_codec,omitempty"`
+	CreatedAt     string                                `json:"created_at"`
+	State         string                                `json:"state,omitempty"`
+	StateSince    string                                `json:"state_since,omitempty"`
 }
 
 // serverCollectionInfoToTransport converts a server-side CollectionInfo to
@@ -55,9 +58,12 @@ func serverCollectionInfoToTransport(sc *serverCollectionInfo) *transport.Collec
 		IDStrategy:    sc.IDStrategy,
 		FieldHash:     sc.FieldHash,
 		Schema:        sc.Schema,
+		Indexes:       sc.Indexes,
 		DocumentCount: sc.DocumentCount,
 		StorageCodec:  sc.StorageCodec,
 		CreatedAt:     sc.CreatedAt,
+		State:         sc.State,
+		StateSince:    sc.StateSince,
 	}
 }
 
@@ -121,6 +127,18 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 	}
 	if req.FieldHash != "" {
 		params["field_hash"] = req.FieldHash
+	}
+	if req.StorageCodec != "" {
+		params["storage_codec"] = req.StorageCodec
+	}
+	if len(req.Indexes) > 0 {
+		// Array-valued tool arguments travel as a JSON string on this
+		// surface; see the server's parseCollectionIndexes.
+		encoded, encErr := json.Marshal(req.Indexes)
+		if encErr != nil {
+			return nil, &transport.RequestError{Method: "CreateCollection", Err: encErr}
+		}
+		params["indexes"] = string(encoded)
 	}
 
 	text, err := t.callTool(ctx, "qrdb_collection_create", params)

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -110,6 +111,13 @@ var dominantRules = []rule{
 	// reporting the cause would drop the fact that secondary state may now be
 	// inconsistent.
 	as(&user.IndexCompensationError{}, DataLoss),
+
+	// A collection document write whose outcome is unknown -- the write
+	// failed and may have committed, its post-write fence could not read the
+	// metadata back, or a fenced-out write could not be retracted. The
+	// document may be stored, so this is a server fault the caller must not
+	// read as the lifecycle refusal a failed retraction wraps.
+	collectionOutcomeUnknownRule,
 }
 
 // dataPlaneRules are the key-value, lease, index, watch and transaction
@@ -185,6 +193,18 @@ var collectionRules = []rule{
 	as(&service.CollectionDocumentExistsError{}, AlreadyExists),
 	as(&service.CollectionEmptyDocumentError{}, InvalidArgument),
 	as(&service.CollectionInvalidDocumentIDError{}, InvalidArgument),
+	// Only an active collection serves document verbs; a creating or dropping
+	// one refuses them until its transition settles.
+	as(&service.CollectionNotActiveError{}, FailedPrecondition),
+	// A lifecycle transition or a guarded document write lost a race:
+	// re-read and retry.
+	as(&service.CollectionStateConflictError{}, Aborted),
+	as(&service.CollectionDocumentConflictError{}, Aborted),
+	as(&service.CollectionInvalidIndexError{}, InvalidArgument),
+	// An index held by another owner: a create cannot take the name, and the
+	// explicit API's drop may not remove a collection's index. Either way the
+	// precondition -- the caller owns the name -- does not hold.
+	as(&index.OwnershipError{}, FailedPrecondition),
 }
 
 // importRules are the bulk-import guards.
@@ -659,6 +679,25 @@ var memberIdentityRule = rule{
 		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MemberIdentityConflictError{ReplicaID: 2}},
 		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MemberIdentityUnknownError{ReplicaID: 4}},
 		&service.MemberIdentityError{ReplicaID: 4, Err: &cluster.MembershipReadError{ShardID: 1, Err: service.ErrNodeClosed}},
+	},
+}
+
+// collectionOutcomeUnknownRule recognises a *service.CollectionMetadataError
+// whose operation leaves a document write's outcome unknown
+// (CollectionMetadataError.OutcomeUnknown). Every other operation of that type
+// is the generic wrapper genericRules classifies last.
+var collectionOutcomeUnknownRule = rule{
+	name: "service.CollectionMetadataError.OutcomeUnknown",
+	classify: func(err error) (Class, bool) {
+		var cme *service.CollectionMetadataError
+		if !errors.As(err, &cme) || !cme.OutcomeUnknown() {
+			return Unclassified, false
+		}
+		return Internal, true
+	},
+	samples: []error{
+		&service.CollectionMetadataError{Op: "retract-write", Err: &service.CollectionNotActiveError{Database: "db", Collection: "c", State: "dropping"}},
+		&service.CollectionMetadataError{Op: "insert-document", Err: context.DeadlineExceeded},
 	},
 }
 

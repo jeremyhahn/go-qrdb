@@ -206,6 +206,15 @@ are not reconstructed here — their history is in the git log.
   existing log entries decode unchanged.
 - `CollectionServicer.UpsertDocument`, a guarded insert-or-replace that
   reports what it displaced.
+- **Collection index definitions and lifecycle state on every transport.**
+  `CreateCollectionRequest` carries `indexes` (and `storage_codec`, which only
+  the embedded transport carried before) on REST, gRPC, Unix, QUIC, MCP and
+  embedded, and `CollectionInfo` reports `indexes`, `state` and `state_since`.
+  The protobuf messages gain `CollectionIndexDefinition`,
+  `CreateCollectionRequest.storage_codec`/`indexes` and
+  `CollectionInfoResponse.storage_codec`/`indexes`/`state`/`state_since`.
+  `qrdb collection create` takes a repeatable `--index FIELD[,unique][,sparse]`,
+  and `info`/`list` show the state.
 
 ### Changed — BREAKING
 

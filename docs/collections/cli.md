@@ -1,6 +1,6 @@
 # Document Collections — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
 
 Command group: `qrdb collection`, with a `doc` subgroup for the documents
 inside. All verbs accept the root persistent flags documented in
@@ -19,20 +19,34 @@ Create a new collection within a database.
 | `--id-strategy` | string | `unix_nano` | `unix_nano \| increment \| field_hash` |
 | `--field-hash` | string | — | document field to hash; **required** when `--id-strategy=field_hash` |
 | `--storage-codec` | string | server default | document storage codec override |
+| `--index` | string, repeatable | — | secondary index as `FIELD[,unique][,sparse]` |
 
 ```bash
 qrdb collection create users --database app
 qrdb collection create events --database app --id-strategy increment
 qrdb collection create products --database app \
      --id-strategy field_hash --field-hash sku
+qrdb collection create accounts --database app \
+     --index email,unique --index region
 ```
 
 The ID strategy is fixed for the collection's life.
 
+`--index` declares a secondary index the collection creates, owns and drops
+with itself. An unknown option or an empty field name is refused rather than
+ignored. The collection reports `creating` until every declared index exists and
+serves documents only once it is `active`; if an index cannot be built the
+command fails and nothing is left behind, so running it again is safe. A field
+whose derived index name (`{database}.{collection}.{field}`) is already held by
+another index — one made with `qrdb index create`, say — is refused with a
+conflict instead of being shared.
+
 ## `qrdb collection info <name>`
 
-Show collection details: ID strategy, storage codec, document count, creation
-time.
+Show collection details: lifecycle state, ID strategy, storage codec, document
+count, creation time, and declared indexes. A collection that is not `active`
+shows when it entered its state, e.g. `State: dropping (since
+2026-09-25T12:00:00Z)`.
 
 | Flag | Type | Default |
 |---|---|---|
@@ -44,7 +58,8 @@ qrdb collection info users --database app --output json
 
 ## `qrdb collection list`
 
-List all collections in a database.
+List all collections in a database, with a `STATE` column. A collection
+that is `creating` or `dropping` is listed, not hidden.
 
 | Flag | Type | Default |
 |---|---|---|
@@ -59,10 +74,11 @@ qrdb collection list --database app
 Drop a collection and delete all of its documents, together with any secondary
 index the collection declared. **Irreversible.**
 
-The drop deletes the documents first and the collection's metadata last, so an
-interrupted drop leaves the collection still listed and re-running the command
-finishes it. If the index teardown fails the command reports the failure instead
-of succeeding — retry it once the cluster has a leader again.
+The collection is marked `dropping` first — from then on it accepts no document
+reads or writes — and its metadata is removed last. An interrupted drop leaves
+the collection listed as `dropping`; the server finishes it on its own within a
+few minutes, and re-running the command finishes it immediately. If the index
+teardown fails the command reports the failure instead of succeeding.
 
 Also discards the collection's `increment` counter, so a collection later
 created with the same name starts at ID 1. The command is safe to re-run: if it

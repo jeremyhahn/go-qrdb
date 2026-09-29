@@ -29,10 +29,12 @@ import (
 
 // createCollectionRequest is the JSON payload for POST /v1/collections.
 type createCollectionRequest struct {
-	Name       string `json:"name"`
-	Database   string `json:"database"`
-	IDStrategy string `json:"id_strategy,omitempty"`
-	FieldHash  string `json:"field_hash,omitempty"`
+	Name         string                    `json:"name"`
+	Database     string                    `json:"database"`
+	IDStrategy   string                    `json:"id_strategy,omitempty"`
+	FieldHash    string                    `json:"field_hash,omitempty"`
+	StorageCodec string                    `json:"storage_codec,omitempty"`
+	Indexes      []service.IndexDefinition `json:"indexes,omitempty"`
 }
 
 // insertDocumentRequest is the JSON payload for
@@ -49,13 +51,17 @@ type updateDocumentRequest struct {
 
 // collectionInfoResponse is the JSON representation of a collection.
 type collectionInfoResponse struct {
-	Name          string            `json:"name"`
-	Database      string            `json:"database"`
-	IDStrategy    string            `json:"id_strategy"`
-	FieldHash     string            `json:"field_hash,omitempty"`
-	Schema        map[string]string `json:"schema,omitempty"`
-	DocumentCount int64             `json:"document_count"`
-	CreatedAt     string            `json:"created_at"`
+	Name          string                    `json:"name"`
+	Database      string                    `json:"database"`
+	IDStrategy    string                    `json:"id_strategy"`
+	FieldHash     string                    `json:"field_hash,omitempty"`
+	Schema        map[string]string         `json:"schema,omitempty"`
+	Indexes       []service.IndexDefinition `json:"indexes,omitempty"`
+	DocumentCount int64                     `json:"document_count"`
+	StorageCodec  string                    `json:"storage_codec,omitempty"`
+	CreatedAt     string                    `json:"created_at"`
+	State         string                    `json:"state,omitempty"`
+	StateSince    string                    `json:"state_since,omitempty"`
 }
 
 // listCollectionsResponse is the JSON payload returned by
@@ -122,10 +128,12 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	info, err := collectionSvc.CreateCollection(r.Context(), &service.CreateCollectionRequest{
-		Name:       req.Name,
-		Database:   req.Database,
-		IDStrategy: req.IDStrategy,
-		FieldHash:  req.FieldHash,
+		Name:         req.Name,
+		Database:     req.Database,
+		IDStrategy:   req.IDStrategy,
+		FieldHash:    req.FieldHash,
+		StorageCodec: req.StorageCodec,
+		Indexes:      req.Indexes,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -461,13 +469,20 @@ func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request, dat
 // collectionInfoToResponse converts a service.CollectionInfo to its JSON
 // response representation.
 func collectionInfoToResponse(info *service.CollectionInfo) collectionInfoResponse {
-	return collectionInfoResponse{
+	resp := collectionInfoResponse{
 		Name:          info.Name,
 		Database:      info.Database,
 		IDStrategy:    info.IDStrategy,
 		FieldHash:     info.FieldHash,
 		Schema:        info.Schema,
+		Indexes:       info.Indexes,
 		DocumentCount: info.DocumentCount,
+		StorageCodec:  info.StorageCodec,
 		CreatedAt:     info.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		State:         info.State,
 	}
+	if !info.StateSince.IsZero() {
+		resp.StateSince = info.StateSince.Format("2006-01-02T15:04:05Z07:00")
+	}
+	return resp
 }

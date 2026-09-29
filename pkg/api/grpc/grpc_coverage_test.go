@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
@@ -2650,7 +2651,7 @@ func TestCollectionInfoToProto(t *testing.T) {
 		DocumentCount: 42,
 		CreatedAt:     ts,
 	}
-	result := collectionInfoToProto(info)
+	result := collectionpb.InfoToProto(info)
 	if result.GetName() != "docs" {
 		t.Fatalf("expected name 'docs', got %q", result.GetName())
 	}
