@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"time"
 
 	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -36,6 +37,15 @@ import (
 // SetShamirConfig); the share count must equal the number of enrolled holders.
 // policy is the factor policy for the share set; empty selects
 // FactorPolicyDesignated.
+//
+// Initialization is all or nothing. If the distribution fails at any step,
+// the root key is discarded and deleted, so storage and status are sealed and
+// uninitialized again; a barrier left initialized with a key no holder has a
+// share of could never be unsealed. The in-memory epoch barrier cannot leave
+// the initialized state within the process, so a retry needs a node restart:
+// until then every initialization of this barrier answers
+// ErrRestartRequired. Should the rollback itself fail, the error is a
+// *ShamirInitRollbackError carrying both failures.
 func (b *StorageBarrier) InitializeShamir(ctx context.Context, policy FactorPolicy) (*ShamirInitParams, error) {
 	if b.config.Shamir == nil || b.ShamirStrategy() == nil {
 		return nil, ErrShamirNotConfigured
@@ -78,7 +88,58 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, policy FactorPoli
 	}
 	defer rootKey.Destroy()
 
-	return b.redistribute(ctx, DomainUnseal, rootKey, threshold, policy, nil, total)
+	params, err := b.redistribute(ctx, DomainUnseal, rootKey, threshold, policy, nil, total)
+	if err != nil {
+		if rbErr := b.rollbackInitialization(ctx); rbErr != nil {
+			return nil, &ShamirInitRollbackError{Distribution: err, Rollback: rbErr}
+		}
+		return nil, err
+	}
+	return params, nil
+}
+
+// ShamirInitRollbackError is returned by InitializeShamir when the share
+// distribution failed and discarding the new root key failed too. The barrier
+// may then be left initialized without distributed shares; an operator must
+// clear it before initializing again.
+type ShamirInitRollbackError struct {
+	// Distribution is the error that failed the distribution.
+	Distribution error
+	// Rollback is the error that failed discarding the root key.
+	Rollback error
+}
+
+// Error returns a human-readable description.
+func (e *ShamirInitRollbackError) Error() string {
+	return "qrdb/seal: share distribution failed (" + e.Distribution.Error() +
+		") and the new root key could not be discarded: " + e.Rollback.Error()
+}
+
+// Unwrap returns both failures, so errors.Is and errors.As match either.
+func (e *ShamirInitRollbackError) Unwrap() []error {
+	return []error{e.Distribution, e.Rollback}
+}
+
+// rollbackInitialization returns a barrier whose initialization did not
+// complete to the uninitialized state: it zeroes the in-memory keys, seals,
+// forgets the strategy and initialization time, and deletes the persisted
+// root key, wrapped unseal key and metadata. It marks the barrier as needing a
+// restart before it is initialized again (see ErrRestartRequired).
+func (b *StorageBarrier) rollbackInitialization(ctx context.Context) error {
+	b.rolledBack.Store(true)
+	_ = b.Seal()
+	b.activeStrategy.Store(StrategyID(""))
+	b.persistedStrategyCache.Store(StrategyID(""))
+	b.initializedAt.Store(time.Time{})
+	if err := b.DeleteRootKey(ctx); err != nil {
+		return err
+	}
+	if err := b.base.Delete(ctx, b.metadataPath()); err != nil && !isSecretNotFound(err) {
+		return err
+	}
+	emitAudit(b.config.AuditLogger, "initialize", "barrier", b.config.RootKeyPath,
+		"deny", map[string]string{"strategy": string(StrategyShamir), "rolled_back": "true"})
+	return nil
 }
 
 // masterKeyBuffer copies the in-memory root key of an unsealed barrier into

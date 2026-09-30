@@ -155,6 +155,11 @@ type StorageBarrier struct {
 	// stores time.Time. Zero value means "never initialized".
 	initializedAt atomic.Value
 
+	// rolledBack is set once an initialization has failed and been rolled
+	// back. The epoch barrier cannot return to uninitialized within the
+	// process, so every later initialization answers ErrRestartRequired.
+	rolledBack atomic.Bool
+
 	// distributor seals both key domains' shares to their holders (init,
 	// recovery-key generation, rekey). Set via SetCeremonyDistributor.
 	distributor CeremonyDistributor
@@ -342,6 +347,9 @@ func (b *StorageBarrier) InitializeWithStrategy(ctx context.Context, strategy Se
 // blob under an existence CAS, and transitions to unsealed. Callers have
 // already verified the barrier is uninitialized and chosen the strategy.
 func (b *StorageBarrier) initializeWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	if b.rolledBack.Load() {
+		return ErrRestartRequired
+	}
 	// Delegate initialization to the EpochBarrier. It generates the root
 	// key, derives the initial DEK, and seals the root key via the strategy.
 	if err := b.barrier.Initialize(ctx, strategy, creds); err != nil {

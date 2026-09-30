@@ -751,6 +751,10 @@ var userAuthFactorRules = []rule{
 // authentication wraps its factor's own error, and a rekey that would break
 // the quorum also matches seal.ErrShamirThresholdInvalid.
 var holderRules = []rule{
+	// A rollback that failed outranks the distribution failure it wraps: the
+	// barrier may be left initialized without shares, which is a server fault.
+	as(&seal.ShamirInitRollbackError{Distribution: errHolderSample, Rollback: errHolderSample}, Internal),
+	is(seal.ErrRestartRequired, FailedPrecondition),
 	as(&seal.HolderAuthenticationError{Holder: "h", Err: errHolderSample}, PermissionDenied),
 	as(&seal.HolderNotInRosterError{}, PermissionDenied),
 	as(&seal.HolderRevokedError{}, PermissionDenied),

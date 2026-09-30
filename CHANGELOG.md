@@ -3283,6 +3283,15 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   running ceremony service across (`ceremony.CeremonyService.Rebind` moves it
   to the rebuilt barrier), in the daemon and in `sdk/go/node`, so the holders
   claim from the sealed node and a quorum unseals it.
+- **A Shamir initialization whose share distribution fails is rolled back.**
+  The barrier used to stay initialized and unsealed with a root key no holder
+  had a share of, and every retry was refused as already initialized.
+  `InitializeShamir` now discards the key, seals, and deletes the persisted
+  root key, wrapped key and metadata, so storage and status read as
+  uninitialized. The epoch barrier cannot leave the initialized state within
+  the process, so a retry needs a node restart; until then initialization
+  answers the new `seal.ErrRestartRequired` (FailedPrecondition). A rollback
+  that fails returns `seal.ShamirInitRollbackError` (Internal).
 - **The REST sealed window no longer admits holder revocation.** The claim
   routes were allowlisted by an `/v1/barrier/officers/` prefix, which also let
   `POST /v1/barrier/officers/revoke` through while the barrier was sealed. The

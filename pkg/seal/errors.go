@@ -27,6 +27,13 @@ var (
 	// that has already been initialized with a root key.
 	ErrAlreadyInitialized = errors.New("qrdb/seal: barrier already initialized")
 
+	// ErrRestartRequired is returned by every initialization of a barrier
+	// whose earlier initialization failed and was rolled back. The rollback
+	// returns storage and status to uninitialized, but the in-memory epoch
+	// barrier cannot leave the initialized state within the process, so the
+	// node must be restarted before the barrier is initialized again.
+	ErrRestartRequired = errors.New("qrdb/seal: a failed initialization was rolled back; restart the node before initializing again")
+
 	// ErrNotInitialized is returned when Unseal is called on a barrier that
 	// has not been initialized. Call Initialize first.
 	ErrNotInitialized = errors.New("qrdb/seal: barrier not initialized")

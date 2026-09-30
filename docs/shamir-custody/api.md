@@ -180,9 +180,10 @@ Every share-holder, quorum and envelope error is classified once
 | PermissionDenied | 403 | `PERMISSION_DENIED` | factor proof failed; factor not admitted by the policy; holder not in roster or being revoked; share index not the holder's; certificate mismatch; self-enrolment; reconstructed key fails to open the blob (`ErrUnsealKeyMismatch`) |
 | NotFound | 404 | `NOT_FOUND` | unknown holder; no pending share; unknown factor |
 | AlreadyExists | 409 | `ALREADY_EXISTS` | holder already submitted to this round; duplicate username or key; a round already in progress |
-| FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed or expired; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA, trust domain or PIN backend |
+| FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed or expired; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA, trust domain or PIN backend; a rolled-back initialization awaiting a restart (`ErrRestartRequired`) |
 | ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges |
 | Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
+| Internal | 500 | `INTERNAL` | an initialization whose distribution failed could not be rolled back (`ShamirInitRollbackError`) |
 
 QUIC and MCP carry the gRPC code name, and the embedded transport returns
 the classified error itself. A claim without a client certificate is

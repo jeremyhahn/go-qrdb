@@ -43,6 +43,9 @@ func TestClassify_HolderConditions(t *testing.T) {
 		{seal.ErrQuorumRoundInProgress, AlreadyExists},
 		{seal.ErrShamirInitializeRequiresHolders, FailedPrecondition},
 		{seal.ErrShamirUnsealRequiresQuorum, Unprocessable},
+		{seal.ErrRestartRequired, FailedPrecondition},
+		// A failed rollback outranks the distribution failure it wraps.
+		{&seal.ShamirInitRollbackError{Distribution: &seal.HolderCountMismatchError{Want: 3, Enrolled: 2}, Rollback: errors.New("x")}, Internal},
 		{ceremony.ErrSelfEnrolment, PermissionDenied},
 		{ceremony.ErrNoPendingShare, NotFound},
 		{ceremony.ErrShareExpired, Gone},

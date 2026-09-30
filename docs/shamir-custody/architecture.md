@@ -88,6 +88,15 @@ rekey (including revocation) call the same `redistribute` path:
    distribution fails, the previous blob — and so the previous share set —
    stays in force.
 
+Initialization has no previous share set, so a distribution that fails during
+`InitializeShamir` is **rolled back**: the new root key is discarded, the
+barrier is sealed, and the persisted root key, wrapped key and metadata are
+deleted, so storage and status read as uninitialized. The process's epoch
+barrier cannot return to uninitialized, so a retry needs a node restart;
+until then, initialization is refused with `ErrRestartRequired`. A rollback
+that cannot delete what was persisted returns a `ShamirInitRollbackError`
+carrying both failures.
+
 Envelopes live **only in go-enclave protected memory**, with a time-to-live
 (24 hours by default). They are never persisted.
 
