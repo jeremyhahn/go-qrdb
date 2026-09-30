@@ -117,6 +117,13 @@ Optional extensions:
 | `MCPToolPermissioner` | declare each MCP tool's permission; **a tool registered without one stays fail-closed** |
 | `GRPCPublicMethodLister` | declare gRPC methods reachable without auth, symmetric with `HandlePublic` |
 | `ModuleAuthFallback` | authenticate credentials the host does not understand — a capability's own session-token plane |
+| `ConnObserver` | observe each connection opened and closed on every listener (REST, HTTP/3, gRPC, unix, QUIC, MCP), so a host keeps its own active-connection metrics for connections qrdb accepts on its behalf |
+
+`ConnObserver` is a per-module option on the one listener set, not a second
+listener. The alternative — a host counting connections on a listener of its
+own — is exactly the parallel transport stack the seam exists to remove. It is
+reported per listener (`Transport`), and REST's two sockets are reported apart
+(`rest` for TCP, `http3` for QUIC) because they are different connections.
 
 ### `ModuleAuthFallback` — the important one
 

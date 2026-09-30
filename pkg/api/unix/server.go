@@ -555,7 +555,10 @@ func (s *Server) Start() error {
 	// TCP gRPC server, so tests and embedded callers that construct their
 	// own plaintext loopback may still opt out.
 	if s.tls != nil {
-		creds := credentials.NewTLS(s.tls)
+		// Connections are reported to observing modules through the
+		// credentials, never by wrapping the listener, so grpc-go receives the
+		// accepted socket unchanged.
+		creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportUnix)
 		serverOpts = append(serverOpts, grpc.Creds(creds))
 	}
 

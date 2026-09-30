@@ -716,6 +716,9 @@ func (s *Server) Start() error {
 		return &StartError{Addr: s.addr, Err: err}
 	}
 
+	// Report every accepted connection to the modules that observe them.
+	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn.
+	ln = apimodule.ConnObserversOf(s.modules).Listener(ln, apimodule.TransportMCP)
 	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 

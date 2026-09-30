@@ -35,6 +35,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
@@ -889,6 +890,12 @@ func (s *Server) Start() error {
 		}
 	}
 
+	// Report every accepted connection to the modules that observe them.
+	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn
+	// and negotiates HTTP/2 over it.
+	observers := apimodule.ConnObserversOf(s.modules)
+	ln = observers.Listener(ln, apimodule.TransportREST)
+
 	// Wrap listener with TLS (always configured; guarded above).
 	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
@@ -972,6 +979,15 @@ func (s *Server) Start() error {
 			Addr:      h3Conn.LocalAddr().String(),
 			TLSConfig: s.tlsConfig,
 			Handler:   s.server.Handler,
+		}
+		if len(observers) > 0 {
+			// http3.Server accepts QUIC connections itself, so there is no
+			// net.Listener to wrap. ConnContext runs once per accepted
+			// connection, and the connection's own context ends when it closes.
+			s.http3Server.ConnContext = func(ctx context.Context, c *quicgo.Conn) context.Context {
+				context.AfterFunc(c.Context(), observers.Open(apimodule.TransportHTTP3))
+				return ctx
+			}
 		}
 		go func() {
 			if serveErr := s.http3Server.Serve(h3Conn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {

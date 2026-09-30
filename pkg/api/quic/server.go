@@ -107,6 +107,11 @@ type Server struct {
 	// RegisterQUIC hook. Set via WithServiceModules by the server orchestrator.
 	modules []apimodule.ServiceModule
 
+	// connObservers are the modules observing the connection lifecycle,
+	// collected from modules at Start. handleConnection reports each accepted
+	// connection to them for as long as it runs.
+	connObservers apimodule.ConnObservers
+
 	addr      string
 	tlsConfig *tls.Config
 	listener  *quicgo.Listener
@@ -518,6 +523,7 @@ func (s *Server) Start() error {
 	s.udpConn = udpConn
 	s.transport = tr
 	s.listener = ln
+	s.connObservers = apimodule.ConnObserversOf(s.modules)
 	s.stopping = make(chan struct{})
 
 	slog.Info("QUIC server started", "addr", ln.Addr().String())
@@ -732,6 +738,11 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(conn *quicgo.Conn) {
 	defer s.wg.Done()
 	defer s.conns.Delete(conn)
+	// handleConnection runs for exactly the connection's life -- it returns
+	// only once AcceptStream fails because the connection closed -- so its
+	// span is the span reported to connection observers. Deferred after
+	// wg.Done so the close is reported before Stop's wg.Wait returns.
+	defer s.connObservers.Open(apimodule.TransportQUIC)()
 
 	for {
 		stream, err := conn.AcceptStream(context.Background())

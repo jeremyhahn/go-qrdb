@@ -90,6 +90,15 @@ are not reconstructed here — their history is in the git log.
   `sdk.NewMCPErrorEnvelope`, `sdk.DecodeMCPErrorPayload` and `sdk.MCPCodes`. A
   module's MCP tools already receive the classified envelope from the server's
   error-code middleware when they return an error; a test now pins that.
+- **A capability module can observe connections on every listener.**
+  `apimodule.ConnObserver` (`ConnOpened` / `ConnClosed`, with the
+  `apimodule.Transport` the connection arrived on) is an optional
+  `ServiceModule` extension; the unified server reports each connection
+  accepted on REST (TCP and HTTP/3), gRPC, unix, native QUIC and MCP exactly
+  once opened and once closed. A composing host keeps its own active-connection
+  metrics without a parallel listener. Re-exported as `sdk.ModuleConnObserver`,
+  `sdk.ModuleTransport` and `sdk.ModuleTransport*`. A server whose modules do
+  not implement it wraps no listener.
 
 ### Changed — BREAKING
 

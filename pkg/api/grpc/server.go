@@ -547,7 +547,10 @@ func (s *Server) Start() error {
 
 	// Add TLS credentials when configured.
 	if s.tls != nil {
-		creds := credentials.NewTLS(s.tls)
+		// Connections are reported to observing modules through the
+		// credentials, never by wrapping the listener: grpc-go sets
+		// TCP_USER_TIMEOUT only on the *net.TCPConn it accepts.
+		creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportGRPC)
 		serverOpts = append(serverOpts, grpc.Creds(creds))
 	}
 

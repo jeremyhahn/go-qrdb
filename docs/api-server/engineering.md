@@ -43,6 +43,8 @@ type ModuleHTTPRegistrar          = apimodule.HTTPRegistrar
 type ModuleMCPToolPermissioner    = apimodule.MCPToolPermissioner
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 type ModuleAuthFallback           = apimodule.ModuleAuthFallback
+type ModuleConnObserver           = apimodule.ConnObserver
+type ModuleTransport              = apimodule.Transport   // + ModuleTransportGRPC … ModuleTransportQUIC
 
 var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 ```
@@ -113,7 +115,32 @@ type GRPCPublicMethodLister interface {
 type ModuleAuthFallback interface {
 	AuthenticateHTTP(r *http.Request) (*auth.Identity, error)
 }
+
+type ConnObserver interface {
+	ConnOpened(t Transport)   // Transport: grpc, unix, rest, http3, mcp, quic
+	ConnClosed(t Transport)
+}
 ```
+
+`ConnObserver` is wired from each transport's existing `WithServiceModules`
+option: at `Start`, every listener collects the modules that implement it
+(`apimodule.ConnObserversOf`) and reports through them. The zero set costs
+nothing — the listener is not wrapped at all.
+
+| Listener | Where a connection is reported |
+|---|---|
+| gRPC, unix | `ConnObservers.Credentials` wraps the TLS transport credentials: `ServerHandshake` reports the open, returns a conn that reports its close, and reports the close at once on a failed handshake. The listener is NOT wrapped — grpc-go sets `TCP_USER_TIMEOUT` only on the `*net.TCPConn` it accepts, and a wrapped listener silently dropped it from 20000ms to 0 (`TestConnObserver_KeepsGRPCTCPUserTimeout` reads the kernel's value) |
+| REST (TCP), MCP | the raw TCP listener is wrapped **beneath** `tls.NewListener`, so `http.Server` still sees a `*tls.Conn` and negotiates HTTP/2 |
+| REST (HTTP/3) | `http3.Server.ConnContext` reports the open; `context.AfterFunc` on the connection's context reports the close |
+| QUIC | `handleConnection` spans exactly the connection's life; it reports the open on entry and the close on return, before `Stop`'s wait completes |
+
+Each connection is reported opened exactly once and closed exactly once (the
+close function is a `sync.OnceFunc`, so every close path may call it). A
+connection that fails its TLS handshake was accepted, so it is counted and then
+closed. The callbacks run synchronously on the accept and close paths and must
+not block. `TestModuleConnObserver_SeesEveryListener` (pkg/server) proves the
+counts balance on all six listeners of a real server while each carries a real
+request.
 
 ## Invariants
 

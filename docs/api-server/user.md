@@ -101,6 +101,10 @@ as an operator: a module can establish *who* a caller is, but the host still
 decides *what they may do*, and roles always come from the store rather than
 from any token a module accepts.
 
+A module can also observe connections on every listener (`ConnObserver`), which
+is how a composing host's own active-connection metrics count the connections
+this server accepts for it. qrdb itself exports no such gauge.
+
 ## Troubleshooting
 
 **A command exists in the help but returns 501 or "unimplemented".** Either the
