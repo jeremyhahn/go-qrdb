@@ -15,6 +15,7 @@
 package main
 
 import (
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
@@ -457,7 +459,11 @@ func TestMain(m *testing.M) {
 // RLIMIT-aware rejection, overrides newSecureAllocator itself via
 // swapSecureLifecycle and does not rely on this default.
 func installTestSecureLifecycle() (restore func()) {
-	prevNew, prevSet, prevWipe, prevDiscover := newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit
+	prevHarden, prevNew, prevSet, prevWipe, prevDiscover := hardenSecureProcess, newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit
+	// Process hardening cannot be undone: a non-dumpable test binary stays so
+	// for every later test. secure_lifecycle_test.go pins that runStart calls
+	// it; pkg/secure proves the mechanism from a subprocess.
+	hardenSecureProcess = func(*slog.Logger) error { return nil }
 	newSecureAllocator = enclave.NewAllocator
 	setSecureAllocator = func(*secure.Allocator) error { return nil }
 	wipeSecureMemory = func() (int, error) { return 0, nil }
@@ -469,6 +475,6 @@ func installTestSecureLifecycle() (restore func()) {
 		return secure.LockedMemoryLimit{Source: secure.LimitUnlimited}, nil
 	}
 	return func() {
-		newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit = prevNew, prevSet, prevWipe, prevDiscover
+		hardenSecureProcess, newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit = prevHarden, prevNew, prevSet, prevWipe, prevDiscover
 	}
 }

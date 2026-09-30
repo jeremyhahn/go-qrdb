@@ -27,8 +27,10 @@ package secure
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -66,7 +68,16 @@ type (
 	ProviderError     = secure.ProviderError
 	NestedBorrowError = secure.NestedBorrowError
 	EmptyBorrowError  = secure.EmptyBorrowError
+
+	ProcessHardeningError        = secure.ProcessHardeningError
+	ProcessInspectionOptOutError = secure.ProcessInspectionOptOutError
 )
+
+// AllowProcessInspectionEnv is the SDK re-export of
+// secure.AllowProcessInspectionEnv: the environment variable that opts a
+// process out of HardenProcess, with a logged warning, so a debugger can
+// attach.
+const AllowProcessInspectionEnv = secure.AllowProcessInspectionEnv
 
 // ErrAllocatorInstalled is the SDK re-export of the same sentinel
 // enclave.SetAllocator returns: the process-wide locked-memory budget was
@@ -270,6 +281,13 @@ func NewStdinProvider() *StdinProvider { return secure.NewStdinProvider() }
 func NewCallbackProvider(fn func(ctx context.Context, prompt string) ([]byte, error)) *CallbackProvider {
 	return secure.NewCallbackProvider(fn)
 }
+
+// HardenProcess is the SDK re-export of secure.HardenProcess. Like
+// SetAllocator it belongs to the BINARY that owns the process: call it once
+// at startup, before anything constructs a Buffer or Secret, so that a
+// debugger or a same-user process cannot read protected memory through ptrace
+// or /proc/<pid>/mem. cmd/qrdbd/start.go's runStart is the reference wiring.
+func HardenProcess(logger *slog.Logger) error { return secure.HardenProcess(logger) }
 
 // NewAllocatorWithinRLimit is the SDK re-export of
 // enclave.NewAllocatorWithinRLimit. It builds a locked-memory budget of

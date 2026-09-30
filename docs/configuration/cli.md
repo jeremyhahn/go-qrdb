@@ -91,6 +91,11 @@ The last three are examples of the general rule, not a closed list: with
 `QRDB_<PATH_UPPER_CASED>`. The rows above `QRDB_SEAL_SHARE_TTL` are different —
 they are command-scoped bindings that do not go through the config file.
 
+One variable is neither: `QRDB_SECURE_ALLOW_PROCESS_INSPECTION` has no config
+key or flag at all, by design. `start` reads it from the environment to leave
+the process readable by a debugger, and logs a warning when it does — see
+[../deployment/user.md](../deployment/user.md#attaching-a-debugger).
+
 ## Bind host
 
 `server.host` is the bind host for **every** API listener: REST (and the HTTP/3

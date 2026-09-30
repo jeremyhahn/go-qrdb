@@ -534,6 +534,20 @@ are not reconstructed here — their history is in the git log.
   still matches `ErrInvalidCertificate`, so every transport answers as
   before; an ambiguous certificate carries the new
   `*spiffe.AmbiguousTenantError` (`sdk.SpiffeAmbiguousTenantError`).
+- **`qrdbd start` makes its memory unreadable to other processes before it
+  holds any key** (#554). mlock kept protected memory out of swap, but a
+  process running as the same user could still read every enclave through
+  ptrace, `/proc/<pid>/mem` or a core file. `start` now calls the new
+  `secure.HardenProcess` first: `prctl(PR_SET_DUMPABLE, 0)` on Linux,
+  `ptrace(PT_DENY_ATTACH)` on macOS, and a logged no-op where no mechanism
+  exists (Windows). It is unconditional; `QRDB_SECURE_ALLOW_PROCESS_INSPECTION=true`
+  leaves the process inspectable for a debugging session and logs a warning.
+  A malformed opt-out value, or a platform refusal, fails `start` with
+  `*ProcessInspectionOptOutError` / `*ProcessHardeningError`. Re-exported from
+  `sdk/go/secure` (with `AllowProcessInspectionEnv` and both error types) so
+  embedding binaries apply the same posture at their own startup. Operators:
+  `gdb -p`/`dlv attach` now need the opt-out, a crash writes no core file, and
+  non-root monitoring agents lose `qrdbd`'s `/proc/<pid>/` entries.
 
 ### Known limits
 

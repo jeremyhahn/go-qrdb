@@ -918,7 +918,14 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 // path it reads and installs nothing, which is why TestMain leaves it real.
 // It is indirected for the test double the ErrAllocatorInstalled mismatch
 // check needs (go-qrdb#114 review, round 3).
+//
+// hardenSecureProcess is indirected for the same reason: secure.HardenProcess
+// makes the calling process non-dumpable (Linux) or refuses every later
+// debugger attach (macOS), and neither can be undone, so the test binary that
+// drives runStart must not apply it to itself. TestMain doubles it; the real
+// mechanism is proven from a subprocess in pkg/secure.
 var (
+	hardenSecureProcess    = secure.HardenProcess
 	newSecureAllocator     = secure.NewAllocatorWithinRLimit
 	setSecureAllocator     = secure.SetAllocator
 	processSecureAllocator = secure.ProcessAllocator
@@ -980,6 +987,14 @@ func recordSecureMemoryWipe(err *error) {
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
 func runStart(f *startFlags) (err error) {
+	// Process hardening comes before the budget and before anything else, so
+	// no protected memory exists yet while this process is still readable by a
+	// debugger or a same-user process through /proc/<pid>/mem (go-qrdb#554).
+	// A refusal is fatal: a node that holds keys must not run inspectable
+	// unless the operator opted out explicitly, and the opt-out is logged.
+	if herr := hardenSecureProcess(slog.Default()); herr != nil {
+		return herr
+	}
 	budgetMiB := f.secureMemoryBudgetMiB
 	resolved, rerr := resolveSecureMemoryBudget(budgetMiB)
 	if rerr != nil {

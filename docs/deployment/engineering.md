@@ -16,7 +16,7 @@ limitations under the License.
 
 # Deployment — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
 
 ## Exported and package surface
 
@@ -28,6 +28,16 @@ limitations under the License.
   (secureMemoryBudget, error)` — the derivation. Constants
   `secureMemoryHeadroomBytes` (2 MiB) and `minSecureMemoryBudgetBytes`
   (1 MiB); the ceiling is `pkg/config.DefaultSecureMemoryBudgetMiB` (64).
+
+- `sdk/go/secure.HardenProcess(*slog.Logger) error`, re-exporting
+  `pkg/secure.HardenProcess`, with the constant `AllowProcessInspectionEnv`
+  (`QRDB_SECURE_ALLOW_PROCESS_INSPECTION`) and the errors
+  `*ProcessHardeningError{Mechanism, Err}` and
+  `*ProcessInspectionOptOutError{Value, Err}`. Platform files
+  `pkg/secure/harden_linux.go`, `harden_darwin.go` and `harden_other.go`
+  (`!linux && !darwin`) each supply the mechanism and its name.
+- `cmd/qrdbd.runStart` calls it as its first statement, through the
+  `hardenSecureProcess` seam, before `resolveSecureMemoryBudget`.
 
 ## Derivation
 
@@ -58,12 +68,23 @@ a configured value is always distinguishable from the default.
   could not be read.
 - `*SecureMemoryBudgetMismatchError` — an allocator was already installed
   with a different figure.
+- `*ProcessHardeningError` — the platform refused the hardening mechanism.
+  `start` fails; the process is not hardened.
+- `*ProcessInspectionOptOutError` — `QRDB_SECURE_ALLOW_PROCESS_INSPECTION`
+  holds a value `strconv.ParseBool` rejects. `start` fails before anything is
+  applied: a malformed security opt-out is not read as either answer.
 
 ## Observability
 
 One `INFO` log event per successful start: `secure memory budget installed`
 with `budget_bytes`, `source`, `rlimit_memlock_source`,
 `rlimit_memlock_bytes`.
+
+One `WARN` event when the process is left inspectable: `secure: process
+inspection hardening DISABLED by environment` with `env` and `mechanism` when
+the opt-out is honoured, or `secure: this platform has no process inspection
+hardening` with `goos` on a platform without a mechanism. A hardened start
+logs nothing for it.
 
 ## Test strategy
 
@@ -74,3 +95,19 @@ headroom, large, unaligned, tiny (64 KiB and the boundary values), and
 unreadable; explicit within-limit and explicit over-limit through `runStart`.
 `TestMain` presents an unlimited limit to the rest of the binary so no test
 depends on the host.
+
+Process hardening cannot be undone, so no test applies it to its own test
+binary. `pkg/secure/harden_test.go` drives `HardenProcess`'s decisions against
+a double of the platform mechanism (applied when unset or false, skipped and
+warned when true, refused when malformed, a platform refusal surfaced typed).
+`pkg/secure/harden_linux_test.go` proves the real mechanism across three
+processes: a reader that drops `CAP_SYS_PTRACE` (CI containers run as root,
+and the capability bypasses the check) starts a target as its child (so Yama's
+default `ptrace_scope=1` admits it), and the target reports `PR_GET_DUMPABLE`
+and the address of a random marker. The opt-out run is the positive control —
+the reader opens `/proc/<pid>/mem` and reads the marker back — and the
+hardened run must refuse the open with `PR_GET_DUMPABLE == 0`.
+`cmd/qrdbd`'s `TestMain` doubles `hardenSecureProcess`, and
+`secure_lifecycle_test.go` pins that the production seam is
+`secure.HardenProcess` and that a refusal fails `start` before any budget is
+built.
