@@ -406,6 +406,14 @@ are not reconstructed here — their history is in the git log.
   allocator now checks its block's epoch before every cached value and
   refills from the post-reset counter when a reset has intervened, on this
   node or any other.
+- **PostgreSQL `TRUNCATE TABLE` keeps the table's sequence on every server
+  construction path** (#547). A PostgreSQL server composed with
+  `WithServiceRegistry` but no database manager built its provider without
+  the PostgreSQL protocol, so its relational tables took MySQL's `TRUNCATE`
+  semantics and restarted `AUTO_INCREMENT` at 1, and unqualified
+  `pg_catalog` relations did not resolve. `pgsql.Server.Start` now
+  applies `WithProtocol(ProtocolPostgreSQL)` on both paths. MySQL `TRUNCATE
+  TABLE` resets `AUTO_INCREMENT` to 1, matching MySQL.
 
 ### Security
 

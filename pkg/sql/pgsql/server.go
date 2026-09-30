@@ -235,7 +235,15 @@ func (s *Server) Start() error {
 	// constructed *provider.Provider -- the exported option functions are
 	// just closures over unexported fields and work identically regardless
 	// of which constructor built the Provider.
-	var svcOpts []func(*provider.Provider)
+	//
+	// WithProtocol(ProtocolPostgreSQL) is in that set, so it applies on
+	// EVERY construction path, not only the database-manager one: it is what
+	// makes this a PostgreSQL-dialect provider at all, gating pg_catalog
+	// resolution (Provider.servesPGCatalog) and, through Database.postgres
+	// and WithPostgreSQLDialect, TRUNCATE's keeping of a table's sequence. A
+	// composer that supplies WithServiceRegistry without WithDatabaseManager
+	// must not be served MySQL semantics on a PostgreSQL listener.
+	svcOpts := []func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}
 	if s.collectionSvc != nil {
 		svcOpts = append(svcOpts, provider.WithCollectionService(s.collectionSvc))
 	}
@@ -254,7 +262,7 @@ func (s *Server) Start() error {
 
 	var dbProvider *provider.Provider
 	if s.dbManager != nil {
-		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}, svcOpts...)
+		managerOpts := svcOpts
 		if s.sharedDefaultDB != "" {
 			managerOpts = append(managerOpts, provider.WithSharedDefaultDatabase(s.sharedDefaultDB))
 		}

@@ -72,6 +72,12 @@ not renumbered and the counter is not checked against them: an
 fails with a duplicate-key error (MySQL would instead move the counter past
 the largest id).
 
+`TRUNCATE TABLE users` resets `AUTO_INCREMENT` back to 1 on the MySQL wire
+protocol, matching MySQL. On the PostgreSQL wire protocol, plain `TRUNCATE`
+leaves the sequence exactly where it was, matching PostgreSQL's own default
+(`RESTART IDENTITY` is not supported). Either way, no session goes on
+inserting ids reserved before the `TRUNCATE`.
+
 **Use transactions.**
 
 ```sql
