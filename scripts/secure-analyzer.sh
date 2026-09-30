@@ -97,13 +97,14 @@ case "${1:---sweep}" in
 	trap 'rm -rf "$(dirname "$tool")"' EXIT INT TERM
 	build_tool "$tool"
 
-	echo "secure-analyzer: securecheck rules 1-3, every module, every declared combination"
+	echo "secure-analyzer: securecheck rules 1-4, every module, every declared combination"
 	GOVET="$GO vet -vettool=$tool" GOLIST="$GOLIST" VET_MODULES_ROOT="$ROOT" \
 		"$ROOT/scripts/vet-modules.sh" --vet "$TAG_SETS" "$GORM_TAGS" || \
 		die "secure-analyzer: securecheck reported findings, or a module was not swept." \
 		    "  Rules 1 and 2 are absolute. Rule 3 is scoped, and the four clauses" \
 		    "  plus the argument for each are in pkg/secure/analyzer/scope.go --" \
-		    "  read it before assuming a finding is a false positive."
+		    "  read it before assuming a finding is a false positive. Rule 4's" \
+		    "  directive and its two kinds are in pkg/secure/analyzer/unborrowed.go."
 	;;
 *)
 	die "usage: secure-analyzer.sh [--build <abs-out> | --sweep <TAG_SETS> <GORM_TAGS>]" ;;

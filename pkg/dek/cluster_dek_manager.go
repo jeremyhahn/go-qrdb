@@ -198,13 +198,16 @@ func (m *ClusterDEKManager) Initialize(ctx context.Context, algorithm string, ke
 	//
 	// UNBORROWED Bytes, deliberately. m.barrier is an injected
 	// seal.EncryptionBarrier; any conforming implementation may allocate
-	// protected memory, and a borrow held across it deadlocks at boot
-	// (go-qrdb#145, fenced by
+	// protected memory, and pkg/secure's rule 6 forbids reaching that from
+	// inside a held borrow (go-qrdb#145, fenced by
 	// TestClusterDEKManager_ToleratesABarrierThatAllocatesProtectedMemory).
 	// The pages stay mlocked and the plaintext never reaches the ordinary
-	// heap; the residual is a purge landing mid-Encrypt, a timing fault rather
-	// than a key leak. Contrast fillFromEntropy above, whose callee is stdlib
-	// and therefore CAN be borrowed across.
+	// heap; the residual is a concurrent destroy landing mid-Encrypt, a fault
+	// rather than a key leak. Contrast fillFromEntropy above, whose callee is
+	// stdlib and therefore CAN be borrowed across. The directive below is what
+	// pkg/secure/analyzer's rule 4 reads (go-qrdb#428).
+	//
+	//secure:unborrowed injected-interface m.barrier is a consumer-supplied seal.EncryptionBarrier (go-qrdb#145)
 	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
 		dekBuf.Destroy()
@@ -362,6 +365,8 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 
 	// Encrypt new DEK with barrier. UNBORROWED Bytes for the same reason as
 	// Initialize above: the injected barrier may allocate protected memory.
+	//
+	//secure:unborrowed injected-interface m.barrier is a consumer-supplied seal.EncryptionBarrier (go-qrdb#145)
 	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
 		dekBuf.Destroy()

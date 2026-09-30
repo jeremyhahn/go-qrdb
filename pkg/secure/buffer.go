@@ -184,22 +184,31 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // # What Bytes is still FOR
 //
 // Not "everything not yet converted". The remaining callers are reads whose
-// borrow cannot be held at all, and they fall into two kinds:
+// borrow cannot be held at all, and they fall into three kinds:
 //
-//   - the material crosses into an INJECTED INTERFACE — seal.EncryptionBarrier,
-//     seal.SealingStrategy, ceremony's BarrierUnseal — whose implementations
-//     are supplied by consumers. Any conforming one may allocate protected
-//     memory of its own, which no longer deadlocks against a held borrow
-//     (go-qrdb#114 removed the process-wide lock that made it), but the
-//     migration to WithBytes for these sites is tracked separately
-//     (go-qrdb#145) and not mechanical;
-//   - the read happens inside a go-quicraft enclave borrow, whose own
-//     WithBytes documentation forbids nesting a second protected-memory
-//     borrow inside it.
+//   - injected-interface: the material crosses into an INJECTED INTERFACE —
+//     seal.EncryptionBarrier, seal.SealingStrategy, ceremony's BarrierUnseal —
+//     whose implementations are supplied by consumers. Any conforming one may
+//     allocate protected memory of its own, which no longer deadlocks against
+//     a held borrow (go-qrdb#114 removed the process-wide lock that made it),
+//     but rule 6 still forbids it, and the migration for these sites is
+//     tracked separately (go-qrdb#145);
+//   - allocates-protected: the read spans a call in this repository that
+//     allocates protected memory of its own, such as a strategy constructor
+//     copying the key into its own enclave — rule 6 again, with a callee that
+//     can be named;
+//   - nested-enclave: the read happens inside a go-quicraft enclave borrow,
+//     whose own WithBytes documentation forbids nesting a second
+//     protected-memory borrow inside it.
 //
-// A call site using Bytes for any OTHER reason is one that has not been
-// converted yet. Each surviving one carries a comment saying which kind it
-// is; a new one that does not is a defect.
+// A call site using Bytes for any OTHER reason is a defect. Each surviving
+// one carries a directive naming its kind and reason, trailing the read or
+// standing alone on the line above it:
+//
+//	//secure:unborrowed injected-interface m.barrier is a seal.EncryptionBarrier
+//
+// pkg/secure/analyzer's rule 4 reports any reference to Bytes outside a test
+// file that lacks one (go-qrdb#428).
 func (b *Buffer) Bytes() []byte {
 	if b == nil || b.destroyed.Load() {
 		return nil

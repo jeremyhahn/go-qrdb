@@ -99,6 +99,18 @@ are not reconstructed here — their history is in the git log.
   metrics without a parallel listener. Re-exported as `sdk.ModuleConnObserver`,
   `sdk.ModuleTransport` and `sdk.ModuleTransport*`. A server whose modules do
   not implement it wraps no listener.
+- **The secure analyzer's rule 4: an unborrowed `secure.Buffer.Bytes` read
+  must say why** (#428). `Bytes` holds no lock once it returns, so a
+  concurrent destroy can unmap the pages mid-read. Every reference outside a
+  `_test.go` file now needs a `//secure:unborrowed <injected-interface|allocates-protected|nested-enclave> <reason>`
+  directive trailing the read or standing alone on the line above it; `make secure-analyzer` (CI's Lint
+  job) fails without it, and `make test-secure-analyzer` plants a bare read to
+  prove the gate goes red. The eleven reads left on `main` each reach code rule 6 keeps out of a borrow
+  (a consumer-supplied interface, or a protected allocation) and are marked: the cluster DEK wrap (2, the
+  subject of the protected-barrier design in #145) and nine in the Shamir
+  unseal, recovery, root-token and custodian paths that the share-holder
+  rewrite replaces. The `SecretValue.WithBytes` and nested-enclave reads the
+  issue listed were already converted by the go-enclave adoption.
 
 ### Changed — BREAKING
 

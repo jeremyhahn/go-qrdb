@@ -221,8 +221,9 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   (the go-enclave migration removed the process-wide lock that made it), but converting
   these sites to a held borrow is a separate, not-yet-landed change.
   Those sites read without a borrow deliberately, each with a
-  comment saying so, and are covered by a regression test that fails if a
-  borrow is reintroduced.
+  `//secure:unborrowed injected-interface` directive the secure analyzer
+  requires (rule 4 below), and are covered by a regression test that fails if
+  a borrow is reintroduced.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
@@ -399,7 +400,7 @@ truncated, on either path.
 ## Secure-memory rules, and what enforces them
 
 Key material in this repository is held through `pkg/secure`, a facade over a
-process-wide mlocking allocator. Three rules protect that boundary, and they
+process-wide mlocking allocator. Four rules protect that boundary, and they
 are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
 secure-analyzer` runs in CI's Lint job over **every Go module in the tree**
 under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
@@ -409,6 +410,18 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 | 1 | No raw `memguard` import anywhere (go-enclave is the protected-memory library; `pkg/secure` is its facade) | Every file, tests included |
 | 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
 | 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
+| 4 | No `secure.Buffer.Bytes` reference (call, method value or method expression) unless a `//secure:unborrowed <kind> <reason>` directive trailing the read, or standing alone on the line above it, names why it cannot hold a borrow; `<kind>` is `injected-interface`, `allocates-protected` or `nested-enclave` | Every file except `_test.go` |
+
+Rule 4 exists because `Bytes` returns a slice into locked pages with no lock
+held, so a concurrent destroy — the shutdown sweep above all — can unmap the
+pages mid-read and fault the process. `WithBytes` and `secure.CopyOut` hold
+the borrow across the read. A read that cannot hold one crosses an interface a
+consumer implements (the barrier's `Encrypt`, a sealing strategy, the share
+distributor), which `pkg/secure` forbids reaching from inside a borrow. The
+directive is written at the site and read by the analyzer; it is not an
+allowlist, and nothing away from the line can silence a read. Test files are
+out of scope: a test reads its buffer on the goroutine that owns it, with no
+shutdown sweep running.
 
 Both the sweep and its module coverage matter. `./...` does not cross a module
 boundary, so `sdk/go` needs its own pass; and a single tag combination reports
@@ -448,10 +461,11 @@ is tracked rather than assumed away.
 
 ### The gate is checked against a known instance
 
-`make test-secure-analyzer` plants a raw `memguard` import and a raw holder
-field, requires both to be reported, and requires `go vet` to exit nonzero —
+`make test-secure-analyzer` plants a raw `memguard` import, a raw holder
+field and a bare `secure.Buffer.Bytes` read, requires each to be reported, and requires `go vet` to exit nonzero —
 a diagnostic that does not fail the command does not block a merge. It also
-requires the four scoped populations to stay silent through the real binary.
+requires the four scoped populations, a directive-justified read and a read in
+a test file to stay silent through the real binary.
 A clean sweep and a neutered analyzer print the same thing; only the red run
 distinguishes them.
 
