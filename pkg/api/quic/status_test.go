@@ -430,7 +430,7 @@ var conditions = []conditionRow{
 	{"restore scope too large", &service.RestoreScopeTooLargeError{Limit: 10, Scope: "prefix"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"restore prefix unbounded", &service.RestoreUnboundedPrefixError{Prefix: ""}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"ceremony CA not configured", &CeremonyCANotConfiguredError{}, wire.StatusUnimplemented, codes.Unimplemented},
-	{"share claim needs a client cert", &ClientCertRequiredError{}, wire.StatusUnauthenticated, codes.Unauthenticated},
+	{"share claim needs a client cert", &service.ClientCertRequiredError{}, wire.StatusUnauthenticated, codes.Unauthenticated},
 	{"request payload will not decode", &UnmarshalError{Err: errors.New("proto")}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"tenant supplied is not the caller's", &tenant.CrossTenantDeniedError{
 		IdentityTenantID: "a", RequestedTenantID: "b", Op: "users.list",

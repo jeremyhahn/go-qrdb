@@ -87,7 +87,7 @@ func TestLocalErrorsDeclareTheirClass(t *testing.T) {
 		{&RequestTooLargeError{Limit: 1}, http.StatusRequestEntityTooLarge},
 		{&PayloadTooLargeError{Size: 2, Limit: 1}, http.StatusRequestEntityTooLarge},
 		{&KeyTooLargeError{Size: 2, Limit: 1}, http.StatusRequestEntityTooLarge},
-		{&restClientCertRequiredError{}, http.StatusUnauthorized},
+		{&service.ClientCertRequiredError{}, http.StatusUnauthorized},
 	} {
 		if got := ServiceErrorStatus(tc.err); got != tc.want {
 			t.Errorf("ServiceErrorStatus(%T) = %d, want %d", tc.err, got, tc.want)

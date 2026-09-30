@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestClientCertRequired_IsUnauthenticated: a share-claim tool refused for want
@@ -26,8 +27,8 @@ import (
 // the ToolError wrapper the tool actually returns.
 func TestClientCertRequired_IsUnauthenticated(t *testing.T) {
 	for _, err := range []error{
-		&mcpClientCertRequiredError{},
-		&ToolError{Tool: "qrdb_barrier_share_claim_begin", Err: &mcpClientCertRequiredError{}},
+		&service.ClientCertRequiredError{},
+		&ToolError{Tool: "qrdb_barrier_share_claim_begin", Err: &service.ClientCertRequiredError{}},
 	} {
 		if got := ServiceErrorCode(err); got != wire.CodeUnauthenticated {
 			t.Errorf("ServiceErrorCode(%T) = %v, want UNAUTHENTICATED", err, got)

@@ -231,11 +231,16 @@ func TestGRPCHolders_ClaimBindsTheTLSPeer(t *testing.T) {
 		t.Fatalf("domains = %v", domains)
 	}
 
-	// No client certificate: neither step reaches the service.
+	// No client certificate: neither step reaches the service, and the
+	// caller is unauthenticated, as on every other transport.
 	_, err := s.BarrierShareClaimBegin(context.Background(), begin)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, codes.Unauthenticated)
 	_, err = s.BarrierShareClaimComplete(context.Background(), complete)
-	requireCode(t, err, codes.InvalidArgument)
+	requireCode(t, err, codes.Unauthenticated)
+	_, err = s.BarrierRecoveryShareClaimBegin(context.Background(), begin)
+	requireCode(t, err, codes.Unauthenticated)
+	_, err = s.BarrierRecoveryShareClaimComplete(context.Background(), complete)
+	requireCode(t, err, codes.Unauthenticated)
 
 	svc.claimBegin = func(seal.QuorumDomain, string, string) (*service.BarrierShareClaimChallenge, error) {
 		return nil, ceremony.ErrCertThumbprintMismatch
@@ -506,10 +511,11 @@ func TestGRPCTenantHolders_Refusals(t *testing.T) {
 		})
 	}
 
-	// A claim needs the holder's certificate on the connection.
+	// A claim needs the holder's certificate on the connection; without one
+	// the caller is unauthenticated, as on every other transport.
 	for _, name := range []string{"claim-begin", "claim-complete"} {
 		t.Run("no-cert/"+name, func(t *testing.T) {
-			requireCode(t, tenantHolderCalls(configured, context.Background(), "acme")[name](), codes.InvalidArgument)
+			requireCode(t, tenantHolderCalls(configured, context.Background(), "acme")[name](), codes.Unauthenticated)
 		})
 	}
 }

@@ -60,7 +60,6 @@ var grpcCodeByClass = map[errclass.Class]codes.Code{
 var (
 	_ errclass.Classed = (*ServiceNotConfiguredError)(nil)
 	_ errclass.Classed = (*CeremonyCANotConfiguredError)(nil)
-	_ errclass.Classed = (*ClientCertRequiredError)(nil)
 	_ errclass.Classed = (*MetadataUnmarshalError)(nil)
 	_ errclass.Classed = (*MetadataMarshalError)(nil)
 	_ errclass.Classed = (*VectorIDParseError)(nil)
@@ -76,13 +75,6 @@ func (e *ServiceNotConfiguredError) ErrorClass() errclass.Class { return errclas
 
 // ErrorClass reports that no ceremony CA was configured.
 func (e *CeremonyCANotConfiguredError) ErrorClass() errclass.Class { return errclass.Unimplemented }
-
-// ErrorClass reports a share claim refused for want of a verified client
-// certificate. The caller never established who it is, so it is an
-// authentication failure — the same class on every transport's twin of this
-// type (REST, QUIC, MCP). It used to answer Internal from the gRPC mapper and
-// InvalidArgument from the handlers that built the status inline.
-func (e *ClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
 
 // ErrorClass reports request metadata JSON that does not decode: the caller's.
 func (e *MetadataUnmarshalError) ErrorClass() errclass.Class { return errclass.InvalidArgument }

@@ -63,7 +63,6 @@ var (
 	_ errclass.Classed = (*ServiceNotConfiguredError)(nil)
 	_ errclass.Classed = (*CeremonyCANotConfiguredError)(nil)
 	_ errclass.Classed = (*InvalidArgumentError)(nil)
-	_ errclass.Classed = (*ClientCertRequiredError)(nil)
 	_ errclass.Classed = (*UnmarshalError)(nil)
 )
 
@@ -76,11 +75,6 @@ func (e *CeremonyCANotConfiguredError) ErrorClass() errclass.Class { return errc
 // ErrorClass reports a malformed or incomplete frame payload: the caller's
 // request, not a server fault.
 func (e *InvalidArgumentError) ErrorClass() errclass.Class { return errclass.InvalidArgument }
-
-// ErrorClass reports a share claim refused for want of a verified client
-// certificate: the caller never established who it is, so it is an
-// authentication failure, the same class every transport's twin declares.
-func (e *ClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
 
 // ErrorClass reports a request payload that does not decode. Its sibling
 // MarshalError stays unclassified: a response this server could not encode IS

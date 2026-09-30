@@ -118,7 +118,6 @@ func TestLocalErrorsDeclareTheirClass(t *testing.T) {
 	}{
 		{&ServiceNotConfiguredError{Service: "backup"}, codes.Unimplemented},
 		{&CeremonyCANotConfiguredError{}, codes.Unimplemented},
-		{&ClientCertRequiredError{}, codes.Unauthenticated},
 	} {
 		if got := ServiceErrorCode(tc.err); got != tc.want {
 			t.Errorf("ServiceErrorCode(%T) = %s, want %s", tc.err, got, tc.want)

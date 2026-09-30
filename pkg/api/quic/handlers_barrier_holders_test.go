@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
@@ -193,10 +194,13 @@ func TestQUICHolders_SystemFrames(t *testing.T) {
 	if _, err := frames["quorum-submit"](context.Background()); err != nil || svc.peer != "" {
 		t.Fatalf("submit without a certificate: %v peer=%q", err, svc.peer)
 	}
-	for _, name := range []string{"claim-begin", "claim-complete"} {
-		var certErr *ClientCertRequiredError
-		if _, err := frames[name](context.Background()); !errors.As(err, &certErr) {
-			t.Errorf("%s without a certificate = %v", name, err)
+	for _, name := range []string{"claim-begin", "claim-complete", "recovery-begin", "recovery-complete"} {
+		_, err := frames[name](context.Background())
+		if err == nil {
+			t.Fatalf("%s without a certificate succeeded", name)
+		}
+		if code, _ := mapServiceError(err); code != wire.StatusUnauthenticated {
+			t.Errorf("%s without a certificate = %v (status %d), want StatusUnauthenticated", name, err, code)
 		}
 	}
 }
@@ -342,8 +346,12 @@ func TestQUICHolders_TenantFrames(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"claim-begin", "claim-complete"} {
-		if _, err := tenantHolderFrames(t, s, "acme")[name](context.Background()); err == nil {
-			t.Errorf("%s ran without a certificate", name)
+		_, err := tenantHolderFrames(t, s, "acme")[name](context.Background())
+		if err == nil {
+			t.Fatalf("%s ran without a certificate", name)
+		}
+		if code, _ := mapServiceError(err); code != wire.StatusUnauthenticated {
+			t.Errorf("%s without a certificate = %v (status %d), want StatusUnauthenticated", name, err, code)
 		}
 	}
 

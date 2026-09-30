@@ -3405,6 +3405,15 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   splits to every enrolled recovery holder.
 - **REST renders the FailedPrecondition class as 409** (a claim after the
   envelope's time-to-live was 410).
+- **A share claim without a client certificate is Unauthenticated on every
+  transport.** gRPC and Unix answered `INVALID_ARGUMENT`, QUIC
+  PermissionDenied and MCP Internal; REST already answered 401. The one typed
+  error is now `service.ClientCertRequiredError`, in the new
+  `service.ClassUnauthenticated` class (REST 401, gRPC/Unix/QUIC/MCP
+  `UNAUTHENTICATED`). The per-transport types it replaces are removed:
+  `grpc.ClientCertRequiredError`, `quic.ClientCertRequiredError` and the SDK's
+  `embedded.ClientCertRequiredError`; match `*service.ClientCertRequiredError`
+  instead.
 - **The desktop `SealBinding`**: `InitializeShamir(threshold, total, policy)`;
   `Unseal` refuses a Shamir barrier, which its holders unseal. The embedded
   node no longer auto-unseals a Shamir barrier.

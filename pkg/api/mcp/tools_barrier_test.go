@@ -774,16 +774,6 @@ func TestCeremonyCANotConfiguredError(t *testing.T) {
 	}
 }
 
-// mcpCertThumbprint success path (covered via ShareClaimBegin above, but also
-// test the Error() method on mcpClientCertRequiredError directly).
-
-func TestMCPClientCertRequiredError(t *testing.T) {
-	e := &mcpClientCertRequiredError{}
-	if e.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
 func TestMCPCertThumbprint_Success(t *testing.T) {
 	ctx := ctxWithFakeTLS()
 	thumb, err := mcpCertThumbprint(ctx, "test-tool")

@@ -281,7 +281,7 @@ test.describe("Security Officer bootstrap (§7.3 officer routes)", () => {
       { headers: { "Content-Type": "application/json" } },
     );
 
-    // restClientCertRequiredError → 401.
+    // service.ClientCertRequiredError (unauthenticated) → 401.
     expect(resp.status()).toBe(401);
   });
 

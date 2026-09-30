@@ -511,14 +511,6 @@ func TestMapServiceError_WrappedNotLeaderError(t *testing.T) {
 	}
 }
 
-// ClientCertRequiredError.Error() coverage.
-func TestClientCertRequiredError_Error(t *testing.T) {
-	e := &ClientCertRequiredError{}
-	if e.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
 // TestMapServiceError_BarrierSealedError verifies that a data-plane
 // service.BarrierSealedError maps to wire.StatusUnavailable (not the
 // default StatusError), matching the gRPC (codes.Unavailable) and REST

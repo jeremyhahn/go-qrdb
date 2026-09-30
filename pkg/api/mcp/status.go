@@ -107,14 +107,6 @@ func ServiceErrorCode(err error) wire.Code {
 	return wire.CodeInternal
 }
 
-// mcpClientCertRequiredError declares its class here, beside the rendering,
-// because pkg/api/errclass cannot import this package: a share claim with no
-// verified client certificate is an authentication failure on every transport.
-var _ errclass.Classed = (*mcpClientCertRequiredError)(nil)
-
-// ErrorClass reports an authentication failure.
-func (e *mcpClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
-
 var _ errclass.Classed = (*ServiceNotConfiguredError)(nil)
 
 // ErrorClass reports Unimplemented: this node cannot serve the tool's service

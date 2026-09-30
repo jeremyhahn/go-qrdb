@@ -32,11 +32,11 @@ import (
 )
 
 // restCertThumbprint returns the verified TLS client certificate's
-// thumbprint, or restClientCertRequiredError when the connection carries
-// none. The share claim requires it.
+// thumbprint, or service.ClientCertRequiredError when the connection
+// carries none. The share claim requires it.
 func restCertThumbprint(r *http.Request) (string, error) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return "", &restClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	return mtls.Thumbprint(r.TLS.PeerCertificates[0].Raw), nil
 }

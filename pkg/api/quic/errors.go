@@ -79,15 +79,6 @@ func (e *InvalidArgumentError) Error() string {
 	return "quic: invalid argument: " + e.Reason
 }
 
-// ClientCertRequiredError is returned when a share-claim handler requires a
-// verified mTLS client certificate but the connection carries none.
-type ClientCertRequiredError struct{}
-
-// Error returns a human-readable description.
-func (e *ClientCertRequiredError) Error() string {
-	return "quic: client certificate required for share claim"
-}
-
 // MarshalError is returned when protobuf marshaling fails.
 type MarshalError struct {
 	Err error

@@ -93,7 +93,7 @@ func (s *qrdbServiceServer) claimBegin(ctx context.Context, domain seal.QuorumDo
 	}
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 	challenge, err := s.barrierSvc.BarrierShareClaimBegin(ctx, domain, req.GetUsername(), thumbprint)
 	if err != nil {
@@ -109,7 +109,7 @@ func (s *qrdbServiceServer) claimComplete(ctx context.Context, domain seal.Quoru
 	}
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 	result, err := s.barrierSvc.BarrierShareClaimComplete(ctx, domain, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
 	if err != nil {

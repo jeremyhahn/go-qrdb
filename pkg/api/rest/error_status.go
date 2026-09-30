@@ -63,7 +63,6 @@ var (
 	_ errclass.Classed = (*RequestTooLargeError)(nil)
 	_ errclass.Classed = (*PayloadTooLargeError)(nil)
 	_ errclass.Classed = (*KeyTooLargeError)(nil)
-	_ errclass.Classed = (*restClientCertRequiredError)(nil)
 	_ errclass.Classed = (*InvalidParameterError)(nil)
 )
 
@@ -79,10 +78,6 @@ func (e *PayloadTooLargeError) ErrorClass() errclass.Class { return errclass.Too
 
 // ErrorClass reports a key over its byte bound.
 func (e *KeyTooLargeError) ErrorClass() errclass.Class { return errclass.TooLarge }
-
-// ErrorClass reports a share claim refused for want of a verified client
-// certificate: an authentication failure (401), as on every transport.
-func (e *restClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
 
 // ErrorClass reports a request parameter the handler could not parse: the
 // caller's input is wrong, so it is a 400 wherever it is rendered.

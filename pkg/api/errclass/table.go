@@ -796,6 +796,8 @@ var holderRules = []rule{
 	as(&keydelivery.UnsupportedRecipientKeyError{}, InvalidArgument),
 	as(&keydelivery.SuiteNotApprovedError{}, InvalidArgument),
 	is(service.ErrNilRequest, InvalidArgument),
+	// A share claim over a connection with no verified client certificate.
+	as(&service.ClientCertRequiredError{}, Unauthenticated),
 }
 
 // errHolderSample is the cause the holder rows' wrapping samples carry, so

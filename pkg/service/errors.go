@@ -1176,3 +1176,18 @@ func (e *InvalidKeyError) Error() string {
 	}
 	return "service: " + e.Field + " names an empty key"
 }
+
+// ClientCertRequiredError is returned when an operation that authenticates
+// the caller by its verified mTLS client certificate - a share claim, or a
+// ceremony step bound to the caller's identity - arrives without one. It is
+// the single such error on every transport, and it classifies as
+// Unauthenticated, so a claim without a certificate answers REST 401, gRPC,
+// Unix, QUIC and MCP Unauthenticated, and the same typed error in process.
+// The operation fails closed: nothing is released to a caller it cannot
+// identify.
+type ClientCertRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *ClientCertRequiredError) Error() string {
+	return "service: a verified client certificate is required"
+}

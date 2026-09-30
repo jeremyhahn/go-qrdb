@@ -182,9 +182,11 @@ Every share-holder, quorum and envelope error is classified once
 | AlreadyExists | 409 | `ALREADY_EXISTS` | holder already submitted to this round; duplicate username or key; a round already in progress |
 | FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed or expired; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA, trust domain or PIN backend |
 | ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges |
+| Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
 
-QUIC and MCP carry the gRPC code name. A claim over a connection without a
-client certificate is a REST 401. An SO-PIN-gated route answers 401 for a
+QUIC and MCP carry the gRPC code name, and the embedded transport returns
+the classified error itself. A claim without a client certificate is
+Unauthenticated on every transport. An SO-PIN-gated route answers 401 for a
 wrong PIN and 412 when no PIN backend is configured — it fails closed.
 
 ## Versioning

@@ -77,14 +77,15 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 
 // contextCertThumbprint derives the caller's certificate thumbprint from the
 // TLS connection state carried on ctx. It fails closed with
-// ClientCertRequiredError when no verified peer certificate is present.
+// service.ClientCertRequiredError when no verified peer certificate is
+// present.
 func contextCertThumbprint(ctx context.Context) (string, error) {
 	if ctx == nil {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	state := auth.TLSStateFromContext(ctx)
 	if state == nil || len(state.PeerCertificates) == 0 {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	return mtls.Thumbprint(state.PeerCertificates[0].Raw), nil
 }

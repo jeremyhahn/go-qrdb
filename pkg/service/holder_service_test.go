@@ -328,3 +328,8 @@ func TestCeremonyService_InitializeWithHolders(t *testing.T) {
 	require.True(t, ok)
 	assert.Same(t, e.core, core)
 }
+
+// TestClientCertRequiredError_Error pins the message every transport carries.
+func TestClientCertRequiredError_Error(t *testing.T) {
+	assert.Equal(t, "service: a verified client certificate is required", (&ClientCertRequiredError{}).Error())
+}

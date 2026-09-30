@@ -116,8 +116,7 @@ func TestEveryTransportAgreesOnEveryCondition(t *testing.T) {
 // through every transport. Each type must declare EXACTLY the class listed
 // here — a refusal that drifted to another class that also happens to agree
 // across transports would otherwise pass — and every transport must render
-// that class consistently. The unexported REST and MCP twins of the
-// client-certificate refusal are pinned in their own packages.
+// that class consistently.
 func TestTransportLocalErrorsAgree(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -130,7 +129,6 @@ func TestTransportLocalErrorsAgree(t *testing.T) {
 		{"rest.KeyTooLargeError", &rest.KeyTooLargeError{Size: 2, Limit: 1}, errclass.TooLarge},
 		{"grpc.ServiceNotConfiguredError", &grpcapi.ServiceNotConfiguredError{Service: "backup"}, errclass.Unimplemented},
 		{"grpc.CeremonyCANotConfiguredError", &grpcapi.CeremonyCANotConfiguredError{}, errclass.Unimplemented},
-		{"grpc.ClientCertRequiredError", &grpcapi.ClientCertRequiredError{}, errclass.Unauthenticated},
 		{"grpc.MetadataUnmarshalError", &grpcapi.MetadataUnmarshalError{Err: http.ErrBodyNotAllowed}, errclass.InvalidArgument},
 		{"grpc.MetadataMarshalError", &grpcapi.MetadataMarshalError{Err: http.ErrBodyNotAllowed}, errclass.Internal},
 		{"grpc.VectorIDParseError", &grpcapi.VectorIDParseError{ID: "x", Err: http.ErrBodyNotAllowed}, errclass.InvalidArgument},
@@ -142,7 +140,6 @@ func TestTransportLocalErrorsAgree(t *testing.T) {
 		{"quic.ServiceNotConfiguredError", &quic.ServiceNotConfiguredError{Service: "backup"}, errclass.Unimplemented},
 		{"quic.CeremonyCANotConfiguredError", &quic.CeremonyCANotConfiguredError{}, errclass.Unimplemented},
 		{"quic.InvalidArgumentError", &quic.InvalidArgumentError{Reason: "x"}, errclass.InvalidArgument},
-		{"quic.ClientCertRequiredError", &quic.ClientCertRequiredError{}, errclass.Unauthenticated},
 		{"quic.UnmarshalError", &quic.UnmarshalError{Err: http.ErrBodyNotAllowed}, errclass.InvalidArgument},
 	} {
 		if got := errclass.Classify(tc.err); got != tc.want {

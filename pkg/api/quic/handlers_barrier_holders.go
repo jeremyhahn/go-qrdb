@@ -37,11 +37,12 @@ import (
 // message means the same thing on every protobuf-carrying transport.
 
 // quicCertThumbprint returns the verified TLS client certificate's
-// thumbprint, or a ClientCertRequiredError when the stream carried none.
+// thumbprint, or a service.ClientCertRequiredError when the stream carried
+// none.
 func quicCertThumbprint(ctx context.Context) (string, error) {
 	tlsState := auth.TLSStateFromContext(ctx)
 	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	return mtls.Thumbprint(tlsState.PeerCertificates[0].Raw), nil
 }

@@ -88,7 +88,6 @@ func TestLocalErrorsDeclareTheirClass(t *testing.T) {
 		{&ServiceNotConfiguredError{Service: "backup"}, wire.StatusUnimplemented},
 		{&CeremonyCANotConfiguredError{}, wire.StatusUnimplemented},
 		{&InvalidArgumentError{Reason: "missing key"}, wire.StatusInvalidArgument},
-		{&ClientCertRequiredError{}, wire.StatusUnauthenticated},
 		{&UnmarshalError{Err: errors.New("proto")}, wire.StatusInvalidArgument},
 		{&MarshalError{Err: errors.New("proto")}, wire.StatusError},
 	} {

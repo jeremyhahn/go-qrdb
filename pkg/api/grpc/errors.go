@@ -148,15 +148,6 @@ func (e *TimestampParseError) Unwrap() error {
 	return e.Err
 }
 
-// ClientCertRequiredError is returned when a share-claim handler requires
-// a verified mTLS client certificate but the connection carries none.
-type ClientCertRequiredError struct{}
-
-// Error returns a human-readable description.
-func (e *ClientCertRequiredError) Error() string {
-	return "grpc: client certificate required for share claim"
-}
-
 // TLSNotConfiguredError is returned by Start when no TLS configuration was
 // supplied via WithTLS. The gRPC transport is TLS-only — the mTLS client
 // certificate is the identity the auth middleware authenticates against — so

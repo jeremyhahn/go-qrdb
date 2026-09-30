@@ -408,9 +408,9 @@ func TestQuicCertThumbprint_MissingTLS(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ClientCertRequiredError")
 	}
-	var ce *ClientCertRequiredError
+	var ce *service.ClientCertRequiredError
 	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+		t.Fatalf("expected *service.ClientCertRequiredError, got %T", err)
 	}
 }
 

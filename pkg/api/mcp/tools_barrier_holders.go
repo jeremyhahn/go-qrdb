@@ -35,21 +35,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// mcpClientCertRequiredError is returned when a share-claim tool requires a
-// verified mTLS client certificate but the connection carries none.
-type mcpClientCertRequiredError struct{}
-
-// Error returns a human-readable description.
-func (e *mcpClientCertRequiredError) Error() string {
-	return "mcp: client certificate required for share claim"
-}
-
 // mcpCertThumbprint returns the verified TLS client certificate's
 // thumbprint; the share claim requires one.
 func mcpCertThumbprint(ctx context.Context, toolName string) (string, error) {
 	tlsState := auth.TLSStateFromContext(ctx)
 	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
-		return "", &ToolError{Tool: toolName, Err: &mcpClientCertRequiredError{}}
+		return "", &ToolError{Tool: toolName, Err: &service.ClientCertRequiredError{}}
 	}
 	return mtls.Thumbprint(tlsState.PeerCertificates[0].Raw), nil
 }

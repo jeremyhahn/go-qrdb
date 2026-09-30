@@ -300,14 +300,14 @@ func (s *qrdbServiceServer) BarrierRecoveryStatus(ctx context.Context, _ *emptyp
 func peerCertThumbprint(ctx context.Context) (string, error) {
 	p, ok := grpcpeer.FromContext(ctx)
 	if !ok {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	if len(tlsInfo.State.PeerCertificates) == 0 {
-		return "", &ClientCertRequiredError{}
+		return "", &service.ClientCertRequiredError{}
 	}
 	return mtls.Thumbprint(tlsInfo.State.PeerCertificates[0].Raw), nil
 }

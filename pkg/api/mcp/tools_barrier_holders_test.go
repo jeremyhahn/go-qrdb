@@ -32,6 +32,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -252,9 +253,11 @@ func TestHolderTools_SystemRefusals(t *testing.T) {
 	// A claim needs the holder's certificate on the connection.
 	for _, name := range []string{"qrdb_barrier_share_claim_begin", "qrdb_barrier_share_claim_complete"} {
 		_, err := holderTool(t, tools, name)(context.Background(), buildCallToolRequest(t, name, map[string]any{"username": "u"}))
-		var certErr *mcpClientCertRequiredError
-		if !errors.As(err, &certErr) || certErr.Error() == "" {
-			t.Fatalf("%s without a certificate = %v", name, err)
+		if err == nil {
+			t.Fatalf("%s without a certificate succeeded", name)
+		}
+		if code := ServiceErrorCode(err); code != wire.CodeUnauthenticated {
+			t.Fatalf("%s without a certificate = %v (code %d), want CodeUnauthenticated", name, err, code)
 		}
 	}
 

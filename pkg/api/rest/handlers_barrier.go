@@ -56,15 +56,6 @@ type barrierSealRequest struct {
 	SOPin string `json:"so_pin,omitempty"`
 }
 
-// restClientCertRequiredError is returned when a share-claim handler
-// requires a verified mTLS client certificate but the connection carries none.
-type restClientCertRequiredError struct{}
-
-// Error returns a human-readable description.
-func (e *restClientCertRequiredError) Error() string {
-	return "rest: client certificate required for share claim"
-}
-
 // ---------------------------------------------------------------------------
 // Barrier handlers
 // ---------------------------------------------------------------------------
