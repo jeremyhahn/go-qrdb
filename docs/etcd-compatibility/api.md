@@ -89,7 +89,8 @@ kube-apiserver \
 
 **Requirements:**
 
-- The database must be created with `engine: kv`, `backend: raft`, and `etcd: enabled`.
+- The database must be `engine: kv` with `etcd: enabled`; enabling etcd on any other engine is refused at create and on update with `database.EtcdEngineUnsupportedError` (`400` / `INVALID_ARGUMENT`). Any backend serves it: the listener resolves the database's engines through the service registry.
+- The node must run in mode `raft`: MVCC, leases and watches are raft-only, and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft"). *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
 - The `sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions).
 - mTLS must be enabled with certificates signed by the same CA as the `kube-apiserver` client certificate.
 - The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. `Compact` is reserved to the system tenant on the shared shard.

@@ -584,3 +584,17 @@ func (e *BarrierEncryptorUnavailableError) Error() string {
 // operations would appear to succeed while allowing two callers to both create
 // the same key, which for a single-use credential means issuing it twice.
 var ErrAtomicWriteUnsupported = errors.New("database: backend does not support atomic conditional writes")
+
+// EtcdEngineUnsupportedError is returned when the etcd wire protocol is
+// enabled on a database whose engine is not kv. etcd serves a key-value
+// keyspace; on a timeseries or vector database it would serve that engine's
+// internal keys as etcd keys.
+type EtcdEngineUnsupportedError struct {
+	Name   string
+	Engine EngineType
+}
+
+// Error returns a human-readable description.
+func (e *EtcdEngineUnsupportedError) Error() string {
+	return "database: etcd is served only by an engine: kv database; " + e.Name + " is engine: " + string(e.Engine)
+}

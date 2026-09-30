@@ -261,6 +261,8 @@ var databaseRules = []rule{
 	as(&database.NotFoundError{}, NotFound),
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.ReservedNameError{}, InvalidArgument),
+	// etcd enabled on a database whose engine is not kv.
+	as(&database.EtcdEngineUnsupportedError{}, InvalidArgument),
 	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
 	// A per-database barrier requested where it would not wrap the store the

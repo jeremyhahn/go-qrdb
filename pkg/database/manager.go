@@ -577,6 +577,9 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 		return &NotFoundError{Name: name}
 	}
 	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if err := etcdEngineError(name, db.Config().Engine, etcd); err != nil {
+		return err
+	}
 	db.UpdateEtcd(etcd)
 
 	return m.rewriteMeta(name, db)

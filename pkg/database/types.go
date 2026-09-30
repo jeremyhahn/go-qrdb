@@ -407,6 +407,15 @@ type EtcdConfig struct {
 	AdvertiseClientURLs []string `yaml:"advertise_client_urls" json:"advertise_client_urls,omitempty"`
 }
 
+// etcdEngineError returns the typed refusal for enabling etcd on a database
+// of engine, or nil. Disabling is always allowed.
+func etcdEngineError(name string, engine EngineType, etcd *EtcdConfig) error {
+	if etcd == nil || !etcd.Enabled || engine == EngineKV {
+		return nil
+	}
+	return &EtcdEngineUnsupportedError{Name: name, Engine: engine}
+}
+
 // Validate checks that the etcd config has required fields when enabled.
 func (e *EtcdConfig) Validate() error {
 	if !e.Enabled {
@@ -523,6 +532,9 @@ func (c *DatabaseConfig) Validate() error {
 
 	if c.Protocol.Etcd != nil {
 		if err := c.Protocol.Etcd.Validate(); err != nil {
+			return err
+		}
+		if err := etcdEngineError(c.Name, c.Engine, c.Protocol.Etcd); err != nil {
 			return err
 		}
 	}

@@ -184,6 +184,8 @@ pkg/api/etcd/
 - **No global etcd cluster view.** `MemberList` and `Status` report the qrdb
   cluster, per database.
 - **No etcd v2 API.**
-- **No support outside `engine: kv` + `backend: raft`.** Configuration
-  validation refuses other combinations, because etcd semantics need MVCC and
-  replication.
+- **No support outside `engine: kv`, or on a standalone node.** Enabling etcd
+  on another engine is refused at create and on update
+  (`database.EtcdEngineUnsupportedError`), and a standalone node's listener
+  refuses to start, because etcd semantics need MVCC, leases and watches,
+  which are raft-only. Any backend serves it. *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*

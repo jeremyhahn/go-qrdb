@@ -74,6 +74,15 @@ are not reconstructed here — their history is in the git log.
   any database of a raft-isolated tenant; one without `databases:create_volume`
   can no longer create a database of a volume-isolated tenant. The built-in
   roles that grant database management hold both.
+- **etcd is served only by an `engine: kv` database on a node in mode
+  `raft`.** Enabling etcd on a timeseries or vector database is refused at
+  create and on update with `database.EtcdEngineUnsupportedError` (`400` /
+  `INVALID_ARGUMENT`); it would have served that engine's internal keys. A
+  standalone node's etcd listener refuses to start
+  (`service.CapabilityUnsupportedError`, "requires mode: raft"): MVCC, leases
+  and watches are raft-only on every other transport, and the listener used to
+  serve them anyway. `backend: raft` is not required -- the documentation
+  said it was, and nothing checked it.
 
 ### Fixed
 

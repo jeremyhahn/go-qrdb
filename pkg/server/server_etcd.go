@@ -70,7 +70,10 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	if owner == "" {
 		owner = tenant.SystemTenantID
 	}
-	reg := s.buildServiceRegistry()
+	// The transport registry, gated like every other transport's: MVCC,
+	// leases and watches are raft-only, so on a standalone node the listener
+	// is refused rather than serving them.
+	reg := s.transportServiceRegistry()
 	if reg == nil {
 		return nil, &etcd.ScopeUnavailableError{Database: dbName, Reason: "no per-database service registry is configured"}
 	}

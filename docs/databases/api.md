@@ -88,7 +88,7 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 409 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
-| etcd enabled on a non-`kv` / non-`raft` database | 400 | `FAILED_PRECONDITION` |
+| etcd enabled on a non-`kv` database | 400 | `INVALID_ARGUMENT` — `database.EtcdEngineUnsupportedError` *(corrected: documented as non-`kv` / non-`raft`, `FAILED_PRECONDITION`)* |
 | Wrong unseal secret | 403 | `PERMISSION_DENIED` — the database stays sealed |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

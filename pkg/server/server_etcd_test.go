@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 var etcdListenCfg = &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"}
@@ -140,6 +141,21 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 		if etcdSrv, err := startEtcd(f.srv, "nosuchdb", etcdListenCfg); err == nil {
 			stopEtcd(etcdSrv)
 			t.Fatal("startEtcd served a database that does not exist")
+		}
+	})
+	// MVCC, leases and watches are raft-only on every transport; a standalone
+	// node's registry refuses them, and so does its etcd listener, which
+	// would otherwise serve them over the ungated registry.
+	t.Run("standalone mode", func(t *testing.T) {
+		f := newEtcdScopeFixture(t, true)
+		f.srv.opts.standaloneMode = true
+		etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+		var unsupported *service.CapabilityUnsupportedError
+		if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), StandaloneModeHint) {
+			if etcdSrv != nil {
+				stopEtcd(etcdSrv)
+			}
+			t.Fatalf("startEtcd in standalone mode = %v, want *service.CapabilityUnsupportedError naming %q", err, StandaloneModeHint)
 		}
 	})
 	t.Run("sealed database", func(t *testing.T) {

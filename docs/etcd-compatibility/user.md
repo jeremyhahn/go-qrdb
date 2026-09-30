@@ -16,11 +16,11 @@ and it works as an etcd v3 endpoint.
 
 ## First run
 
-Create a database with etcd enabled. It must be a `kv` engine on a `raft`
-backend.
+Create a database with etcd enabled. It must be a `kv` engine, on a node
+running in mode `raft`; any backend serves it.
 
 ```bash
-qrdb database create --name k8s --engine kv --backend raft \
+qrdb database create --name k8s --engine kv \
      --etcd --etcd-listen-addr :2379
 ```
 
@@ -69,9 +69,10 @@ tenant if it needs a revision counter of its own.
 
 ## Troubleshooting
 
-**The etcd listener never came up.** Configuration validation refuses the
-combination at startup rather than failing later. Check that the database is
-`engine: kv` on `backend: raft`, and that TLS and auth are both enabled.
+**The etcd listener never came up.** The listener refuses to start rather than
+fail later. Check that the node runs in mode `raft`, that TLS and auth are both
+enabled, and that the database is not sealed. (A database of an engine other
+than `kv` cannot have etcd enabled at all.)
 
 **`etcdctl user` or `etcdctl role` returns "permission denied".** That is
 permanent. Authentication is mTLS and authorization is qrdb RBAC; etcd's own

@@ -131,8 +131,11 @@ path, not the body.
 - **`ScaleDatabase` requires `TargetReplicas >= 1`** and works on
   dedicated-raft databases only. It adds or removes voting replicas in place —
   the database is not recreated.
-- **etcd requires `engine: kv` and `backend: raft`**, plus TLS and auth enabled.
-  Validation rejects any other combination at configuration time.
+- **etcd requires `engine: kv`**, a node in mode `raft`, and TLS and auth
+  enabled. Another engine is refused at create and on update
+  (`database.EtcdEngineUnsupportedError`); a standalone node's listener refuses
+  to start (MVCC, leases and watches are raft-only). Any backend serves it.
+  *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
 - **`DatabaseScoped` returns a new client** with its own immutable scope, so
   scopes never leak between clients; scoping to `system` or `""` yields the
   receiver. A caller that names a database is never handed the default one: a transport
@@ -247,7 +250,7 @@ Deliberately finer than one grant per verb:
 | Barrier enabled where the data is served from another store (raft backend, volume/raft-isolated tenant) | `database.BarrierOffDataPathError` | **yes** |
 | `--cluster-mode` / `--replicas` on a non-raft backend | invalid-argument | **yes** |
 | `TargetReplicas < 1` | invalid-argument | **yes** |
-| etcd enabled on a non-`kv`/non-`raft` database | rejected at configuration time | **yes** |
+| etcd enabled on a non-`kv` database | `database.EtcdEngineUnsupportedError` at create and on update *(corrected: documented as non-`kv`/non-`raft`, "at configuration time"; nothing checked it, and any backend serves etcd)* | **yes** |
 | Unseal with a wrong secret | refused; the database stays sealed | **yes** |
 | Operating on a sealed database | `service.BarrierSealedError` naming the database, on every engine | **yes** |
 | The store holding a database's keys is unresolvable | `service.ReclaimStoreUnavailableError` (503 / `UNAVAILABLE`, whatever the resolver reported); the drop fails and nothing is removed | **yes** |

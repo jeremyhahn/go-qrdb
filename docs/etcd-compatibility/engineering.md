@@ -89,7 +89,8 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Built without `qrdb_etcd` | listener never starts | **yes** |
-| `engine` is not `kv`, or `backend` is not `raft` | configuration rejected at startup | **yes** |
+| `engine` is not `kv` | create or etcd update refused: `database.EtcdEngineUnsupportedError` (`INVALID_ARGUMENT`) | **yes** |
+| Node in mode `standalone` | listener refused: `service.CapabilityUnsupportedError` ("requires mode: raft") | **yes** |
 | TLS or the node's authentication not configured | listener refused: `etcd.AuthRequiredError` | **yes** |
 | No database catalog or service registry to confine the listener | listener refused: `etcd.ScopeUnavailableError` | **yes** |
 | Client presents no certificate | `UNAUTHENTICATED` on every RPC | **yes** |
