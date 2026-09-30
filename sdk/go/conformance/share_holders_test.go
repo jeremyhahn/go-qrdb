@@ -26,7 +26,6 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"slices"
 	"testing"
 	"time"
@@ -37,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
@@ -306,31 +306,9 @@ func newHolderE2E(t *testing.T, tk transportKind) *holderE2E {
 	t.Helper()
 	e := &holderE2E{t: t, tk: tk, holders: map[string]*e2eHolder{}}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "Share Holder Conformance CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if e.ca, err = ceremony.NewLocalCA(caPEM, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
-		t.Fatal(err)
-	}
+	var caPEM []byte
+	e.ca, caPEM = ceremonytest.NewCA(t, "Share Holder Conformance CA")
+	var err error
 	e.pool = x509.NewCertPool()
 	e.pool.AppendCertsFromPEM(caPEM)
 

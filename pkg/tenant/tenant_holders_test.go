@@ -24,13 +24,12 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
-	"math/big"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -59,27 +58,7 @@ func newTenantHolder(t *testing.T, name string) *tenantHolder {
 // newTenantHolderCA builds a LocalCA over a fresh self-signed CA.
 func newTenantHolderCA(t *testing.T) *ceremony.LocalCA {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Tenant Holder CA"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ca, err := ceremony.NewLocalCA(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	ca, _ := ceremonytest.NewCA(t, "Tenant Holder CA")
 	return ca
 }
 
