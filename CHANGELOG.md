@@ -253,6 +253,13 @@ are not reconstructed here — their history is in the git log.
   `auth.CanonicalAuthMethod` (no vocabulary check), so no existing account is
   locked out. `auth.IsBuiltinAuthMethod`, `auth.BuiltinAuthMethods` and
   `auth.CanonicalAuthMethod` are re-exported by the SDK.
+- **`secure.StdinProvider` reads a seekable stream in bulk** (#440). When
+  standard input can seek (redirected from a file), the passphrase line is read
+  straight into the mlocked buffer in one or two `read(2)` calls instead of one
+  per byte, and the bytes read past the newline are sought back, so the rest of
+  the stream is still there for its next reader. A pipe or terminal cannot give
+  bytes back, so it is still read one byte per call rather than over-read. A
+  seek-back the stream refuses fails the read with `*ProviderError`.
 
 ### Fixed
 

@@ -378,6 +378,24 @@ dropping them before the directory is gone would orphan it.
 See [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for
 where it sits in the tenant teardown order.
 
+## Reading a passphrase from standard input
+
+`secure.StdinProvider` (re-exported from `sdk/go/secure`) reads one line
+straight into an mlocked buffer, never through a `bufio.Reader`: that would
+stage the passphrase in heap memory nothing wipes, and it would consume bytes
+past the newline that belong to the stream's next reader. The rest of the
+stream is always left where it was.
+
+The number of `read(2)` calls depends on the stream. When standard input is a
+regular file — redirected from one — the line is read in bulk and the bytes
+past the newline are sought back, so a line costs one or two reads; the offset
+the seek reports must be exactly one byte past the newline, or the read fails.
+Anything else — a pipe, a terminal or another character device, even one that
+accepts a seek — is read one byte per call, because it cannot give bytes back
+and any larger read may take bytes past the newline.
+Lines longer than `MaxStdinPassphraseLen` (1024 bytes) are refused, not
+truncated, on either path.
+
 ## Secure-memory rules, and what enforces them
 
 Key material in this repository is held through `pkg/secure`, a facade over a
