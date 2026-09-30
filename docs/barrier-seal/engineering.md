@@ -459,13 +459,73 @@ not yet enforce the `[]byte` half — converting the remaining `string` fields
 is a wire-format break, since JSON renders `[]byte` as base64 — and that gap
 is tracked rather than assumed away.
 
+### Lifetimes: where a copy of protected bytes ends
+
+The four rules are about declarations and access. None of them asks what
+happens to bytes once they are copied out of protected memory, and that is how
+an unrecoverable plaintext copy once landed with every rule green: a
+passphrase moved into a `secure.Buffer`, read back with
+`append([]byte(nil), b...)` inside `WithBytes`, and never wiped. A second
+analyzer in the same tool, `securecopy`, follows every such copy.
+
+**A copy-out** is `append(x, view...)`, `copy(dst, view)` into a
+non-protected destination, `bytes.Clone`/`slices.Clone` of a view,
+`string(view)`, or a call to a function known to return one. A *view* is the
+`[]byte` a literal `WithBytes` callback receives, a `Buffer.Bytes` result, or
+a re-slice of either.
+
+**The obligation ends** when the variable holding the copy is:
+
+- **wiped or consumed** after the copy: passed to `secure.Wipe`, the builtin
+  `clear`, or any function that hands its parameter on to one. go-enclave's
+  `Wipe` and `NewSealed` are the roots, and consumers are inferred from them
+  across packages, so `secure.NewBufferFromBytes` and `seal.NewCredentials`
+  count with no annotation. A contract inference cannot see (an interface
+  method, for example) is declared with `//secure:consumes` in its doc
+  comment.
+- **returned**, which makes the function a copy-returner and moves the
+  obligation to every caller, across packages.
+
+Anything else is reported. `defer secure.Wipe(x)` written *before* the copy
+is reported too: a deferred call evaluates `x` when the defer statement runs,
+so it wipes whatever `x` held then. `defer func() { secure.Wipe(x) }()` reads
+`x` at exit and counts wherever it is written. A copy that has to outlive every
+wipe carries `//secure:unwiped <reason>` trailing it, or standing alone on the
+line above it, in the same per-site form as rule 4.
+
+**What it cannot see**, which stays a review obligation:
+
+- a wipe that only some paths reach (the analysis is not path-sensitive; a
+  `defer` right after the copy removes the question);
+- a wipe through a second variable (reported, a false positive in the safe
+  direction), and an `append` that reallocates the copy after it was made
+  (not seen);
+- what a callee does with a view it is handed. A view passed to a function
+  is not a copy-out, and inside that function the parameter is an ordinary
+  `[]byte`;
+- copies returned through an interface method or a function value. Facts
+  attach to concrete functions, so the obligation is not traced past dynamic
+  dispatch. That is where credential retrieval leaves the analysis: the
+  service interface the transports call;
+- callbacks passed to `WithBytes` by variable rather than as a literal;
+- copies the compiler or runtime makes, and plaintext that never lived in
+  protected memory (a decoded request field, for example).
+
+Measured when the analyzer landed: 24 copy-outs across both modules. 19 are
+returned to a caller that owns them, 3 are wiped or consumed, and 2 carry
+`//secure:unwiped`: the per-tenant credential retrieval returned through a
+function value to the resolver that wipes it, and the officer share claim
+returned to its transport response.
+
 ### The gate is checked against a known instance
 
 `make test-secure-analyzer` plants a raw `memguard` import, a raw holder
-field and a bare `secure.Buffer.Bytes` read, requires each to be reported, and requires `go vet` to exit nonzero —
+field, a bare `secure.Buffer.Bytes` read, an unwiped copy-out and a copy-out
+whose deferred wipe precedes it, requires each to be reported, and requires `go vet` to exit nonzero —
 a diagnostic that does not fail the command does not block a merge. It also
-requires the four scoped populations, a directive-justified read and a read in
-a test file to stay silent through the real binary.
+requires the four scoped populations, a directive-justified read, a read in a
+test file and a correctly wiped copy-out to stay silent through the real
+binary.
 A clean sweep and a neutered analyzer print the same thing; only the red run
 distinguishes them.
 

@@ -33,6 +33,13 @@ const (
 
 // CredentialRetrieveFunc is a function that retrieves a named credential's
 // plaintext value. It is the primitive backing type for CredentialResolver.
+//
+// Ownership: the returned slice is a fresh plaintext copy that belongs to the
+// CALLER, who must secure.Wipe it once done — on every path, including an
+// error from whatever it does next. An implementation must return a copy it
+// retains no reference to, never an alias of storage it keeps.
+// CredentialResolver.Resolve honours this: it seals the value and wipes the
+// slice whether or not sealing succeeded.
 type CredentialRetrieveFunc func(ctx context.Context, name string) ([]byte, error)
 
 // CredentialRetriever is the minimal interface required to retrieve a named
@@ -149,6 +156,11 @@ func NewTenantScopedCredentialRetrieve(
 				if err != nil {
 					return nil, err
 				}
+				// The copy goes back to this CredentialRetrieveFunc's caller,
+				// which the analysis cannot follow through a function value:
+				// CredentialResolver.Resolve seals it and wipes it.
+				//
+				//secure:unwiped returned through CredentialRetrieveFunc; CredentialResolver.Resolve wipes it after sealing
 				return svc.RetrieveCredential(ctx, name)
 			}
 		}

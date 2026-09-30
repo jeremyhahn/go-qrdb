@@ -111,6 +111,19 @@ are not reconstructed here — their history is in the git log.
   unseal, recovery, root-token and custodian paths that the share-holder
   rewrite replaces. The `SecretValue.WithBytes` and nested-enclave reads the
   issue listed were already converted by the go-enclave adoption.
+- **`securecopy`: the secure analyzer now checks lifetimes, not only
+  declarations** (#459). A copy of protected bytes into ordinary memory
+  (`append`, `copy`, `bytes.Clone`, `string(...)`, or a call that returns one)
+  must be wiped or consumed after it is made, or returned to a caller that
+  then owns it. Consumers and copy-returners are inferred across packages from
+  go-enclave's `Wipe`/`NewSealed`; `//secure:consumes` declares a contract
+  inference cannot see, and `//secure:unwiped <reason>` justifies a copy at
+  its site. A `defer secure.Wipe(x)` written before the copy is reported, since
+  it wipes what `x` held when the defer ran. It runs in the same
+  `make secure-analyzer` sweep, and the self-test plants the unwiped copy-out
+  that motivated it. 24 copy-outs were measured; 2 carry `//secure:unwiped`.
+  What it cannot see (path sensitivity, aliases, interface dispatch, views
+  handed to callees) is listed in `docs/barrier-seal/engineering.md`.
 
 ### Changed — BREAKING
 

@@ -34,6 +34,12 @@
 //     line above names why the read cannot hold a borrow (go-qrdb#428). The
 //     fix is `Buffer.WithBytes` or `secure.CopyOut`; see unborrowed.go.
 //
+// Those are DECLARATION and ACCESS rules. The same vet tool also runs a second
+// analyzer, CopyOutAnalyzer ("securecopy", copyout.go), about LIFETIMES: a
+// copy of protected bytes into ordinary memory must be wiped, returned to a
+// caller that then owns it, or handed to a function that consumes it
+// (go-qrdb#459).
+//
 // # Where it runs
 //
 // `make secure-analyzer` builds the singlechecker under

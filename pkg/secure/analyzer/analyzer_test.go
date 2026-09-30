@@ -64,6 +64,16 @@ func TestAnalyzer_UnborrowedBytes(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), Analyzer, "unborrowed_bytes")
 }
 
+// TestCopyOutAnalyzer verifies securecopy (go-qrdb#459) end to end: every
+// copy-out shape it names is reported when nothing wipes, returns or consumes
+// it; every discharge it names silences it; a wipe or an argument-evaluating
+// defer written BEFORE the copy does not; and the consumes/returnsCopy facts
+// it infers are the ones expected, including across a package boundary.
+func TestCopyOutAnalyzer(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), CopyOutAnalyzer,
+		"copyout_cases", "github.com/jeremyhahn/go-qrdb/pkg/secure")
+}
+
 // TestParseUnborrowedDirective exercises every branch of the directive parser.
 func TestParseUnborrowedDirective(t *testing.T) {
 	cases := map[string]directiveState{

@@ -84,6 +84,9 @@ func otherBytes(b *bytes.Buffer) []byte {
 	return b.Bytes()
 }
 
+// A package-level function that happens to be called Bytes is not the method.
+func packageFunc() []byte { return secure.Bytes() }
+
 // A field named Bytes is not the method.
 type holder struct{ Bytes []byte }
 

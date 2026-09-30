@@ -152,6 +152,48 @@ func justifiedRead(buf *secure.Buffer, s sink) {
 }
 EOF
 
+# securecopy (go-qrdb#459): the #429 instance itself -- a copy taken inside a
+# borrow and never wiped -- beside the same copy wiped by a deferred
+# secure.Wipe written after it, which must stay silent. The early-defer form
+# wipes the nil slice the variable held when the defer ran and must be
+# reported: it is the shape that looks right and is not.
+cat > "$PROBE/copyout.go" <<'EOF'
+package probe
+
+import "github.com/jeremyhahn/go-qrdb/pkg/secure"
+
+func keep([]byte) {}
+
+func unwipedCopyOut(buf *secure.Buffer) {
+	var secret []byte
+	_ = buf.WithBytes(func(b []byte) error {
+		secret = append([]byte(nil), b...)
+		return nil
+	})
+	keep(secret)
+}
+
+func wipedCopyOut(buf *secure.Buffer) {
+	var secret []byte
+	_ = buf.WithBytes(func(b []byte) error {
+		secret = append([]byte(nil), b...)
+		return nil
+	})
+	defer secure.Wipe(secret)
+	keep(secret)
+}
+
+func earlyDeferCopyOut(buf *secure.Buffer) {
+	var secret []byte
+	defer secure.Wipe(secret)
+	_ = buf.WithBytes(func(b []byte) error {
+		secret = append([]byte(nil), b...)
+		return nil
+	})
+	keep(secret)
+}
+EOF
+
 cat > "$PROBE/unborrowed_test.go" <<'EOF'
 package probe
 
@@ -231,6 +273,13 @@ expect_hit 'unborrowed.go:8:.*secure.Buffer.Bytes holds no borrow across the rea
 	'rule 4: a bare secure.Buffer.Bytes read in production code'
 expect_silent 'unborrowed.go:13:' 'rule 4: a read justified by //secure:unborrowed'
 expect_silent 'unborrowed_test.go' 'rule 4: a read in a _test.go file'
+
+# --- securecopy: the unwiped and early-defer copies, and only those. --------
+expect_hit 'copyout.go:10:.*copies protected bytes into ordinary memory that is never wiped' \
+	'securecopy: a copy taken inside a borrow and never wiped (the #429 instance)'
+expect_hit 'copyout.go:30:.*copies protected bytes into ordinary memory that is never wiped' \
+	'securecopy: a deferred wipe written before the copy'
+expect_silent 'copyout.go:19:' 'securecopy: a copy wiped by a deferred secure.Wipe after it'
 
 if [ "$fails" -ne 0 ]; then
 	printf '\nsecure-analyzer selftest: %d assertion(s) failed\n' "$fails" >&2
