@@ -191,7 +191,7 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 
   The symlink predicate is not redundant with the canonical one: `filepath.Clean`
   reasons about a path lexically while the syscall follows it physically, so a
-  perfectly canonical `/mnt/disk-a/vol` can still be a symlink elsewhere. The
+  perfectly canonical `/srv/volume-a/vol` can still be a symlink elsewhere. The
   overlap predicate is separator-aware — `/data/foo2` is **not** inside
   `/data/foo` — because two volumes where one contains the other are one volume
   counted twice, and a placement strategy would report free space that does not

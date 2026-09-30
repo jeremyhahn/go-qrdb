@@ -343,6 +343,18 @@ jobs:
       - name: Test the publication-bound guard
         run: make test-publication-bound
 
+      # Its sibling over the WHOLE tracked tree (#565): every tracked file
+      # publishes -- the module zip is the tracked tree, and the public mirror
+      # is byte-identical to the release tag -- so a lab address, a lab host, a
+      # path under the owner's home or tracked agent state is scrubbed at the
+      # source, before tagging. Same checkout caveat as the step above: a PR
+      # run covers the branch head, and the push to main covers the merge.
+      - name: The tracked tree is publicly releasable
+        run: make check-public-releasable
+
+      - name: Test the public-releasability guard
+        run: make test-public-releasable
+
       # go-qrdb#271. The committed test/tools/ifacesweep/findings/*.tsv are a
       # reference measurement whose entire value is being stable and diffable
       # across checkouts -- which an absolute, workstation-specific path in

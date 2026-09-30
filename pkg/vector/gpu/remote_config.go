@@ -23,7 +23,7 @@ type RemoteGPUConfig struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
 
 	// Endpoint is the host:port address of the remote VectorIndexService,
-	// e.g. "198.51.100.91:9090".
+	// e.g. "gpu-host.example.com:9090".
 	Endpoint string `json:"endpoint" yaml:"endpoint"`
 
 	// TLSCert is the path to the PEM-encoded client certificate used for mTLS.

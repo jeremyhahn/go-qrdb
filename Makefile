@@ -226,15 +226,23 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # ---------------------------------------------------------------------------
 # Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
-# The forge's address, in ONE place. It moved once already (2026-09-07,
-# 198.51.100.91 -> 198.51.100.50) and broke every devcontainer target that
-# resolves a first-party module, because the same URL was written out three
-# times across this file and .devcontainer/docker-compose.yml. Compose reads the
-# same name with a ":-" default, and that default is load-bearing -- #322
-# measured that an interpolated compose value with nothing behind it expands to
-# the EMPTY STRING and overrides the fallback it was meant to have. Override the
-# variable; do not edit the literal.
-GITEA_HOST ?= git.example.internal
+# The forge's address, GITEA_HOST (host:port), in ONE place -- and that place
+# is NOT a tracked file. Everything tracked publishes, so the internal forge's
+# address lives in the gitignored .devcontainer/.env beside the token that
+# already lives there (.devcontainer/.env.example documents both), or in the
+# environment, which wins over the file. `make check-public-releasable` rejects
+# the literal anywhere in the tree.
+#
+# It is one name for every consumer: stage-gomodauth below sources the .env
+# file, and docker compose reads the same file for .devcontainer/docker-compose.yml.
+# It used to be a Makefile default, and before that the same URL was written
+# out three times; the forge moved once (2026-09-07) and broke every
+# devcontainer target that resolves a first-party module.
+#
+# There is deliberately no default. A .env that carries a token and no host is
+# an error that names the variable, not a silent fall-through to the public
+# proxy, because that combination is a half-configured forge rather than a
+# machine without one.
 
 # go.mod pins first-party modules published only to the internal Gitea, and a
 # docker build inherits nothing from its caller's environment. The four
@@ -262,7 +270,7 @@ GITEA_HOST ?= git.example.internal
 # MEASURED before adopting, because the issue made it conditional on the
 # BuildKit floor (option 2 "if the floor allows it, else 1"):
 #   workstation      docker 29.1.3, compose 2.40.3
-#   gpu-host (runner) docker 29.1.3, buildx 0.30.1
+#   CI runner        docker 29.1.3, buildx 0.30.1
 # and end to end on both shapes: set -> secret mounted; UNSET and EMPTY ->
 # build succeeds with no secret, which is the fall-through #302 requires so a
 # GitHub build resolves from the public proxy.
@@ -298,8 +306,11 @@ if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
   export GOMODAUTH; \
   echo "==> module credentials: from the job environment"; \
 elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
+  gitea_host_env="$${GITEA_HOST:-}"; \
   . $(CURDIR)/.devcontainer/.env; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$(GITEA_HOST)/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
+  GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
+  [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
+  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
@@ -1548,7 +1559,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1713,6 +1724,20 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# The WHOLE tracked tree names no fleet value: no lab address, no lab host, no
+# path under the owner's home, and no tracked per-machine agent state (#565).
+# check-publication-bound's sibling, deliberately narrower in WHAT it matches
+# and wider in WHERE it looks -- the header of scripts/check-public-releasable.sh
+# says why each is so. ~2s over the whole index.
+.PHONY: check-public-releasable
+check-public-releasable:
+	@./scripts/check-public-releasable.sh
+
+# Its rejecting and fail-closed branches, against throwaway repositories.
+.PHONY: test-public-releasable
+test-public-releasable:
+	@./scripts/check-public-releasable_test.sh
 
 # Every `uses:` in every workflow resolves to a 40-hex commit (#367).
 #

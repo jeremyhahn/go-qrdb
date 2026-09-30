@@ -113,10 +113,10 @@ coverage "github.com/jeremyhahn/go-qrdb/pkg/legit"
 expect accept "legitimate import path" "$COVERAGE"
 
 echo "== coverage-baseline.txt: every absolute-path shape seen so far must REJECT =="
-coverage "/home/jhahn/sources/go-qrdb/pkg/x"
+coverage "/home/dev/sources/go-qrdb/pkg/x"
 expect reject "POSIX home-directory path" "$COVERAGE"
 
-coverage "/Users/jhahn/sources/go-qrdb/pkg/x"
+coverage "/Users/dev/sources/go-qrdb/pkg/x"
 expect reject "macOS /Users path" "$COVERAGE"
 
 coverage "/workspace/go-qrdb/pkg/x"
@@ -149,7 +149,7 @@ expect reject "Windows extended-length drive path" "$COVERAGE"
 coverage '\\?\UNC\server\share\go-qrdb\pkg\x'
 expect reject "Windows extended-length UNC path" "$COVERAGE"
 
-coverage "path=/home/jhahn/sources/go-qrdb"
+coverage "path=/home/dev/sources/go-qrdb"
 expect reject "an absolute path is still rejected wrapped in key=value" "$COVERAGE"
 
 echo "== coverage-baseline.txt: a URI in the import-path field must REJECT too -- it is not an import path either =="
@@ -220,7 +220,7 @@ deadcode "sdk/go" "github.com/jeremyhahn/go-qrdb/pkg/legit.Fn"
 expect accept "a nested module (sdk/go)" "$DEADCODE"
 
 echo "== baseline.txt (deadcode): an absolute path or traversal in either column must REJECT =="
-deadcode "/home/jhahn/x" "github.com/jeremyhahn/go-qrdb/pkg/legit.Fn"
+deadcode "/home/dev/x" "github.com/jeremyhahn/go-qrdb/pkg/legit.Fn"
 expect reject "absolute path in the module column" "$DEADCODE"
 
 deadcode "." '\\server\share\x.Fn'
@@ -270,7 +270,7 @@ ifacesweep "github.com/jeremyhahn/go-qrdb/pkg/legit" "cmd/qrdbd/start.go"
 expect accept "legitimate package and file" "$TSV"
 
 echo "== *.tsv (ifacesweep): an absolute, foreign, or traversing value in either column must REJECT =="
-ifacesweep "github.com/jeremyhahn/go-qrdb/pkg/legit" "/home/jhahn/sources/go-qrdb/cmd/qrdbd/start.go"
+ifacesweep "github.com/jeremyhahn/go-qrdb/pkg/legit" "/home/dev/sources/go-qrdb/cmd/qrdbd/start.go"
 expect reject "absolute path in the file column" "$TSV"
 
 ifacesweep "github.com/jeremyhahn/go-qrdb/pkg/legit" '\\?\UNC\server\share\go-qrdb\cmd\qrdbd\start.go'
@@ -324,7 +324,7 @@ lockstep "sdk/go/gorm/conformance"
 expect accept "a nested module, with a comment-line URI ignored" "$LOCKSTEP"
 
 echo "== lockstep-baseline: an absolute path or traversal in the module column must REJECT =="
-lockstep "/home/jhahn/go-qrdb"
+lockstep "/home/dev/go-qrdb"
 expect reject "absolute path as the module" "$LOCKSTEP"
 
 lockstep '\\?\C:\Users\dev\go-qrdb'
@@ -413,7 +413,7 @@ echo "== multiple files given together: one bad file must fail the whole run =="
 mkdir -p "$work/clean-dir/test" "$work/bad-dir/test"
 coverage "github.com/jeremyhahn/go-qrdb/pkg/legit"
 cp "$COVERAGE" "$work/clean-dir/test/coverage-baseline.txt"
-coverage "/home/jhahn/sources/go-qrdb/pkg/x"
+coverage "/home/dev/sources/go-qrdb/pkg/x"
 cp "$COVERAGE" "$work/bad-dir/test/coverage-baseline.txt"
 expect reject "clean + absolute together" "$work/clean-dir/test/coverage-baseline.txt" "$work/bad-dir/test/coverage-baseline.txt"
 

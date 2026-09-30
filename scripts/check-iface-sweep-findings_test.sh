@@ -86,7 +86,7 @@ write clean.tsv 150 "cmd/qrdbd/start.go"
 expect accept "150 clean repo-relative rows" "$work/clean.tsv"
 
 echo "== THE DEFECT THIS SCRIPT EXISTS FOR: an absolute path row. Must REJECT =="
-write absolute.tsv 150 "/home/jhahn/sources/.wt/go-qrdb-271-iface-sweep/cmd/qrdbd/start.go"
+write absolute.tsv 150 "/home/dev/sources/.wt/go-qrdb-271-iface-sweep/cmd/qrdbd/start.go"
 expect reject "absolute POSIX path in the file column" "$work/absolute.tsv"
 
 echo "== a Windows-style drive-absolute path. Must REJECT =="

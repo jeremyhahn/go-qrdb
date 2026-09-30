@@ -38,7 +38,7 @@ import (
 // convert without introducing a circular import.
 type Config struct {
 	// Endpoint is the host:port of the remote VectorIndexService,
-	// e.g. "198.51.100.91:9090".
+	// e.g. "gpu-host.example.com:9090".
 	Endpoint string
 
 	// TLSCert is the path to the PEM-encoded client certificate for mTLS.

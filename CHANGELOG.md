@@ -124,6 +124,16 @@ are not reconstructed here — their history is in the git log.
   that motivated it. 24 copy-outs were measured; 2 carry `//secure:unwiped`.
   What it cannot see (path sensitivity, aliases, interface dispatch, views
   handed to callees) is listed in `docs/barrier-seal/engineering.md`.
+- **`make check-public-releasable`, a whole-tree publication gate, runs in the
+  Lint job.** Every tracked file publishes, so the gate rejects any tracked
+  file that names the private development fleet: an address on one of its
+  subnets, one of its host names, or a path under the owner's home directory
+  or the lab mount. It also rejects tracked per-machine agent state
+  (`.serena/`, `.claude/`, any `.env`). It reads every path in the index,
+  including binary files and symlink values, and it fails closed if git fails
+  or a file goes unread. A line whose meaning *is* the value can carry an
+  inline `public-release-ok: <reason>` waiver. `make test-public-releasable`
+  covers the gate's rejecting paths.
 
 ### Changed — BREAKING
 
@@ -285,6 +295,18 @@ are not reconstructed here — their history is in the git log.
   the stream is still there for its next reader. A pipe or terminal cannot give
   bytes back, so it is still read one byte per call rather than over-read. A
   seek-back the stream refuses fails the read with `*ProviderError`.
+- **The module forge's address is no longer a Makefile default.** Set
+  `GITEA_HOST` in the gitignored `.devcontainer/.env` (documented in the new
+  `.devcontainer/.env.example`) or in the environment. A `.env` that has a
+  token but no host now fails with an error naming the variable. The devcontainer
+  compose services resolve modules from the public proxy when `GITEA_HOST` is
+  unset.
+
+### Removed
+
+- The tracked `.serena/` project state, the `.claude/skills` directory and the
+  `tmp-probe` developer diagnostic. The first two were already in
+  `.gitignore`, and the new gate keeps them out.
 
 ### Fixed
 
