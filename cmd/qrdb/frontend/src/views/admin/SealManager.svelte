@@ -22,6 +22,7 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
+  import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
 
   let { client, onReconfigure }: {
     client: Client;
@@ -84,11 +85,19 @@
 
   // Re-initialization state
   let showReinit: boolean = $state(false);
-  let reinitMode: SealMode = $state("passphrase");
+  let reinitMode = $state<SealMode>("passphrase");
   let reinitPassphrase: string = $state("");
   let reinitPassphraseConfirm: string = $state("");
   let reinitShamirThreshold: number = $state(3);
   let reinitShamirShares: number = $state(5);
+  /** Unseal holders enrolled for a Shamir configuration, bound from the forms. */
+  let reinitHoldersRegistered: number = $state(0);
+  /**
+   * Whether the configuration can be applied: Shamir initialization splits
+   * the unseal key to exactly the enrolled holders, so every one must be
+   * enrolled first.
+   */
+  let reinitReady = $derived(reinitMode !== "shamir" || reinitHoldersRegistered === reinitShamirShares);
   let reinitLoading: boolean = $state(false);
   let reinitConfirm: boolean = $state(false);
 
@@ -748,6 +757,13 @@
         {reinitShamirThreshold} of {reinitShamirShares} shares will be
         required to unseal.
       </p>
+      <div class="border-t border-base-300 pt-3" data-testid="shamir-holder-enrolment">
+        <p class="text-base-content/70 mb-3 text-sm">
+          Enrol the {reinitShamirShares} share holders the unseal key is split to. Each
+          claims its envelope afterwards from the qrdb CLI or the desktop app.
+        </p>
+        <HolderEnrolmentForms {client} count={reinitShamirShares} bind:registeredCount={reinitHoldersRegistered} />
+      </div>
     {/if}
   {/snippet}
 
@@ -799,7 +815,7 @@
                 class="btn btn-primary btn-sm"
                 data-testid="configure-encryption-submit"
                 onclick={() => void handleReinitialize()}
-                disabled={reinitLoading}
+                disabled={reinitLoading || !reinitReady}
               >
                 {#if reinitLoading}
                   <span class="loading loading-spinner loading-xs"></span>
@@ -1019,7 +1035,7 @@
                 <button
                   class="btn btn-error btn-sm"
                   onclick={() => void handleReinitialize()}
-                  disabled={reinitLoading}
+                  disabled={reinitLoading || !reinitReady}
                 >
                   {#if reinitLoading}
                     <span class="loading loading-spinner loading-xs"></span>
