@@ -2853,9 +2853,9 @@ func shutdownNode(node io.Closer) error {
 // store.WithEncryptor, which wraps every Pebble file the state machine creates
 // (sstables, WAL, manifest, snapshots) in the barrier-driven encfs. Every other
 // type resolves from the registry over the data dir and --sm-storage, carrying
-// the same encryptor, so a storage-generic state machine that would persist
-// plaintext while the seal barrier is enabled is refused here, at start
-// (SealedSMStoragePlaintextError), rather than opened.
+// the same encryptor: pebble storage is opened on that encfs too, and storage
+// that cannot be encrypted (file) is refused here, at start, while the seal
+// barrier is enabled (SealedSMStoragePlaintextError), rather than opened.
 func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
 	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
 	switch f.smType {

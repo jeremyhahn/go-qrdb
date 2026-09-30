@@ -193,6 +193,8 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Objstore configured as a hot apply path | validation error | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
+| Seal barrier enabled with `sm_type: disk`/`fast` over `file` `sm_storage` | refused at start (`statemachine.SMStorageUnencryptedError`; `qrdbd`: `SealedSMStoragePlaintextError`; SDK: `ConfigError` on `raft.sm_storage`), nothing opened | **yes** |
+| Seal barrier enabled with `sm_type: disk`/`fast` over `pebble` `sm_storage` | opened on the barrier's encfs (`atrest.Encryptor.FS`): every sstable, WAL and manifest encrypted | — |
 | `VolumePools()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 | Pool `Pick` with an unknown pool name | not-found | yes |
 | Opcode an engine has no handler for | refused in the result payload; the apply loop keeps advancing | **yes** |

@@ -144,20 +144,21 @@ type StorageConfig struct {
 
 	// Encryptor is the node's at-rest encryptor. When it is enabled — the
 	// seal barrier is on — every byte a replica's storage persists must be
-	// encrypted, and a storage that would persist plaintext is refused at
-	// resolution (SMStorageUnencryptedError) rather than opened. nil means
-	// the barrier is off.
+	// encrypted: pebble storage is opened on the encryptor's barrier-driven
+	// encfs, exactly as the pebble and mvcc state machines are, and a storage
+	// that cannot be encrypted is refused at resolution
+	// (SMStorageUnencryptedError) rather than opened. nil means the barrier
+	// is off.
 	Encryptor *atrest.Encryptor
 }
 
 // persistsPlaintext reports whether a replica's storage under this config
-// would write unencrypted bytes to disk while the seal barrier is on.
-// "memory" persists nothing.
+// would write unencrypted bytes to disk while the seal barrier is on. Pebble
+// storage is encrypted through the encryptor's FS and "memory" persists
+// nothing; "file" storage writes through the OS directly and has no
+// encrypting seam.
 func (c StorageConfig) persistsPlaintext() bool {
-	if !c.Encryptor.Enabled() {
-		return false
-	}
-	return c.Kind != "memory"
+	return c.Encryptor.Enabled() && c.Kind == "file"
 }
 
 // storageKinds are the raft.sm_storage values a storage-generic state
@@ -381,7 +382,7 @@ func (e *SMStorageNotApplicableError) Error() string {
 
 // SMStorageUnencryptedError is returned when the seal barrier is enabled and
 // the storage a storage-generic state machine would compose cannot be
-// encrypted at rest: the replica's data would sit on disk in plaintext beside
+// encrypted at rest — "file" storage, which writes through the OS directly: the replica's data would sit on disk in plaintext beside
 // a barrier the operator enabled to prevent exactly that.
 type SMStorageUnencryptedError struct {
 	SMType string
@@ -395,7 +396,7 @@ func (e *SMStorageUnencryptedError) Error() string {
 		kind = "pebble"
 	}
 	return "statemachine: sm_type " + strconv.Quote(e.SMType) + " over sm_storage " + strconv.Quote(kind) +
-		" would store plaintext while the seal barrier is enabled; use sm_storage memory or a state machine that encrypts at rest (pebble, mvcc)"
+		" would store plaintext while the seal barrier is enabled; use sm_storage pebble (encrypted at rest) or memory"
 }
 
 // UnknownSMTypeError is returned when a state machine type name cannot
@@ -569,6 +570,14 @@ func newStorageFactory(sc StorageConfig) StorageFactory {
 			cfg = pebblestore.TestConfig(dir)
 		} else {
 			cfg = pebblestore.DefaultConfig(dir)
+		}
+		// Under the seal barrier every file Pebble writes — sstables, WAL,
+		// manifest — goes through the barrier-driven encfs, as it does for
+		// the pebble and mvcc state machines (store.WithEncryptor). The
+		// factory runs when the replica starts, after the barrier is
+		// unsealed.
+		if sc.Encryptor.Enabled() {
+			cfg.FS = sc.Encryptor.FS()
 		}
 		s, err := pebblestore.New(cfg)
 		if err != nil {

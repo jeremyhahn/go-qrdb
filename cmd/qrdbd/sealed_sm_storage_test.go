@@ -27,9 +27,9 @@ import (
 
 // TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier is the
 // daemon's start-time refusal: with the seal barrier enabled, a
-// storage-generic --sm over storage that would hold its data in plaintext is
-// refused with SealedSMStoragePlaintextError, as the SDK refuses it; every
-// composition that keeps data encrypted, or keeps none on disk, still builds.
+// storage-generic --sm over storage that cannot be encrypted (file) is refused
+// with SealedSMStoragePlaintextError; pebble storage, which the barrier
+// encrypts, and memory storage, which persists nothing, still build.
 func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T) {
 	sealed := atrest.New(sealtest.UnsealedBarrier(t))
 	lr, hub := lease.NewLessor(), watch.NewHub()
@@ -41,8 +41,8 @@ func TestBuildSMCreateFunc_RefusesPlaintextSMStorageUnderTheBarrier(t *testing.T
 	}{
 		{"disk", "file", true},
 		{"fast", "file", true},
-		{"disk", "pebble", true},
-		{"fast", "", true},
+		{"disk", "pebble", false},
+		{"fast", "", false},
 		{"disk", "memory", false},
 		{"memory", "", false},
 		{"pebble", "", false},

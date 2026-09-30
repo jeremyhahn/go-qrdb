@@ -948,11 +948,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 // factory from the statemachine registry: KV, batches, the guarded verbs and
 // transactions, without watch / lease / time-series (go-qrdb#136). A
 // storage-generic one ("disk", "fast") composes the storage raft.sm_storage
-// selects under raft.data_dir, exactly as the daemon does; a non-pebble
-// sm_storage for any other type is refused rather than ignored. Memory-class
-// state machines are rejected when the seal barrier is enabled, since there is
-// no durable at-rest store to encrypt.
-func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, sealed bool) (sm.CreateFunc, error) {
+// selects under raft.data_dir, exactly as the daemon does, carrying the
+// node's at-rest encryptor: with the seal barrier enabled, pebble storage is
+// opened on the barrier's encfs and file storage — which has no encrypting
+// seam — is refused rather than left in plaintext. A non-pebble sm_storage for
+// any other type is refused rather than ignored.
+func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
 		if cfg.Raft.SMStorage != "" && cfg.Raft.SMStorage != "pebble" {
 			return nil, &ConfigError{
@@ -962,16 +963,15 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 		}
 		return store.NewMVCCCreateFuncWith(pebbleOpts, mvccOpts...), nil
 	}
-	if sealed {
-		return nil, &ConfigError{
-			Field:   "raft.sm_type",
-			Message: "state machine " + cfg.Raft.SMType + " is incompatible with an enabled seal barrier; use the default pebble store",
-		}
-	}
 	fn, err := statemachine.ResolveTypedWithStorage(cfg.Raft.SMType, cfg.Raft.SMBackend,
-		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage})
+		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor})
 	if err != nil {
-		return nil, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
+		field := "raft.sm_type"
+		var unencrypted *statemachine.SMStorageUnencryptedError
+		if errors.As(err, &unencrypted) {
+			field = "raft.sm_storage"
+		}
+		return nil, &ConfigError{Field: field, Message: err.Error()}
 	}
 	return fn, nil
 }
@@ -1117,7 +1117,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	if pending.noSyncWrites {
 		mvccOpts = append(mvccOpts, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, true)
+	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, encryptor)
 	if err != nil {
 		return err
 	}
@@ -1792,7 +1792,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	if nOpts.noSyncWrites {
 		mvccOptsNoSeal = append(mvccOptsNoSeal, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, false)
+	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, nil)
 	if err != nil {
 		return nil, err
 	}

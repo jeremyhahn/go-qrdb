@@ -29,9 +29,11 @@ import (
 
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
@@ -167,7 +169,7 @@ func TestNewClusteredNode_EmptyMembers(t *testing.T) {
 
 func TestClusteredCreateFunc_DefaultPebble(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig() // SMType defaults to "pebble"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, false)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
@@ -175,7 +177,7 @@ func TestClusteredCreateFunc_DefaultPebble(t *testing.T) {
 func TestClusteredCreateFunc_EmptySMTypeDefaultsPebble(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = ""
-	fn, err := clusteredCreateFunc(cfg, nil, nil, false)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
@@ -183,25 +185,49 @@ func TestClusteredCreateFunc_EmptySMTypeDefaultsPebble(t *testing.T) {
 func TestClusteredCreateFunc_MemoryUnsealed(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = "memory"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, false)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
 
-func TestClusteredCreateFunc_MemoryRejectedWhenSealed(t *testing.T) {
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.SMType = "memory"
-	_, err := clusteredCreateFunc(cfg, nil, nil, true)
-	require.Error(t, err)
-	var cfgErr *ConfigError
-	require.ErrorAs(t, err, &cfgErr)
-	assert.Equal(t, "raft.sm_type", cfgErr.Field)
+// TestClusteredCreateFunc_UnderTheSealBarrier pins what a clustered node may
+// run while the seal barrier is enabled — the same rule the daemon applies:
+// state machines that persist nothing (memory-class, or disk/fast over memory
+// storage) and disk/fast over pebble storage, which is opened on the
+// barrier's encfs, build; disk/fast over file storage, which would sit on disk
+// in plaintext, is refused as a raft.sm_storage ConfigError.
+func TestClusteredCreateFunc_UnderTheSealBarrier(t *testing.T) {
+	sealed := atrest.New(sealtest.UnsealedBarrier(t))
+	for _, tc := range []struct {
+		smType, storage string
+		refused         bool
+	}{
+		{"memory", "", false},
+		{"highperf", "", false},
+		{"disk", "pebble", false},
+		{"fast", "memory", false},
+		{"disk", "file", true},
+		{"fast", "file", true},
+	} {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Raft.DataDir = t.TempDir()
+		cfg.Raft.SMType = tc.smType
+		cfg.Raft.SMStorage = tc.storage
+		_, err := clusteredCreateFunc(cfg, nil, nil, sealed)
+		if !tc.refused {
+			require.NoError(t, err, "%s over %q under the barrier", tc.smType, tc.storage)
+			continue
+		}
+		var cfgErr *ConfigError
+		require.ErrorAs(t, err, &cfgErr, "%s over %q under the barrier", tc.smType, tc.storage)
+		assert.Equal(t, "raft.sm_storage", cfgErr.Field)
+	}
 }
 
 func TestClusteredCreateFunc_UnknownSMTypeErrors(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = "does-not-exist"
-	_, err := clusteredCreateFunc(cfg, nil, nil, false)
+	_, err := clusteredCreateFunc(cfg, nil, nil, nil)
 	require.Error(t, err)
 	var cfgErr *ConfigError
 	require.ErrorAs(t, err, &cfgErr)
@@ -217,7 +243,7 @@ func TestClusteredCreateFunc_HonoursSMStorage(t *testing.T) {
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Raft.SMType = "disk"
 	cfg.Raft.SMStorage = "file"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, false)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil)
 	require.NoError(t, err)
 
 	machine := fn(3, 4)
@@ -242,7 +268,7 @@ func TestClusteredCreateFunc_RefusesInapplicableSMStorage(t *testing.T) {
 		cfg.Raft.DataDir = t.TempDir()
 		cfg.Raft.SMType = smType
 		cfg.Raft.SMStorage = "file"
-		_, err := clusteredCreateFunc(cfg, nil, nil, false)
+		_, err := clusteredCreateFunc(cfg, nil, nil, nil)
 		var cfgErr *ConfigError
 		require.ErrorAs(t, err, &cfgErr, "sm_type %q over sm_storage file", smType)
 	}

@@ -363,9 +363,12 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Raft.SMStorage = c.smStorage
 		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}}}
-		// A non-default sm_type is hard-refused while the seal barrier is
-		// enabled (sdk/go/node.clusteredCreateFunc), which is itself part of
-		// why scoping these cells to typed refusal costs so little in practice.
+		// The non-default cells run with the barrier off: the disk cell's
+		// file storage cannot be encrypted and is refused under it
+		// (sdk/go/node.clusteredCreateFunc), and one seal setting across the
+		// row's non-default cells keeps them comparable. What the barrier
+		// allows and refuses per sm_type is pinned in sdk/go/node's
+		// TestClusteredCreateFunc_UnderTheSealBarrier.
 		cfg.Seal.Enabled = c.smType == ""
 		if cfg.Seal.Enabled {
 			cfg.Seal.Strategy = "none"

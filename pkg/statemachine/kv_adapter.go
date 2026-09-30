@@ -266,8 +266,18 @@ func (a *DiskAdapter) RecoverFromSnapshot(_ context.Context, r io.Reader, stoppe
 }
 
 // Close implements sm.DiskStateMachine.Close.
+//
+// It closes the replica's storage too: the storage factory opened it for this
+// replica alone, and a Pebble store left open keeps its directory lock, so a
+// replica restarted in the same process could not reopen its own data.
 func (a *DiskAdapter) Close(_ context.Context) error {
-	return a.KVStateMachine.Close()
+	err := a.KVStateMachine.Close()
+	if a.store != nil {
+		if cerr := a.store.Close(); cerr != nil && err == nil {
+			err = &StorageError{Op: "close", Inner: cerr}
+		}
+	}
+	return err
 }
 
 // GetHash implements sm.Hasher.GetHash.

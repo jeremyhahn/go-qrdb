@@ -94,6 +94,7 @@ flags alone.
 | etcd enabled on a database that is not `engine: kv` + `backend: raft` | refused |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
+| Seal barrier enabled with `disk`/`fast` over `file` `sm_storage` | refused at start: file storage cannot be encrypted at rest (`pebble` storage is encrypted and allowed) |
 | Per-database barrier on a database sharing the default store | refused |
 | Multicast discovery with no secret | the method does not run |
 

@@ -181,7 +181,7 @@ path.
 | MVCC (revisions, `--at-revision`, watch replay, PITR-lite restore) | ❌ | ✅ | ❌ | ❌ |
 | Lease, watch, lock, index, time series | ✅ | ✅ | ❌ | ❌ |
 | SQL / relational (needs `node://` or daemon) | ✅ | ✅ | ✅ | ✅ (volatile) |
-| Encryption at rest (barrier encfs) | ✅ | ✅ | ❌ (`raft.sm_storage` is not wrapped by the barrier) | n/a |
+| Encryption at rest (barrier encfs) | ✅ | ✅ | ✅ over `pebble` `sm_storage`; `file` refused under the seal barrier (no encrypting seam); `memory` persists nothing | n/a |
 
 **Run mode × storage backend (`storage.backend`):** all four backends load
 in every run mode; production is `pebble` everywhere, `memory` for tests,

@@ -757,8 +757,9 @@ func (e *SecureMemoryWipeError) Unwrap() error { return e.Err }
 
 // SealedSMStoragePlaintextError is returned at start when the seal barrier is
 // enabled and --sm names a storage-generic state machine (disk, fast) over an
-// --sm-storage that would hold its data in plaintext. The SDK refuses the same
-// combination (sdk/go/node.clusteredCreateFunc).
+// --sm-storage that cannot be encrypted at rest (file). Pebble storage is
+// encrypted through the barrier and memory storage persists nothing, so both
+// are allowed.
 type SealedSMStoragePlaintextError struct {
 	SMType  string
 	Storage string
@@ -772,7 +773,7 @@ func (e *SealedSMStoragePlaintextError) Error() string {
 		storage = "pebble"
 	}
 	return "cli: --sm " + strconv.Quote(e.SMType) + " over --sm-storage " + strconv.Quote(storage) +
-		" would store data in plaintext while the seal barrier is enabled; use --sm-storage memory, or --sm pebble or mvcc"
+		" would store data in plaintext while the seal barrier is enabled; use --sm-storage pebble (encrypted at rest) or memory"
 }
 
 // Unwrap returns the registry's refusal.

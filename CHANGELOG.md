@@ -52,6 +52,15 @@ are not reconstructed here — their history is in the git log.
   durability is the Raft log's, since each replica is rebuilt from the log and
   snapshots at start). A `Backend` implemented outside this repository must
   add it.
+- **Under the seal barrier, `--sm disk`/`fast` storage is encrypted at rest or
+  refused.** That storage was never wrapped by the barrier, so a replica's data
+  sat on disk in plaintext beside a barrier the operator enabled. Over
+  `--sm-storage pebble` it is now opened on the barrier's encfs, like the
+  `pebble` and `mvcc` state machines. `--sm-storage file` cannot be encrypted
+  and is refused at start (`SealedSMStoragePlaintextError`; registry:
+  `statemachine.SMStorageUnencryptedError`); `memory` persists nothing and is
+  allowed. `sdk/go/node.NewClusteredNode` applies the same rule and no longer
+  refuses every non-default `sm_type` under the barrier.
 - **Empty keys are refused on every write path, and the disk state machine's
   applied-index key is reserved.** `TransactionService` and `BatchService`
   refuse an empty key before proposing it (`service.InvalidKeyError` inside
@@ -240,6 +249,9 @@ are not reconstructed here — their history is in the git log.
   applied key by key: a concurrent read could see part of one, a crash could
   leave part of one on disk, and the service layer's batch opcodes were
   refused.
+- **The `disk` state machine closes its storage when it closes.** It left the
+  Pebble store open, holding its directory lock, so a replica restarted in the
+  same process could not reopen its own data.
 - **The `disk` state machine commits each entry's log index with its writes**
   — single-key guarded verbs as well as transactions — and the `fast` state
   machine starts each replica from an empty keyspace (one storage batch), so
