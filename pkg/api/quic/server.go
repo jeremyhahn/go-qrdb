@@ -473,12 +473,15 @@ func (s *Server) Start() error {
 	// connecting under a label it will not be served by.
 	tlsCfg.NextProtos = []string{wire.ProtocolV2}
 
+	// 0-RTT stays off (Allow0RTT is false). Early data is replayable: an
+	// on-path attacker can resend a captured flight and the server processes
+	// it again. Every frame this listener serves is a request, and many of
+	// them change state. A resumed client completes a full handshake first.
 	quicCfg := &quicgo.Config{
 		MaxIdleTimeout:        30 * time.Second,
 		KeepAlivePeriod:       10 * time.Second,
 		MaxIncomingStreams:    1000,
 		MaxIncomingUniStreams: 0,
-		Allow0RTT:             true,
 	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", s.addr)

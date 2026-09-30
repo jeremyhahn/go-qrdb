@@ -241,6 +241,7 @@ over the same services, not a seventh transport.
 | A module calling `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the registrar's router | `*apimodule.UnsupportedRouterMethodError` panics at construction | **yes** |
 | An unmatched request under a module's route prefix | 404 from the REST middleware; never reaches the router's fallback | **yes** |
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
+| QUIC client offering 0-RTT early data on a resumed session | refused. The listener does not allow 0-RTT, because early data is replayable, so the client completes a full handshake before any request is accepted | **yes** |
 | MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
 | MCP request body over `maxRequestBodyBytes` (the base64 batch-import bound plus 1 MiB) | the read fails with `*http.MaxBytesError` and the request is refused | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |

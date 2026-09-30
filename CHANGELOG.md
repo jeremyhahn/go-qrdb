@@ -307,6 +307,11 @@ are not reconstructed here — their history is in the git log.
   `service.SignCSRThrottledError`, which unwraps to `pin.ErrPINLocked` and is
   answered `429` / `RESOURCE_EXHAUSTED` on every transport. The REST 429
   carries `Retry-After` with the wait in seconds, rounded up.
+- **The native QUIC listener no longer accepts 0-RTT (medium).** It set
+  `Allow0RTT`, so a resumed client's early data was accepted before the
+  handshake completed. 0-RTT data is replayable, so an on-path attacker could
+  resend a captured request, including a state-changing one, and have it
+  processed again. A resumed client now completes a full handshake first.
 
 ### Known limits
 
