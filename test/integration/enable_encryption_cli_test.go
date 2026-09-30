@@ -518,55 +518,15 @@ func waitForCLIBarrierSealed(t *testing.T, cli string, connArgs []string, timeou
 	t.Fatalf("timed out after %v waiting for the migrated barrier to come back sealed", timeout)
 }
 
-// TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes proves
-// the fix for the confirmed product bug the (now-removed)
-// ...ShamirTargetNeverCompletes test pinned: pkg/clustermig's replicated
-// migration-intent record now carries ShamirThreshold/ShamirTotal end to end
-// (pkg/clustermig/store.go ClusterMigration fields, threaded through
-// Coordinator.Request and the daemon's LocalRecycler), so
-// seal.MigrationOptions.Validate() no longer rejects the reconciler-driven
-// recycle on every retry. With enough Security Officers pre-registered (the
-// same operational precondition a fresh `barrier init-shamir` already has —
-// see pkg/seal.MintKeyedShamirSibling), the migration now runs to completion:
-// the CLI call is accepted, the node recycles its data plane in process (the
-// same in-process reboot a passphrase target already goes through), and the
-// node comes back up SEALED with the barrier CORRECTLY self-describing as a
-// genuine threshold-of-total Shamir barrier (not silently downgraded to
-// passphrase — pkg/seal.AdoptMigratedRootKey now adopts the Shamir wrapped-
-// root-key blob and registers the M-of-N scheme, not just the passphrase-
-// shaped envelope the migration mechanism originally only supported).
-//
-// This test does NOT go on to also complete a share quorum + unseal: doing so
-// is currently impossible for SYSTEM scope specifically, VERIFIED (not just
-// theorized) against a real daemon below — an enrolled officer's own
-// claim-begin fails with a 404 "ceremony: officer not found" against the
-// post-migration process, because system-scope migrations ALWAYS go through
-// an in-process reboot (the same mechanism a passphrase target already uses)
-// that discards and reconstructs the ceremony/officer state from scratch;
-// combined with pkg/ceremony's share custody being deliberately in-memory-
-// ONLY (pkg/ceremony/share_store.go: "Shares are NEVER persisted to disk"),
-// neither the enrollment nor the sealed shares this run's SealAndDistribute
-// produced survive to be claimed afterward. This is a separate, pre-existing
-// architectural property of the ceremony/boot-sequencing design, not a defect
-// this change introduces or is scoped to fix (closing it would mean either
-// persisting sealed shares durably across the reboot or restructuring the
-// reboot to preserve ceremony state — a cross-cutting decision outside a
-// migration bug fix). It is called out and pinned explicitly below, not
-// silently glossed over.
-func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testing.T) {
+// TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Refused proves a
+// system-scope migration to Shamir is refused synchronously, with the barrier
+// untouched: the in-process data-plane restart the migration triggers would
+// discard the share envelopes it distributes, leaving a sealed barrier no
+// holder could open.
+func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Refused(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	// A self-generated-CA node (see registerShamirOfficer's doc comment): the
-	// daemon retains its CA private key, so it can sign officer CSRs.
-	// shamir_threshold/shamir_total are pre-provisioned in the static config
-	// (valid even while strategy: none — pkg/config only enforces the M-of-N
-	// shape when strategy=="shamir"): cmd/qrdbd/seal_subsystem.go's
-	// PersistedStrategyFrom restart-survival fallback reads them from this
-	// SAME static config on the post-migration reboot to register a real
-	// seal.ShamirStrategy for the now-migrated barrier, exactly the
-	// precondition a deployment planning to enable Shamir later must
-	// provision up front (mirrors a fresh Shamir init's own requirement).
 	node := bootSelfGenCANode(t, bin,
 		"seal:\n  enabled: true\n  strategy: none\n  shamir_threshold: 2\n  shamir_total: 3\n",
 		"[cli-enc-shamir] ")
@@ -577,72 +537,29 @@ func TestCLI_BarrierEnableEncryption_SystemScope_ShamirTarget_Completes(t *testi
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
-	// Pre-register 3 Security Officers (== --shamir-total) — the same
-	// operational precondition a fresh `barrier init-shamir` already
-	// enforces (pkg/ceremony's sealSharesToOfficers requires the enrolled
-	// count to exactly satisfy the request).
-	off1Cert, off1Key := registerShamirOfficerWithIdentity(t, cli, node.restArgsAdmin(), "off1")
+	registerShamirOfficer(t, cli, node.restArgsAdmin(), "off1")
 	registerShamirOfficer(t, cli, node.restArgsAdmin(), "off2")
 	registerShamirOfficer(t, cli, node.restArgsAdmin(), "off3")
-
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "put", "shamir-key", "shamir-value"); err != nil {
 		t.Fatalf("kv put: %v\noutput: %s", err, out)
 	}
 
 	out, err := runQRDB(t, cli, node.restArgsAdmin(),
-		"barrier", "enable-encryption",
-		"--strategy", "shamir",
-		"--shamir-threshold", "2",
-		"--shamir-total", "3",
-		"-y",
-	)
-	if err != nil {
-		t.Fatalf("barrier enable-encryption --strategy shamir: %v\noutput: %s", err, out)
+		"barrier", "enable-encryption", "--strategy", "shamir",
+		"--shamir-threshold", "2", "--shamir-total", "3", "-y")
+	if err == nil {
+		t.Fatalf("a system-scope migration to shamir was accepted: %s", out)
 	}
-	if !strings.Contains(out, "migration_started") {
-		t.Fatalf("barrier enable-encryption --strategy shamir: unexpected output: %s", out)
+	if !strings.Contains(out, "not supported yet") {
+		t.Errorf("expected the typed refusal, got: %s", out)
 	}
 
-	// The migration now genuinely runs to completion: it recycles the data
-	// plane in process (same reboot mechanics as a passphrase target) and the
-	// node comes back up SEALED as a keyed barrier. Before the field-drop fix
-	// this deadline was NEVER reached — the reconciler retried
-	// ErrShamirThresholdInvalid forever without ever tearing down the data
-	// plane.
-	waitForCLIBarrierSealed(t, cli, node.restArgsNoAuth(), 120*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 90*time.Second)
-
-	// The barrier self-describes correctly WHILE SEALED (StorageBarrier.Status
-	// reads the persisted strategy from the sealed root-key blob without
-	// requiring an unseal first): it must report the REAL shamir strategy and
-	// M/N, not a silently mislabeled passphrase barrier.
-	status := cliBarrierStatus(t, cli, node.restArgsNoAuth())
-	if status.Strategy != "shamir" || !status.Sealed {
-		t.Fatalf("post-migration `barrier status` = %+v, want strategy=shamir sealed=true", status)
+	status := cliBarrierStatus(t, cli, node.restArgsAdmin())
+	if status.Strategy != "none" || status.Sealed {
+		t.Fatalf("barrier changed by a refused migration: %+v", status)
 	}
-	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
-		t.Fatalf("post-migration shamir scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
-	}
-
-	// VERIFIED (not assumed) residual gap, pinned rather than silently
-	// glossed over: the officer's own share-claim fails post-migration,
-	// because the pre-reboot enrollment/ceremony state (pkg/ceremony's
-	// officer registry lookup and its in-memory-only share enclaves —
-	// pkg/ceremony/share_store.go: "Shares are NEVER persisted to disk") does
-	// not survive the in-process reboot every system-scope migration goes
-	// through. This is a separate, pre-existing architectural limitation of
-	// the ceremony subsystem's boot-sequencing (not something this change
-	// introduces or is scoped to fix): closing it requires either persisting
-	// sealed shares durably across the reboot or restructuring the reboot to
-	// preserve ceremony state, both cross-cutting decisions outside a
-	// migration bug fix. Confirmed directly against a real daemon (not
-	// theorized): the claim fails with a 404 "ceremony: officer not found" —
-	// the fresh post-reboot ceremony instance has no record of "off1" at all.
-	if _, err := runQRDB(t, cli, node.restArgsIdentity(off1Cert, off1Key),
-		"barrier", "officer", "claim-begin", "--username", "off1"); err == nil {
-		t.Fatal("officer claim-begin unexpectedly succeeded post-reboot; the known " +
-			"ceremony-state-does-not-survive-the-reboot gap may have been fixed -- " +
-			"if so, replace this assertion with a full claim+unseal proof")
+	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "get", "shamir-key"); err != nil || strings.TrimSpace(out) != "shamir-value" {
+		t.Fatalf("kv get shamir-key = %q (err=%v), want shamir-value", out, err)
 	}
 }
 

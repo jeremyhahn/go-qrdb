@@ -122,6 +122,10 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 		opts.Credentials.Secret.Destroy()
 		return err
 	}
+	if err := service.CheckSystemMigrationTarget(scope, opts); err != nil {
+		opts.Credentials.Secret.Destroy()
+		return err
+	}
 	if !m.inProgress.CompareAndSwap(false, true) {
 		// seal.ErrMigrationInProgress, not a command-local sentinel: REST
 		// (pkg/api/rest/handlers_barrier.go) and gRPC/Unix

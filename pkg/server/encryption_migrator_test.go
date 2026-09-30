@@ -161,3 +161,27 @@ func TestScopedEncryptionMigrator_TenantAdmission(t *testing.T) {
 		}
 	})
 }
+
+// TestEnableEncryption_RefusesSystemShamirTarget proves a system-scope
+// migration to Shamir is refused before the system migrator runs: the
+// in-process data-plane restart it triggers would discard the envelopes the
+// migration distributes, leaving a sealed barrier no holder could open.
+func TestEnableEncryption_RefusesSystemShamirTarget(t *testing.T) {
+	called := false
+	m := &scopedEncryptionMigrator{system: encMigratorFunc(func(context.Context, service.BarrierScope, seal.MigrationOptions) error {
+		called = true
+		return nil
+	})}
+	err := m.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem},
+		seal.MigrationOptions{TargetStrategy: seal.StrategyShamir, ShamirThreshold: 2, ShamirTotal: 3})
+	if !errors.Is(err, service.ErrShamirSystemMigrationUnsupported) {
+		t.Fatalf("err = %v, want service.ErrShamirSystemMigrationUnsupported", err)
+	}
+	if called {
+		t.Fatal("the system migrator ran for a refused Shamir target")
+	}
+	if err := m.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem},
+		seal.MigrationOptions{TargetStrategy: seal.StrategyPassphrase}); err != nil || !called {
+		t.Fatalf("a passphrase target was not passed through: err=%v called=%v", err, called)
+	}
+}

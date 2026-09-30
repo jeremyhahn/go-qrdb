@@ -3275,6 +3275,12 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   such a holder is refused at enrolment rather than at sealing.
 - **Membership changes need the quorum.** Adding, removing or re-policing
   holders is a rekey, and a rekey completes only with M current holders.
+- **A system-scope encryption migration to Shamir is refused.** The in-process
+  data-plane restart it triggers built a new ceremony service and discarded
+  the share envelopes the migration had just distributed, so the barrier came
+  back sealed with no holder able to open it. Every system-scope migrator now
+  refuses a Shamir target with `service.ErrShamirSystemMigrationUnsupported`
+  (FailedPrecondition class) before touching the data plane.
 - **A distributed Shamir share is destroyed if it is not claimed in time.**
   Every envelope held for a share holder now carries its own expiry timer
   (`CeremonyConfig.ShareTTL`, default `ceremony.DefaultShareTTL` = 24h) and is

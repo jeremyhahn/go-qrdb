@@ -42,6 +42,14 @@ var (
 	// ErrTenantBarrierNotFound is returned when a tenant-scoped migration names
 	// a tenant that has no registered dedicated barrier.
 	ErrTenantBarrierNotFound = errors.New("service: tenant has no dedicated barrier")
+
+	// ErrShamirSystemMigrationUnsupported is returned when a system-scope
+	// encryption migration targets Shamir. The migration distributes the new
+	// share envelopes, then restarts the data plane in process; the restart
+	// builds a new ceremony service and the envelopes are lost, leaving a
+	// sealed barrier no holder can open. The migration is refused until the
+	// restart carries the ceremony state across.
+	ErrShamirSystemMigrationUnsupported = errors.New("service: a system-scope encryption migration to shamir is not supported yet: the data-plane restart would discard the share envelopes")
 )
 
 // DataPlaneRecyclingError is returned when an operation needs a service that a
@@ -239,5 +247,15 @@ func (s *EncryptionMigrationService) run(ctx context.Context, scope BarrierScope
 		slog.String("tenant", scope.TenantID),
 		slog.String("strategy", string(opts.TargetStrategy)),
 		slog.Int("stores", len(dirs)))
+	return nil
+}
+
+// CheckSystemMigrationTarget refuses a system-scope migration to Shamir with
+// ErrShamirSystemMigrationUnsupported. Every system-scope migrator calls it
+// before any work, so the refusal holds on every deployment path.
+func CheckSystemMigrationTarget(scope BarrierScope, opts seal.MigrationOptions) error {
+	if scope.Kind == ScopeSystem && opts.TargetStrategy == seal.StrategyShamir {
+		return ErrShamirSystemMigrationUnsupported
+	}
 	return nil
 }

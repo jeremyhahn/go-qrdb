@@ -177,6 +177,9 @@ type nodeSystemMigrator struct {
 func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	switch scope.Kind {
 	case service.ScopeSystem:
+		if err := service.CheckSystemMigrationTarget(scope, opts); err != nil {
+			return err
+		}
 		// The node's lifecycle lock: Close waits for this migration to finish
 		// rather than retracting the barrier underneath it (go-qrdb#226), and a
 		// migration that arrives after Close is refused.
