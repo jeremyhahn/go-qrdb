@@ -193,6 +193,8 @@ type ModuleAuthFallback interface {
 | `GET /v1/ca/bootstrap` | **public**, only when a bootstrap certificate is configured |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |
 | `GET /metrics` | **authenticated**, no specific permission, only when a gatherer is configured |
+| MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
+| MCP `/mcp`, every JSON-RPC method (`initialize`, `ping` and `tools/list` included) | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
 
 Everything else carries a permission.
 
@@ -237,6 +239,8 @@ over the same services, not a seventh transport.
 | A module calling `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the registrar's router | `*apimodule.UnsupportedRouterMethodError` panics at construction | **yes** |
 | An unmatched request under a module's route prefix | 404 from the REST middleware; never reaches the router's fallback | **yes** |
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
+| MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
+| MCP request body over `maxRequestBodyBytes` (the base64 batch-import bound plus 1 MiB) | the read fails with `*http.MaxBytesError` and the request is refused | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |

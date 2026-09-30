@@ -710,16 +710,19 @@ func (s *Server) Start() error {
 	}
 	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
 
-	// The MCP endpoint handler. When a bearer challenge is configured (an
-	// embedder running the MCP authorization flow), an unauthenticated
-	// request is answered 401 + WWW-Authenticate BEFORE reaching the MCP
-	// layer — the discovery entry point OAuth clients depend on. A request
-	// that authenticates proceeds with its identity already bound into the
-	// request context; authHTTPContext detects it and skips the second
-	// authentication pass.
-	var mcpHandler http.Handler = streamHandler
-	if s.authMW != nil && s.bearerChallenge != "" {
-		mcpHandler = s.bearerChallengeHandler(streamHandler)
+	// The MCP endpoint handler, from the outside in:
+	//
+	//   - the boot-time sealed-window listener's gate, when this is one;
+	//   - authentication, whenever it is configured: an unauthenticated
+	//     request is answered 401 (with WWW-Authenticate when a bearer
+	//     challenge is configured) BEFORE mcp-go reads anything, so not even
+	//     initialize or tools/list is answered anonymously. A request that
+	//     authenticates proceeds with its identity bound into the request
+	//     context, where authHTTPContext reuses it;
+	//   - the request-body bound, on every request.
+	var mcpHandler http.Handler = boundedBodyHandler(maxRequestBodyBytes, streamHandler)
+	if s.authMW != nil {
+		mcpHandler = s.authenticateHandler(mcpHandler)
 	}
 	if s.sealedWindowListener {
 		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)

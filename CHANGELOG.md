@@ -279,6 +279,15 @@ are not reconstructed here — their history is in the git log.
   (`forward.ClusterPeer`) before reading anything, and reads a cluster node's
   body under `forward.MaxBodyBytes`: 16 MiB + 64 KiB, the largest body a REST
   handler forwards.
+- **MCP authenticates every request before the MCP layer reads it, and bounds
+  the body (medium).** With authentication configured, a request that no
+  authenticator accepted went on to mcp-go without an identity, and only tool
+  calls were refused. `initialize`, `ping` and `tools/list` were answered to
+  anonymous callers, and `tools/list` enumerates the whole admin tool surface.
+  mcp-go also parsed bodies of any size. Every request to `/mcp` is now
+  authenticated at the HTTP layer and refused with `401` if it fails, with
+  `WWW-Authenticate` when a bearer challenge is configured. Every body is
+  bounded at the batch-import limit plus 1 MiB of envelope.
 
 ### Known limits
 

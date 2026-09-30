@@ -97,9 +97,10 @@ node, err := node.NewStandaloneNode(ctx, cfg,
 )
 ```
 
-Without `WithBearerChallenge`, unauthenticated MCP requests proceed
-identity-less into per-tool DEFAULT-DENY errors — the pre-OAuth behavior
-mTLS-only deployments rely on.
+Without `WithBearerChallenge`, an unauthenticated MCP request is still
+refused with `401` at the HTTP layer, before the MCP layer reads it, but
+without a `WWW-Authenticate` header. `initialize`, `ping` and `tools/list`
+are never answered to an anonymous caller.
 
 ## Composition with built-in semantics
 

@@ -341,8 +341,16 @@ kernel-assigned port.
   (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
   the decoded key as it always did.
 - **Public routes are explicit and few** — `GET /health`,
-  `GET /v1/config/initialized`, and `GET /v1/ca/bootstrap` when configured.
-  `GET /metrics` requires authentication but no specific permission.
+  `GET /v1/config/initialized`, `GET /v1/ca/bootstrap` when configured, the
+  two cluster key routes when a receiver is wired (they authorize the peer
+  node themselves), and the MCP protected-resource metadata document when
+  configured. `GET /metrics` requires authentication but no specific
+  permission. The full list is in
+  [engineering.md](engineering.md#public-and-authenticated-only-routes).
+- **MCP authenticates before the MCP layer reads anything.** With
+  authentication configured, every request to the MCP endpoint is
+  authenticated at the HTTP layer, so `initialize`, `ping` and `tools/list`
+  are not answered anonymously, and every request body is bounded.
 - **A module cannot grant itself authority.** Its fallback returns an identity;
   the host enriches and authorizes it.
 - **A malformed public gRPC method name is rejected at registration**, so a typo
