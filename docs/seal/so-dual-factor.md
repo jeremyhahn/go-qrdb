@@ -45,14 +45,33 @@ handler.
 | MCP | `X-QRDB-SO-PIN` header on the `/mcp` request | `CodeUnauthenticated` / `CodePermissionDenied` / `CodeUnavailable` |
 | QUIC | the request message's `so_pin` field | `StatusUnauthenticated` / `StatusPermissionDenied` / `StatusUnavailable` |
 
-A QUIC frame has no header section, so on QUIC the PIN rides in the request
-message of the barrier-PIN operations that already carry `so_pin`
+A QUIC frame has no header section, so on QUIC the PIN rides in the `so_pin`
+field of the request message of every SO-gated operation
 (`barrier.ShamirInitialize`, `barrier.Rekey`, `barrier.RecoveryGenerate`,
-`ceremony.Initialize`, `ceremony.SignCSR`). `barrier.RecoveryDelete` takes an
-empty request on every transport and so has no carrier on QUIC: with the gate
-on, it is **refused** over QUIC (fail-closed) and must be issued over another
-transport. The embedded transport runs in process with no authenticated
-caller and is not gated.
+`barrier.RecoveryDelete`, `ceremony.Initialize`, `ceremony.SignCSR`).
+`BarrierRecoveryDelete` takes a `BarrierRecoveryDeleteRequest` for this reason
+(it took `google.protobuf.Empty`; an empty request encodes identically). A
+gated QUIC method without a carrier would be refused, never admitted, and a
+test holds every gated method to having one. The embedded transport runs in
+process with no authenticated caller and is not gated.
+
+## From the Go SDK
+
+Bind the PIN to the context of the SO call; every network transport sends it
+in its own carrier:
+
+```go
+ctx, release := sdk.WithSOPIN(ctx, pin)
+defer release()
+_, err := client.Barrier().BarrierRekey(ctx, &sdk.BarrierRekeyRequest{Threshold: 2, Total: 3})
+```
+
+`WithSOPIN` copies the PIN; `release` wipes the SDK's copy, after which the
+context presents no PIN. The transports take a fresh copy per request, write
+it and wipe it, and never log it. HTTP header and gRPC metadata values are Go
+strings, which cannot be wiped. On QUIC, where the PIN shares the request's
+`so_pin` field, a request whose own `SOPin` differs from the bound PIN is
+refused with `sdk.SOPINConflictError` rather than sending either.
 
 A PIN is read only from a TLS connection. The three refusal classes are the
 same everywhere: the factor itself (no TLS, no PIN, wrong PIN) is

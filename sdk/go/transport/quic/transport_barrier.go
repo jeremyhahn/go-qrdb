@@ -102,11 +102,16 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierInitializeShamir", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierShamirInitializeRequest{
 		Secret:      req.Secret,
 		Threshold:   int32(req.Threshold),
 		TotalShares: int32(req.TotalShares),
-		SoPin:       req.SOPin,
+		SoPin:       soPIN,
 		UserPin:     req.UserPin,
 	})
 	if err != nil {
@@ -176,10 +181,15 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -241,10 +251,15 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierGenerateRecoveryKeys", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
@@ -284,7 +299,16 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.call(ctx, "barrier.RecoveryDelete", nil)
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierDeleteRecoveryKeys", "")
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(&pb.BarrierRecoveryDeleteRequest{SoPin: soPIN})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	_, err = t.call(ctx, "barrier.RecoveryDelete", payload)
 	return err
 }
 

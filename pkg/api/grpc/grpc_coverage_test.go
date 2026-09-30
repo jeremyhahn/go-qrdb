@@ -1415,7 +1415,7 @@ func TestGRPC_BarrierRecoveryDelete_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err != nil {
 		t.Fatalf("BarrierRecoveryDelete failed: %v", err)
 	}
@@ -1425,7 +1425,7 @@ func TestGRPC_BarrierRecoveryDelete_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -73,3 +73,13 @@ func TestBarrier_CountsRekeys(t *testing.T) {
 		t.Fatalf("Rekeys = %d, want 1", b.Rekeys())
 	}
 }
+
+func TestBarrier_CountsRecoveryDeletes(t *testing.T) {
+	b := &authtest.Barrier{}
+	if err := b.BarrierDeleteRecoveryKeys(context.Background()); err != nil {
+		t.Fatalf("BarrierDeleteRecoveryKeys: %v", err)
+	}
+	if b.RecoveryDeletes() != 1 {
+		t.Fatalf("RecoveryDeletes = %d, want 1", b.RecoveryDeletes())
+	}
+}

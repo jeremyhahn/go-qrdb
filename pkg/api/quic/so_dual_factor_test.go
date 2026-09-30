@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"testing"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -114,24 +115,44 @@ func TestSODualFactor(t *testing.T) {
 	}
 }
 
-// TestSODualFactor_MethodWithoutCarrierFailsClosed: barrier.RecoveryDelete
-// has no PIN carrier on QUIC, so with the gate on even the officer is refused
-// -- the gate never admits a gated method it cannot read a PIN for.
-func TestSODualFactor_MethodWithoutCarrierFailsClosed(t *testing.T) {
-	f := newSOFixture(t, true)
-	status, _ := credentialE2ERoundTrip(t, f.addr, f.clientCfg, "barrier.RecoveryDelete", nil)
-	if status != wire.StatusUnauthenticated {
-		t.Fatalf("status = %s, want %s", wire.StatusName(status), wire.StatusName(wire.StatusUnauthenticated))
+// TestSODualFactor_RecoveryDeleteCarriesThePIN: barrier.RecoveryDelete used to
+// take an empty request, so on QUIC it had nowhere to carry the SO PIN and the
+// gate refused even the officer. Its request now has so_pin (field 1). The
+// payload is encoded by hand so the test reads the same before and after the
+// message existed.
+func TestSODualFactor_RecoveryDeleteCarriesThePIN(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pin     string
+		status  uint16
+		deletes int64
+	}{
+		{"with PIN", soTestPIN, wire.StatusOK, 1},
+		{"without PIN", "", wire.StatusUnauthenticated, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSOFixture(t, true)
+			var payload []byte
+			if tc.pin != "" {
+				payload = protowire.AppendTag(nil, 1, protowire.BytesType)
+				payload = protowire.AppendString(payload, tc.pin)
+			}
+			status, _ := credentialE2ERoundTrip(t, f.addr, f.clientCfg, "barrier.RecoveryDelete", payload)
+			if status != tc.status {
+				t.Fatalf("status = %s, want %s", wire.StatusName(status), wire.StatusName(tc.status))
+			}
+			if got := f.barrier.RecoveryDeletes(); got != tc.deletes {
+				t.Fatalf("deletes = %d, want %d", got, tc.deletes)
+			}
+		})
 	}
 }
 
-// TestSOGate_EveryGatedQUICMethodIsAccountedFor pins soPINCarriers to the
-// method registry: every QUIC method whose permission the gate covers either
-// has a PIN carrier or is on the named list of methods without one, which the
-// gate refuses rather than admits. A newly gated method fails here until it is
-// placed in one or the other.
-func TestSOGate_EveryGatedQUICMethodIsAccountedFor(t *testing.T) {
-	noCarrier := map[string]bool{"barrier.RecoveryDelete": true}
+// TestSOGate_EveryGatedQUICMethodHasACarrier pins soPINCarriers to the method
+// registry: every QUIC method whose permission the gate covers has a PIN
+// carrier, and every carrier names a gated, registered method. A newly gated
+// method fails here until its request carries so_pin.
+func TestSOGate_EveryGatedQUICMethodHasACarrier(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 	gated := 0
 	for method, perm := range srv.methodPerms.Entries() {
@@ -139,9 +160,8 @@ func TestSOGate_EveryGatedQUICMethodIsAccountedFor(t *testing.T) {
 			continue
 		}
 		gated++
-		_, carried := soPINCarriers[method]
-		if carried == noCarrier[method] {
-			t.Errorf("%s (%s): carrier=%v, listed-without-carrier=%v; exactly one must hold", method, perm, carried, noCarrier[method])
+		if _, carried := soPINCarriers[method]; !carried {
+			t.Errorf("%s (%s) is SO-gated and has no PIN carrier", method, perm)
 		}
 	}
 	for method := range soPINCarriers {
@@ -164,7 +184,7 @@ func TestSOPINFromPayload(t *testing.T) {
 	if got := string(soPINFromPayload("ceremony.SignCSR", payload)); got != "1234" {
 		t.Fatalf("pin = %q, want 1234", got)
 	}
-	if soPINFromPayload("barrier.RecoveryDelete", payload) != nil {
+	if soPINFromPayload("barrier.Status", payload) != nil {
 		t.Fatal("a method without a carrier yielded a PIN")
 	}
 	if soPINFromPayload("ceremony.SignCSR", []byte{0xff, 0xff}) != nil {

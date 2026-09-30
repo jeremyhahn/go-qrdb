@@ -71,14 +71,25 @@ func SOVerifier(t testing.TB, tenantID, pin string) *auth.SOAuthenticator {
 	return v
 }
 
-// Barrier is a service.BarrierServicer that implements BarrierRekey and counts
-// the rekeys that reached it, so a test can tell a refused request from one
-// the service performed. Every other method is the nil embedded interface: a
-// test that reaches one has left the path it meant to drive.
+// Barrier is a service.BarrierServicer that implements BarrierRekey and
+// BarrierDeleteRecoveryKeys and counts the calls that reached it, so a test
+// can tell a refused request from one the service performed. Every other
+// method is the nil embedded interface: a test that reaches one has left the
+// path it meant to drive.
 type Barrier struct {
 	service.BarrierServicer
-	rekeys atomic.Int64
+	rekeys  atomic.Int64
+	deletes atomic.Int64
 }
+
+// BarrierDeleteRecoveryKeys records the deletion.
+func (b *Barrier) BarrierDeleteRecoveryKeys(context.Context) error {
+	b.deletes.Add(1)
+	return nil
+}
+
+// RecoveryDeletes reports how many recovery-key deletions reached the service.
+func (b *Barrier) RecoveryDeletes() int64 { return b.deletes.Load() }
 
 // BarrierRekey records the rekey.
 func (b *Barrier) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {

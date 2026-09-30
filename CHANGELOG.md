@@ -45,6 +45,12 @@ are not reconstructed here — their history is in the git log.
   function, so there is one rule. No cross-tenant thumbprint index is added.
   `pinnedTrustDomain == ""` accepts any trust domain and is for tests only;
   composers must pin.
+- `sdk.WithSOPIN(ctx, pin) (ctx, release)`: the Go SDK presents the SO
+  dual-factor PIN on every network transport -- the `X-QRDB-SO-PIN` header on
+  REST and MCP, `x-qrdb-so-pin` metadata on gRPC and the Unix socket, the
+  request's `so_pin` field on QUIC. The PIN is copied, never logged, and
+  wiped by `release`; per-request copies are wiped once written. A QUIC
+  request whose own `SOPin` differs is refused with `sdk.SOPINConflictError`.
 
 ### Changed — BREAKING
 
@@ -147,6 +153,13 @@ are not reconstructed here — their history is in the git log.
 - REST `POST /v1/authfactors/{id}/verify` reads the body's `factor_name`
   (which the SDK REST client already sent) and passes it to the service, like
   the other five transports, so a mismatch is refused rather than ignored.
+- **BREAKING (gRPC API and generated Go client):** `BarrierRecoveryDelete`
+  takes `BarrierRecoveryDeleteRequest{so_pin}` instead of
+  `google.protobuf.Empty`, so QUIC can carry the SO PIN for it. The wire is
+  compatible (an empty request encodes exactly as `Empty` did); Go code
+  calling or implementing `QRDBServiceClient`/`QRDBServiceServer.BarrierRecoveryDelete`
+  must pass or accept `*qrdbv1.BarrierRecoveryDeleteRequest`. The SDK's
+  `BarrierDeleteRecoveryKeys(ctx)` signature is unchanged.
 
 ### Fixed
 
@@ -391,8 +404,8 @@ are not reconstructed here — their history is in the git log.
   `middleware.SOGate`, which the orchestrator installs on all of them
   (`WithSOGate` on each server). The PIN travels in `x-qrdb-so-pin` metadata
   on gRPC and Unix, in the `X-QRDB-SO-PIN` header on MCP, and in the request's
-  `so_pin` field on QUIC. `barrier.RecoveryDelete` has no carrier on QUIC and
-  is refused there while the gate is on. Refusals are typed
+  `so_pin` field on QUIC. The Go SDK sends it on every network transport
+  from `sdk.WithSOPIN` (see Added). Refusals are typed
   (`SOFactorError`, `SORoleRequiredError`, `SORoleUnresolvedError`) and map to
   the same class on every transport.
 - **`VerifyFactor` is dispatched to the enrollment's own factor.** The

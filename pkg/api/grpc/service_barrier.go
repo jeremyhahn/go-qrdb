@@ -344,7 +344,7 @@ func (s *qrdbServiceServer) BarrierRecoveryRecover(ctx context.Context, req *pb.
 }
 
 // BarrierRecoveryDelete removes recovery key metadata from storage.
-func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *pb.BarrierRecoveryDeleteRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}

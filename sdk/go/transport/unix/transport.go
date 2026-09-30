@@ -89,6 +89,13 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
+	// A context bound by transport.WithSOPIN carries the SO PIN in the
+	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor()),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor()),
+	)
+
 	if t.activeDatabase != "" {
 		opts = append(opts,
 			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),

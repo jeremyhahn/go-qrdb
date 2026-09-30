@@ -236,7 +236,7 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.client.BarrierRecoveryDelete(ctx, &emptypb.Empty{})
+	_, err := t.client.BarrierRecoveryDelete(ctx, &pb.BarrierRecoveryDeleteRequest{})
 	if err != nil {
 		return mapGRPCError("BarrierDeleteRecoveryKeys", err)
 	}

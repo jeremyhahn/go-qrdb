@@ -27,24 +27,24 @@ import (
 // soPINField is the request-message field that carries the SO PIN on QUIC.
 const soPINField = "so_pin"
 
-// soPINCarriers names, for every SO-gated QUIC method whose request message
-// has a so_pin field, a constructor for that message.
+// soPINCarriers names, for every SO-gated QUIC method, a constructor for its
+// request message, whose so_pin field carries the SO PIN.
 //
 // A QUIC frame has no header section, so unlike REST (the X-QRDB-SO-PIN
 // header), gRPC and Unix (x-qrdb-so-pin metadata) and MCP (the header on the
 // /mcp request), the only per-request carrier QUIC has is the request message
-// itself. These are the barrier-PIN operations, whose messages already carry
-// the SO PIN.
+// itself. barrier.RecoveryDelete's request used to be empty and so had no
+// carrier; it is now BarrierRecoveryDeleteRequest.
 //
-// A gated method absent from this table has no carrier: its request presents
-// no PIN and the gate refuses it (fail-closed), never admits it. At present
-// that is barrier.RecoveryDelete, whose request is empty on every transport.
-// TestSOGate_EveryGatedQUICMethodIsAccountedFor pins the table against the
-// method registry, so a newly gated method cannot silently lack a carrier.
+// A gated method absent from this table would present no PIN and the gate
+// would refuse it (fail-closed), never admit it.
+// TestSOGate_EveryGatedQUICMethodHasACarrier pins the table against the
+// method registry, so a newly gated method cannot silently lack one.
 var soPINCarriers = map[string]func() proto.Message{
 	"barrier.ShamirInitialize": func() proto.Message { return &pb.BarrierShamirInitializeRequest{} },
 	"barrier.Rekey":            func() proto.Message { return &pb.BarrierRekeyRequest{} },
 	"barrier.RecoveryGenerate": func() proto.Message { return &pb.BarrierRecoveryGenerateRequest{} },
+	"barrier.RecoveryDelete":   func() proto.Message { return &pb.BarrierRecoveryDeleteRequest{} },
 	"ceremony.Initialize":      func() proto.Message { return &pb.CeremonyInitializeRequest{} },
 	"ceremony.SignCSR":         func() proto.Message { return &pb.CeremonySignCSRRequest{} },
 }

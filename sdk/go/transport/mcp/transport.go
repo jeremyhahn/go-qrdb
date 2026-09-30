@@ -183,7 +183,11 @@ func (t *Transport) Connect(ctx context.Context) error {
 		client, err = mcpclient.NewInProcessClient(t.mcpServer)
 	} else {
 		// Network connection via Streamable HTTP.
-		var httpOpts []mcptransport.StreamableHTTPCOption
+		// A call made with a context bound by transport.WithSOPIN carries the
+		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request.
+		httpOpts := []mcptransport.StreamableHTTPCOption{
+			mcptransport.WithHTTPHeaderFunc(transport.SOPINHeaders),
+		}
 		if tlsCfg, tlsErr := t.buildTLSConfig(); tlsErr != nil {
 			return &transport.ConnectionError{
 				Address: t.config.Address,

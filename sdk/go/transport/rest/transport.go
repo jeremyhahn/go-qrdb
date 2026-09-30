@@ -132,7 +132,9 @@ func (t *Transport) Connect(ctx context.Context) error {
 		timeout = 30 * time.Second
 	}
 
-	t.baseRT = httpTransport
+	// Every request made with a context bound by transport.WithSOPIN carries
+	// the SO PIN header.
+	t.baseRT = transport.SOPINRoundTripper(httpTransport)
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,

@@ -845,7 +845,7 @@ service QRDBService {
     }
 
     // BarrierRecoveryDelete deletes all stored recovery keys.
-    rpc BarrierRecoveryDelete(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    rpc BarrierRecoveryDelete(BarrierRecoveryDeleteRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:generate_recovery";
     }
 
@@ -3218,6 +3218,16 @@ message BarrierRecoveryGenerateRequest {
     int32 threshold = 1;
     int32 total = 2;
     string so_pin = 3;
+}
+
+// BarrierRecoveryDeleteRequest deletes all stored recovery keys. It replaced
+// google.protobuf.Empty so the operation can carry the SO PIN in the request
+// itself, which is the only per-request carrier the QUIC frame has: the SO
+// dual-factor gate reads so_pin there. On gRPC and the Unix socket the gate
+// reads the x-qrdb-so-pin metadata entry instead. An empty message encodes
+// exactly as Empty did, so the change is wire-compatible.
+message BarrierRecoveryDeleteRequest {
+    string so_pin = 1;
 }
 
 // BarrierRecoveryKeysResponse is the share-free result of recovery key

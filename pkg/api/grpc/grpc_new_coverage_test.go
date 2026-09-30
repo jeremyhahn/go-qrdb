@@ -293,7 +293,7 @@ func TestGRPC_BarrierRecoveryDelete_Error(t *testing.T) {
 		WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

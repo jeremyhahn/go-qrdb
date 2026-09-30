@@ -42,8 +42,13 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 			CsrPem:   o.CSRPEM,
 		}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.CeremonyInitializeRequest{
-		SoPin:                  req.SOPin,
+		SoPin:                  soPIN,
 		UserPin:                req.UserPin,
 		Threshold:              int32(req.Threshold),
 		CredentialSealStrategy: req.CredentialSealStrategy,
@@ -204,9 +209,14 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.CeremonySignCSRRequest{
 		Username: req.Username,
-		SoPin:    req.SOPin,
+		SoPin:    soPIN,
 		CsrPem:   req.CSRPEM,
 		Role:     req.Role,
 	})

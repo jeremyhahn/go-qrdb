@@ -650,6 +650,13 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 	// When a database is scoped, inject the x-qrdb-database metadata on every
 	// RPC. The server only consults it for data-plane handlers; management and
 	// admin RPCs ignore it, so universal injection is safe.
+	// A context bound by transport.WithSOPIN carries the SO PIN in the
+	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor()),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor()),
+	)
+
 	if t.activeDatabase != "" {
 		opts = append(opts,
 			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),

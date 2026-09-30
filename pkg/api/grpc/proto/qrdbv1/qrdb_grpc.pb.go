@@ -561,7 +561,7 @@ type QRDBServiceClient interface {
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
 	BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
-	BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierRecoveryStatusResponse, error)
 	// BarrierRootToken generates a new root token using Shamir shares.
@@ -2156,7 +2156,7 @@ func (c *qRDBServiceClient) BarrierRecoveryRecover(ctx context.Context, in *Barr
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryDelete_FullMethodName, in, out, cOpts...)
@@ -3024,7 +3024,7 @@ type QRDBServiceServer interface {
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
 	BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
-	BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error)
 	// BarrierRootToken generates a new root token using Shamir shares.
@@ -3609,7 +3609,7 @@ func (UnimplementedQRDBServiceServer) BarrierRecoveryGenerate(context.Context, *
 func (UnimplementedQRDBServiceServer) BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryRecover not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryDelete not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error) {
@@ -6360,7 +6360,7 @@ func _QRDBService_BarrierRecoveryRecover_Handler(srv interface{}, ctx context.Co
 }
 
 func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(BarrierRecoveryDeleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -6372,7 +6372,7 @@ func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Con
 		FullMethod: QRDBService_BarrierRecoveryDelete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, req.(*BarrierRecoveryDeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
