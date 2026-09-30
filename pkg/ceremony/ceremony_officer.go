@@ -429,6 +429,7 @@ func completeClaimShareLocked(
 	}
 
 	// Claim the share exactly once.
+	//secure:unwiped the claimed share is handed to the officer in ShareClaimResult, and the transport response owns it
 	shareBytes, claimErr := store.Claim(username)
 	if claimErr != nil {
 		delete(challenges, challengeKey)
