@@ -19,12 +19,15 @@ package raft
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -292,6 +295,57 @@ func TestHostAdapter_IsShardJoining(t *testing.T) {
 		}
 		a := newTestAdapter(mock)
 		assert.False(t, a.IsShardJoining(1))
+	})
+}
+
+func TestHostAdapter_SyncGetShardMembership(t *testing.T) {
+	t.Run("returns the committed membership from inner", func(t *testing.T) {
+		identity := "spki:" + strings.Repeat("ab", 32)
+		mock := &mockQuicraftHost{
+			syncGetShardMembershipFn: func(_ context.Context, shardID uint64) (*quicraft.Membership, error) {
+				assert.Equal(t, uint64(7), shardID)
+				return &quicraft.Membership{
+					ConfigChangeID: 9,
+					Identities:     map[uint64]string{2: identity},
+				}, nil
+			},
+		}
+		m, err := newTestAdapter(mock).SyncGetShardMembership(context.Background(), 7)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(9), m.ConfigChangeID)
+		assert.Equal(t, identity, m.Identities[2])
+	})
+
+	t.Run("error propagates", func(t *testing.T) {
+		readErr := errors.New("no leader")
+		mock := &mockQuicraftHost{
+			syncGetShardMembershipFn: func(context.Context, uint64) (*quicraft.Membership, error) {
+				return nil, readErr
+			},
+		}
+		_, err := newTestAdapter(mock).SyncGetShardMembership(context.Background(), 7)
+		assert.ErrorIs(t, err, readErr)
+	})
+}
+
+func TestHostAdapter_NodeIdentity(t *testing.T) {
+	t.Run("no concrete host has no identity", func(t *testing.T) {
+		assert.Empty(t, newTestAdapter(&mockQuicraftHost{}).NodeIdentity())
+	})
+
+	t.Run("a host without a transport has no identity", func(t *testing.T) {
+		dir := t.TempDir()
+		host, err := quicraft.NewHost(quicraftconfig.HostConfig{
+			WALDir:        filepath.Join(dir, "wal"),
+			NodeHostDir:   filepath.Join(dir, "nodehost"),
+			RaftAddress:   "127.0.0.1:63001",
+			ListenAddress: "127.0.0.1:63001",
+			DeploymentID:  1,
+		}, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = host.Close() })
+
+		assert.Empty(t, New(host).NodeIdentity())
 	})
 }
 
