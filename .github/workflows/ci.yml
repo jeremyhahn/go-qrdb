@@ -366,6 +366,12 @@ jobs:
       - name: Test the artifact-paths guard
         run: make test-artifact-paths
 
+      # The embedded transport's database-scoped adapters are generated from
+      # the pkg/service interfaces; a stale file serves an interface's new
+      # method unscoped or fails to compile far from the cause.
+      - name: Generated database-scope adapters are current
+        run: make check-generated
+
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
       # unmapped module, an empty or rootless discovery, a partial traversal —

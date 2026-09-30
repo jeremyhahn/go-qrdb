@@ -49,14 +49,17 @@ func (s *databaseScope) tenant(ctx context.Context) string {
 	return tenant.FromContext(ctx)
 }
 
-// errScopedTimeSeriesNeedsContext is what a database-scoped time-series
-// adapter answers for the service methods that carry no context: resolving
-// them for a guessed tenant would reach another tenant's database, so they
-// fail closed. The transport never calls them; it resolves through
-// Transport.timeSeriesFor with the caller's context.
-var errScopedTimeSeriesNeedsContext = &service.CapabilityUnsupportedError{
-	Message: "timeseries: a database-scoped call needs the caller's context to resolve its tenant",
+// errScopedNeedsContext is what a database-scoped adapter answers for a
+// service method that carries no context (today, the time-series retention
+// and metric-listing methods): resolving it for a guessed tenant would reach
+// another tenant's database, so it fails closed. The transport never calls
+// those methods on an adapter; it resolves them itself with the caller's
+// context (Transport.timeSeriesFor).
+var errScopedNeedsContext = &service.CapabilityUnsupportedError{
+	Message: "embedded: a database-scoped call needs the caller's context to resolve its tenant",
 }
+
+//go:generate go run ./internal/scopegen -o database_scope_services.go
 
 // resolve returns the time-series service of the scoped database for ctx's
 // tenant.

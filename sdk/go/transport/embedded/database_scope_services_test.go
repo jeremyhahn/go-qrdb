@@ -143,7 +143,7 @@ func TestScopedAdapters_ResolvePerCallAndPropagateRefusal(t *testing.T) {
 					if len(reg.asked) != before {
 						t.Errorf("%s.%s resolved %v without a context", name, method, reg.asked[before:])
 					}
-					if err, _ := out[len(out)-1].Interface().(error); !errors.Is(err, errScopedTimeSeriesNeedsContext) {
+					if err, _ := out[len(out)-1].Interface().(error); !errors.Is(err, errScopedNeedsContext) {
 						t.Errorf("%s.%s returned %v, want the needs-context refusal", name, method, err)
 					}
 					continue

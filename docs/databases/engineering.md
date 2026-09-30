@@ -149,7 +149,10 @@ path, not the body.
   a registry every scoped call is refused. Time-series retention and metric
   listing, whose service methods take no context, are resolved by the
   transport for the caller's tenant; the scoped service refuses them rather
-  than guess a tenant. A scoped transport serves exactly the families its
+  than guess a tenant. The per-family adapters are generated from the
+  `pkg/service` interfaces (`sdk/go/transport/embedded/internal/scopegen`, run
+  by `go generate`), and CI's `make check-generated` fails while the committed
+  file is stale. A scoped transport serves exactly the families its
   unscoped transport serves: on a standalone node, which serves no MVCC,
   leases or watches, its scoped clients refuse them too. Its SQL query resolves the named database through the
   same registry, on a scoped and an unscoped transport alike, so it reads the
