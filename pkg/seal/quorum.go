@@ -452,6 +452,11 @@ func (b *StorageBarrier) finishRound(ctx context.Context, round *quorumRound, ou
 	// reconstruct a key that no longer exists and the unwrap below fails with
 	// ErrUnsealKeyMismatch: every distribution has a fresh key and a unique
 	// roster digest, so no extra check is needed here.
+	//
+	// The key cannot be read under a held borrow: resolveDomainKey hands it to
+	// the configured AEADProvider, an interface consumers implement, and then
+	// decrypts into a second protected buffer of its own.
+	//secure:unborrowed injected-interface resolveDomainKey hands the key to the configured AEADProvider (go-qrdb#428)
 	rootKey, err := b.resolveDomainKey(ctx, round.domain, keyBuf.Bytes())
 	if err != nil {
 		emitAudit(b.config.AuditLogger, "quorum-complete", "barrier", b.config.RootKeyPath, "deny",
