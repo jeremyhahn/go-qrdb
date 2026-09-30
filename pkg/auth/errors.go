@@ -50,6 +50,27 @@ var (
 	ErrCertificateRevoked = &AuthError{Code: "cert_revoked", Message: "client certificate has been revoked"}
 )
 
+// CertificateTenantError reports that a client certificate names no usable
+// tenant and must be refused: a SPIFFE SAN outside the pinned trust domain, a
+// malformed SPIFFE SAN, or SANs naming more than one tenant. It matches
+// ErrInvalidCertificate under errors.Is and errors.As (so every transport
+// classifies it exactly as before) and carries the spiffe cause for callers
+// that need to tell the three apart.
+type CertificateTenantError struct {
+	// Err is the spiffe cause.
+	Err error
+}
+
+// Error returns the invalid-certificate message with the cause appended.
+func (e *CertificateTenantError) Error() string {
+	return ErrInvalidCertificate.Error() + ": " + e.Err.Error()
+}
+
+// Unwrap exposes both ErrInvalidCertificate and the cause.
+func (e *CertificateTenantError) Unwrap() []error {
+	return []error{ErrInvalidCertificate, e.Err}
+}
+
 // RevocationCheckError reports that a certificate's revocation status could
 // not be determined.
 //

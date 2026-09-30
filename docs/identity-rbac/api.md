@@ -68,6 +68,42 @@ the root of tenant isolation in every other feature.
 presented certificate into a user. Because the thumbprint is over the public
 key, a renewed certificate for the same key resolves to the same user.
 
+**The lookup searches the context tenant only.** There is no cross-tenant
+thumbprint index. A composing host that resolves a verified certificate before
+any tenant is bound (a public route, where the middleware authenticates
+nothing) derives the tenant with the same rule the mTLS authenticator uses,
+binds it, and looks the thumbprint up within it:
+
+```go
+tenantID, _, err := sdk.TenantFromClientCert(cert, trustDomain)
+if err != nil {
+	// foreign trust domain, malformed SPIFFE SAN, nil certificate: refuse
+}
+ctx = sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(tenantID))
+u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(cert))
+```
+
+`sdk.TenantFromClientCert` is `auth.TenantFromClientCert`, the one
+implementation `MTLSAuthenticator.TenantFromCert` delegates to: the SPIFFE
+tenant SAN under the pinned trust domain, else the first Subject OU, else no
+tenant (which `NormalizeTenantID` folds onto the system tenant, as the
+middleware does). Every URI SAN is examined, not only the first. The
+certificate is refused, and never falls back to the OU, when:
+
+- any SPIFFE SAN is under a trust domain other than the pinned one;
+- a SPIFFE SAN is malformed;
+- its tenant SANs name more than one distinct tenant
+  (`sdk.SpiffeAmbiguousTenantError`).
+
+Every refusal is a `*sdk.ClientCertificateTenantError` that matches
+`sdk.ErrInvalidClientCertificate` and carries the cause. The mTLS
+authenticator applies the same rule, so such a certificate cannot log in
+either.
+
+**Pin the trust domain.** `trustDomain == ""` accepts a SPIFFE SAN from any
+trust domain and exists for tests. A composer passes the trust domain its CA
+issues under, the same value it configures the node with.
+
 **Once an account has at least one binding, only a certificate matching one of
 them authenticates as it** — the CN and OU select the account, the thumbprint
 proves the holder. A certificate naming an enrolled account that matches none

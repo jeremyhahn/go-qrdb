@@ -71,6 +71,48 @@ var ParseMTLSBindingPolicy = auth.ParseMTLSBindingPolicy
 // InvalidMTLSBindingPolicyError reports an unrecognised policy spelling.
 type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
 
+// TenantFromClientCert is qrdb's certificate-to-tenant rule -- the one the
+// mTLS authenticator applies to every login -- for a composing host that
+// resolves a verified client certificate's user before any tenant is bound
+// (a public route, where the middleware authenticates nothing).
+//
+//   - The SPIFFE tenant SAN wins. Every URI SAN is examined, never just the
+//     first: SANs naming more than one distinct tenant are refused
+//     (SpiffeAmbiguousTenantError), and under a pin ANY SPIFFE SAN from
+//     another trust domain is refused (ErrSpiffeTrustDomainMismatch), as is a
+//     malformed one. A refusal is never overridden by the OU.
+//   - With no SPIFFE tenant SAN, the first Subject OU is the tenant; with
+//     neither, the tenant is "".
+//   - Every refusal is a *ClientCertificateTenantError, which matches
+//     ErrInvalidClientCertificate under errors.Is and carries the cause.
+//
+// pinnedTrustDomain == "" ACCEPTS A SPIFFE SAN FROM ANY TRUST DOMAIN. That is
+// for tests only. A composer MUST pass the trust domain its CA issues under
+// (the same value it configures qrdb with); an unpinned call lets a
+// certificate from any SPIFFE issuer the CA pool trusts choose its tenant.
+//
+// Bind the result exactly as the middleware does, then look the thumbprint up
+// within that tenant only:
+//
+//	tenantID, _, err := sdk.TenantFromClientCert(cert, trustDomain) // never ""
+//	if err != nil { /* refuse */ }
+//	ctx = sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(tenantID))
+//	u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(cert))
+//
+// (Aliases pkg/auth.TenantFromClientCert.)
+var TenantFromClientCert = auth.TenantFromClientCert
+
+// ErrInvalidClientCertificate is what every TenantFromClientCert refusal
+// matches under errors.Is: a nil certificate, a SPIFFE SAN outside the pinned
+// trust domain, a malformed SPIFFE SAN, or SANs naming more than one tenant.
+// (Aliases pkg/auth.ErrInvalidCertificate.)
+var ErrInvalidClientCertificate = auth.ErrInvalidCertificate
+
+// ClientCertificateTenantError is TenantFromClientCert's refusal: it matches
+// ErrInvalidClientCertificate and wraps the SPIFFE cause.
+// (Aliases pkg/auth.CertificateTenantError.)
+type ClientCertificateTenantError = auth.CertificateTenantError
+
 // ---------------------------------------------------------------------------
 // Auth context helpers
 // ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -60,6 +61,20 @@ var (
 	// port, or anything else url.URL will not carry as a bare host.
 	ErrTrustDomainInvalid = errors.New("spiffe: trust domain does not round-trip through a spiffe id")
 )
+
+// AmbiguousTenantError is returned by TenantFromCert when a certificate
+// carries tenant-scoped SPIFFE SANs naming more than one distinct tenant. Such
+// a certificate names no tenant: answering with the first SAN would let the
+// issuer's SAN order choose the tenant, so it is refused (fail-closed).
+type AmbiguousTenantError struct {
+	// TenantIDs are the distinct tenants the SANs name, in SAN order.
+	TenantIDs []string
+}
+
+// Error returns a human-readable description naming every tenant.
+func (e *AmbiguousTenantError) Error() string {
+	return "spiffe: certificate names more than one tenant: " + strings.Join(e.TenantIDs, ", ")
+}
 
 // Workload kinds.
 const (
@@ -137,31 +152,56 @@ func ParseID(u *url.URL) (ID, bool, error) {
 }
 
 // TenantFromCert scans a certificate's URI SANs for a tenant-scoped SPIFFE
-// identity, enforcing the pinned trust domain (fail-closed).
-//
-//   - When pinnedTrustDomain is non-empty, any SPIFFE tenant SAN whose trust
-//     domain differs returns ErrTrustDomainMismatch (reject foreign certs).
+// identity, enforcing the pinned trust domain (fail-closed). Every URI SAN is
+// examined; the answer never depends on SAN order.
+//   - When pinnedTrustDomain is non-empty, ANY SPIFFE SAN whose trust domain
+//     differs -- a tenant path or not, first or last -- returns
+//     ErrTrustDomainMismatch (reject foreign certs).
+//   - Tenant SANs naming more than one distinct tenant return
+//     *AmbiguousTenantError: the certificate names no tenant.
+//   - A malformed tenant SPIFFE SAN returns the parse error (fail-closed).
 //   - When no tenant SPIFFE SAN is present, returns ErrNoTenantSPIFFEID so the
 //     caller can fall back to home-realm discovery or fail closed.
-//   - A malformed tenant SPIFFE SAN returns the parse error (fail-closed).
+//
+// With pinnedTrustDomain empty any trust domain is accepted. Production
+// composers must pin.
 func TenantFromCert(cert *x509.Certificate, pinnedTrustDomain string) (ID, error) {
 	if cert == nil {
 		return ID{}, ErrNoTenantSPIFFEID
 	}
+	var (
+		found   ID
+		tenants []string
+	)
 	for _, u := range cert.URIs {
 		id, ok, err := ParseID(u)
 		if err != nil {
 			return ID{}, err
 		}
+		if u == nil || u.Scheme != scheme {
+			continue
+		}
+		if pinnedTrustDomain != "" && u.Host != pinnedTrustDomain {
+			return ID{}, ErrTrustDomainMismatch
+		}
 		if !ok {
 			continue
 		}
-		if pinnedTrustDomain != "" && id.TrustDomain != pinnedTrustDomain {
-			return ID{}, ErrTrustDomainMismatch
+		if len(tenants) == 0 {
+			found = id
 		}
-		return id, nil
+		if !slices.Contains(tenants, id.TenantID) {
+			tenants = append(tenants, id.TenantID)
+		}
 	}
-	return ID{}, ErrNoTenantSPIFFEID
+	switch len(tenants) {
+	case 0:
+		return ID{}, ErrNoTenantSPIFFEID
+	case 1:
+		return found, nil
+	default:
+		return ID{}, &AmbiguousTenantError{TenantIDs: tenants}
+	}
 }
 
 // ValidateTrustDomain reports whether trustDomain can be pinned and minted

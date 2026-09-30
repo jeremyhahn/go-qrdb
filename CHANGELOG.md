@@ -35,6 +35,16 @@ are not reconstructed here — their history is in the git log.
   that drive the real auth-factor service, with a strict variant that
   verifies a possession proof over each nonce and a permissive one. Imported
   by tests only.
+- `sdk.TenantFromClientCert` (and `sdk.ErrInvalidClientCertificate`): qrdb's
+  certificate-to-tenant rule, extracted from
+  `MTLSAuthenticator.TenantFromCert` into `auth.TenantFromClientCert` and
+  re-exported, so a composing host can resolve a verified certificate's user
+  before any tenant is bound: derive the tenant, bind it with
+  `sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(t))`, then call
+  `GetUserByCertThumbprint` within it. The authenticator delegates to the same
+  function, so there is one rule. No cross-tenant thumbprint index is added.
+  `pinnedTrustDomain == ""` accepts any trust domain and is for tests only;
+  composers must pin.
 
 ### Changed — BREAKING
 
@@ -400,6 +410,16 @@ are not reconstructed here — their history is in the git log.
   through the registry's own normalisation (case-insensitive), which the
   registry now also applies when a factor is registered, so a factor whose
   `Name()` is not lower case can be enrolled at all.
+- **A client certificate whose SPIFFE SANs name more than one tenant, or that
+  carries any SPIFFE SAN outside the pinned trust domain, is refused.** The
+  certificate-to-tenant rule read only the first tenant SAN, so the issuer's
+  SAN order chose the tenant, and a foreign-domain SAN after a good one was
+  ignored. Every URI SAN is now examined, on login and in
+  `sdk.TenantFromClientCert` alike. The refusal is the new
+  `*auth.CertificateTenantError` (`sdk.ClientCertificateTenantError`), which
+  still matches `ErrInvalidCertificate`, so every transport answers as
+  before; an ambiguous certificate carries the new
+  `*spiffe.AmbiguousTenantError` (`sdk.SpiffeAmbiguousTenantError`).
 
 ### Known limits
 
