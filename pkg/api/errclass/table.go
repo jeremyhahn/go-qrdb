@@ -699,4 +699,8 @@ var authSamples = []error{
 	&authmw.AuthChainError{},
 	&authmw.CertSerialUnresolvableError{},
 	&authmw.RateLimitedError{},
+	// The attested-caller gate: a peer whose measured state is not acceptable
+	// is refused, and a verifier that could not decide is a retryable refusal.
+	&authmw.PeerAttestationRefusedError{Reason: authmw.PeerAttestationStateRejected},
+	&authmw.PeerAttestationRefusedError{Reason: authmw.PeerAttestationVerifierError},
 }
