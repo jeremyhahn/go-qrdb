@@ -24,7 +24,12 @@ cannot complete.
 
 ## `GET /v1/ca/bootstrap`
 
-Serves the CA bootstrap certificate.
+Serves the CA bootstrap certificate: `CERTIFICATE` PEM blocks and **nothing
+else**. The route is public, so it never serves key material. The configured
+bytes are reduced to their `CERTIFICATE` blocks when the server is built, so
+a private key concatenated onto the certificate is dropped rather than
+published. Releases before this one served the cluster CA private key here;
+see the CHANGELOG entry for the rotation that requires.
 
 **Registered only when `len(s.caBootstrapCert) > 0`.** A deployment that has not
 configured a bootstrap certificate returns 404 — the route does not exist,

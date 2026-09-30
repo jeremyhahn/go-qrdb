@@ -11,6 +11,64 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **The cluster CA private key no longer leaves the node that holds it, in
+  any form.** Before this release, `GET /v1/ca/bootstrap` served the cluster
+  CA certificate and **the CA private key** on every first node of a
+  multi-node cluster. The route is public (it is reached before the caller
+  holds a credential), so anyone who could reach a first node's admin port
+  could read the key and mint any cluster node identity. Every node that
+  joined over SPKI-pinned TLS, DANE or direct HTTPS also received the key and
+  wrote it to its data directory as `ca-key.pem`. The Noise NK advertiser
+  handed the same key-bearing bundle to go-truststrap, whose handler stripped
+  the key before it reached the wire. Now `/v1/ca/bootstrap` and the Noise
+  advertiser serve the CA certificate only. Any key material handed to them
+  is filtered out (`clustertls.CertificatesOnly`), and a joining node never
+  writes `ca-key.pem`.
+
+  **Treat the cluster CA key of every existing multi-node cluster as
+  compromised.** It was readable without authentication from every first
+  node's admin port, and it sits on disk on every joined node. Rotate the
+  cluster CA:
+  1. Generate a new cluster CA on one node, the one that will hold it.
+  2. Issue a new node certificate for every member from the new CA.
+  3. Restart the members with a trust bundle holding both CAs, so old and new
+     certificates keep verifying during the change.
+  4. Once every member presents a certificate from the new CA, remove the old
+     CA from the bundle.
+  5. Delete `ca-key.pem` from every node except the one holding the new CA.
+  6. Reissue client and officer certificates that chain to the old CA.
+
+  Until the cluster CA has been rotated, restrict network access to every
+  node's admin port. See `docs/clustering/user.md`, "Adding a node".
+
+### Changed — BREAKING
+
+- **Joining an existing cluster through enrollment is unavailable in this
+  release.** A node started with bootstrap flags (`--bootstrap-noise-key`,
+  `--bootstrap-spki-pin`, `--bootstrap-dane-dns`, `--bootstrap-direct-url`)
+  refuses to start with `*clusterenroll.EnrollmentUnavailableError`
+  (`EnrollmentUnavailableError` in `cmd/qrdbd` and `sdk/go/clusterenroll`).
+  The refusal comes before any network dial and before anything is written
+  to the data directory. Earlier releases enrolled a node by giving it the CA
+  private key. Member-side issuance, where the joining node submits a CSR
+  that a running member signs, lands in a following release. Until then, add
+  a node by issuing its certificate on the node that holds the cluster CA and
+  starting it with `--tls-ca-file`, `--tls-cert-file` and `--tls-key-file`.
+  This affects `clusterenroll.Join` and the join paths of `Resolve` and
+  `ResolveCA`. `ResolveCA`'s join branch no longer returns a CA key, because a
+  joining node has none. `FetchAnchor` and the first-node and single-node
+  paths are unchanged.
+- **`WithCABootstrap` takes the CA certificate only**, in `pkg/api/rest`
+  and `pkg/server`: `WithCABootstrap(certPEM []byte)`. The key parameter is
+  gone. Input with no `CERTIFICATE` block registers no route.
+- **Removed:** `clustertls.GenerateLeafFromCA` and its `sdk/go/clustertls`
+  re-export, which minted a leaf from a CA key received over the network.
+  Also removed: `clusterenroll.JoinError` (`sdk/go/clusterenroll.JoinError`,
+  `cmd/qrdbd.BootstrapError`), which only that path returned.
+  `clustertls.CertificatesOnly` is added.
+
 ## [0.21.1-alpha] - 2026-09-29
 
 Security hotfix: REST percent-encoded path authorization bypass (authorize and route on the same decoded path).

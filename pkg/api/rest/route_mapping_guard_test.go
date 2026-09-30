@@ -64,6 +64,10 @@ func (guardEncMigrator) EnableEncryption(context.Context, service.BarrierScope, 
 	return nil
 }
 
+// guardCACertPEM is a CERTIFICATE block: WithCABootstrap keeps certificate
+// blocks only, so anything else would leave /v1/ca/bootstrap unregistered.
+const guardCACertPEM = "-----BEGIN CERTIFICATE-----\nZ3VhcmQ=\n-----END CERTIFICATE-----\n"
+
 // newFullyWiredGuardServer builds a *Server with every optional service and
 // ServerOption wired so every conditional route registration in
 // registerRoutes fires. It reuses the package's existing test doubles so the
@@ -97,12 +101,12 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithRebalanceService(&stubRebalanceService{}), // gates /v1/rebalance/*
 		WithAuthFactorService(&stubAuthFactorSvc{}),
 		WithUserAuthFactorService(&mockUserAuthFactorService{}),
-		WithCertProvider(&mockCertProvider{}),                            // gates /certs/*
-		WithCABootstrap([]byte("guard-ca-cert"), []byte("guard-ca-key")), // gates /v1/ca/bootstrap
-		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}),                // gates /v1/cluster/*
-		WithBarrierService(newExtBarrierSvc()),                           // gates /v1/barrier/*
-		WithEncryptionMigrator(guardEncMigrator{}),                       // gates /v1/barrier/enable-encryption
-		WithCeremonyService(newCoverageCeremonyService()),                // gates /v1/ceremony/*
+		WithCertProvider(&mockCertProvider{}),             // gates /certs/*
+		WithCABootstrap([]byte(guardCACertPEM)),           // gates /v1/ca/bootstrap
+		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}), // gates /v1/cluster/*
+		WithBarrierService(newExtBarrierSvc()),            // gates /v1/barrier/*
+		WithEncryptionMigrator(guardEncMigrator{}),        // gates /v1/barrier/enable-encryption
+		WithCeremonyService(newCoverageCeremonyService()), // gates /v1/ceremony/*
 		WithCeremonyCA(&coverageCeremonyCA{}),
 		WithCustodianService(&stubCustodianSvc{}),             // gates /v1/ceremony/enroll-custodian etc.
 		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*

@@ -81,10 +81,9 @@ var GenerateClientCert = clustertls.GenerateClientCert
 // SPIFFE node URI SAN.
 var GenerateCABundle = clustertls.GenerateCABundle
 
-// GenerateLeafFromCA parses concatenated CA certificate + CA private key PEM
-// bytes and generates a node leaf certificate signed by the CA. nodeURI is an
-// optional SPIFFE node URI SAN.
-var GenerateLeafFromCA = clustertls.GenerateLeafFromCA
+// CertificatesOnly returns the CERTIFICATE blocks of a PEM input and nothing
+// else; private-key blocks are dropped. See clustertls.CertificatesOnly.
+var CertificatesOnly = clustertls.CertificatesOnly
 
 // IssueLeafForKey signs a node leaf certificate for a caller-supplied public
 // key (e.g. a hardware-resident key whose private key never leaves the device)

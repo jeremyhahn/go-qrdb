@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // White-box tests for pkg/clusterenroll. The package declaration gives access
-// to unexported types (clusterBundleProvider, Advertiser fields) for thorough
+// to unexported types (Advertiser fields) for thorough
 // coverage of the internal implementation.
 package clusterenroll
 
@@ -36,79 +36,6 @@ import (
 // discardLogger returns an slog.Logger that silently discards all output.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// ---------------------------------------------------------------------------
-// clusterBundleProvider tests
-// ---------------------------------------------------------------------------
-
-func TestClusterBundleProvider_CABundle(t *testing.T) {
-	certPEM := []byte("-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----\n")
-	keyPEM := []byte("-----BEGIN EC PRIVATE KEY-----\ntest-key\n-----END EC PRIVATE KEY-----\n")
-
-	provider := &clusterBundleProvider{
-		caCertPEM: certPEM,
-		caKeyPEM:  keyPEM,
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-
-	want := append(append([]byte{}, certPEM...), keyPEM...)
-	if string(got) != string(want) {
-		t.Errorf("CABundle returned unexpected data\ngot:  %q\nwant: %q", got, want)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_EmptyCert(t *testing.T) {
-	provider := &clusterBundleProvider{
-		caCertPEM: nil,
-		caKeyPEM:  []byte("key-data"),
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-	if string(got) != "key-data" {
-		t.Errorf("expected just key data, got %q", got)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_EmptyKey(t *testing.T) {
-	provider := &clusterBundleProvider{
-		caCertPEM: []byte("cert-data"),
-		caKeyPEM:  nil,
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-	if string(got) != "cert-data" {
-		t.Errorf("expected just cert data, got %q", got)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_DoesNotMutateInputs(t *testing.T) {
-	certPEM := []byte("cert")
-	keyPEM := []byte("key")
-	origCert := append([]byte{}, certPEM...)
-	origKey := append([]byte{}, keyPEM...)
-
-	provider := &clusterBundleProvider{caCertPEM: certPEM, caKeyPEM: keyPEM}
-	if _, err := provider.CABundle(); err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-
-	if string(certPEM) != string(origCert) {
-		t.Error("caCertPEM was mutated")
-	}
-	if string(keyPEM) != string(origKey) {
-		t.Error("caKeyPEM was mutated")
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -765,18 +692,6 @@ func TestFetchError_ErrorAndUnwrap(t *testing.T) {
 	inner := textError("connection refused")
 	e := &FetchError{Method: "Noise", Err: inner}
 	want := "clusterenroll: bootstrap fetch failed via Noise: connection refused"
-	if e.Error() != want {
-		t.Errorf("got %q, want %q", e.Error(), want)
-	}
-	if e.Unwrap() != inner {
-		t.Error("Unwrap did not return inner error")
-	}
-}
-
-func TestJoinError_ErrorAndUnwrap(t *testing.T) {
-	inner := textError("key parse failed")
-	e := &JoinError{Err: inner}
-	want := "clusterenroll: TLS bootstrap failed: key parse failed"
 	if e.Error() != want {
 		t.Errorf("got %q, want %q", e.Error(), want)
 	}

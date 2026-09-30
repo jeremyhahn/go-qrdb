@@ -128,10 +128,13 @@ cluster-wide enrollment decision from it at read time would be a guess wearing
 the clothes of a recovery.
 
 Nor is it derived from the material, which was measured rather than assumed.
-Multi-node enrollment is the shared-CA-key mode, so a **joining** node receives
-the CA certificate *and the CA private key* — that is how it mints its own leaf
-— and persists both: `[ca-key.pem ca.pem enrollment-role node-cert.pem
-node-key.pem]`. "Holds the CA key and is not single-node" therefore does not
+Releases before the CA key stopped being distributed enrolled a **joining**
+node by handing it the CA certificate *and the CA private key* — that is how it
+minted its own leaf — and it persisted both: `[ca-key.pem ca.pem
+enrollment-role node-cert.pem node-key.pem]`. This release never hands out the
+key and refuses joins through enrollment (`*EnrollmentUnavailableError`, before
+any dial or write), but data directories written that way still exist. "Holds
+the CA key and is not single-node" therefore does not
 mean "generated the CA", and acting on it would give every joined node in the
 cluster the first node's role, each opening an enrollment listener nobody asked
 for. The other candidate signal, `noise-key.hex`, does discriminate but is
@@ -449,8 +452,10 @@ type ImbalanceReport struct {
 | Discovery finds no peers | `BootstrapShard` fails at the quorum check | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
-| FIPS 140-3 mode, bootstrap join configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
-| FIPS 140-3 mode, bootstrap join configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the join | n/a |
+| Any bootstrap join (bootstrap flags set), this release | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that still dials. | **yes** |
+| `/v1/ca/bootstrap` or the Noise advertiser handed key material | filtered to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`, `ValidateAnchorBundle`); the CA private key is never served | **yes** |
+| FIPS 140-3 mode, anchor fetch configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
+| FIPS 140-3 mode, anchor fetch configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the fetch | n/a |
 | FIPS 140-3 mode, first node | advertises the approved methods with a WARN naming FIPS; no Noise listener, no `noise-key.hex` | n/a |
 | `AddMember` for an existing replica | skipped (idempotent) | n/a |
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |

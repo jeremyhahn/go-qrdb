@@ -586,32 +586,6 @@ func TestLoadTLSFromDir_WithoutCAKey_ReturnsBundle(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// tls.go: generateLeafFromCA error branches
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_NoCertBlock(t *testing.T) {
-	_, err := generateLeafFromCA([]byte("no-pem-blocks-here"))
-	require.Error(t, err)
-	var bke *BootstrapKeyError
-	require.True(t, errors.As(err, &bke))
-	assert.Equal(t, "CA certificate", bke.Kind)
-}
-
-func TestGenerateLeafFromCA_NoKeyBlock(t *testing.T) {
-	// Provide a valid CERTIFICATE block but no key block.
-	_, _, caCert, _, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	pemData := pemEncodeCertificate(caCert.Raw)
-
-	_, err = generateLeafFromCA(pemData)
-	require.Error(t, err)
-	var bke *BootstrapKeyError
-	require.True(t, errors.As(err, &bke))
-	assert.Equal(t, "CA private key", bke.Kind)
-}
-
-// ---------------------------------------------------------------------------
 // tls.go: loadCACertPool
 // ---------------------------------------------------------------------------
 

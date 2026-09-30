@@ -22,7 +22,8 @@
 //  1. Explicit files: TLSCAFile, TLSCertFile, TLSKeyFile all set.
 //  2. Cached certs: data-dir already contains ca.pem, node-cert.pem, node-key.pem.
 //  3. Single node: opts.SingleNode true — generates a self-signed CA.
-//  4. Joining node: Bootstrap.HasFlags() true — fetches the CA bundle via truststrap.
+//  4. Joining node: Bootstrap.HasFlags() true — refused with
+//     *EnrollmentUnavailableError until member-side CSR issuance ships.
 //  5. First node: multi-node cluster without bootstrap flags — generates CA and
 //     starts the Noise NK advertiser for peer enrollment.
 package clusterenroll
@@ -31,8 +32,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/pem"
-	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -68,6 +67,12 @@ const (
 // substitute: CI job containers run as root, and root reads it successfully
 // (conventions/testing-guidelines.md, Fault Injection).
 var readFileFn = os.ReadFile
+
+// newNoiseServer is noiseboot.NewServer, indirected so a test can observe the
+// exact bundle provider this package hands the Noise server. What reaches the
+// wire is also shaped by go-truststrap's handler, and this package's
+// guarantee that no key material is served must hold on its own bytes.
+var newNoiseServer = noiseboot.NewServer
 
 // Options holds the parameters for cluster-TLS enrollment orchestration.
 // Callers populate this from their own configuration (e.g., CLI flags or
@@ -286,21 +291,6 @@ func (e *FetchError) Error() string {
 // Unwrap returns the underlying error.
 func (e *FetchError) Unwrap() error { return e.Err }
 
-// JoinError is returned when the overall bootstrap join process fails after a
-// successful CA-bundle fetch (e.g., leaf certificate generation or persist).
-type JoinError struct {
-	// Err is the underlying error.
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *JoinError) Error() string {
-	return "clusterenroll: TLS bootstrap failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *JoinError) Unwrap() error { return e.Err }
-
 // ServerError is returned when starting or operating a bootstrap server fails.
 type ServerError struct {
 	// Protocol identifies the failed protocol (e.g., "noise").
@@ -378,22 +368,31 @@ func (e *MissingAdminPortError) Error() string {
 		": no admin port configured; set server.admin_port (or --admin-port)"
 }
 
-// clusterBundleProvider implements noiseboot.BundleProvider by concatenating
-// the cluster CA certificate and CA private key as a single PEM bundle.
-// Joining nodes receive this bundle over the Noise NK channel and use it to
-// generate their own leaf certificates, sharing the cluster CA without the
-// CA key ever leaving the first node in plaintext.
-type clusterBundleProvider struct {
-	caCertPEM []byte
-	caKeyPEM  []byte
-}
+// EnrollmentUnavailableError is returned when this node is configured to
+// join an existing cluster (bootstrap flags set). Joining is unavailable in
+// this release, and the refusal is raised before any network dial and before
+// anything touches the data directory.
+//
+// Earlier releases enrolled a joining node by handing it the cluster CA
+// PRIVATE KEY -- over /v1/ca/bootstrap, a public route -- and letting it mint
+// its own leaf. That made every node, and anyone who could reach a first
+// node's admin port, a holder of the key that mints every cluster identity.
+// The key is no longer distributed in any form, and member-side issuance --
+// the joining node generates its key locally and submits a CSR that a running
+// member signs -- has not shipped yet. Until it does, the only way to add a
+// node is to issue its certificate on the node that holds the cluster CA and
+// start it with the explicit TLS file flags.
+type EnrollmentUnavailableError struct{}
 
-// CABundle returns the CA certificate and key concatenated as PEM bytes.
-func (p *clusterBundleProvider) CABundle() ([]byte, error) {
-	bundle := make([]byte, 0, len(p.caCertPEM)+len(p.caKeyPEM))
-	bundle = append(bundle, p.caCertPEM...)
-	bundle = append(bundle, p.caKeyPEM...)
-	return bundle, nil
+// Error returns a human-readable description that names the remedy.
+func (e *EnrollmentUnavailableError) Error() string {
+	return "clusterenroll: joining an existing cluster is unavailable in this release: " +
+		"the cluster CA private key is not distributed to joining nodes any more, and " +
+		"member-side certificate issuance (the joining node submits a CSR that a running " +
+		"member signs) has not shipped yet. To add a node now, issue its node certificate " +
+		"(with its SPIFFE node URI SAN) on the node that holds the cluster CA and start " +
+		"the new node with --tls-ca-file, --tls-cert-file and --tls-key-file instead of " +
+		"bootstrap flags"
 }
 
 // Resolve implements the 5-path cluster-TLS enrollment strategy and returns
@@ -455,11 +454,9 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 		return mat, nil, nil
 	}
 
-	// Path 4: joining node fetches the CA bundle from the existing cluster.
-	// Join records the role itself -- see its doc comment for why it has to be
-	// there rather than here.
+	// Path 4: joining an existing cluster. Refused in this release; see
+	// EnrollmentUnavailableError.
 	if opts.Bootstrap.HasFlags() {
-		logger.Info("bootstrap flags detected, fetching CA bundle from existing cluster")
 		mat, err := Join(ctx, opts, logger)
 		if err != nil {
 			return nil, nil, err
@@ -509,8 +506,8 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 //   - cached:         clustertls.LoadCAFromDir(opts.DataDir).
 //   - single/first:   clustertls.GenerateCA → PersistCA. The first node
 //     (!SingleNode) also starts the Noise Advertiser, as Resolve path 5 does.
-//   - join:           fetch via truststrap AutoFetch, split bundle into
-//     caCertPEM+caKeyPEM, PersistCA.
+//   - join:           refused with *EnrollmentUnavailableError. A joining
+//     node never holds the cluster CA key, so it has none to return.
 //
 // The returned Advertiser is non-nil for a node whose recorded enrollment role
 // is RoleFirstNode, on the boot that generates the CA and on every later boot
@@ -543,24 +540,10 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 		return caCertPEM, caKeyPEM, adv, nil
 	}
 
-	// Join: fetch CA bundle from an existing cluster node via truststrap.
+	// Join: a joining node never receives the cluster CA key, so there is no
+	// CA signing key to resolve. Refused before any dial or write.
 	if opts.Bootstrap.HasFlags() {
-		logger.Info("bootstrap flags detected, fetching CA bundle from existing cluster")
-		bundlePEM, fetchErr := autoFetchBundle(ctx, opts, logger)
-		if fetchErr != nil {
-			return nil, nil, nil, fetchErr
-		}
-		caCertPEM, caKeyPEM, err = splitCABundle(bundlePEM)
-		if err != nil {
-			return nil, nil, nil, &JoinError{Err: err}
-		}
-		if err := persistRole(opts.DataDir, RoleJoined); err != nil {
-			return nil, nil, nil, err
-		}
-		if err := clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
-			return nil, nil, nil, err
-		}
-		return caCertPEM, caKeyPEM, nil, nil
+		return nil, nil, nil, &EnrollmentUnavailableError{}
 	}
 
 	// Single node or first node: generate a new CA and persist it. The
@@ -608,55 +591,22 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 	return caCertPEM, caKeyPEM, adv, nil
 }
 
-// Join fetches the cluster CA bundle from an existing node via truststrap,
-// generates a leaf certificate signed by that CA, and persists everything to
-// opts.DataDir. This is the path 4 implementation; it is also exported so that
-// cmd/qrdbd can provide a thin bootstrapTLS wrapper that preserves the
-// qrdbd-specific TLSBundle type.
+// Join enrolls this node into an existing cluster (path 4).
 //
-// It records RoleJoined itself, before the material, rather than leaving that
-// to Resolve. Once a data directory holding CA material with no role file is a
-// REFUSAL TO BOOT (*MissingRoleError, go-qrdb#264) rather than a warning, a
-// path that writes material without a role does not leave a latent defect for
-// somebody to notice later -- it leaves a node that will not start on its next
-// boot. Resolve path 4 wrote the role and this function did not, so every
-// caller reaching Join directly through the SDK produced exactly that. The
-// role belongs with the write it describes, so it cannot be omitted by a
-// caller that does not know it has to supply it.
-func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.Material, error) {
-	bundlePEM, err := autoFetchBundle(ctx, opts, logger)
-	if err != nil {
-		return nil, err
-	}
-
-	nodeURI := spiffe.NodeURI(opts.TrustDomain, opts.RaftAddress)
-	mat, err := clustertls.GenerateLeafFromCA(bundlePEM, nodeURI)
-	if err != nil {
-		return nil, &JoinError{Err: err}
-	}
-
-	// Recorded here rather than at the top of this function, so that nothing
-	// touches the data directory until there is material to write: a join whose
-	// fetch or leaf issuance failed leaves no role file, and a caller that
-	// distinguished "the CA bundle could not be turned into material" from
-	// "the data directory is unusable" keeps getting the same answer for the
-	// same condition (cmd/qrdbd's TestBootstrapTLS_Noise_PersistError reaches
-	// this function with a data directory that is a regular file, and must
-	// still see the leaf failure). The ordering invariant requires only that
-	// the role reach stable storage BEFORE the material, which it does.
-	if err := persistRole(opts.DataDir, RoleJoined); err != nil {
-		return nil, err
-	}
-	if err := clustertls.PersistMaterial(mat, opts.DataDir); err != nil {
-		return nil, &JoinError{Err: err}
-	}
-
-	logger.Info("TLS bootstrap complete, certificates persisted", "dir", opts.DataDir)
-	return mat, nil
+// It is refused with *EnrollmentUnavailableError in this release: the
+// cluster CA private key is no longer distributed to joining nodes, and
+// member-side CSR issuance has not shipped. The refusal comes before any
+// bootstrap fetch and before anything is written to opts.DataDir, so a
+// refused join leaves no role file and, above all, no ca-key.pem.
+func Join(_ context.Context, _ *Options, _ *slog.Logger) (*clustertls.Material, error) {
+	return nil, &EnrollmentUnavailableError{}
 }
 
 // StartAdvertiser starts the Noise NK bootstrap server so that joining nodes
-// can securely fetch the cluster CA bundle. The server's static key is
+// can securely fetch the cluster CA CERTIFICATE. It serves mat.CACertPEM and
+// nothing else: mat.CAKeyPEM is never read here, and material whose CA
+// certificate field holds no certificate (or holds key material) is refused
+// with *AnchorError before any listener starts. The server's static key is
 // persisted to {dataDir}/noise-key.hex for reuse across restarts; if the key
 // file already exists it is loaded instead of generating a new one.
 //
@@ -671,18 +621,17 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 // toward this package's coverage, since a test binary is credited only with
 // its own package. They now live in this package's tests.
 func StartAdvertiser(mat *clustertls.Material, opts AdvertiseOptions, dataDir string, logger *slog.Logger) (*Advertiser, error) {
-	provider := &clusterBundleProvider{
-		caCertPEM: mat.CACertPEM,
-		caKeyPEM:  mat.CAKeyPEM,
+	if err := ValidateAnchorBundle(mat.CACertPEM); err != nil {
+		return nil, err
 	}
-	return startNoiseAdvertiser(provider, opts, dataDir, logger)
+	return startNoiseAdvertiser(&anchorBundleProvider{anchorPEM: mat.CACertPEM}, opts, dataDir, logger)
 }
 
 // startNoiseAdvertiser starts the Noise NK bootstrap server with the given
 // bundle provider, persisting (or reusing) the static Noise key at
 // {dataDir}/noise-key.hex. It is the shared implementation behind
-// StartAdvertiser (CA cert+key bundle) and StartAnchorAdvertiser
-// (anchor-only bundle).
+// StartAdvertiser (the cluster CA certificate) and StartAnchorAdvertiser
+// (an external trust-anchor chain); both serve certificates only.
 func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptions, dataDir string, logger *slog.Logger) (*Advertiser, error) {
 	// Configuration is checked before anything with a side effect runs.
 	// The bind host is never chosen here: a node contained to one interface
@@ -783,7 +732,7 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 
 	// The embedded DHKey aliases the protected private scalar; the Advertiser
 	// owns the StaticKey from here and releases it in Stop.
-	srv, err := noiseboot.NewServer(&noiseboot.ServerConfig{
+	srv, err := newNoiseServer(&noiseboot.ServerConfig{
 		ListenAddr: listenAddr,
 		StaticKey:  &noiseKey.DHKey,
 		CABundler:  provider,
@@ -864,8 +813,8 @@ func ExtractHostFromPeer(peer string) string {
 
 // autoFetchBundle builds a truststrap AutoConfig from opts and calls AutoFetch
 // to retrieve the cluster CA bundle PEM from an existing cluster node.
-// It is shared by Join, ResolveCA and FetchAnchor to avoid duplicating the
-// truststrap configuration logic.
+// FetchAnchor is its caller, and validates that what arrived is
+// certificates only.
 func autoFetchBundle(ctx context.Context, opts *Options, logger *slog.Logger) ([]byte, error) {
 	cfg, err := buildAutoConfig(opts, logger)
 	if err != nil {
@@ -981,29 +930,6 @@ func buildAutoConfig(opts *Options, logger *slog.Logger) (*truststrap.AutoConfig
 	}
 
 	return cfg, nil
-}
-
-// splitCABundle splits a concatenated CA certificate + CA private key PEM
-// bundle (as produced by clusterBundleProvider.CABundle) into the two
-// PEM-encoded components. It mirrors the parsing logic in
-// clustertls.GenerateLeafFromCA. Returns a *clustertls.KeyError when the
-// expected PEM blocks are absent or malformed.
-func splitCABundle(bundlePEM []byte) (caCertPEM, caKeyPEM []byte, err error) {
-	caBlock, rest := pem.Decode(bundlePEM)
-	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		return nil, nil, &clustertls.KeyError{
-			Kind: "CA certificate",
-			Err:  errors.New("no CERTIFICATE block found in PEM data"),
-		}
-	}
-	keyBlock, _ := pem.Decode(rest)
-	if keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
-		return nil, nil, &clustertls.KeyError{
-			Kind: "CA private key",
-			Err:  errors.New("no EC PRIVATE KEY block found in PEM data"),
-		}
-	}
-	return pem.EncodeToMemory(caBlock), pem.EncodeToMemory(keyBlock), nil
 }
 
 // logAdvertiserInfo logs the information operators need to configure joining

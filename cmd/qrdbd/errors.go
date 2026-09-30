@@ -212,9 +212,11 @@ func (e *AdminCertWriteError) Unwrap() error {
 // bootstrap server fails. Aliased from pkg/clusterenroll.
 type BootstrapFetchError = clusterenroll.FetchError
 
-// BootstrapError is returned when the overall bootstrap process fails.
-// Aliased from pkg/clusterenroll.
-type BootstrapError = clusterenroll.JoinError
+// EnrollmentUnavailableError is returned when this node is started with
+// bootstrap flags: joining an existing cluster is unavailable because the
+// cluster CA private key is no longer distributed. Aliased from
+// pkg/clusterenroll.
+type EnrollmentUnavailableError = clusterenroll.EnrollmentUnavailableError
 
 // BootstrapServerError is returned when starting a bootstrap server
 // fails. Aliased from pkg/clusterenroll.

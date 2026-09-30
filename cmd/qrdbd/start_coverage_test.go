@@ -2016,27 +2016,6 @@ func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// bootstrapTLS: SPKI configured but no bootstrapAddr skips SPKI method
-//
-// bootstrapSPKIPin is set but bootstrapAddr is empty, so the SPKI config
-// branch is not entered. With no other methods configured, AutoFetch
-// fails with BootstrapFetchError (no methods to try).
-// ---------------------------------------------------------------------------
-
-func TestBootstrapTLS_SPKIPinWithNoAddr(t *testing.T) {
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		// bootstrapAddr intentionally omitted — SPKI block not entered.
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	require.Error(t, err)
-	var fetchErr *BootstrapFetchError
-	require.True(t, errors.As(err, &fetchErr))
-}
-
-// ---------------------------------------------------------------------------
 // localSANs: the SAN set is exactly the two loopbacks plus every non-loopback
 // interface address — no more, no less, on a host with any number of NICs
 // ---------------------------------------------------------------------------

@@ -2855,26 +2855,6 @@ func TestBootstrapFetchError_ErrorsIs(t *testing.T) {
 	}
 }
 
-func TestBootstrapError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("no CA available")
-	err := &BootstrapError{Err: inner}
-	want := "clusterenroll: TLS bootstrap failed: no CA available"
-	if err.Error() != want {
-		t.Fatalf("BootstrapError.Error() = %q, want %q", err.Error(), want)
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("BootstrapError.Unwrap() did not return inner error")
-	}
-}
-
-func TestBootstrapError_ErrorsIs(t *testing.T) {
-	inner := errors.New("handshake failed")
-	err := &BootstrapError{Err: inner}
-	if !errors.Is(err, inner) {
-		t.Fatal("errors.Is() should find inner error through Unwrap")
-	}
-}
-
 func TestBootstrapServerError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("address in use")
 	err := &BootstrapServerError{Protocol: "QUIC", Err: inner}
@@ -3152,68 +3132,6 @@ func TestLoadTLSFromDir_Partial(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// generateLeafFromCA tests
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_Valid(t *testing.T) {
-	// Generate CA material and concatenate cert+key PEM.
-	caCertPEM, caKeyPEM, _, _, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	combined := append(caCertPEM, caKeyPEM...)
-
-	bundle, err := generateLeafFromCA(combined)
-	require.NoError(t, err)
-	require.NotNil(t, bundle)
-
-	assert.NotEmpty(t, bundle.CACertPEM)
-	assert.NotEmpty(t, bundle.CAKeyPEM)
-	assert.NotEmpty(t, bundle.CertPEM)
-	assert.NotEmpty(t, bundle.KeyPEM)
-	assert.NotNil(t, bundle.TLSConfig)
-	assert.NotNil(t, bundle.CACertPool)
-
-	// Verify the leaf is signed by the CA.
-	leafBlock, _ := pem.Decode(bundle.CertPEM)
-	require.NotNil(t, leafBlock)
-	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
-	require.NoError(t, err)
-
-	opts := x509.VerifyOptions{
-		Roots:     bundle.CACertPool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	_, err = leaf.Verify(opts)
-	assert.NoError(t, err, "leaf cert should be verifiable by the CA")
-}
-
-func TestGenerateLeafFromCA_MissingCert(t *testing.T) {
-	// Only key PEM, no certificate.
-	_, caKeyPEM, _, _, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	_, err = generateLeafFromCA(caKeyPEM)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA certificate", keyErr.Kind)
-}
-
-func TestGenerateLeafFromCA_MissingKey(t *testing.T) {
-	// Only cert PEM, no key.
-	caCertPEM, _, _, _, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	_, err = generateLeafFromCA(caCertPEM)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA private key", keyErr.Kind)
-}
-
-// ---------------------------------------------------------------------------
 // wireCertReloader tests
 // ---------------------------------------------------------------------------
 
@@ -3251,66 +3169,6 @@ func TestWireCertReloader_WiresCallback(t *testing.T) {
 
 func makePEMBlock(blockType string, data []byte) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: data})
-}
-
-// ---------------------------------------------------------------------------
-// Phase 4: generateLeafFromCA edge cases
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_WrongCertBlockType(t *testing.T) {
-	// PEM with block type "PRIVATE KEY" instead of "CERTIFICATE".
-	input := makePEMBlock("PRIVATE KEY", []byte("fake-cert-data"))
-
-	_, err := generateLeafFromCA(input)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA certificate", keyErr.Kind)
-}
-
-func TestGenerateLeafFromCA_InvalidCertDER(t *testing.T) {
-	// CERTIFICATE block with garbage DER bytes.
-	input := makePEMBlock("CERTIFICATE", []byte("not-valid-der"))
-
-	_, err := generateLeafFromCA(input)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA certificate", keyErr.Kind)
-}
-
-func TestGenerateLeafFromCA_WrongKeyBlockType(t *testing.T) {
-	// Valid CA cert PEM followed by a PEM block with wrong key type.
-	caCertPEM, _, _, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	wrongKeyBlock := makePEMBlock("RSA PRIVATE KEY", []byte("fake-rsa-key"))
-	input := append(caCertPEM, wrongKeyBlock...)
-
-	_, err = generateLeafFromCA(input)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA private key", keyErr.Kind)
-}
-
-func TestGenerateLeafFromCA_InvalidKeyDER(t *testing.T) {
-	// Valid CA cert PEM followed by "EC PRIVATE KEY" block with garbage bytes.
-	caCertPEM, _, _, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	badKeyBlock := makePEMBlock("EC PRIVATE KEY", []byte("not-valid-ec-key"))
-	input := append(caCertPEM, badKeyBlock...)
-
-	_, err = generateLeafFromCA(input)
-	require.Error(t, err)
-
-	var keyErr *BootstrapKeyError
-	assert.True(t, errors.As(err, &keyErr), "error should be *BootstrapKeyError, got %T", err)
-	assert.Equal(t, "CA private key", keyErr.Kind)
 }
 
 // ---------------------------------------------------------------------------

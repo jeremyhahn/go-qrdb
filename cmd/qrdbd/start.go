@@ -2275,7 +2275,7 @@ func runStart(f *startFlags) (err error) {
 			// surface, so it has to be registered on exactly this condition
 			// rather than on the presence of a Noise server.
 			if bootServers != nil {
-				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
+				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM))
 			}
 			if svcNode.Embedding != nil {
 				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))

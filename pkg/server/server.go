@@ -163,7 +163,6 @@ type serverOptions struct {
 	certProv           cert.CertProvider
 	authMW             *authmw.AuthMiddleware
 	caBootstrapCert    []byte
-	caBootstrapKey     []byte
 	batchSvc           service.BatchServicer
 	txSvc              service.TransactionServicer
 	mvccSvc            service.MVCCKVServicer
@@ -352,11 +351,11 @@ func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
-// server for cluster TLS bootstrapping.
-func WithCABootstrap(certPEM, keyPEM []byte) ServerOption {
+// server for cluster TLS bootstrapping. It takes the CA certificate only;
+// the endpoint is public and never serves key material.
+func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(o *serverOptions) {
 		o.caBootstrapCert = certPEM
-		o.caBootstrapKey = keyPEM
 	}
 }
 
@@ -1179,7 +1178,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithRebalanceService(s.opts.rebalanceSvc))
 	}
 	if len(s.opts.caBootstrapCert) > 0 {
-		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert, s.opts.caBootstrapKey))
+		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert))
 	}
 	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(dbName string, cfg *database.EtcdConfig) error {
 		return s.StartEtcd(dbName, cfg)

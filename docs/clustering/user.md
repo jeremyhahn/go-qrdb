@@ -35,6 +35,60 @@ Bootstrap runs: discover peers → validate addresses → add self → check quo
 start the shard. If discovery finds too few peers, bootstrap fails at the quorum
 check rather than starting a cluster that cannot commit.
 
+### Adding a node: joining through enrollment is unavailable in this release
+
+**A node started with bootstrap flags refuses to start** in this release:
+`--bootstrap-noise-key`, `--bootstrap-spki-pin`, `--bootstrap-dane-dns` and
+`--bootstrap-direct-url` all select the join path, and the join path now fails
+with `EnrollmentUnavailableError`. The error message tells you what to do
+instead. The refusal comes before the node dials anything, and nothing is
+written to its data directory.
+
+The reason is a security fix. Earlier releases enrolled a joining node by
+handing it the cluster CA **private key**, which it used to sign its own
+certificate. The key was served by `/v1/ca/bootstrap`, a route that needs no
+credential, so anyone who could reach a first node's admin port could read it.
+The key never leaves the node that holds it any more. The replacement,
+where the joining node generates its key locally and a running member signs
+its certificate request, ships in a following release.
+
+**To add a node now**, issue its certificate yourself on the node that holds
+the cluster CA (`ca.pem` and `ca-key.pem` in its data directory):
+
+1. Generate an ECDSA P-256 key and a certificate signed by the cluster CA,
+   with the node's SPIFFE identity as a URI SAN:
+   `spiffe://<trust-domain>/node/<raft-address>`. Give it both the
+   `serverAuth` and `clientAuth` extended key usages, and add the node's DNS
+   names and IP addresses as SANs.
+2. Copy `ca.pem`, the new certificate and the new key to the new node, and
+   **never `ca-key.pem`**.
+3. Start the new node with `--tls-ca-file`, `--tls-cert-file` and
+   `--tls-key-file` pointing at them, and without bootstrap flags.
+4. Add it to the Raft group as usual (`qrdb admin add-member`, or dynamic
+   membership).
+
+### If your cluster was formed by an earlier release, rotate its CA
+
+Treat the existing cluster CA key as **compromised**. It was readable without
+authentication from every first node's admin port, and every node that joined
+over SPKI, DANE or direct HTTPS holds a copy in `ca-key.pem`. Until the CA is
+rotated, restrict network access to every node's admin port.
+
+Rotate the cluster CA:
+
+1. On the node that will hold the new CA, generate a new CA key and
+   certificate. Keep the key on that node only.
+2. Issue a new node certificate for every member from the new CA, as in
+   [Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
+3. Build a trust bundle holding **both** CA certificates. Restart each member,
+   one at a time, with `--tls-ca-file` set to that bundle and its new
+   certificate and key. Both old and new certificates verify during this step.
+4. Once every member presents a certificate from the new CA, restart each
+   member with `--tls-ca-file` set to the new CA alone.
+5. Delete `ca-key.pem` from every node except the one holding the new CA.
+6. Reissue every client and Security Officer certificate that chains to the
+   old CA.
+
 ### In FIPS 140-3 mode, do not use the Noise bootstrap method
 
 If you run the daemon with `GODEBUG=fips140=only` (or `fips140=on`), the Noise
@@ -173,6 +227,13 @@ works over unary-only transports. It is not a streaming feed.
 **Rebalance execute failed some moves.** The result counts them and reports the
 final imbalance. Re-plan and re-run — the plan is computed from current state,
 so a second pass picks up where the first stopped.
+
+**A joining node refuses to start with "joining an existing cluster is
+unavailable in this release".** This is expected in this release: bootstrap
+flags select a join, and joins through enrollment are unavailable because the
+CA key is no longer distributed. Issue the node's certificate on the node that
+holds the cluster CA and start it with the explicit TLS file flags. See
+[Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
 
 **A joining node reports that Noise NK is not FIPS 140-3 approved.** The daemon
 is running in FIPS mode, where that method cannot be used. Configure

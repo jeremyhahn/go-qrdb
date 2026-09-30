@@ -15,18 +15,12 @@
 package main
 
 import (
-	"context"
-	encoding_hex "encoding/hex"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
-	"time"
-
-	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
-	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
@@ -357,302 +351,65 @@ func TestBootstrapServers_Stop_NilServer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// startTestBootstrapServer helper
+// bootstrapTLS: joining is refused before any dial or write
 // ---------------------------------------------------------------------------
 
-// testBundleProvider is a test-only noiseboot.BundleProvider that serves the
-// cluster CA bundle. After the refactor, clusterBundleProvider lives in
-// pkg/clusterenroll (unexported), so package main tests use this local copy.
-type testBundleProvider struct{ cert, key []byte }
-
-func (p *testBundleProvider) CABundle() ([]byte, error) {
-	bundle := make([]byte, 0, len(p.cert)+len(p.key))
-	bundle = append(bundle, p.cert...)
-	bundle = append(bundle, p.key...)
-	return bundle, nil
-}
-
-// startTestBootstrapServer creates and starts a real Noise NK bootstrap server
-// backed by the given CA certificate and key PEM. It returns the hex-encoded
-// public key and the listen address (host:port). The server is stopped
-// automatically via t.Cleanup.
-func startTestBootstrapServer(t *testing.T, caCertPEM, caKeyPEM []byte) (pubKeyHex string, listenAddr string) {
-	t.Helper()
-
-	provider := &testBundleProvider{cert: caCertPEM, key: caKeyPEM}
-
-	key, err := noiseproto.GenerateStaticKey()
-	if err != nil {
-		t.Fatalf("GenerateStaticKey: %v", err)
-	}
-
-	srv, err := noiseboot.NewServer(&noiseboot.ServerConfig{
-		ListenAddr: "127.0.0.1:0",
-		StaticKey:  &key.DHKey,
-		CABundler:  provider,
-		Logger:     testLogger(),
-	})
-	if err != nil {
-		key.Destroy()
-		t.Fatalf("noiseboot.NewServer: %v", err)
-	}
-
-	if err := srv.Start(); err != nil {
-		key.Destroy()
-		t.Fatalf("noiseboot.Server.Start: %v", err)
-	}
-
-	// Release the key's protected pages only after the server has stopped —
-	// it holds a noise.DHKey aliasing them for the life of the listener.
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Stop(ctx)
-		key.Destroy()
-	})
-
-	return encoding_hex.EncodeToString(key.Public), srv.Addr().String()
-}
-
-// ---------------------------------------------------------------------------
-// bootstrapTLS tests (Phase 1)
-// ---------------------------------------------------------------------------
-
-func TestBootstrapTLS_Noise_Success(t *testing.T) {
-	// Start a real Noise NK bootstrap server and verify that bootstrapTLS
-	// successfully connects, completes the Noise handshake, and fetches the
-	// CA bundle. The truststrap bootstrap protocol intentionally strips
-	// non-CERTIFICATE PEM blocks from the response, so the fetch succeeds
-	// but generateLeafFromCA fails because the CA private key is not
-	// included in the response. This test verifies the fetch + handshake
-	// path is exercised and that the resulting error is correctly typed.
-	if !noiseServed() {
-		assertNoiseJoinRefusedByName(t, &startFlags{dataDir: t.TempDir()})
-		return
-	}
-
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-
-	pubKeyHex, listenAddr := startTestBootstrapServer(t, bundle.CACertPEM, bundle.CAKeyPEM)
-
-	f := &startFlags{
-		dataDir:            t.TempDir(),
-		bootstrapNoiseKey:  pubKeyHex,
-		bootstrapNoiseAddr: listenAddr,
-	}
-
-	// The Noise handshake and fetch succeed, but generateLeafFromCA
-	// fails because the bootstrap protocol strips non-CERTIFICATE PEM
-	// blocks (the CA private key). This produces a BootstrapError
-	// wrapping the BootstrapKeyError from generateLeafFromCA.
-	_, err = bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error because bootstrap protocol strips CA private key")
-	}
-	if _, ok := err.(*BootstrapError); !ok {
-		t.Fatalf("expected *BootstrapError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_Noise_FetchError(t *testing.T) {
-	f := &startFlags{
-		dataDir:            t.TempDir(),
-		bootstrapNoiseKey:  "0000000000000000000000000000000000000000000000000000000000000000",
-		bootstrapNoiseAddr: "127.0.0.1:1",
-	}
-
-	if !noiseServed() {
-		// The method is excluded before the dial, so the failure is a refusal
-		// rather than a fetch error -- which is the whole point of raising it
-		// at configuration time.
-		assertNoiseJoinRefusedByName(t, f)
-		return
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error for unreachable noise server")
-	}
-	if _, ok := err.(*BootstrapFetchError); !ok {
-		t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_Noise_PersistError(t *testing.T) {
-	// Start a real Noise server and set dataDir to a regular file so
-	// clusterenroll.Join's persist would fail. However, since the bootstrap protocol
-	// strips non-CERTIFICATE PEM blocks, generateLeafFromCA fails first
-	// (before persist is reached). This test verifies the error is a
-	// BootstrapError, confirming the fetch succeeded but downstream
-	// processing failed. The bad dataDir ensures that even if
-	// generateLeafFromCA were to succeed, persist would still fail.
-	if !noiseServed() {
-		assertNoiseJoinRefusedByName(t, &startFlags{dataDir: t.TempDir()})
-		return
-	}
-
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-
-	pubKeyHex, listenAddr := startTestBootstrapServer(t, bundle.CACertPEM, bundle.CAKeyPEM)
-
-	// Use a regular file as dataDir so MkdirAll would fail if reached.
-	tmpDir := t.TempDir()
-	badDataDir := filepath.Join(tmpDir, "blockfile")
-	if err := os.WriteFile(badDataDir, []byte("block"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	f := &startFlags{
-		dataDir:            badDataDir,
-		bootstrapNoiseKey:  pubKeyHex,
-		bootstrapNoiseAddr: listenAddr,
-	}
-
-	_, err = bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if _, ok := err.(*BootstrapError); !ok {
-		t.Fatalf("expected *BootstrapError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_SPKI_ConfigBuilt(t *testing.T) {
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		bootstrapAddr:    "127.0.0.1:1",
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error for unreachable SPKI server")
-	}
-	if _, ok := err.(*BootstrapFetchError); !ok {
-		t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_DANE_ConfigBuilt(t *testing.T) {
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapDANEDNS: "127.0.0.1:1",
-		bootstrapAddr:    "127.0.0.1:1",
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error for unreachable DANE server")
-	}
-	if _, ok := err.(*BootstrapFetchError); !ok {
-		t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_DANE_EmptyServerURL(t *testing.T) {
-	// DANE DNS is set but no address can be resolved (no bootstrapAddr,
-	// no peers, no domain). The DANE config is skipped because
-	// clusterenroll.ResolveServerURL returns "" for that combination.
-	// With no other methods configured, AutoFetch should fail with no
-	// methods configured error.
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapDANEDNS: "8.8.8.8:53",
-		// No bootstrapAddr, no peers, no dnsDomain.
-		discoveryMethod: "multicast",
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error when DANE has no server URL and no other methods")
-	}
-	if _, ok := err.(*BootstrapFetchError); !ok {
-		t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_Direct_ConfigBuilt(t *testing.T) {
-	f := &startFlags{
-		dataDir:            t.TempDir(),
-		bootstrapDirectURL: "https://127.0.0.1:1/ca-bundle",
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error for unreachable direct URL")
-	}
-	if _, ok := err.(*BootstrapFetchError); !ok {
-		t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-	}
-}
-
-func TestBootstrapTLS_MultipleMethods_Fallback(t *testing.T) {
-	// Configure both SPKI (unreachable) and Noise (real server). The
-	// AutoBootstrapper tries methods in configured order. Noise succeeds
-	// at the protocol level (handshake + fetch), demonstrating fallback
-	// from the failed SPKI method. As with TestBootstrapTLS_Noise_Success,
-	// generateLeafFromCA subsequently fails because the bootstrap protocol
-	// strips non-CERTIFICATE PEM blocks. A BootstrapError confirms that
-	// the Noise fetch succeeded (BootstrapFetchError would indicate the
-	// fetch itself failed).
-	if !noiseServed() {
-		// FIPS 140-3: Noise is dropped from the candidate list, and because an
-		// approved method WAS also configured the join proceeds on it and
-		// fails on the network. It must NOT be refused -- the operator gave a
-		// preference list, and refusing it would break a deployment over a
-		// method it also named.
-		f := &startFlags{
-			dataDir:            t.TempDir(),
-			bootstrapSPKIPin:   "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-			bootstrapAddr:      net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t))),
-			bootstrapNoiseKey:  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-			bootstrapNoiseAddr: net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t))),
-		}
-		_, err := bootstrapTLS(f, testLogger())
-		if err == nil {
-			t.Fatal("expected the remaining approved method to fail against a dead address")
-		}
-		var fipsErr *clusterenroll.NoiseFIPSUnavailableError
-		if errors.As(err, &fipsErr) {
-			t.Fatalf("a join with an approved method configured must not be refused for FIPS reasons: %v", err)
-		}
-		if _, ok := err.(*BootstrapFetchError); !ok {
-			t.Fatalf("expected *BootstrapFetchError, got %T: %v", err, err)
-		}
-		return
-	}
-
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-
-	pubKeyHex, listenAddr := startTestBootstrapServer(t, bundle.CACertPEM, bundle.CAKeyPEM)
-
-	f := &startFlags{
-		dataDir: t.TempDir(),
-		// SPKI points to unreachable server (will fail).
-		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		bootstrapAddr:    "127.0.0.1:1",
-		// Noise points to real server (handshake + fetch succeed).
-		bootstrapNoiseKey:  pubKeyHex,
-		bootstrapNoiseAddr: listenAddr,
-	}
-
-	_, err = bootstrapTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error because bootstrap protocol strips CA private key")
-	}
-	// BootstrapError (not BootstrapFetchError) confirms the Noise fetch
-	// succeeded and the failure occurred in generateLeafFromCA.
-	if _, ok := err.(*BootstrapError); !ok {
-		t.Fatalf("expected *BootstrapError (not BootstrapFetchError), got %T: %v", err, err)
+// TestBootstrapTLS_EveryMethodIsRefusedBeforeAnyDialOrWrite: the cluster CA
+// private key is no longer distributed, so no bootstrap method can enroll a
+// node in this release. Each configured method -- and a mix of them -- is
+// refused with *EnrollmentUnavailableError, not a fetch error (the refusal
+// precedes the dial; every endpoint here is dead), and the data directory is
+// left empty.
+func TestBootstrapTLS_EveryMethodIsRefusedBeforeAnyDialOrWrite(t *testing.T) {
+	dead := net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t)))
+	for name, set := range map[string]func(f *startFlags){
+		"noise": func(f *startFlags) {
+			f.bootstrapNoiseKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+			f.bootstrapNoiseAddr = dead
+		},
+		"spki": func(f *startFlags) {
+			f.bootstrapSPKIPin = "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			f.bootstrapAddr = dead
+		},
+		"dane": func(f *startFlags) {
+			f.bootstrapDANEDNS = dead
+			f.bootstrapAddr = dead
+		},
+		"direct": func(f *startFlags) {
+			f.bootstrapDirectURL = "https://" + dead + "/v1/ca/bootstrap"
+		},
+		"several": func(f *startFlags) {
+			f.bootstrapSPKIPin = "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			f.bootstrapAddr = dead
+			f.bootstrapDirectURL = "https://" + dead + "/v1/ca/bootstrap"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := &startFlags{dataDir: dir}
+			set(f)
+			if !hasBootstrapFlags(f) {
+				t.Fatal("the configured method must select the join path")
+			}
+			bundle, err := bootstrapTLS(f, testLogger())
+			if bundle != nil {
+				t.Fatal("a refused join must return no TLS material")
+			}
+			var want *EnrollmentUnavailableError
+			if !errors.As(err, &want) {
+				t.Fatalf("error = %v (%T), want *EnrollmentUnavailableError", err, err)
+			}
+			if _, ok := err.(*BootstrapFetchError); ok {
+				t.Fatal("the refusal must come before any bootstrap fetch")
+			}
+			entries, rerr := os.ReadDir(dir)
+			if rerr != nil {
+				t.Fatalf("ReadDir: %v", rerr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("a refused join wrote %d entries into the data directory", len(entries))
+			}
+		})
 	}
 }
 
@@ -726,58 +483,28 @@ func TestResolveTLS_Path3_PersistError(t *testing.T) {
 }
 
 func TestResolveTLS_Path4_JoiningNode(t *testing.T) {
-	// Path 4: joining node with bootstrap flags. The resolveTLS function
-	// delegates to bootstrapTLS which connects to the Noise server. The
-	// handshake and fetch succeed, but generateLeafFromCA fails because
-	// the bootstrap protocol strips non-CERTIFICATE PEM blocks. This
-	// test verifies that Path 4 is exercised (bootstrap flags detected)
-	// and that the error propagates correctly from bootstrapTLS.
-	if !noiseServed() {
-		// Path 4 is still selected -- the bootstrap flags are what choose it --
-		// and the refusal comes from the method, by name.
-		f := &startFlags{
-			dataDir:         t.TempDir(),
-			discoveryMethod: "static",
-			peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-			host:            testBindHost,
-		}
-		f.bootstrapNoiseKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-		f.bootstrapNoiseAddr = net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t)))
-		if !hasBootstrapFlags(f) {
-			t.Fatal("the Noise coordinates must still select path 4")
-		}
-		_, _, err := resolveTLS(f, testLogger())
-		var fipsErr *clusterenroll.NoiseFIPSUnavailableError
-		if !errors.As(err, &fipsErr) {
-			t.Fatalf("error = %v (%T), want *clusterenroll.NoiseFIPSUnavailableError", err, err)
-		}
-		return
-	}
-
-	bundle, err := generateCATLS()
-	if err != nil {
-		t.Fatalf("generateCATLS: %v", err)
-	}
-
-	pubKeyHex, listenAddr := startTestBootstrapServer(t, bundle.CACertPEM, bundle.CAKeyPEM)
-
+	// Path 4: bootstrap flags select the join, which this release refuses:
+	// the cluster CA private key is no longer distributed. It must not fall
+	// through to path 5 and generate a CA of its own.
+	dir := t.TempDir()
 	f := &startFlags{
-		dataDir:            t.TempDir(),
+		dataDir:            dir,
 		discoveryMethod:    "static",
 		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoiseKey:  pubKeyHex,
-		bootstrapNoiseAddr: listenAddr,
+		bootstrapDirectURL: "https://" + net.JoinHostPort(testBindHost, strconv.Itoa(deadTCPPort(t))) + "/v1/ca/bootstrap",
 		host:               testBindHost,
 	}
-
-	_, _, err = resolveTLS(f, testLogger())
-	if err == nil {
-		t.Fatal("expected error because bootstrap protocol strips CA private key")
+	bundle, adv, err := resolveTLS(f, testLogger())
+	if bundle != nil || adv != nil {
+		adv.Stop()
+		t.Fatal("a refused join must yield no material and no advertiser")
 	}
-	// The error should be a BootstrapError from generateLeafFromCA,
-	// not a BootstrapFetchError, confirming the Noise fetch succeeded.
-	if _, ok := err.(*BootstrapError); !ok {
-		t.Fatalf("expected *BootstrapError, got %T: %v", err, err)
+	var want *EnrollmentUnavailableError
+	if !errors.As(err, &want) {
+		t.Fatalf("error = %v (%T), want *EnrollmentUnavailableError", err, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ca-key.pem")); statErr == nil {
+		t.Fatal("a refused join generated a local CA")
 	}
 }
 

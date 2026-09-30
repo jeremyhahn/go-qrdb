@@ -323,8 +323,8 @@ func TestResolveCA_DataDirWithNoRecordedRoleRefusesToBoot(t *testing.T) {
 // property asserted here is about it being actionable rather than present: the
 // file to write, the three values it accepts, and that a restart is needed.
 //
-// The caution is not boilerplate. Multi-node enrollment is the shared-CA-key
-// mode, so a JOINED node holds ca-key.pem too -- an operator reaching for the
+// The caution is not boilerplate. Releases that distributed the CA key left a
+// JOINED node holding ca-key.pem too -- an operator reaching for the
 // obvious evidence would record a joined node as first-node and stand up an
 // enrollment listener serving the CA bundle on a node that should never have
 // one. That is by hand the exact mistake the rejected derivation would have
@@ -399,36 +399,22 @@ func TestRecordedRoleBootsAndOnlyFirstNodeAdvertises(t *testing.T) {
 	}
 }
 
-// TestJoinRecordsItsOwnRole.
-//
-// Join is exported and reachable through the SDK without going through
-// Resolve, and it persisted CA material while Resolve path 4 -- not Join --
-// wrote the role. Under the WARN that left a joined node warning forever;
-// under the refusal it leaves a freshly joined node that will not start on its
-// next boot, on a current version, with the message telling its operator to
-// hand-write a fact the code already knew. The role belongs with the write it
-// describes.
-func TestJoinRecordsItsOwnRole(t *testing.T) {
-	bundle, _ := sharedCABundle(t)
+// TestJoinRecordsNoRole: a refused Join writes nothing, so it cannot leave
+// CA material without a role (the *MissingRoleError state) or a role that
+// would send the next boot down the cached path.
+func TestJoinRecordsNoRole(t *testing.T) {
 	dir := t.TempDir()
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63025",
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
-		Bootstrap:   bundleServer(t, bundle),
+		Bootstrap:   bundleServer(t, legacyKeyBundle(t)),
 	}
-	if _, err := Join(context.Background(), opts, discardLogger()); err != nil {
-		t.Fatalf("Join: %v", err)
+	if _, err := Join(context.Background(), opts, discardLogger()); err == nil {
+		t.Fatal("Join must refuse")
 	}
-	if role, found, err := loadRole(dir); err != nil || !found || role != RoleJoined {
-		t.Fatalf("recorded role after a direct Join = (%q, found=%v, err=%v); want joined", role, found, err)
-	}
-	// And the node it just produced boots.
-	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil {
-		t.Fatalf("the node Join produced refuses to boot: %v", err)
-	} else if adv != nil {
-		adv.Stop()
-		t.Fatal("a joined node started an enrollment listener")
+	if _, found, err := loadRole(dir); err != nil || found {
+		t.Fatalf("a refused Join recorded a role (found=%v, err=%v)", found, err)
 	}
 }
 
@@ -518,59 +504,52 @@ func TestPersistRole_ReportsAWriteFailureAsClustertlsWriteError(t *testing.T) {
 	}
 }
 
-// TestJoinedNodeAlsoHoldsTheCAKey pins the measurement that rules out deriving
-// the role from the material instead of recording it.
+// TestLegacyJoinedNodeHoldingTheCAKeyIsNotAFirstNode pins why the role is
+// recorded rather than derived from the material.
 //
 // The tempting derivation is "ca-key.pem present and !SingleNode, therefore
-// this node generated the cluster CA, therefore it was the first node." It
-// reads like a fact rather than a guess, which is what makes it dangerous. It
-// is false: qrdb's multi-node enrollment is the SHARED-CA-KEY mode, so a
-// joining node is handed the CA certificate AND the CA private key precisely
-// so it can mint its own leaf, and it persists both. Measured 2026-09-03:
+// this node generated the cluster CA, therefore it was the first node." It is
+// false for every cluster formed before this release: those releases enrolled
+// a joining node by handing it the CA certificate AND the CA private key, and
+// it persisted both. Measured 2026-09-03:
 //
 //	Resolve   joined node: [ca-key.pem ca.pem enrollment-role node-cert.pem node-key.pem]
 //	ResolveCA joined node: [ca-key.pem ca.pem enrollment-role]
 //
-// Acting on that derivation would give every joined node in a cluster the
-// first node's role, so each of them would open an enrollment listener nobody
-// asked for, serving the CA bundle. The blast radius is the whole cluster, not
-// one node.
-//
-// noise-key.hex is the other tempting signal -- it is present for a first node
-// and absent for both single-node and joined -- and it fails on the exact case
-// that motivates this issue. It is written by the advertiser start, AFTER the
-// CA material is persisted, so a node killed between the two has CA material
-// and no noise key and would be read as "not a first node". The incidental
-// signal is wrong precisely where it is needed.
-//
-// Hence an explicitly recorded role. If this test ever fails because a joined
-// node stops receiving the CA key, that is a change to the enrollment mode
-// (see docs/clusterenroll-noise-gap.md) and not licence to start deriving the
-// role.
-func TestJoinedNodeAlsoHoldsTheCAKey(t *testing.T) {
-	bundle, _ := sharedCABundle(t)
+// This release no longer distributes the key, but those data directories
+// still exist and still carry it. Acting on the derivation would give each of
+// them the first node's role and an enrollment listener nobody asked for.
+// The fixture here is such a directory, built by hand because no code path in
+// this release can produce one.
+func TestLegacyJoinedNodeHoldingTheCAKeyIsNotAFirstNode(t *testing.T) {
 	dir := t.TempDir()
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	if err := persistRole(dir, RoleJoined); err != nil {
+		t.Fatalf("persistRole: %v", err)
+	}
+	if err := clustertls.PersistMaterial(mat, dir); err != nil {
+		t.Fatalf("PersistMaterial: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); err != nil {
+		t.Fatalf("fixture: the legacy joined directory must hold ca-key.pem: %v", err)
+	}
+
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63024",
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
-		Bootstrap:   bundleServer(t, bundle),
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost},
 	}
-	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil {
-		t.Fatalf("join: %v", err)
-	} else if adv != nil {
+	_, adv, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if adv != nil {
 		adv.Stop()
-		t.Fatal("a joining node must not start an advertiser")
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); err != nil {
-		t.Fatalf("a joined node has no ca-key.pem (%v). The enrollment mode has changed; "+
-			"re-read this test's comment before concluding the role can now be derived", err)
-	}
-	role, found, err := loadRole(dir)
-	if err != nil || !found || role != RoleJoined {
-		t.Fatalf("recorded role = (%q, found=%v, err=%v); want joined -- holding the CA key "+
-			"is exactly why the role has to be recorded rather than derived", role, found, err)
+		t.Fatal("a joined node holding a legacy CA key started an enrollment listener")
 	}
 }
 
@@ -745,10 +724,9 @@ func TestResumedAdvertiserReleasesItsPortOnStop(t *testing.T) {
 // the recorded role still says first-node.
 //
 // Before the check, that node started an enrollment listener with no CA
-// private key: it reported healthy, it answered, and every joining node failed
-// in splitCABundle -- in a different process, about a bundle it did not
-// create. Fail closed, and name THIS node's directory, so the operator is not
-// sent to the joiner.
+// private key: it reported healthy and answered while unable to stand behind
+// any enrollment, and the failure surfaced on the joining node. Fail closed,
+// and name THIS node's directory, so the operator is not sent to the joiner.
 func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
 	dir := t.TempDir()
 	opts := firstNodeOpts(t, dir, freePort(t))
@@ -779,8 +757,7 @@ func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
 	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
 	if adv2 != nil {
 		adv2.Stop()
-		t.Error("an enrollment listener was started with no CA private key: it answers, " +
-			"serves a cert-only bundle, and every joining node fails in splitCABundle")
+		t.Error("an enrollment listener was started by a first node holding no CA private key")
 	}
 	var incomplete *IncompleteFirstNodeMaterialError
 	if !errors.As(err, &incomplete) {

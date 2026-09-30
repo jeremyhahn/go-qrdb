@@ -396,25 +396,6 @@ func TestGenerateClientCert_OnlyClientAuth(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// tls.go: generateLeafFromCA - additional missing path coverage
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_InvalidCACertDERAdditional(t *testing.T) {
-	// CERTIFICATE block present but with unparse-able DER.
-	badCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage-der-bytes")})
-	keyPEM, _, _, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	bundlePEM := append(badCertPEM, keyPEM...)
-	bundle, err := generateLeafFromCA(bundlePEM)
-	require.Error(t, err)
-	var bke *BootstrapKeyError
-	require.True(t, errors.As(err, &bke))
-	assert.Equal(t, "CA certificate", bke.Kind)
-	assert.Nil(t, bundle)
-}
-
-// ---------------------------------------------------------------------------
 // bootstrap.go: resolveTLS path 2 with ca-key.pem present
 // ---------------------------------------------------------------------------
 

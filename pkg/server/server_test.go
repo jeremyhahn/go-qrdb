@@ -1871,15 +1871,11 @@ var _ service.LeaseServicer = (*stubLeaseService)(nil)
 
 func TestWithCABootstrap_Applied(t *testing.T) {
 	certPEM := []byte("cert")
-	keyPEM := []byte("key")
 	var opts serverOptions
-	opt := WithCABootstrap(certPEM, keyPEM)
+	opt := WithCABootstrap(certPEM)
 	opt(&opts)
 	if string(opts.caBootstrapCert) != "cert" {
 		t.Errorf("expected caBootstrapCert %q, got %q", "cert", opts.caBootstrapCert)
-	}
-	if string(opts.caBootstrapKey) != "key" {
-		t.Errorf("expected caBootstrapKey %q, got %q", "key", opts.caBootstrapKey)
 	}
 }
 
@@ -2047,7 +2043,7 @@ func TestStart_AllProtocols_WithAllServiceOptions(t *testing.T) {
 		WithTransaction(txSvc),
 		WithWatch(watchSvc),
 		WithLease(leaseSvc),
-		WithCABootstrap([]byte("cert"), []byte("key")),
+		WithCABootstrap([]byte("cert")),
 	)
 
 	if err := srv.Start(); err != nil {

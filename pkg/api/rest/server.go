@@ -42,6 +42,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -181,8 +182,7 @@ type Server struct {
 	// by Start so the bind is checked synchronously, and closed by Stop.
 	http3Conn       net.PacketConn
 	host            Host
-	caBootstrapCert []byte // PEM-encoded CA cert for bootstrap endpoint
-	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
+	caBootstrapCert []byte // PEM-encoded CA certificate(s) for the bootstrap endpoint; never a key
 	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
 	webUI           http.Handler      // optional embedded web UI file server
 	auditLogger     audit.AuditLogger // optional compliance-grade audit logger
@@ -555,13 +555,15 @@ func WithCORS(cfg CORSConfig) ServerOption {
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint that serves the
-// cluster CA certificate bundle for joining nodes. The endpoint is public
-// (no authentication required) so that nodes without TLS credentials can
-// bootstrap their trust store.
-func WithCABootstrap(certPEM, keyPEM []byte) ServerOption {
+// cluster CA certificate to joining nodes. The endpoint is public (no
+// authentication required) so that nodes without TLS credentials can
+// bootstrap their trust store -- which is exactly why it serves certificates
+// and nothing else. certPEM is reduced to its CERTIFICATE blocks here, so a
+// caller that concatenates the CA key onto it cannot publish the key; input
+// with no certificate leaves the route unregistered.
+func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(s *Server) {
-		s.caBootstrapCert = certPEM
-		s.caBootstrapKey = keyPEM
+		s.caBootstrapCert = clustertls.CertificatesOnly(certPEM)
 	}
 }
 
@@ -1617,9 +1619,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// handleCABootstrap serves the cluster CA certificate bundle for joining
-// nodes. The response contains PEM-encoded CA cert + CA key concatenated,
-// with content type "application/pem-certificate-chain". This endpoint is
+// handleCABootstrap serves the cluster CA certificate for joining nodes, as
+// PEM with content type "application/pem-certificate-chain". It never serves
+// key material: the cluster CA private key does not leave the node holding
+// it. This endpoint is
 // public (exempted from authentication in the middleware) because joining
 // nodes do not yet have TLS credentials.
 func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
@@ -1630,9 +1633,6 @@ func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.caBootstrapCert)
-	if len(s.caBootstrapKey) > 0 {
-		_, _ = w.Write(s.caBootstrapKey)
-	}
 }
 
 // peerAdminRegistry is a thread-safe registry that maps Raft addresses to

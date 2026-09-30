@@ -100,10 +100,9 @@ func StartAnchorAdvertiser(anchorPEM []byte, opts AdvertiseOptions, dataDir stri
 // of StartAnchorAdvertiser.
 //
 // FetchAnchor fails closed with AnchorError when the fetched bundle carries
-// private-key material: that indicates the advertising node is running the
-// shared-CA-key enrollment mode (StartAdvertiser), which is incompatible with
-// attestation-based enrollment and must be surfaced as a configuration
-// mismatch rather than silently accepted.
+// private-key material: that indicates the advertising node runs a release
+// that still distributed the cluster CA key, and a key must never be
+// accepted as a trust anchor.
 func FetchAnchor(ctx context.Context, opts *Options, logger *slog.Logger) ([]byte, error) {
 	if !opts.Bootstrap.HasFlags() {
 		return nil, &FetchError{Method: "auto", Err: errors.New("no bootstrap method configured")}

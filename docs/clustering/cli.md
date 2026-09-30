@@ -150,7 +150,12 @@ Discovery and bootstrap are `qrdbd` configuration, not client verbs:
 
 Dynamic membership is **off by default**, leader-only, and quorum-guarded.
 
-Peer enrollment is configured on the joining node:
+Peer enrollment is configured on the joining node. **In this release, every
+flag in the table below selects a join path that refuses to start** with
+`EnrollmentUnavailableError`, before any dial or write, because the cluster CA
+private key is no longer distributed. Add a node with `--tls-ca-file`,
+`--tls-cert-file` and `--tls-key-file` instead. See
+[user.md](user.md#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
 
 | Flag | Method |
 |---|---|

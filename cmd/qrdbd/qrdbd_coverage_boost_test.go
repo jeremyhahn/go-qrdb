@@ -319,30 +319,6 @@ func TestDefaultMVCCFastStorageFactory_CallsFactory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// generateLeafFromCA – success path (takes bundlePEM with CA cert+key)
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_Success(t *testing.T) {
-	caCertPEM, caKeyPEM, _, _, err := generateCA(time.Hour)
-	if err != nil {
-		t.Fatalf("generateCA: %v", err)
-	}
-
-	// generateLeafFromCA takes a concatenated PEM bundle [caCert][caKey].
-	bundlePEM := append(caCertPEM, caKeyPEM...)
-	bundle, err := generateLeafFromCA(bundlePEM)
-	if err != nil {
-		t.Fatalf("generateLeafFromCA: %v", err)
-	}
-	if bundle == nil {
-		t.Fatal("expected non-nil bundle")
-	}
-	if len(bundle.CertPEM) == 0 {
-		t.Error("expected non-empty leaf cert PEM")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

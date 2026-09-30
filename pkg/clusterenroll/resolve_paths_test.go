@@ -30,11 +30,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
-// TestResolveJoinPathReportsFetchFailure covers Resolve's path 4: bootstrap
-// flags are set, so it must attempt a join rather than fall through to
-// generating its own CA. Falling through is the dangerous failure -- the node
-// would come up with a CA no peer trusts.
-func TestResolveJoinPathReportsFetchFailure(t *testing.T) {
+// TestResolveJoinPathNeverFallsThroughToALocalCA covers Resolve's path 4:
+// bootstrap flags are set, so it must take the join branch -- refused in this
+// release -- rather than fall through to generating its own CA. Falling
+// through is the dangerous failure: the node would come up with a CA no peer
+// trusts.
+func TestResolveJoinPathNeverFallsThroughToALocalCA(t *testing.T) {
 	dir := t.TempDir()
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63010",
@@ -45,14 +46,14 @@ func TestResolveJoinPathReportsFetchFailure(t *testing.T) {
 
 	mat, adv, err := Resolve(context.Background(), opts, discardLogger())
 	if err == nil {
-		t.Fatal("Resolve must fail when the join fetch fails")
+		t.Fatal("Resolve must refuse a join")
 	}
 	if mat != nil || adv != nil {
-		t.Fatal("a failed join must yield no material and no advertiser")
+		t.Fatal("a refused join must yield no material and no advertiser")
 	}
-	var want *FetchError
+	var want *EnrollmentUnavailableError
 	if !errors.As(err, &want) {
-		t.Fatalf("error = %v (%T), want *FetchError", err, err)
+		t.Fatalf("error = %v (%T), want *EnrollmentUnavailableError", err, err)
 	}
 
 	// It must NOT have silently generated and persisted its own CA.
@@ -86,28 +87,30 @@ func TestResolveCARejectsExplicitFiles(t *testing.T) {
 	}
 }
 
-// TestResolveCAJoinPathSplitsAndPersists covers ResolveCA's bootstrap branch
-// when the fetch itself fails. The distinction from the Resolve test above is
-// which error surfaces: ResolveCA returns the fetch error unwrapped, so a
-// caller can tell a transport failure from a malformed bundle.
-func TestResolveCAJoinPathReportsFetchFailure(t *testing.T) {
+// TestResolveCAJoinPathNeverFallsThroughToALocalCA is the ResolveCA
+// counterpart: its bootstrap branch is refused and generates nothing.
+func TestResolveCAJoinPathNeverFallsThroughToALocalCA(t *testing.T) {
+	dir := t.TempDir()
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63011",
 		TrustDomain: "test.cluster",
-		DataDir:     t.TempDir(),
+		DataDir:     dir,
 		Bootstrap:   BootstrapOptions{DirectURL: "https://127.0.0.1:1/bundle"},
 	}
 
 	certPEM, keyPEM, adv, err := ResolveCA(context.Background(), opts, discardLogger())
 	if err == nil {
-		t.Fatal("ResolveCA must fail when the fetch fails")
+		t.Fatal("ResolveCA must refuse a join")
 	}
 	if certPEM != nil || keyPEM != nil || adv != nil {
-		t.Fatal("a failed fetch must yield nothing")
+		t.Fatal("a refused join must yield nothing")
 	}
-	var want *FetchError
+	var want *EnrollmentUnavailableError
 	if !errors.As(err, &want) {
-		t.Fatalf("error = %v (%T), want *FetchError", err, err)
+		t.Fatalf("error = %v (%T), want *EnrollmentUnavailableError", err, err)
+	}
+	if fileExists(filepath.Join(dir, "ca-key.pem")) {
+		t.Error("a refused join generated a local CA")
 	}
 }
 
