@@ -15,10 +15,11 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, HolderRole, OfficerStatus, OfficerRegisterResponse } from "@qrdb/sdk";
-  import { ShieldCheck, AlertCircle, AlertTriangle, RefreshCw, CheckCircle, Clock, UserPlus, Copy, Download } from "lucide-svelte";
+  import type { Client, OfficerStatus } from "@qrdb/sdk";
+  import { ShieldCheck, AlertCircle, AlertTriangle, RefreshCw, CheckCircle, Clock } from "lucide-svelte";
   import StepIndicator from "./wizard/StepIndicator.svelte";
   import StepGlobalBarrier from "./wizard/setup/StepGlobalBarrier.svelte";
+  import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
   import { setupWizardStore } from "$stores/setup-wizard.svelte.ts";
 
   // ---------------------------------------------------------------------------
@@ -71,44 +72,16 @@
   let claimStatusLoading: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
-  // Officer-registration step state
+  // Holder-enrolment step state
   // ---------------------------------------------------------------------------
 
-  /** Per-holder enrolment form state. */
-  interface OfficerFormEntry {
-    username: string;
-    role: HolderRole;
-    csrPem: string;
-    /** null = not yet registered, OfficerRegisterResponse = success, string = error message */
-    result: OfficerRegisterResponse | null;
-    error: string;
-    loading: boolean;
-    /** Tracks whether the returned cert was copied by the admin. */
-    certCopied: boolean;
-  }
+  /** Holders enrolled so far, bound from HolderEnrolmentForms. */
+  let registeredCount: number = $state(0);
 
-  let officerForms: OfficerFormEntry[] = $state([]);
-
-  /** Rebuild the officer forms array when shamir share count changes. */
-  function resetOfficerForms(count: number): void {
-    officerForms = Array.from({ length: count }, () => ({
-      username: "",
-      role: "so" as HolderRole,
-      csrPem: "",
-      result: null,
-      error: "",
-      loading: false,
-      certCopied: false,
-    }));
-  }
-
-  /** Number of officers that have been successfully registered. */
-  let registeredCount = $derived(officerForms.filter((f) => f.result !== null).length);
-
-  /** Total officers needed (from the barrier config). */
+  /** Holders needed: the Shamir share count (N). */
   let totalOfficers = $derived(setupWizardStore.barrierConfig.shamirShares);
 
-  /** Whether all required officers have been registered, gating the Initialize button. */
+  /** Whether every holder is enrolled, gating the Initialize button. */
   let allOfficersRegistered = $derived(registeredCount === totalOfficers && totalOfficers > 0);
 
   // ---------------------------------------------------------------------------
@@ -119,8 +92,6 @@
     applyError = "";
     const cfg = setupWizardStore.barrierConfig;
     if (cfg.mode === "shamir") {
-      // Build empty officer forms for the shamir count before navigating.
-      resetOfficerForms(cfg.shamirShares);
       currentStep = "officers";
     } else {
       currentStep = "applying";
@@ -210,66 +181,6 @@
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Per-officer registration
-  // ---------------------------------------------------------------------------
-  async function registerOfficer(index: number): Promise<void> {
-    const form = officerForms[index];
-    if (form === undefined) return;
-
-    const username = form.username.trim();
-    const csrPem = form.csrPem.trim();
-
-    if (username === "") {
-      officerForms[index] = { ...form, error: "Username is required." };
-      return;
-    }
-    if (csrPem === "") {
-      officerForms[index] = { ...form, error: "CSR PEM is required." };
-      return;
-    }
-
-    officerForms[index] = { ...form, loading: true, error: "" };
-    try {
-      const resp = await client.officers.registerOfficer({ username, role: form.role, csrPem });
-      officerForms[index] = { ...officerForms[index], loading: false, result: resp, error: "" };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Registration failed";
-      officerForms[index] = { ...officerForms[index], loading: false, error: msg };
-    }
-  }
-
-  function copyCert(index: number): void {
-    const form = officerForms[index];
-    if (form === undefined || form.result === null || form.result === undefined) return;
-    const certPem = form.result.certPem;
-    void navigator.clipboard.writeText(certPem).then(() => {
-      const current = officerForms[index];
-      if (current !== undefined) {
-        officerForms[index] = {
-          username: current.username,
-          role: current.role,
-          csrPem: current.csrPem,
-          result: current.result,
-          error: current.error,
-          loading: current.loading,
-          certCopied: true,
-        };
-      }
-    });
-  }
-
-  function downloadCert(index: number): void {
-    const form = officerForms[index];
-    if (form === undefined || form.result === null || form.result === undefined) return;
-    const blob = new Blob([form.result.certPem], { type: "application/x-pem-file" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `officer-${form.username}-cert.pem`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
 </script>
 
 <div class="flex min-h-screen flex-col items-center justify-center px-4 py-8">
@@ -314,13 +225,13 @@
         {:else if currentStep === "officers"}
           <div class="flex flex-col gap-6">
             <div class="text-center">
-              <h2 class="text-2xl font-bold">Register Security Officers</h2>
+              <h2 class="text-2xl font-bold">Enrol Share Holders</h2>
               <p class="text-base-content/70 mt-2 text-sm">
-                Each Security Officer must provide their CSR PEM (generated
-                offline). The server signs it and returns a certificate. The admin
-                must hand the certificate back to the officer out of band.
-                Share bytes are never generated or shown here — they are issued
-                after initialization when each officer claims their share.
+                Each holder — a Security Officer or a key custodian — provides a
+                CSR generated offline. The server's CA issues the holder
+                certificate, which you hand back to the holder out of band. No
+                share exists yet: initialization seals one to each holder, who
+                claims it with its own keys from the qrdb CLI or the desktop app.
               </p>
             </div>
 
@@ -331,161 +242,7 @@
               </div>
             {/if}
 
-            <!-- Progress indicator -->
-            <div class="flex items-center justify-between text-sm">
-              <span class="font-semibold">
-                Registered Officers
-              </span>
-              <span
-                class="badge"
-                class:badge-success={allOfficersRegistered}
-                class:badge-warning={!allOfficersRegistered}
-                data-testid="officer-registration-count"
-              >
-                {registeredCount} / {totalOfficers}
-              </span>
-            </div>
-
-            <!-- Per-officer forms -->
-            {#each officerForms as form, i (i)}
-              <div
-                class="card border bg-base-200"
-                class:border-success={form.result !== null}
-                class:border-base-300={form.result === null}
-                data-testid={`officer-form-${i}`}
-              >
-                <div class="card-body gap-3 p-4">
-                  <div class="flex items-center gap-2">
-                    {#if form.result !== null}
-                      <CheckCircle class="text-success h-5 w-5 shrink-0" />
-                    {:else}
-                      <UserPlus class="text-base-content/50 h-5 w-5 shrink-0" />
-                    {/if}
-                    <h3 class="font-semibold text-sm">
-                      Officer {i + 1}
-                      {#if form.result !== null}
-                        <span class="text-base-content/60 font-normal">
-                          — {form.username} ({form.result.role === "custodian" ? "custodian" : "Security Officer"})
-                        </span>
-                      {/if}
-                    </h3>
-                  </div>
-
-                  {#if form.result === null}
-                    <!-- Registration form -->
-                    <div class="form-control">
-                      <label class="label" for={`officer-username-${i}`}>
-                        <span class="label-text text-xs">Username</span>
-                      </label>
-                      <input
-                        id={`officer-username-${i}`}
-                        type="text"
-                        class="input input-bordered input-sm"
-                        placeholder="officer-alice"
-                        value={form.username}
-                        oninput={(e: Event) => { if (officerForms[i]) officerForms[i].username = (e.currentTarget as HTMLInputElement).value; }}
-                        disabled={form.loading}
-                        data-testid={`officer-username-${i}`}
-                      />
-                    </div>
-
-                    <div class="form-control">
-                      <label class="label" for={`officer-role-${i}`}>
-                        <span class="label-text text-xs">Role</span>
-                      </label>
-                      <select
-                        id={`officer-role-${i}`}
-                        class="select select-bordered select-sm"
-                        value={form.role}
-                        onchange={(e: Event) => { if (officerForms[i]) officerForms[i].role = (e.currentTarget as HTMLSelectElement).value as HolderRole; }}
-                        disabled={form.loading}
-                        data-testid={`officer-role-${i}`}
-                      >
-                        <option value="so">Security Officer</option>
-                        <option value="custodian">Key custodian</option>
-                      </select>
-                    </div>
-
-                    <div class="form-control">
-                      <label class="label" for={`officer-csr-${i}`}>
-                        <span class="label-text text-xs">CSR PEM</span>
-                      </label>
-                      <textarea
-                        id={`officer-csr-${i}`}
-                        class="textarea textarea-bordered textarea-sm font-mono text-xs leading-tight"
-                        rows={5}
-                        placeholder={"-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----"}
-                        value={form.csrPem}
-                        oninput={(e: Event) => { if (officerForms[i]) officerForms[i].csrPem = (e.currentTarget as HTMLTextAreaElement).value; }}
-                        disabled={form.loading}
-                        data-testid={`officer-csr-${i}`}
-                      ></textarea>
-                    </div>
-
-                    {#if form.error}
-                      <div
-                        role="alert"
-                        class="alert alert-error py-2 text-xs"
-                        data-testid={`officer-error-${i}`}
-                      >
-                        <AlertCircle class="h-3 w-3 shrink-0" />
-                        <span>{form.error}</span>
-                      </div>
-                    {/if}
-
-                    <button
-                      class="btn btn-primary btn-sm self-end"
-                      onclick={() => void registerOfficer(i)}
-                      disabled={form.loading || form.username.trim() === "" || form.csrPem.trim() === ""}
-                      data-testid={`register-officer-btn-${i}`}
-                    >
-                      {#if form.loading}
-                        <span class="loading loading-spinner loading-xs"></span>
-                      {/if}
-                      Register Officer
-                    </button>
-
-                  {:else}
-                    <!-- Registration complete: show signed certificate -->
-                    <div class="form-control">
-                      <div class="flex items-center justify-between mb-1">
-                        <span class="label-text text-xs font-semibold">Signed Certificate PEM</span>
-                        <div class="flex gap-1">
-                          <button
-                            class="btn btn-ghost btn-xs gap-1"
-                            onclick={() => copyCert(i)}
-                            aria-label="Copy certificate PEM"
-                            data-testid={`copy-cert-btn-${i}`}
-                          >
-                            <Copy class="h-3 w-3" />
-                            {form.certCopied ? "Copied" : "Copy"}
-                          </button>
-                          <button
-                            class="btn btn-ghost btn-xs gap-1"
-                            onclick={() => downloadCert(i)}
-                            aria-label="Download certificate PEM"
-                            data-testid={`download-cert-btn-${i}`}
-                          >
-                            <Download class="h-3 w-3" />
-                            Download
-                          </button>
-                        </div>
-                      </div>
-                      <textarea
-                        class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
-                        rows={4}
-                        readonly
-                        value={form.result.certPem}
-                        data-testid={`officer-cert-${i}`}
-                      ></textarea>
-                      <p class="text-base-content/50 mt-1 text-xs">
-                        Hand this certificate to the officer. They will need it to authenticate and claim their share.
-                      </p>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            {/each}
+            <HolderEnrolmentForms {client} count={totalOfficers} bind:registeredCount />
 
             <div class="flex justify-between mt-2">
               <button class="btn btn-ghost" onclick={handleOfficersBack}>

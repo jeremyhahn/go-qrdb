@@ -45,6 +45,7 @@
     ExternalConnectionConfig,
   } from "$stores/connection-manager.svelte.ts";
   import StepIndicator from "./wizard/StepIndicator.svelte";
+  import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -135,7 +136,20 @@
       (applyError ? "Setup failed" : "Preparing..."),
   );
 
-  // Shamir result state shown after applying (share-free: shares distributed via officer claim).
+  // Holder enrolment, between starting the server and initializing a Shamir
+  // barrier: initialization splits the unseal key to exactly the enrolled
+  // holders, so it waits here until every one is enrolled.
+  let awaitingHolders: boolean = $state(false);
+  let holdersRegistered: number = $state(0);
+
+  /**
+   * Where a Shamir apply paused for holder enrolment: the phase it paused in,
+   * the profile it created and the connection it opened. Not reactive; only
+   * the resume reads it.
+   */
+  let pausedApply: { phaseIdx: number; profileId: string; connState: ConnectionState } | null = null;
+
+  // Shamir result state shown after applying (share-free: each holder claims its envelope).
   let shamirShareCount: number = $state(0);
   let shamirThresholdResult: number = $state(0);
   let shamirRootToken: string = $state("");
@@ -356,6 +370,8 @@
     applyPhases = [];
     applyProgress = 0;
     applyError = "";
+    awaitingHolders = false;
+    pausedApply = null;
     shamirShareCount = 0;
     shamirThresholdResult = 0;
     shamirRootToken = "";
@@ -405,6 +421,9 @@
       { label: "Saving server configuration...", status: "pending" },
       { label: "Starting embedded server...", status: "pending" },
     ];
+    if (embeddedBarrierMode === "shamir") {
+      phases.push({ label: "Enrolling share holders...", status: "pending" });
+    }
     if (embeddedBarrierMode !== "none") {
       phases.push({ label: "Initializing encryption barrier...", status: "pending" });
     }
@@ -513,89 +532,146 @@
       const preStatus = await client.seal.status();
       const alreadyInitialized = preStatus.initialized;
 
-      if (embeddedBarrierMode !== "none") {
+      if (embeddedBarrierMode === "shamir") {
         advanceApplyPhase(phaseIdx);
-        if (alreadyInitialized) {
-          // Barrier was auto-initialized by the embedded server; honor the
-          // phase for UX continuity but do not call initialize again.
-        } else if (embeddedBarrierMode === "shamir") {
-          const result = await client.seal.initializeShamir({
-            threshold: embeddedShamirThreshold,
-            totalShares: embeddedShamirShares,
-          });
-          shamirShareCount = result.shareCount;
-          shamirThresholdResult = result.threshold;
-          shamirRootToken = result.rootToken;
-        } else {
-          await client.seal.initialize(embeddedPassphrase);
+        if (!alreadyInitialized) {
+          // Pause: the holders are enrolled against the running server, and
+          // continueAfterHolders resumes the apply once every one is.
+          pausedApply = { phaseIdx, profileId, connState };
+          holdersRegistered = 0;
+          awaitingHolders = true;
+          return;
         }
         completeApplyPhase(phaseIdx);
         phaseIdx++;
-      } else if (!alreadyInitialized) {
-        // For "none" mode we still need to mark the barrier as initialized
-        // when the embedded server did not already do so.
-        await client.seal.initialize("");
       }
 
-      // Phase 4: Verify server health.
-      advanceApplyPhase(phaseIdx);
-      await client.admin.status();
-      completeApplyPhase(phaseIdx);
-      phaseIdx++;
-
-      // Phase 5: Complete.
-      advanceApplyPhase(phaseIdx);
-      completeApplyPhase(phaseIdx);
-      applyProgress = 100;
-
-      // Yield to Svelte reactivity before transitioning.
-      await new Promise<void>((r) => setTimeout(r, 120));
-
-      // If shamir, wait for user to acknowledge shares before routing.
-      if (embeddedBarrierMode !== "shamir") {
-        activePanel = "none";
-        // Barrier is now initialized; update the store's cached state so
-        // subsequent sidebar clicks see the connection as fully-connected.
-        // Without this, the cached state would still be "needs-init" from
-        // the initial connectProfile() call above (which happened before
-        // seal.initialize), and clicking the server row would try to
-        // reconnect — which the backend used to refuse as already active.
-        const finalState: ConnectionState = {
-          ...connState,
-          status: "connected",
-        };
-        connManagerStore.states = new Map(connManagerStore.states).set(
-          profileId,
-          finalState,
-        );
-        onConnect(finalState);
-      }
-      // If shamir: the UI shows the officer enrollment panel. The "Continue to Server"
-      // button is immediately enabled — shares are distributed via per-officer claim flow.
+      phaseIdx = await finishApply(phaseIdx, profileId, connState, alreadyInitialized, (i) => { phaseIdx = i; });
     } catch (err: unknown) {
-      console.error("[ConnectionManager] embedded wizard apply error", err);
-      if (phaseIdx >= 0 && phaseIdx < applyPhases.length) {
-        failApplyPhase(phaseIdx);
+      await handleApplyFailure(err, phaseIdx, profileId);
+    }
+  }
+
+  /**
+   * Resumes a Shamir apply once every holder is enrolled: initializes the
+   * barrier, verifies health and completes.
+   */
+  async function continueAfterHolders(): Promise<void> {
+    const paused = pausedApply;
+    if (paused === null || holdersRegistered !== embeddedShamirShares) return;
+    pausedApply = null;
+    awaitingHolders = false;
+    completeApplyPhase(paused.phaseIdx);
+    let phaseIdx = paused.phaseIdx + 1;
+    try {
+      await finishApply(phaseIdx, paused.profileId, paused.connState, false, (i) => { phaseIdx = i; });
+    } catch (err: unknown) {
+      await handleApplyFailure(err, phaseIdx, paused.profileId);
+    }
+  }
+
+  /**
+   * Runs the apply from the barrier-initialization phase to completion.
+   * onPhase reports the phase in progress so a failure marks the right one.
+   * Returns the index past the last phase run.
+   */
+  async function finishApply(
+    startIdx: number,
+    profileId: string,
+    connState: ConnectionState,
+    alreadyInitialized: boolean,
+    onPhase: (idx: number) => void,
+  ): Promise<number> {
+    let phaseIdx = startIdx;
+    const at = (idx: number): void => { phaseIdx = idx; onPhase(idx); };
+
+    if (embeddedBarrierMode !== "none") {
+      advanceApplyPhase(phaseIdx);
+      if (alreadyInitialized) {
+        // Barrier was auto-initialized by the embedded server; honor the
+        // phase for UX continuity but do not call initialize again.
+      } else if (embeddedBarrierMode === "shamir") {
+        const result = await client.seal.initializeShamir({
+          threshold: embeddedShamirThreshold,
+          totalShares: embeddedShamirShares,
+        });
+        shamirShareCount = result.shareCount;
+        shamirThresholdResult = result.threshold;
+        shamirRootToken = result.rootToken;
+      } else {
+        await client.seal.initialize(embeddedPassphrase);
       }
-      applyError = err instanceof Error ? err.message : "An unknown error occurred";
-      // If we got far enough to start the embedded server, tear it down so a
-      // retry can succeed without hitting "connection already active".
-      if (profileId !== "") {
-        try {
-          await disconnectProfile(client, profileId);
-        } catch (stopErr: unknown) {
-          console.warn(
-            "[ConnectionManager] failed to stop orphaned embedded server",
-            stopErr,
-          );
-        }
+      completeApplyPhase(phaseIdx);
+      at(phaseIdx + 1);
+    } else if (!alreadyInitialized) {
+      // For "none" mode we still need to mark the barrier as initialized
+      // when the embedded server did not already do so.
+      await client.seal.initialize("");
+    }
+
+    // Verify server health.
+    advanceApplyPhase(phaseIdx);
+    await client.admin.status();
+    completeApplyPhase(phaseIdx);
+    at(phaseIdx + 1);
+
+    // Complete.
+    advanceApplyPhase(phaseIdx);
+    completeApplyPhase(phaseIdx);
+    applyProgress = 100;
+
+    // Yield to Svelte reactivity before transitioning.
+    await new Promise<void>((r) => setTimeout(r, 120));
+
+    // A Shamir barrier shows its result panel and waits for the operator to
+    // continue; every other mode routes straight to the server.
+    if (embeddedBarrierMode !== "shamir") {
+      activePanel = "none";
+      // Barrier is now initialized; update the store's cached state so
+      // subsequent sidebar clicks see the connection as fully-connected.
+      // Without this, the cached state would still be "needs-init" from
+      // the initial connectProfile() call (which happened before
+      // seal.initialize), and clicking the server row would try to
+      // reconnect — which the backend used to refuse as already active.
+      const finalState: ConnectionState = {
+        ...connState,
+        status: "connected",
+      };
+      connManagerStore.states = new Map(connManagerStore.states).set(
+        profileId,
+        finalState,
+      );
+      onConnect(finalState);
+    }
+    return phaseIdx;
+  }
+
+  /** Marks the failed phase, reports the error and stops the orphaned server. */
+  async function handleApplyFailure(err: unknown, phaseIdx: number, profileId: string): Promise<void> {
+    console.error("[ConnectionManager] embedded wizard apply error", err);
+    awaitingHolders = false;
+    pausedApply = null;
+    if (phaseIdx >= 0 && phaseIdx < applyPhases.length) {
+      failApplyPhase(phaseIdx);
+    }
+    applyError = err instanceof Error ? err.message : "An unknown error occurred";
+    // If we got far enough to start the embedded server, tear it down so a
+    // retry can succeed without hitting "connection already active".
+    if (profileId !== "") {
+      try {
+        await disconnectProfile(client, profileId);
+      } catch (stopErr: unknown) {
+        console.warn(
+          "[ConnectionManager] failed to stop orphaned embedded server",
+          stopErr,
+        );
       }
     }
   }
 
   function handleShamirAck(): void {
-    // Barrier initialized (share-free). Officers claim their shares independently
-    // via the /officer/claim page. Transition to connected state immediately.
+    // Barrier initialized (share-free). Each holder claims its envelope with
+    // its own keys from the qrdb CLI or the desktop app.
     const profile = connManagerStore.profiles[connManagerStore.profiles.length - 1];
     if (profile === undefined) return;
     activePanel = "none";
@@ -617,6 +693,8 @@
     applyPhases = [];
     applyProgress = 0;
     applyError = "";
+    awaitingHolders = false;
+    pausedApply = null;
     shamirShareCount = 0;
     shamirThresholdResult = 0;
     shamirRootToken = "";
@@ -1412,17 +1490,17 @@
           {:else if embeddedStep === "applying"}
             <div class="space-y-6">
               {#if shamirShareCount > 0 && applyProgress >= 100 && !applyError}
-                <!-- Shamir barrier initialized: officer enrollment panel (share-free). -->
+                <!-- Shamir barrier initialized: result panel (share-free). -->
                 <div class="space-y-4">
                   <div role="alert" class="alert alert-info text-sm">
                     <AlertCircle class="h-5 w-5 shrink-0" />
                     <span>
                       The barrier has been initialized with a
                       <strong>{shamirThresholdResult}-of-{shamirShareCount}</strong>
-                      Shamir scheme. Each Security Officer must log in with their
-                      <strong>mTLS certificate</strong> and navigate to
-                      <strong>/officer/claim</strong> to retrieve their share.
-                      Share bytes are never displayed here.
+                      Shamir scheme. Each holder claims its sealed envelope, once, with
+                      its own keys from the qrdb CLI
+                      (<span class="font-mono">qrdb barrier officer claim</span>) or the
+                      desktop app. No share is ever displayed here.
                     </span>
                   </div>
 
@@ -1458,6 +1536,33 @@
                       onclick={handleShamirAck}
                     >
                       Continue to Server
+                    </button>
+                  </div>
+                </div>
+              {:else if awaitingHolders && !applyError}
+                <!-- Holder enrolment: the server is running and waits for its
+                     holders before the Shamir barrier is initialized. -->
+                <div class="space-y-4" data-testid="embedded-holder-enrolment">
+                  <div>
+                    <h3 class="font-semibold">Enrol Share Holders</h3>
+                    <p class="text-base-content/60 mt-1 text-sm">
+                      The unseal key is split to exactly {embeddedShamirShares} enrolled
+                      holders. Enrol each from the CSR it generated offline, and hand it
+                      the issued certificate. No share exists until initialization.
+                    </p>
+                  </div>
+                  <HolderEnrolmentForms {client} count={embeddedShamirShares} bind:registeredCount={holdersRegistered} />
+                  <div class="card-actions justify-end">
+                    <button
+                      class="btn btn-primary"
+                      onclick={() => void continueAfterHolders()}
+                      disabled={holdersRegistered !== embeddedShamirShares}
+                      data-testid="embedded-initialize-btn"
+                    >
+                      Initialize
+                      {#if holdersRegistered !== embeddedShamirShares}
+                        <span class="text-xs opacity-70">({holdersRegistered}/{embeddedShamirShares})</span>
+                      {/if}
                     </button>
                   </div>
                 </div>
