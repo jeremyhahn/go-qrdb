@@ -273,3 +273,29 @@ func TestSign_DeterministicAssertionBytes(t *testing.T) {
 		t.Fatalf("assertion bytes not deterministic:\n%s\n%s", ab1, ab2)
 	}
 }
+
+// TestClusterPeer admits a node certificate and refuses a nil or non-node
+// certificate with the typed not-a-cluster-peer error.
+func TestClusterPeer(t *testing.T) {
+	nc, _ := nodeCert(t, "qrdb.cluster", "127.0.0.1:63001")
+	id, err := ClusterPeer(nc, "")
+	if err != nil {
+		t.Fatalf("ClusterPeer(node cert): %v", err)
+	}
+	if id.NodeID != "127.0.0.1:63001" {
+		t.Errorf("node id = %q, want 127.0.0.1:63001", id.NodeID)
+	}
+
+	uc, _ := userCert(t)
+	for name, cert := range map[string]*x509.Certificate{"nil": nil, "user": uc} {
+		_, err := ClusterPeer(cert, "")
+		var notPeer *ForwardAssertionNotClusterPeerError
+		if !errors.As(err, &notPeer) {
+			t.Errorf("ClusterPeer(%s) = %v, want *ForwardAssertionNotClusterPeerError", name, err)
+		}
+	}
+
+	if _, err := ClusterPeer(nc, "other.domain"); err == nil {
+		t.Error("ClusterPeer admitted a node certificate outside the pinned trust domain")
+	}
+}

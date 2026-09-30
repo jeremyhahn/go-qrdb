@@ -507,6 +507,18 @@ wrong fails a test rather than passing a typed-in column.
   authenticator that names itself `""` is observed, not unobservable, and
   conflating the two let it walk past a non-empty policy through the ordinary
   chain. An observed method whose name does not normalize fails closed.
+- **A forwarded on-behalf request is not read until its presenter is a
+  cluster node, and then only under a bound.** The leader must read the body
+  to check the assertion's body digest. Before it reads anything, it
+  requires the verified, unrevoked peer certificate to be a cluster node's
+  (`forward.ClusterPeer`). Any other certificate that chains to the cluster
+  CA, such as a user's, can never present an honored assertion, and is
+  refused with the same opaque 401 as every other assertion failure. A
+  cluster node's body is then read under `forward.MaxBodyBytes`, which is
+  the largest body any REST handler forwards (a test in `pkg/api/rest` keeps
+  every forwarding handler's bound within it). Previously any certificate
+  chaining to the cluster CA could make the node buffer an unbounded body
+  before the signature was checked.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
 - **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and

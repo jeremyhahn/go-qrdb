@@ -112,7 +112,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			authnErr error
 		)
 		if hasOnBehalfAssertion(r) {
-			ctx, identity, authnErr = m.authenticateOnBehalf(ctx, r)
+			ctx, identity, authnErr = m.authenticateOnBehalf(ctx, w, r)
 		} else {
 			ctx, identity, authnErr = m.authenticate(ctx)
 		}

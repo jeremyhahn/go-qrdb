@@ -22,6 +22,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
 // #231: five handlers called io.ReadAll(r.Body) with no bound. The HTTP read
@@ -177,3 +179,22 @@ func TestRebalancePlanBoundAdmitsAPlanTheServerCanProduce(t *testing.T) {
 }
 
 var _ io.Reader = errReader{}
+
+// TestForwardedBodiesFitTheOnBehalfBound: a forwarded write carries an
+// on-behalf assertion, and the leader reads its body under
+// forward.MaxBodyBytes before it can check the assertion's body binding. Every
+// body a handler forwards must fit, or the leader refuses a write the
+// follower accepted.
+func TestForwardedBodiesFitTheOnBehalfBound(t *testing.T) {
+	for name, bound := range map[string]int64{
+		"kv put":            maxKVPutRequestBytes,
+		"guarded write":     maxGuardedRequestBytes,
+		"control plane":     maxControlPlaneRequestBytes,
+		"rebalance execute": maxRebalancePlanRequestBytes,
+	} {
+		if bound > forward.MaxBodyBytes {
+			t.Errorf("%s bound %d exceeds forward.MaxBodyBytes %d: the leader would refuse the forwarded body",
+				name, bound, forward.MaxBodyBytes)
+		}
+	}
+}

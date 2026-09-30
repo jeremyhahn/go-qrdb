@@ -20,6 +20,9 @@ are not reconstructed here — their history is in the git log.
   servers, and `sealedwindow.Decide` / `RESTEntryMatches`: the gate of a
   boot-time sealed-window listener, which refuses every request once the
   barrier is unsealed.
+- `forward.ClusterPeer` and `forward.MaxBodyBytes`, the cluster-node check
+  and the body bound a receiver applies to a forwarded on-behalf request
+  before reading its body.
 
 ### Changed — BREAKING
 
@@ -267,6 +270,15 @@ are not reconstructed here — their history is in the git log.
   delete, rekey and external officer enrollment were destructive or
   SO-only verbs that were allowlisted, and only the service's own refusal
   while sealed kept the first two inert.
+- **A forwarded on-behalf request no longer lets any cluster-CA certificate
+  make the leader buffer an unbounded body (medium).** The REST middleware
+  read the whole body of a request carrying on-behalf headers, with no bound,
+  to compute the digest the assertion binds. It did this before verifying the
+  assertion, and for any certificate chaining to the cluster CA, including a
+  user's. It now refuses a presenter that is not a cluster node
+  (`forward.ClusterPeer`) before reading anything, and reads a cluster node's
+  body under `forward.MaxBodyBytes`: 16 MiB + 64 KiB, the largest body a REST
+  handler forwards.
 
 ### Known limits
 
