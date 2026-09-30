@@ -92,11 +92,11 @@ func TestIndexService_DropOwnedIndex_Errors(t *testing.T) {
 
 	notConfigured := NewIndexService(&mockHost{
 		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
-			return sm.Result{Data: protocol.EncodeAppError("index not configured")}, nil
+			return sm.Result{Data: protocol.EncodeCapabilityError("index not configured")}, nil
 		},
 	}, 1)
-	var snc *SMNotConfiguredError
+	var snc *CapabilityUnsupportedError
 	if err := notConfigured.DropOwnedIndex(context.Background(), "n", "o"); !errors.As(err, &snc) {
-		t.Fatalf("expected SMNotConfiguredError, got %v", err)
+		t.Fatalf("expected CapabilityUnsupportedError, got %v", err)
 	}
 }

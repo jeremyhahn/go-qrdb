@@ -158,9 +158,9 @@ func TestIndexOwnershipError_RoundTrip(t *testing.T) {
 	if !ok || name != "db.c.f" || owner != "collection:db/c#1" {
 		t.Fatalf("decode: %q %q %v", name, owner, ok)
 	}
-	msg, capability, ok := DecodeAppErrorKind(data)
-	if !ok || capability {
-		t.Fatalf("an ownership refusal is an application error, not a capability one: %v %v", ok, capability)
+	msg, kind, ok := DecodeAppErrorKind(data)
+	if !ok || kind != AppErrorConflict {
+		t.Fatalf("an ownership refusal is a conflict application error, not a capability or corrupt one: %v %v", ok, kind)
 	}
 	if msg != "index db.c.f is owned by collection:db/c#1" {
 		t.Fatalf("message %q", msg)
@@ -172,9 +172,9 @@ func TestIndexOwnershipError_RoundTrip(t *testing.T) {
 
 func TestIndexOwnershipError_OtherPayloads(t *testing.T) {
 	for name, data := range map[string][]byte{
-		"plain result":      {0x01},
-		"generic app error": EncodeAppError("boom"),
-		"capability error":  EncodeCapabilityError("nope"),
+		"plain result":       {0x01},
+		"conflict app error": EncodeAppError(AppErrorConflict, "boom"),
+		"capability error":   EncodeCapabilityError("nope"),
 	} {
 		if _, _, ok := DecodeIndexOwnershipError(data); ok {
 			t.Errorf("%s decoded as an ownership refusal", name)
