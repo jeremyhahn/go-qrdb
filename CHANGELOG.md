@@ -79,6 +79,11 @@ are not reconstructed here — their history is in the git log.
   and a test fails when the registry holds one the SDK does not name.
   `sdk.PermissionDeniedError` aliases `rbac.PermissionDeniedError`, so a
   consumer tells a denial apart from an authorizer that failed to decide.
+- **`SaveIfAbsent`'s refusal is typed and crosses the SDK boundary.**
+  `dao.AtomicWriteUnsupportedError` (entity type, plus the store's refusal when
+  there is one) is re-exported as `sdk.DAOAtomicWriteUnsupportedError`, with
+  its marker `sdk.DAOErrAtomicWriteUnsupported`, so an SDK consumer fails closed
+  on a non-atomic store without importing `pkg/dao`.
 
 ### Changed — BREAKING
 
@@ -219,6 +224,12 @@ are not reconstructed here — their history is in the git log.
 - The admin account first boot creates in the system tenant is now the System user, so
   `DeleteUser` refuses it. A cluster whose admin predates this is promoted on its next start,
   and at most one System user can exist in a cluster.
+- **`SaveIfAbsent` reports a store's call-time atomic refusal as the DAO's own
+  refusal.** A store that implements `AtomicKVStore` but refused the write with
+  `kvstore.ErrAtomicWriteUnsupported` came back bare, so a caller testing the
+  documented `dao.ErrAtomicWriteUnsupported` missed it and could treat the
+  refusal as an ordinary failure. It now matches the DAO marker too; any other
+  store error is still returned unchanged.
 
 ### Security
 

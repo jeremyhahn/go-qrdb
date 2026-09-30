@@ -274,7 +274,7 @@ func (d *genericDAO[E]) Save(ctx context.Context, entity E) error {
 func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error) {
 	atomicStore, ok := d.store.(kvstore.AtomicKVStore)
 	if !ok {
-		return false, ErrAtomicWriteUnsupported
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType}
 	}
 
 	if entity.EntityID() == 0 {
@@ -289,7 +289,13 @@ func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error
 	ctx, cancel := d.ensureTimeout(ctx)
 	defer cancel()
 
-	return atomicStore.PutIfAbsent(ctx, d.makeKey(entity.EntityID()), data)
+	stored, err := atomicStore.PutIfAbsent(ctx, d.makeKey(entity.EntityID()), data)
+	if err != nil && errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		// The store has the method but not the capability. That is the same
+		// condition as having neither, so it answers to the same marker.
+		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: err}
+	}
+	return stored, err
 }
 
 // SaveWithCondition persists an entity only if the given condition is

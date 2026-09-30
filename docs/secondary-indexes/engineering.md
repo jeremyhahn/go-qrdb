@@ -19,6 +19,13 @@ type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 
+// DAO.SaveIfAbsent's refusal when the store cannot write atomically, whether
+// it is not an AtomicKVStore at all or refused the call (the store's refusal
+// is then reachable through Unwrap). DAOErrAtomicWriteUnsupported is its
+// errors.Is marker.
+type DAOAtomicWriteUnsupportedError = dao.AtomicWriteUnsupportedError
+var  DAOErrAtomicWriteUnsupported   = dao.ErrAtomicWriteUnsupported
+
 // An in-process store with real index maintenance and real atomicity, for
 // unit-testing DAO code without booting a node.
 var NewMemoryKVStore = kvstore.NewMemoryKVStore
@@ -298,6 +305,7 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
 | Registration fails for any other reason | DAO construction fails | **yes** |
 | Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
+| DAO `SaveIfAbsent` over a store with no atomic write, or one that refused it | `*dao.AtomicWriteUnsupportedError` (matches `dao.ErrAtomicWriteUnsupported`; a store refusal stays in the chain) | **yes** — never degrades to `Get`-then-`Save`; any other store error is returned unchanged as outcome-unknown |
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |

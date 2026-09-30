@@ -198,3 +198,45 @@ func TestSDK_EntityTraitTypesCrossTheBoundary(t *testing.T) {
 		_ sdk.DAOSortDirection = sdk.DAOSortAscending
 	)
 }
+
+// nonAtomicKVStore is a consumer's KVStore with no atomic conditional write:
+// embedding the interface leaves the method set exactly sdk.KVStore, so the
+// AtomicKVStore capability is absent the way it is on a real plain backend.
+type nonAtomicKVStore struct {
+	sdk.KVStore
+}
+
+// TestSDK_SaveIfAbsentRefusalIsTestableByConsumers covers #568: a consumer
+// tells "this backend has no atomic write" apart from a real SaveIfAbsent
+// failure through the SDK alone, by the marker or by the typed refusal, and
+// the refusal writes nothing.
+func TestSDK_SaveIfAbsentRefusalIsTestableByConsumers(t *testing.T) {
+	var (
+		_ error = (*sdk.DAOAtomicWriteUnsupportedError)(nil)
+		_ error = sdk.DAOErrAtomicWriteUnsupported
+	)
+	ctx := context.Background()
+	inner := sdk.NewMemoryKVStore()
+	d, err := sdk.NewDAO(nonAtomicKVStore{inner}, "member", func() *reexportMember { return &reexportMember{} })
+	require.NoError(t, err)
+
+	stored, err := d.SaveIfAbsent(ctx, &reexportMember{ID: 9, Name: "ada", Team: "alpha"})
+	require.False(t, stored)
+	require.ErrorIs(t, err, sdk.DAOErrAtomicWriteUnsupported)
+
+	var refusal *sdk.DAOAtomicWriteUnsupportedError
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, "member", refusal.EntityType)
+
+	_, getErr := d.Get(ctx, 9)
+	var notFound sdk.DAONotFoundError
+	require.ErrorAs(t, getErr, &notFound, "the refused write must not reach the store")
+
+	// The same DAO over an atomic store creates the entity: the refusal is
+	// the capability, not the call.
+	atomicDAO, err := sdk.NewDAO(sdk.NewMemoryKVStore(), "member", func() *reexportMember { return &reexportMember{} })
+	require.NoError(t, err)
+	stored, err = atomicDAO.SaveIfAbsent(ctx, &reexportMember{ID: 9, Name: "ada", Team: "alpha"})
+	require.NoError(t, err)
+	require.True(t, stored)
+}
