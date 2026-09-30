@@ -58,6 +58,10 @@ type TokenBucketLimiter struct {
 	idleTTL       time.Duration
 	sweepInterval time.Duration
 	clock         func() time.Time
+	// ticks, when non-nil, drives the reaper instead of a wall-clock ticker
+	// on sweepInterval. Only this package's tests set it (withSweepTicks), so
+	// a test decides exactly when a sweep happens instead of waiting for one.
+	ticks <-chan time.Time
 
 	stop      chan struct{}
 	done      chan struct{}
@@ -101,6 +105,15 @@ func withClock(now func() time.Time) TokenBucketOption {
 	}
 }
 
+// withSweepTicks drives the reaper from ticks instead of a wall-clock ticker.
+// Unexported for the same reason as withClock: it exists so this package's
+// tests can trigger a sweep explicitly rather than sleep until one happens.
+func withSweepTicks(ticks <-chan time.Time) TokenBucketOption {
+	return func(l *TokenBucketLimiter) {
+		l.ticks = ticks
+	}
+}
+
 // NewTokenBucketLimiter constructs a TokenBucketLimiter and starts its
 // background idle-bucket reaper. Callers must call Close when the limiter is
 // no longer needed to stop the reaper goroutine.
@@ -138,35 +151,35 @@ func (l *TokenBucketLimiter) Allow(key string, policy Policy) (allowed bool, ret
 	}
 
 	nowNano := l.clock().UnixNano()
-	burst := float64(policy.Burst)
-
 	for {
 		cur := slot.Load()
-
-		tokens := burst
-		if cur != nil {
-			elapsed := time.Duration(nowNano - cur.lastRefill)
-			tokens = cur.tokens + elapsed.Seconds()*policy.RatePerSecond
-			if tokens > burst {
-				tokens = burst
-			}
-		}
-
-		if tokens < 1 {
-			next := &bucketState{tokens: tokens, lastRefill: nowNano, lastAccess: nowNano}
-			if slot.CompareAndSwap(cur, next) {
-				deficit := 1 - tokens
-				wait := time.Duration(deficit / policy.RatePerSecond * float64(time.Second))
-				return false, wait
-			}
-			continue
-		}
-
-		next := &bucketState{tokens: tokens - 1, lastRefill: nowNano, lastAccess: nowNano}
+		next, allowed, retryAfter := take(cur, nowNano, policy)
+		// A lost race means another caller committed a newer state first;
+		// the loop recomputes from that state. The decision itself is take's,
+		// so every branch of it is reachable from a single-threaded test.
 		if slot.CompareAndSwap(cur, next) {
-			return true, 0
+			return allowed, retryAfter
 		}
 	}
+}
+
+// take is one token-bucket decision, as a pure function: given the bucket's
+// current state (nil for a key never seen) at time nowNano, it returns the
+// state to commit, whether the request is allowed, and when a denied request
+// may retry. Refill is capped at the policy's burst.
+func take(cur *bucketState, nowNano int64, policy Policy) (next *bucketState, allowed bool, retryAfter time.Duration) {
+	burst := float64(policy.Burst)
+	tokens := burst
+	if cur != nil {
+		elapsed := time.Duration(nowNano - cur.lastRefill)
+		tokens = min(cur.tokens+elapsed.Seconds()*policy.RatePerSecond, burst)
+	}
+	if tokens < 1 {
+		deficit := 1 - tokens
+		wait := time.Duration(deficit / policy.RatePerSecond * float64(time.Second))
+		return &bucketState{tokens: tokens, lastRefill: nowNano, lastAccess: nowNano}, false, wait
+	}
+	return &bucketState{tokens: tokens - 1, lastRefill: nowNano, lastAccess: nowNano}, true, 0
 }
 
 // Close stops the background reaper. Safe to call more than once; only the
@@ -184,13 +197,17 @@ func (l *TokenBucketLimiter) Close() error {
 // staying constant) consumes. It runs until Close closes l.stop.
 func (l *TokenBucketLimiter) reap() {
 	defer close(l.done)
-	ticker := time.NewTicker(l.sweepInterval)
-	defer ticker.Stop()
+	ticks := l.ticks
+	if ticks == nil {
+		ticker := time.NewTicker(l.sweepInterval)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
 	for {
 		select {
 		case <-l.stop:
 			return
-		case <-ticker.C:
+		case <-ticks:
 			l.sweep()
 		}
 	}

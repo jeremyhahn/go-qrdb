@@ -133,7 +133,14 @@ the `Registry`.
   simulated clock, retry-after computation, independent keys, invalid-policy
   refusal, idle-bucket reclamation, concurrent `Allow` under `-race` never
   exceeding burst, `Registry` panics for each invalid-construction case, and
-  a nil-`Registry` unlimited-lookup case.
+  a nil-`Registry` unlimited-lookup case. **No unit test waits on real
+  time.** The decision is a pure function (`take`: current state, now,
+  policy in; next state, verdict and retry-after out), tested branch by
+  branch, and `Allow`'s compare-and-swap loop only retries it. The
+  refill cap is exercised by an hour of simulated idle. The reaper is driven by
+  explicit ticks (`withSweepTicks`) on an unbuffered channel, so a second tick
+  proves the first sweep finished. The package's coverage is therefore the same
+  on every run; only the two unreachable type-assertion panics are uncovered.
 - **Unit, `pkg/auth/middleware`**: `checkRateLimit` no-op paths (unconfigured
   limiter, unconfigured registry, unregistered permission), denial and its
   error fields, per-caller independence, `authorize` running the rate-limit

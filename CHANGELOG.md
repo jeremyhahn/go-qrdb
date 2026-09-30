@@ -338,6 +338,13 @@ are not reconstructed here — their history is in the git log.
   tests cover the raft observer promoter, `StartedAsObserver`, and
   `CloseAndPurge`. `CloseAndPurge` is the demotion teardown that deletes a
   demoted replica's ciphertext, and it had no test.
+- **`pkg/ratelimit` measures the same coverage on every run.** Its coverage
+  used to alternate between 95.60% and 96.70% depending on thread timing,
+  which could fail the coverage gate at random. The token-bucket decision is
+  now a pure function (`take`), and `Allow`'s compare-and-swap loop only
+  retries it. Tests trigger the reaper with explicit ticks instead of sleeping
+  on the wall clock. Five consecutive runs produced identical profiles at
+  97.75%; only two unreachable panic guards are uncovered.
 
 ### Removed
 
