@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	memorystorage "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
@@ -245,8 +246,8 @@ func TestRemoteBackendKV_StillRefusesGuardedWrites(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ok, err := call()
 			assert.False(t, ok)
-			assert.True(t, errors.Is(err, database.ErrAtomicWriteUnsupported),
-				"error %v no longer names the missing capability", err)
+			assert.True(t, errors.Is(err, kvstore.ErrAtomicWriteUnsupported),
+				"error %v does not match the canonical kvstore.ErrAtomicWriteUnsupported", err)
 			assert.True(t, errors.Is(err, ErrNotStored),
 				"a refused capability provably stored nothing and must say so")
 		})

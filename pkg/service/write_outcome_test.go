@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -281,8 +282,8 @@ func TestBackendKVService_CapabilityRefusalProvesNotStored(t *testing.T) {
 			}
 			// The marker is additive: code that matched on the sentinel before
 			// the marker existed must keep working.
-			if !errors.Is(err, database.ErrAtomicWriteUnsupported) {
-				t.Errorf("error %v no longer matches database.ErrAtomicWriteUnsupported", err)
+			if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+				t.Errorf("error %v does not match kvstore.ErrAtomicWriteUnsupported, the canonical marker", err)
 			}
 		})
 	}

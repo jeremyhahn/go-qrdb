@@ -72,19 +72,6 @@ var (
 	// ErrInvalidPublicKey is returned when the public key PEM cannot be parsed.
 	ErrInvalidPublicKey = errors.New("custodian: invalid public key PEM")
 
-	// ErrAtomicWriteUnsupported is returned when the KV store cannot perform
-	// an atomic conditional write.
-	//
-	// Registration claims a tenant's username with PutIfAbsent so exactly one
-	// of two concurrent enrolments for the same identity can proceed. A store
-	// without that primitive can only be checked with Get and then written
-	// with Put, and both callers observe "absent" in the window between them
-	// — so both seal a different share against the same identity and the
-	// later write decides which enrolment survives, leaving the other holder
-	// with an envelope for material the store no longer describes. Emulating
-	// the guarantee would hide that; refusing states it.
-	ErrAtomicWriteUnsupported = errors.New("custodian: kv store does not support atomic conditional writes")
-
 	// ErrGuardedBatchUnsupported is returned when the KV store cannot apply an
 	// enrolment's three keys as one write fenced on the username claim.
 	//

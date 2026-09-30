@@ -213,7 +213,6 @@ type nonAtomicKVStore struct {
 func TestSDK_SaveIfAbsentRefusalIsTestableByConsumers(t *testing.T) {
 	var (
 		_ error = (*sdk.DAOAtomicWriteUnsupportedError)(nil)
-		_ error = sdk.DAOErrAtomicWriteUnsupported
 	)
 	ctx := context.Background()
 	inner := sdk.NewMemoryKVStore()
@@ -222,7 +221,7 @@ func TestSDK_SaveIfAbsentRefusalIsTestableByConsumers(t *testing.T) {
 
 	stored, err := d.SaveIfAbsent(ctx, &reexportMember{ID: 9, Name: "ada", Team: "alpha"})
 	require.False(t, stored)
-	require.ErrorIs(t, err, sdk.DAOErrAtomicWriteUnsupported)
+	require.ErrorIs(t, err, sdk.ErrKVAtomicWriteUnsupported, "the refusal matches the canonical marker")
 
 	var refusal *sdk.DAOAtomicWriteUnsupportedError
 	require.ErrorAs(t, err, &refusal)

@@ -105,7 +105,10 @@ func NewDAOStore(store kvstore.KVStore) (*DAOStore, error) {
 		return nil, ErrNilStore
 	}
 	if _, ok := store.(kvstore.AtomicKVStore); !ok {
-		return nil, ErrAtomicWriteUnsupported
+		// Single-use redemption needs an atomic conditional write; refuse at
+		// construction with the one atomic-refusal marker rather than let an
+		// invitation be redeemed twice.
+		return nil, kvstore.ErrAtomicWriteUnsupported
 	}
 
 	inviteIDs := dao.NewFieldHashGenerator("TokenHash")

@@ -15,7 +15,6 @@
 package database
 
 import (
-	"errors"
 	"strconv"
 )
 
@@ -576,14 +575,6 @@ type BarrierEncryptorUnavailableError struct {
 func (e *BarrierEncryptorUnavailableError) Error() string {
 	return "database: barrier encryptor unavailable for database " + strconv.Quote(e.Name) + " immediately after registration"
 }
-
-// ErrAtomicWriteUnsupported is returned when a conditional write is requested
-// of a backend that cannot perform one atomically.
-//
-// It is a refusal, not a fallback. Performing the check and the write as two
-// operations would appear to succeed while allowing two callers to both create
-// the same key, which for a single-use credential means issuing it twice.
-var ErrAtomicWriteUnsupported = errors.New("database: backend does not support atomic conditional writes")
 
 // EtcdEngineUnsupportedError is returned when the etcd wire protocol is
 // enabled on a database whose engine is not kv. etcd serves a key-value

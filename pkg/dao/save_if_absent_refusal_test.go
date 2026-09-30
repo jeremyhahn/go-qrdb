@@ -59,8 +59,8 @@ var _ kvstore.AtomicKVStore = refusingAtomicKVStore{}
 
 // TestSaveIfAbsent_NonAtomicStoreIsRefused: a store with no atomic write is
 // refused, never emulated with Get-then-Put, and the refusal is the typed
-// AtomicWriteUnsupportedError naming the entity type, matching the
-// ErrAtomicWriteUnsupported marker.
+// AtomicWriteUnsupportedError naming the entity type, matching the canonical
+// kvstore.ErrAtomicWriteUnsupported marker.
 func TestSaveIfAbsent_NonAtomicStoreIsRefused(t *testing.T) {
 	ctx := context.Background()
 	inner := newMemoryKVStore()
@@ -73,8 +73,11 @@ func TestSaveIfAbsent_NonAtomicStoreIsRefused(t *testing.T) {
 	if stored {
 		t.Fatal("a non-atomic store reported the entity stored")
 	}
-	if !errors.Is(err, ErrAtomicWriteUnsupported) {
-		t.Fatalf("err = %v, want it to match ErrAtomicWriteUnsupported", err)
+	if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want it to match kvstore.ErrAtomicWriteUnsupported", err)
+	}
+	if !errors.Is(err, kvstore.ErrNotApplied) {
+		t.Fatalf("err = %v, want it to match kvstore.ErrNotApplied: a capability refusal wrote nothing", err)
 	}
 	var unsupported *AtomicWriteUnsupportedError
 	if !errors.As(err, &unsupported) {
@@ -88,12 +91,11 @@ func TestSaveIfAbsent_NonAtomicStoreIsRefused(t *testing.T) {
 	}
 }
 
-// TestSaveIfAbsent_StoreRefusalMatchesTheDAOMarker: a store that has the
-// method but refuses the operation reports the same condition, so a caller
-// testing the DAO's own marker sees it. Before, the store's
-// kvstore.ErrAtomicWriteUnsupported came back bare and the DAO marker —
-// the one SaveIfAbsent documents — did not match.
-func TestSaveIfAbsent_StoreRefusalMatchesTheDAOMarker(t *testing.T) {
+// TestSaveIfAbsent_StoreRefusalIsTheTypedRefusal: a store that has the method
+// but refuses the operation reports the same condition as one without the
+// method — the typed AtomicWriteUnsupportedError, still matching the canonical
+// marker, with the store's own refusal kept in the chain.
+func TestSaveIfAbsent_StoreRefusalIsTheTypedRefusal(t *testing.T) {
 	d, err := New(refusingAtomicKVStore{newMemoryKVStore()}, "certs", func() *TestEntity { return &TestEntity{} })
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -103,15 +105,18 @@ func TestSaveIfAbsent_StoreRefusalMatchesTheDAOMarker(t *testing.T) {
 	if stored {
 		t.Fatal("a refused write reported the entity stored")
 	}
-	if !errors.Is(err, ErrAtomicWriteUnsupported) {
-		t.Fatalf("err = %v, want it to match dao.ErrAtomicWriteUnsupported", err)
-	}
 	if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
-		t.Errorf("err = %v, want the store's own refusal kept in the chain", err)
+		t.Fatalf("err = %v, want it to match kvstore.ErrAtomicWriteUnsupported", err)
+	}
+	if !errors.Is(err, kvstore.ErrNotApplied) {
+		t.Fatalf("err = %v, want it to match kvstore.ErrNotApplied: a capability refusal wrote nothing", err)
 	}
 	var unsupported *AtomicWriteUnsupportedError
 	if !errors.As(err, &unsupported) || unsupported.EntityType != "certs" {
-		t.Errorf("err = %#v, want *AtomicWriteUnsupportedError for certs", err)
+		t.Fatalf("err = %#v, want *AtomicWriteUnsupportedError for certs", err)
+	}
+	if unsupported.Err != kvstore.ErrAtomicWriteUnsupported {
+		t.Errorf("Err = %v, want the store's refusal kept in the chain", unsupported.Err)
 	}
 }
 
@@ -128,7 +133,8 @@ func TestSaveIfAbsent_OtherStoreErrorsAreNotRelabelled(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the store's error", err)
 	}
-	if errors.Is(err, ErrAtomicWriteUnsupported) {
+	var unsupported *AtomicWriteUnsupportedError
+	if errors.Is(err, kvstore.ErrAtomicWriteUnsupported) || errors.Is(err, kvstore.ErrNotApplied) || errors.As(err, &unsupported) {
 		t.Error("an ordinary store failure was relabelled as unsupported")
 	}
 }
@@ -166,7 +172,7 @@ func TestAtomicWriteUnsupportedError_Message(t *testing.T) {
 	if got, want := wrapped.Error(), "dao: certs: underlying store does not support atomic conditional writes: kvstore: store does not support atomic conditional writes"; got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
-	if !errors.Is(bare, ErrAtomicWriteUnsupported) || errors.Is(bare, kvstore.ErrAtomicWriteUnsupported) {
-		t.Error("a bare refusal must match the DAO marker only")
+	if !errors.Is(bare, kvstore.ErrAtomicWriteUnsupported) || !errors.Is(bare, kvstore.ErrNotApplied) {
+		t.Error("a bare refusal must match the canonical marker and ErrNotApplied")
 	}
 }

@@ -292,7 +292,7 @@ func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error
 	stored, err := atomicStore.PutIfAbsent(ctx, d.makeKey(entity.EntityID()), data)
 	if err != nil && errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
 		// The store has the method but not the capability. That is the same
-		// condition as having neither, so it answers to the same marker.
+		// condition as having neither, so it is the same typed refusal.
 		return false, &AtomicWriteUnsupportedError{EntityType: d.entityType, Err: err}
 	}
 	return stored, err

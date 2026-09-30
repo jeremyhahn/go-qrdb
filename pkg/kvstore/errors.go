@@ -45,7 +45,25 @@ var ErrIndexUnsupported = errors.New("kvstore: store does not maintain secondary
 // delivers it silently: the structural type assertion still succeeds, the
 // call still returns (true, nil), and two callers racing to claim the same
 // single-use token both win. Refusing is recoverable; a false success is not.
-var ErrAtomicWriteUnsupported = errors.New("kvstore: store does not support atomic conditional writes")
+//
+// It is the ONE marker for the condition across the stack: every layer that
+// refuses a guarded write for want of the capability returns it or an error
+// matching it. It also matches ErrNotApplied, because a capability refusal
+// happens before anything can commit and so proves nothing was written.
+var ErrAtomicWriteUnsupported error = atomicWriteUnsupportedError{}
+
+// atomicWriteUnsupportedError is ErrAtomicWriteUnsupported's type. It is a
+// comparable value type, so the marker compares equal to itself however it
+// is copied.
+type atomicWriteUnsupportedError struct{}
+
+// Error returns the marker's message.
+func (atomicWriteUnsupportedError) Error() string {
+	return "kvstore: store does not support atomic conditional writes"
+}
+
+// Is reports ErrNotApplied: a refused capability wrote nothing.
+func (atomicWriteUnsupportedError) Is(target error) bool { return target == ErrNotApplied }
 
 // ErrInvalidScanBound is the cause carried by an
 // index.InvalidNumericBoundError when a range-scan bound cannot be encoded

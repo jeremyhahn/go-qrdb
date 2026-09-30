@@ -112,8 +112,9 @@ var (
 	// An invitation that never expires is a permanent bearer credential.
 	ErrInviteNonPositiveTTL = invite.ErrNonPositiveTTL
 	// ErrInviteAtomicWriteUnsupported indicates the store cannot guarantee
-	// single-use redemption.
-	ErrInviteAtomicWriteUnsupported = invite.ErrAtomicWriteUnsupported
+	// single-use redemption. It IS ErrKVAtomicWriteUnsupported, the one
+	// atomic-refusal marker; the name is kept for callers already using it.
+	ErrInviteAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 	// ErrInviteNilStoreResolver indicates NewTenantInviteStore was called with
 	// no resolver, which would place every tenant's invitations together.
 	ErrInviteNilStoreResolver = invite.ErrNilStoreResolver

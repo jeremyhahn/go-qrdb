@@ -2109,7 +2109,7 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 // leaves a window in which a second caller sees the same free ID, and both
 // write, and one document is silently gone. The guarded write has no such
 // window on any backend that offers it, and a backend that does not offer it
-// refuses with database.ErrAtomicWriteUnsupported rather than degrading -- an
+// refuses with kvstore.ErrAtomicWriteUnsupported rather than degrading -- an
 // insert that cannot promise the ID is the caller's fails, which is the whole
 // point of the promise.
 //

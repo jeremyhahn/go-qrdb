@@ -81,9 +81,9 @@ are not reconstructed here — their history is in the git log.
   consumer tells a denial apart from an authorizer that failed to decide.
 - **`SaveIfAbsent`'s refusal is typed and crosses the SDK boundary.**
   `dao.AtomicWriteUnsupportedError` (entity type, plus the store's refusal when
-  there is one) is re-exported as `sdk.DAOAtomicWriteUnsupportedError`, with
-  its marker `sdk.DAOErrAtomicWriteUnsupported`, so an SDK consumer fails closed
-  on a non-atomic store without importing `pkg/dao`.
+  there is one) is re-exported as `sdk.DAOAtomicWriteUnsupportedError`. It
+  matches `sdk.ErrKVAtomicWriteUnsupported`, so an SDK consumer fails closed on
+  a non-atomic store without importing `pkg/dao`.
 - **The MCP tool-error contract is exported through the SDK.**
   `sdk/go/types_mcp_wire.go` re-exports `pkg/api/mcp/wire`: `sdk.MCPCode` and
   its seventeen constants, `sdk.MCPErrorPayload`, `sdk.MCPErrorEnvelope`,
@@ -219,6 +219,21 @@ are not reconstructed here — their history is in the git log.
   calling or implementing `QRDBServiceClient`/`QRDBServiceServer.BarrierRecoveryDelete`
   must pass or accept `*qrdbv1.BarrierRecoveryDeleteRequest`. The SDK's
   `BarrierDeleteRecoveryKeys(ctx)` signature is unchanged.
+- **Breaking: one marker for "this store cannot write atomically".**
+  `kvstore.ErrAtomicWriteUnsupported` (`sdk.ErrKVAtomicWriteUnsupported`) is
+  the only one. `dao.ErrAtomicWriteUnsupported`, `database.ErrAtomicWriteUnsupported`,
+  `custodian.ErrAtomicWriteUnsupported` and `invite.ErrAtomicWriteUnsupported`
+  are removed: the DAO refuses with the typed `dao.AtomicWriteUnsupportedError`,
+  and the database backends, the service layer, the custodian service and the
+  invitation store return the kvstore marker itself.
+  `sdk.ErrInviteAtomicWriteUnsupported` is now an alias of
+  `sdk.ErrKVAtomicWriteUnsupported` (same value; its message is the kvstore
+  one). The marker, and the DAO's typed refusal, also match
+  `kvstore.ErrNotApplied` (new SDK alias `sdk.ErrKVNotApplied`): a capability
+  refusal writes nothing, so a caller need not reconcile. Before, a caller
+  testing one marker missed a refusal carrying another; the server's own KV
+  adapter, for one, refused with the database sentinel, which neither the
+  kvstore nor the dao marker matched.
 
 ### Fixed
 
@@ -239,12 +254,11 @@ are not reconstructed here — their history is in the git log.
 - The admin account first boot creates in the system tenant is now the System user, so
   `DeleteUser` refuses it. A cluster whose admin predates this is promoted on its next start,
   and at most one System user can exist in a cluster.
-- **`SaveIfAbsent` reports a store's call-time atomic refusal as the DAO's own
-  refusal.** A store that implements `AtomicKVStore` but refused the write with
-  `kvstore.ErrAtomicWriteUnsupported` came back bare, so a caller testing the
-  documented `dao.ErrAtomicWriteUnsupported` missed it and could treat the
-  refusal as an ordinary failure. It now matches the DAO marker too; any other
-  store error is still returned unchanged.
+- **`SaveIfAbsent` reports a store's call-time atomic refusal as its typed
+  refusal.** A store that implements `AtomicKVStore` but refused the write came
+  back as a bare store error. It is now `*dao.AtomicWriteUnsupportedError`,
+  the same as a store without the method, with the store's refusal kept in the
+  chain. Any other store error is still returned unchanged.
 
 ### Security
 

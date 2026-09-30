@@ -79,14 +79,6 @@ func (e *StoreError) Unwrap() error { return e.Cause }
 // belonging to someone else.
 var ErrTokenCollision = errors.New("invite: generated token collides with an existing invitation")
 
-// ErrAtomicWriteUnsupported indicates the KV store cannot perform atomic
-// conditional writes, so single-use redemption cannot be guaranteed.
-//
-// It is returned at construction rather than at redemption: an invitation that
-// can be redeemed twice enrolls two authenticators against one identity, and
-// discovering that on the first redemption is far too late.
-var ErrAtomicWriteUnsupported = errors.New("invite: store does not support atomic conditional writes; single-use redemption cannot be guaranteed")
-
 // ErrNilStoreResolver is returned by NewTenantStore when no resolver is
 // supplied. Without one there is no way to route an invitation into its
 // tenant's store, and defaulting to a shared store would place every tenant's

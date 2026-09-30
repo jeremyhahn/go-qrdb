@@ -197,7 +197,7 @@ path, not the body.
   discovered by asserting the backend to `database.AtomicBackend` rather than
   being part of `database.Backend`, because the remote proxy cannot honour it
   until its wire protocol carries the verbs; it refuses with
-  `database.ErrAtomicWriteUnsupported` instead of emulating them with a read
+  `kvstore.ErrAtomicWriteUnsupported` instead of emulating them with a read
   and a write.
 - **A local backend's guarded write is atomic against every other write on the
   same backend**, unguarded ones included. The read and the write are one

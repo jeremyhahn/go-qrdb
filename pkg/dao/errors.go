@@ -16,6 +16,8 @@ package dao
 import (
 	"errors"
 	"fmt"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 var (
@@ -230,15 +232,6 @@ func IsUnitOfWorkCommitError(err error) bool {
 	return errors.As(err, &uowErr) || errors.As(err, &uowErrPtr)
 }
 
-// ErrAtomicWriteUnsupported is the marker SaveIfAbsent's refusal matches under
-// errors.Is when the underlying KVStore cannot perform an atomic conditional
-// write. The refusal itself is an *AtomicWriteUnsupportedError.
-//
-// It is a refusal, not a fallback. Emulating the operation with a read followed
-// by a write would appear to succeed while allowing two callers to create the
-// same entity, which for a single-use credential means issuing it twice.
-var ErrAtomicWriteUnsupported = errors.New("dao: underlying store does not support atomic conditional writes")
-
 // AtomicWriteUnsupportedError is SaveIfAbsent's refusal when the store cannot
 // perform an atomic conditional write, for either of the two reasons a store
 // can have: its type offers no kvstore.AtomicKVStore at all (Err is nil), or
@@ -246,9 +239,14 @@ var ErrAtomicWriteUnsupported = errors.New("dao: underlying store does not suppo
 // kvstore.ErrAtomicWriteUnsupported (Err is that refusal).
 //
 // Both are the same condition to a caller — nothing was written, and no retry
-// against this store will write it — so both match ErrAtomicWriteUnsupported,
+// against this store will write it — so both match
+// kvstore.ErrAtomicWriteUnsupported, the stack's one marker for the condition,
 // and a store's refusal stays reachable through Unwrap. Any other store error
 // is an outcome-unknown write and is returned unchanged.
+//
+// It is a refusal, not a fallback. Emulating the operation with a read followed
+// by a write would appear to succeed while allowing two callers to create the
+// same entity, which for a single-use credential means issuing it twice.
 type AtomicWriteUnsupportedError struct {
 	// EntityType is the DAO's entity namespace.
 	EntityType string
@@ -267,9 +265,10 @@ func (e *AtomicWriteUnsupportedError) Error() string {
 	return msg
 }
 
-// Is reports the ErrAtomicWriteUnsupported marker.
+// Is reports the canonical kvstore.ErrAtomicWriteUnsupported marker, and
+// kvstore.ErrNotApplied: the refusal happened before anything was written.
 func (e *AtomicWriteUnsupportedError) Is(target error) bool {
-	return target == ErrAtomicWriteUnsupported
+	return target == kvstore.ErrAtomicWriteUnsupported || target == kvstore.ErrNotApplied
 }
 
 // Unwrap returns the store's refusal, if any.

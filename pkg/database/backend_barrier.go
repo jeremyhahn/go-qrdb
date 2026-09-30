@@ -17,6 +17,8 @@ package database
 import (
 	"bytes"
 	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // BarrierEncryptor provides encrypt/decrypt/sealed-check for the barrier
@@ -99,7 +101,7 @@ func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
 // a non-atomic store cannot manufacture atomicity — encrypting first and then
 // doing a check-then-write here would reintroduce exactly the window the
 // operation exists to close — so the capability is reported honestly by
-// returning ErrAtomicWriteUnsupported instead. StandaloneBackend is one, so the
+// returning kvstore.ErrAtomicWriteUnsupported instead. StandaloneBackend is one, so the
 // barrier-over-standalone composition the dedicated-store path builds is atomic
 // end to end (go-qrdb#466).
 func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
@@ -108,7 +110,7 @@ func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bo
 	}
 	atomicInner, ok := b.inner.(AtomicBackend)
 	if !ok {
-		return false, ErrAtomicWriteUnsupported
+		return false, kvstore.ErrAtomicWriteUnsupported
 	}
 	encrypted, err := b.barrier.Encrypt(nil, value)
 	if err != nil {
@@ -134,7 +136,7 @@ func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []b
 	}
 	atomicInner, ok := b.inner.(AtomicBackend)
 	if !ok {
-		return false, ErrAtomicWriteUnsupported
+		return false, kvstore.ErrAtomicWriteUnsupported
 	}
 	stored, err := b.inner.Get(ctx, key)
 	if err != nil {
@@ -169,7 +171,7 @@ func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []b
 // AtomicBackend without implementing it here meant BarrierBackend stopped
 // satisfying the interface, so BackendKVService's type assertion failed for
 // every barrier-backed database and the PRE-EXISTING PutIfAbsent and
-// CompareAndDelete began returning ErrAtomicWriteUnsupported — silently
+// CompareAndDelete began returning kvstore.ErrAtomicWriteUnsupported — silently
 // disabling uniqueness and single-use claims on encrypted databases. The
 // compile-time assertion below exists so that cannot recur (go-qrdb#56).
 func (b *BarrierBackend) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
@@ -178,7 +180,7 @@ func (b *BarrierBackend) CompareAndSwap(ctx context.Context, key, expected, next
 	}
 	atomicInner, ok := b.inner.(AtomicBackend)
 	if !ok {
-		return false, ErrAtomicWriteUnsupported
+		return false, kvstore.ErrAtomicWriteUnsupported
 	}
 	stored, err := b.inner.Get(ctx, key)
 	if err != nil {

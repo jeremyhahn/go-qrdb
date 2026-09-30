@@ -110,7 +110,12 @@ func NewService(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *sl
 	}
 	claims, ok := store.(kvstore.AtomicKVStore)
 	if !ok {
-		return nil, ErrAtomicWriteUnsupported
+		// Registration claims a tenant's username with PutIfAbsent so exactly
+		// one of two concurrent enrolments for the same identity proceeds. A
+		// store without it could only Get then Put, and both callers would see
+		// "absent" in between. Refuse with the canonical marker rather than
+		// emulate the guarantee.
+		return nil, kvstore.ErrAtomicWriteUnsupported
 	}
 	// The enrolment's three keys are written as ONE guarded transaction, so the
 	// capability is required rather than optional. Refusing here surfaces a

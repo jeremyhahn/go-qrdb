@@ -92,7 +92,8 @@ type GenericDAO[E Entity] interface {
 	// name — requires this.
 	//
 	// It requires the underlying KVStore to implement kvstore.AtomicKVStore
-	// and returns ErrAtomicWriteUnsupported when it does not, rather than
+	// and returns *AtomicWriteUnsupportedError (matching
+	// kvstore.ErrAtomicWriteUnsupported) when it does not, rather than
 	// silently degrading to a racy read-then-write.
 	SaveIfAbsent(ctx context.Context, entity E) (stored bool, err error)
 

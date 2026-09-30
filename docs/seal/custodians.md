@@ -118,7 +118,7 @@ it is left for an operator (see [Operator recovery](#operator-recovery-for-a-str
 
 Because the claim is required, the KV store backing the custodian service must
 implement `kvstore.AtomicKVStore`. `custodian.NewService` refuses a store
-without it (`ErrAtomicWriteUnsupported`) rather than emulating the claim with a
+without it (`kvstore.ErrAtomicWriteUnsupported`) rather than emulating the claim with a
 read followed by a write, which is the check-then-act window it exists to
 close. Every qrdb engine provides the primitive natively — Raft evaluates the
 condition inside the state machine, so replicas cannot diverge.

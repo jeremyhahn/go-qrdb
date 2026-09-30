@@ -448,7 +448,7 @@ middle decided nowhere.
   per cent on `pebble`.
 
   **The remote proxy still refuses**, with
-  `database.ErrAtomicWriteUnsupported`, because its wire protocol carries no
+  `kvstore.ErrAtomicWriteUnsupported`, because its wire protocol carries no
   guarded operation. That refusal is why the capability is discovered by type
   assertion instead of living on `database.Backend`: widening the interface
   would force the proxy to ship a method that either lies or always fails, and

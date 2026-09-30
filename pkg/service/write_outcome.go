@@ -73,7 +73,7 @@ var (
 // without changing what it matches otherwise.
 //
 // Used for sentinels owned by other packages, which cannot carry an Is method
-// of their own. Unwrap keeps errors.Is(err, database.ErrAtomicWriteUnsupported)
+// of their own. Unwrap keeps errors.Is(err, kvstore.ErrAtomicWriteUnsupported)
 // answering true for callers that match on the original.
 type notStoredError struct {
 	err error
