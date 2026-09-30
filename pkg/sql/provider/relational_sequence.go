@@ -44,6 +44,18 @@ import (
 // established by a Raft-committed CAS, so two concurrent allocators -- on
 // the same node or different ones -- can never both believe they own the
 // same value.
+//
+// Fencing: a reset -- ALTER TABLE ... AUTO_INCREMENT = 0, or a MySQL-dialect
+// TRUNCATE TABLE -- restarts the counter at 1, so the post-reset counter
+// hands out again every value a block reserved before the reset still
+// holds. SequenceServicer carries an epoch that every reset advances, and
+// Allocate reports the epoch a block was reserved under; sequenceBlock keeps
+// it beside the block and compares it with SequenceServicer.Epoch before
+// handing out ANY cached value, not only when the block runs out. A block
+// that still has unconsumed capacity when a reset commits -- through another
+// session, another handle, or another node -- is discarded at its next use
+// rather than at its natural exhaustion, and next refills from the
+// post-reset counter.
 // ---------------------------------------------------------------------------
 
 const (
@@ -68,31 +80,47 @@ type sequenceBlock struct {
 	mu       sync.Mutex
 	cursor   uint64 // next unused value in the reserved block
 	end      uint64 // exclusive upper bound of the reserved block
+	epoch    uint64 // the sequence's epoch when [cursor, end) was reserved
 	lastSize uint64 // size of the most recently requested block; 0 before the first allocation
 }
 
-// next returns the next value to hand out, allocating a fresh block from
-// seqSvc via a Raft-committed CAS whenever the current one is exhausted.
-// Each successive block requested by the same sequenceBlock is at least as
-// large as the last (see nextBlockSizeLocked), amortizing the Raft round
-// trip cost across a large multi-row INSERT.
-func (b *sequenceBlock) next(ctx context.Context, seqSvc service.SequenceServicer, database, seqName string) (uint64, error) {
+// next returns the next value to hand out and the epoch it was reserved
+// under. A cached value is handed out only while its block's epoch is still
+// the sequence's current one (see the fencing note above); a stale block is
+// discarded. Whenever the block is exhausted or discarded, next allocates a
+// fresh one from seqSvc via a Raft-committed CAS. Each successive block
+// requested by the same sequenceBlock is at least as large as the last (see
+// nextBlockSizeLocked), amortizing the Raft round trip cost of a large
+// multi-row INSERT's allocations; the epoch check is one linearizable read
+// per cached value, the price of fencing a block that still has capacity.
+func (b *sequenceBlock) next(ctx context.Context, seqSvc service.SequenceServicer, database, seqName string) (uint64, uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.cursor < b.end {
+		current, err := seqSvc.Epoch(ctx, database, seqName)
+		if err != nil {
+			return 0, 0, err
+		}
+		if current != b.epoch {
+			b.cursor, b.end = 0, 0
+		}
+	}
+
 	if b.cursor >= b.end {
 		size := b.nextBlockSizeLocked()
-		first, err := seqSvc.Allocate(ctx, database, seqName, size)
+		first, epoch, err := seqSvc.Allocate(ctx, database, seqName, size)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		b.cursor = first
 		b.end = first + size
+		b.epoch = epoch
 	}
 
 	v := b.cursor
 	b.cursor++
-	return v, nil
+	return v, b.epoch, nil
 }
 
 // nextBlockSizeLocked returns the size of the next block to request,
@@ -118,5 +146,5 @@ func (b *sequenceBlock) nextBlockSizeLocked() uint64 {
 func (b *sequenceBlock) discard() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.cursor, b.end, b.lastSize = 0, 0, 0
+	b.cursor, b.end, b.epoch, b.lastSize = 0, 0, 0, 0
 }

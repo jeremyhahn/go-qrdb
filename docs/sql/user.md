@@ -63,6 +63,15 @@ CREATE INDEX idx_email ON users (email);
 normal; duplicates are impossible.** If you need consecutive ids within one
 multi-row `INSERT`, this is not the store for that guarantee.
 
+`ALTER TABLE users AUTO_INCREMENT = 0` restarts the counter at 1, and every
+session — on any node — stops using ids it had reserved before the restart:
+its next generated id comes from the restarted counter, so two concurrent
+inserts never both receive the same new id. Rows already in the table are
+not renumbered and the counter is not checked against them: an
+`AUTO_INCREMENT = 0` on a table that still holds id 1 means the next insert
+fails with a duplicate-key error (MySQL would instead move the counter past
+the largest id).
+
 **Use transactions.**
 
 ```sql

@@ -31,30 +31,58 @@ import (
 // simply throws its candidate block away and computes a fresh one from the
 // value the winner committed -- that block is never handed out, which is
 // where the gaps come from.
+//
+// Fencing: every sequence also carries an epoch, stored in the same value as
+// the counter and so written by the same compare-and-swap -- a reset's epoch
+// advance is exactly as replicated and failover-safe as the counter it
+// zeroes, and no reader can observe one without the other. Reset is the only
+// operation that advances it. A caller that caches an allocated block (see
+// pkg/sql/provider's sequenceBlock) caches the epoch Allocate reported with
+// it, and a block whose epoch is no longer the sequence's current one is
+// stale: the counter was reset after the block was reserved, so the
+// post-reset counter will hand its values out again and nothing left in it
+// may be used.
 type SequenceServicer interface {
 	// Allocate reserves n consecutive counter values and returns the first
-	// one; the caller owns [first, first+n). Sequences start at 1, so
-	// Allocate on a fresh sequence with n == 1 returns 1.
-	Allocate(ctx context.Context, database, name string, n uint64) (first uint64, err error)
+	// one, together with the epoch the sequence was at when they were
+	// reserved; the caller owns [first, first+n) for as long as that epoch
+	// is current (see Reset). Sequences start at 1, so Allocate on a fresh
+	// sequence with n == 1 returns (1, 0).
+	Allocate(ctx context.Context, database, name string, n uint64) (first, epoch uint64, err error)
 
 	// Peek returns the sequence's current value (the last value allocated,
 	// or 0 for a sequence that has never been allocated from) without
 	// advancing it.
 	Peek(ctx context.Context, database, name string) (uint64, error)
 
+	// Epoch returns the sequence's current epoch (0 for a sequence that has
+	// never been reset) without allocating or changing anything. It is a
+	// linearizable read, not a compare-and-swap, so it never contends with
+	// a concurrent writer; a caller holding a cached block compares its
+	// block's epoch against this before handing out a value from it.
+	Epoch(ctx context.Context, database, name string) (uint64, error)
+
 	// Advance raises the sequence's current value to atLeast if it is not
 	// already there. It is a no-op, not an error, when the sequence is
 	// already at or past atLeast -- this makes it safe to call
 	// unconditionally when importing or replaying data that carries its own
 	// IDs, to guarantee the sequence never subsequently hands out a value
-	// that collides with one already in use.
+	// that collides with one already in use. Advance never changes the
+	// epoch: raising the counter cannot make an outstanding block's values
+	// reappear, so it invalidates nothing.
 	Advance(ctx context.Context, database, name string, atLeast uint64) error
 
-	// Reset returns the sequence to its zero state, so the next Allocate
-	// call starts a fresh sequence at 1. Reset does not affect rows already
-	// written under previously allocated values; callers that reset a
-	// sequence backing a live AUTO_INCREMENT column are responsible for the
-	// consequences of any resulting collisions with existing data.
+	// Reset returns the sequence's counter to zero, so the next Allocate
+	// call starts a fresh sequence at 1, and advances its epoch in the same
+	// compare-and-swap, so every block any caller reserved before the reset
+	// is stale from the moment it commits (see the fencing note above). A
+	// sequence whose counter is already zero is left alone, epoch included:
+	// nothing has been reserved since the epoch that already governs it.
+	// Reset does not affect rows already written under previously allocated
+	// values, nor a value a caller took from a block before the reset and
+	// has not yet written; callers that reset a sequence backing a live
+	// AUTO_INCREMENT column are responsible for the consequences of any
+	// resulting collisions with such data.
 	Reset(ctx context.Context, database, name string) error
 
 	// Delete removes the sequence entirely, reclaiming its storage. It is
@@ -77,6 +105,10 @@ type SequenceServicer interface {
 	// ModRevision, committed through Raft -- so a replica that applies it
 	// cannot diverge from one that has not yet. An absent sequence is
 	// already the replicated state, so deleting one proposes nothing.
+	//
+	// Delete discards the epoch with the counter: a sequence named again
+	// after a Delete starts at epoch 0. A caller caching blocks must not
+	// outlive the object whose teardown deletes its sequence.
 	Delete(ctx context.Context, database, name string) error
 }
 
@@ -92,9 +124,10 @@ type sequenceKVService interface {
 	GetRevision(ctx context.Context, key string) (*KeyValue, error)
 }
 
-// SequenceService implements SequenceServicer backed by an 8-byte
-// big-endian counter at tableSequenceKey(database, name), advanced through
-// TransactionServicer compare-and-swap proposals over Raft consensus.
+// SequenceService implements SequenceServicer backed by the (counter, epoch)
+// state sequenceState.encode stores at tableSequenceKey(database, name),
+// advanced through TransactionServicer compare-and-swap proposals over Raft
+// consensus.
 type SequenceService struct {
 	kv  sequenceKVService
 	txn TransactionServicer
@@ -110,24 +143,25 @@ func NewSequenceService(kv sequenceKVService, txn TransactionServicer) *Sequence
 	return &SequenceService{kv: kv, txn: txn}
 }
 
-// Allocate reserves n consecutive counter values and returns the first one.
-func (s *SequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, error) {
+// Allocate reserves n consecutive counter values and returns the first one
+// together with the epoch they were reserved under.
+func (s *SequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, uint64, error) {
 	if err := validateSequenceRef(database, name); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if n == 0 {
-		return 0, &SequenceInvalidCountError{}
+		return 0, 0, &SequenceInvalidCountError{}
 	}
 
 	var first uint64
-	_, err := s.casLoop(ctx, database, name, func(current uint64) (uint64, bool) {
-		first = current + 1
-		return current + n, true
+	state, err := s.casLoop(ctx, database, name, func(cur sequenceState) (sequenceState, bool) {
+		first = cur.counter + 1
+		return sequenceState{counter: cur.counter + n, epoch: cur.epoch}, true
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return first, nil
+	return first, state.epoch, nil
 }
 
 // Peek returns the sequence's current value without advancing it.
@@ -135,11 +169,23 @@ func (s *SequenceService) Peek(ctx context.Context, database, name string) (uint
 	if err := validateSequenceRef(database, name); err != nil {
 		return 0, err
 	}
-	current, _, err := s.readCounter(ctx, tableSequenceKey(database, name))
+	state, _, err := s.readState(ctx, tableSequenceKey(database, name))
 	if err != nil {
 		return 0, err
 	}
-	return current, nil
+	return state.counter, nil
+}
+
+// Epoch returns the sequence's current epoch without changing anything.
+func (s *SequenceService) Epoch(ctx context.Context, database, name string) (uint64, error) {
+	if err := validateSequenceRef(database, name); err != nil {
+		return 0, err
+	}
+	state, _, err := s.readState(ctx, tableSequenceKey(database, name))
+	if err != nil {
+		return 0, err
+	}
+	return state.epoch, nil
 }
 
 // Advance raises the sequence's current value to atLeast if it is not
@@ -148,26 +194,21 @@ func (s *SequenceService) Advance(ctx context.Context, database, name string, at
 	if err := validateSequenceRef(database, name); err != nil {
 		return err
 	}
-	_, err := s.casLoop(ctx, database, name, func(current uint64) (uint64, bool) {
-		if current >= atLeast {
-			return current, false
+	_, err := s.casLoop(ctx, database, name, func(cur sequenceState) (sequenceState, bool) {
+		if cur.counter >= atLeast {
+			return cur, false
 		}
-		return atLeast, true
+		return sequenceState{counter: atLeast, epoch: cur.epoch}, true
 	})
 	return err
 }
 
-// Reset returns the sequence to its zero state.
+// Reset zeroes the sequence's counter and advances its epoch.
 func (s *SequenceService) Reset(ctx context.Context, database, name string) error {
 	if err := validateSequenceRef(database, name); err != nil {
 		return err
 	}
-	_, err := s.casLoop(ctx, database, name, func(current uint64) (uint64, bool) {
-		if current == 0 {
-			return current, false
-		}
-		return 0, true
-	})
+	_, err := s.casLoop(ctx, database, name, sequenceState.reset)
 	return err
 }
 
@@ -179,12 +220,12 @@ func (s *SequenceService) Delete(ctx context.Context, database, name string) err
 
 	key := tableSequenceKey(database, name)
 	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
-		_, modRevision, err := s.readCounter(ctx, key)
+		_, modRevision, err := s.readState(ctx, key)
 		if err != nil {
 			return err
 		}
 
-		// modRevision == 0 is the "absent" encoding readCounter returns for
+		// modRevision == 0 is the "absent" encoding readState returns for
 		// a key that was never written (see sequenceKVService). Absence is
 		// already the replicated state, so there is nothing to propose and
 		// -- per the interface contract -- nothing to report.
@@ -226,21 +267,21 @@ func (s *SequenceService) proposeCAS(ctx context.Context, key string, modRevisio
 	return nil
 }
 
-// casLoop reads the counter's current value, applies compute to decide the
-// next value, and -- when compute reports a change -- proposes a Raft
-// compare-and-swap over the counter's observed ModRevision. It retries with
-// bounded jittered backoff (see catalogRetryConfig) on a losing CAS race,
-// re-reading a fresh current/modRevision on every attempt, and gives up
+// casLoop reads the sequence's current state, applies compute to decide the
+// next state, and -- when compute reports a change -- proposes a Raft
+// compare-and-swap over the state key's observed ModRevision. It retries
+// with bounded jittered backoff (see catalogRetryConfig) on a losing CAS
+// race, re-reading a fresh state/modRevision on every attempt, and gives up
 // with SequenceConflictError after the retry budget is exhausted. When
 // compute reports no change (already at the target value, as with a no-op
-// Advance or Reset), casLoop returns the unchanged current value without
-// proposing anything.
-func (s *SequenceService) casLoop(ctx context.Context, database, name string, compute func(current uint64) (next uint64, changed bool)) (uint64, error) {
+// Advance or Reset), casLoop returns the unchanged state without proposing
+// anything.
+func (s *SequenceService) casLoop(ctx context.Context, database, name string, compute func(cur sequenceState) (next sequenceState, changed bool)) (sequenceState, error) {
 	key := tableSequenceKey(database, name)
 
-	var result uint64
+	var result sequenceState
 	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
-		current, modRevision, err := s.readCounter(ctx, key)
+		current, modRevision, err := s.readState(ctx, key)
 		if err != nil {
 			return err
 		}
@@ -254,7 +295,7 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 		if err := s.proposeCAS(ctx, key, modRevision, Op{
 			Type:  OpPut,
 			Key:   []byte(key),
-			Value: encodeSequenceCounter(next),
+			Value: next.encode(),
 		}); err != nil {
 			return err
 		}
@@ -264,26 +305,26 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 	})
 	if err != nil {
 		if isTransactionConflict(err) {
-			return 0, &SequenceConflictError{Database: database, Name: name}
+			return sequenceState{}, &SequenceConflictError{Database: database, Name: name}
 		}
-		return 0, err
+		return sequenceState{}, err
 	}
 
 	return result, nil
 }
 
-// readCounter reads the counter at key, returning (0, 0, nil) when the key
-// has never been written -- the "absent" encoding described on
-// sequenceKVService.
-func (s *SequenceService) readCounter(ctx context.Context, key string) (current uint64, modRevision int64, err error) {
+// readState reads the sequence state at key, returning the zero state and
+// ModRevision 0 when the key has never been written -- the "absent" encoding
+// described on sequenceKVService.
+func (s *SequenceService) readState(ctx context.Context, key string) (sequenceState, int64, error) {
 	kv, err := s.kv.GetRevision(ctx, key)
 	if err == nil {
-		return decodeSequenceCounter(kv.Value), kv.ModRevision, nil
+		return decodeSequenceState(kv.Value), kv.ModRevision, nil
 	}
 	if isKeyNotFound(err) {
-		return 0, 0, nil
+		return sequenceState{}, 0, nil
 	}
-	return 0, 0, err
+	return sequenceState{}, 0, err
 }
 
 // validateSequenceRef validates the database and sequence name are non-empty.
@@ -313,6 +354,57 @@ func decodeSequenceCounter(b []byte) uint64 {
 		return 0
 	}
 	return binary.BigEndian.Uint64(b)
+}
+
+// sequenceState is the value SequenceService stores at a sequence's key:
+// the counter (the last value allocated) and the epoch Reset advances. They
+// share one key so that one compare-and-swap writes both.
+type sequenceState struct {
+	counter uint64
+	epoch   uint64
+}
+
+// reset returns the state Reset commits: counter zero and the epoch
+// advanced, or s unchanged when its counter is already zero -- nothing has
+// been reserved under s.epoch since it began, so there is nothing to fence.
+// TableService.TruncateTable applies the same transition inside its own
+// transaction, which is why it is a method rather than inlined in Reset.
+func (s sequenceState) reset() (sequenceState, bool) {
+	if s.counter == 0 {
+		return s, false
+	}
+	return sequenceState{epoch: s.epoch + 1}, true
+}
+
+// sequenceStateSize is the encoded size of a sequenceState: the 8-byte
+// big-endian counter, then the 8-byte big-endian epoch.
+const sequenceStateSize = 16
+
+// encode encodes s as the 8-byte big-endian counter followed by the 8-byte
+// big-endian epoch. The counter comes first so that the leading 8 bytes are
+// exactly the counter-only format earlier releases wrote and read
+// (encodeSequenceCounter): a value decodes the same counter either way.
+func (s sequenceState) encode() []byte {
+	b := make([]byte, sequenceStateSize)
+	binary.BigEndian.PutUint64(b[:8], s.counter)
+	binary.BigEndian.PutUint64(b[8:], s.epoch)
+	return b
+}
+
+// decodeSequenceState decodes the value encode writes. A value of 8 to 15
+// bytes is the counter-only format earlier releases wrote, before the epoch
+// existed, and decodes as that counter at epoch 0 -- a sequence allocated
+// from by an earlier release keeps counting from where it was rather than
+// restarting at 1 and handing its values out again. A shorter value,
+// including empty, decodes as the zero state, as decodeSequenceCounter does.
+func decodeSequenceState(b []byte) sequenceState {
+	if len(b) < sequenceStateSize {
+		return sequenceState{counter: decodeSequenceCounter(b)}
+	}
+	return sequenceState{
+		counter: binary.BigEndian.Uint64(b[:8]),
+		epoch:   binary.BigEndian.Uint64(b[8:]),
+	}
 }
 
 // userSequencePrefix namespaces the sequences SQL clients create and

@@ -346,9 +346,9 @@ func TestDatabase_DropTable_ReclaimsSequenceCounters(t *testing.T) {
 	// Allocate on both so the counters are genuinely present: Delete on a
 	// never-written counter proposes nothing, so a test that skipped this
 	// would pass whether or not the fix exists.
-	_, err = h.seqSvc.Allocate(ctx, "shop", autoinc, 5)
+	_, _, err = h.seqSvc.Allocate(ctx, "shop", autoinc, 5)
 	require.NoError(t, err)
-	_, err = h.seqSvc.Allocate(ctx, "shop", rowid, 3)
+	_, _, err = h.seqSvc.Allocate(ctx, "shop", rowid, 3)
 	require.NoError(t, err)
 
 	for _, name := range []string{autoinc, rowid} {

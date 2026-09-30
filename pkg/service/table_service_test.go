@@ -1121,7 +1121,7 @@ func TestTableService_TruncateTable_FirstTruncateEver(t *testing.T) {
 	// Allocate an AUTO_INCREMENT value so the sequence key exists and is
 	// nonzero before truncating -- otherwise the reset branch (which skips
 	// proposing a no-op Put when the sequence is already 0) never runs.
-	_, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 1)
+	_, _, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 1)
 	require.NoError(t, err)
 
 	got, err := svc.TruncateTable(ctx, "db", "t", true)
@@ -1134,7 +1134,9 @@ func TestTableService_TruncateTable_FirstTruncateEver(t *testing.T) {
 
 	seqData, err := store.Get(ctx, tableSequenceKey("db", TableAutoIncrementSequenceName(def.TableID)))
 	require.NoError(t, err)
-	assert.Equal(t, uint64(0), decodeSequenceCounter(seqData), "AUTO_INCREMENT must reset to 0")
+	state := decodeSequenceState(seqData)
+	assert.Equal(t, uint64(0), state.counter, "AUTO_INCREMENT must reset to 0")
+	assert.Equal(t, uint64(1), state.epoch, "the reset must advance the epoch, fencing blocks reserved before it")
 }
 
 // TestTableService_TruncateTable_PostgreSQLKeepsSequence verifies
@@ -1146,7 +1148,7 @@ func TestTableService_TruncateTable_PostgreSQLKeepsSequence(t *testing.T) {
 
 	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
 	require.NoError(t, err)
-	_, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 5)
+	_, _, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 5)
 	require.NoError(t, err)
 
 	_, err = svc.TruncateTable(ctx, "db", "t", false)
@@ -1154,7 +1156,59 @@ func TestTableService_TruncateTable_PostgreSQLKeepsSequence(t *testing.T) {
 
 	seqData, err := store.Get(ctx, tableSequenceKey("db", TableAutoIncrementSequenceName(def.TableID)))
 	require.NoError(t, err)
-	assert.Equal(t, uint64(5), decodeSequenceCounter(seqData), "PostgreSQL TRUNCATE must not reset the sequence")
+	state := decodeSequenceState(seqData)
+	assert.Equal(t, uint64(5), state.counter, "PostgreSQL TRUNCATE must not reset the sequence")
+	assert.Equal(t, uint64(0), state.epoch, "a TRUNCATE that keeps the sequence must not fence its blocks")
+}
+
+// TestTableService_TruncateTable_ZeroSequenceKeepsEpoch verifies a MySQL
+// TRUNCATE of a table whose AUTO_INCREMENT counter is already zero writes
+// the state SequenceServicer.Reset would leave -- nothing -- to the epoch:
+// no block can have been reserved since the epoch began.
+func TestTableService_TruncateTable_ZeroSequenceKeepsEpoch(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	seqName := TableAutoIncrementSequenceName(def.TableID)
+	_, _, err = svc.seq.Allocate(ctx, "db", seqName, 3)
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	seqData, err := store.Get(ctx, tableSequenceKey("db", seqName))
+	require.NoError(t, err)
+	assert.Equal(t, sequenceState{counter: 0, epoch: 1}, decodeSequenceState(seqData))
+}
+
+// TestTableService_TruncateTable_FencesAllocationsAcrossResets verifies the
+// epoch TruncateTable writes is the one SequenceServicer reports: Allocate
+// after the TRUNCATE returns 1 under the advanced epoch, and Epoch agrees.
+func TestTableService_TruncateTable_FencesAllocationsAcrossResets(t *testing.T) {
+	svc, _ := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	seqName := TableAutoIncrementSequenceName(def.TableID)
+	_, before, err := svc.seq.Allocate(ctx, "db", seqName, 4)
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	epoch, err := svc.seq.Epoch(ctx, "db", seqName)
+	require.NoError(t, err)
+	assert.Equal(t, before+1, epoch)
+
+	first, after, err := svc.seq.Allocate(ctx, "db", seqName, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), first)
+	assert.Equal(t, epoch, after)
 }
 
 // TestTableService_TruncateTable_PublishesReclaimJobNamingTheOldGeneration

@@ -2177,7 +2177,7 @@ func collectionIDGenKey(info *CollectionInfo) string {
 // function's doc comment for why that fallback can produce duplicate IDs.
 func (s *CollectionService) nextDocumentID(ctx context.Context, info *CollectionInfo, entity dao.Entity) (uint64, error) {
 	if info.IDStrategy == IDStrategyIncrement && s.seqSvc != nil {
-		id, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info), 1)
+		id, _, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info), 1)
 		if err != nil {
 			return 0, &CollectionMetadataError{Op: "allocate-id", Err: err}
 		}

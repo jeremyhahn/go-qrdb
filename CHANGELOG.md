@@ -248,6 +248,14 @@ are not reconstructed here — their history is in the git log.
 - `User.Factors` is removed. Factors and MFA state are read from the auth-factor store once
   per response; if that read fails the request fails with 503 / `UNAVAILABLE` instead of
   reporting no second factor.
+- **`service.SequenceServicer` carries an epoch** (#547).
+  `Allocate` returns `(first, epoch, err)`, and a new `Epoch` method reads a
+  sequence's current epoch. `Reset`, and a MySQL-dialect `TRUNCATE TABLE`'s
+  sequence reset, advance the epoch in the same compare-and-swap that zeroes
+  the counter. Implementations and callers outside this module must follow
+  the new signature. The stored value grows from 8 to 16 bytes, counter
+  first; a counter-only value written by an earlier release is read as that
+  counter at epoch 0, so no sequence restarts on upgrade.
 
 ### Changed
 
@@ -390,6 +398,14 @@ are not reconstructed here — their history is in the git log.
   now returns `*driver.RowWidthError`. A narrower row used to leave the
   previous row's values in the slots it did not fill, and it now gets the same
   error. gosec's G602 found this once the severity floor was lowered.
+- **A reset no longer lets a session emit AUTO_INCREMENT values from a block
+  reserved before it** (#547). After `ALTER TABLE ... AUTO_INCREMENT = 0` or
+  a MySQL `TRUNCATE TABLE`, a session still holding part of a pre-reset block
+  kept handing those values out while the restarted counter handed them out
+  again, so concurrent inserts collided with MySQL error 1062. The block
+  allocator now checks its block's epoch before every cached value and
+  refills from the post-reset counter when a reset has intervened, on this
+  node or any other.
 
 ### Security
 

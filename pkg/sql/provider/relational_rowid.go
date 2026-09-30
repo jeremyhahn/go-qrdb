@@ -80,7 +80,7 @@ func (t *RelationalTable) allocateRowID(ctx *sqle.Context, row sqle.Row) (sqle.R
 		return nil, &SequenceServiceUnavailableError{Table: t.def.Name}
 	}
 
-	id, err := t.rowIDs.next(ctx, t.seqSvc, t.def.Database, t.rowIDSequenceName())
+	id, _, err := t.rowIDs.next(ctx, t.seqSvc, t.def.Database, t.rowIDSequenceName())
 	if err != nil {
 		return nil, err
 	}

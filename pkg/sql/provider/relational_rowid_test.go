@@ -508,8 +508,8 @@ type failingSequence struct {
 	service.SequenceServicer // nil; only Allocate is implemented
 }
 
-func (failingSequence) Allocate(context.Context, string, string, uint64) (uint64, error) {
-	return 0, assert.AnError
+func (failingSequence) Allocate(context.Context, string, string, uint64) (uint64, uint64, error) {
+	return 0, 0, assert.AnError
 }
 
 // TestAllocateRowID_PropagatesSequenceFailure verifies a failed allocation

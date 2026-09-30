@@ -246,7 +246,7 @@ func (s *TableService) CreateTable(ctx context.Context, req *CreateTableRequest)
 		return nil, err
 	}
 
-	tableID, err := s.seq.Allocate(ctx, req.Database, tableIDSequenceName, 1)
+	tableID, _, err := s.seq.Allocate(ctx, req.Database, tableIDSequenceName, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +533,15 @@ func (s *TableService) TruncateTable(ctx context.Context, database, name string,
 			// The compare and the Put are unconditional, even when the
 			// observed counter already reads 0: the compare is what catches
 			// a concurrent SequenceServicer.Allocate that writes a nonzero
-			// counter between this read and this transaction's commit.
+			// counter between this read and this transaction's commit. The
+			// written state is exactly SequenceServicer.Reset's, epoch
+			// advance included, so a block any session reserved before this
+			// commit is fenced (see sequenceState.reset).
 			compares = append(compares, Compare{
 				Key: []byte(seqKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: seqRev.ModRevision,
 			})
-			ops = append(ops, Op{Type: OpPut, Key: []byte(seqKey), Value: encodeSequenceCounter(0)})
+			reset, _ := decodeSequenceState(seqRev.Value).reset()
+			ops = append(ops, Op{Type: OpPut, Key: []byte(seqKey), Value: reset.encode()})
 		}
 
 		def.Generation = newGeneration
@@ -1989,7 +1993,8 @@ func isSupportedColumnType(t string) bool {
 // SequenceServicer the table-ID allocator uses, under the client-sequence
 // namespace (see UserSequenceName).
 func (s *TableService) NextUserSequenceValue(ctx context.Context, database, name string) (uint64, error) {
-	return s.seq.Allocate(ctx, database, UserSequenceName(name), 1)
+	first, _, err := s.seq.Allocate(ctx, database, UserSequenceName(name), 1)
+	return first, err
 }
 
 // ResetUserSequence implements UserSequencer.

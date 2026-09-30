@@ -39,7 +39,7 @@ type spySequenceService struct {
 	allocateSizes []uint64
 }
 
-func (s *spySequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, error) {
+func (s *spySequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, uint64, error) {
 	s.allocateSizes = append(s.allocateSizes, n)
 	return s.SequenceServicer.Allocate(ctx, database, name, n)
 }
