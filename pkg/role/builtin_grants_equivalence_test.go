@@ -118,6 +118,9 @@ var goldenAdminPermissions = []permission.Permission{
 	// rather than tenants:update, and the platform operator must hold it.
 	permission.TenantsCreate, permission.TenantsSetQuotas,
 	permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
+	// Retired-tenant listing and reconcile, cross-scope: effective only for
+	// system-tenant Admin.
+	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
