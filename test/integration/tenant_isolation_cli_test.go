@@ -162,7 +162,7 @@ func tenantCLIArgsForProto(node *multiProtoNode, proto multiProtocol, certPath, 
 // parity gap), so this file works around it in its own fixture rather than
 // changing product code.
 var dataPlanePermissions = []string{
-	"databases:create", "databases:read", "databases:list",
+	"databases:create", "databases:create_raft", "databases:create_volume", "databases:read", "databases:list",
 	"kv:put", "kv:get",
 	"admin:health",
 }
@@ -663,7 +663,7 @@ func TestTenantIsolation_SystemSealed_BlocksTenantData_PerProtocol(t *testing.T)
 // service layer). admin:health is required to OPEN a gRPC/QUIC/Unix connection
 // (see dataPlanePermissions for the rationale).
 var dbBarrierControlPermissions = []string{
-	"databases:create", "databases:read", "databases:list",
+	"databases:create", "databases:create_raft", "databases:create_volume", "databases:read", "databases:list",
 	"databases:seal", "databases:unseal", "databases:barrier_status",
 	"admin:health",
 }

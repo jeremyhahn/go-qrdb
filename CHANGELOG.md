@@ -68,6 +68,12 @@ are not reconstructed here — their history is in the git log.
   `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
   transport that cannot scope refuses instead of returning the unscoped
   client. Scoping to `""` or `system` returns the receiver.
+- **Creating a raft-backed or volume-isolated database needs its provisioning
+  permission.** A role holding `databases:create` but not
+  `databases:create_raft` can no longer create a `backend: raft` database or
+  any database of a raft-isolated tenant; one without `databases:create_volume`
+  can no longer create a database of a volume-isolated tenant. The built-in
+  roles that grant database management hold both.
 
 ### Fixed
 
@@ -199,6 +205,15 @@ are not reconstructed here — their history is in the git log.
   report carries them as `UnencryptedAtRest` (`unencrypted_at_rest` field 20
   in `CapabilitiesResponse`) on REST, gRPC, Unix, QUIC, MCP and embedded, and
   in `qrdb admin capabilities`. Encrypting those stores is separate work.
+- **`databases:create_raft` and `databases:create_volume` are enforced
+  (high).** Both were documented as required in addition to `databases:create`
+  and checked nowhere, so any holder of `databases:create` could provision a
+  dedicated Raft group (`backend: raft`, or any database of a raft-isolated
+  tenant) or a database on a volume-isolated tenant's volume. Every create
+  path -- REST, gRPC, Unix, QUIC, MCP and SQL `CREATE DATABASE` -- now checks
+  them against the caller's tenant through the database service the server
+  composes (`service.NewProvisioningAuthorizedDatabaseService`); a refusal is
+  `service.ProvisioningDeniedError`, `403` / `PERMISSION_DENIED`.
 
 ### Known limits
 

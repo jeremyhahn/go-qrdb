@@ -355,7 +355,7 @@ func TestIsolationRaft_Rebalance_Move(t *testing.T) {
 			"name":      "db-admin",
 			"tenant_id": rebalMoveTenantID,
 			"permissions": []string{
-				"databases:create",
+				"databases:create", "databases:create_raft",
 				"databases:create_raft",
 				"databases:read",
 				"databases:list",

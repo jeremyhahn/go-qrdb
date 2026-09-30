@@ -26,8 +26,11 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 Thirteen capabilities, all present on all six transports.
 
 **Note the additive permissions.** Creating a raft-backed database checks
-`databases:create_raft` *in addition to* `databases:create`; a volume-isolated
-database checks `databases:create_volume`. Neither replaces the base grant.
+`databases:create_raft` *in addition to* `databases:create`, as does every
+database of a raft-isolated tenant; every database of a volume-isolated tenant
+checks `databases:create_volume`. Neither replaces the base grant. They apply to
+every create path -- REST, gRPC, Unix, QUIC, MCP and SQL `CREATE DATABASE` --
+and a refusal answers `403` / `PERMISSION_DENIED`.
 
 ## Database scope on data-plane requests
 

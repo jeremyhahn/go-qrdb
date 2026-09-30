@@ -2080,8 +2080,10 @@ func TestStart_AllProtocols_WithAllServiceOptions(t *testing.T) {
 	if srv.opts.vectorSvc != vectorSvc {
 		t.Error("expected vectorSvc to be stored")
 	}
-	if srv.opts.databaseSvc != dbSvc {
-		t.Error("expected databaseSvc to be stored")
+	// With authentication on, the stored database service is dbSvc behind the
+	// provisioning check (TestServer_DatabaseCreateChecksProvisioningPermissions).
+	if srv.opts.databaseSvc == nil || srv.opts.databaseSvc == dbSvc {
+		t.Error("expected databaseSvc stored behind the provisioning check")
 	}
 	if srv.opts.barrierSvc != barrierSvc {
 		t.Error("expected barrierSvc to be stored")

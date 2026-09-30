@@ -182,7 +182,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 			"name":      "db-admin",
 			"tenant_id": scaleFoundationTenantID,
 			"permissions": []string{
-				"databases:create",
+				"databases:create", "databases:create_raft",
 				"databases:create_raft",
 				"databases:read",
 				"databases:list",

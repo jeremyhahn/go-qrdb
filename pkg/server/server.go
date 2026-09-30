@@ -865,8 +865,27 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireVolumeStoreResolver()
 	s.wireTenantDataProbe()
 	s.wireReclaimStoreResolver()
+	s.wireProvisioningAuthorization()
 
 	return s
+}
+
+// wireProvisioningAuthorization gives the database service every network
+// transport and both SQL wire listeners create through the provisioning
+// check: databases:create_raft and databases:create_volume, in addition to
+// the databases:create their entry check makes. Which one a create needs
+// depends on the request's backend and the tenant's isolation tier, which no
+// entry check can see. Without authentication there is no entry check to
+// add to, and the service is left as it is.
+func (s *Server) wireProvisioningAuthorization() {
+	if s.opts.databaseSvc == nil || s.opts.authMW == nil {
+		return
+	}
+	var tenants service.TenantInfoLookup
+	if s.opts.tenantSvc != nil {
+		tenants = s.opts.tenantSvc
+	}
+	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
 }
 
 // wireTenantDataProbe gives the tenant service the data probe its

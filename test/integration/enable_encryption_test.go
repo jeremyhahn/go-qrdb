@@ -367,7 +367,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 			"name":      "db-admin",
 			"tenant_id": tenantID,
 			"permissions": []string{
-				"databases:create", "databases:read", "databases:list",
+				"databases:create", "databases:create_volume", "databases:read", "databases:list",
 				"kv:put", "kv:get",
 				"tenant_barrier:status", "tenant_barrier:init",
 			},

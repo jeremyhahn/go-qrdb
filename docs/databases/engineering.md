@@ -207,13 +207,26 @@ path, not the body.
 
 ## Permission model
 
+The two provisioning permissions are enforced where both the request's
+backend and the tenant's isolation tier are known: the database service every
+network transport (REST, gRPC, Unix, QUIC, MCP) and both SQL wire listeners
+create through (`service.NewProvisioningAuthorizedDatabaseService`, composed by
+the server whenever authentication is on). The transports' entry check can
+check only the route's `databases:create`. The re-check runs against the
+caller's tenant, charges no second rate-limit token and records only a
+refusal; a refusal is `service.ProvisioningDeniedError`, answered as its
+cause's class (`403` / `PERMISSION_DENIED` for a missing grant, `503` /
+`UNAVAILABLE` for an audit sink that could not record it). A tenant whose tier
+cannot be read is refused. *(Corrected: neither permission was checked
+anywhere before this release.)*
+
 Deliberately finer than one grant per verb:
 
 | Permission | Gates |
 |---|---|
 | `databases:create` | creating any database — including SQL `CREATE DATABASE`, which creates a database owned by the session's tenant, inside its quota |
-| `databases:create_raft` | **in addition** for a raft-backed database — a dedicated Raft group is privileged provisioning |
-| `databases:create_volume` | **in addition** for a volume-isolated database |
+| `databases:create_raft` | **in addition** for a raft-backed database — `backend: raft`, or any database of a raft-isolated tenant — because a dedicated Raft group is privileged provisioning |
+| `databases:create_volume` | **in addition** for a volume-isolated database — any database of a volume-isolated tenant |
 | `databases:read` | `GetDatabase` |
 | `databases:list` | `ListDatabases` |
 | `databases:update` | all configuration updates: barrier, connection, etcd, protocol, raft |
