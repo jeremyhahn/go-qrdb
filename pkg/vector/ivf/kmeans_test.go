@@ -336,6 +336,7 @@ func TestKMeans_InitializeKMeansPlusPlus_SignedMetricWeights(t *testing.T) {
 		got, err := km.initializeKMeansPlusPlus(vectors)
 		require.NoError(t, err)
 
+		// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 		want := referenceKMeansPlusPlus(rand.New(rand.NewSource(seed)), vectors, numCentroids, distFunc)
 
 		require.Lenf(t, got, len(want), "seed %d", seed)

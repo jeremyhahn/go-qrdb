@@ -46,6 +46,7 @@ func StripPrefixBytes(tenantID string, key []byte) []byte {
 	if len(key) > len(prefix) {
 		match := true
 		for i := range prefix {
+			// #nosec G602 -- len(key) > len(prefix) is checked above, and i ranges over prefix.
 			if key[i] != prefix[i] {
 				match = false
 				break

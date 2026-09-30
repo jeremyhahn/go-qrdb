@@ -81,6 +81,7 @@ func drainOkResult(ctx *gmssql.Context, schema gmssql.Schema, iter gmssql.RowIte
 // isOkResultSchema reports whether schema is the single-column shape
 // go-mysql-server uses to carry an OkResult.
 func isOkResultSchema(schema gmssql.Schema) bool {
+	// #nosec G602 -- len(schema) == 1 is checked first in the same expression.
 	return len(schema) == 1 && schema[0] != nil && schema[0].Name == types.OkResultColumnName
 }
 

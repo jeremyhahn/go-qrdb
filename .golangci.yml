@@ -149,14 +149,13 @@ linters:
       # GOSEC_EXCLUDE in the Makefile carries its own measurements and they do
       # not agree with these.
       #
-      # G602 IS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST, because TWO
-      # separate things keep it off the other leg and fixing one changes
-      # nothing (#395). `make gosec` passes no -tests, so it does not build the
-      # test variant's SSA and never REACHES these 15 root / 4 sdk sites; and it
-      # runs at -severity=medium while gosec grades G602 LOW/HIGH, so it would
-      # not PRINT them if it did. Deleting this entry therefore reddens THIS leg
-      # alone and arms nothing over there. Both halves are measured beside
-      # GOSEC_EXCLUDE in the Makefile, along with why -tests is still off.
+      # G602 IS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST. `make gosec`
+      # now runs with -tests at -severity=low (#408), so the standalone leg
+      # REACHES and PRINTS every G602 site, and each one carries an inline
+      # `#nosec G602 -- <guard>` naming the check that makes it safe. The
+      # entry here predates that audit and suppresses the same sites for this
+      # leg's older bundled gosec. Deleting it is the change that retires the
+      # duplication; re-measure this block when you do.
       #
       # G304 and G703 are NOT here. G304 is suppressed per-path under
       # `exclusions.rules` below, at the files an audit actually enumerated, so
@@ -255,14 +254,11 @@ linters:
       #     splits on commas, so that leg was scanning the UNTAGGED tree: 1044
       #     files where the same command with the tags spelled correctly scans
       #     1147. Fixed in the Makefile.
-      #   - `make gosec` passes no -tests, and the analyzer rules build less of
-      #     a package's SSA without the test variant, so it loses findings in
-      #     PRODUCTION files that this leg reaches. STILL OFF, and #395 closed
-      #     the question rather than the gap: gosec's -tests hands go/packages a
-      #     file list, so an external `_test` package cannot see what an
-      #     `export_test.go` exports, and the run exits 1 on loader errors with
-      #     zero findings. pkg/seal and sdk/go both hit it. Measured in the
-      #     Makefile above the `gosec` target; carried by #408.
+      #   - `make gosec` passed no -tests, and the analyzer rules build less of
+      #     a package's SSA without the test variant, so it lost findings in
+      #     PRODUCTION files that this leg reaches. ON since #408, which
+      #     removed the export_test.go idiom gosec's file-list loader could not
+      #     typecheck (pkg/seal, sdk/go). See GOSEC_FLAGS in the Makefile.
       #
       # With the tags corrected and -tests supplied, gosec v2.29.0 reaches
       # exactly this leg's G304 and G602 sets. The residue is G703 and it is the

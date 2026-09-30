@@ -61,6 +61,7 @@ func TestNewSecretFromBuffer_SurvivesConcurrentWipeAll(t *testing.T) {
 		return
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], subprocessTestArgs("TestNewSecretFromBuffer_SurvivesConcurrentWipeAll", 20*time.Second)...)
 	cmd.Env = append(os.Environ(), secretFromBufferRaceChildEnv+"=1")
 	out, err := cmd.CombinedOutput()

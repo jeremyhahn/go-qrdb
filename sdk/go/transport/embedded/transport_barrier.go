@@ -263,6 +263,8 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	// lifetime.
 	migrator := t.encMigrator
 	resultCh := make(chan error, 1)
+	// #nosec G118 -- detaching from the request context is the point: the
+	// migration must survive this call returning.
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
 		// call, so destroying it here would pull the passphrase out from

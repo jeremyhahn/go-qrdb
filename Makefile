@@ -79,13 +79,22 @@ GOVULNCHECK   := govulncheck
 #   G115      440            148          yes
 #   G304       48              0          yes
 #   G704        2              0          yes
-#   G103        0              0          no -- 8 findings, all LOW
-#   G104        0              0          no
+#   G104      287             21          TEST FILES ONLY -- see below
+#   G103        0              0          no -- fixed or annotated (#408)
 #   G118        0              0          no -- 5 sites carry #nosec G118
 #   G122        0              0          no -- 2 sites carry #nosec G122
 #   G705        0              0          no -- 1 site carries #nosec G705
 #
-# THE THREE THAT ARE KEPT:
+# THE THREE THAT ARE KEPT, plus one PATH-SCOPED exclusion that is not in this
+# list (the G104 row is measured under #408's flags, -tests -severity=low,
+# 2026-09-30; the other rows predate them):
+#
+#   G104: unchecked errors, graded LOW, so the old -severity=medium floor never
+#         printed one. At -severity=low with -tests, EVERY site is in a
+#         _test.go file. It is therefore NOT in GOSEC_EXCLUDE: GOSEC_FLAGS
+#         excludes it for `_test.go` paths only (-exclude-rules), so a new
+#         unchecked error in production code reddens this leg as well as
+#         errcheck in `make lint`.
 #
 #   G115: integer overflow in conversions. Protocol-spec bounded shard/replica
 #         IDs and length prefixes; 440 sites in the root module and 148 in
@@ -129,13 +138,11 @@ GOVULNCHECK   := govulncheck
 # zero" is not the same claim as "it can never fire", and a reader deciding
 # whether to re-add one needs to know which:
 #
-#   G103  8 findings exist (pkg/index/metadata.go, generated .pb.go) but every
-#         one is LOW severity, and this leg runs at -severity=medium. The
-#         exclusion was doing nothing the severity floor was not already doing.
-#         Lower that floor and these appear -- which is the correct outcome:
-#         they would then be audited rather than silently pre-cleared.
-#   G104  no findings at all, at any severity. gosec reports unchecked errors
-#         only in audit mode, which this leg does not enable.
+#   G103  8 findings existed (pkg/index/metadata.go, generated .pb.go), all
+#         LOW, held out by the old -severity=medium floor rather than by this
+#         list. #408 lowered the floor and audited them: pkg/index now uses
+#         math.Float64bits, the .pb.go sites fall to -exclude-generated, and
+#         the deliberate test uses carry `#nosec G103` with their reasons.
 #   G118  5 findings, every one already suppressed by an inline `#nosec G118`
 #         carrying its reason at the site (pkg/auth/login.go, pkg/service,
 #         pkg/api/{grpc,quic,mcp}). The list entry was a second suppression
@@ -149,10 +156,8 @@ GOVULNCHECK   := govulncheck
 # list still covered it; now it reddens this leg. That is #181's rule -- the
 # justification lives at the site -- turned from a convention into a gate.
 #
-# WHAT -tests WOULD DO TO THIS TABLE, measured 2026-09-10 so the next person to
-# reach for the flag does not have to (#395). It is NOT on -- the `gosec` target
-# below records why -- but the numbers are the reason the table above is still
-# the whole truth about what this leg suppresses:
+# WHAT -tests DID TO THIS TABLE, measured 2026-09-10 (#395) before #408 turned
+# it on. These are the numbers the kept entries now suppress:
 #
 #   G115   440 -> 599 sites (161 more, all in root test files)
 #   G304    48 ->  87 sites root, and 0 -> 6 in sdk/go
@@ -2513,89 +2518,72 @@ TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/
 # nothing left to drift; a second name spelled a second way is what produced
 # this defect.
 #
-# -tests IS DELIBERATELY ABSENT FROM ALL THREE INVOCATIONS BELOW, AND THAT IS A
-# MEASURED DECISION, NOT AN OVERSIGHT (#395). Do not add it without reading
-# this; #395 was filed to add it and the measurements say it cannot be, yet.
+# GOSEC_FLAGS: EVERY ANALYSIS-AFFECTING FLAG, IN ONE VARIABLE THE THREE
+# INVOCATIONS BELOW SHARE (#408). A flag that reached two of them and not the
+# third is how this class of defect kept surviving: #293 gave `gosec` a tag
+# list and left `gosec-sarif` bare, #295 found the tag list inert, and #395
+# found -tests missing from all three. One variable cannot disagree with
+# itself, so no scanner is needed to hold them together.
 #
-# WHY IT LOOKS LIKE IT SHOULD BE ON. gosec's default is -tests=false, and that
-# is not merely "test files are skipped": the analyzer-backed rules run over a
-# package's SSA, and the test variant BUILDS MORE OF THE PACKAGE, so omitting it
-# reaches less of the NON-TEST code. Measured on gosec v2.29.0 with the tags
-# above, no excludes, no severity floor, duplicate (file, line, rule) tuples
-# collapsed:
+# -tests IS ON. gosec's default is -tests=false, and that is not merely "test
+# files are skipped": the analyzer-backed rules run over a package's SSA, and
+# the test variant BUILDS MORE OF THE PACKAGE, so omitting it reached less of
+# the NON-TEST code -- 19 G602 sites (15 root, 4 sdk/go) this leg never saw.
 #
-#                unique findings in NON-TEST files
-#                    root      sdk/go
-#   no -tests          504         148
-#   -tests             519         152
+# IT WAS OFF because gosec loads a package by handing go/packages a FILE LIST,
+# which makes the loaded package `command-line-arguments`: an external test
+# package (`package foo_test`) importing its own package by import path then
+# binds to the un-augmented package, every identifier an `export_test.go`
+# exposes is undefined, and gosec exits 1 on the loader error with zero
+# findings. pkg/seal and sdk/go both hit it. #408 removed the idiom rather than
+# waiting on the scanner: the tests that borrowed an unexported symbol now live
+# in the package they test, and neither export_test.go exists. A new
+# export_test.go consumed by an external test package reddens this gate with
+# "undefined:" -- move that test in-package instead.
 #
-# The 15 and the 4 are all G602, and they are exactly the sets recorded against
-# .golangci.yml's G602 entry -- that leg sets `run.tests: true`, so its gosec
-# has always reached them.
+# -severity=low, NOT medium. gosec grades G602 LOW, so -tests alone restored
+# the G602 sites without printing them: the floor was the other half of the
+# blindness (#408). -confidence=medium stays, and is what holds out the
+# LOW-confidence G101 credential-name guesses.
 #
-# WHY IT IS STILL OFF. Two independent reasons, either one sufficient:
+# -exclude-generated. Lowering the floor admits G103 in protoc output
+# (pkg/api/grpc/proto/qrdbv1: authz.pb.go:85, qrdb.pb.go x2, measured
+# 2026-09-30), and protoc rewrites those files, so they cannot carry an inline
+# justification. Generated code is recognised by its standard
+# "Code generated ... DO NOT EDIT." header, not by a path.
 #
-#   1. IT FAILS THE GATE. gosec loads a package by handing go/packages a FILE
-#      LIST, which makes the loaded package `command-line-arguments`. With
-#      -tests it adds XTestGoFiles to that list, and an external test package
-#      (`package foo_test`) importing its own package by IMPORT PATH then binds
-#      to the real, un-augmented package -- so every identifier an
-#      `export_test.go` exposes is undefined. gosec exits 1 on loader errors
-#      even with zero findings. This tree has two such packages, pkg/seal and
-#      sdk/go, and both fail:
+# WHAT THE LOWER FLOOR SURFACED, AND WHERE IT WENT (gosec v2.29.0, both
+# modules, 2026-09-30). Every site was read, and each one was either fixed or
+# annotated in place with `#nosec <RULE> -- <reason>`:
 #
-#        pkg/seal/barrier_registry_strategy_test.go:128: undefined:
-#            seal.NewCaptureDistributor
-#        sdk/go/membership_test.go:124: undefined:
-#            sdk.TranslateMemberEventForTest        (+ 8 more in sdk/go)
+#   G602  30 root + 4 sdk/go. One was a REAL latent panic: sdk/go/driver's
+#         embedded Rows.Next wrote dest[i] for every cell the engine returned,
+#         so a row wider than the columns database/sql sized dest from indexed
+#         past it. It now returns *RowWidthError. The rest are guarded: the
+#         sm.StateMachine Update contract (len(results) == len(entries)), or a
+#         length check just above the index.
+#   G103  8. pkg/index's float encoding used an unsafe cast for what
+#         math.Float64bits does -- replaced, and unsafe is gone from that file.
+#         The pkg/secure and pkg/service tests use unsafe on purpose, and each
+#         says why.
+#   G204/G702  10 test-binary re-execs. G404  6 fixed-seed fixtures + the
+#         k-means++ seeding, whose annotation sat one statement too early.
+#         G301/G306  14 fixture modes in test/buildgates, tightened to
+#         0750/0600. G122 2, G117 1, G402 1, G407 1, G703 1 in tests. G118 1
+#         in sdk/go/transport/embedded, which had been missing its annotation.
 #
-#      `go vet` and `go test` typecheck both packages fine, so this is gosec's
-#      loader, not this tree. Reproduced on 22 lines: a package, an
-#      `export_test.go` exporting one unexported symbol, and an external test
-#      using it -- `go vet` and `go test` pass, `gosec` passes, `gosec -tests`
-#      exits 1 with "Issues: 0". `gosec@latest` resolved to v2.29.0 on
-#      2026-09-10, so there is no newer release to take.
-#
-#      Working around it means deleting the `export_test.go` idiom from
-#      pkg/seal and sdk/go -- restructuring tests in a security-review path to
-#      suit a scanner bug. That is a change for an owner to approve, not a
-#      side effect of a flag. Carried by #408 with both options written out.
-#
-#   2. IT WOULD NOT CHANGE WHAT THIS LEG REPORTS ANYWAY. This leg runs at
-#      -severity=medium and gosec grades G602 LOW/HIGH, so all 19 of the sites
-#      -tests restores sit under the floor. Measured the same day, unique
-#      non-test sites at each floor:
-#
-#                              root   sdk/go
-#        -severity=medium       488      148   <- what this leg reports
-#        -severity=low          519      152
-#          G602                  15        4   <- what -tests restores
-#          G101                  11        0   <- LOW confidence too, so the
-#                                                 -confidence floor holds these
-#                                                 out at either severity
-#          G103                   5        0   <- 3 of them in generated .pb.go
-#
-#      So -tests is necessary but NOT sufficient for the G602 blindness #395
-#      names; the severity floor is the other half, and lowering it is its own
-#      change (three of the sites are in generated protobuf output, which
-#      cannot carry an inline justification because protoc rewrites it). #408.
-#
-# WHAT IS ALREADY PAID FOR. The 91 findings a -tests run admits in _test.go
-# files -- the reason #395 called this a separate change -- are triaged and
-# gone: directory and file modes tightened to 0750/0600 at 39 sites, and 48
-# inline `#nosec <RULE> -- reason` annotations at the rest (G102, G120, G122,
-# G202, G204, G302, G404, G407, G702, G703), each read individually. Both
-# scanner versions honour those, so when the loader defect is resolved this
-# becomes a one-word change to three lines with a green gate behind it.
-#
-# The three invocations are listed one after another ON PURPOSE. A flag that
-# reaches two of them and not the third is how this class of defect survives:
-# #293 gave `gosec` a tag list and left `gosec-sarif` bare, and #295 found the
-# tag list was inert anyway. Whatever you change here, change all three.
+# G104 IS EXCLUDED IN TEST FILES ONLY (-exclude-rules, gosec's path-scoped
+# exclusion), and that changes nothing the old floor reported: gosec grades
+# unchecked errors LOW, so -severity=medium never printed one. At
+# -severity=low with -tests it reports 287 root and 21 sdk/go sites, EVERY ONE
+# in a _test.go file (idx.Add(...) in a fixture) -- the policy .golangci.yml's
+# test-file rule already takes for errcheck. Production code stays armed: a new
+# unchecked error there is reported by this leg and by errcheck in `make lint`.
+GOSEC_FLAGS := -concurrency 4 -tests -exclude-generated -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-rules='_test\.go$$:G104' -severity=low -confidence=medium
 .PHONY: gosec
 gosec:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./...
+	$(GOSEC) $(GOSEC_FLAGS) $(GOSEC_EXCLUDE_DIRS) ./...
 
 # The SDK module, scanned with the same exclusions so the two legs cannot
 # disagree about what is suppressed. sdk/go/gorm/conformance is a module nested
@@ -2614,14 +2602,14 @@ gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
 	@$(stage-gomodauth) \
 	eval "$${GOMODAUTH:-}"; \
-	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
+	cd $(SDK_DIR) && $(GOSEC) $(GOSEC_FLAGS) ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
 # dashboard and the gate never disagree; non-blocking because `gosec` is the
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./... || true
+	$(GOSEC) $(GOSEC_FLAGS) -fmt=sarif -out=gosec.sarif $(GOSEC_EXCLUDE_DIRS) ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable

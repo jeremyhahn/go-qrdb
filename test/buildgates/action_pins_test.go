@@ -319,10 +319,10 @@ func TestBothWorkflowPlanesAreScanned(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, body string) {
 		t.Helper()
-		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(rel)), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(rel)), 0o750); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o600); err != nil {
 			t.Fatalf("write %s: %v", rel, err)
 		}
 	}
@@ -349,12 +349,12 @@ func TestBothWorkflowPlanesAreScanned(t *testing.T) {
 // by the caller's floor rather than by silence.
 func TestAMissingWorkflowPlaneIsNotAnError(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".github", "workflows", "w.yml"),
 		[]byte("jobs:\n  a:\n    steps:\n      - uses: actions/checkout@"+
-			"d23441a48e516b6c34aea4fa41551a30e30af803\n"), 0o644); err != nil {
+			"d23441a48e516b6c34aea4fa41551a30e30af803\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	bad, refs, files := scan(t, root, workflowDirs)
@@ -438,11 +438,11 @@ func TestTheGateSeesEveryYAMLSpelling(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o750); err != nil {
 				t.Fatalf("mkdir: %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(root, ".github", "workflows", "w.yml"),
-				[]byte(tc.body), 0o644); err != nil {
+				[]byte(tc.body), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 			bad, refs, _ := scan(t, root, workflowDirs)
@@ -468,16 +468,16 @@ func TestTheGateSeesEveryYAMLSpelling(t *testing.T) {
 func TestTheGateSeesYamlWorkflowsToo(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".github", "workflows")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "pinned.yml"),
 		[]byte("jobs:\n  a:\n    steps:\n      - uses: actions/checkout@"+
-			"d23441a48e516b6c34aea4fa41551a30e30af803 # v6\n"), 0o644); err != nil {
+			"d23441a48e516b6c34aea4fa41551a30e30af803 # v6\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "sneaky.yaml"),
-		[]byte("jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v6\n"), 0o644); err != nil {
+		[]byte("jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v6\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestTheGateSeesYamlWorkflowsToo(t *testing.T) {
 func TestALocalActionIsNotAFinding(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".github", "workflows")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "w.yml"),
@@ -513,7 +513,7 @@ func TestALocalActionIsNotAFinding(t *testing.T) {
 			"      - uses: ./.github/actions/thing\n"+
 			"      - uses: docker://alpine:3.20\n"+
 			"      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803\n"+
-			"      - uses: someone/repo/.github/actions/thing@v1\n"), 0o644); err != nil {
+			"      - uses: someone/repo/.github/actions/thing@v1\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	bad, refs, _ := scan(t, root, workflowDirs)
@@ -538,7 +538,7 @@ func TestALocalActionIsNotAFinding(t *testing.T) {
 func TestAgentPromptProseIsNotMistakenForAUses(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".github", "workflows")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	body := "jobs:\n" +
@@ -551,7 +551,7 @@ func TestAgentPromptProseIsNotMistakenForAUses(t *testing.T) {
 		"          Reject any step that reads `uses: actions/checkout@v6`.\n" +
 		"          uses: aquasecurity/trivy-action@master is a branch, not a tag.\n" +
 		"          EOF\n"
-	if err := os.WriteFile(filepath.Join(dir, "opencode-review.yml"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "opencode-review.yml"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	bad, refs, _ := scan(t, root, workflowDirs)

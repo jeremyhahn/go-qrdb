@@ -24,7 +24,11 @@ In-process paths, both gated on `qrdb_sql`:
 
 - `sdk/go/driver` — a `database/sql` driver. Its connection owns exactly one
   `provider.QRDBSession` for its lifetime, which is what makes transactions
-  work on it.
+  work on it. Its embedded `Rows.Next` refuses a row whose width differs from
+  the result's column count with `*driver.RowWidthError`: `database/sql`
+  sizes the destination from `Columns()`, so a wider row would index past it
+  and a narrower one would leave the previous row's values in the unfilled
+  slots.
 - `sdk/go/gorm` — the GORM dialector. See [gorm.md](gorm.md) for the two
   in-process DSN schemes (`node://`, `embedded://`), which differ in exactly
   whether the relational catalog is reachable.

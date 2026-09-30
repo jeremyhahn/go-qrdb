@@ -332,6 +332,7 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 		if stop {
 			return applyErr
 		}
+		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 
 		// Notifications from a refused entry are deliberately dropped: it

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk_test
+package sdk
 
 import (
 	"context"
@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -256,9 +255,9 @@ func (f *fakeLease) LeaseList(_ context.Context) ([]*transport.LeaseInfo, error)
 
 // newCoordinator builds a Coordinator over the supplied fakes, failing the test
 // on the (unexpected) construction error.
-func newCoordinator(t *testing.T, kv *fakeKV, lease *fakeLease, txn *fakeTxn, watch *fakeWatch) *sdk.Coordinator {
+func newCoordinator(t *testing.T, kv *fakeKV, lease *fakeLease, txn *fakeTxn, watch *fakeWatch) *Coordinator {
 	t.Helper()
-	c, err := sdk.NewCoordinator(kv, lease, txn, watch)
+	c, err := NewCoordinator(kv, lease, txn, watch)
 	if err != nil {
 		t.Fatalf("NewCoordinator: %v", err)
 	}
@@ -661,7 +660,7 @@ func TestCoordinator_AcquireLease_AlreadyHeldRevokesGrant(t *testing.T) {
 	c := newCoordinator(t, &fakeKV{}, lease, txn, &fakeWatch{})
 
 	_, err := c.AcquireLease(context.Background(), "k", time.Second)
-	var held *sdk.LeaseHeldError
+	var held *LeaseHeldError
 	if !errors.As(err, &held) || held.Key != "k" {
 		t.Fatalf("got %v, want LeaseHeldError{k}", err)
 	}
@@ -681,7 +680,7 @@ func TestCoordinator_AcquireLease_BindErrorRevokesGrant(t *testing.T) {
 	if err == nil {
 		t.Fatal("a transaction error must be returned")
 	}
-	var held *sdk.LeaseHeldError
+	var held *LeaseHeldError
 	if errors.As(err, &held) {
 		t.Fatal("a transport error must not be reported as LeaseHeldError")
 	}
@@ -700,7 +699,9 @@ func TestCoordinator_AcquireLease_CleanupRevokeIsBounded(t *testing.T) {
 	// The bound itself is what is under test, not its production length, so
 	// shorten it — a test that waited out the real budget would add five idle
 	// seconds to every run.
-	defer sdk.SetLeaseCleanupTimeoutForTest(50 * time.Millisecond)()
+	previous := leaseCleanupTimeout
+	leaseCleanupTimeout = 50 * time.Millisecond
+	defer func() { leaseCleanupTimeout = previous }()
 
 	lease := &fakeLease{grantedID: 9, revokeBlocks: true}
 	txn := &fakeTxn{resp: &transport.TransactionResponse{Succeeded: false}}
@@ -721,7 +722,7 @@ func TestCoordinator_AcquireLease_CleanupRevokeIsBounded(t *testing.T) {
 	case err := <-done:
 		// The acquisition error must survive the cleanup: a failed revoke is
 		// not what the caller asked about.
-		var held *sdk.LeaseHeldError
+		var held *LeaseHeldError
 		if !errors.As(err, &held) || held.Key != "k" {
 			t.Fatalf("got %v, want LeaseHeldError{k}", err)
 		}
@@ -789,7 +790,7 @@ func TestLease_ReleaseRevokesAndClosesDone(t *testing.T) {
 // acquireLease acquires a lease over the supplied fake, failing the test on an
 // unexpected acquisition error. ttl drives both the grant and the monitor's poll
 // interval, so a test that wants the monitor to tick passes a short one.
-func acquireLease(t *testing.T, lease *fakeLease, ttl time.Duration) sdk.Lease {
+func acquireLease(t *testing.T, lease *fakeLease, ttl time.Duration) Lease {
 	t.Helper()
 	c := newCoordinator(t, &fakeKV{}, lease, succeedingTxn(), &fakeWatch{})
 	l, err := c.AcquireLease(context.Background(), "k", ttl)
@@ -1042,7 +1043,7 @@ func TestLease_LookupOutageWithoutRenewalStillClosesDone(t *testing.T) {
 // these tests exist to catch — while leaving a couple of seconds for a loaded
 // machine to schedule the goroutine. Callers wait on Done rather than sleeping
 // toward it, so this is the only wall-clock margin in play.
-func blockedRenewal(t *testing.T, keepAliveErr error) (sdk.Lease, *fakeLease, chan struct{}, <-chan error) {
+func blockedRenewal(t *testing.T, keepAliveErr error) (Lease, *fakeLease, chan struct{}, <-chan error) {
 	t.Helper()
 	release := make(chan struct{})
 	lease := &fakeLease{
@@ -1115,7 +1116,7 @@ func TestLease_RenewalAcknowledgedAfterTheDeadlineReportsTheLeaseLost(t *testing
 	close(release)
 	select {
 	case err := <-outcome:
-		var lost *sdk.LeaseLostError
+		var lost *LeaseLostError
 		if !errors.As(err, &lost) {
 			t.Fatalf("a late acknowledgement must report the lease lost, got %v", err)
 		}
@@ -1318,30 +1319,30 @@ func TestNewCoordinator_NilArgs(t *testing.T) {
 	}
 	cases := []struct {
 		name string
-		call func() (*sdk.Coordinator, error)
+		call func() (*Coordinator, error)
 		want string
 	}{
-		{"nil kv", func() (*sdk.Coordinator, error) {
+		{"nil kv", func() (*Coordinator, error) {
 			_, l, tx, w := full()
-			return sdk.NewCoordinator(nil, l, tx, w)
+			return NewCoordinator(nil, l, tx, w)
 		}, "kv"},
-		{"nil lease", func() (*sdk.Coordinator, error) {
+		{"nil lease", func() (*Coordinator, error) {
 			k, _, tx, w := full()
-			return sdk.NewCoordinator(k, nil, tx, w)
+			return NewCoordinator(k, nil, tx, w)
 		}, "lease"},
-		{"nil txn", func() (*sdk.Coordinator, error) {
+		{"nil txn", func() (*Coordinator, error) {
 			k, l, _, w := full()
-			return sdk.NewCoordinator(k, l, nil, w)
+			return NewCoordinator(k, l, nil, w)
 		}, "transaction"},
-		{"nil watch", func() (*sdk.Coordinator, error) {
+		{"nil watch", func() (*Coordinator, error) {
 			k, l, tx, _ := full()
-			return sdk.NewCoordinator(k, l, tx, nil)
+			return NewCoordinator(k, l, tx, nil)
 		}, "watch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.call()
-			var unsupported *sdk.CoordinationUnsupportedError
+			var unsupported *CoordinationUnsupportedError
 			if !errors.As(err, &unsupported) || unsupported.Capability != tc.want {
 				t.Fatalf("got %v, want CoordinationUnsupportedError{%q}", err, tc.want)
 			}
@@ -1353,7 +1354,7 @@ func TestNewCoordinator_NilArgs(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
-func recvEvent(t *testing.T, out <-chan sdk.Event) sdk.Event {
+func recvEvent(t *testing.T, out <-chan Event) Event {
 	t.Helper()
 	select {
 	case e, ok := <-out:
@@ -1363,11 +1364,11 @@ func recvEvent(t *testing.T, out <-chan sdk.Event) sdk.Event {
 		return e
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for a watch event")
-		return sdk.Event{}
+		return Event{}
 	}
 }
 
-func assertClosed(t *testing.T, out <-chan sdk.Event) {
+func assertClosed(t *testing.T, out <-chan Event) {
 	t.Helper()
 	select {
 	case _, ok := <-out:

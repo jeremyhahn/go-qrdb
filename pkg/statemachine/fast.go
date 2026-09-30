@@ -229,10 +229,12 @@ func (f *FastStateMachine) Update(ctx context.Context, entries []sm.Entry, resul
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
+		// #nosec G602 -- i ranges over entries.
 		resolved, stop, applyErr := ResolveApplyError(f.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}
+		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 	}
 	return nil

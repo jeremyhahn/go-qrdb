@@ -123,7 +123,7 @@ func TestResetSignalHandlers_NoUnhandledSignalWindow(t *testing.T) {
 	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
 		args = append(args, "-test.gocoverdir="+dir)
 	}
-	// #nosec G204 -- re-exec of this test binary: argv[0] is os.Args[0], the
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the
 	// path `go test` invoked, and every other argument is a compile-time
 	// literal. No shell is involved and nothing from outside the process
 	// reaches this argv.

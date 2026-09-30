@@ -255,6 +255,7 @@ func TestSecret_Open_DecryptionFailure(t *testing.T) {
 			"layout changed and this test's reflection technique needs updating")
 	}
 	// Use unsafe to obtain a writable reference to the unexported slice.
+	// #nosec G103 -- the test tampers with go-enclave's unexported ciphertext on purpose, to prove Open detects it; the field is checked valid above.
 	ctPtr := (*[]byte)(unsafe.Pointer(ctField.UnsafeAddr()))
 	ct := *ctPtr
 	if len(ct) == 0 {

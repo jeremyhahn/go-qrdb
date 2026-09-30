@@ -300,6 +300,7 @@ func TestShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
 		// profile by `make coverage`'s `go tool covdata textfmt` step.
 		args = append(args, "-test.gocoverdir="+dir)
 	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), childEnv+"=1")
 	out, err := cmd.CombinedOutput()

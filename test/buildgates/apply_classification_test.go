@@ -187,6 +187,7 @@ func collectApplySeams(t *testing.T) []applySeam {
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		// #nosec G122 -- a test reading this repository's own checkout; nothing else writes the tree while it walks.
 		src, readErr := os.ReadFile(path) //nolint:gosec // path comes from the walk of this repository
 		if readErr != nil {
 			return readErr

@@ -514,7 +514,7 @@ func TestChainFileLogger_VerifyChain_CatchesADuplicatedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	// #nosec G306 -- mirrors the audit file's own mode, in a temp dir.
+	// #nosec G306,G703 -- mirrors the audit file's own mode; the path is a literal name under this test's t.TempDir().
 	if err := os.WriteFile(filepath.Join(dir, "audit-2099-12-31-000.ndjson"), data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -779,7 +779,7 @@ func TestVerifyChainSegment_RejectsAMalformedSeed(t *testing.T) {
 
 func TestVerifyChainSegment_EmptyFileHasNoRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	// #nosec G306 -- mirrors the audit file's own mode, in a temp dir.
+	// #nosec G306,G703 -- mirrors the audit file's own mode; the path is a literal name under this test's t.TempDir().
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -948,7 +948,7 @@ func TestRotationSetFiles_SkipsDirectoriesAndReportsAnUnreadableParent(t *testin
 func TestVerifyChainSegment_ReportsALineTooLongToBeARecord(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.ndjson")
-	// #nosec G306 -- mirrors the audit file's own mode, in a temp dir.
+	// #nosec G306,G703 -- mirrors the audit file's own mode; the path is a literal name under this test's t.TempDir().
 	if err := os.WriteFile(path, append([]byte(strings.Repeat("x", maxScanLine+1)), '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

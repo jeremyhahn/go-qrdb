@@ -130,6 +130,7 @@ func TestBarrierSecretFieldsMarshalAsBase64(t *testing.T) {
 // "none" strategy is requested — and omitting the key would make an
 // explicitly-empty secret indistinguishable from a malformed body.
 func TestBarrierSecretFieldsOmitEmpty(t *testing.T) {
+	// #nosec G117 -- marshals an EMPTY request to assert which secret keys are omitted; no secret value is present.
 	data, err := json.Marshal(&BarrierInitializeRequest{})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)

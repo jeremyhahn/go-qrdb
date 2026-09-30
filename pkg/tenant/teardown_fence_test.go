@@ -108,6 +108,7 @@ func (c *tenantCrypto) decrypts(ctx context.Context, t *testing.T, tenantID stri
 // FIPS 140-3 forbids caller-chosen GCM IVs.
 func sealWith(t *testing.T, key, plaintext []byte) []byte {
 	t.Helper()
+	// #nosec G407 -- the nonce argument is nil: gcmFor returns a GCM that draws a random nonce and prefixes it, so nothing here is hardcoded.
 	return gcmFor(t, key).Seal(nil, nil, plaintext, nil)
 }
 

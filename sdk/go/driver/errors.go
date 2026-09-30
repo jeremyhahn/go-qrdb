@@ -231,6 +231,22 @@ func (e *RowsClosedError) Error() string {
 	return "driver: rows are closed"
 }
 
+// RowWidthError is returned by Rows.Next when the engine produced a row whose
+// width differs from the result's column count. database/sql sizes the
+// destination from Columns(), so a wider row would index past it and a
+// narrower one would leave the previous row's values in the unfilled slots.
+type RowWidthError struct {
+	// Columns is the number of destination slots, one per result column.
+	Columns int
+	// Values is the number of values the engine returned for the row.
+	Values int
+}
+
+// Error returns a human-readable description of the width mismatch.
+func (e *RowWidthError) Error() string {
+	return "driver: row has " + strconv.Itoa(e.Values) + " values for " + strconv.Itoa(e.Columns) + " columns"
+}
+
 // ParameterizedQueryUnsupportedError is returned when a query carrying bound
 // arguments is issued over a network connection.
 //

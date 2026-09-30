@@ -45,6 +45,7 @@ func TestCanary_SecretNeverOnHeap(t *testing.T) {
 	// copy of the needle. We record its address range so the scanner
 	// can exclude self-matches.
 	expected := append([]byte(nil), raw...)
+	// #nosec G103 -- the address is recorded only to exclude this reference copy from the memory scan; it is never dereferenced.
 	exStart := uintptr(unsafe.Pointer(&expected[0]))
 	exLen := uintptr(len(expected))
 
@@ -132,6 +133,7 @@ func scanSelfMemFor(needle []byte, excludeAddr, excludeLen uintptr) ([]string, e
 		buf := make([]byte, size)
 		// Record the scanner buffer address range so matches landing in
 		// it (in the region we're currently reading) are excluded.
+		// #nosec G103 -- the address is recorded only to exclude the scanner's own buffer from the matches; it is never dereferenced.
 		bufAddr := uintptr(unsafe.Pointer(&buf[0]))
 		bufLen := uintptr(len(buf))
 

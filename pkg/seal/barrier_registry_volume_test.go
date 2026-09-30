@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"context"
@@ -20,8 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // pebbleAbsent reports whether NO Pebble store exists at path, treating a
@@ -91,7 +89,7 @@ func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
 
 	// Initialize with empty credentials (inherited system strategy) and verify
 	// the barrier becomes usable, mirroring the IsolationBarrier create flow.
-	if err := reg.InitializeTenant(ctx, "vol-alpha", seal.Credentials{}); err != nil {
+	if err := reg.InitializeTenant(ctx, "vol-alpha", Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 	if tb.IsSealed() {
@@ -117,12 +115,12 @@ func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
 	}
 	assertPebbleAtPath(t, filepath.Join(explicit, "barrier"))
 
-	if err := reg.UnsealTenant(ctx, "vol-beta", seal.Credentials{}); err == nil {
+	if err := reg.UnsealTenant(ctx, "vol-beta", Credentials{}); err == nil {
 		// A freshly-registered, never-initialized barrier cannot be unsealed;
 		// initialize then verify it becomes usable.
 		t.Log("unexpected unseal success on uninitialized barrier")
 	}
-	if err := reg.InitializeTenant(ctx, "vol-beta", seal.Credentials{}); err != nil {
+	if err := reg.InitializeTenant(ctx, "vol-beta", Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 	if tb.IsSealed() {
@@ -136,11 +134,11 @@ func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
 func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -150,7 +148,7 @@ func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 	}
 	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
 
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -196,11 +194,11 @@ func TestReattachVolumeTenant_AbsentStoreReturnsMountMissing(t *testing.T) {
 // assertMountMissing asserts the re-attach failed closed: a
 // DataRootMountMissingError was returned, the tenant is not registered, and no
 // fresh Pebble was created at {dataRoot}/barrier.
-func assertMountMissing(t *testing.T, reg *seal.BarrierRegistry, tenantID, dataRoot string, err error) {
+func assertMountMissing(t *testing.T, reg *BarrierRegistry, tenantID, dataRoot string, err error) {
 	t.Helper()
-	var mm *seal.DataRootMountMissingError
+	var mm *DataRootMountMissingError
 	if !errors.As(err, &mm) {
-		t.Fatalf("ReattachVolumeTenant = %v, want *seal.DataRootMountMissingError", err)
+		t.Fatalf("ReattachVolumeTenant = %v, want *DataRootMountMissingError", err)
 	}
 	if _, gerr := reg.GetTenant(tenantID); gerr == nil {
 		t.Error("tenant must NOT be registered after a missing-mount failure")
@@ -238,7 +236,7 @@ func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
 func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -250,7 +248,7 @@ func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
 		t.Fatalf("system.Put missing-mount record: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -276,7 +274,7 @@ func TestRegisterVolumeTenant_SystemManagedAutoUnseal(t *testing.T) {
 
 	// The pool system barrier starts sealed; the system-managed strategy needs
 	// it unsealed to act as the unseal authority.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := reg.SystemBarrier().Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -284,21 +282,21 @@ func TestRegisterVolumeTenant_SystemManagedAutoUnseal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant (auto): %v", err)
 	}
-	if err := reg.InitializeTenant(ctx, "vol-auto", seal.Credentials{}); err != nil {
+	if err := reg.InitializeTenant(ctx, "vol-auto", Credentials{}); err != nil {
 		t.Fatalf("credential-free InitializeTenant: %v", err)
 	}
 	if tb.IsSealed() {
 		t.Fatal("barrier should be unsealed after credential-free Initialize")
 	}
-	if got := tb.Barrier().ActiveStrategy(); got != seal.StrategySystemBarrier {
-		t.Fatalf("active strategy = %q, want %q", got, seal.StrategySystemBarrier)
+	if got := tb.Barrier().ActiveStrategy(); got != StrategySystemBarrier {
+		t.Fatalf("active strategy = %q, want %q", got, StrategySystemBarrier)
 	}
 
 	// Seal, then re-attach + credential-free unseal (the boot path).
 	if err := reg.SealTenant("vol-auto"); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
-	if err := reg.UnsealTenant(ctx, "vol-auto", seal.Credentials{}); err != nil {
+	if err := reg.UnsealTenant(ctx, "vol-auto", Credentials{}); err != nil {
 		t.Fatalf("credential-free UnsealTenant after seal: %v", err)
 	}
 	if tb.IsSealed() {
@@ -341,7 +339,7 @@ func TestRegisterVolumeTenant_EmptyTenantID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrEmptyTenantID, got nil")
 	}
-	if !errors.Is(err, seal.ErrEmptyTenantID) {
+	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Errorf("error = %v, want wrapping ErrEmptyTenantID", err)
 	}
 }
@@ -350,7 +348,7 @@ func TestRegisterVolumeTenant_EmptyTenantID(t *testing.T) {
 // configured volume pool.
 func TestRegisterVolumeTenant_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -402,7 +400,7 @@ func TestLocalTenantDataRoot(t *testing.T) {
 // error when no volume pool is configured rather than silently returning empty.
 func TestLocalTenantDataRoot_NoPool(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -422,7 +420,7 @@ func TestLocalTenantDataRoot_NotRegistered(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unregistered tenant, got nil")
 	}
-	if !errors.Is(err, seal.ErrTenantNotFound) {
+	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("error = %v, want wrapping ErrTenantNotFound", err)
 	}
 }
@@ -437,12 +435,12 @@ func TestRestoreVolumeTenants_RestoredAfterFreshRegistry(t *testing.T) {
 	system, opts, roots := newShareableComponents(t)
 
 	// Initialize the system barrier so persistTenantRoot can write.
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
 	// reg1: original node that registered the tenant.
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -463,7 +461,7 @@ func TestRestoreVolumeTenants_RestoredAfterFreshRegistry(t *testing.T) {
 	}
 
 	// reg2: simulates a fresh process (new BarrierRegistry, same system barrier).
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -505,11 +503,11 @@ func TestRestoreVolumeTenants_AutoUnsealUnsealed(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -518,12 +516,12 @@ func TestRestoreVolumeTenants_AutoUnsealUnsealed(t *testing.T) {
 		t.Fatalf("RegisterVolumeTenant (auto): %v", err)
 	}
 	// Initialize so the DEK is written and wrapped under the system barrier.
-	if err := reg1.InitializeTenant(ctx, "vol-auto-restore", seal.Credentials{}); err != nil {
+	if err := reg1.InitializeTenant(ctx, "vol-auto-restore", Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 
 	// reg2: simulates restart with same system barrier.
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -548,11 +546,11 @@ func TestRestoreVolumeTenants_SelfManagedStaysSealed(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -561,7 +559,7 @@ func TestRestoreVolumeTenants_SelfManagedStaysSealed(t *testing.T) {
 	}
 
 	// reg2: simulates restart.
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -587,11 +585,11 @@ func TestRestoreVolumeTenants_IdempotentWhenAlreadyRegistered(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -632,11 +630,11 @@ func TestLocalTenantDataRoot_FallsBackToPersistentStore(t *testing.T) {
 	ctx := context.Background()
 	system, opts, roots := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -646,7 +644,7 @@ func TestLocalTenantDataRoot_FallsBackToPersistentStore(t *testing.T) {
 	}
 
 	// reg2: fresh tenantDataRoots sync.Map, same system barrier (has the record).
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -696,7 +694,7 @@ func TestRestoreVolumeTenants_SkipsEmptyDataRoot(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -705,7 +703,7 @@ func TestRestoreVolumeTenants_SkipsEmptyDataRoot(t *testing.T) {
 		t.Fatalf("system.Put empty DataRoot record: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -728,7 +726,7 @@ func TestRestoreVolumeTenants_SkipsCorruptRecord(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -737,7 +735,7 @@ func TestRestoreVolumeTenants_SkipsCorruptRecord(t *testing.T) {
 		t.Fatalf("system.Put corrupt record: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -760,7 +758,7 @@ func TestRestoreVolumeTenants_ShortKeySkipped(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -769,7 +767,7 @@ func TestRestoreVolumeTenants_ShortKeySkipped(t *testing.T) {
 		t.Fatalf("system.Put at prefix-only key: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -795,11 +793,11 @@ func TestRestoreVolumeTenants_AutoUnsealFailure(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
 
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
@@ -813,7 +811,7 @@ func TestRestoreVolumeTenants_AutoUnsealFailure(t *testing.T) {
 	}
 
 	// reg2 simulates a follower node or process restart.
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
@@ -839,11 +837,11 @@ func TestLocalTenantDataRoot_NotInPersistentStoreEither(t *testing.T) {
 	system, opts, _ := newShareableComponents(t)
 
 	// Unseal the system barrier so the persistent-store lookup is attempted.
-	if err := system.Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -855,7 +853,7 @@ func TestLocalTenantDataRoot_NotInPersistentStoreEither(t *testing.T) {
 	if terr == nil {
 		t.Fatal("expected ErrTenantNotFound for unregistered tenant, got nil")
 	}
-	if !errors.Is(terr, seal.ErrTenantNotFound) {
+	if !errors.Is(terr, ErrTenantNotFound) {
 		t.Errorf("error = %v, want wrapping ErrTenantNotFound", terr)
 	}
 }
@@ -870,10 +868,10 @@ func TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild(t *testi
 	ctx := context.Background()
 
 	var gotRootKeyPath string
-	var gotBackend seal.StorageBackend
+	var gotBackend StorageBackend
 	calls := 0
-	reg.Attach(seal.WithMigrationRecoverer(
-		func(_ context.Context, backend seal.StorageBackend, rootKeyPath string) error {
+	reg.Attach(WithMigrationRecoverer(
+		func(_ context.Context, backend StorageBackend, rootKeyPath string) error {
 			calls++
 			gotBackend = backend
 			gotRootKeyPath = rootKeyPath
@@ -906,13 +904,13 @@ func TestRegisterVolumeTenant_MigrationRecoverer_FailsClosed(t *testing.T) {
 	ctx := context.Background()
 
 	sentinel := errors.New("recovery exploded")
-	reg.Attach(seal.WithMigrationRecoverer(
-		func(context.Context, seal.StorageBackend, string) error { return sentinel }))
+	reg.Attach(WithMigrationRecoverer(
+		func(context.Context, StorageBackend, string) error { return sentinel }))
 
 	_, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover-fail", "", true)
-	var mre *seal.MigrationRecoveryError
+	var mre *MigrationRecoveryError
 	if !errors.As(err, &mre) {
-		t.Fatalf("err = %v, want *seal.MigrationRecoveryError", err)
+		t.Fatalf("err = %v, want *MigrationRecoveryError", err)
 	}
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err must wrap the recoverer's cause; got %v", err)

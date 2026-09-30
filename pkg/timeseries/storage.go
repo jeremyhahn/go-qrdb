@@ -883,6 +883,7 @@ func matchesTags(dpTags, filterTags map[string]string) bool {
 // reverseDataPoints reverses a slice of DataPoint in place.
 func reverseDataPoints(pts []DataPoint) {
 	for i, j := 0, len(pts)-1; i < j; i, j = i+1, j-1 {
+		// #nosec G602 -- the loop condition keeps 0 <= i < j < len(pts).
 		pts[i], pts[j] = pts[j], pts[i]
 	}
 }

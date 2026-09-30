@@ -68,6 +68,7 @@ func TestAllocationFailure_TypedErrorNotProcessAbort(t *testing.T) {
 		return
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0],
 		subprocessTestArgs("TestAllocationFailure_TypedErrorNotProcessAbort", 20*time.Second)...)
 	cmd.Env = append(os.Environ(), allocationFailureChildEnv+"=1")
@@ -198,6 +199,7 @@ func TestNewSecretFromBuffer_SealsWithoutAdmittingPlaintextCopy(t *testing.T) {
 		return
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0],
 		subprocessTestArgs("TestNewSecretFromBuffer_SealsWithoutAdmittingPlaintextCopy", 20*time.Second)...)
 	cmd.Env = append(os.Environ(), sealUnderExhaustedBudgetChildEnv+"=1")

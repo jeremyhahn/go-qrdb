@@ -73,11 +73,13 @@ func TestCopyOut_DoesNotAliasProtectedMemory(t *testing.T) {
 	}
 	var protected uintptr
 	if err := buf.WithBytes(func(b []byte) error {
+		// #nosec G103 -- address comparison only; the pointer is never dereferenced.
 		protected = uintptr(unsafe.Pointer(&b[0])) //nolint:gosec // address comparison only; the pointer is never dereferenced
 		return nil
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)
 	}
+	// #nosec G103 -- address comparison only; the pointer is never dereferenced.
 	if uintptr(unsafe.Pointer(&out[0])) == protected { //nolint:gosec // address comparison only
 		t.Fatal("CopyOut returned a view onto the protected pages rather than a copy")
 	}

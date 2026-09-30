@@ -301,6 +301,17 @@ are not reconstructed here — their history is in the git log.
   token but no host now fails with an error naming the variable. The devcontainer
   compose services resolve modules from the public proxy when `GITEA_HOST` is
   unset.
+- **`make gosec`, `gosec-sdk` and `gosec-sarif` scan test variants
+  (`-tests`), at `-severity=low`, and skip generated code.** All three take
+  their analysis flags from one `GOSEC_FLAGS` variable, so they cannot
+  drift. Every site the lower floor surfaced was fixed or annotated with its
+  reason. `pkg/index` replaces an `unsafe` float cast with `math.Float64bits`.
+  G104 (unchecked errors) is excluded in `_test.go` files only, where every
+  site was, so production code stays armed. The REST auth-factor round-trip
+  test now verifies the server against its certificate instead of skipping
+  verification. The `export_test.go` idiom is gone from
+  `pkg/seal` and `sdk/go`, because gosec's loader cannot typecheck an external
+  test package that relies on it. Those tests now run in-package.
 
 ### Removed
 
@@ -332,6 +343,13 @@ are not reconstructed here — their history is in the git log.
   back as a bare store error. It is now `*dao.AtomicWriteUnsupportedError`,
   the same as a store without the method, with the store's refusal kept in the
   chain. Any other store error is still returned unchanged.
+- **`sdk/go/driver`: the embedded `Rows.Next` no longer panics on a row
+  wider than its columns.** It wrote `dest[i]` for every cell the engine
+  returned. `database/sql` sizes `dest` from `Columns()`, so a wider row
+  indexed past it inside the caller's `rows.Next`. A row of any other width
+  now returns `*driver.RowWidthError`. A narrower row used to leave the
+  previous row's values in the slots it did not fill, and it now gets the same
+  error. gosec's G602 found this once the severity floor was lowered.
 
 ### Security
 

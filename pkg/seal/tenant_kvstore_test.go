@@ -12,34 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"bytes"
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // newInitializedTenantBarrier builds a tenant barrier over a shared base
 // MemoryBackend and initializes (unseals) it. It returns the tenant
 // barrier and the shared base so tests can inspect the on-disk bytes.
-func newInitializedTenantBarrier(t *testing.T, tenantID string, base seal.StorageBackend) *seal.TenantBarrier {
+func newInitializedTenantBarrier(t *testing.T, tenantID string, base StorageBackend) *TenantBarrier {
 	t.Helper()
-	tb, err := seal.NewTenantBarrier(tenantID, poolTestLogger(), base, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
+	tb, err := NewTenantBarrier(tenantID, poolTestLogger(), base, BarrierConfig{}, newPoolSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("NewTenantBarrier(%s): %v", tenantID, err)
 	}
-	if err := tb.Initialize(context.Background(), seal.Credentials{}); err != nil {
+	if err := tb.Initialize(context.Background(), Credentials{}); err != nil {
 		t.Fatalf("Initialize(%s): %v", tenantID, err)
 	}
 	return tb
 }
 
 func TestTenantBarrierKVStore_NilBarrier(t *testing.T) {
-	if _, err := seal.NewTenantBarrierKVStore(nil); !errors.Is(err, seal.ErrNilTenantBarrier) {
+	if _, err := NewTenantBarrierKVStore(nil); !errors.Is(err, ErrNilTenantBarrier) {
 		t.Fatalf("NewTenantBarrierKVStore(nil) = %v, want ErrNilTenantBarrier", err)
 	}
 }
@@ -49,10 +47,10 @@ func TestTenantBarrierKVStore_NilBarrier(t *testing.T) {
 // namespace in the base backend, and are stored as CIPHERTEXT (the
 // plaintext never appears in the base backend's stored bytes).
 func TestTenantBarrierKVStore_RoundTripAndCryptoSeparation(t *testing.T) {
-	base := seal.NewMemoryBackend()
+	base := NewMemoryBackend()
 	tb := newInitializedTenantBarrier(t, "alpha", base)
 
-	store, err := seal.NewTenantBarrierKVStore(tb)
+	store, err := NewTenantBarrierKVStore(tb)
 	if err != nil {
 		t.Fatalf("NewTenantBarrierKVStore: %v", err)
 	}
@@ -107,10 +105,10 @@ func TestTenantBarrierKVStore_RoundTripAndCryptoSeparation(t *testing.T) {
 // ErrSealed once the tenant barrier is sealed — they do NOT silently treat
 // a sealed barrier as an empty store.
 func TestTenantBarrierKVStore_SealedFailsClosed(t *testing.T) {
-	base := seal.NewMemoryBackend()
+	base := NewMemoryBackend()
 	tb := newInitializedTenantBarrier(t, "beta", base)
 
-	store, err := seal.NewTenantBarrierKVStore(tb)
+	store, err := NewTenantBarrierKVStore(tb)
 	if err != nil {
 		t.Fatalf("NewTenantBarrierKVStore: %v", err)
 	}
@@ -124,13 +122,13 @@ func TestTenantBarrierKVStore_SealedFailsClosed(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	if err := store.Put(ctx, "k2", []byte("v2")); !errors.Is(err, seal.ErrSealed) {
+	if err := store.Put(ctx, "k2", []byte("v2")); !errors.Is(err, ErrSealed) {
 		t.Fatalf("Put(sealed) = %v, want ErrSealed", err)
 	}
-	if _, err := store.Get(ctx, "k"); !errors.Is(err, seal.ErrSealed) {
+	if _, err := store.Get(ctx, "k"); !errors.Is(err, ErrSealed) {
 		t.Fatalf("Get(sealed) = %v, want ErrSealed", err)
 	}
-	if _, err := store.Exists(ctx, "k"); !errors.Is(err, seal.ErrSealed) {
+	if _, err := store.Exists(ctx, "k"); !errors.Is(err, ErrSealed) {
 		t.Fatalf("Exists(sealed) = %v, want ErrSealed", err)
 	}
 }
@@ -139,15 +137,15 @@ func TestTenantBarrierKVStore_SealedFailsClosed(t *testing.T) {
 // over the SAME base backend cannot read each other's records (namespace
 // isolation) and decrypt with their own DEK.
 func TestTenantBarrierKVStore_TwoTenantsIsolated(t *testing.T) {
-	base := seal.NewMemoryBackend()
+	base := NewMemoryBackend()
 	tbA := newInitializedTenantBarrier(t, "a", base)
 	tbB := newInitializedTenantBarrier(t, "b", base)
 
-	storeA, err := seal.NewTenantBarrierKVStore(tbA)
+	storeA, err := NewTenantBarrierKVStore(tbA)
 	if err != nil {
 		t.Fatalf("wrap A: %v", err)
 	}
-	storeB, err := seal.NewTenantBarrierKVStore(tbB)
+	storeB, err := NewTenantBarrierKVStore(tbB)
 	if err != nil {
 		t.Fatalf("wrap B: %v", err)
 	}
@@ -188,7 +186,7 @@ func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
 	}
 
 	// Initialize then round-trip a value to prove the backend is usable.
-	if err := reg.InitializeTenant(ctx, "pooled", seal.Credentials{}); err != nil {
+	if err := reg.InitializeTenant(ctx, "pooled", Credentials{}); err != nil {
 		t.Fatalf("InitializeTenant: %v", err)
 	}
 	if err := tb.Put(ctx, "k", []byte("v")); err != nil {
@@ -204,11 +202,11 @@ func TestRegisterTenantPooled_DurableIndependentBackend(t *testing.T) {
 // closed when no volume pool is configured.
 func TestRegisterTenantPooled_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
-	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, seal.ErrPoolNotConfigured) {
+	if _, err := reg.RegisterTenantPooled(context.Background(), "x"); !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("RegisterTenantPooled without pool = %v, want ErrPoolNotConfigured", err)
 	}
 }

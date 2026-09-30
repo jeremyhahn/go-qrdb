@@ -86,15 +86,16 @@ func assertPartial(t *testing.T, resp *transport.ReconcileDeletedTenantsResponse
 // the REAL SDK client connected to it.
 func newTenantRoundTrip(t *testing.T, svc tenant.TenantServicer) *Transport {
 	t.Helper()
+	serverTLS, roots := generateRoundTripTLSConfig(t)
 	srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 		restserver.WithTenantService(svc),
-		restserver.WithTLS(generateRoundTripTLSConfig(t)),
+		restserver.WithTLS(serverTLS),
 	)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(srv.Stop)
-	return newRoundTripClient(t, "https://"+srv.Addr())
+	return newRoundTripClient(t, "https://"+srv.Addr(), roots)
 }
 
 func realKVTenants(t *testing.T) tenant.TenantServicer {

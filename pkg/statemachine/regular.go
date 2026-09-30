@@ -201,10 +201,12 @@ func (r *RegularStateMachine) Update(_ context.Context, entries []sm.Entry, resu
 		} else {
 			err = &InvalidOpcodeError{Op: op}
 		}
+		// #nosec G602 -- i ranges over entries.
 		resolved, stop, applyErr := ResolveApplyError(r.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
 		}
+		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 	}
 	return nil

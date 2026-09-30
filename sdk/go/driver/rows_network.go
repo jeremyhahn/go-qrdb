@@ -82,9 +82,11 @@ func (r *networkRows) Next(dest []driver.Value) error {
 		}
 		v, ok := row[col]
 		if !ok {
+			// #nosec G602 -- i < len(dest) is checked above.
 			dest[i] = nil
 			continue
 		}
+		// #nosec G602 -- i < len(dest) is checked above.
 		dest[i] = toDriverValue(v)
 	}
 	return nil

@@ -509,6 +509,7 @@ func TestBorrowGuard_TheUnguardedShapeReallyHangs(t *testing.T) {
 		{"guarded", false, "attempted while this goroutine holds a borrow"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
+			// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 			cmd := exec.Command(os.Args[0], subprocessTestArgs(deadlockTestName, deadline)...)
 			cmd.Env = append(os.Environ(), childEnv+"="+tc.mode)
 			out, err := cmd.CombinedOutput()
