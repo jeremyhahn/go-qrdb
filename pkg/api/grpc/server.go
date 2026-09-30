@@ -94,11 +94,14 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
-	addr              string
-	server            *grpc.Server
-	listener          net.Listener
-	tls               *tls.Config
-	tlsErr            error
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate   *authmw.SOGate
+	addr     string
+	server   *grpc.Server
+	listener net.Listener
+	tls      *tls.Config
+	tlsErr   error
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. When nil the singleton service fields are used.
@@ -312,6 +315,15 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
+// whose permission is in authmw.SOPermissions, after authentication: the
+// caller must hold the SO role and present the SO PIN in the "x-qrdb-so-pin" metadata
+// entry over TLS. It is the same gate the REST transport applies, built by the
+// orchestrator when auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
+}
+
 // WithCertProvider configures the gRPC server with a certificate provider.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
@@ -502,6 +514,9 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
+	if s.authMW != nil && s.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
+	}
 	if s.sealedWindowProbe != nil {
 		unaryInterceptors = append(unaryInterceptors,
 			sealedWindowUnary(s.sealedWindowProbe, nil, s.sealedWindowListener))
@@ -513,6 +528,9 @@ func (s *Server) Start() error {
 	}
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
+	}
+	if s.authMW != nil && s.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
 	}
 	if s.sealedWindowProbe != nil {
 		streamInterceptors = append(streamInterceptors,

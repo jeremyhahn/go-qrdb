@@ -40,6 +40,11 @@ import (
 // the identity is always already bound and this hook only reuses it. It
 // remains the tool gate's second line, not its first.
 func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.Context {
+	// The SO second factor rides the HTTP request, and this hook is the one
+	// place the tool path can see it. It is bound before the early return
+	// below so a request authenticateHandler already authenticated carries
+	// it too.
+	ctx = withSOFactor(ctx, r)
 	// authenticateHandler has already authenticated this request and bound
 	// the identity into the request context; a second pass would only
 	// repeat the same chain walk.
@@ -55,6 +60,21 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 		return ctx
 	}
 	return authCtx
+}
+
+// withSOFactor binds the SO second factor the /mcp request presented. The
+// header is read only from a TLS connection, as REST reads it.
+func withSOFactor(ctx context.Context, r *http.Request) context.Context {
+	if r == nil {
+		return ctx
+	}
+	factor := authmw.SOFactor{Secure: r.TLS != nil, ClientIP: r.RemoteAddr}
+	if factor.Secure {
+		if pin := r.Header.Get(authmw.SOPINHeader); pin != "" {
+			factor.PIN = []byte(pin)
+		}
+	}
+	return authmw.WithSOFactor(ctx, factor)
 }
 
 // withHTTPRequestCredentials binds the request's transport-level credential
@@ -240,6 +260,15 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 				slog.Warn("mcp: tool call denied",
 					"tool", req.Params.Name, "error", err)
 				return authzToolError(err), nil
+			}
+			if s.soGate != nil {
+				if perm, ok := s.toolPerms.Lookup(req.Params.Name); ok {
+					if err := s.soGate.Enforce(ctx, perm, req.Params.Name, "call"); err != nil {
+						slog.Warn("mcp: SO dual factor refused",
+							"tool", req.Params.Name, "error", err)
+						return authzToolError(err), nil
+					}
+				}
 			}
 			return next(ctx, req)
 		}

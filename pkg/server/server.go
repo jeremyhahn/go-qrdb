@@ -1315,6 +1315,29 @@ func (s *Server) MCPAddr() string {
 }
 
 // startREST creates and starts the REST server with configured options.
+// soGate returns the SO dual-factor gate the gRPC, Unix, QUIC and MCP
+// transports install, or nil when it is off. It is on under exactly the
+// conditions the REST transport's SOMiddleware is -- auth.so_dual_factor set,
+// an SO authenticator wired -- plus an auth middleware to bind the identity
+// it checks, so the six transports cannot disagree about whether the SO
+// surface needs the second factor. It is built over the same role service,
+// audit logger and audit failure policy REST uses. An unrecognised policy
+// fails the start, as it does for REST.
+func (s *Server) soGate() (*authmw.SOGate, error) {
+	if !s.config.Auth.SODualFactor || s.opts.soAuthenticator == nil || s.opts.authMW == nil {
+		return nil, nil
+	}
+	policy, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy)
+	if err != nil {
+		return nil, err
+	}
+	var roles role.NameResolver
+	if s.opts.roleSvc != nil {
+		roles = s.opts.roleSvc
+	}
+	return authmw.NewSOGate(roles, s.opts.soAuthenticator, s.opts.auditLogger, policy, slog.Default()), nil
+}
+
 func (s *Server) startREST() error {
 	addr := net.JoinHostPort(s.config.Server.Host, strconv.Itoa(s.config.Server.AdminPort))
 
@@ -1590,6 +1613,11 @@ func (s *Server) startGRPC() error {
 	if s.opts.roleSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCertProvider(s.opts.certProv))
 	}
@@ -1716,6 +1744,11 @@ func (s *Server) startQUIC() error {
 	if s.opts.roleSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		quicOpts = append(quicOpts, quicapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		quicOpts = append(quicOpts, quicapi.WithCertProvider(s.opts.certProv))
 	}
@@ -1838,6 +1871,11 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.roleSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithRoleService(s.opts.roleSvc))
+	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		unixOpts = append(unixOpts, unixapi.WithSOGate(gate))
 	}
 	if s.opts.certProv != nil {
 		unixOpts = append(unixOpts, unixapi.WithCertProvider(s.opts.certProv))
@@ -1974,6 +2012,11 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.roleSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithRoleService(s.opts.roleSvc))
+	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithSOGate(gate))
 	}
 	if s.opts.certProv != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))

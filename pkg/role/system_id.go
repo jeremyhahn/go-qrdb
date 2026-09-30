@@ -17,6 +17,7 @@ package role
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -117,4 +118,52 @@ func SystemRoleIDs(ctx context.Context, svc NameResolver, tenantID, roleName str
 		return []string{canonical}, nil
 	}
 	return []string{canonical, persisted}, nil
+}
+
+// HoldsSystemRole reports whether roleIDs grant the named system role of
+// tenantID: whether one of them is the identifier under which the store
+// persists that role.
+//
+// It answers the GRANT direction, and that makes it deliberately narrower
+// than SystemRoleIDs. The controls that VOID a grant (the SO deny-list, the
+// strict-separation Owner strip) must over-match, so they accept the role
+// name, the canonical identifier and anything a stale replica cannot rule
+// out. A control that ADMITS a caller as the holder of a role must do the
+// opposite and match only what the role store itself says denotes the role:
+//
+//   - a role NAME never matches. identity.Roles holds identifiers (the
+//     enrichment sets it from User.RoleIDs), and a name there can only have
+//     come from somewhere that is not the role store, such as a token claim
+//     for a subject with no user record.
+//   - the canonical identifier matches only when it is the persisted one. On
+//     a cluster seeded before the move off UUIDv5 it names no role at all.
+//   - a tenant with no role of that name grants nothing.
+//
+// The lookup runs under tenantID's context, because a tenant-routed store
+// scopes its ownership check to the context tenant. An empty tenantID is the
+// system tenant. A nil svc is refused with *ResolverRequiredError rather than
+// answered, since "cannot tell" is not "no". Any other store error is
+// returned, and callers must deny on it.
+func HoldsSystemRole(ctx context.Context, svc NameResolver, tenantID string, roleIDs []string, roleName string) (bool, error) {
+	if svc == nil {
+		return false, &ResolverRequiredError{Name: roleName}
+	}
+	if len(roleIDs) == 0 {
+		return false, nil
+	}
+	if tenantID == "" {
+		tenantID = tenant.SystemTenantID
+	}
+	r, err := svc.GetRoleByName(tenant.WithTenantID(ctx, tenantID), tenantID, roleName)
+	if err != nil {
+		var notFound *RoleNotFoundError
+		if errors.As(err, &notFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if r == nil {
+		return false, &InvalidResolverResultError{Name: roleName, TenantID: tenantID}
+	}
+	return slices.Contains(roleIDs, r.ID), nil
 }

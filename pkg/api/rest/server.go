@@ -830,7 +830,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// wired — default posture is unchanged.
 	var handler http.Handler = r
 	if s.soDualFactor && s.soPINVerifier != nil {
-		handler = authmw.SOMiddleware(s.routePerms, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
+		handler = authmw.SOMiddleware(s.routePerms, s.roleSvc, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
 	}
 	if s.authMW != nil {
 		handler = s.authMW.RESTMiddleware(s.routePerms, handler)

@@ -54,7 +54,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // discardLogger returns a slog.Logger that discards all output.
@@ -75,10 +74,11 @@ const (
 // committed, and the middleware under test wrapping a handler that records
 // whether it ran.
 type soGateFixture struct {
-	chain   *audit.ChainFileLogger
-	path    string
-	handler http.Handler
-	ran     *bool
+	chain    *audit.ChainFileLogger
+	path     string
+	handler  http.Handler
+	ran      *bool
+	soRoleID string
 }
 
 func newSOGateFixture(t *testing.T, policy audit.FailurePolicy) *soGateFixture {
@@ -99,16 +99,18 @@ func newSOGateFixture(t *testing.T, policy audit.FailurePolicy) *soGateFixture {
 		t.Fatalf("SetSOPIN: %v", err)
 	}
 
+	roles, soRoleID := seededSORoles(t)
 	ran := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		ran = true
 		w.WriteHeader(http.StatusOK)
 	})
 	return &soGateFixture{
-		chain:   chain,
-		path:    path,
-		handler: SOMiddleware(testRESTRoutes(), verifier, chain, policy, discardLogger(), next),
-		ran:     &ran,
+		soRoleID: soRoleID,
+		chain:    chain,
+		path:     path,
+		handler:  SOMiddleware(testRESTRoutes(), roles, verifier, chain, policy, discardLogger(), next),
+		ran:      &ran,
 	}
 }
 
@@ -132,7 +134,7 @@ func (f *soGateFixture) serve(pin string) *httptest.ResponseRecorder {
 	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
 		Subject:  "officer",
 		TenantID: soGateTenant,
-		Roles:    []string{role.RoleNameSO},
+		Roles:    []string{f.soRoleID},
 	}))
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)
@@ -354,7 +356,8 @@ func TestSOMiddleware_VerifierGateErrorIsNotFlattenedIntoInvalidPIN(t *testing.T
 	}
 
 	ran := false
-	h := SOMiddleware(testRESTRoutes(), verifier, healthy, audit.FailClosed, discardLogger(),
+	roles, soRoleID := seededSORoles(t)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, healthy, audit.FailClosed, discardLogger(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			ran = true
 			w.WriteHeader(http.StatusOK)
@@ -364,7 +367,7 @@ func TestSOMiddleware_VerifierGateErrorIsNotFlattenedIntoInvalidPIN(t *testing.T
 	req.TLS = &tls.ConnectionState{}
 	req.Header.Set(SOPINHeader, soGatePIN)
 	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{
-		Subject: "officer", TenantID: soGateTenant, Roles: []string{role.RoleNameSO},
+		Subject: "officer", TenantID: soGateTenant, Roles: []string{soRoleID},
 	}))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

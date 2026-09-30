@@ -77,6 +77,9 @@ type Server struct {
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate *authmw.SOGate
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
 	// from the optional "database" tool argument. When nil, the singleton
@@ -419,6 +422,16 @@ func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption 
 // When set, the qrdb_audit_query tool is available.
 func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every tool
+// whose permission is in authmw.SOPermissions, after authorization: the caller
+// must hold the SO role and present the SO PIN in the X-QRDB-SO-PIN header of
+// the /mcp request (authmw.SOPINHeader), the same header REST reads. It is the
+// same gate the REST transport applies, built by the orchestrator when
+// auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
 }
 
 // WithSealedWindowProbe installs the sealed-window tool-handler middleware

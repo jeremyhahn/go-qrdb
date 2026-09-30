@@ -164,3 +164,17 @@ func (e *InvalidResolverResultError) Error() string {
 	return "role: name resolver returned no role and no error for " + e.Name +
 		" in tenant " + e.TenantID
 }
+
+// ResolverRequiredError is returned by HoldsSystemRole when it is given no
+// NameResolver. Deciding that a caller holds a role needs the store's answer,
+// so a missing store is reported rather than read as "does not hold it" --
+// which would look like an ordinary refusal and hide the misconfiguration.
+type ResolverRequiredError struct {
+	// Name is the role name that was being resolved.
+	Name string
+}
+
+// Error returns a human-readable description of the missing resolver.
+func (e *ResolverRequiredError) Error() string {
+	return "role: no name resolver to decide whether a caller holds " + e.Name
+}

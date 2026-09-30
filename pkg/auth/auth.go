@@ -32,7 +32,12 @@ type Identity struct {
 	// uses an empty TenantID as a sentinel.
 	TenantID string
 
-	// Roles contains the roles assigned to this identity.
+	// Roles contains the IDENTIFIERS of the roles assigned to this identity.
+	// The authentication middleware sets it from the user record's RoleIDs.
+	// A role NAME found here did not come from the role store, so to ask
+	// whether the identity holds a named system role, resolve the name
+	// through the role store (role.HoldsSystemRole) rather than comparing
+	// the name here.
 	Roles []string
 
 	// ScopePermissions carries permissions that were pre-resolved by a
@@ -56,10 +61,14 @@ type Identity struct {
 	Metadata map[string]string
 }
 
-// HasRole reports whether this identity has the specified role.
-func (id *Identity) HasRole(role string) bool {
+// HasRole reports whether this identity carries the role identifier roleID,
+// compared verbatim. Roles holds identifiers, so passing a role NAME here is
+// a defect: it refuses every real holder and admits any identity whose roles
+// happen to carry that string (go-qrdb#569). Use role.HoldsSystemRole for a
+// named system role.
+func (id *Identity) HasRole(roleID string) bool {
 	for _, r := range id.Roles {
-		if r == role {
+		if r == roleID {
 			return true
 		}
 	}

@@ -88,6 +88,9 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate            *authmw.SOGate
 	sealedWindowProbe sealedWindowProbe
 	// sealedWindowListener is the boot-time sealed-window listener's probe,
 	// and selects that listener's gate. Nil for a regular listener.
@@ -262,6 +265,17 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the QUIC server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every method
+// whose permission is in authmw.SOPermissions, after authorization: the caller
+// must hold the SO role and present the SO PIN in the request message's
+// so_pin field (see soPINCarriers: a QUIC frame has no header section). QUIC
+// is TLS-only, so the factor always arrives over TLS. It is the same gate the REST transport
+// applies, built by the orchestrator when auth.so_dual_factor is on; nil
+// leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
 }
 
 // WithCertProvider configures the QUIC server with a certificate provider.
@@ -805,6 +819,17 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			_ = s.writeResponse(stream, requestID, authStatus, []byte(authErr.Error()))
 			s.logRequest(method, requestID, authStatus, start)
 			return
+		}
+
+		// The SO dual-factor gate, after authorization and before any
+		// handler, exactly where the REST and gRPC transports apply it.
+		if s.soGate != nil {
+			if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
+				soStatus := authzStatus(soErr)
+				_ = s.writeResponse(stream, requestID, soStatus, []byte(soErr.Error()))
+				s.logRequest(method, requestID, soStatus, start)
+				return
+			}
 		}
 	}
 

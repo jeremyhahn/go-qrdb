@@ -122,6 +122,15 @@ are not reconstructed here — their history is in the git log.
   retries against the regular listener. It no longer starts the MySQL or
   PostgreSQL wire protocols, which carry no sealed-window verb.
 
+### Changed
+
+- **BREAKING (Go API):** `middleware.SOMiddleware` takes a
+  `role.NameResolver` as its second parameter. `rest.Server` passes its
+  role service (`rest.WithRoleService`); a server with the gate enabled and
+  no role service refuses SO-gated routes with `503`.
+- `auth.Identity.HasRole` documents that it compares role identifiers, and
+  its parameter is renamed `roleID`.
+
 ### Fixed
 
 - **A standalone `sdk/go/node` node serves its named databases.** Its server
@@ -341,6 +350,31 @@ are not reconstructed here — their history is in the git log.
   it sees the mark. An authenticated caller on a regular listener still gets
   the full record. The wizard keys its claim table by share index and names
   rows from its own registrations.
+- **The SO dual-factor gate recognises a real Security Officer, and only
+  one.** `middleware.SOMiddleware` checked `identity.HasRole("so")`, but an
+  authenticated identity's `Roles` holds role *identifiers* (from the user
+  record's `RoleIDs`). Every real officer was refused with
+  `403 SO role required`, and an identity whose roles carried the literal
+  string `so` (a token claim for a subject with no user record) passed the
+  role step; the SO PIN was still required. The gate now resolves the SO
+  role through the role store with the new `role.HoldsSystemRole`: the
+  caller must carry the identifier under which its own tenant's `so` role is
+  persisted. Names never match. A role store that cannot answer refuses with
+  `503`.
+- **The SO dual-factor gate now guards every network transport, not only
+  REST.** With `auth.so_dual_factor` on, the SO-gated operations
+  (`middleware.SOPermissions`: barrier rekey, Shamir initialize, recovery
+  generate, root-key rotation, ceremony initialize, custodian enrol and revoke,
+  CSR signing) were reachable over gRPC, the Unix socket, QUIC and MCP by any
+  caller RBAC admitted, such as a token principal granted `seal:rekey`, with
+  no SO role and no SO PIN. The gate is now one implementation,
+  `middleware.SOGate`, which the orchestrator installs on all of them
+  (`WithSOGate` on each server). The PIN travels in `x-qrdb-so-pin` metadata
+  on gRPC and Unix, in the `X-QRDB-SO-PIN` header on MCP, and in the request's
+  `so_pin` field on QUIC. `barrier.RecoveryDelete` has no carrier on QUIC and
+  is refused there while the gate is on. Refusals are typed
+  (`SOFactorError`, `SORoleRequiredError`, `SORoleUnresolvedError`) and map to
+  the same class on every transport.
 
 ### Known limits
 

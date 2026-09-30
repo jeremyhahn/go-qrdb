@@ -92,6 +92,9 @@ type Server struct {
 	userAuthFactorSvc service.UserAuthFactorServicer
 	tenantBarrierSvc  tenant.TenantServicer
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate            *authmw.SOGate
 	sqlSvc            service.SQLServicer
 	registry          service.Registry
 	modules           []apimodule.ServiceModule
@@ -177,6 +180,15 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the Unix socket server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
+// whose permission is in authmw.SOPermissions, after authentication: the
+// caller must hold the SO role and present the SO PIN in the "x-qrdb-so-pin" metadata
+// entry over TLS. It is the same gate the REST transport applies, built by the
+// orchestrator when auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
 }
 
 // WithCertProvider configures the Unix socket server with a certificate provider.
@@ -494,6 +506,9 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
+	if s.authMW != nil && s.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
+	}
 	var sealedUnary grpc.UnaryServerInterceptor
 	var sealedStream grpc.StreamServerInterceptor
 	switch {
@@ -514,6 +529,9 @@ func (s *Server) Start() error {
 	}
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
+	}
+	if s.authMW != nil && s.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
 	}
 	if sealedStream != nil {
 		streamInterceptors = append(streamInterceptors, sealedStream)

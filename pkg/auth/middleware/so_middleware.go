@@ -18,10 +18,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
@@ -54,7 +52,8 @@ type SOPINVerifier interface {
 	VerifySOPIN(ctx context.Context, tenantID string, presentedPIN []byte) error
 }
 
-// SOMiddleware returns an http.Handler that enforces SO dual-factor
+// SOMiddleware is the REST face of SOGate, the one SO dual-factor gate every
+// transport shares. It returns an http.Handler that enforces SO dual-factor
 // authentication for SO-permissioned routes. The required permission for
 // the request's route is resolved from the RESTRouteRegistry the REST
 // server populates at route-registration time. It wraps the provided
@@ -65,11 +64,17 @@ type SOPINVerifier interface {
 //     unchanged.
 //  2. Rejects SO-gated requests over plain HTTP (no TLS state) with 401
 //     so the PIN is never read off an unencrypted connection.
-//  3. Requires the X-QRDB-SO-PIN header to be present and valid.
+//  3. Requires the identity to hold the SO role, resolved by identifier
+//     against roles, and the X-QRDB-SO-PIN header to be present and valid.
 //  4. Emits an audit event on both success and failure, and REFUSES the
 //     request when that event cannot be written and policy is
 //     audit.FailClosed — the zero value (go-qrdb#445).
 //  5. Delegates to the base handler on success.
+//
+// roles is the role store the SO role is resolved against: the caller must
+// hold, in its own tenant, the identifier under which that store persists the
+// SO role (role.HoldsSystemRole). A nil roles refuses every SO-gated request
+// with 503 rather than guessing.
 //
 // The identity's TenantID is used to look up the stored PIN commit.
 // If the identity has no tenant (cross-tenant/system identity), the
@@ -87,150 +92,40 @@ type SOPINVerifier interface {
 // shape.
 func SOMiddleware(
 	routes *RESTRouteRegistry,
+	roles role.NameResolver,
 	verifier SOPINVerifier,
 	auditLogger audit.AuditLogger,
 	policy audit.FailurePolicy,
 	logger *slog.Logger,
 	next http.Handler,
 ) http.Handler {
+	gate := NewSOGate(roles, verifier, auditLogger, policy, logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		// Determine the required permission for this route.
+		// Determine the required permission for this route. A route that is
+		// not permission-mapped, or whose permission is outside
+		// SOPermissions, is not SO-gated: the gate passes it through, so the
+		// middleware never changes behavior outside the SO surface.
 		perm, kind, hasPerm := routes.Lookup(r.Method, r.URL.Path)
 		if !hasPerm || kind != RESTRoutePermission {
-			// Not a permission-mapped route; no SO gating needed.
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check whether this permission requires SO dual-factor.
-		if _, requiresSO := SOPermissions[perm]; !requiresSO {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// SO PIN must only be transmitted over TLS. Reject plain HTTP
-		// requests to SO-gated routes before reading the header to
-		// prevent credential exposure. Non-SO routes are unaffected so
-		// the middleware never changes behavior outside SOPermissions.
-		if r.TLS == nil {
-			writeJSONError(w, http.StatusUnauthorized, "SO PIN requires TLS 1.3")
-			return
-		}
-
-		// Extract the identity from context (set by the upstream RESTMiddleware).
-		identity := auth.IdentityFromContext(ctx)
-		if identity == nil || !identity.HasRole(role.RoleNameSO) {
-			writeJSONError(w, http.StatusForbidden, "SO role required")
-			return
-		}
-
-		// ONE emitter for all three outcomes, so the gating decision is made
-		// once rather than restated at each site -- a later branch that
-		// forgot to act on the returned error is how this posture was lost
-		// the first time.
-		emit := func(outcome string) error {
-			return audit.EmitGated(ctx, auditLogger, soDualFactorComponent, policy, audit.AuditEvent{
-				Actor:    identity.Subject,
-				TenantID: identity.TenantID,
-				Role:     role.RoleNameSO,
-				Resource: strings.ToLower(r.URL.Path),
-				Action:   strings.ToLower(r.Method),
-				Outcome:  outcome,
-				ClientIP: r.RemoteAddr,
-			})
-		}
-
-		// Read the SO PIN header.
-		pinStr := r.Header.Get(SOPINHeader)
-		if pinStr == "" {
-			if gateErr := emit(audit.OutcomeFailure + ":missing-so-pin"); gateErr != nil {
-				writeGateError(w, gateErr)
-				return
+		// The header is bound only over TLS: a PIN sent in plaintext is never
+		// read, and the gate refuses the request as insecure.
+		factor := SOFactor{Secure: r.TLS != nil, ClientIP: r.RemoteAddr}
+		if factor.Secure {
+			if pin := r.Header.Get(SOPINHeader); pin != "" {
+				factor.PIN = []byte(pin)
 			}
-			writeJSONError(w, http.StatusUnauthorized, "SO PIN required (X-QRDB-SO-PIN header)")
-			return
 		}
+		ctx := WithSOFactor(r.Context(), factor)
 
-		// Verify the PIN.
-		if err := verifier.VerifySOPIN(ctx, identity.TenantID, []byte(pinStr)); err != nil {
-			// THE VERIFIER'S OWN AUDIT GATE, distinguished from a bad PIN by
-			// the narrow AuthFailureAuditUnavailable class (isAuditFailure),
-			// never the wider AuthFailureUnavailable it used to be part of.
-			//
-			// auth.SOAuthenticator.VerifySOPIN now fails closed on its own
-			// unrecordable outcome (go-qrdb#445) and returns *audit.GateError
-			// instead of ErrSOPINInvalid. Rendering that as 401 "SO PIN
-			// verification failed" would tell a security officer holding a
-			// perfectly good PIN that the PIN was wrong, on a node whose audit
-			// disk was full -- terminal in every client, and the exact
-			// misdiagnosis the 503 mapping exists to prevent.
-			//
-			// Guarding on AuthFailureUnavailable instead would sweep in
-			// *StoreUnavailableError, which on this surface carries
-			// tenant.ErrTenantSealed -- a signal the sealed-window fallbacks
-			// exist to act on, not one to reinterpret here. go-qrdb#460 split
-			// that class in two for exactly this reason, so this site now
-			// shares barrier_bootstrap.go's isAuditFailure instead of
-			// repeating its own errors.As(*audit.GateError) check.
-			if isAuditFailure(err) {
-				writeGateError(w, err)
-				return
-			}
-			if emitErr := emit(audit.OutcomeFailure + ":invalid-so-pin"); emitErr != nil {
-				writeGateError(w, emitErr)
-				return
-			}
-			logger.Warn("SO PIN verification failed",
-				slog.String("actor", identity.Subject),
-				slog.String("path", r.URL.Path))
-			writeJSONError(w, http.StatusUnauthorized, "SO PIN verification failed")
-			return
-		}
-
-		// FAIL-CLOSED, on the operator's own lever (go-qrdb#445).
-		//
-		// This used to be best-effort, on the argument that the middleware
-		// runs BEHIND an already-fail-closed authorization decision so the
-		// sink cannot be down by the time control reaches here. That argument
-		// is real but partial, and it was answered by the ruling that closed
-		// #445: the authorization decision and the SO factor are TWO DISTINCT
-		// ASSERTIONS about the request, and only one of them was guaranteed
-		// recorded. A sink can also fail between the two -- they are separate
-		// writes -- and an SO operation is the most privileged action the
-		// system offers, so a second factor that passes unrecorded is exactly
-		// the event the trail exists to capture.
-		//
-		// The objection raised at the time was that "two postures with one
-		// lever is worse than one stated plainly". The answer is not to keep
-		// the weaker posture but to make it ONE posture: policy is the same
-		// audit.FailurePolicy the AuthMiddleware was built with, resolved once
-		// from auth.audit_failure_policy. There is no second configuration
-		// key.
-		if gateErr := emit(audit.OutcomeSuccess); gateErr != nil {
-			writeGateError(w, gateErr)
+		if err := gate.Enforce(ctx, perm, r.URL.Path, r.Method); err != nil {
+			writeJSONError(w, HTTPStatus(err, http.StatusServiceUnavailable), err.Error())
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-// writeGateError answers a request refused because its SO-factor audit record
-// could not be written.
-//
-// The status comes from HTTPStatus, not from a literal, so this surface cannot
-// drift from the three other transports' answer to the same class: an
-// *audit.GateError is AuthFailureAuditUnavailable, which maps to 503 exactly
-// as AuthFailureUnavailable does -- a retryable node-side fault. The fallback
-// is never reached for a *audit.GateError and is 503 rather than 401 anyway,
-// because by the time this middleware runs the caller has already
-// authenticated.
-//
-// The refusal is NOT itself audited. The only sink is the one that just
-// failed; audit.EmitGated has already counted it on
-// qrdb_audit_gate_failures_total and logged it at ERROR.
-func writeGateError(w http.ResponseWriter, err error) {
-	writeJSONError(w, HTTPStatus(err, http.StatusServiceUnavailable), err.Error())
 }
