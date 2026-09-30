@@ -39,6 +39,19 @@ type Authorizer = auth.Authorizer
 // deployments.
 type NoopAuthorizer = auth.NoopAuthorizer
 
+// PermissionDeniedError is the RBAC authorizer's denial: the identity holds no
+// grant for the requested resource and action, or holds one it may not
+// exercise (a cross-scope permission outside the system tenant, a
+// cryptographic operation on the Security Officer role). Reason is set when
+// the denial is more than a plain permission miss.
+//
+// It is the only error the RBAC authorizer returns that means "denied".
+// Anything else — a role-resolution failure, a cancelled context — is the
+// authorizer failing to decide, so a consumer tells the two apart with
+// errors.As rather than treating every error as a denial. (An authorizer
+// wrapped by DecorateAuthorizer adds the ABAC policy's own denial.)
+type PermissionDeniedError = rbac.PermissionDeniedError
+
 // MethodMTLS is the name the built-in mTLS authenticator reports, and
 // therefore the exact token a user's permitted-method policy
 // (CreateUserRequest.AuthMethods / UpdateUserRequest.AuthMethods) must spell

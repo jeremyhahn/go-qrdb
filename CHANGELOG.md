@@ -72,6 +72,13 @@ are not reconstructed here — their history is in the git log.
   ceremony enforces `User.AuthMethods` without restating the rule. The method
   tokens gain `auth.MethodPIV` (`"piv"`) and `auth.MethodWebAuthn`
   (`"webauthn"`) beside `MethodMTLS`, each re-exported by the SDK.
+- **Every cross-scope permission and the RBAC denial type cross the SDK
+  boundary.** `sdk/go/types_permission_cross.go` names each `ScopeCross`
+  permission (`sdk.PermissionAuditReadCross`, the tenants, volume-pool,
+  registration-config and credentials families, `sdk.PermissionMVCCCompact`),
+  and a test fails when the registry holds one the SDK does not name.
+  `sdk.PermissionDeniedError` aliases `rbac.PermissionDeniedError`, so a
+  consumer tells a denial apart from an authorizer that failed to decide.
 
 ### Changed — BREAKING
 

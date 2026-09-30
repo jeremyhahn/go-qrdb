@@ -259,6 +259,20 @@ the identity fails.
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 | `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
 
+**Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
+re-exports each one (`sdk.PermissionAuditReadCross`, the `tenants`,
+`volumepool`, `registration_config` and `credentials` families,
+`sdk.PermissionMVCCCompact`), and `TestSDK_CrossScopePermissions_AreComplete`
+compares that list with the registry, so a cross-scope permission added without
+an SDK name is a red test rather than a string a consumer has to restate.
+
+**A denial is a type, and only a denial is.** The RBAC authorizer answers a
+refused grant or a failed scope with `*rbac.PermissionDeniedError`, re-exported
+as `sdk.PermissionDeniedError`. Every other error from `Authorize` — a role the
+store cannot resolve, a cancelled context — means the authorizer could not
+decide, and a consumer tells the two apart with `errors.As` instead of reading
+every error as a denial.
+
 **Choose by asking whose material the permission acts on, not who usually calls
 it.** `ScopeTenantOnly` means *"tenant-admin-only, system-admin-denied, no
 cross-tenant"*, and it exists for material held **on a tenant's behalf** — the
