@@ -15,12 +15,13 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, FactorPolicy, HolderRole, QuorumDomain, QuorumRound } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
+  import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
 
   let { client, onReconfigure }: {
     client: Client;
@@ -59,15 +60,6 @@
   // Rekey / revocation state. Opening a round needs RBAC and the SO PIN; a
   // quorum of current holders completes it from the CLI or the desktop app.
   let showRekeyPanel: boolean = $state(false);
-  let rekeyDomain: QuorumDomain = $state("unseal");
-  let rekeyThreshold: number = $state(2);
-  let rekeyPolicy: FactorPolicy = $state("designated");
-  let revokeUsername: string = $state("");
-  let revokeThreshold: number = $state(0);
-  let rekeySoPin: string = $state("");
-  let rekeyLoading: boolean = $state(false);
-  /** The round the last rekey or revocation opened. */
-  let openRound = $state<QuorumRound | null>(null);
 
   // ---------------------------------------------------------------------------
   // Recovery holders panel state
@@ -471,50 +463,6 @@
     a.download = "recovery-officer-cert.pem";
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  /** Opens a rekey round on the chosen domain. */
-  async function handleStartRekey(): Promise<void> {
-    try {
-      rekeyLoading = true;
-      openRound = await client.officers.startRekey({
-        domain: rekeyDomain,
-        threshold: rekeyThreshold,
-        policy: rekeyPolicy,
-        ...(rekeySoPin === "" ? {} : { soPin: rekeySoPin }),
-      });
-      rekeySoPin = "";
-      showToast("success", `Rekey round opened: ${openRound.required} holders must submit`);
-    } catch (err: unknown) {
-      showToast("error", err instanceof Error ? err.message : "Failed to start the rekey");
-    } finally {
-      rekeyLoading = false;
-    }
-  }
-
-  /** Revokes a holder: opens a rekey round that removes it. */
-  async function handleRevokeHolder(): Promise<void> {
-    const username = revokeUsername.trim();
-    if (username === "") {
-      showToast("warning", "The holder to revoke is required");
-      return;
-    }
-    try {
-      rekeyLoading = true;
-      openRound = await client.officers.revokeOfficer({
-        domain: rekeyDomain,
-        username,
-        ...(revokeThreshold > 0 ? { threshold: revokeThreshold } : {}),
-        ...(rekeySoPin === "" ? {} : { soPin: rekeySoPin }),
-      });
-      rekeySoPin = "";
-      revokeUsername = "";
-      showToast("success", `Revocation of ${username} opened: ${openRound.required} holders must submit`);
-    } catch (err: unknown) {
-      showToast("error", err instanceof Error ? err.message : "Failed to revoke the holder");
-    } finally {
-      rekeyLoading = false;
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1312,94 +1260,23 @@
 
         <!-- Rekey / revoke -->
         {#if showRekeyPanel}
-          <div class="mt-4 space-y-3 border-t border-base-300 pt-4" data-testid="rekey-panel">
-            <h3 class="font-semibold text-sm">Rekey or Revoke</h3>
-            <p class="text-base-content/60 text-xs">
-              Opening a round needs the SO PIN. A quorum of the current holders
-              completes it (<span class="font-mono">qrdb barrier quorum submit --op rekey</span>);
-              each holder in the new share set then claims a new envelope.
-            </p>
-
-            <div class="grid grid-cols-2 gap-4">
-              <div class="form-control">
-                <label class="label" for="rekey-domain">
-                  <span class="label-text text-xs">Domain</span>
-                </label>
-                <select id="rekey-domain" class="select select-bordered select-sm" bind:value={rekeyDomain}>
-                  <option value="unseal">Unseal</option>
-                  <option value="recovery">Recovery</option>
-                </select>
-              </div>
-              <div class="form-control">
-                <label class="label" for="rekey-so-pin">
-                  <span class="label-text text-xs">SO PIN</span>
-                </label>
-                <input id="rekey-so-pin" type="password" class="input input-bordered input-sm" bind:value={rekeySoPin} />
-              </div>
-            </div>
-
-            <div class="grid grid-cols-3 items-end gap-4">
-              <div class="form-control">
-                <label class="label" for="rekey-threshold">
-                  <span class="label-text text-xs">New threshold</span>
-                </label>
-                <input id="rekey-threshold" type="number" min="2" class="input input-bordered input-sm" bind:value={rekeyThreshold} />
-              </div>
-              <div class="form-control">
-                <label class="label" for="rekey-policy">
-                  <span class="label-text text-xs">Factor policy</span>
-                </label>
-                <select id="rekey-policy" class="select select-bordered select-sm" bind:value={rekeyPolicy}>
-                  <option value="designated">Designated factor</option>
-                  <option value="any-enrolled">Any enrolled factor</option>
-                </select>
-              </div>
-              <button
-                class="btn btn-primary btn-sm"
-                onclick={() => void handleStartRekey()}
-                disabled={rekeyLoading || rekeyThreshold < 2}
-                data-testid="start-rekey-btn"
-              >
-                Start Rekey
-              </button>
-            </div>
-
-            <div class="grid grid-cols-3 items-end gap-4">
-              <div class="form-control">
-                <label class="label" for="revoke-username">
-                  <span class="label-text text-xs">Holder to revoke</span>
-                </label>
-                <input id="revoke-username" type="text" class="input input-bordered input-sm" bind:value={revokeUsername} />
-              </div>
-              <div class="form-control">
-                <label class="label" for="revoke-threshold">
-                  <span class="label-text text-xs">New threshold (0 keeps it)</span>
-                </label>
-                <input id="revoke-threshold" type="number" min="0" class="input input-bordered input-sm" bind:value={revokeThreshold} />
-              </div>
-              <button
-                class="btn btn-error btn-sm"
-                onclick={() => void handleRevokeHolder()}
-                disabled={rekeyLoading || revokeUsername.trim() === ""}
-                data-testid="revoke-holder-btn"
-              >
-                Revoke
-              </button>
-            </div>
-
-            {#if openRound !== null}
-              <div role="status" class="alert alert-info py-2 text-xs" data-testid="open-round">
-                <Info class="h-3 w-3 shrink-0" />
-                <span>
-                  Open {openRound.op} round on the {openRound.domain} domain:
-                  {openRound.submitted} of {openRound.required} submissions,
-                  expires {new Date(openRound.expiresAt).toLocaleString()}.
-                  {#if openRound.remove && openRound.remove.length > 0}
-                    Removes {openRound.remove.join(", ")}.
-                  {/if}
-                </span>
-              </div>
-            {/if}
+          <div class="mt-4 border-t border-base-300 pt-4">
+            <HolderRekeyPanel
+              systemScope
+              submitCommand="qrdb barrier quorum submit --op rekey"
+              onStartRekey={(r) => client.officers.startRekey({
+                domain: r.domain,
+                threshold: r.threshold,
+                policy: r.policy,
+                ...(r.soPin === "" ? {} : { soPin: r.soPin }),
+              })}
+              onRevoke={(r) => client.officers.revokeOfficer({
+                domain: r.domain,
+                username: r.username,
+                ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
+                ...(r.soPin === "" ? {} : { soPin: r.soPin }),
+              })}
+            />
           </div>
         {/if}
       </div>

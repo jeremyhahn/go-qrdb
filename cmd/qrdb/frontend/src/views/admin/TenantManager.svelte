@@ -38,10 +38,13 @@
     Lock,
     Info,
     CheckCircle,
+    Users,
+    RefreshCw,
   } from "lucide-svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
+  import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
   import TenantDetail from "./TenantDetail.svelte";
 
   let { client }: { client: Client } = $props();
@@ -148,6 +151,41 @@
   // Holder claim status for the tenant barrier after Shamir init.
   let tenantOfficerStatuses = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
   let tenantOfficerStatusLoading: boolean = $state(false);
+
+  // Per-tenant share-holder panel: the holders of a Shamir tenant barrier, and
+  // rekey and revocation rounds on it. A quorum of the current holders
+  // completes a round from the CLI or the desktop app.
+  let showHoldersPanel: boolean = $state(false);
+  let holdersTenantId: string = $state("");
+  let holders = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
+  let holdersLoading: boolean = $state(false);
+
+  /** Opens the share-holder panel for a tenant. */
+  function handleHolders(tenantId: string): void {
+    holdersTenantId = tenantId;
+    holders = [];
+    showHoldersPanel = true;
+    void fetchHolders(tenantId);
+  }
+
+  /** Closes the share-holder panel. */
+  function handleCloseHolders(): void {
+    showHoldersPanel = false;
+    holdersTenantId = "";
+    holders = [];
+  }
+
+  /** Lists the tenant barrier's share holders. */
+  async function fetchHolders(tenantId: string): Promise<void> {
+    try {
+      holdersLoading = true;
+      holders = await client.officers.listTenantOfficers(tenantId);
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : "Failed to list the tenant's share holders");
+    } finally {
+      holdersLoading = false;
+    }
+  }
 
   // Per-tenant unseal state. A passphrase barrier is unsealed here; a Shamir
   // barrier opens through a quorum of its holders, who submit from the CLI
@@ -1011,6 +1049,90 @@
     </div>
   </div>
 
+{:else if showHoldersPanel}
+  <!-- Per-tenant share-holder panel -->
+  <div class="flex flex-col gap-6" data-testid="tenant-holders-panel">
+    <div class="flex items-center gap-3">
+      <button class="btn btn-ghost btn-sm" onclick={handleCloseHolders}>
+        <ChevronLeft class="h-4 w-4" />
+        Back
+      </button>
+      <h2 class="text-lg font-semibold">Share Holders — {holdersTenantId}</h2>
+    </div>
+
+    <div class="card bg-base-200 w-full max-w-3xl shadow">
+      <div class="card-body gap-4">
+        <div class="flex items-center justify-between">
+          <p class="text-base-content/70 text-sm">
+            The holders of this tenant's Shamir barrier. Each holds one share of
+            the unseal key and claims and submits from the qrdb CLI or the
+            desktop app.
+          </p>
+          <button
+            class="btn btn-ghost btn-sm gap-1"
+            onclick={() => void fetchHolders(holdersTenantId)}
+            disabled={holdersLoading}
+            aria-label="Refresh share holders"
+          >
+            <RefreshCw class={`h-4 w-4 ${holdersLoading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+
+        {#if holdersLoading && holders.length === 0}
+          <div class="flex justify-center py-4">
+            <span class="loading loading-spinner loading-sm"></span>
+          </div>
+        {:else if holders.length === 0}
+          <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60">
+            No share holders enrolled.
+          </div>
+        {:else}
+          <div class="overflow-x-auto">
+            <table class="table table-sm" data-testid="tenant-holders-table">
+              <thead>
+                <tr>
+                  <th>Holder</th>
+                  <th>Role</th>
+                  <th>Share #</th>
+                  <th>Claim</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each holders as holder (holder.username)}
+                  <tr>
+                    <td class="font-mono text-sm">{holder.username}</td>
+                    <td class="text-xs">{holder.role}</td>
+                    <td class="text-center">{holder.shareIndex}</td>
+                    <td class="text-xs">
+                      {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+        <div class="border-t border-base-300 pt-4">
+          <HolderRekeyPanel
+            submitCommand="qrdb tenant barrier-quorum submit --op rekey"
+            onStartRekey={(r) => client.officers.startTenantRekey({
+              tenantId: holdersTenantId,
+              threshold: r.threshold,
+              policy: r.policy,
+            })}
+            onRevoke={(r) => client.officers.revokeTenantOfficer({
+              tenantId: holdersTenantId,
+              username: r.username,
+              ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
+            })}
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+
 {:else if showUnsealForm}
   <!-- Per-tenant unseal panel -->
   <div class="flex flex-col gap-6">
@@ -1283,6 +1405,15 @@
                 >
                   <ShieldCheck class="h-4 w-4" />
                   Init Barrier
+                </button>
+                <button
+                  class="btn btn-outline btn-sm"
+                  data-testid="tenant-holders-btn-{tenant.id}"
+                  title="Share holders of tenant {tenant.id}'s Shamir barrier: list them, and open rekey and revocation rounds."
+                  onclick={() => handleHolders(tenant.id)}
+                >
+                  <Users class="h-4 w-4" />
+                  Holders
                 </button>
                 <button
                   class="btn btn-outline btn-sm"
