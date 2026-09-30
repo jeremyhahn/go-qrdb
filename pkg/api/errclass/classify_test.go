@@ -160,13 +160,13 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 	}
 }
 
-type selfClassed struct{}
+type selfClassedError struct{}
 
-func (selfClassed) Error() string     { return "self" }
-func (selfClassed) ErrorClass() Class { return Gone }
+func (selfClassedError) Error() string     { return "self" }
+func (selfClassedError) ErrorClass() Class { return Gone }
 
 func TestClassify_HonoursClassed(t *testing.T) {
-	if got := Classify(wrapped{selfClassed{}}); got != Gone {
+	if got := Classify(wrapped{selfClassedError{}}); got != Gone {
 		t.Errorf("got %s, want gone", got)
 	}
 }

@@ -45,7 +45,7 @@ func TestHandleTenantReconcileDeleted_PartialFailureCarriesBoth(t *testing.T) {
 		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
 		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
 	}
-	agg := &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
+	agg := &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
 	handler := handleTenantReconcileDeleted(failingMCPDeletedSvc{report: report, err: agg})
 	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_tenant_reconcile_deleted", nil))
 	if err != nil || result.IsError {

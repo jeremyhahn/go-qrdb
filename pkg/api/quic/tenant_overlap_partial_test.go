@@ -46,7 +46,7 @@ func TestHandleTenantReconcileDeleted_PartialFailureCarriesBoth(t *testing.T) {
 		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
 		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
 	}
-	agg := &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
+	agg := &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(failingQUICDeletedSvc{report: report, err: agg}))
 	raw, err := srv.handleTenantReconcileDeleted(context.Background(), nil)
 	if err != nil {

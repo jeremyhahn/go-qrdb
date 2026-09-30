@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"time"
@@ -240,7 +241,13 @@ func (m *AuthMiddleware) checkPeerAttestation(ctx context.Context, identity *aut
 	if gerr == nil {
 		return nil
 	}
-	refusal, _ := gerr.(*PeerAttestationRefusedError)
+	var refusal *PeerAttestationRefusedError
+	if !errors.As(gerr, &refusal) {
+		// check only ever returns a refusal. Anything else is still a denial,
+		// returned as it is rather than logged and audited as a refusal it
+		// is not.
+		return gerr
+	}
 	level := slog.LevelWarn
 	if refusal.SecurityRelevant {
 		level = slog.LevelError

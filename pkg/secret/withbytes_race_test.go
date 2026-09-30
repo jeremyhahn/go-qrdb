@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
@@ -120,11 +121,11 @@ func runWithBytesRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with WithBytes' callback: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with WithBytes' callback: remaining=%d\n", remaining)
 
 	if err := <-done; err != nil {
 		fail("WithBytes callback failed: %v", err)
 	}
 
-	fmt.Println("PASS: WithBytes' callback observed the uncorrupted plaintext throughout")
+	fmt.Fprintln(os.Stdout, "PASS: WithBytes' callback observed the uncorrupted plaintext throughout")
 }

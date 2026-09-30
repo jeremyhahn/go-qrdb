@@ -119,12 +119,12 @@ type partialReconcileCLISvc struct {
 func (partialReconcileCLISvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
 	boom := errors.New("device busy")
 	return &tenant.ReconcileReport{
-			Inspected: 2,
-			Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
-			Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
-		}, &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{
-			{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
-		}}
+		Inspected: 2,
+		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
+		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
+	}, &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{
+		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
+	}}
 }
 
 // TestTenantReconcileDeletedCmd_PartialFailurePrintsTheReportAndFails: what

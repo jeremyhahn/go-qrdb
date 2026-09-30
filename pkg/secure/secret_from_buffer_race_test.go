@@ -130,7 +130,7 @@ func runSecretFromBufferRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with NewSecretFromBuffer's seal: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with NewSecretFromBuffer's seal: remaining=%d\n", remaining)
 
 	result := <-done
 	if result.err != nil {
@@ -155,5 +155,5 @@ func runSecretFromBufferRaceChild() {
 		fail("sealed content = %q, want %q", opened.Bytes(), want)
 	}
 
-	fmt.Println("PASS: NewSecretFromBuffer observed the uncorrupted plaintext throughout sealing")
+	fmt.Fprintln(os.Stdout, "PASS: NewSecretFromBuffer observed the uncorrupted plaintext throughout sealing")
 }

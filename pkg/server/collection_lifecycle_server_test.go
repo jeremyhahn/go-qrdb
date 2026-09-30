@@ -223,6 +223,7 @@ func TestServer_CollectionSweepTargets_TenantsAndDatabases(t *testing.T) {
 		t.Fatalf("targets = %v, want %v", got, want)
 	}
 	for i := range want {
+		// #nosec G602 -- the lengths are compared equal above, and i ranges over want.
 		if got[i] != want[i] {
 			t.Fatalf("targets = %v, want %v", got, want)
 		}

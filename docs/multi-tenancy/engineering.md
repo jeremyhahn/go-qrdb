@@ -581,7 +581,7 @@ listing the tombstones, reading the live set (including the re-read) — aborts
 the pass with `*ResidueReconcileError{TenantID, Op, Path}`, because nothing can
 be judged without it. A **per-id** failure — a removal, stopping the runtime,
 dropping the records — is collected and the pass continues with the next id;
-the pass then returns its report together with `*ResidueReconcileErrors`,
+the pass then returns its report together with `*ResidueReconcileFailuresError`,
 whose `Unwrap() []error` exposes each `*ResidueReconcileError`; the report
 carries the same failures as `Failed []FailedReclaim`. Every transport asks
 `tenant.ReconcileResponseError(report, err)` what to answer: nil when the

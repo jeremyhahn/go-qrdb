@@ -14,7 +14,11 @@
 
 package errclass
 
-// Condition is one sample of one table row, as the parity test sees it.
+// Condition is one sample of one classification rule: an error the rule must
+// recognise, and the class it assigns. The rules carry their own samples, so
+// Conditions is the whole table in a form a cross-package conformance check
+// can iterate -- in particular the transport parity test, which has to live
+// outside this package because every transport imports it.
 type Condition struct {
 	// Row is the rule's name: the type or sentinel it recognises.
 	Row string
@@ -24,10 +28,10 @@ type Condition struct {
 	Want Class
 }
 
-// Conditions lists every sample of every row, in table order.
+// Conditions lists every sample of every rule, in table order.
 //
-// Want is read from the row itself rather than from Classify, so a row that
-// an earlier row shadows shows up as a disagreement instead of agreeing with
+// Want is read from the rule itself rather than from Classify, so a rule that
+// an earlier rule shadows shows up as a disagreement instead of agreeing with
 // its own shadow.
 func Conditions() []Condition {
 	var out []Condition
@@ -40,5 +44,6 @@ func Conditions() []Condition {
 	return out
 }
 
-// RuleCount reports how many rows the table has, for the discovery floor.
+// RuleCount reports how many rules the table has, so a caller iterating
+// Conditions can hold a discovery floor.
 func RuleCount() int { return len(rules) }

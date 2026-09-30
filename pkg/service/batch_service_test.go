@@ -399,7 +399,6 @@ func TestBatchService_Execute_ResponseCountMatchesOpsCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBatchService_translateProposeError_NotLeaderError(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       33,
 		LeaderID:      7,
@@ -436,7 +435,6 @@ func TestBatchService_translateProposeError_GenericError(t *testing.T) {
 }
 
 func TestBatchService_translateProposeError_NotLeaderUnknownLeader(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       20,
 		LeaderID:      0,
@@ -459,7 +457,6 @@ func TestBatchService_translateProposeError_NotLeaderUnknownLeader(t *testing.T)
 }
 
 func TestBatchService_translateProposeError_WrappedNotLeaderError(t *testing.T) {
-
 	// errors.As traverses the chain, so wrapping should still match.
 	inner := &quicraft.NotLeaderError{
 		ShardID:       15,

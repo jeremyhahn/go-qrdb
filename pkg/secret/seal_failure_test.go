@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
@@ -164,5 +165,5 @@ func runSealFailureChild() {
 		fail("JSON encoding of SealFailedError carries the plaintext secret: %s", encoded)
 	}
 
-	fmt.Println("PASS: sealing failure returned *SealFailedError, not a silently empty SecretValue")
+	fmt.Fprintln(os.Stdout, "PASS: sealing failure returned *SealFailedError, not a silently empty SecretValue")
 }

@@ -289,7 +289,7 @@ type ReconcileReport struct {
 	// Skipped lists what was left in place.
 	Skipped []SkippedPath `json:"skipped,omitempty"`
 	// Failed lists the retired ids the pass could not fully reclaim. It is
-	// the report's copy of the *ResidueReconcileErrors the pass returns with
+	// the report's copy of the *ResidueReconcileFailuresError the pass returns with
 	// it, so a transport can answer with one response carrying both what was
 	// done and what was not.
 	Failed []FailedReclaim `json:"failed,omitempty"`
@@ -314,7 +314,7 @@ type FailedReclaim struct {
 // tells the caller what was not reclaimed. Any other error -- a guard that
 // could not be read -- is returned as is.
 func ReconcileResponseError(report *ReconcileReport, err error) error {
-	var agg *ResidueReconcileErrors
+	var agg *ResidueReconcileFailuresError
 	if err == nil || (report != nil && errors.As(err, &agg) && len(report.Failed) == len(agg.Errors)) {
 		return nil
 	}
@@ -349,7 +349,7 @@ type residueGuards struct {
 // reading the live set -- aborts the pass, because nothing can be judged
 // without them. A failure for ONE id -- a removal, stopping its runtime,
 // dropping its records -- is collected and the pass goes on to the next id;
-// the pass then returns its report together with *ResidueReconcileErrors. An
+// the pass then returns its report together with *ResidueReconcileFailuresError. An
 // id whose removal failed keeps its records, so the next pass finds the
 // directory again. Every step is idempotent.
 func (s *TenantService) ReconcileDeletedTenants(ctx context.Context) (*ReconcileReport, error) {
@@ -385,7 +385,7 @@ func (s *TenantService) ReconcileDeletedTenants(ctx context.Context) (*Reconcile
 		for _, f := range failed {
 			report.Failed = append(report.Failed, FailedReclaim{TenantID: f.TenantID, Op: f.Op, Path: f.Path, Error: f.Err.Error()})
 		}
-		return report, &ResidueReconcileErrors{Errors: failed}
+		return report, &ResidueReconcileFailuresError{Errors: failed}
 	}
 	return report, nil
 }

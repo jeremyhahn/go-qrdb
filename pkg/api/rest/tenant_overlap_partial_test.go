@@ -46,7 +46,7 @@ func TestHandleReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
 		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
 		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
 	}
-	agg := &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
+	agg := &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom}}}
 	srv := newTenantServer(failingRESTDeletedSvc{report: report, err: agg})
 
 	rec := httptest.NewRecorder()

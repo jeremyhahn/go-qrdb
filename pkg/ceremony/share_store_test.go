@@ -342,7 +342,7 @@ func runShareStoreWipeAllChild() {
 		fail("a failed claim marked the share consumed — the custodian holds " +
 			"nothing and the store will never hand it over again")
 	}
-	fmt.Println("PASS: claim after WipeAll refused and did not consume the share")
+	fmt.Fprintln(os.Stdout, "PASS: claim after WipeAll refused and did not consume the share")
 }
 
 // emptyBorrow is a borrow that yields no bytes — the shape a process-wide

@@ -157,6 +157,7 @@ func runConcurrentCRUD(q *quotaCollectionService, strategy string, workers int, 
 		wg.Add(1)
 		go func(seed int64) {
 			defer wg.Done()
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			r := rand.New(rand.NewSource(seed))
 			for i := 0; i < 300; i++ {
 				id := uint64(r.Intn(4) + 1)

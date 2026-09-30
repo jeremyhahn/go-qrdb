@@ -554,7 +554,6 @@ func TestTimeSeriesService_Aggregate_UnexpectedResultType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTimeSeriesService_translateProposeError_NotLeader(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      2,

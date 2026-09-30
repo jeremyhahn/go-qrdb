@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -137,7 +138,7 @@ func runCopyEnclaveRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with copyEnclaveToBuffer's held copy: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with copyEnclaveToBuffer's held copy: remaining=%d\n", remaining)
 
 	result := <-done
 	if result.err != nil {
@@ -150,5 +151,5 @@ func runCopyEnclaveRaceChild() {
 			"the destination's pages were mutated or unmapped out from under the copy", got, want)
 	}
 
-	fmt.Println("PASS: copyEnclaveToBuffer observed the uncorrupted plaintext throughout")
+	fmt.Fprintln(os.Stdout, "PASS: copyEnclaveToBuffer observed the uncorrupted plaintext throughout")
 }

@@ -345,6 +345,13 @@ are not reconstructed here — their history is in the git log.
   retries it. Tests trigger the reaper with explicit ticks instead of sleeping
   on the wall clock. Five consecutive runs produced identical profiles at
   97.75%; only two unreachable panic guards are uncovered.
+- **BREAKING: `tenant.ResidueReconcileErrors` is renamed
+  `tenant.ResidueReconcileFailuresError`**, to follow the `XxxError` naming
+  every other error type here uses (errname). Its fields, message and
+  `Unwrap() []error` are unchanged. `errclass.Conditions`, `errclass.Condition`
+  and `errclass.RuleCount` move out of a test-only `export_test.go` into the
+  package proper, so gosec's `-tests` loader can typecheck the transport
+  parity test that reads them.
 
 ### Removed
 

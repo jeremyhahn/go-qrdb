@@ -136,7 +136,7 @@ func runStdinProviderRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with the passphrase read: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with the passphrase read: remaining=%d\n", remaining)
 
 	result := <-done
 	if result.err != nil {
@@ -149,5 +149,5 @@ func runStdinProviderRaceChild() {
 			"scratch's pages were mutated or unmapped out from under the read", got, want)
 	}
 
-	fmt.Println("PASS: StdinProvider.Passphrase observed the uncorrupted input throughout the read")
+	fmt.Fprintln(os.Stdout, "PASS: StdinProvider.Passphrase observed the uncorrupted input throughout the read")
 }
