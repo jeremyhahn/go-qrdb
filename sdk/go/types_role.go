@@ -156,7 +156,7 @@ type RetiredPermissionError = role.RetiredPermissionError
 var RetiredPermissions = role.RetiredPermissions
 
 // IsSystemRoleName reports whether a role name is one of the canonical system
-// role names — the six FIPS 140-3 / PCI-DSS roles or Owner.
+// role names — the five FIPS 140-3 / PCI-DSS roles or Owner.
 //
 // It is the same predicate the role store uses to decide the System flag, so a
 // consumer can tell BEFORE issuing a create, rename, or delete whether the
@@ -179,8 +179,6 @@ const (
 	RoleNameUser = role.RoleNameUser
 	// RoleNameAuditor is the read-only Auditor role name.
 	RoleNameAuditor = role.RoleNameAuditor
-	// RoleNameCustodian is the Shamir share-holder role name.
-	RoleNameCustodian = role.RoleNameCustodian
 	// RoleNameOwner is the standard-posture superuser role name.
 	RoleNameOwner = role.RoleNameOwner
 )

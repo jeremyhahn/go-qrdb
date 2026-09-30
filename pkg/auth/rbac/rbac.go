@@ -189,7 +189,7 @@ type RBACAuthorizer struct {
 	// are stripped from every identity before permission resolution. This is
 	// defense-in-depth — even if a role store was bootstrapped under the
 	// standard posture and assigned Owner to the admin, a strict (FIPS 140-3
-	// / auth.separation_of_duties) authorizer never honors it. The six
+	// / auth.separation_of_duties) authorizer never honors it. The five
 	// canonical roles are unaffected.
 	strictSoD bool
 

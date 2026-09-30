@@ -44,7 +44,7 @@ You can supply everything through the environment instead —
 ```bash
 qrdb ceremony status      # operational (single-admin) or enrolling (M-of-N)
 qrdb barrier status
-qrdb roles list           # SO, Admin, Operator, User, Auditor, Custodian
+qrdb roles list           # SO, Admin, Operator, User, Auditor
 qrdb users list           # the admin user
 ```
 
@@ -53,7 +53,7 @@ certificate and share — see [../ceremony/user.md](../ceremony/user.md).
 
 ## What you get
 
-Six built-in roles, created with stable identifiers so they mean the same thing
+Five built-in roles, created with stable identifiers so they mean the same thing
 on every node and after every restart:
 
 | Role | For |
@@ -63,7 +63,10 @@ on every node and after every restart:
 | Operator | routine operations, including seal and unseal |
 | User | crypto operations only |
 | Auditor | read-only everywhere |
-| Custodian | holding a Shamir share, nothing else |
+
+A key custodian — a Shamir share holder — is not a role: it is enrolled in the
+holder roster and authenticates with its holder certificate and factors. See
+[../shamir-custody/](../shamir-custody/).
 
 Plus an admin user for the system tenant, and a data directory containing
 `ca.pem`, the server certificate and key, the admin client certificate, the

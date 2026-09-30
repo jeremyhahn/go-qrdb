@@ -214,12 +214,12 @@ func (s *kvRoleStore) ReconcileBuiltInRoles(ctx context.Context, tenantID string
 }
 
 // reconcilableRoles returns the roles ReconcileBuiltInRoles considers, in
-// report order: the six canonical built-ins, then Owner.
+// report order: the five canonical built-ins, then Owner.
 //
 // Owner is included because it drifts for the same reason — its grant is
 // permission.All(), so every permission a build adds or retires changes it —
 // and IsSystemRoleName covers it, which means UpdateRole refuses to repair it
-// exactly as it refuses the other six. It is NOT created when absent (see
+// exactly as it refuses the other five. It is NOT created when absent (see
 // reconcileRole): Owner is provisioned only under the standard RBAC posture,
 // so seeding it into a tenant that does not hold it would hand a strict
 // separation-of-duties deployment a superuser role reconciliation was never

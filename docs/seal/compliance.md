@@ -57,7 +57,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 
 | Requirement ID | Requirement | go-qrdb Capability | Phase | File |
 |---|---|---|---|---|
-| **AS10.03** | Roles, Services, and Authentication | Six-role model (SO, Admin, Operator, User, Auditor, Custodian); SO governance-only; RBAC with explicit deny-lists | 2 | `docs/auth/roles.md`, `pkg/role/`, `pkg/auth/rbac/` |
+| **AS10.03** | Roles, Services, and Authentication | Five-role model (SO, Admin, Operator, User, Auditor); SO governance-only; RBAC with explicit deny-lists | 2 | `docs/auth/roles.md`, `pkg/role/`, `pkg/auth/rbac/` |
 | **AS10.05** | Split Knowledge Procedure | Shamir M-of-N custody of the unseal key by named share holders (Security Officers and custodians); no single holder, operator or administrator ever holds a key or sees a share | 4 | `docs/shamir-custody/`, `pkg/seal/quorum.go`, `pkg/seal/holders.go` |
 | **AS10.06** | Dual Authorization Procedure | SO governance: mTLS + PIN; every share-gated operation (unseal, seal, root token, rekey, revocation) needs M distinct holders, each authenticated by an enrolled factor against the roster bound to the key | 4 | `pkg/auth/so_auth.go`, `pkg/seal/quorum.go`, `pkg/ceremony/holder_scope.go` |
 | **AS10.09** | Key Zeroization | go-enclave locked pages for material in use and sealed enclaves for material at rest in memory; byte-by-byte wipe on barrier seal; `defer Destroy()` on all secret operations | 1 (inherited from go-quicraft) | `go-enclave`, `pkg/seal/`, `pkg/secure/` |
@@ -73,7 +73,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 
 | Control | Requirement | go-qrdb Capability | Phase | File |
 |---|---|---|---|---|
-| **AC-6** | Least Privilege | Role-based access with six roles; explicit deny-lists; Custodian minimal-access tier | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/` |
+| **AC-6** | Least Privilege | Role-based access with five roles; explicit deny-lists; share holders hold no RBAC access | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/` |
 | **AC-3** | Access Enforcement | RBAC middleware on all API endpoints; permission-based denial; audit-logged denials | 2, 6 | `pkg/auth/middleware/`, `pkg/audit/` |
 | **IA-2** | Authentication (Enhanced) | mTLS certificates; SO dual-factor (PIN via `pkg/pin.PINBackend`); challenge-response for Custodian (FIDO2, PIV, PKCS#11 implementations injected from go-xkms via `WithFactorRegistry`) | 3, 4 | `pkg/cert/`, `pkg/authfactors/`, `pkg/pin/` |
 | **IA-5** | Password Policy | SO PIN not stored (verified against HSM or hash-commit); User PIN configurable length/complexity | 2, 4 | `pkg/auth/so_auth.go`, `pkg/auth/pin_policy.go` |

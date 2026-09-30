@@ -333,7 +333,7 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 // concurrent, identical built-in role's create should be treated as
 // success: that determination requires comparing the existing record's full
 // definition against a KNOWN-GOOD one, which only the caller minting that
-// definition (pkg/firstboot, for the six built-in roles) can do honestly.
+// definition (pkg/firstboot, for the five built-in roles) can do honestly.
 // Doing it here would let ANY caller holding roles:create adopt another
 // tenant's or another actor's in-flight custom role by supplying its exact
 // name and a guessed id — the provenance problem an earlier version of this
@@ -644,8 +644,7 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	// docs/firstboot/architecture.md repeats it as a deliberate non-goal. The
 	// code never enforced either half.
 	//
-	// It matters more than the name guard: granting the custodian role
-	// anything, or widening Auditor past read-only,
+	// It matters more than the name guard: widening Auditor past read-only,
 	// changes the compliance posture (FIPS 140-3 AS10.03/AS10.06/AS10.10)
 	// while the record still presents as a canonical system role to anything
 	// that inspects it.
@@ -895,8 +894,12 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 //  3. Operator — routine crypto and maintenance
 //  4. User — end-user cryptographic operations
 //  5. Auditor — read-only audit and state visibility
-//  6. Custodian — retained so persisted role references resolve; it grants
-//     nothing (see custodianPermissions)
+//
+// There is no custodian role. A key custodian is a share holder, and a share
+// holder is not an RBAC principal: it authenticates with its CA-issued holder
+// certificate and an enrolled factor, every holder operation is
+// identity-gated, and RBAC refuses a holder identity everything (FIPS 140-3
+// AS10.06).
 func BuiltInRoles(tenantID string) []*Role {
 	if tenantID == "" {
 		tenantID = tenantid.System
@@ -950,15 +953,6 @@ func BuiltInRoles(tenantID string) []*Role {
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		},
-		{
-			ID:          SystemRoleID(tenantID, RoleNameCustodian),
-			Name:        RoleNameCustodian,
-			TenantID:    tenantID,
-			Permissions: custodianPermissions(),
-			System:      true,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		},
 	}
 }
 
@@ -985,7 +979,7 @@ var systemRoleNames = sync.OnceValue(func() map[string]struct{} {
 	return names
 })
 
-// IsSystemRoleName reports whether name denotes a system role — one of the six
+// IsSystemRoleName reports whether name denotes a system role — one of the five
 // canonical FIPS 140-3 / PCI-DSS roles or Owner.
 //
 // This is the sole authority for the Role.System flag: CreateRole DERIVES the
@@ -1045,7 +1039,7 @@ func canonicalSystemRole(tenantID, name string) *Role {
 //
 // Both halves of the identity are checked because docs/firstboot/architecture.md
 // makes both normative: each built-in "gets a fixed UUIDv8 (SHA-256) derived
-// from its name, so role identity is stable across clusters", and "the six
+// from its name, so role identity is stable across clusters", and "the
 // built-in roles are fixed". Requiring the id alone would still admit a
 // canonical-id role carrying arbitrary grants.
 //
@@ -1199,17 +1193,6 @@ func deterministicUUID(tenantID, name string) string {
 	u[6] = (u[6] & 0x0f) | 0x80 // version 8
 	u[8] = (u[8] & 0x3f) | 0x80 // RFC 9562 variant (10xx)
 	return u.String()
-}
-
-// custodianPermissions returns the permission set for the Custodian built-in
-// role: none. A key custodian is a share holder, and a share holder is not an
-// RBAC principal — it authenticates with its CA-issued holder certificate and
-// an enrolled factor, every holder operation is identity-gated, and RBAC
-// refuses a holder identity everything (FIPS 140-3 AS10.06). The role is kept
-// so persisted role references resolve; role reconciliation strips the
-// retired share permissions it used to carry.
-func custodianPermissions() []permission.Permission {
-	return []permission.Permission{}
 }
 
 // validatePermissions checks that every permission in the slice is either

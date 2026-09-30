@@ -495,7 +495,7 @@ The Tenants admin view lets the **tenant admin choose the barrier strategy** —
 
 ## Compliance Documentation
 
-- **[../auth/roles.md](../auth/roles.md)** — Six-role model (SO, Admin, Operator, User, Auditor, Custodian) with FIPS 140-3 AS10.03 separation of duties
+- **[../auth/roles.md](../auth/roles.md)** — Five-role model (SO, Admin, Operator, User, Auditor) with FIPS 140-3 AS10.03 separation of duties
 - **[compliance.md](compliance.md)** — FIPS 140-3, FedRAMP, PCI-DSS v4, HIPAA requirement cross-reference
 - **[shamir-custody](../shamir-custody/)** — share holders, the two domains (unseal and recovery), envelope delivery and the authenticated quorum
 

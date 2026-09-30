@@ -902,7 +902,7 @@ unchecked call panics rather than failing cleanly.
 - Users and roles live under the internal `__sys:` namespace, Raft-replicated,
   invisible to user KV enumeration.
 - Roles are at `__sys:role/<id>` with deterministic identifiers for the built-in
-  six: RFC 9562 §5.8 **UUIDv8 over SHA-256** of a fixed
+  five: RFC 9562 §5.8 **UUIDv8 over SHA-256** of a fixed
   `"go-qrdb:role-namespace/v8/"` prefix plus the length-framed tenant ID and
   role name (`pkg/role.SystemRoleID`).
 - User lookup by certificate thumbprint is a secondary index —

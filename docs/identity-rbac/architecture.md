@@ -332,7 +332,7 @@ grant that reads as live and is not.
 
 ## Built-in roles
 
-Six roles are bootstrapped by `firstboot.Initialize` with deterministic UUIDv8
+Five roles are bootstrapped by `firstboot.Initialize` with deterministic UUIDv8
 (SHA-256) identifiers, undeletable — see [../firstboot/](../firstboot/architecture.md) for
 the permission matrix. The load-bearing one is the **Security Officer's explicit
 denial of crypto operations**: governance and key use are different people, and
@@ -342,7 +342,7 @@ that is the FIPS 140-3 AS10.03 separation-of-duties control.
 
 A built-in role is immutable — `UpdateRole` refuses to replace its permission
 set and `DeleteRole` refuses to remove it — so that an operator cannot widen
-`auditor` or re-permission `custodian` by hand.
+`auditor` or re-permission `so` by hand.
 
 That invariant assumed nothing ever needed to rewrite a built-in's grants. The
 assumption expired the first time a permission was **renamed**. Roles are copied

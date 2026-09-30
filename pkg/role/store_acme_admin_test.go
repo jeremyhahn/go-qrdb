@@ -110,11 +110,11 @@ func TestBuiltInRoles_AuditorACMEAdminIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestBuiltInRoles_UserAndCustodianHaveNoACMEAdmin verifies the two least
-// privileged canonical roles reach none of the ACME administration surface.
-func TestBuiltInRoles_UserAndCustodianHaveNoACMEAdmin(t *testing.T) {
+// TestBuiltInRoles_UserHasNoACMEAdmin verifies the least privileged
+// canonical role reaches none of the ACME administration surface.
+func TestBuiltInRoles_UserHasNoACMEAdmin(t *testing.T) {
 	all := append(append([]permission.Permission{}, acmeAdminReadOnly...), acmeAdminMutating...)
-	for _, name := range []string{RoleNameUser, RoleNameCustodian} {
+	for _, name := range []string{RoleNameUser} {
 		set := permSetForRole(t, "acme-tenant", name)
 		for _, p := range all {
 			if _, ok := set[p]; ok {

@@ -1247,17 +1247,17 @@ func TestBuiltInRoles_Count(t *testing.T) {
 	// Auditor, Custodian. (No platform-admin role; that authority comes
 	// the canonical platform-admin pattern is Admin@system, gated by the
 	// system-tenant rule in pkg/auth/rbac.
-	if len(roles) != 6 {
+	if len(roles) != 5 {
 		t.Fatalf("BuiltInRoles: got %d roles, want 6", len(roles))
 	}
 }
 
 func TestBuiltInRoles_Names(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	// Canonical six-role FIPS 140-3 model.
+	// Canonical five-role FIPS 140-3 model.
 	expected := []string{
 		RoleNameSO, RoleNameAdmin, RoleNameOperator,
-		RoleNameUser, RoleNameAuditor, RoleNameCustodian,
+		RoleNameUser, RoleNameAuditor,
 	}
 	for i, name := range expected {
 		if roles[i].Name != name {
@@ -1646,21 +1646,6 @@ func TestBuiltInRoles_SOHasNoCryptoPerms(t *testing.T) {
 	}
 }
 
-// TestBuiltInRoles_CustodianGrantsNothing verifies that the Custodian role
-// carries no permission at all. A key custodian is a share holder, and a
-// share holder is not an RBAC principal: its operations are identity-gated
-// and RBAC refuses a holder identity everything (FIPS 140-3 AS10.06).
-func TestBuiltInRoles_CustodianGrantsNothing(t *testing.T) {
-	roles := BuiltInRoles("acme")
-	custodian := roleByName(roles, RoleNameCustodian)
-	if custodian == nil {
-		t.Fatal("custodian role not found")
-	}
-	if len(custodian.Permissions) != 0 {
-		t.Fatalf("custodian: expected no permissions, got %v", custodian.Permissions)
-	}
-}
-
 // TestBuiltInRoles_AuditorReadOnly verifies that the Auditor role has only
 // read, list, query, and stream permissions — no write or delete permissions.
 func TestBuiltInRoles_AuditorReadOnly(t *testing.T) {
@@ -1710,7 +1695,7 @@ func TestSystemRoleID_Deterministic(t *testing.T) {
 	tenant := "test-tenant"
 	roleNames := []string{
 		RoleNameSO, RoleNameAdmin, RoleNameOperator,
-		RoleNameUser, RoleNameAuditor, RoleNameCustodian,
+		RoleNameUser, RoleNameAuditor,
 	}
 
 	// Verify determinism: same output on repeated calls.
@@ -2072,13 +2057,11 @@ func TestBuiltInRoles_AuditorOrchestratorMetadataSlice(t *testing.T) {
 	}
 }
 
-// TestBuiltInRoles_SOAndCustodianHaveNoOrchestratorVerbs asserts the SO and
-// Custodian roles hold ZERO orchestrator verbs: SO is governance
-// crypto-denied and Custodian is Shamir-share-only (FIPS 140-3 AS10.03 /
-// AS10.06).
-func TestBuiltInRoles_SOAndCustodianHaveNoOrchestratorVerbs(t *testing.T) {
+// TestBuiltInRoles_SOHasNoOrchestratorVerbs asserts the SO role holds ZERO
+// orchestrator verbs: SO is governance, crypto-denied (FIPS 140-3 AS10.03).
+func TestBuiltInRoles_SOHasNoOrchestratorVerbs(t *testing.T) {
 	roles := BuiltInRoles("acme")
-	for _, name := range []string{RoleNameSO, RoleNameCustodian} {
+	for _, name := range []string{RoleNameSO} {
 		r := roleByName(roles, name)
 		if r == nil {
 			t.Fatalf("%s role not found", name)

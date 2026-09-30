@@ -9,9 +9,9 @@ Role definitions and enforced separation of duties for go-qrdb, aligned with FIP
 
 ## Overview
 
-go-qrdb implements a six-role model that enforces separation of duties between module initialization, cryptographic operations, and auditing. The critical design constraint is that the Security Officer (SO) role **cannot** perform cryptographic operations (sign, encrypt, decrypt). This prevents a single compromised identity from both managing the module infrastructure and using it for sensitive operations, meeting FIPS 140-3 AS10.03 and PCI-DSS v4 Req 7.1 separation-of-duties requirements.
+go-qrdb implements a five-role model that enforces separation of duties between module initialization, cryptographic operations, and auditing. The critical design constraint is that the Security Officer (SO) role **cannot** perform cryptographic operations (sign, encrypt, decrypt). This prevents a single compromised identity from both managing the module infrastructure and using it for sensitive operations, meeting FIPS 140-3 AS10.03 and PCI-DSS v4 Req 7.1 separation-of-duties requirements.
 
-Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct roles (Operator does maintenance; User is read-only crypto consumer) and adds Custodian as a separate tier for M-of-N unseal ceremonies, matching the xkms role architecture and the PKCS#11-extended two-role model.
+Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct roles (Operator does maintenance; User is read-only crypto consumer) matching the xkms role architecture and the PKCS#11-extended two-role model. Key custodians, who hold Shamir shares for M-of-N unseal ceremonies, are share holders rather than an RBAC role: see [Key custodians](#key-custodians).
 
 ## Roles
 
@@ -22,7 +22,6 @@ Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct r
 | Operator | Operator | Operational key use, routine maintenance, barrier seal/unseal (except share-claim). |
 | User | User | Cryptographic operations only (sign, encrypt, decrypt, verify). No key creation or deletion. |
 | Auditor | Auditor | Read-only access to audit logs and system state. Cannot modify. |
-| Custodian | Custodian | Shamir share holder. The role grants **no** permission: a holder's operations are identity-gated. |
 
 ## Role Details
 
@@ -110,7 +109,7 @@ Auditors have read-only access to audit logs, system state, and configuration. T
 
 **Guarantee:** Auditor role has no capability to delete or modify audit events. Audit trail integrity is enforced at the storage layer.
 
-### Custodian
+### Key custodians
 
 A key custodian holds one Shamir share of a barrier key, exactly as a Security
 Officer does, but carries no governance rights. Custodians and Security
@@ -118,101 +117,99 @@ Officers are both **share holders**: enrolled the same way, claiming their
 sealed envelopes the same way, and submitting their shares to the same
 authenticated quorum. See [../shamir-custody/](../shamir-custody/).
 
+A custodian is **not an RBAC role**, and there is no custodian role to assign.
+The holder role (`custodian` or `so`) is recorded in the holder roster at
+enrolment, by an Admin or a Security Officer (never by the holder), in the
+initialization ceremony or with `barrier officer register --role custodian`.
+
 **Authentication:** a CA-issued holder certificate in the SPIFFE holder
 namespace, plus the holder's enrolled factors: `mtls` (possession of the
 certificate key) and any factor the composer registered through
 `WithFactorRegistry` (FIDO2, PIV, PKCS#11 — go-xkms implementations). Every
 share submission carries a factor proof checked against the holder roster.
 
-**Assigned during:** enrolment by an Admin or a Security Officer (never by the
-holder), in the initialization ceremony or with `barrier officer register
---role custodian`.
-
 **Responsibilities:**
 - Claim their sealed envelope once and keep it
 - Take part in quorum rounds (unseal, seal, root token, rekey) when asked
 
-**Key constraint:** the Custodian role grants **no** RBAC permission. A holder
-identity is refused as a login identity; the holder routes are identity-gated
-and authorize the holder themselves. The role is retained so persisted role
-references resolve.
-
-**Authorization:** none.
+**Key constraint:** a holder identity is refused as a login identity; the
+holder routes are identity-gated and authorize the holder themselves, so a
+custodian holds no RBAC permission at all.
 
 ## FIPS 140-3 Role-to-Operation Matrix
 
 The following matrix defines which roles can perform each operation. This is enforced by the RBAC middleware on all API endpoints (REST, gRPC, MCP, QUIC, Unix socket).
 
 ```
-                                        SO    Admin  Operator  User  Auditor  Custodian
+                                        SO    Admin  Operator  User  Auditor
 BARRIER OPERATIONS
-  Initialize barrier                    YES   --     --        --    --       --
-  Seal barrier                          YES   YES    YES       --    --       --
-  Unseal barrier (master secret)        YES   YES    YES       --    --       --
-  Initialize Shamir custody             YES   --     --        --    --       --
-  Rotate barrier root key               YES   --     --        --    --       --
-  Start a rekey (quorum completes it)   YES   --     --        --    --       --
-  Enrol / revoke share holders          YES   YES    --        --    --       --
-  Generate recovery keys                YES   --     --        --    --       --
-  Barrier status                        YES   YES    YES       --    --       --
+  Initialize barrier                    YES   --     --        --    --
+  Seal barrier                          YES   YES    YES       --    --
+  Unseal barrier (master secret)        YES   YES    YES       --    --
+  Initialize Shamir custody             YES   --     --        --    --
+  Rotate barrier root key               YES   --     --        --    --
+  Start a rekey (quorum completes it)   YES   --     --        --    --
+  Enrol / revoke share holders          YES   YES    --        --    --
+  Generate recovery keys                YES   --     --        --    --
+  Barrier status                        YES   YES    YES       --    --
 
   Unseal, seal, root token, recovery and rekey completion on a Shamir barrier
   are not role permissions: each needs a quorum of authenticated share holders
   (Security Officers and custodians), whatever their RBAC role.
 
 CEREMONY OPERATIONS
-  Initialize ceremony                   YES   --     --        --    --       --
-  Sign CSR (for new certs)              YES   --     --        --    --       --
-  Ceremony status                       YES   YES    YES       --    YES      --
+  Initialize ceremony                   YES   --     --        --    --
+  Sign CSR (for new certs)              YES   --     --        --    --
+  Ceremony status                       YES   YES    YES       --    YES
 
 PIN MANAGEMENT (delegated to pin.PINBackend; see docs/pin/README.md)
-  Set/reset SO PIN                      YES   --     --        --    --       --
-  Reset User PIN                        YES   YES    --        --    --       --
-  Change own password                   --    YES    YES       YES   --       --
+  Set/reset SO PIN                      YES   --     --        --    --
+  Reset User PIN                        YES   YES    --        --    --
+  Change own password                   --    YES    YES       YES   --
 
 KEY LIFECYCLE
-  Generate infrastructure keys          YES   --     --        --    --       --
-  Generate operational keys             --    YES    YES       --    --       --
-  Delete any key                        YES   --     --        --    --       --
-  Delete own keys                       --    YES    YES       --    --       --
-  Rotate keys                           --    YES    YES       --    --       --
-  List keys                             --    YES    YES       YES   YES      --
-  Get key metadata                      --    YES    YES       YES   YES      --
+  Generate infrastructure keys          YES   --     --        --    --
+  Generate operational keys             --    YES    YES       --    --
+  Delete any key                        YES   --     --        --    --
+  Delete own keys                       --    YES    YES       --    --
+  Rotate keys                           --    YES    YES       --    --
+  List keys                             --    YES    YES       YES   YES
+  Get key metadata                      --    YES    YES       YES   YES
 
 CRYPTO OPERATIONS (SO explicitly denied)
-  Sign data                             ✗✗   --     YES       YES   --       --
-  Verify signature                      ✗✗   --     YES       YES   --       --
-  Encrypt data                          ✗✗   --     YES       YES   --       --
-  Decrypt data                          ✗✗   --     YES       YES   --       --
-  Wrap/unwrap keys                      ✗✗   YES    --        --    --       --
+  Sign data                             ✗✗   --     YES       YES   --
+  Verify signature                      ✗✗   --     YES       YES   --
+  Encrypt data                          ✗✗   --     YES       YES   --
+  Decrypt data                          ✗✗   --     YES       YES   --
+  Wrap/unwrap keys                      ✗✗   YES    --        --    --
 
 CERTIFICATE MANAGEMENT
-  Create CA                             YES   --     --        --    --       --
-  Issue certificates                    YES   YES    --        --    --       --
-  Revoke certificates                   YES   YES    --        --    --       --
-  Store/delete certificates             YES   YES    --        --    --       --
-  List certificates                     YES   YES    --        --    YES      --
+  Create CA                             YES   --     --        --    --
+  Issue certificates                    YES   YES    --        --    --
+  Revoke certificates                   YES   YES    --        --    --
+  Store/delete certificates             YES   YES    --        --    --
+  List certificates                     YES   YES    --        --    YES
 
 TENANT MANAGEMENT
-  Create/delete tenants                 YES   YES    --        --    --       --
-  List tenants                          YES   YES    YES       --    YES      --
-  Assign backend to tenant              YES   YES    --        --    --       --
-  Configure tenant barriers             YES   YES    --        --    --       --
+  Create/delete tenants                 YES   YES    --        --    --
+  List tenants                          YES   YES    YES       --    YES
+  Assign backend to tenant              YES   YES    --        --    --
+  Configure tenant barriers             YES   YES    --        --    --
 
 ROLE & USER MANAGEMENT
-  Create roles                          YES   --     --        --    --       --
-  Delete roles                          YES   --     --        --    --       --
-  Modify role permissions               YES   --     --        --    --       --
-  Create users                          YES   YES    --        --    --       --
-  Delete users                          YES   YES    --        --    --       --
-  Assign roles to users                 YES   YES    --        --    --       --
-  List users                            YES   YES    YES       --    YES      --
-  List roles                            YES   YES    YES       --    YES      --
+  Create roles                          YES   --     --        --    --
+  Delete roles                          YES   --     --        --    --
+  Modify role permissions               YES   --     --        --    --
+  Create users                          YES   YES    --        --    --
+  Delete users                          YES   YES    --        --    --
+  Assign roles to users                 YES   YES    --        --    --
+  List users                            YES   YES    YES       --    YES
+  List roles                            YES   YES    YES       --    YES
 
 AUDIT & MONITORING
-  Query audit events                    YES   YES    --        --    YES      --
-  View system health                    YES   YES    YES       YES   YES      --
-  View metrics                          YES   YES    YES       --    YES      --
+  Query audit events                    YES   YES    --        --    YES
+  View system health                    YES   YES    YES       YES   YES
+  View metrics                          YES   YES    YES       --    YES
 
 Legend: YES = permitted, -- = denied, ✗✗ = explicitly denied even with erroneous permission grant
 ```
@@ -283,9 +280,9 @@ Enforcement is **dual-layer**, and both layers are structural:
 1. **Registration time** -- `permission.RegisterRoleGrant` panics if the `so` role is granted a cryptographic permission (`SoDViolationError`), a permission whose separated duty nobody declared (`UndeclaredDutyError`), or a whole-segment wildcard (`WildcardGrantError`). The invariant cannot be violated by adding a bad grant, and cannot be side-stepped by adding an unclassified one -- from qrdb or from a higher layer through the `sdk/go` re-export.
 2. **Request time** -- the RBAC deny-list (`soDeniedActions` + `soDeniedCryptoVerbs` in `pkg/auth/rbac/rbac.go`) rejects the request before permissions are resolved, so a grant that reached a role by another path (a hand-authored custom role named `so`, or a role store written by an earlier build) is still denied. The two mechanisms are independent implementations -- the request-time one classifies the `resource:action` itself and never consults the duty registry -- and a test proves they agree in both directions.
 
-### Custodians Have Minimal Access (FIPS 140-3 AS10.06)
+### Share Holders Have No RBAC Access (FIPS 140-3 AS10.06)
 
-Custodians can only submit Shamir shares during unseal. They cannot view keys, certificates, audit logs, users, tenants, or perform any other operation. This limits the attack surface of compromised custodian credentials. A custodian compromise:
+A key custodian is a share holder, not an RBAC principal. RBAC refuses a holder identity everything: it cannot view keys, certificates, audit logs, users or tenants, and its only acts — claiming its envelope and submitting its share to a quorum — are identity-gated. This limits the attack surface of compromised custodian credentials. A custodian compromise:
 
 - Does NOT grant access to plaintext keys or data
 - Does NOT allow quorum unseal by a single individual (requires threshold M of N)
@@ -320,9 +317,8 @@ The go-qrdb role model extends the PKCS#11 two-role model (SO + User) to support
 | SO | SO | Module initialization, PIN management. Cannot perform crypto. |
 | User | Admin, Operator, User | Subdivided for finer-grained access control. |
 | N/A | Auditor | go-qrdb extension for compliance (HIPAA, PCI-DSS, FedRAMP require audit read-access). |
-| N/A | Custodian | go-qrdb extension for M-of-N operations (FIPS 140-3 AS10.06 split knowledge). |
 
-When qrdb is deployed as a PKCS#11 library, the SO role maps to `CKU_SO` user type, and Admin/Operator/User map to `CKU_USER`. The Auditor and Custodian roles exist at the qrdb application layer (not PKCS#11 protocol layer).
+When qrdb is deployed as a PKCS#11 library, the SO role maps to `CKU_SO` user type, and Admin/Operator/User map to `CKU_USER`. The Auditor role exists at the qrdb application layer (not PKCS#11 protocol layer); key custodians are share holders, not a role.
 
 ## Mapping to Existing qrdb RBAC
 
@@ -335,7 +331,6 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 | Operator | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*`, `mvcc:*`, `transaction:execute`, `batch:execute`, `watch:*`, `lease:*`, `index:*`, `timeseries:*`, `vector:*`, `admin:health`, `admin:status`, `backends:*`, `pin:read`, `piv:read`, `piv:use`, `passwords:*`, `ssh:*`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list` | No key creation/deletion, no SO operations. No wrap/unwrap. No certs operations. No admin/governance verbs. |
 | User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:list`, `keys:get`, `admin:health`, `admin:status` | Minimal: crypto-only. No key creation/deletion/rotation. No administrative operations. |
 | Auditor | `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, orchestrator read-only perms | Read-only everywhere. No seal:status. No write/delete permissions. |
-| Custodian | none | A share holder's operations are identity-gated; the role grants nothing. |
 
 ### Tenant plan permissions are platform-operator only
 
@@ -435,7 +430,7 @@ and status, health and capabilities are what a tenant's tools poll.
 
 ### Role Bootstrap (Deterministic)
 
-On daemon initialization (`qrdbd start`), the six system roles are created deterministically and idempotently:
+On daemon initialization (`qrdbd start`), the five system roles are created deterministically and idempotently:
 
 - Each role is assigned a fixed UUIDv8 (RFC 9562 §5.8) derived over SHA-256 from
   the fixed `"go-qrdb:role-namespace/v8/"` prefix plus the tenant ID and role
@@ -444,7 +439,7 @@ On daemon initialization (`qrdbd start`), the six system roles are created deter
   under the legacy identifiers, which still resolve. See
   [identity-rbac/engineering.md](../identity-rbac/engineering.md#persistence)
   for the compatibility rules.
-- All six roles are marked as **system roles** (undeletable)
+- All five roles are marked as **system roles** (undeletable)
 - Roles are persisted in the KV store at `__sys:role/<id>` (Raft-replicated)
 - If roles already exist (restart scenario), the function returns immediately without duplication
 
@@ -458,9 +453,9 @@ Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a use
 
 | Standard | Requirement | Coverage |
 |----------|-------------|----------|
-| FIPS 140-3 | AS10.03 (Roles, Services, Authentication) | Six-role model, SO separation of duties, explicit deny-lists |
+| FIPS 140-3 | AS10.03 (Roles, Services, Authentication) | Five-role model, SO separation of duties, explicit deny-lists |
 | FIPS 140-3 | AS10.05 (Split Knowledge) | Shamir M-of-N unseal — `pkg/seal/shamir.go` + custodian lifecycle |
-| FIPS 140-3 | AS10.06 (Dual Authorization) | SO dual-factor (mTLS + PIN), Custodian challenge-response |
+| FIPS 140-3 | AS10.06 (Dual Authorization) | SO dual-factor (mTLS + PIN), share-holder challenge-response |
 | PCI-DSS v4 | Req 7.1 (Role-Based Access Control) | Fine-grained role model, permission matrix, deny-lists |
 | FedRAMP Moderate | AC-6 (Least Privilege) | Role-based access, explicit deny-lists, read-only Auditor |
 | HIPAA | 164.312(a)(1)(ii)(A) (Access Control) | Role-based access control with audit log visibility |

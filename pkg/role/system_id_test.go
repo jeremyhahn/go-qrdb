@@ -97,7 +97,7 @@ func seedLegacyRole(t *testing.T, kv *memKVStore, tenantID, roleName string, per
 // ---------------------------------------------------------------------------
 
 func TestSystemRoleID_IsUUIDv8(t *testing.T) {
-	for _, name := range []string{RoleNameSO, RoleNameAdmin, RoleNameOperator, RoleNameUser, RoleNameAuditor, RoleNameCustodian, RoleNameOwner} {
+	for _, name := range []string{RoleNameSO, RoleNameAdmin, RoleNameOperator, RoleNameUser, RoleNameAuditor, RoleNameOwner} {
 		got := SystemRoleID(tenantid.System, name)
 
 		parsed, err := uuid.Parse(got)

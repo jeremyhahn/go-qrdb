@@ -26,8 +26,8 @@ import (
 // Canonical role name constants
 // ---------------------------------------------------------------------------
 
-// The six canonical FIPS 140-3 / PCI-DSS v4 system roles defined in
-// docs/auth/roles.md. All six are undeletable system roles created
+// The five canonical FIPS 140-3 / PCI-DSS v4 system roles defined in
+// docs/auth/roles.md. All five are undeletable system roles created
 // deterministically on daemon initialization.
 
 const (
@@ -52,18 +52,12 @@ const (
 	// to audit logs and system state (FIPS 140-3 AS10.10).
 	RoleNameAuditor = "auditor"
 
-	// RoleNameCustodian is the Custodian role name. It grants nothing: a key
-	// custodian is a share holder enrolled in the ceremony registry, and its
-	// only act — submitting its share — is authenticated by its enrolled
-	// factor, not by RBAC (FIPS 140-3 AS10.06).
-	RoleNameCustodian = "custodian"
-
 	// RoleNameOwner is the Owner role name. Owner is the standard-posture
 	// convenience superuser: it holds the full operational permission set
 	// (permission.All()) so a single bootstrap identity can run the entire
 	// database without juggling separate admin/operator/SO identities.
 	//
-	// Owner is NOT one of the six canonical FIPS 140-3 / PCI-DSS roles. It is
+	// Owner is NOT one of the five canonical FIPS 140-3 / PCI-DSS roles. It is
 	// provisioned and assigned to the bootstrap admin ONLY under the standard
 	// (non-strict) RBAC posture, and the RBAC authorizer treats any Owner
 	// grant as inert whenever strict separation of duties is active (FIPS

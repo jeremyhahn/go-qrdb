@@ -103,7 +103,10 @@ Six exist from the first boot and cannot be deleted:
 | Operator | routine operations, including seal and unseal |
 | User | crypto operations only |
 | Auditor | read-only everywhere |
-| Custodian | holding a Shamir share, nothing else |
+
+A key custodian — a Shamir share holder — is not a role: it is enrolled in the
+holder roster and authenticates with its holder certificate and factors. See
+[../shamir-custody/](../shamir-custody/).
 
 The Security Officer's inability to use keys is the separation-of-duties
 control, not an oversight.

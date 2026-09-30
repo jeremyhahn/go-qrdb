@@ -617,13 +617,12 @@ func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &fakeUsers{exists: true}
 	roles := &fakeRoles{existsByName: map[string]bool{
-		role.RoleNameSO:        true,
-		role.RoleNameAdmin:     true,
-		role.RoleNameOperator:  true,
-		role.RoleNameUser:      true,
-		role.RoleNameAuditor:   true,
-		role.RoleNameCustodian: true,
-		role.RoleNameOwner:     true,
+		role.RoleNameSO:       true,
+		role.RoleNameAdmin:    true,
+		role.RoleNameOperator: true,
+		role.RoleNameUser:     true,
+		role.RoleNameAuditor:  true,
+		role.RoleNameOwner:    true,
 	}}
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
@@ -668,13 +667,12 @@ func TestInitialize_AdminIDCollisionIsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &fakeUsers{idExists: true}
 	roles := &fakeRoles{existsByName: map[string]bool{
-		role.RoleNameSO:        true,
-		role.RoleNameAdmin:     true,
-		role.RoleNameOperator:  true,
-		role.RoleNameUser:      true,
-		role.RoleNameAuditor:   true,
-		role.RoleNameCustodian: true,
-		role.RoleNameOwner:     true,
+		role.RoleNameSO:       true,
+		role.RoleNameAdmin:    true,
+		role.RoleNameOperator: true,
+		role.RoleNameUser:     true,
+		role.RoleNameAuditor:  true,
+		role.RoleNameOwner:    true,
 	}}
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
@@ -704,13 +702,12 @@ func TestInitialize_AdminIDCollisionUnverifiableRefused(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &unresolvableIDCollisionUsers{}
 	roles := &fakeRoles{existsByName: map[string]bool{
-		role.RoleNameSO:        true,
-		role.RoleNameAdmin:     true,
-		role.RoleNameOperator:  true,
-		role.RoleNameUser:      true,
-		role.RoleNameAuditor:   true,
-		role.RoleNameCustodian: true,
-		role.RoleNameOwner:     true,
+		role.RoleNameSO:       true,
+		role.RoleNameAdmin:    true,
+		role.RoleNameOperator: true,
+		role.RoleNameUser:     true,
+		role.RoleNameAuditor:  true,
+		role.RoleNameOwner:    true,
 	}}
 
 	_, err := Initialize(context.Background(), Dependencies{
@@ -1180,13 +1177,12 @@ func TestInitialize_TenantExistsAdminMissingCreatesAdmin(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	users := &fakeUsers{}
 	roles := &fakeRoles{existsByName: map[string]bool{
-		role.RoleNameSO:        true,
-		role.RoleNameAdmin:     true,
-		role.RoleNameOperator:  true,
-		role.RoleNameUser:      true,
-		role.RoleNameAuditor:   true,
-		role.RoleNameCustodian: true,
-		role.RoleNameOwner:     true,
+		role.RoleNameSO:       true,
+		role.RoleNameAdmin:    true,
+		role.RoleNameOperator: true,
+		role.RoleNameUser:     true,
+		role.RoleNameAuditor:  true,
+		role.RoleNameOwner:    true,
 	}}
 
 	result, err := Initialize(context.Background(), Dependencies{

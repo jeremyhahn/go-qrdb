@@ -254,8 +254,8 @@ type Dependencies struct {
 //     service's reserved-id rejection is bypassed for this trusted path.
 //     IsolationPrefix is used for the system tenant so its IAM data
 //     lives in the shared store and is reachable during bootstrap.
-//  2. Register the six built-in roles (SO/Admin/Operator/User/Auditor/
-//     Custodian) under the system tenant.
+//  2. Register the five built-in roles (SO/Admin/Operator/User/Auditor)
+//     under the system tenant.
 //  3. Create the admin user inside the system tenant with a single
 //     role grant: Admin@system. The system-tenant rule in
 //     pkg/auth/rbac promotes this to cross-tenant authority.

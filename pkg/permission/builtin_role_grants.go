@@ -27,11 +27,10 @@ package permission
 // permission, registered here once, rather than a parallel list the role
 // package must keep in sync by hand.
 //
-// The Custodian and Owner roles are NOT derived from this registry:
-// Custodian grants nothing (a key custodian is a share holder, whose every
-// operation is identity-gated rather than RBAC-gated), and Owner is the
+// The Owner role is NOT derived from this registry: it is the
 // standard-posture convenience superuser defined as permission.All() — see
-// pkg/role.custodianPermissions / OwnerRole.
+// pkg/role.OwnerRole. There is no custodian role; a key custodian is a share
+// holder, whose every operation is identity-gated rather than RBAC-gated.
 // ---------------------------------------------------------------------------
 
 // registerSOGrants places the Security Officer's default permissions. The SO

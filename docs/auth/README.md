@@ -155,7 +155,7 @@ Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go).
 
 1. **TLS setup** (driven by ceremony): Generate or load CA certificate and server TLS credentials.
 2. **System tenant**: Create the reserved `system` tenant via an internal-call context that bypasses the public reserved-id rejection.
-3. **Built-in roles**: Register the six built-in roles (SO / Admin / Operator / User / Auditor / Custodian) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
+3. **Built-in roles**: Register the five built-in roles (SO / Admin / Operator / User / Auditor) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
 4. **Admin user**: Create user `admin` in the system tenant with exactly one role grant: `Admin@system`. The system-tenant rule in `pkg/auth/rbac` promotes that single grant to cross-tenant authority.
 5. **Admin client certificate**: Issue an mTLS client certificate via the supplied `CertProvider` so the CLI can authenticate immediately after first start.
 

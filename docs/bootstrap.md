@@ -89,7 +89,7 @@ The barrier status is checked via `BarrierStatus`. If sealed, data operations ar
 
 ### 6. Role and User Bootstrap
 
-The daemon creates six system roles deterministically on first init. Each role is
+The daemon creates five system roles deterministically on first init. Each role is
 assigned a fixed UUIDv8 (RFC 9562 §5.8, derived over SHA-256) from its tenant and
 name to ensure cross-cluster stability. Roles seeded before the FIPS 140-3
 migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
@@ -104,7 +104,6 @@ migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
 | Operator | `SystemRoleID(tenantID, "Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
 | User | `SystemRoleID(tenantID, "User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
 | Auditor | `SystemRoleID(tenantID, "Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `SystemRoleID(tenantID, "Custodian")` | none | Retained so persisted references resolve; share-holder operations are identity-gated |
 
 An admin user for the system tenant is also created:
 

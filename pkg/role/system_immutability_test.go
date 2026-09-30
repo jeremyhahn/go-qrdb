@@ -365,7 +365,7 @@ func TestCanonicalSystemRole_IsAccepted(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	canonical := canonicalSystemRole("acme", RoleNameCustodian)
+	canonical := canonicalSystemRole("acme", RoleNameAuditor)
 	r, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          canonical.ID,
 		Name:        canonical.Name,

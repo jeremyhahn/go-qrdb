@@ -216,7 +216,6 @@ waits for the admin's bindings rather than judging a lagging copy.
 | Operator | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | routine operations |
 | User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | crypto ops only |
 | Auditor | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | read-only everywhere |
-| Custodian | none | retained so persisted references resolve; share-holder operations are identity-gated |
 
 The SO's explicit denial of crypto operations is the separation-of-duties
 control: governance and key use are different people. Full matrix and the FIPS

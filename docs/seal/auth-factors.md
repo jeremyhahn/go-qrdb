@@ -160,7 +160,7 @@ srv := server.New(cfg, kvSvc, adminSvc, server.WithFactorRegistry(reg))
 
 ## See Also
 
-- [../auth/roles.md](../auth/roles.md) — Custodian role and permissions
+- [../auth/roles.md](../auth/roles.md) — roles, and why a key custodian is a share holder rather than a role
 - [shamir-custody](../shamir-custody/) — share holders and the factors that authenticate their quorum submissions
 - [../ceremony/README.md](../ceremony/architecture.md) — How the ceremony consumes factors during enrolment
 - [go-xkms docs](https://github.com/jeremyhahn/go-xkms/tree/main/docs/authfactors) — Hardware factor implementations (FIDO2, PIV, PKCS#11) with attestation

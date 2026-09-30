@@ -105,7 +105,7 @@ func (s *scriptedAdminUsers) GetUserByUsername(context.Context, string, string) 
 func allBuiltInRolesPresent() *fakeRoles {
 	return &fakeRoles{existsByName: map[string]bool{
 		role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
-		role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
+		role.RoleNameUser: true, role.RoleNameAuditor: true,
 		role.RoleNameOwner: true,
 	}}
 }

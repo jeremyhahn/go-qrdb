@@ -3326,6 +3326,13 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   `ceremony.CeremonyExtension`, `CeremonyEnrollExternalOfficer`, the
   custodian-group service on every transport, and the ceremony's own share
   claims. Custodians are share holders with `--role custodian`.
+- **The empty Custodian RBAC role**: `role.RoleNameCustodian` and the SDK's
+  `RoleNameCustodian` are removed, and `role.BuiltInRoles` returns five roles
+  (SO, Admin, Operator, User, Auditor). The role granted nothing; a key
+  custodian is a share holder, not an RBAC principal. A tenant seeded by an
+  earlier build keeps its stored `custodian` role record, which grants nothing
+  and is no longer a reserved system role name, so any user still assigned it
+  keeps resolving; remove the assignment and the role at leisure.
 - **Batch and unauthenticated share entry points**: `UnsealWithShare(s)`,
   `SubmitSealVote`, `GenerateRootToken`, `RecoverWithKeys`, the one-call
   `Rekey`, and the `ShareExchangeCoordinator` skeleton (never wired; nodes do

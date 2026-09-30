@@ -536,7 +536,7 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 		},
 		Roles: &fakeRoles{existsByName: map[string]bool{
 			role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
-			role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
+			role.RoleNameUser: true, role.RoleNameAuditor: true,
 			role.RoleNameOwner: true,
 		}},
 		Barriers: reg, Logger: discardLogger(),
@@ -1231,7 +1231,7 @@ func TestProvisionTenant_IdempotentReRun(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
 	roles := &fakeRoles{existsByName: map[string]bool{
 		role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
-		role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
+		role.RoleNameUser: true, role.RoleNameAuditor: true,
 	}}
 	users := &fakeUsers{exists: true}
 	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}

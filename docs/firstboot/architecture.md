@@ -128,7 +128,6 @@ Created deterministically on first init, undeletable, persisted at
 | Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
 | User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
 | Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | none | Retained so persisted role references resolve; a share holder's operations are identity-gated |
 
 An admin user for the system tenant is also created:
 

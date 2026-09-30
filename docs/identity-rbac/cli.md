@@ -147,7 +147,7 @@ refused.
 ```bash
 qrdb roles get 7a1b...
 qrdb roles get-by-name Operator --tenant-id system
-qrdb roles delete 7a1b...        # refused for the six built-in roles
+qrdb roles delete 7a1b...        # refused for the five built-in roles
 ```
 
 `get-by-name` takes `--tenant-id`, defaulting to the system tenant. **It is how
@@ -241,8 +241,8 @@ how you know to run it.
 
 ## The built-in roles
 
-Six roles exist from bootstrap and **cannot be deleted**: Security Officer,
-Admin, Operator, User, Auditor, Custodian. Their identifiers are deterministic,
+Five roles exist from bootstrap and **cannot be deleted**: Security Officer,
+Admin, Operator, User, Auditor. Their identifiers are deterministic,
 so they are the same on every node. Their permissions are fixed too — the one
 supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.

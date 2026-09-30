@@ -103,7 +103,7 @@ func TestSystemRoleIDs_ExposesBothFormsToConsumers(t *testing.T) {
 func TestIsSystemRoleName_ReExported(t *testing.T) {
 	for _, name := range []string{
 		RoleNameSO, RoleNameAdmin, RoleNameOperator,
-		RoleNameUser, RoleNameAuditor, RoleNameCustodian, RoleNameOwner,
+		RoleNameUser, RoleNameAuditor, RoleNameOwner,
 	} {
 		if !IsSystemRoleName(name) {
 			t.Errorf("IsSystemRoleName(%q) = false, want true", name)

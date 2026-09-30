@@ -562,7 +562,7 @@ func TestCreateRole_Atomic_ReconcilesLostResponse_StaleReadCatchesUp(t *testing.
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	want := BuiltInRoles(tenantid.System)[5]
+	want := OwnerRole(tenantid.System)
 
 	got, err := svc.CreateRole(context.Background(), &CreateRoleRequest{
 		ID:          want.ID,
