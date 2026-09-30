@@ -92,8 +92,8 @@ Locked memory keeps key material out of swap; it does not stop another process
 running as the same user from reading it. ptrace, and the kernel's
 `/proc/<pid>/mem` interface, read every page of a process regardless of mlock
 or guard pages, and so does a core file written on a crash. So `qrdbd start`
-hardens the process first, before it installs the budget or creates any
-protected memory:
+hardens the process as the very first thing it does — before it reads its
+configuration, installs the budget or creates any protected memory:
 
 | Platform | Mechanism | Effect |
 |---|---|---|
@@ -101,12 +101,32 @@ protected memory:
 | macOS | `ptrace(PT_DENY_ATTACH)` | no debugger can attach; a process already being traced is terminated |
 | Windows and others | none exists | a documented no-op, logged as a warning |
 
+Marking the process non-dumpable stops new attaches, but a tracer that
+attached before start ran keeps its access. So on Linux, once the mechanism is
+applied, start reads `TracerPid` from `/proc/self/status` and refuses to run if
+it is not 0 (or if it cannot be read). On macOS `PT_DENY_ATTACH` already
+terminates a traced process.
+
 It is unconditional on Linux and macOS. The one way to leave the process
 inspectable is the environment variable `QRDB_SECURE_ALLOW_PROCESS_INSPECTION`,
-for attaching a debugger; honouring it logs a warning at every start. It is an
-environment variable and not a configuration key on purpose: a setting in a
-config file outlives the debugging session it was added for. A value that is
-not a boolean fails `start` rather than being read as either answer.
+for attaching a debugger; honouring it skips the mechanism and the tracer
+check, logs a warning at every start, and writes a
+`disable-inspection-hardening` event to the node's compliance audit trail as
+soon as that trail exists. A node that cannot write that event does not run.
+It is an environment variable and not a configuration key on purpose: a setting
+in a config file outlives the debugging session it was added for. A value that
+is not a boolean fails `start` rather than being read as either answer.
+
+In FIPS 140-3 mode (the stack's single FIPS predicate, `seal.FIPSEnabled`) the
+opt-out is refused: `start` fails rather than run a validated deployment
+inspectable. qrdb has no separate "production mode" setting; FIPS mode is the
+only mode that forbids the opt-out.
+
+The `qrdb` desktop and CLI binary applies the same hardening, with the same
+opt-out, as the first thing it does after its logger is up and before either
+the GUI or a command runs: it unseals barriers and reads passphrases, PINs and
+shares too. Its warning goes to standard error, because standard output is a
+command's data.
 
 Hardening is process lifecycle, like the budget: it belongs to the binary, not
 to a library. `sdk/go/secure.HardenProcess` is exported so an embedding binary

@@ -23,24 +23,37 @@ import (
 	"testing"
 )
 
-// These tests drive HardenProcess's decisions IN-PROCESS against a double of
-// the platform mechanism, because the real one changes the test binary itself
-// and cannot be undone. The real mechanism is proven from a subprocess in
-// harden_linux_test.go.
+// These tests drive HardenProcess's decisions IN-PROCESS against doubles of
+// the platform mechanism, the tracer lookup and the FIPS predicate, because
+// the real mechanism changes the test binary itself and cannot be undone. The
+// real mechanism is proven from a subprocess in harden_linux_test.go.
 
-// swapDenyInspection installs fn as the platform mechanism for one test and
-// counts the calls that reach it.
-func swapDenyInspection(t *testing.T, fn func() error) *int {
-	t.Helper()
-	calls := new(int)
-	prev := denyInspection
-	denyInspection = func() error {
-		*calls++
-		return fn()
-	}
-	t.Cleanup(func() { denyInspection = prev })
-	return calls
+// hardenSeams installs doubles for every seam HardenProcess reads, for one
+// test, and counts the calls that reach the mechanism.
+type hardenSeams struct {
+	denyCalls   int
+	tracerCalls int
 }
+
+func swapHardenSeams(t *testing.T, deny func() error, tracer func() (int, error), fips bool) *hardenSeams {
+	t.Helper()
+	s := &hardenSeams{}
+	prevDeny, prevTracer, prevFIPS := denyInspection, processTracer, fipsMode
+	denyInspection = func() error {
+		s.denyCalls++
+		return deny()
+	}
+	processTracer = func() (int, error) {
+		s.tracerCalls++
+		return tracer()
+	}
+	fipsMode = func() bool { return fips }
+	t.Cleanup(func() { denyInspection, processTracer, fipsMode = prevDeny, prevTracer, prevFIPS })
+	return s
+}
+
+func notTraced() (int, error) { return 0, nil }
+func noError() error          { return nil }
 
 // captureLogger returns a text logger writing into the returned buffer.
 func captureLogger() (*slog.Logger, *bytes.Buffer) {
@@ -52,13 +65,17 @@ func TestHardenProcess_AppliesTheMechanismWhenNotOptedOut(t *testing.T) {
 	for _, value := range []string{"", "false", "0", "FALSE"} {
 		t.Run(strconv.Quote(value), func(t *testing.T) {
 			t.Setenv(AllowProcessInspectionEnv, value)
-			calls := swapDenyInspection(t, func() error { return nil })
+			s := swapHardenSeams(t, noError, notTraced, false)
 			logger, out := captureLogger()
-			if err := HardenProcess(logger); err != nil {
+			got, err := HardenProcess(logger)
+			if err != nil {
 				t.Fatalf("HardenProcess: %v", err)
 			}
-			if *calls != 1 {
-				t.Fatalf("mechanism applied %d times, want 1", *calls)
+			if got != ProcessHardened {
+				t.Fatalf("HardenProcess = %v, want %v", got, ProcessHardened)
+			}
+			if s.denyCalls != 1 || s.tracerCalls != 1 {
+				t.Fatalf("mechanism applied %d times and tracer checked %d times, want 1 and 1", s.denyCalls, s.tracerCalls)
 			}
 			if out.Len() != 0 {
 				t.Fatalf("a hardened process logged %q; only the opt-out warns", out.String())
@@ -71,26 +88,94 @@ func TestHardenProcess_OptOutSkipsTheMechanismAndWarns(t *testing.T) {
 	for _, value := range []string{"1", "true", "TRUE", "t"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(AllowProcessInspectionEnv, value)
-			calls := swapDenyInspection(t, func() error { return nil })
+			s := swapHardenSeams(t, noError, func() (int, error) { return 4242, nil }, false)
 			logger, out := captureLogger()
-			if err := HardenProcess(logger); err != nil {
+			got, err := HardenProcess(logger)
+			if err != nil {
 				t.Fatalf("HardenProcess: %v", err)
 			}
-			if *calls != 0 {
-				t.Fatalf("the opt-out still applied the mechanism %d times", *calls)
+			if got != ProcessInspectionAllowed {
+				t.Fatalf("HardenProcess = %v, want %v", got, ProcessInspectionAllowed)
 			}
-			got := out.String()
-			if !strings.Contains(got, "level=WARN") || !strings.Contains(got, AllowProcessInspectionEnv) {
-				t.Fatalf("the opt-out must log a WARN naming %s; got %q", AllowProcessInspectionEnv, got)
+			if s.denyCalls != 0 || s.tracerCalls != 0 {
+				t.Fatalf("the opt-out still applied the mechanism (%d) or the tracer check (%d)", s.denyCalls, s.tracerCalls)
+			}
+			if !strings.Contains(out.String(), "level=WARN") || !strings.Contains(out.String(), AllowProcessInspectionEnv) {
+				t.Fatalf("the opt-out must log a WARN naming %s; got %q", AllowProcessInspectionEnv, out.String())
 			}
 		})
 	}
 }
 
+// In FIPS 140-3 mode the opt-out is refused outright: the process neither
+// runs inspectable nor quietly hardens against the operator's stated intent.
+func TestHardenProcess_RefusesTheOptOutInFIPSMode(t *testing.T) {
+	t.Setenv(AllowProcessInspectionEnv, "true")
+	s := swapHardenSeams(t, noError, notTraced, true)
+	got, err := HardenProcess(nil)
+	var refused *ProcessInspectionOptOutRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("HardenProcess = %v (%T), want *ProcessInspectionOptOutRefusedError", err, err)
+	}
+	if got != 0 {
+		t.Fatalf("a refusal reported outcome %v", got)
+	}
+	if !strings.Contains(err.Error(), "FIPS") || !strings.Contains(err.Error(), AllowProcessInspectionEnv) {
+		t.Fatalf("the refusal must name FIPS mode and the variable; got %q", err.Error())
+	}
+	if s.denyCalls != 0 {
+		t.Fatalf("a refused opt-out must not be followed by anything; mechanism ran %d times", s.denyCalls)
+	}
+}
+
+// FIPS mode does not change an ordinary start.
+func TestHardenProcess_FIPSModeHardensNormally(t *testing.T) {
+	t.Setenv(AllowProcessInspectionEnv, "")
+	swapHardenSeams(t, noError, notTraced, true)
+	if got, err := HardenProcess(nil); err != nil || got != ProcessHardened {
+		t.Fatalf("HardenProcess = %v, %v; want %v, nil", got, err, ProcessHardened)
+	}
+}
+
+// A tracer attached BEFORE the process hardened keeps its access: marking the
+// process non-dumpable stops new attaches, not existing ones. So a traced
+// process refuses to continue.
+func TestHardenProcess_RefusesAnAlreadyTracedProcess(t *testing.T) {
+	t.Setenv(AllowProcessInspectionEnv, "")
+	s := swapHardenSeams(t, noError, func() (int, error) { return 4242, nil }, false)
+	_, err := HardenProcess(nil)
+	var traced *ProcessTracedError
+	if !errors.As(err, &traced) {
+		t.Fatalf("HardenProcess = %v (%T), want *ProcessTracedError", err, err)
+	}
+	if traced.TracerPID != 4242 {
+		t.Fatalf("TracerPID = %d, want 4242", traced.TracerPID)
+	}
+	if !strings.Contains(err.Error(), "4242") || !strings.Contains(err.Error(), AllowProcessInspectionEnv) {
+		t.Fatalf("the error must name the tracer and the opt-out; got %q", err.Error())
+	}
+	if s.denyCalls != 1 {
+		t.Fatalf("the mechanism must be applied before the tracer is checked; ran %d times", s.denyCalls)
+	}
+}
+
+// A tracer lookup that fails is a refusal: the process cannot show it is not
+// being traced.
+func TestHardenProcess_TracerLookupFailureIsARefusal(t *testing.T) {
+	t.Setenv(AllowProcessInspectionEnv, "")
+	lookup := errors.New("status unreadable")
+	swapHardenSeams(t, noError, func() (int, error) { return 0, lookup }, false)
+	_, err := HardenProcess(nil)
+	var hardErr *ProcessHardeningError
+	if !errors.As(err, &hardErr) || !errors.Is(err, lookup) {
+		t.Fatalf("HardenProcess = %v (%T), want *ProcessHardeningError wrapping the lookup error", err, err)
+	}
+}
+
 func TestHardenProcess_RefusesAMalformedOptOut(t *testing.T) {
 	t.Setenv(AllowProcessInspectionEnv, "yes-please")
-	calls := swapDenyInspection(t, func() error { return nil })
-	err := HardenProcess(nil)
+	s := swapHardenSeams(t, noError, notTraced, false)
+	_, err := HardenProcess(nil)
 	var optErr *ProcessInspectionOptOutError
 	if !errors.As(err, &optErr) {
 		t.Fatalf("HardenProcess = %v (%T), want *ProcessInspectionOptOutError", err, err)
@@ -105,16 +190,16 @@ func TestHardenProcess_RefusesAMalformedOptOut(t *testing.T) {
 	if !strings.Contains(err.Error(), AllowProcessInspectionEnv) {
 		t.Fatalf("the error must name the variable; got %q", err.Error())
 	}
-	if *calls != 0 {
-		t.Fatalf("a malformed opt-out is refused before anything is applied; mechanism ran %d times", *calls)
+	if s.denyCalls != 0 {
+		t.Fatalf("a malformed opt-out is refused before anything is applied; mechanism ran %d times", s.denyCalls)
 	}
 }
 
 func TestHardenProcess_ReportsAPlatformRefusal(t *testing.T) {
 	t.Setenv(AllowProcessInspectionEnv, "")
 	refused := errors.New("operation not permitted")
-	swapDenyInspection(t, func() error { return refused })
-	err := HardenProcess(nil)
+	s := swapHardenSeams(t, func() error { return refused }, notTraced, false)
+	_, err := HardenProcess(nil)
 	var hardErr *ProcessHardeningError
 	if !errors.As(err, &hardErr) {
 		t.Fatalf("HardenProcess = %v (%T), want *ProcessHardeningError", err, err)
@@ -128,19 +213,37 @@ func TestHardenProcess_ReportsAPlatformRefusal(t *testing.T) {
 	if !strings.Contains(err.Error(), inspectionMechanism) || !strings.Contains(err.Error(), refused.Error()) {
 		t.Fatalf("the error must name the mechanism and the cause; got %q", err.Error())
 	}
+	if s.tracerCalls != 0 {
+		t.Fatalf("a refused mechanism must not go on to the tracer check")
+	}
 }
 
 func TestHardenProcess_NilLoggerUsesTheDefault(t *testing.T) {
 	t.Setenv(AllowProcessInspectionEnv, "true")
-	swapDenyInspection(t, func() error { return nil })
+	swapHardenSeams(t, noError, notTraced, false)
 	logger, out := captureLogger()
 	prev := slog.Default()
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	if err := HardenProcess(nil); err != nil {
+	if _, err := HardenProcess(nil); err != nil {
 		t.Fatalf("HardenProcess: %v", err)
 	}
 	if !strings.Contains(out.String(), AllowProcessInspectionEnv) {
 		t.Fatalf("a nil logger must fall back to slog.Default; got %q", out.String())
+	}
+}
+
+func TestProcessHardening_String(t *testing.T) {
+	cases := map[ProcessHardening]string{
+		ProcessHardened:             "hardened",
+		ProcessInspectionAllowed:    "inspection-allowed",
+		ProcessHardeningUnavailable: "unavailable",
+		ProcessHardening(0):         "unknown",
+		ProcessHardening(99):        "unknown",
+	}
+	for h, want := range cases {
+		if got := h.String(); got != want {
+			t.Errorf("ProcessHardening(%d).String() = %q, want %q", int(h), got, want)
+		}
 	}
 }

@@ -29,15 +29,25 @@ limitations under the License.
   `secureMemoryHeadroomBytes` (2 MiB) and `minSecureMemoryBudgetBytes`
   (1 MiB); the ceiling is `pkg/config.DefaultSecureMemoryBudgetMiB` (64).
 
-- `sdk/go/secure.HardenProcess(*slog.Logger) error`, re-exporting
-  `pkg/secure.HardenProcess`, with the constant `AllowProcessInspectionEnv`
-  (`QRDB_SECURE_ALLOW_PROCESS_INSPECTION`) and the errors
-  `*ProcessHardeningError{Mechanism, Err}` and
-  `*ProcessInspectionOptOutError{Value, Err}`. Platform files
+- `sdk/go/secure.HardenProcess(*slog.Logger) (ProcessHardening, error)`,
+  re-exporting `pkg/secure.HardenProcess`, with the outcomes
+  `ProcessHardened`, `ProcessInspectionAllowed` and
+  `ProcessHardeningUnavailable`, the constant `AllowProcessInspectionEnv`
+  (`QRDB_SECURE_ALLOW_PROCESS_INSPECTION`), and the errors
+  `*ProcessHardeningError{Mechanism, Err}`,
+  `*ProcessInspectionOptOutError{Value, Err}`,
+  `*ProcessInspectionOptOutRefusedError{Mode}` and
+  `*ProcessTracedError{TracerPID}`. Platform files
   `pkg/secure/harden_linux.go`, `harden_darwin.go` and `harden_other.go`
   (`!linux && !darwin`) each supply the mechanism and its name.
-- `cmd/qrdbd.runStart` calls it as its first statement, through the
-  `hardenSecureProcess` seam, before `resolveSecureMemoryBudget`.
+- `cmd/qrdbd`'s start command calls it as the first statement of its RunE,
+  through the `hardenSecureProcess` seam, before `resolveStartFlags` loads any
+  configuration. The outcome travels in `startFlags.processHardening`;
+  `runStart` passes it to `auditInspectionOptOut` once the compliance audit
+  trail is built.
+- `cmd/qrdb.run` calls it through `hardenAtStartup(os.Stderr)` (the
+  `hardenProcess` seam) after the logger is initialised and before the
+  GUI/CLI branch; a refusal exits 1.
 
 ## Derivation
 
@@ -73,12 +83,23 @@ a configured value is always distinguishable from the default.
 - `*ProcessInspectionOptOutError` — `QRDB_SECURE_ALLOW_PROCESS_INSPECTION`
   holds a value `strconv.ParseBool` rejects. `start` fails before anything is
   applied: a malformed security opt-out is not read as either answer.
+- `*ProcessInspectionOptOutRefusedError` — the opt-out is set in FIPS 140-3
+  mode. `start` fails.
+- `*ProcessTracedError` — a tracer is attached (`TracerPid` is not 0). A
+  `TracerPid` that cannot be read or parsed is a `*ProcessHardeningError`
+  (mechanism `tracer check`), never "not traced". `start` fails.
+- `*InspectionOptOutAuditError` — the opt-out was honoured but the compliance
+  audit trail refused the record of it. `start` fails.
 
 ## Observability
 
 One `INFO` log event per successful start: `secure memory budget installed`
 with `budget_bytes`, `source`, `rlimit_memlock_source`,
 `rlimit_memlock_bytes`.
+
+One compliance audit event when the opt-out is honoured: actor `qrdbd`,
+resource `process`, action `disable-inspection-hardening`, outcome `success`,
+attribute `env` naming the variable.
 
 One `WARN` event when the process is left inspectable: `secure: process
 inspection hardening DISABLED by environment` with `env` and `mechanism` when
@@ -108,6 +129,13 @@ and the address of a random marker. The opt-out run is the positive control —
 the reader opens `/proc/<pid>/mem` and reads the marker back — and the
 hardened run must refuse the open with `PR_GET_DUMPABLE == 0`.
 `cmd/qrdbd`'s `TestMain` doubles `hardenSecureProcess`, and
-`secure_lifecycle_test.go` pins that the production seam is
-`secure.HardenProcess` and that a refusal fails `start` before any budget is
-built.
+`harden_start_test.go` pins that the production seam is
+`secure.HardenProcess`, that a refusal fails `start` before any configuration
+is read (a missing config file would otherwise be the error) or any budget is
+built, that the outcome reaches `runStart`, and that `auditInspectionOptOut`
+records exactly one event for an honoured opt-out, none otherwise, and fails
+start when the sink refuses it. `pkg/secure/harden_test.go` presents a tracer,
+a failed tracer lookup and FIPS mode through seams, and
+`harden_tracer_linux_test.go` parses every shape of the status line. `cmd/qrdb/harden_test.go` pins the same seam, that a refusal makes `run`
+exit 1, and that the opt-out warning goes to the writer it is given rather than
+standard output.

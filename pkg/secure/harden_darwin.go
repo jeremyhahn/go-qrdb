@@ -30,3 +30,8 @@ const inspectionMechanism = "ptrace(PT_DENY_ATTACH)"
 func denyProcessInspection() error {
 	return unix.PtraceDenyAttach()
 }
+
+// tracerPID reports no tracer. On macOS there is nothing to ask afterwards:
+// PT_DENY_ATTACH terminates a process that is already being traced, so a
+// process still running after denyProcessInspection is not traced.
+func tracerPID() (int, error) { return 0, nil }

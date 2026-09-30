@@ -90,6 +90,10 @@ level=WARN msg="secure: process inspection hardening DISABLED by environment; a 
 ```
 
 Remove it afterwards. Never set it in a unit file, a compose file or an image.
+The node records every start with the opt-out in its compliance audit trail
+(action `disable-inspection-hardening`), and a FIPS 140-3 build refuses the
+opt-out altogether. Attach the debugger after start: a node started under a
+debugger that is already attached refuses to run unless the opt-out is set.
 
 ## Troubleshooting
 
@@ -108,3 +112,8 @@ Remove it afterwards. Never set it in a unit file, a compose file or an image.
 - **A monitoring agent lost `qrdbd`'s `/proc` entries** — expected: a
   non-dumpable process's `/proc/<pid>/` belongs to root. Run the agent with
   `CAP_SYS_PTRACE` or read the node's own metrics endpoint instead.
+- **`process is already traced by pid N`** — something attached to `qrdbd`
+  before it hardened itself (a debugger, `strace`, a profiler). Detach it, or
+  set the opt-out for a debugging session.
+- **`QRDB_SECURE_ALLOW_PROCESS_INSPECTION is refused in FIPS 140-3 mode`** — a
+  FIPS build does not run inspectable. Unset the variable.

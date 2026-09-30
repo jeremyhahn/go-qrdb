@@ -205,7 +205,7 @@ func runHardenTarget() error {
 	if len(marker) == 0 {
 		return errNoHardenMarker
 	}
-	if err := HardenProcess(nil); err != nil {
+	if _, err := HardenProcess(nil); err != nil {
 		return err
 	}
 	dumpable, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
@@ -237,6 +237,12 @@ func runHardenReader() error {
 	target.Env = append(os.Environ(),
 		hardenRoleEnv+"="+hardenRoleTgt,
 		hardenMarkerEnv+"="+hex.EncodeToString(marker),
+		// The opt-out is refused in FIPS mode, and the positive control needs
+		// it honoured. The target is taken out of FIPS mode so this test means
+		// the same thing under the FIPS CI job; the refusal itself is covered
+		// in-process by TestHardenProcess_RefusesTheOptOutInFIPSMode.
+		"GODEBUG=fips140=off",
+		"GOFIPS140=off",
 	)
 	var stderr bytes.Buffer
 	target.Stderr = &stderr

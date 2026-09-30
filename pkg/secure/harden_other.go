@@ -29,3 +29,6 @@ const inspectionMechanism = "none"
 // denyProcessInspection is never reached on this platform: HardenProcess
 // checks inspectionHardeningSupported first and logs instead.
 func denyProcessInspection() error { return nil }
+
+// tracerPID is never reached on this platform, for the same reason.
+func tracerPID() (int, error) { return 0, nil }

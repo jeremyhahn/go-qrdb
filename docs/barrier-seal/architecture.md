@@ -255,7 +255,7 @@ implemented here; do not describe this as enclave-protected until it is.
   see its own lifecycle section above — and is wiped (`secure.Wipe`) but not
   mlocked while live.
 - **Protected memory is not readable from outside the process.** `qrdbd
-  start` marks itself non-dumpable (Linux) or denies debugger attach (macOS)
+  start` and the `qrdb` desktop/CLI binary mark themselves non-dumpable (Linux) or denies debugger attach (macOS)
   before it holds any key, so a same-user process cannot read the mlocked pages
   through ptrace, `/proc/<pid>/mem` or a core file. The environment opt-out for
   debugging logs a warning; see

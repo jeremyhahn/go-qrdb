@@ -19,6 +19,8 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // AllowProcessInspectionEnv names the environment variable that opts a
@@ -70,39 +72,104 @@ var denyInspection = denyProcessInspection
 // locked-memory budget (SetAllocator), and for the same reason. cmd/qrdbd's
 // start command is the reference wiring.
 //
-// AllowProcessInspectionEnv opts out: the process is left inspectable and a
-// warning is logged. A nil logger uses slog.Default.
+// Marking the process non-dumpable stops NEW attaches; a tracer that attached
+// before HardenProcess ran keeps its access. So after the mechanism is applied,
+// HardenProcess asks the kernel whether the process is being traced — on
+// Linux, TracerPid in /proc/self/status — and refuses to continue if it is. On
+// macOS PT_DENY_ATTACH already terminates a traced process.
 //
-// Returns *ProcessInspectionOptOutError for an unparseable opt-out value and
-// *ProcessHardeningError when the platform refuses the mechanism. Both mean the
-// process is NOT hardened, and a caller that holds secrets should refuse to
-// continue.
-func HardenProcess(logger *slog.Logger) error {
+// AllowProcessInspectionEnv opts out: the process is left inspectable, no
+// tracer check is made, and a warning is logged. The caller that owns an audit
+// trail records the opt-out there too, which is why the outcome is returned.
+// In FIPS 140-3 mode (seal.FIPSEnabled, the stack's single FIPS predicate) the
+// opt-out is REFUSED rather than honoured: a validated deployment does not run
+// inspectable. A nil logger uses slog.Default.
+//
+// Every error means the process is NOT hardened, and a caller that holds
+// secrets should refuse to continue:
+//
+//   - *ProcessInspectionOptOutError: the opt-out value does not parse;
+//   - *ProcessInspectionOptOutRefusedError: the opt-out is set in FIPS mode;
+//   - *ProcessHardeningError: the platform refused the mechanism, or the
+//     tracer check could not be made;
+//   - *ProcessTracedError: a tracer is already attached.
+func HardenProcess(logger *slog.Logger) (ProcessHardening, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	optOut, err := processInspectionOptOut()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if optOut {
+		if fipsMode() {
+			return 0, &ProcessInspectionOptOutRefusedError{Mode: "FIPS 140-3"}
+		}
 		logger.Warn("secure: process inspection hardening DISABLED by environment; "+
 			"a debugger or any process running as this user can read protected memory",
 			"env", AllowProcessInspectionEnv,
 			"mechanism", inspectionMechanism)
-		return nil
+		return ProcessInspectionAllowed, nil
 	}
 	if !inspectionHardeningSupported {
 		logger.Warn("secure: this platform has no process inspection hardening; "+
 			"a debugger or any process running as this user can read protected memory",
 			"goos", runtime.GOOS)
-		return nil
+		return ProcessHardeningUnavailable, nil
 	}
 	if err := denyInspection(); err != nil {
-		return &ProcessHardeningError{Mechanism: inspectionMechanism, Err: err}
+		return 0, &ProcessHardeningError{Mechanism: inspectionMechanism, Err: err}
 	}
-	return nil
+	tracer, err := processTracer()
+	if err != nil {
+		return 0, &ProcessHardeningError{Mechanism: tracerCheckMechanism, Err: err}
+	}
+	if tracer != 0 {
+		return 0, &ProcessTracedError{TracerPID: tracer}
+	}
+	return ProcessHardened, nil
 }
+
+// ProcessHardening is what HardenProcess did to the process.
+type ProcessHardening int
+
+const (
+	// ProcessHardened: the mechanism is applied and no tracer is attached.
+	ProcessHardened ProcessHardening = iota + 1
+	// ProcessInspectionAllowed: AllowProcessInspectionEnv was honoured; the
+	// process is inspectable, and a caller with an audit trail records it.
+	ProcessInspectionAllowed
+	// ProcessHardeningUnavailable: the platform has no mechanism.
+	ProcessHardeningUnavailable
+)
+
+// processHardeningNames maps each outcome to its String form.
+var processHardeningNames = map[ProcessHardening]string{
+	ProcessHardened:             "hardened",
+	ProcessInspectionAllowed:    "inspection-allowed",
+	ProcessHardeningUnavailable: "unavailable",
+}
+
+// String returns the outcome's name, or "unknown".
+func (h ProcessHardening) String() string {
+	if name, ok := processHardeningNames[h]; ok {
+		return name
+	}
+	return "unknown"
+}
+
+// tracerCheckMechanism names the tracer check in errors.
+const tracerCheckMechanism = "tracer check"
+
+// processTracer returns the PID of the process tracing this one, or 0. It is a
+// variable so in-process tests can present a tracer; the real lookup is
+// platform code (tracerPID).
+var processTracer = tracerPID
+
+// fipsMode reports whether the process runs in FIPS 140-3 mode. It is
+// quicraftseal.FIPSEnabled, the stack's single FIPS predicate, and a variable
+// only so tests can present either answer.
+var fipsMode = quicraftseal.FIPSEnabled
 
 // processInspectionOptOut reads AllowProcessInspectionEnv. Unset or empty is
 // "no opt-out"; anything strconv.ParseBool rejects is an error.

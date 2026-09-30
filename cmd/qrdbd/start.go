@@ -96,6 +96,11 @@ import (
 
 // startFlags holds the parsed CLI flags for the start command.
 type startFlags struct {
+	// processHardening is what secure.HardenProcess did at the top of the
+	// start command. It is not a flag: RunE sets it, and runStart audits an
+	// honoured opt-out (ProcessInspectionAllowed).
+	processHardening secure.ProcessHardening
+
 	mode            string
 	configFile      string
 	listen          string
@@ -376,6 +381,20 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 			"  2. CLI flags (backward compatible)\n" +
 			"CLI flags override YAML values when both are provided.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Process hardening is the FIRST thing start does: before the
+			// configuration (which may name secret references) is read, before
+			// the budget, before anything protected exists, so nothing this
+			// process ever holds is readable by a debugger or a same-user
+			// process through ptrace or /proc/<pid>/mem (go-qrdb#554). A
+			// refusal is fatal. An honoured opt-out is carried to runStart,
+			// which records it in the compliance audit trail once that trail
+			// exists.
+			hardening, herr := hardenSecureProcess(slog.Default())
+			if herr != nil {
+				return herr
+			}
+			f.processHardening = hardening
+
 			if err := resolveStartFlags(cmd, f); err != nil {
 				return err
 			}
@@ -922,7 +941,7 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 // hardenSecureProcess is indirected for the same reason: secure.HardenProcess
 // makes the calling process non-dumpable (Linux) or refuses every later
 // debugger attach (macOS), and neither can be undone, so the test binary that
-// drives runStart must not apply it to itself. TestMain doubles it; the real
+// drives the start command must not apply it to itself. TestMain doubles it; the real
 // mechanism is proven from a subprocess in pkg/secure.
 var (
 	hardenSecureProcess    = secure.HardenProcess
@@ -987,14 +1006,6 @@ func recordSecureMemoryWipe(err *error) {
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
 func runStart(f *startFlags) (err error) {
-	// Process hardening comes before the budget and before anything else, so
-	// no protected memory exists yet while this process is still readable by a
-	// debugger or a same-user process through /proc/<pid>/mem (go-qrdb#554).
-	// A refusal is fatal: a node that holds keys must not run inspectable
-	// unless the operator opted out explicitly, and the opt-out is logged.
-	if herr := hardenSecureProcess(slog.Default()); herr != nil {
-		return herr
-	}
 	budgetMiB := f.secureMemoryBudgetMiB
 	resolved, rerr := resolveSecureMemoryBudget(budgetMiB)
 	if rerr != nil {
@@ -1670,6 +1681,15 @@ func runStart(f *startFlags) (err error) {
 			)
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
+
+			// A node that runs inspectable does so on the record: the opt-out
+			// honoured at the top of start is written to the compliance trail
+			// the moment the trail exists, and a node that cannot record it
+			// does not run.
+			if err := auditInspectionOptOut(sigCtx, complianceAudit, f.processHardening); err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
+			}
 
 			// Under auth.mtls_binding_policy "required" every user store
 			// refuses any change that would lock the bootstrap admin out of

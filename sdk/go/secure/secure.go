@@ -69,8 +69,21 @@ type (
 	NestedBorrowError = secure.NestedBorrowError
 	EmptyBorrowError  = secure.EmptyBorrowError
 
-	ProcessHardeningError        = secure.ProcessHardeningError
-	ProcessInspectionOptOutError = secure.ProcessInspectionOptOutError
+	ProcessHardeningError               = secure.ProcessHardeningError
+	ProcessInspectionOptOutError        = secure.ProcessInspectionOptOutError
+	ProcessInspectionOptOutRefusedError = secure.ProcessInspectionOptOutRefusedError
+	ProcessTracedError                  = secure.ProcessTracedError
+)
+
+// ProcessHardening is the SDK re-export of secure.ProcessHardening: what
+// HardenProcess did to the process.
+type ProcessHardening = secure.ProcessHardening
+
+// The HardenProcess outcomes, re-exported from secure.
+const (
+	ProcessHardened             = secure.ProcessHardened
+	ProcessInspectionAllowed    = secure.ProcessInspectionAllowed
+	ProcessHardeningUnavailable = secure.ProcessHardeningUnavailable
 )
 
 // AllowProcessInspectionEnv is the SDK re-export of
@@ -286,8 +299,12 @@ func NewCallbackProvider(fn func(ctx context.Context, prompt string) ([]byte, er
 // SetAllocator it belongs to the BINARY that owns the process: call it once
 // at startup, before anything constructs a Buffer or Secret, so that a
 // debugger or a same-user process cannot read protected memory through ptrace
-// or /proc/<pid>/mem. cmd/qrdbd/start.go's runStart is the reference wiring.
-func HardenProcess(logger *slog.Logger) error { return secure.HardenProcess(logger) }
+// or /proc/<pid>/mem. A binary with an audit trail records an outcome of
+// ProcessInspectionAllowed there. cmd/qrdbd's start command is the reference
+// wiring.
+func HardenProcess(logger *slog.Logger) (ProcessHardening, error) {
+	return secure.HardenProcess(logger)
+}
 
 // NewAllocatorWithinRLimit is the SDK re-export of
 // enclave.NewAllocatorWithinRLimit. It builds a locked-memory budget of

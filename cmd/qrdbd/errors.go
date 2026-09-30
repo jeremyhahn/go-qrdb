@@ -778,3 +778,19 @@ func (e *SealedSMStoragePlaintextError) Error() string {
 
 // Unwrap returns the registry's refusal.
 func (e *SealedSMStoragePlaintextError) Unwrap() error { return e.Err }
+
+// InspectionOptOutAuditError is returned by start when the process-inspection
+// opt-out was honoured but the compliance audit trail refused the record of
+// it. The node does not run inspectable off the record.
+type InspectionOptOutAuditError struct {
+	Err error
+}
+
+// Error implements the error interface.
+func (e *InspectionOptOutAuditError) Error() string {
+	return "qrdbd: process inspection hardening is disabled by environment, and the audit trail refused the record of it: " +
+		e.Err.Error()
+}
+
+// Unwrap returns the audit sink's error.
+func (e *InspectionOptOutAuditError) Unwrap() error { return e.Err }

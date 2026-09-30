@@ -580,6 +580,19 @@ are not reconstructed here — their history is in the git log.
   embedding binaries apply the same posture at their own startup. Operators:
   `gdb -p`/`dlv attach` now need the opt-out, a crash writes no core file, and
   non-root monitoring agents lose `qrdbd`'s `/proc/<pid>/` entries.
+  Hardening is the first statement of the start command, before any
+  configuration is read. A tracer already attached (`TracerPid` in
+  `/proc/self/status` not 0) fails start with `*ProcessTracedError`. In FIPS
+  140-3 mode the opt-out is refused (`*ProcessInspectionOptOutRefusedError`),
+  and an honoured opt-out is written to the compliance audit trail
+  (`disable-inspection-hardening`); a node that cannot record it does not run.
+  `HardenProcess` returns the outcome (`ProcessHardened`,
+  `ProcessInspectionAllowed`, `ProcessHardeningUnavailable`) with the error.
+- **The `qrdb` desktop and CLI binary hardens itself the same way** (#554). It
+  unseals barriers and reads passphrases, PINs and shares too, so it calls
+  `secure.HardenProcess` before the GUI/CLI branch, honours the same
+  `QRDB_SECURE_ALLOW_PROCESS_INSPECTION` opt-out, and exits 1 on a refusal. Its
+  warning goes to standard error so it never mixes into a command's output.
 
 ### Known limits
 

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+
 	securesdk "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
@@ -29,12 +31,23 @@ import (
 // it would make this test binary non-dumpable for the rest of its life. The
 // mechanism itself is proven from a subprocess in pkg/secure.
 
+// The opt-out is honoured, or — under a FIPS build, which the nightly FIPS job
+// runs this suite as — refused with the typed error. Both answers are asserted
+// exactly; which one applies is the stack's own FIPS predicate, not a guess.
 func TestHardenProcess_OptOutIsHonouredThroughTheSDK(t *testing.T) {
 	t.Setenv(securesdk.AllowProcessInspectionEnv, "true")
 	var out bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&out, nil))
-	if err := securesdk.HardenProcess(logger); err != nil {
-		t.Fatalf("HardenProcess: %v", err)
+	got, err := securesdk.HardenProcess(logger)
+	if quicraftseal.FIPSEnabled() {
+		var refused *securesdk.ProcessInspectionOptOutRefusedError
+		if !errors.As(err, &refused) {
+			t.Fatalf("HardenProcess in FIPS mode = %v, %v; want *ProcessInspectionOptOutRefusedError", got, err)
+		}
+		return
+	}
+	if err != nil || got != securesdk.ProcessInspectionAllowed {
+		t.Fatalf("HardenProcess = %v, %v; want %v, nil", got, err, securesdk.ProcessInspectionAllowed)
 	}
 	if !strings.Contains(out.String(), "level=WARN") ||
 		!strings.Contains(out.String(), securesdk.AllowProcessInspectionEnv) {
@@ -44,7 +57,7 @@ func TestHardenProcess_OptOutIsHonouredThroughTheSDK(t *testing.T) {
 
 func TestHardenProcess_MalformedOptOutIsATypedRefusalThroughTheSDK(t *testing.T) {
 	t.Setenv(securesdk.AllowProcessInspectionEnv, "maybe")
-	err := securesdk.HardenProcess(nil)
+	_, err := securesdk.HardenProcess(nil)
 	var optErr *securesdk.ProcessInspectionOptOutError
 	if !errors.As(err, &optErr) {
 		t.Fatalf("HardenProcess = %v (%T), want *ProcessInspectionOptOutError", err, err)

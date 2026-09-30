@@ -16,9 +16,7 @@ package main
 
 import (
 	"errors"
-	"log/slog"
 	"math"
-	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-enclave"
@@ -49,83 +47,6 @@ func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (*secure.Allocator, 
 	t.Cleanup(func() {
 		newSecureAllocator, setSecureAllocator, processSecureAllocator, wipeSecureMemory = prevNew, prevSet, prevProcess, prevWipe
 	})
-}
-
-// swapHardenSecureProcess overrides runStart's process-hardening seam for one
-// test, on top of TestMain's binary-wide no-op double.
-func swapHardenSecureProcess(t *testing.T, fn func(*slog.Logger) error) {
-	t.Helper()
-	prev := hardenSecureProcess
-	hardenSecureProcess = fn
-	t.Cleanup(func() { hardenSecureProcess = prev })
-}
-
-// productionHardenSecureProcess is hardenSecureProcess as the package
-// initialised it, captured at package initialisation — before TestMain
-// installs its double.
-var productionHardenSecureProcess = hardenSecureProcess
-
-// The production seam must be the real hardening. A double that shipped
-// would leave every node inspectable with nothing logged (go-qrdb#554).
-func TestHardenSecureProcess_ProductionSeamIsSecureHardenProcess(t *testing.T) {
-	if reflect.ValueOf(productionHardenSecureProcess).Pointer() != reflect.ValueOf(secure.HardenProcess).Pointer() {
-		t.Fatal("hardenSecureProcess is not initialised to secure.HardenProcess")
-	}
-	if reflect.ValueOf(hardenSecureProcess).Pointer() == reflect.ValueOf(secure.HardenProcess).Pointer() {
-		t.Fatal("TestMain must double hardenSecureProcess: the real one cannot be undone in this binary")
-	}
-}
-
-// runStart hardens the process FIRST: a refusal fails startup before the
-// locked-memory budget is installed, so no protected memory is ever created in
-// a process that is still inspectable (go-qrdb#554).
-func TestRunStart_HardeningRefusalFailsBeforeAnySecureMemory(t *testing.T) {
-	refused := &secure.ProcessHardeningError{Mechanism: "test", Err: errors.New("operation not permitted")}
-	var hardened bool
-	swapHardenSecureProcess(t, func(logger *slog.Logger) error {
-		hardened = true
-		if logger == nil {
-			t.Error("runStart must pass its logger to HardenProcess")
-		}
-		return refused
-	})
-	allocated := false
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
-		allocated = true
-		return nil, errors.New("unreachable")
-	}, nil, nil, nil)
-
-	err := runStart(&startFlags{})
-	if !hardened {
-		t.Fatal("runStart did not harden the process")
-	}
-	if !errors.Is(err, refused) {
-		t.Fatalf("runStart error = %v (%T), want the hardening refusal", err, err)
-	}
-	if allocated {
-		t.Fatal("runStart built a locked-memory budget after hardening was refused")
-	}
-}
-
-// A malformed opt-out is a refusal too: runStart must not start inspectable
-// because an operator mistyped the switch.
-func TestRunStart_MalformedInspectionOptOutFailsStartup(t *testing.T) {
-	t.Setenv(secure.AllowProcessInspectionEnv, "sometimes")
-	swapHardenSecureProcess(t, secure.HardenProcess)
-	allocated := false
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
-		allocated = true
-		return nil, errors.New("unreachable")
-	}, nil, nil, nil)
-
-	err := runStart(&startFlags{})
-	var optErr *secure.ProcessInspectionOptOutError
-	if !errors.As(err, &optErr) {
-		t.Fatalf("runStart error = %v (%T), want *ProcessInspectionOptOutError", err, err)
-	}
-	if allocated {
-		t.Fatal("runStart built a locked-memory budget after the opt-out was refused")
-	}
 }
 
 // An unsatisfiable RLIMIT_MEMLOCK budget must fail runStart closed, before

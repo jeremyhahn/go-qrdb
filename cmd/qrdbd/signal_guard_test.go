@@ -463,7 +463,7 @@ func installTestSecureLifecycle() (restore func()) {
 	// Process hardening cannot be undone: a non-dumpable test binary stays so
 	// for every later test. secure_lifecycle_test.go pins that runStart calls
 	// it; pkg/secure proves the mechanism from a subprocess.
-	hardenSecureProcess = func(*slog.Logger) error { return nil }
+	hardenSecureProcess = func(*slog.Logger) (secure.ProcessHardening, error) { return secure.ProcessHardened, nil }
 	newSecureAllocator = enclave.NewAllocator
 	setSecureAllocator = func(*secure.Allocator) error { return nil }
 	wipeSecureMemory = func() (int, error) { return 0, nil }

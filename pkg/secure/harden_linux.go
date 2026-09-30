@@ -16,7 +16,14 @@
 
 package secure
 
-import "golang.org/x/sys/unix"
+import (
+	"bytes"
+	"errors"
+	"os"
+	"strconv"
+
+	"golang.org/x/sys/unix"
+)
 
 // inspectionHardeningSupported reports that Linux has a mechanism.
 const inspectionHardeningSupported = true
@@ -29,4 +36,40 @@ const inspectionMechanism = "prctl(PR_SET_DUMPABLE, 0)"
 // hands /proc/<pid>/* to root, and writes no core file.
 func denyProcessInspection() error {
 	return unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
+}
+
+// procSelfStatus is the file tracerPID reads.
+const procSelfStatus = "/proc/self/status"
+
+// errNoTracerPID is a status file with no parseable TracerPid line.
+var errNoTracerPID = errors.New("secure: " + procSelfStatus + " has no parseable TracerPid line")
+
+// tracerPID returns the PID of the process tracing this one, or 0, from the
+// TracerPid line of /proc/self/status. A process can always read its own
+// status file, even once it is non-dumpable.
+func tracerPID() (int, error) {
+	status, err := os.ReadFile(procSelfStatus)
+	if err != nil {
+		return 0, err
+	}
+	return parseTracerPID(status)
+}
+
+// parseTracerPID extracts the TracerPid value from a /proc/<pid>/status body.
+// A missing line or a value that is not a non-negative integer is an error,
+// never 0: "not traced" must be read, not assumed.
+func parseTracerPID(status []byte) (int, error) {
+	const key = "TracerPid:"
+	for _, line := range bytes.Split(status, []byte("\n")) {
+		rest, ok := bytes.CutPrefix(line, []byte(key))
+		if !ok {
+			continue
+		}
+		pid, err := strconv.Atoi(string(bytes.TrimSpace(rest)))
+		if err != nil || pid < 0 {
+			return 0, errNoTracerPID
+		}
+		return pid, nil
+	}
+	return 0, errNoTracerPID
 }

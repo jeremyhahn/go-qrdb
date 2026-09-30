@@ -155,3 +155,32 @@ func (e *ProcessInspectionOptOutError) Error() string {
 func (e *ProcessInspectionOptOutError) Unwrap() error {
 	return e.Err
 }
+
+// ProcessInspectionOptOutRefusedError is returned by HardenProcess when
+// AllowProcessInspectionEnv is set in a mode that forbids it. Mode names the
+// mode, for example "FIPS 140-3". The process is NOT hardened: the opt-out is
+// refused rather than silently ignored, so the operator learns that the
+// debugging session they asked for cannot happen in this mode.
+type ProcessInspectionOptOutRefusedError struct {
+	Mode string
+}
+
+// Error implements the error interface.
+func (e *ProcessInspectionOptOutRefusedError) Error() string {
+	return "secure: " + AllowProcessInspectionEnv + " is refused in " + e.Mode +
+		" mode; a process in this mode must not be inspectable, so unset it"
+}
+
+// ProcessTracedError is returned by HardenProcess when a tracer is already
+// attached to the process. Marking the process non-dumpable stops new
+// attaches but leaves an existing tracer its access, so the process refuses to
+// continue. TracerPID is the tracer's process ID.
+type ProcessTracedError struct {
+	TracerPID int
+}
+
+// Error implements the error interface.
+func (e *ProcessTracedError) Error() string {
+	return "secure: process is already traced by pid " + strconv.Itoa(e.TracerPID) +
+		"; detach the tracer, or set " + AllowProcessInspectionEnv + "=true to debug"
+}
