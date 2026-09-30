@@ -2017,7 +2017,7 @@ func (m *mockTSService) GetRetentionPolicy(metric string) (*timeseries.Retention
 	return &timeseries.RetentionPolicy{Duration: 24 * time.Hour}, nil
 }
 
-func (m *mockTSService) SetRetentionPolicy(metric string, policy *timeseries.RetentionPolicy) error {
+func (m *mockTSService) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetFn != nil {
 		return m.setRetFn(metric, policy)
 	}

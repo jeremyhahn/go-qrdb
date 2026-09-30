@@ -298,7 +298,7 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
-		result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+		result, err := propose(ctx, s.host, s.shardID, cmd)
 		if err != nil {
 			return nil, translateProposeError(err)
 		}
@@ -365,7 +365,7 @@ func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode write
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
-		result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+		result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 		if err != nil {
 			return nil, translateProposeError(err)
 		}
@@ -493,7 +493,7 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 		shardID = req.ShardID
 	}
 
-	result, err := s.host.SyncPropose(ctx, shardID, cmd)
+	result, err := propose(ctx, s.host, shardID, cmd)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -1183,18 +1183,30 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 		if encErr != nil {
 			return nil, &EncodeRequestError{Err: encErr}
 		}
-		proposed, err := s.host.SyncPropose(ctx, s.shardID, cmd)
-		if err == nil {
-			// A not-configured subsystem arrives in the RESULT, not as a Raft
-			// error, so a chunk that applied nothing would otherwise be counted
-			// as imported (go-qrdb#62). Treated exactly as a proposal failure
-			// from here: returned in transactional mode, per-row in the other.
+		proposed, err := propose(ctx, s.host, s.shardID, cmd)
+		if err != nil {
+			err = translateProposeError(err)
+		} else {
+			// A not-configured subsystem -- or a refused write guard, such as
+			// the drop fence of a database being dropped -- arrives in the
+			// RESULT, not as a Raft error, so a chunk that applied nothing
+			// would otherwise be counted as imported (go-qrdb#62). Treated as
+			// a failure from here: returned in transactional mode, per-row in
+			// the other. It is NOT wrapped as a proposal failure: the entry
+			// committed and provably stored nothing, which a ProposeError
+			// (outcome unknown) would misreport.
 			err = checkResultError(proposed)
 		}
 		if err != nil {
 			if transactional {
-				// For transactional mode, return the error directly.
-				return nil, translateProposeError(err)
+				// For transactional mode, return the error directly. Not
+				// translateProposeError: checkResultError above already
+				// returns a fully-typed application error (a refused guard,
+				// a capability/conflict/unavailable/fault/corrupt kind),
+				// and wrapping it as a ProposeError would misreport a
+				// provably-stored-nothing outcome as one that may have
+				// landed (see the comment above this block).
+				return nil, err
 			}
 			// For non-transactional mode, mark this chunk's rows as failed
 			// and continue with the remaining chunks.

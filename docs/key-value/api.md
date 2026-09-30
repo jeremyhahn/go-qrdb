@@ -28,6 +28,12 @@ Go call on the SDK client.
 | Compact | `POST /kv/compact` | `Compact` | `mvcc.Compact` | `qrdb_mvcc_compact` | `Client.MVCC().Compact` | `mvcc:compact` |
 | Restore to revision | `POST /kv/restore` | `RestoreToRevision` | `mvcc.RestoreToRevision` | `qrdb_mvcc_restore_to_revision` | `Client.MVCC().RestoreToRevision` | `mvcc:restore` |
 
+**Put with lease on a state machine without revision history.** On the default
+`pebble` state machine the lease is attached and the value stored, but there is
+no revision to report: every transport answers with `create_revision`,
+`mod_revision` and `version` all `0`. See
+[../leases/api.md](../leases/api.md).
+
 ## The guarded write verbs
 
 `PutIfAbsent`, `CompareAndDelete` and `CompareAndSwap` are conditional writes

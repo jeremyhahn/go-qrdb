@@ -772,6 +772,14 @@ func TestDropInProgressError_Message(t *testing.T) {
 	}
 }
 
+func TestDroppingError_Message(t *testing.T) {
+	err := &DroppingError{Name: "orders"}
+	want := `database: database is being dropped: "orders"`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
 func TestKeyspaceReclaimError_Message(t *testing.T) {
 	err := &KeyspaceReclaimError{Name: "orders", TenantID: "acme", Err: io.ErrUnexpectedEOF}
 	want := `database: failed to reclaim the shared-store keyspace of database "orders" (tenant: "acme"): unexpected EOF`

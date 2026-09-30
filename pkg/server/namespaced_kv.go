@@ -39,6 +39,7 @@ import (
 // the namespace. The guard belongs wherever the key is in the form the caller
 // wrote it, which for a namespaced view is here.
 type namespacedKVService struct {
+	dbGuard
 	inner  service.KVServicer
 	prefix string // namespace + "/"
 }
@@ -57,6 +58,7 @@ func newNamespacedKVService(inner service.KVServicer, namespace string) *namespa
 
 // Put stores a key-value pair under the namespace prefix.
 func (s *namespacedKVService) Put(ctx context.Context, key string, value []byte) error {
+	ctx = s.scope(ctx)
 	return s.inner.Put(ctx, s.prefix+key, value)
 }
 
@@ -67,18 +69,21 @@ func (s *namespacedKVService) Put(ctx context.Context, key string, value []byte)
 // key, and one tenant's write must never be declined because another tenant
 // already used that name.
 func (s *namespacedKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	ctx = s.scope(ctx)
 	return s.inner.PutIfAbsent(ctx, s.prefix+key, value)
 }
 
 // CompareAndDelete removes the namespaced key only when its stored value
 // still equals expected.
 func (s *namespacedKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	ctx = s.scope(ctx)
 	return s.inner.CompareAndDelete(ctx, s.prefix+key, expected)
 }
 
 // CompareAndSwap replaces the prefixed key's value only when it still equals
 // expected.
 func (s *namespacedKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	ctx = s.scope(ctx)
 	return s.inner.CompareAndSwap(ctx, s.prefix+key, expected, next)
 }
 
@@ -89,6 +94,7 @@ func (s *namespacedKVService) Get(ctx context.Context, key string) ([]byte, erro
 
 // Delete removes a key under the namespace prefix.
 func (s *namespacedKVService) Delete(ctx context.Context, key string) error {
+	ctx = s.scope(ctx)
 	return s.inner.Delete(ctx, s.prefix+key)
 }
 
@@ -157,12 +163,14 @@ func (s *namespacedKVService) ScanStale(ctx context.Context, prefix string) (map
 // PutWithMode stores a key-value pair under the namespace prefix with the
 // specified write durability.
 func (s *namespacedKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
+	ctx = s.scope(ctx)
 	return s.inner.PutWithMode(ctx, s.prefix+key, value, mode)
 }
 
 // DeleteWithMode removes a key under the namespace prefix with the specified
 // write durability.
 func (s *namespacedKVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
+	ctx = s.scope(ctx)
 	return s.inner.DeleteWithMode(ctx, s.prefix+key, mode)
 }
 
@@ -200,6 +208,7 @@ func (s *namespacedKVService) ExistsWithConsistency(ctx context.Context, key str
 
 // PutEntity stores a typed entity under the namespace prefix.
 func (s *namespacedKVService) PutEntity(ctx context.Context, req *service.PutEntityRequest) (*service.PutEntityResponse, error) {
+	ctx = s.scope(ctx)
 	prefixed := *req
 	prefixed.ID = s.prefix + req.ID
 	return s.inner.PutEntity(ctx, &prefixed)
@@ -214,6 +223,7 @@ func (s *namespacedKVService) GetEntity(ctx context.Context, req *service.GetEnt
 
 // DeleteEntity removes a typed entity under the namespace prefix.
 func (s *namespacedKVService) DeleteEntity(ctx context.Context, req *service.DeleteEntityRequest) (*service.DeleteEntityResponse, error) {
+	ctx = s.scope(ctx)
 	prefixed := *req
 	prefixed.ID = s.prefix + req.ID
 	return s.inner.DeleteEntity(ctx, &prefixed)

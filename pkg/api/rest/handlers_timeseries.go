@@ -546,7 +546,7 @@ func (s *Server) handleTSSetRetention(w http.ResponseWriter, r *http.Request, me
 		Aggregation: agg,
 	}
 
-	if err := tsSvc.SetRetentionPolicy(metric, policy); err != nil {
+	if err := tsSvc.SetRetentionPolicy(ctx, metric, policy); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

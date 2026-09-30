@@ -131,6 +131,40 @@ type Placement struct {
 	// placement table so follower replicas materialized by the reconciler honor
 	// the same WAL routing the leader chose at create time.
 	DedicatedWAL bool `json:"dedicated_wal,omitempty"`
+
+	// Dropping is the replicated drop fence for a dedicated-raft database
+	// (go-qrdb#482). DatabaseService sets it, through Store.SetDropping,
+	// BEFORE the drop reclaims anything the database owns in the shared
+	// system store; every node's own RaftBackendFactory.Services checks it
+	// -- on both the cold-start path and a shard already cached from before
+	// the drop began -- and refuses new operations for the (tenant,
+	// database) pair with database.DroppingError while it is set. Because
+	// the placement table is replicated, this is the one fence in the drop
+	// path that is NOT node-local: it holds on every replica, survives a
+	// leader change, and (like the rest of the placement entry) survives a
+	// restart. It is removed together with the whole entry at the end of a
+	// successful drop; a failed reclamation clears it via another
+	// Store.SetDropping call, exactly as database.Manager's own local
+	// fence is cleared, so a failed drop stays retryable.
+	Dropping bool `json:"dropping,omitempty"`
+
+	// DropCommitted marks that SOME node's database.Manager has already
+	// completed the local, node-level half of this drop (go-qrdb#482 round
+	// 3): the database's data reclaimed, its backend closed, its catalog
+	// entry removed. It is set once, via Store.MarkDropCommitted, in the
+	// narrow window between that local success and this placement entry's
+	// own removal (finishRaftPlacementTeardown) -- the one window in which a
+	// later retry landing on a DIFFERENT node needs to tell two identically
+	// shaped failures apart: "manager.DropForTenant returned NotFoundError
+	// because an earlier attempt already finished tearing this database
+	// down" versus "manager.DropForTenant returned NotFoundError because
+	// THIS node never had the local record to begin with" (a request that
+	// reaches a non-authoritative replica). Only the first is safe to treat
+	// as "finish the placement teardown"; treating the second the same way
+	// silently reports success for a drop that never reclaimed anything or
+	// released the tenant's quota. It is removed together with the whole
+	// entry at the end of a successful drop, exactly like Dropping.
+	DropCommitted bool `json:"drop_committed,omitempty"`
 }
 
 // Leader returns the leader replica and true, or a zero Replica and false when

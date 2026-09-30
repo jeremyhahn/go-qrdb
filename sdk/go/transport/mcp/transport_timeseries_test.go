@@ -178,7 +178,7 @@ func (m *mockTSSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, e
 	return m.retentionResp, nil
 }
 
-func (m *mockTSSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (m *mockTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return m.setRetentErr
 }
 

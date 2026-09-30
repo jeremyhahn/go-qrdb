@@ -29,6 +29,7 @@ import (
 // listings. Metric names are the keyspace for the time-series engine, so
 // prefixing the metric isolates each database's series.
 type namespacedTimeSeriesService struct {
+	dbGuard
 	inner  service.TimeSeriesServicer
 	prefix string
 }
@@ -81,11 +82,13 @@ func (s *namespacedTimeSeriesService) stripPointPtrs(points []*timeseries.DataPo
 
 // Write stores a single data point under the prefixed metric.
 func (s *namespacedTimeSeriesService) Write(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error {
+	ctx = s.scope(ctx)
 	return s.inner.Write(ctx, s.prefix+metric, value, timestamp, tags)
 }
 
 // WriteBatch stores multiple data points under prefixed metrics.
 func (s *namespacedTimeSeriesService) WriteBatch(ctx context.Context, points []timeseries.DataPoint) error {
+	ctx = s.scope(ctx)
 	return s.inner.WriteBatch(ctx, s.prefixPoints(points))
 }
 
@@ -121,6 +124,7 @@ func (s *namespacedTimeSeriesService) AggregateWithConsistency(ctx context.Conte
 
 // WritePoint stores a single validated data point under the prefixed metric.
 func (s *namespacedTimeSeriesService) WritePoint(ctx context.Context, point *timeseries.DataPoint) error {
+	ctx = s.scope(ctx)
 	if point == nil {
 		return s.inner.WritePoint(ctx, point)
 	}
@@ -183,6 +187,7 @@ func (s *namespacedTimeSeriesService) QueryRichWithConsistency(ctx context.Conte
 
 // DeleteSeries deletes data points for a prefixed metric.
 func (s *namespacedTimeSeriesService) DeleteSeries(ctx context.Context, req *timeseries.DeleteRequest) error {
+	ctx = s.scope(ctx)
 	if req == nil {
 		return s.inner.DeleteSeries(ctx, req)
 	}
@@ -197,8 +202,8 @@ func (s *namespacedTimeSeriesService) GetRetentionPolicy(metric string) (*timese
 }
 
 // SetRetentionPolicy sets the retention policy for a prefixed metric.
-func (s *namespacedTimeSeriesService) SetRetentionPolicy(metric string, policy *timeseries.RetentionPolicy) error {
-	return s.inner.SetRetentionPolicy(s.prefix+metric, policy)
+func (s *namespacedTimeSeriesService) SetRetentionPolicy(ctx context.Context, metric string, policy *timeseries.RetentionPolicy) error {
+	return s.inner.SetRetentionPolicy(s.scope(ctx), s.prefix+metric, policy)
 }
 
 // ListMetrics returns metric names matching the prefixed search prefix, with

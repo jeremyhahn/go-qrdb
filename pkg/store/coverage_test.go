@@ -41,119 +41,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// pebble.go: evaluateCompareResult - all branches
-// ---------------------------------------------------------------------------
-
-func TestEvaluateCompareResult_Equal(t *testing.T) {
-	if !evaluateCompareResult(0, 0) {
-		t.Fatal("expected true for Equal with cmp=0")
-	}
-	if evaluateCompareResult(0, 1) {
-		t.Fatal("expected false for Equal with cmp=1")
-	}
-}
-
-func TestEvaluateCompareResult_Greater(t *testing.T) {
-	if !evaluateCompareResult(1, 1) {
-		t.Fatal("expected true for Greater with cmp=1")
-	}
-	if evaluateCompareResult(1, 0) {
-		t.Fatal("expected false for Greater with cmp=0")
-	}
-	if evaluateCompareResult(1, -1) {
-		t.Fatal("expected false for Greater with cmp=-1")
-	}
-}
-
-func TestEvaluateCompareResult_Less(t *testing.T) {
-	if !evaluateCompareResult(2, -1) {
-		t.Fatal("expected true for Less with cmp=-1")
-	}
-	if evaluateCompareResult(2, 0) {
-		t.Fatal("expected false for Less with cmp=0")
-	}
-	if evaluateCompareResult(2, 1) {
-		t.Fatal("expected false for Less with cmp=1")
-	}
-}
-
-func TestEvaluateCompareResult_NotEqual(t *testing.T) {
-	if !evaluateCompareResult(3, 1) {
-		t.Fatal("expected true for NotEqual with cmp=1")
-	}
-	if !evaluateCompareResult(3, -1) {
-		t.Fatal("expected true for NotEqual with cmp=-1")
-	}
-	if evaluateCompareResult(3, 0) {
-		t.Fatal("expected false for NotEqual with cmp=0")
-	}
-}
-
-func TestEvaluateCompareResult_InvalidResult(t *testing.T) {
-	if evaluateCompareResult(99, 0) {
-		t.Fatal("expected false for unknown result byte")
-	}
-	if evaluateCompareResult(255, 1) {
-		t.Fatal("expected false for unknown result byte 255")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// pebble.go: evaluateCompareInt - all branches
-// ---------------------------------------------------------------------------
-
-func TestEvaluateCompareInt_Equal(t *testing.T) {
-	if !evaluateCompareInt(0, 5, 5) {
-		t.Fatal("expected true for Equal 5==5")
-	}
-	if evaluateCompareInt(0, 5, 6) {
-		t.Fatal("expected false for Equal 5==6")
-	}
-}
-
-func TestEvaluateCompareInt_Greater(t *testing.T) {
-	if !evaluateCompareInt(1, 10, 5) {
-		t.Fatal("expected true for Greater 10>5")
-	}
-	if evaluateCompareInt(1, 5, 10) {
-		t.Fatal("expected false for Greater 5>10")
-	}
-	if evaluateCompareInt(1, 5, 5) {
-		t.Fatal("expected false for Greater 5>5")
-	}
-}
-
-func TestEvaluateCompareInt_Less(t *testing.T) {
-	if !evaluateCompareInt(2, 3, 5) {
-		t.Fatal("expected true for Less 3<5")
-	}
-	if evaluateCompareInt(2, 5, 3) {
-		t.Fatal("expected false for Less 5<3")
-	}
-	if evaluateCompareInt(2, 5, 5) {
-		t.Fatal("expected false for Less 5<5")
-	}
-}
-
-func TestEvaluateCompareInt_NotEqual(t *testing.T) {
-	if !evaluateCompareInt(3, 5, 6) {
-		t.Fatal("expected true for NotEqual 5!=6")
-	}
-	if evaluateCompareInt(3, 5, 5) {
-		t.Fatal("expected false for NotEqual 5!=5")
-	}
-}
-
-func TestEvaluateCompareInt_InvalidResult(t *testing.T) {
-	if evaluateCompareInt(99, 5, 5) {
-		t.Fatal("expected false for unknown result byte")
-	}
-	if evaluateCompareInt(255, 0, 0) {
-		t.Fatal("expected false for unknown result byte 255")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // pebble.go: pebbleEvaluateCompare - additional target branches
 // ---------------------------------------------------------------------------
 
@@ -175,16 +62,16 @@ func TestPebbleEvaluateCompare_RevisionTargetsFailClosed(t *testing.T) {
 		compare protocol.DecodedCompare
 	}{
 		{"create revision equal 0", protocol.DecodedCompare{
-			Key: []byte("cr-key"), Target: compareTargetCreateRevision, Result: 0, CreateRevision: 0,
+			Key: []byte("cr-key"), Target: protocol.CompareTargetCreateRevision, Result: 0, CreateRevision: 0,
 		}},
 		{"create revision equal 5", protocol.DecodedCompare{
-			Key: []byte("cr-key"), Target: compareTargetCreateRevision, Result: 0, CreateRevision: 5,
+			Key: []byte("cr-key"), Target: protocol.CompareTargetCreateRevision, Result: 0, CreateRevision: 5,
 		}},
 		{"mod revision equal 0", protocol.DecodedCompare{
-			Key: []byte("cr-key"), Target: compareTargetModRevision, Result: 0, ModRevision: 0,
+			Key: []byte("cr-key"), Target: protocol.CompareTargetModRevision, Result: 0, ModRevision: 0,
 		}},
 		{"mod revision equal 3", protocol.DecodedCompare{
-			Key: []byte("cr-key"), Target: compareTargetModRevision, Result: 0, ModRevision: 3,
+			Key: []byte("cr-key"), Target: protocol.CompareTargetModRevision, Result: 0, ModRevision: 3,
 		}},
 	} {
 		if pebbleEvaluateCompare(s, readBatch(t, s), tc.compare) {
@@ -204,13 +91,13 @@ func TestPebbleEvaluateCompare_ValueAndVersionStillWork(t *testing.T) {
 
 	// Version: 1 when the key exists, 0 when it does not.
 	present := protocol.DecodedCompare{
-		Key: []byte("vv-key"), Target: compareTargetVersion, Result: 0, Version: 1,
+		Key: []byte("vv-key"), Target: protocol.CompareTargetVersion, Result: 0, Version: 1,
 	}
 	if !pebbleEvaluateCompare(s, readBatch(t, s), present) {
 		t.Error("version compare on an existing key should succeed (version 1)")
 	}
 	absent := protocol.DecodedCompare{
-		Key: []byte("vv-missing"), Target: compareTargetVersion, Result: 0, Version: 0,
+		Key: []byte("vv-missing"), Target: protocol.CompareTargetVersion, Result: 0, Version: 0,
 	}
 	if !pebbleEvaluateCompare(s, readBatch(t, s), absent) {
 		t.Error("version compare on a missing key should succeed (version 0)")
@@ -218,13 +105,13 @@ func TestPebbleEvaluateCompare_ValueAndVersionStillWork(t *testing.T) {
 
 	// Value compares against the stored bytes.
 	match := protocol.DecodedCompare{
-		Key: []byte("vv-key"), Target: compareTargetValue, Result: 0, Value: []byte("val"),
+		Key: []byte("vv-key"), Target: protocol.CompareTargetValue, Result: 0, Value: []byte("val"),
 	}
 	if !pebbleEvaluateCompare(s, readBatch(t, s), match) {
 		t.Error("value compare should succeed for the stored value")
 	}
 	mismatch := protocol.DecodedCompare{
-		Key: []byte("vv-key"), Target: compareTargetValue, Result: 0, Value: []byte("other"),
+		Key: []byte("vv-key"), Target: protocol.CompareTargetValue, Result: 0, Value: []byte("other"),
 	}
 	if pebbleEvaluateCompare(s, readBatch(t, s), mismatch) {
 		t.Error("value compare should fail for a different value")
@@ -1069,8 +956,8 @@ func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
 		key       string
 		resultKey string
 	}{
-		{"create revision", compareTargetCreateRevision, "cr-txn-key", "cr-result"},
-		{"mod revision", compareTargetModRevision, "mr-txn-key", "mr-result"},
+		{"create revision", protocol.CompareTargetCreateRevision, "cr-txn-key", "cr-result"},
+		{"mod revision", protocol.CompareTargetModRevision, "mr-txn-key", "mr-result"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openExtendedStore(t)
@@ -1109,7 +996,7 @@ func TestPebbleStateMachine_Transaction_ValueCompareStillCommits(t *testing.T) {
 	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("val-txn-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	compare := mustEncode(protocol.EncodeCompare([]byte("val-txn-key"), compareTargetValue, 0 /* Equal */, []byte("val"), 0, 0, 0))
+	compare := mustEncode(protocol.EncodeCompare([]byte("val-txn-key"), protocol.CompareTargetValue, 0 /* Equal */, []byte("val"), 0, 0, 0))
 	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("val-result"), []byte("ok"), nil, 0))
 	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})

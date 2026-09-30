@@ -151,6 +151,13 @@ The Go surface is in `pkg/clusterenroll`, re-exported from
 
 See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable).
 
+The cluster feature gate is not an API surface either: a node refused under a
+feature the cluster activated fails at startup with
+`*featuregate.UnsupportedFeatureError`. Its Go surface, for an embedder
+composing its own node, is `pkg/cluster/featuregate` and
+`(*sdk.Client).StartFeatureGate` (see
+[engineering.md](engineering.md#cluster-feature-gate--pkgclusterfeaturegate)).
+
 ## Pagination
 
 None of these results are paginated. `Peers`, `GetTopology` and the imbalance

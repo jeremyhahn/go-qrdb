@@ -15,7 +15,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -69,6 +71,20 @@ type ReclaimKV interface {
 
 	// Delete removes one key. Deleting an absent key is success.
 	Delete(ctx context.Context, key string) error
+
+	// Put writes one key. The teardown writes exactly one: the drop fence
+	// (DropFenceKey), before it deletes anything.
+	Put(ctx context.Context, key string, value []byte) error
+
+	// Get reads one key; an absent key is *KeyNotFoundError.
+	Get(ctx context.Context, key string) ([]byte, error)
+
+	// PutIfAbsent, CompareAndSwap and CompareAndDelete are the guarded verbs
+	// a create uses to claim the fence marker: from absent or from the
+	// dropped tombstone, and never over another live incarnation.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
 }
 
 // Compile-time check: the production KV engines are what the teardown is
@@ -133,6 +149,32 @@ type StoreResolver interface {
 	// database with a store of its own (whose composite prefix is unused
 	// wherever it is scanned, making the scan a no-op).
 	ReclaimTarget(ctx context.Context, tenantID string) (target ReclaimTarget, dedicated bool, err error)
+
+	// FenceTarget returns the store holding the (tenantID, db) database's
+	// data, for its drop fence. It is database-scoped where ReclaimTarget is
+	// tenant-scoped because one more isolation mode matters here: a
+	// dedicated-raft database's data is in its OWN shard, so that is where
+	// the fence its writes are guarded by must be written.
+	//
+	// dedicated=false means "the system store". dedicated=true with a nil
+	// store.KV means the database's own store does not exist (yet, or any
+	// more): there is nothing in it to fence, and nothing to unfence. An
+	// error is never answered with the system store: a fence written where
+	// the database's writes are not guarded against it fences nothing.
+	FenceTarget(ctx context.Context, tenantID, db string) (store FenceStore, dedicated bool, err error)
+}
+
+// FenceStore is the store a database's drop fence lives in.
+type FenceStore struct {
+	// KV is the store. nil when the database's own store does not exist.
+	KV ReclaimKV
+
+	// PerDatabase reports that the store belongs to this database alone --
+	// a dedicated-raft database's shard. A database created again under the
+	// same name gets a new store, so the store itself is the incarnation and
+	// the fence marker carries none: it is absent while the database is live
+	// (see DropFenceGuard).
+	PerDatabase bool
 }
 
 // KeyspaceReclaimService reclaims the data a dropped database owns in a store
@@ -229,6 +271,163 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 	}
 	ns := tenant.ComposeNamespace(tenantID, db)
 	return s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns), ns)
+}
+
+// FenceDatabaseKeyspace fences the (tenantID, db) database in the store
+// holding its data: its fence marker (DropFenceKey) is set to the dropped
+// tombstone, which no incarnation's guard accepts. See the drop-fence
+// section of drop_fence.go: once it returns, every write to the database
+// that had not applied is refused by the state machine, in the same command
+// as the write.
+//
+// A store that cannot be resolved FAILS the fence rather than falling back
+// to the system store: a fence written where the database's writes are not
+// guarded against it fences nothing.
+func (s *KeyspaceReclaimService) FenceDatabaseKeyspace(ctx context.Context, tenantID, db string) error {
+	if db == "" {
+		return &ReclaimScopeError{TenantID: tenantID, Database: db}
+	}
+	store, err := s.fenceTarget(ctx, tenantID, db)
+	if err != nil {
+		return err
+	}
+	if store.KV == nil {
+		return &DropFenceError{TenantID: tenantID, Database: db, Op: "write", Err: &FenceStoreMissingError{TenantID: tenantID, Database: db}}
+	}
+	if err := store.KV.Put(ctx, DropFenceKey(tenantID, db), dropFenceTombstone); err != nil {
+		return &DropFenceError{TenantID: tenantID, Database: db, Op: "write", Err: err}
+	}
+	return nil
+}
+
+// UnfenceDatabaseKeyspace makes incarnation the live incarnation of the
+// (tenantID, db) database in the store holding its data: the one whose
+// writes the store accepts. Create calls it with a new incarnation, before
+// the new database is resolvable -- which is what refuses every handle of
+// an earlier incarnation of the name -- and a failed drop calls it with the
+// database's own incarnation to roll the fence back.
+//
+// An empty incarnation -- a database created before incarnations existed,
+// or with no store to mark -- and a store that belongs to the database alone
+// both mean "live is marker-absent", so the marker is removed. A database
+// whose own store does not exist has nothing to mark, which is the case a
+// brand-new dedicated-raft database is in when it is created.
+//
+// The marker is only ever claimed from ABSENT or from the dropped
+// TOMBSTONE, with compare-and-swap, never overwritten. A marker holding
+// another live incarnation is a database of this name created on another
+// node -- the catalog is node-local, the marker is replicated -- and taking
+// it over would refuse every write to that database. That is refused with
+// *database.AlreadyExistsError (Elsewhere set). Marking the incarnation the
+// marker already holds is success, so a retried create or rollback is
+// idempotent.
+func (s *KeyspaceReclaimService) UnfenceDatabaseKeyspace(ctx context.Context, tenantID, db, incarnation string) error {
+	if db == "" {
+		return &ReclaimScopeError{TenantID: tenantID, Database: db}
+	}
+	store, err := s.fenceTarget(ctx, tenantID, db)
+	if err != nil || store.KV == nil {
+		return err
+	}
+	key := DropFenceKey(tenantID, db)
+	if incarnation == "" || store.PerDatabase {
+		return clearMarker(ctx, store.KV, tenantID, db, key)
+	}
+	return claimMarker(ctx, store.KV, tenantID, db, key, []byte(incarnation))
+}
+
+// markerClaimAttempts bounds the claim loop. Each attempt either decides or
+// observes a marker that changed between two of its reads; a marker cannot
+// keep changing without another create or drop of the same name racing it.
+const markerClaimAttempts = 3
+
+// claimMarker sets key to live, from absent or from the tombstone only.
+func claimMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key string, live []byte) error {
+	for attempt := 0; attempt < markerClaimAttempts; attempt++ {
+		stored, err := kv.PutIfAbsent(ctx, key, live)
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+		}
+		if stored {
+			return nil
+		}
+		swapped, err := kv.CompareAndSwap(ctx, key, dropFenceTombstone, live)
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+		}
+		if swapped {
+			return nil
+		}
+		current, present, err := readMarker(ctx, kv, key)
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+		}
+		if !present {
+			continue // removed between our reads: claim it again
+		}
+		if bytes.Equal(current, live) {
+			return nil
+		}
+		if !bytes.Equal(current, dropFenceTombstone) {
+			return &database.AlreadyExistsError{Name: db, Elsewhere: true}
+		}
+	}
+	return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: &MarkerContendedError{Key: key}}
+}
+
+// clearMarker removes key when it holds the tombstone; an absent marker is
+// already clear. A marker holding a live incarnation is another database of
+// this name and is left alone.
+func clearMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key string) error {
+	for attempt := 0; attempt < markerClaimAttempts; attempt++ {
+		deleted, err := kv.CompareAndDelete(ctx, key, dropFenceTombstone)
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "remove", Err: err}
+		}
+		if deleted {
+			return nil
+		}
+		current, present, err := readMarker(ctx, kv, key)
+		if err != nil {
+			return &DropFenceError{TenantID: tenantID, Database: db, Op: "remove", Err: err}
+		}
+		if !present {
+			return nil
+		}
+		if !bytes.Equal(current, dropFenceTombstone) {
+			return &database.AlreadyExistsError{Name: db, Elsewhere: true}
+		}
+	}
+	return &DropFenceError{TenantID: tenantID, Database: db, Op: "remove", Err: &MarkerContendedError{Key: key}}
+}
+
+// readMarker reads key, reporting an absent key as present=false.
+func readMarker(ctx context.Context, kv ReclaimKV, key string) (value []byte, present bool, err error) {
+	v, err := kv.Get(ctx, key)
+	if err != nil {
+		var notFound *KeyNotFoundError
+		if errors.As(err, &notFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return v, true, nil
+}
+
+// fenceTarget returns the store holding (tenantID, db)'s data: the system
+// store unless the resolver names a dedicated one.
+func (s *KeyspaceReclaimService) fenceTarget(ctx context.Context, tenantID, db string) (FenceStore, error) {
+	if s.resolver == nil {
+		return FenceStore{KV: s.system.KV}, nil
+	}
+	store, dedicated, err := s.resolver.FenceTarget(ctx, tenantID, db)
+	if err != nil {
+		return FenceStore{}, &ReclaimStoreUnavailableError{TenantID: tenantID, Err: err}
+	}
+	if !dedicated {
+		return FenceStore{KV: s.system.KV}, nil
+	}
+	return store, nil
 }
 
 // ReclaimTenantKeyspace deletes everything tenantID owns in the system store:

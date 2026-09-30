@@ -35,6 +35,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -324,11 +326,15 @@ var conditions = []conditionRow{
 	{"consistency unmet", &service.ConsistencyError{Level: "linearizable", Reason: "no quorum"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"PIN not set", pin.ErrPINNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"PIN strategy unset", pin.ErrStrategyNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"replica on a node without the group's features", &featuregate.UnsupportedReplicaError{ShardID: 1, Address: "n3:1", Feature: featuregate.GuardedWrites}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 
 	// --- concurrency ---------------------------------------------------
 	{"transaction conflict", &service.TransactionConflictError{Key: "k"}, wire.StatusAborted, codes.Aborted},
 	{"lock held elsewhere", &lock.LockHeldError{Key: "k", HolderID: "other"}, wire.StatusAborted, codes.Aborted},
 	{"import transaction aborted", &service.ImportTransactionAbortedError{Row: 2, Key: "k"}, wire.StatusAborted, codes.Aborted},
+	{"database mid-drop", &database.DroppingError{Name: "reports"}, wire.StatusAborted, codes.Aborted},
+	{"second drop of the same database", &database.DropInProgressError{Name: "reports"}, wire.StatusAborted, codes.Aborted},
+	{"drop of the default database", &database.DefaultDatabaseDropError{Name: "system"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 
 	// --- history --------------------------------------------------------
 	{"revision compacted away", &service.RevisionCompactedError{Requested: 1, Compacted: 9}, wire.StatusOutOfRange, codes.OutOfRange},

@@ -956,7 +956,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
 	}
 
-	s.wireVolumeStoreResolver()
+	s.wireStoreResolver()
 	s.wireTenantDataProbe()
 	s.wireReclaimStoreResolver()
 	s.wireProvisioningAuthorization()
@@ -998,29 +998,38 @@ func (s *Server) wireTenantDataProbe() {
 	}
 }
 
-// wireVolumeStoreResolver completes the DROP DATABASE reclamation seam for
-// the one isolation mode whose keys are not in the system store.
+// wireStoreResolver completes the DROP DATABASE seam for the isolation modes
+// whose data is not in the system store.
 //
 // lifecycle.BuildServices already wired a service.KeyspaceReclaimService into
 // the database manager over the system store, which is where every
-// shared-store database's keys are. A volume-isolated tenant's databases
-// share a dedicated per-tenant Host instead, and the registry that resolves
-// it only exists here -- so the resolver is attached here, and a reclamation
-// that would otherwise scan the system store and find nothing is routed to
-// the store that actually holds the data (go-qrdb#412).
+// shared-store database's keys are. Two modes put a database's data
+// elsewhere, and the registries that resolve those stores only exist here:
 //
-// It is a no-op without a TenantHostRegistry, because then no volume-isolated
-// tenant can be served at all, and without the reclaim service, because then
-// there is nothing to attach it to.
-func (s *Server) wireVolumeStoreResolver() {
-	if s.opts.keyspaceReclaim == nil || s.opts.tenantHosts == nil {
+//   - a volume-isolated tenant's databases share a dedicated per-tenant Host,
+//     so both the reclamation (go-qrdb#412) and the drop fence go there;
+//   - a raft-isolated tenant's database has a shard of its own, so its drop
+//     fence goes into that shard -- the Raft group its writes are guarded
+//     in.
+//
+// It is a no-op without the reclaim service, because then there is nothing to
+// attach it to, and without either registry, because then every database's
+// data is in the system store the reclaim service already targets.
+func (s *Server) wireStoreResolver() {
+	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil) {
 		return
 	}
-	s.opts.keyspaceReclaim.SetStoreResolver(&volumeStoreResolver{
-		hosts:        s.opts.tenantHosts,
+	resolver := &storeResolver{
 		tenantSvc:    s.opts.tenantSvc,
 		systemTenant: tenant.SystemTenantID,
-	})
+	}
+	if s.opts.tenantHosts != nil {
+		resolver.hosts = s.opts.tenantHosts
+	}
+	if s.opts.raftBackend != nil {
+		resolver.raft = s.opts.raftBackend
+	}
+	s.opts.keyspaceReclaim.SetStoreResolver(resolver)
 }
 
 // ErrAuthFactorTenantRoutingRequired is returned by Start when a caller

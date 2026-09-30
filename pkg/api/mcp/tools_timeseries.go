@@ -587,7 +587,7 @@ func handleTSSetRetentionPolicy(tsSvc service.TimeSeriesServicer) mcpserver.Tool
 			policy.Aggregation = aggFunc
 		}
 
-		if setErr := tsSvc.SetRetentionPolicy(metric, policy); setErr != nil {
+		if setErr := tsSvc.SetRetentionPolicy(ctx, metric, policy); setErr != nil {
 			return nil, &ToolError{Tool: "qrdb_ts_set_retention_policy", Err: setErr}
 		}
 

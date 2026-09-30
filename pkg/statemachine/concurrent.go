@@ -178,6 +178,10 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 		protocol.OpCompareAndDelete: c.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   c.handleCompareAndSwap,
 
+		// A write wrapped with a guard evaluated at this entry's log
+		// position -- the drop fence rides on it. See guarded_write.go.
+		protocol.OpGuarded: c.handleGuarded,
+
 		// MVCC
 		protocol.OpMVCCPut:     c.handleMVCCPut,
 		protocol.OpMVCCDelete:  c.handleMVCCDelete,

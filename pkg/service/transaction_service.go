@@ -73,7 +73,7 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -96,7 +96,7 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -238,7 +238,7 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 		shardID = req.ShardID
 	}
 
-	result, proposeErr := s.host.SyncPropose(ctx, shardID, cmd)
+	result, proposeErr := propose(ctx, s.host, shardID, cmd)
 	if proposeErr != nil {
 		return nil, translateProposeError(proposeErr)
 	}

@@ -93,6 +93,18 @@ func WithEpsilon(epsilon float64) SchedulerOption {
 	}
 }
 
+// ReplicaFilter reports whether a replica of shardID may be placed on the
+// node at raftAddr; a non-nil error excludes the node. The feature gate
+// supplies one so a group is never placed on a node that cannot apply the
+// commands the group uses.
+type ReplicaFilter func(shardID uint64, raftAddr string) error
+
+// WithReplicaFilter excludes every candidate node filter refuses from Place
+// and PlaceAdditional.
+func WithReplicaFilter(filter ReplicaFilter) SchedulerOption {
+	return func(s *Scheduler) { s.filter = filter }
+}
+
 // Scheduler computes a Placement from a snapshot of cluster topology using a
 // load-aware, bounded-load objective with anti-affinity (one voting replica per
 // node). It is safe for concurrent use: it holds only an immutable provider
@@ -100,6 +112,7 @@ func WithEpsilon(epsilon float64) SchedulerOption {
 type Scheduler struct {
 	topo    TopologyProvider
 	epsilon float64
+	filter  ReplicaFilter
 }
 
 // NewScheduler constructs a Scheduler over the given TopologyProvider. The
@@ -155,7 +168,7 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 		return nil, ErrNilDataRootFunc
 	}
 
-	candidates := healthyDistinct(s.topo.Nodes())
+	candidates := s.admitted(req.ShardID, healthyDistinct(s.topo.Nodes()))
 	if len(candidates) < req.RF {
 		return nil, &InsufficientNodesError{Have: len(candidates), Need: req.RF}
 	}
@@ -220,7 +233,7 @@ func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, ad
 	}
 
 	candidates := make([]NodeLoad, 0, len(s.topo.Nodes()))
-	for _, n := range healthyDistinct(s.topo.Nodes()) {
+	for _, n := range s.admitted(existing.ShardID, healthyDistinct(s.topo.Nodes())) {
 		if _, dup := occupied[n.NodeID]; dup {
 			continue
 		}
@@ -253,6 +266,21 @@ func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, ad
 	updated.Replicas = replicas
 	updated.RF = len(replicas)
 	return &updated, nil
+}
+
+// admitted returns the candidates the scheduler's replica filter accepts for
+// shardID, in their original order; all of them when there is no filter.
+func (s *Scheduler) admitted(shardID uint64, candidates []NodeLoad) []NodeLoad {
+	if s.filter == nil {
+		return candidates
+	}
+	out := candidates[:0:0]
+	for _, n := range candidates {
+		if s.filter(shardID, n.RaftAddr) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // healthyDistinct returns the healthy nodes, deduplicated by NodeID (first

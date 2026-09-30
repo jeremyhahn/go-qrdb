@@ -347,7 +347,7 @@ func (s *errTSSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, er
 	return nil, errSentinel
 }
 
-func (s *errTSSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (s *errTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return errSentinel
 }
 

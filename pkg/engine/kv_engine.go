@@ -160,57 +160,14 @@ func (e *KVEngine) Type() string { return "kv" }
 // CommandDecodeError) rather than being silently reported as applied.
 func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
-		// Try base KV protocol (OpPut=1, OpDelete=3).
-		cmd, err := kv.DecodeCommand(entries[i].Cmd)
-		if err == nil {
-			var result sm.Result
-			var hErr error
-			handler, ok := e.handlers[cmd.Op]
-			if ok {
-				result, hErr = handler(e, cmd)
-			} else {
-				hErr = &UnsupportedOperationError{Op: cmd.Op}
-			}
-			// #nosec G602 -- i ranges over entries.
-			resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, hErr)
-			if stop {
-				// The failure marker predates the classifier and is kept: Raft
-				// discards results for a halted Apply, but LocalBackend calls
-				// Update directly and reads them.
-				// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
-				results[i] = sm.Result{Value: 1}
-				return applyErr
-			}
-			// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
-			results[i] = resolved
-			continue
-		}
-
-		// Try extended protocol for index and batch operations.
-		extCmd, extErr := protocol.DecodeCommand(entries[i].Cmd)
-		if extErr != nil {
-			// Undecodable by both protocols: this is a deterministic
-			// consequence of the specific committed bytes (corruption or a
-			// version-skewed writer), not engine state. Surface it as an
-			// application error rather than reporting Value:1 (SUCCESS) —
-			// silently dropping the write — or returning a Go error, which
-			// would stall consensus.
-			decErr := &CommandDecodeError{KVErr: err, ExtErr: extErr}
-			results[i] = sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorCorrupt, decErr.Error())}
-			continue
-		}
-
-		var result sm.Result
-		var extHErr error
-		extFn, ok := e.extHandlers[extCmd.Op]
-		if ok {
-			result, extHErr = extFn(extCmd.Payload)
-		} else {
-			extHErr = &UnsupportedOperationError{Op: extCmd.Op}
-		}
 		// #nosec G602 -- i ranges over entries.
-		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, extHErr)
+		result, err := e.apply(entries[i].Cmd)
+		// #nosec G602 -- i ranges over entries.
+		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, err)
 		if stop {
+			// The failure marker predates the classifier and is kept: Raft
+			// discards results for a halted Apply, but LocalBackend calls
+			// Update directly and reads them.
 			// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 			results[i] = sm.Result{Value: 1}
 			return applyErr
@@ -219,6 +176,53 @@ func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Re
 		results[i] = resolved
 	}
 	return nil
+}
+
+// apply dispatches one complete command. It is the single dispatch point for
+// both a log entry and the inner command of an OpGuarded entry, so the two
+// can never disagree about which opcodes this engine serves.
+func (e *KVEngine) apply(data []byte) (sm.Result, error) {
+	// Try base KV protocol (OpPut=1, OpDelete=3).
+	cmd, err := kv.DecodeCommand(data)
+	if err == nil {
+		handler, ok := e.handlers[cmd.Op]
+		if !ok {
+			return sm.Result{}, &UnsupportedOperationError{Op: cmd.Op}
+		}
+		return handler(e, cmd)
+	}
+
+	// Try extended protocol for index and batch operations.
+	extCmd, extErr := protocol.DecodeCommand(data)
+	if extErr != nil {
+		// Undecodable by both protocols: this is a deterministic consequence
+		// of the specific committed bytes (corruption or a version-skewed
+		// writer), not engine state. Surface it as an application error
+		// rather than reporting Value:1 (SUCCESS) — silently dropping the
+		// write — or returning a Go error, which would stall consensus.
+		decErr := &CommandDecodeError{KVErr: err, ExtErr: extErr}
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorCorrupt, decErr.Error())}, nil
+	}
+	extFn, ok := e.extHandlers[extCmd.Op]
+	if !ok {
+		return sm.Result{}, &UnsupportedOperationError{Op: extCmd.Op}
+	}
+	return extFn(extCmd.Payload)
+}
+
+// handleGuarded applies an OpGuarded entry. The guard is read through
+// e.stg.Get -- the read handleCompareAndSwap uses -- and the inner command is
+// applied through apply only when every compare holds. A refused guard is a
+// successful application that changes nothing (see protocol.OpGuarded).
+func (e *KVEngine) handleGuarded(payload []byte) (sm.Result, error) {
+	inner, refusal, err := protocol.OpenGuarded(payload, e.stg.Get)
+	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if refusal != nil {
+		return sm.Result{Data: refusal}, nil
+	}
+	return e.apply(inner)
 }
 
 // Lookup performs a read query against the storage engine. Supported
@@ -293,8 +297,8 @@ func (e *KVEngine) buildHandlers() map[byte]kvHandler {
 }
 
 // buildExtHandlers creates the extended protocol handler dispatch map.
-// Index, batch, the single-key guarded verbs, and the multi-key compare-and-
-// execute transaction are supported; MVCC-, lease-, and time-series-specific
+// Index, batch, the single-key guarded verbs, the multi-key compare-and-
+// execute transaction, and guarded writes (protocol.OpGuarded) are supported; MVCC-, lease-, and time-series-specific
 // opcodes are absent and will trigger UnsupportedOperationError.
 func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 	return map[byte]extHandler{
@@ -304,6 +308,7 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
 		protocol.OpTransaction:      e.handleTransaction,
+		protocol.OpGuarded:          e.handleGuarded,
 	}
 }
 

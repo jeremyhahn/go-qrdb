@@ -17,6 +17,7 @@ package placement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // PlacementPrefix is the key prefix under which placement records live in the
@@ -73,6 +74,29 @@ type Watcher interface {
 	// Watch returns a channel of change events for keys under prefix. The
 	// channel is closed when ctx is cancelled or the feed ends.
 	Watch(ctx context.Context, prefix string) (<-chan WatchEvent, error)
+}
+
+// AtomicKV is the optional guarded-write capability a KV backend may
+// provide. When the configured KV also implements AtomicKV, every
+// read-modify-write this package performs against a SINGLE placement entry
+// -- SetDropping, and CompareAndSwapPlacement's callers (the scale and
+// reconciler paths that read a Placement, derive an updated copy, and write
+// it back) -- commits with a compare-and-swap against the exact bytes it
+// read, instead of an unconditional Put. Without this, two concurrent
+// mutations of the same entry (a scale-up admitting a replica, a
+// reconciler promoting one, a Drop setting the fence) resolve by
+// last-write-wins: whichever Put commits last silently discards the
+// other's change, including a Drop's own fence (go-qrdb#482). The shared
+// system KVStore this package is normally configured with
+// (kvstore.KVStore, via lifecycle's kvStoreAdapter) already implements
+// this; a KV that does not falls back to a bare Put, which is what every
+// mutation in this package did before AtomicKV existed.
+type AtomicKV interface {
+	// CompareAndSwap replaces key's value with next only if it currently
+	// equals expected. A nil/empty expected is not a supported "key must be
+	// absent" case here (every placement mutation this package performs
+	// targets an entry it just read), so it is not documented as one.
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
 
 // EventType distinguishes a placement put from a placement delete.
@@ -178,6 +202,196 @@ func (s *Store) Delete(ctx context.Context, tenantID, database string) error {
 		return &StoreError{TenantID: tenantID, Database: database, Op: "delete", Err: err}
 	}
 	return nil
+}
+
+// CompareAndSwapPlacement replaces the placement for (next.TenantID,
+// next.Database) with next, but only if the entry currently marshals to
+// the exact bytes expected does (nil expected is not supported -- every
+// caller in this package holds a value it just read). It is the primitive
+// a read-modify-write of an EXISTING placement entry should commit through
+// instead of Put, so a caller's own copy -- read before some OTHER
+// mutation (a Drop's fence, a concurrent scale, a reconciler promotion)
+// committed -- can never silently overwrite it (go-qrdb#482); see AtomicKV.
+//
+// Returns (false, nil) -- not an error -- when the entry changed since
+// expected was read: that is the compare-and-swap declining, not a failure
+// to reach the store. A caller that must retry re-reads and re-derives its
+// update from the fresh value, exactly as SetDropping does internally.
+//
+// Returns a *StoreError wrapping *AtomicWriteUnsupportedError when the
+// backing KV does not implement AtomicKV. This is a capability refusal,
+// not a silent fallback to Put: falling back would defeat the entire
+// reason a caller chose this over Put.
+func (s *Store) CompareAndSwapPlacement(ctx context.Context, expected, next *Placement) (bool, error) {
+	if next == nil {
+		return false, &StoreError{Op: "compare-and-swap", Err: ErrPlacementNotFound}
+	}
+	if next.TenantID == "" {
+		return false, &StoreError{Database: next.Database, Op: "compare-and-swap", Err: ErrEmptyTenant}
+	}
+	if next.Database == "" {
+		return false, &StoreError{TenantID: next.TenantID, Op: "compare-and-swap", Err: ErrEmptyDatabase}
+	}
+	atomicKV, ok := s.kv.(AtomicKV)
+	if !ok {
+		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: &AtomicWriteUnsupportedError{}}
+	}
+	var expectedBytes []byte
+	if expected != nil {
+		b, err := json.Marshal(expected)
+		if err != nil {
+			return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+		}
+		expectedBytes = b
+	}
+	nextBytes, err := json.Marshal(next)
+	if err != nil {
+		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+	}
+	swapped, err := atomicKV.CompareAndSwap(ctx, placementKey(next.TenantID, next.Database), expectedBytes, nextBytes)
+	if err != nil {
+		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+	}
+	return swapped, nil
+}
+
+// setDroppingMaxAttempts bounds SetDropping's optimistic-retry loop. Each
+// attempt costs one Get plus one CompareAndSwap; a genuine conflict is
+// resolved by the first attempt whose read observes the other mutation
+// already committed, so this bounds against a pathologically hot entry
+// rather than the expected case of zero or one retry.
+const setDroppingMaxAttempts = 10
+
+// SetDropping sets or clears the replicated drop fence (Placement.Dropping)
+// on the placement for (tenantID, database). A no-op write (the flag
+// already holds the requested value) still succeeds without a store round
+// trip beyond the read, matching Get's own idempotence contract rather
+// than adding a special case a caller has to reason about.
+//
+// It commits through CompareAndSwapPlacement, retrying the whole
+// read-modify-write when the entry changed since it was read -- a
+// concurrent scale-up admitting a replica, or a reconciler promoting one,
+// must never be silently discarded by a Drop's fence commit, and a Drop's
+// fence must never be silently discarded by either of those (go-qrdb#482).
+//
+// Returns a *StoreError wrapping *AtomicWriteUnsupportedError when the backing
+// KV cannot compare-and-swap at all: go-qrdb#482 round 3 found that
+// degrading to an unconditional Put here was itself the exact race this
+// fence exists to close -- two concurrent SetDropping(true) calls (or a
+// racing scale/promotion) could both "succeed" against a backend with no
+// compare-and-swap, silently overwriting one another. A backend that cannot
+// offer atomic-mutation safety cannot host a dedicated-raft database's
+// fence at all; every production KV (see AtomicKV) supports it.
+//
+// Returns a *StoreError wrapping ErrPlacementNotFound when no placement
+// entry exists for (tenantID, database) -- there is nothing to fence -- or
+// *ConflictError when every attempt in the retry loop lost the race.
+func (s *Store) SetDropping(ctx context.Context, tenantID, database string, dropping bool) error {
+	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
+		p, err := s.Get(ctx, tenantID, database)
+		if err != nil {
+			return err
+		}
+		if p.Dropping == dropping {
+			return nil
+		}
+		next := *p
+		next.Dropping = dropping
+		swapped, err := s.CompareAndSwapPlacement(ctx, p, &next)
+		if err != nil {
+			return err
+		}
+		if swapped {
+			return nil
+		}
+		// Lost the race: another mutation committed between Get and
+		// CompareAndSwap. Retry with a fresh read.
+	}
+	return &StoreError{TenantID: tenantID, Database: database, Op: "set-dropping", Err: &ConflictError{}}
+}
+
+// TryMarkDropping attempts to transition the replicated drop fence for
+// (tenantID, database) from not-dropping to dropping, and reports whether
+// THIS call performed that exact transition (owned=true), as opposed to
+// finding the fence already set (owned=false, nil error).
+//
+// owned=false covers two situations a caller cannot tell apart from this
+// return value alone, and must not treat differently: another drop request
+// racing this one already claimed the fence, or an earlier attempt for the
+// very same drop still owns it because this node restarted before clearing
+// or completing it. Either way, THIS call did not just set the fence, and
+// must never be the one to clear it afterward on a failure -- doing so is
+// go-qrdb#482 round 3's finding that two concurrent drops (or a resumed
+// retry racing a still-live earlier attempt) could roll back a fence they
+// never owned. A caller that needs the fence cleared on failure gates that
+// call on owned; a caller that only needs the whole entry removed once its
+// own database-level drop succeeds (finishRaftPlacementTeardown) does not
+// need to gate on it at all, since deletion is safe regardless of who most
+// recently owned the fence.
+//
+// Commits through CompareAndSwapPlacement with the same bounded retry as
+// SetDropping, and the same refusal -- not a fallback to Put -- when the
+// backing KV cannot compare-and-swap: see SetDropping's doc comment for why
+// a fallback here would let two concurrent callers both observe owned=true.
+func (s *Store) TryMarkDropping(ctx context.Context, tenantID, database string) (owned bool, err error) {
+	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
+		p, err := s.Get(ctx, tenantID, database)
+		if err != nil {
+			return false, err
+		}
+		if p.Dropping {
+			return false, nil
+		}
+		next := *p
+		next.Dropping = true
+		swapped, err := s.CompareAndSwapPlacement(ctx, p, &next)
+		if err != nil {
+			return false, err
+		}
+		if swapped {
+			return true, nil
+		}
+		// Lost the race: another mutation committed between Get and
+		// CompareAndSwap. Retry with a fresh read.
+	}
+	return false, &StoreError{TenantID: tenantID, Database: database, Op: "try-mark-dropping", Err: &ConflictError{}}
+}
+
+// MarkDropCommitted sets Placement.DropCommitted for (tenantID, database), a
+// one-way marker (never cleared -- the whole entry is removed together with
+// it once the drop finishes) recording that some node's database.Manager has
+// completed the local half of this drop. See DropCommitted's doc comment for
+// why a later retry landing on a different node needs this signal. A no-op
+// when the flag is already set, or when the entry no longer exists at all
+// (the drop already finished completely; nothing left to mark).
+//
+// Commits through CompareAndSwapPlacement with the same bounded retry as
+// SetDropping, and the same refusal (not a Put fallback) when the backing
+// KV cannot compare-and-swap.
+func (s *Store) MarkDropCommitted(ctx context.Context, tenantID, database string) error {
+	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
+		p, err := s.Get(ctx, tenantID, database)
+		if err != nil {
+			if errors.Is(err, ErrPlacementNotFound) {
+				return nil
+			}
+			return err
+		}
+		if p.DropCommitted {
+			return nil
+		}
+		next := *p
+		next.DropCommitted = true
+		swapped, err := s.CompareAndSwapPlacement(ctx, p, &next)
+		if err != nil {
+			return err
+		}
+		if swapped {
+			return nil
+		}
+		// Lost the race: retry with a fresh read.
+	}
+	return &StoreError{TenantID: tenantID, Database: database, Op: "mark-drop-committed", Err: &ConflictError{}}
 }
 
 // List returns every placement in the table, decoded from the values so the

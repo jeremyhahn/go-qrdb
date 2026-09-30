@@ -28,6 +28,7 @@ import (
 // operations have their entity ID prefixed, mirroring the namespaced KV entity
 // methods so that the resulting entity keys match.
 type namespacedBatchService struct {
+	dbGuard
 	inner  service.BatchServicer
 	prefix string
 }
@@ -77,6 +78,7 @@ func (s *namespacedBatchService) stripResponses(responses []service.OpResponse) 
 
 // Execute applies the operations atomically under the namespace prefix.
 func (s *namespacedBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
+	ctx = s.scope(ctx)
 	responses, err := s.inner.Execute(ctx, s.prefixOps(ops))
 	if err != nil {
 		return nil, err
@@ -87,6 +89,7 @@ func (s *namespacedBatchService) Execute(ctx context.Context, ops []service.Op) 
 // ExecuteWithMode applies the operations atomically with the specified write
 // durability under the namespace prefix.
 func (s *namespacedBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) ([]service.OpResponse, error) {
+	ctx = s.scope(ctx)
 	responses, err := s.inner.ExecuteWithMode(ctx, s.prefixOps(ops), mode)
 	if err != nil {
 		return nil, err
@@ -97,6 +100,7 @@ func (s *namespacedBatchService) ExecuteWithMode(ctx context.Context, ops []serv
 // ExecuteEntity executes entity-typed operations with their entity IDs prefixed
 // so the resulting entity keys are scoped to the namespace.
 func (s *namespacedBatchService) ExecuteEntity(ctx context.Context, req *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
+	ctx = s.scope(ctx)
 	if req == nil {
 		return s.inner.ExecuteEntity(ctx, req)
 	}
@@ -115,6 +119,7 @@ func (s *namespacedBatchService) ExecuteEntity(ctx context.Context, req *service
 // stored key and still reports the original user-supplied key in any error
 // rows.
 func (s *namespacedBatchService) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	ctx = s.scope(ctx)
 	opts.KeyPrefix = s.prefix + opts.KeyPrefix
 	return s.inner.Import(ctx, file, opts)
 }

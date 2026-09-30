@@ -34,7 +34,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -668,11 +670,19 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // membershipChangeStatus is the HTTP status for a failed membership add: the
-// status pkg/api/errclass gives a member-identity refusal when the failure is
-// one, else 500.
+// status pkg/api/errclass gives a member-identity refusal or a feature-gate
+// admission refusal when the failure is one of those, else 500. Deliberately
+// narrower than a blanket mapHTTPError(err): a membership change reaches
+// go-quicraft directly, and errclass's Unclassified default (500) is the
+// right answer for whatever else that surface can return, not a class this
+// function would otherwise have to guess at.
 func membershipChangeStatus(err error) int {
 	var mie *service.MemberIdentityError
 	if errors.As(err, &mie) {
+		return mapHTTPError(err)
+	}
+	var ure *featuregate.UnsupportedReplicaError
+	if errors.As(err, &ure) {
 		return mapHTTPError(err)
 	}
 	return http.StatusInternalServerError
@@ -1056,6 +1066,15 @@ func writeProposeFailure(w http.ResponseWriter, err error) {
 	// itself (go-qrdb#371).
 	if errors.Is(err, storage.ErrStorageClosed) {
 		writeErrorJSON(w, mapHTTPError(err), &ProposeError{Err: err})
+		return
+	}
+	// A write the state machine refused because the database's drop fence
+	// stood at its log position is the database being dropped, not a server
+	// fault: 409, the answer every other transport and every resolve-time
+	// refusal of the same condition gives.
+	var dropping *database.DroppingError
+	if errors.As(err, &dropping) {
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})

@@ -98,11 +98,24 @@ qrdb database drop scratch
 secondary index, sequence and vector namespace the database owns — not only
 the directory that holds its configuration. The name is released last, so:
 
-- **A drop that fails has removed nothing.** Re-issue it.
+- **A drop that fails before its data is reclaimed has removed nothing.**
+  Re-issue it.
+- **A drop that fails AFTER its data is reclaimed — closing its backend or
+  removing its directory — leaves the database fenced, not gone: emptied of
+  its data, still unresolvable to ordinary operations, still occupying its
+  name.** This is the only case in which a failed drop has changed
+  anything; re-issuing it finishes the remaining, already-idempotent steps.
 - **A drop interrupted part way leaves the database in place and emptier.**
   Re-issue it; the second drop finishes the first.
 - **A name reused after a successful drop starts empty.** It inherits nothing
   from the database that held it.
+- **A write already on its way when the drop starts is refused, not lost into
+  the dropped database.** A key, document, row, index or time-series write
+  delayed past the drop gets "database is being dropped" and stores nothing,
+  however long it was delayed. Vector writes are the exception: they are
+  checked just before they are written, not refused by the store.
+- **The default database (`system`) cannot be dropped.** The command is
+  refused before anything is touched.
 
 ## `qrdb database scale <name>`
 

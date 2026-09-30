@@ -27,6 +27,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -47,6 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -61,6 +63,13 @@ type Infra struct {
 	// Host is the service.Host implementation (Raft adapter or LocalBackend).
 	// Required.
 	Host service.Host
+
+	// NoRevisionHistory declares that the system shard's state machine keeps
+	// no MVCC revision history (see StateMachineKeepsRevisionHistory). The
+	// MVCC service then reports a lease-attached put without reading it back
+	// (service.WithoutRevisionHistory), and revision-answering surfaces
+	// refuse to serve over it.
+	NoRevisionHistory bool
 
 	// WatchHub delivers change events between the state machine and watchers.
 	// Required.
@@ -381,7 +390,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		adminOpts = append(adminOpts, service.WithCapabilityProfile(*infra.Profile))
 	}
 	n.Admin = service.NewAdminService(infra.Host, adminOpts...)
-	n.MVCC = service.NewMVCCKVService(infra.Host, shard.ShardKV)
+	var mvccOpts []service.MVCCKVServiceOption
+	if infra.NoRevisionHistory {
+		mvccOpts = append(mvccOpts, service.WithoutRevisionHistory())
+	}
+	n.MVCC = service.NewMVCCKVService(infra.Host, shard.ShardKV, mvccOpts...)
 	n.Batch = service.NewBatchService(infra.Host, shard.ShardKV)
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
 	n.Lease = service.NewLeaseService(infra.Host, shard.ShardKV)
@@ -508,7 +521,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	var placementOpts []service.DatabaseServiceOption
 	if store, perr := placement.NewStore(authStore); perr == nil {
 		n.PlacementStore = store
-		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance)); serr == nil {
+		var schedOpts []placement.SchedulerOption
+		// A host whose groups gate features never has a group placed on a
+		// node that cannot apply what the group uses.
+		if admitter, ok := infra.Host.(service.ReplicaAdmitter); ok {
+			schedOpts = append(schedOpts, placement.WithReplicaFilter(admitter.AdmitReplica))
+		}
+		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance), schedOpts...); serr == nil {
 			placementOpts = []service.DatabaseServiceOption{
 				service.WithPlacementStore(store),
 				service.WithPlacementScheduler(scheduler),
@@ -1103,4 +1122,16 @@ func UserStoreOptions(mtlsBindingPolicy string, logger *slog.Logger) ([]user.Opt
 		opts = append(opts, user.WithBootstrapAdminBindingRequired())
 	}
 	return opts, nil
+}
+
+// StateMachineKeepsRevisionHistory reports whether the registered state
+// machine type smType keeps MVCC revision history: its descriptor declares
+// statemachine.CapabilityMVCC. An unregistered type is reported as keeping
+// none.
+func StateMachineKeepsRevisionHistory(smType string) bool {
+	d, err := statemachine.Describe(smType)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(d.Capabilities, statemachine.CapabilityMVCC)
 }

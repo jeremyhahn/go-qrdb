@@ -25,6 +25,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -620,6 +621,20 @@ func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) map[uin
 //     reconciles the updated placement. The move is counted as failed so
 //     the caller can alert or retry.
 func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move RebalanceMovePlan, p *placement.Placement) error {
+	// Step -1: a database mid-drop is never rebalanced. p is the caller's
+	// snapshot of the placement entry the whole MOVE plan was computed
+	// against; if it already shows Dropping=true, admitting or removing a
+	// replica here would mutate quota and Raft membership while the
+	// database is being torn down (go-qrdb#482 round 3, finding 5).
+	if p.Dropping {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "dropping",
+			Err:      &database.DroppingError{Name: p.Database, TenantID: p.TenantID},
+		}
+	}
+
 	// Step 0: route to the dedicated group's current Raft leader. When the
 	// source is ALSO the local node, resolveMoveLeader additionally
 	// transfers leadership away before reporting itself as not-the-leader

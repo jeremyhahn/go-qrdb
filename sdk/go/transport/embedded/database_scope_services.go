@@ -784,9 +784,12 @@ func (s *scopedTimeSeries) QueryWithConsistency(ctx context.Context, a1 string, 
 	return svc.QueryWithConsistency(ctx, a1, a2, a3, a4, a5...)
 }
 
-// SetRetentionPolicy refuses: without a context it cannot know the caller's tenant.
-func (s *scopedTimeSeries) SetRetentionPolicy(string, *timeseries.RetentionPolicy) error {
-	return errScopedNeedsContext
+func (s *scopedTimeSeries) SetRetentionPolicy(ctx context.Context, a1 string, a2 *timeseries.RetentionPolicy) error {
+	svc, err := s.scope.registry.TimeSeriesService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return err
+	}
+	return svc.SetRetentionPolicy(ctx, a1, a2)
 }
 
 func (s *scopedTimeSeries) Write(ctx context.Context, a1 string, a2 float64, a3 time.Time, a4 map[string]string) error {

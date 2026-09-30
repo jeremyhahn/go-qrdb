@@ -72,11 +72,28 @@ const (
 
 	// AppErrorFault — the subsystem failed while applying the command.
 	AppErrorFault
+
+	// AppErrorGuardRefused — a guarded command's (OpGuarded) compare did not
+	// hold at its own log position: the entry committed and applied nothing.
+	// Distinct from AppErrorConflict (a uniqueness violation the command
+	// itself would have caused) because a guard refusal is a lost
+	// concurrency race the caller should re-read and retry, not a naming
+	// collision -- the drop fence is the guard every Raft-backed write now
+	// carries, so this is what a write into a keyspace DROP DATABASE just
+	// reclaimed reports.
+	AppErrorGuardRefused
 )
 
 // appErrorMarkers is each kind's marker, written after appErrorPrefix. A map
 // rather than a switch: the kinds are values, the encoding is a lookup, and a
 // kind added without a marker is a missing key the tests catch.
+//
+// AppErrorGuardRefused is deliberately NOT a row here: its payload is the raw
+// key of the compare that failed, not a plain message, so it has its own
+// encode/decode pair (EncodeGuardRefusal/DecodeGuardRefusal) and is
+// synthesized into this kind only in DecodeAppErrorKind's fallback below --
+// the same reason EncodeIndexOwnershipError's structured name+owner payload
+// is not a row here either.
 var appErrorMarkers = map[AppErrorKind][]byte{
 	AppErrorCorrupt:     []byte("\x00corrupt\x00"),
 	AppErrorCapability:  []byte("\x00cap\x00"),
@@ -105,6 +122,45 @@ func EncodeAppError(kind AppErrorKind, msg string) []byte {
 // point because an absent capability is the refusal most call sites raise.
 func EncodeCapabilityError(msg string) []byte {
 	return EncodeAppError(AppErrorCapability, msg)
+}
+
+// guardRefusalMarker distinguishes the application error a refused guard
+// reports (see OpGuarded) from every other one. It carries the key of the
+// compare that failed after the marker, so the service layer can say WHICH
+// precondition stopped the write -- for the drop fence, which database is
+// being dropped -- without parsing message text. Like ownershipMarker it
+// sits after appErrorPrefix, so a reader that predates it still recognises
+// the payload as an application error rather than an ordinary result.
+var guardRefusalMarker = []byte("\x00guard\x00")
+
+// EncodeGuardRefusal encodes the result of a guarded command whose guard did
+// not hold: nothing was written, and key is the key of the compare that
+// failed. See DecodeGuardRefusal.
+func EncodeGuardRefusal(key []byte) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(guardRefusalMarker)+len(key))
+	out = append(out, appErrorPrefix...)
+	out = append(out, guardRefusalMarker...)
+	out = append(out, key...)
+	return out
+}
+
+// DecodeGuardRefusal reports whether data is a guard refusal and, if so,
+// returns the key of the compare that failed.
+func DecodeGuardRefusal(data []byte) (key []byte, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return nil, false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, guardRefusalMarker) {
+		return nil, false
+	}
+	return body[len(guardRefusalMarker):], true
+}
+
+// guardRefusalMessage renders a guard refusal as the message a generic
+// DecodeAppError/DecodeAppErrorKind caller reads.
+func guardRefusalMessage(key []byte) string {
+	return "write guard refused on key " + string(key)
 }
 
 // ownershipMarker distinguishes an index-ownership refusal (go-qrdb#426) from
@@ -191,6 +247,14 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// message and the conflict kind -- the name is held by another owner.
 	if name, owner, own := DecodeIndexOwnershipError(data); own {
 		return indexOwnershipMessage(name, owner), AppErrorConflict, true
+	}
+	// A guard refusal carries its own marker and payload too (see
+	// EncodeGuardRefusal). checkResultError decodes it directly into
+	// *database.DroppingError or *service.WriteGuardRefusedError before it
+	// gets here; a generic reader gets its rendered message and the
+	// dedicated guard-refused kind.
+	if key, refused := DecodeGuardRefusal(data); refused {
+		return guardRefusalMessage(key), AppErrorGuardRefused, true
 	}
 	return string(body), AppErrorCorrupt, true
 }

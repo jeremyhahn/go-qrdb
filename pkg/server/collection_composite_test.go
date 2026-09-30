@@ -126,8 +126,8 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 	kv := newMockKVService()
 	src := &DatabaseServices{KV: kv}
 
-	first := c.getOrBuild(src, src, "tenant-a", "appdb")
-	second := c.getOrBuild(src, src, "tenant-a", "appdb")
+	first := c.getOrBuild(src, src, "tenant-a", "appdb", service.WriteGuard{})
+	second := c.getOrBuild(src, src, "tenant-a", "appdb", service.WriteGuard{})
 	if first == nil {
 		t.Fatal("expected a collection service")
 	}
@@ -135,7 +135,7 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 		t.Fatal("cache returned a different service for the same (bundle, prefix)")
 	}
 
-	other := c.getOrBuild(src, src, "tenant-b", "appdb")
+	other := c.getOrBuild(src, src, "tenant-b", "appdb", service.WriteGuard{})
 	if other == first {
 		t.Fatal("cache returned the same service for two different tenants")
 	}
@@ -148,14 +148,14 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 func TestCompositeCollectionCacheRebuildsWhenTheBundleIsReplaced(t *testing.T) {
 	c := newCompositeCollectionCache()
 
-	first := c.getOrBuild(&DatabaseServices{KV: newMockKVService()}, &DatabaseServices{KV: newMockKVService()}, "tenant-a", "appdb")
+	first := c.getOrBuild(&DatabaseServices{KV: newMockKVService()}, &DatabaseServices{KV: newMockKVService()}, "tenant-a", "appdb", service.WriteGuard{})
 	replacement := &DatabaseServices{KV: newMockKVService()}
-	second := c.getOrBuild(replacement, replacement, "tenant-a", "appdb")
+	second := c.getOrBuild(replacement, replacement, "tenant-a", "appdb", service.WriteGuard{})
 
 	if first == second {
 		t.Fatal("cache kept serving the collection service of a replaced bundle")
 	}
-	if third := c.getOrBuild(replacement, replacement, "tenant-a", "appdb"); third != second {
+	if third := c.getOrBuild(replacement, replacement, "tenant-a", "appdb", service.WriteGuard{}); third != second {
 		t.Fatal("cache did not settle on the replacement")
 	}
 }
@@ -168,7 +168,7 @@ func TestCompositeCollectionCacheCachesTheAbsentCase(t *testing.T) {
 	src := &DatabaseServices{}
 	prefix := tenant.ComposeNamespace("tenant-a", "appdb")
 
-	if svc := c.getOrBuild(src, src, "tenant-a", "appdb"); svc != nil {
+	if svc := c.getOrBuild(src, src, "tenant-a", "appdb", service.WriteGuard{}); svc != nil {
 		t.Fatalf("expected nil for a bundle with no KV, got %T", svc)
 	}
 	c.mu.RLock()
@@ -215,7 +215,7 @@ func TestCompositeCollectionCacheNilReceiverStillNamespaces(t *testing.T) {
 	kv := newMockKVService()
 	src := &DatabaseServices{KV: kv}
 
-	svc := c.getOrBuild(src, src, "tenant-a", "appdb")
+	svc := c.getOrBuild(src, src, "tenant-a", "appdb", service.WriteGuard{})
 	if svc == nil {
 		t.Fatal("a nil cache must still build a collection service")
 	}
@@ -237,7 +237,7 @@ func TestApplyCompositeNamespacesWithoutTheConstructor(t *testing.T) {
 	kv, svcs := sharedCollectionStore()
 	reg := &restServiceRegistry{dbReg: NewDatabaseServiceRegistry("appdb")}
 
-	out := reg.applyComposite(svcs, "tenant-a", "appdb")
+	out := reg.applyComposite(svcs, "tenant-a", "appdb", databaseFence{})
 	if _, err := out.Collection.CreateCollection(context.Background(), &service.CreateCollectionRequest{
 		Database: "appdb", Name: "users",
 	}); err != nil {
@@ -267,7 +267,7 @@ func TestCompositeCollectionCacheIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results <- c.getOrBuild(src, src, "tenant-a", "appdb")
+			results <- c.getOrBuild(src, src, "tenant-a", "appdb", service.WriteGuard{})
 		}()
 	}
 	close(start)

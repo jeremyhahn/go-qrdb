@@ -163,7 +163,19 @@ func (r *restServiceRegistry) journaledCollectionService(tenantID, db string) (s
 	if base == nil {
 		return nil, &CollectionWorkNotServedError{TenantID: tenantID, Database: db}
 	}
-	svcs := r.applyQuota(r.applyComposite(base, tenantID, db), tenantID, info)
+	// The sweeper's write is a collection-lifecycle transition, not the drop
+	// reclamation itself, so it is fenced exactly like any other write to
+	// this database's keyspace: a drop in flight refuses it, same as a
+	// request that resolved the same (tenant, db) through resolve.
+	managed, err := r.managedDatabase(db)
+	if err != nil {
+		return nil, err
+	}
+	fence, err := r.sharedStoreFence(tenantID, db, managed)
+	if err != nil {
+		return nil, err
+	}
+	svcs := r.applyQuota(r.applyComposite(base, tenantID, db, fence), tenantID, info)
 	if svcs.Collection == nil {
 		return nil, notImplemented("collection", "")
 	}

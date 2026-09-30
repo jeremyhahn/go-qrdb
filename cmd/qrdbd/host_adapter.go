@@ -35,8 +35,8 @@ type quicraftHost = raftbackend.QuicraftHost
 type hostAdapter = raftbackend.HostAdapter
 
 // newHostAdapter creates a hostAdapter backed by the given quicraft.Host.
-func newHostAdapter(h *quicraft.Host) *hostAdapter {
-	return raftbackend.New(h)
+func newHostAdapter(h *quicraft.Host, opts ...raftbackend.Option) *hostAdapter {
+	return raftbackend.New(h, opts...)
 }
 
 // bootstrapHostAdapter wraps hostAdapter and redirects SyncRead to

@@ -334,6 +334,90 @@ embeddable without import cycles:
 SDK wiring: `client.NewMembershipManager(self, shardID, cfg)`, or the
 lower-level `client.NewMembershipStore()` / `client.NewMembershipReconfigurer()`.
 
+### Cluster feature gate — `pkg/cluster/featuregate`
+
+```go
+type Feature string
+const GuardedWrites Feature = "guarded-writes"
+func Supported() []Feature
+func SupportedNames() []string
+
+const AdvertisementPrefix = "__sys:cluster/features/nodes/"
+const ActivationPrefix    = "__sys:cluster/features/activated/"
+
+func New(cfg Config) (*Gate, error)
+func (g *Gate) Enabled(shardID uint64, f Feature) bool
+func (g *Gate) Supports(raftAddr string, f Feature) bool
+func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error // *UnsupportedReplicaError
+func (g *Gate) Activated(f Feature) bool
+func (g *Gate) AdvertisedSelf() (Self, error)
+func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error
+func (g *Gate) Refusal() error
+func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.MembershipStore) error
+func (g *Gate) Close() error
+func CheckActivated(ctx context.Context, kv ActivationKV) error
+func HostMembership(h ShardMembershipReader) MembershipSource
+```
+
+- The only emission point of a gated command is `service.guardCommand`. It
+  asks a Host implementing `service.FeatureGatedHost` whether
+  `GuardedWrites` is enabled for the shard; `raftbackend.HostAdapter`
+  implements it from `raftbackend.WithFeatureGate(gate)`. Without a gate, an
+  adapter over a host with no transport answers enabled and one over a host
+  with a transport answers **not** enabled -- a forgotten gate costs
+  atomicity, never divergence. `raftbackend.NewFeatureGate` returns the gate
+  for a host, or nil for one with no transport.
+- The composer (`qrdbd`, `sdk/go/node`) builds the gate with the host, attaches
+  it to every adapter over that host (the service host, the bootstrap host, and
+  the IsolationRaft factory through `server.TenantInfraConfig.FeatureGate`), and
+  starts it once the services exist: `client.StartFeatureGate(ctx, gate, kv)`
+  checks the activations (`*featuregate.UnsupportedFeatureError`), advertises
+  through `cluster.Advertiser` over
+  `client.NewMembershipStoreAt(featuregate.AdvertisementPrefix)`, and starts
+  the gate. `qrdbd` does this synchronously after provisioning, so a refused
+  binary never serves; `sdk/go/node` does it in the background once the system
+  shard has a leader, because a clustered node is built before its peers. It
+  cannot refuse to start after the fact, so under a refusal it never
+  advertises, logs the error, and reports itself **degraded**: the gate keeps
+  the refusal (`Gate.Refusal`) and `raftbackend.HostAdapter.HealthCheck` turns
+  an `ok` verdict into `degraded`, which every transport's health check
+  serves. A `qrdbd` node with no gate still runs `featuregate.CheckActivated`
+  at startup.
+- **Admission** is `service.ReplicaAdmitter` (`AdmitReplica`), implemented by
+  `raftbackend.HostAdapter` and `qrdbd`'s raft host adapter from the gate.
+  `AdminService.AddMember` (every transport's member add, and dynamic
+  membership's reconfigurer) asks it before `RequestAddNode`;
+  `addObserverReplica` (scale-up and rebalance) asks it before the placement
+  compare-and-swap; the raft host adapter asks again in `AddFollowerNode` and
+  `AddObserver`; the placement scheduler drops refused candidates
+  (`placement.WithReplicaFilter`, wired in `lifecycle.BuildServices`). A refusal
+  is REST 409 and gRPC/QUIC `FailedPrecondition`.
+- **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
+  signal and migration branches, before it stops the servers and the host, so
+  the lease is revoked while the host can still propose. After a crash the
+  record lapses only with its lease (`cluster.DefaultLeaseTTL`).
+- **Caching.** `Enabled` reads membership only on a cache miss; the cache is
+  invalidated by every advertisement change and by the background refresh, so
+  a write does no per-call membership copy. Staleness after a membership change
+  is bounded by one refresh and is safe because of admission.
+- Adding a feature: add the constant to `supported`, and gate its emission
+  point on `Enabled`. Nothing else in the package changes.
+- Invariants: an undecidable group (membership unreadable, empty) is not
+  enabled; an unknown feature is never enabled; activation counts witnesses and
+  is recorded with `PutIfAbsent` -- only the node whose claim created the record
+  logs "activated", the others log "observed" -- and a failed write is retried
+  on the next refresh, never assumed.
+- **Joining a new node after activation.** A node is admitted only when it
+  has a live advertisement. A member advertises through its own gate; a joining
+  node's advertisement is published by its enrollment, through the member that
+  signs it -- the same lease-backed record under
+  `featuregate.AdvertisementPrefix`. Until then, after activation, `member add`
+  of a node with no advertisement is refused with
+  `*featuregate.UnsupportedReplicaError`, whose message names the missing
+  advertisement and its source; a node that registers through dynamic
+  membership from a client of the running cluster, with its features in the
+  registration, is admitted.
+
 ### Node administration — `sdk/go/transport`
 
 ```go
@@ -533,6 +617,9 @@ database's owning tenant.
 | Reconfiguration transient failure | retried with capped exponential backoff | — |
 | Unknown shard on state/snapshot | not-found | yes |
 | Missing permission | permission denied | **yes** |
+| The cluster activated a feature this binary lacks | `featuregate.UnsupportedFeatureError`; `qrdbd` refuses to start, an embedded clustered node never advertises and reports health `degraded` | **yes** |
+| A group holds a replica that does not advertise a feature | the feature is not used in that group (guarded writes are proposed unguarded) | **yes** |
+| The feature gate cannot read membership | the feature is not enabled for that group | **yes** |
 
 ## Configuration
 

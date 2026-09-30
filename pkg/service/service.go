@@ -447,7 +447,7 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -476,7 +476,7 @@ func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (
 	if err != nil {
 		return false, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -504,7 +504,7 @@ func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected [
 	if err != nil {
 		return false, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -522,7 +522,7 @@ func (s *KVService) CompareAndSwap(ctx context.Context, key string, expected, ne
 	if err != nil {
 		return false, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -561,7 +561,7 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -715,7 +715,7 @@ func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, m
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -736,7 +736,7 @@ func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemo
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -1198,8 +1198,14 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 //
 // The identity committed with the replica is identity when given, otherwise
 // the one go-quicraft already committed for the replica or its host (see
-// ResolveMemberIdentity).
+// ResolveMemberIdentity). The replica is admitted only on a node that
+// advertises every feature this group uses (admitReplica) -- it is caught up
+// by replaying the group's log, so a node whose binary cannot apply
+// something already active in the log must never be added to it.
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
 	resolved, err := ResolveMemberIdentity(ctx, s.host, shardID, replicaID, raftAddr, identity)
 	if err != nil {
 		return err

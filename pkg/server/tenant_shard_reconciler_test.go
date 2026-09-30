@@ -1258,6 +1258,140 @@ func TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader(t *testing.
 	}
 }
 
+// ---------------------------------------------------------------------------
+// go-qrdb#482 round-3 finding (3): every placement mutation the reconciler
+// makes -- not only the drop fence -- must go through a compare-and-swap
+// against the exact snapshot it read, and must never promote a replica of a
+// database that is mid-Drop (which would also overwrite the replicated
+// Dropping fence with a stale, pre-Drop copy of the entry).
+// ---------------------------------------------------------------------------
+
+// TestTenantShardReconciler_DroppingPlacement_ObserverNeverPromotedToObserverReady
+// proves maybePromoteToObserverReady refuses outright when p.Dropping is
+// true, even though every other precondition (join window closed) is met.
+func TestTenantShardReconciler_DroppingPlacement_ObserverNeverPromotedToObserverReady(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := joiningPlacement1("acme", "orders", 1001)
+	p.Dropping = true
+	observer := newFakeJoinObserver()
+	observer.setCaughtUp(1001)
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithJoinObserver(observer))
+
+	r.ReconcileOnce(context.Background())
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if !got.Dropping {
+		t.Error("Dropping = false, want true (unchanged)")
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserver {
+		t.Fatalf("State = %v, want ReplicaStateObserver (a dropping database is never promoted)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_DroppingPlacement_ReadyObserverNeverPromotedToActive
+// is the same guarantee for maybePromoteReadyObservers: a confirmed leader
+// must still refuse to promote an ObserverReady replica of a database that
+// is mid-Drop.
+func TestTenantShardReconciler_DroppingPlacement_ReadyObserverNeverPromotedToActive(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
+		Dropping: true,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders"},
+			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "", State: placement.ReplicaStateObserverReady},
+		},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+
+	promoter := &fakePromoter{leaderID: 1, leaderOK: true}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithPromoter(promoter))
+
+	r.ReconcileOnce(context.Background())
+
+	if promoter.promotedCount() != 0 {
+		t.Fatalf("PromoteObserver called %d times, want 0 (a dropping database is never promoted)", promoter.promotedCount())
+	}
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	remote, ok := got.ReplicaForNode("remote:1")
+	if !ok || remote.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("remote replica State = %v, want ReplicaStateObserverReady (unchanged)", remote.State)
+	}
+}
+
+// TestTenantShardReconciler_PromotionCAS_RejectsStaleSnapshot proves
+// maybePromoteToObserverReady persists via compare-and-swap against the
+// exact snapshot it was handed: a mutation that commits directly against the
+// store after that snapshot was read -- standing in for a concurrent Drop
+// fence, scale, or another promotion -- must survive untouched, and the
+// promotion this call computed from the now-stale snapshot must never be
+// written over it.
+func TestTenantShardReconciler_PromotionCAS_RejectsStaleSnapshot(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := joiningPlacement1("acme", "orders", 1001)
+	observer := newFakeJoinObserver()
+	observer.setCaughtUp(1001)
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithJoinObserver(observer))
+
+	// A concurrent mutation -- e.g. a Drop's fence -- commits directly
+	// against the store, after p was already read but before this call's
+	// own compare-and-swap.
+	racing := *p
+	racing.Dropping = true
+	if err := store.Put(context.Background(), &racing); err != nil {
+		t.Fatalf("racing Put: %v", err)
+	}
+
+	r.maybePromoteToObserverReady(context.Background(), p)
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if !got.Dropping {
+		t.Error("Dropping = false, want true (the racing writer's fence must survive)")
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserver {
+		t.Fatalf("State = %v, want ReplicaStateObserver (the stale promotion must have been rejected, not applied over the fence)", local.State)
+	}
+}
+
 // TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader proves
 // that a node hosting (or merely seeing) an ObserverReady replica does NOT
 // attempt promotion when it is not confirmed as the shard's current leader

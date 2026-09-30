@@ -498,9 +498,24 @@ func addObserverReplica(
 	r placement.Replica,
 	selfNodeID string,
 ) (updated *placement.Placement, keyDeliveryErr error, placementFailed bool, err error) {
+	// Refuse a replica on a node that cannot apply what the group uses
+	// before anything is persisted: a refused add leaves the placement as
+	// it was, so no reconciler starts a shard there.
+	if aerr := admitReplica(raftHost, current.ShardID, r.RaftAddr); aerr != nil {
+		return current, nil, false, aerr
+	}
 	updated = clonePlacementWithReplica(current, r)
-	if perr := ps.Put(ctx, updated); perr != nil {
+	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, updated)
+	if perr != nil {
 		return current, nil, true, perr
+	}
+	if !swapped {
+		return current, nil, true, &placement.StoreError{
+			TenantID: current.TenantID,
+			Database: current.Database,
+			Op:       "put",
+			Err:      &placement.ConflictError{},
+		}
 	}
 
 	if kd != nil && bl != nil {
@@ -562,8 +577,17 @@ func removeReplicaFromGroup(
 	replicaID uint64,
 ) (updated *placement.Placement, placementFailed bool, err error) {
 	updated = dropReplicaFromPlacement(current, replicaID)
-	if perr := ps.Put(ctx, updated); perr != nil {
+	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, updated)
+	if perr != nil {
 		return current, true, perr
+	}
+	if !swapped {
+		return current, true, &placement.StoreError{
+			TenantID: current.TenantID,
+			Database: current.Database,
+			Op:       "put",
+			Err:      &placement.ConflictError{},
+		}
 	}
 	if raftHost != nil {
 		if rerr := raftHost.RemoveFollowerNode(ctx, updated.ShardID, replicaID); rerr != nil {
@@ -810,10 +834,202 @@ func (s *DatabaseService) List() ([]database.DatabaseInfo, error) {
 }
 
 // Drop closes and removes a database, reclaiming its shared-store keyspace,
-// its barrier and its data directory. See database.Manager.Drop for the
-// ordering and for what an interrupted drop leaves behind.
+// its barrier and its data directory. For a dedicated-raft database, it
+// also commits the replicated placement drop fence before reclaiming
+// anything and removes the placement entry once the drop completes -- see
+// DropForTenant, which shares dropRaftPlacement/clearRaftPlacementFence/
+// finishRaftPlacementTeardown, for the fence's rationale and retry
+// semantics (go-qrdb#482). See database.Manager.Drop for the ordering and
+// for what an interrupted drop leaves behind.
+//
+// The owning tenant is resolved from the local catalog because this,
+// unlike DropForTenant, has no tenant-scoped context to read it from. That
+// lookup fails once an earlier attempt has already removed the local
+// catalog entry -- at that point the caller is retrying a drop whose
+// manager-level work is done and only the placement teardown remains, but
+// this entry point cannot identify WHICH tenant's placement to finish
+// tearing down without it, so that retry is left to DropForTenant (which
+// has the tenant from its own context) instead. It DOES succeed, however,
+// when the local record is merely FENCED rather than gone -- Manager.Get
+// returns *database.DroppingError in that case (a restart mid-drop reopens
+// the database still fenced), and that error itself carries the tenant ID
+// (go-qrdb#482 round 3): without this fallback, a retry issued after a
+// restart could never resume a placement-fenced drop at all, since the
+// normal lookup path is exactly what the fence refuses.
 func (s *DatabaseService) Drop(ctx context.Context, name string) error {
-	return s.manager.Drop(ctx, name)
+	if err := database.CheckDroppable(name); err != nil {
+		return err
+	}
+	tenantID := ""
+	if db, err := s.manager.Get(name); err == nil {
+		tenantID = db.TenantID()
+	} else {
+		var dropping *database.DroppingError
+		if errors.As(err, &dropping) {
+			tenantID = dropping.TenantID
+		}
+	}
+
+	var hadPlacement, owned bool
+	if tenantID != "" {
+		var err error
+		hadPlacement, owned, err = s.dropRaftPlacement(ctx, tenantID, name)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := s.manager.Drop(ctx, name); err != nil {
+		if hadPlacement && owned && isReclamationFailure(err) {
+			s.clearRaftPlacementFence(ctx, tenantID, name)
+		}
+		return err
+	}
+
+	if hadPlacement {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+			return err
+		}
+		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+	}
+	return nil
+}
+
+// isReclamationFailure reports whether err is a failed manager-level drop
+// that was rolled back COMPLETELY (database.DropRolledBack): one that never
+// got past persisting its local fence, or one whose store fence and then
+// local fence were both cleared again. Only then may the replicated
+// placement fence be rolled back too. Every other failure -- a backend
+// close, a directory removal, or a rollback whose store fence could not be
+// cleared -- leaves the database fenced locally and in its store, and the
+// replicated fence must stay set to match: clearing it would route every
+// node's traffic to a database that refuses every write (go-qrdb#482).
+func isReclamationFailure(err error) bool {
+	return database.DropRolledBack(err)
+}
+
+// dropRaftPlacement commits the replicated drop fence (placement.Placement.
+// Dropping) for (tenantID, name) BEFORE any reclamation runs, so every
+// node's own resolution (RaftBackendFactory.Services) refuses new
+// operations against the database immediately, cluster-wide -- not only on
+// whichever node handles this Drop call (go-qrdb#482). This is what a
+// node-local database.Manager fence cannot provide on its own for a
+// dedicated-raft database: a follower's local catalog may legitimately not
+// carry the entry at all, but every replica reads the same placement table.
+//
+// hadPlacement is true only when a placement entry was found (and
+// therefore fenced): a database with no placement entry is not a
+// dedicated-raft database, or placement is not wired into this
+// composition, and database.Manager's own local fence already covers it
+// either way. It is deliberately a different signal from "is this database
+// raft-backed" (info.Backend == database.BackendRaft): a raft-backed
+// database can exist with no placement store wired in at all (a
+// single-node deployment with no scheduler), in which case there is
+// nothing here to fence.
+//
+// owned reports whether THIS call performed the false-to-true transition
+// (see Store.TryMarkDropping): false means another attempt -- concurrent, or
+// an earlier one still live after a restart -- already owns the fence, and
+// this call's caller must never be the one to clear it (go-qrdb#482 round 3,
+// finding 4).
+func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, name string) (hadPlacement, owned bool, err error) {
+	if s.placementStore == nil {
+		return false, false, nil
+	}
+	if _, err := s.placementStore.Get(ctx, tenantID, name); err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	owned, err = s.placementStore.TryMarkDropping(ctx, tenantID, name)
+	if err != nil {
+		return true, false, err
+	}
+	return true, owned, nil
+}
+
+// clearRaftPlacementFence rolls back dropRaftPlacement's fence after a
+// failed manager-level drop, so the placement entry -- which still
+// describes a live database -- is resolvable again. Callers MUST gate this
+// on dropRaftPlacement's own owned result and on isReclamationFailure: see
+// their doc comments for why an unowned fence or a non-reclamation failure
+// must never reach this call (go-qrdb#482 round 3, findings 4 and 7).
+//
+// The failure is logged, not returned: the manager-level drop already
+// failed and is what the caller reports, and a fence that failed to clear
+// leaves the database in the SAME fail-closed state the failed drop already
+// left it in, not a new one -- an operator retrying the drop calls
+// dropRaftPlacement again regardless.
+func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID, name string) {
+	// Under a context the failed request's cancellation cannot reach: see
+	// database.DropRollbackContext.
+	rollbackCtx, cancel := database.DropRollbackContext(ctx)
+	defer cancel()
+	if err := s.placementStore.SetDropping(rollbackCtx, tenantID, name, false); err != nil {
+		s.logger.Warn("failed to clear the replicated drop fence after a failed drop",
+			slog.String("tenant", tenantID), slog.String("database", name), slog.Any("error", err))
+	}
+}
+
+// markRaftPlacementDropCommitted records, via Store.MarkDropCommitted, that
+// this node's database-level drop just succeeded, BEFORE the placement
+// entry itself is removed by finishRaftPlacementTeardown. See
+// Placement.DropCommitted's doc comment for why a later retry landing on a
+// different node needs this signal to tell "an earlier attempt already
+// finished tearing this database down" apart from "this node never had the
+// local record to begin with" (go-qrdb#482 round 3, finding 5).
+//
+// The failure is returned, not merely logged (round 3's second review,
+// finding 8): the caller must fail the whole Drop/DropForTenant call
+// rather than proceed to finishRaftPlacementTeardown regardless. If that
+// deletion then ALSO fails -- or the process crashes between the two -- a
+// marker that silently never got set would strand the surviving,
+// DropCommitted=false placement entry exactly as finding 5 describes,
+// permanently unable to prove to a later retry (on any node) that the
+// local drop this entry is fenced for has, in fact, already happened.
+// Reporting failure here instead forces a retry, which re-attempts this
+// idempotent marker (and then the deletion) until both converge.
+func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, tenantID, name string) error {
+	return s.placementStore.MarkDropCommitted(ctx, tenantID, name)
+}
+
+// raftPlacementDropAlreadyCommitted reports whether (tenantID, name)'s
+// placement entry already records a completed local drop
+// (Placement.DropCommitted), or has already been fully torn down (no entry
+// at all -- an earlier retry finished both halves). See
+// Placement.DropCommitted's doc comment: this is the signal that lets
+// DropForTenant tell a legitimate retry-after-teardown apart from a request
+// that reached a node which never had the local catalog record at all
+// (go-qrdb#482 round 3, finding 5).
+func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context, tenantID, name string) (bool, error) {
+	p, err := s.placementStore.Get(ctx, tenantID, name)
+	if err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return p.DropCommitted, nil
+}
+
+// finishRaftPlacementTeardown removes (tenantID, name)'s placement entry --
+// which also removes the Dropping fence, since the whole entry goes with
+// it -- so the reconciler tears down its replicas.
+//
+// UNLIKE the reclamation and the manager-level drop, a failure here is NOT
+// swallowed and logged: dropRaftPlacement's fence survives together with
+// the entry it is part of, which is exactly what keeps every node's
+// placement-based resolution refusing new operations instead of a stale
+// entry that is simultaneously unreachable (the local catalog record is
+// already gone) AND unrefused (nothing marks the shard as still being torn
+// down). Reporting success here over that would be the same defect
+// go-qrdb#412 reported for the shared-store keyspace, one layer up. The
+// caller retrying the drop -- through DropForTenant, which recognizes an
+// already-gone local catalog entry as "finish the placement teardown", not
+// as a failure -- is what completes it.
+func (s *DatabaseService) finishRaftPlacementTeardown(ctx context.Context, tenantID, name string) error {
+	return s.placementStore.Delete(ctx, tenantID, name)
 }
 
 // UpdateProtocol updates the wire protocol configuration for the named
@@ -1447,32 +1663,106 @@ func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info
 }
 
 // DropForTenant drops a database after verifying tenant ownership via the
-// context. For a dedicated-raft (IsolationRaft) database it also releases the
-// tenant's raft-group usage slot so MaxRaftGroups accounting stays accurate.
+// context. For a dedicated-raft (IsolationRaft) database it also commits the
+// replicated placement drop fence BEFORE anything is reclaimed, releases the
+// tenant's raft-group usage slot once the manager-level drop succeeds, and
+// removes the placement entry last (see dropRaftPlacement,
+// clearRaftPlacementFence, finishRaftPlacementTeardown, and Drop, which
+// shares them) so every node's own resolution refuses new operations
+// against the database for the whole of the drop, not only on the node that
+// issued it (go-qrdb#482).
+//
+// This node must have a local record for name -- resolved via
+// GetForTenantIgnoringFence, which (unlike GetForTenant) still returns the
+// database while its local drop fence is set, since resuming this very
+// drop's own claim is exactly the one caller the fence should never refuse
+// -- before it ever touches the replicated fence. A request that reaches a
+// node with NO local record at all (an ordinary, load-balanced client
+// landing on a non-authoritative replica, not a retry) is refused
+// immediately, UNLESS the replicated placement entry already shows
+// DropCommitted (Placement.DropCommitted): that marker means an earlier
+// attempt, on WHATEVER node held the record, already finished the local
+// half, and this call only needs to finish the remaining placement
+// teardown. Claiming the fence first and discovering the local absence only
+// afterward -- the round-2 shape -- left a live database permanently fenced
+// cluster-wide for a client with no guaranteed route back to the node that
+// actually holds the record (go-qrdb#482 round 3, findings 6 and 9).
 //
 // Phase 4c: stopping the database's dedicated shard on the shared host (and
 // removing its replicated data) is handled at the server layer alongside
-// multi-node placement; this method releases only the on-disk catalog/dir and
-// the quota slot.
+// multi-node placement; this method releases only the on-disk catalog/dir,
+// the replicated placement entry, and the quota slot.
 func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error {
+	if err := database.CheckDroppable(name); err != nil {
+		return err
+	}
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return s.Drop(ctx, name)
 	}
-	// Capture the backend and replica count before dropping so the raft-group
-	// and total-replica counters can be released for a dedicated-raft database.
+
+	// wasRaft/replicaCount/wasDedicatedWAL back the quota release below.
+	// GetForTenantIgnoringFence -- not GetForTenant -- so a resumed drop
+	// (this node's own record, still locally fenced from before a crash)
+	// still reports them instead of silently skipping every quota
+	// decrement (go-qrdb#482 round 3, finding 9).
 	wasRaft := false
 	replicaCount := 0
 	wasDedicatedWAL := false
-	if db, err := s.manager.GetForTenant(ctx, name); err == nil {
+	db, dbErr := s.manager.GetForTenantIgnoringFence(ctx, name)
+	switch {
+	case dbErr == nil:
 		info := db.Info()
 		wasRaft = info.Backend == database.BackendRaft
 		replicaCount = info.Replicas
 		wasDedicatedWAL = info.DedicatedWAL
+	case s.placementStore != nil:
+		// No local record on this node for name at all. See this method's
+		// doc comment: refuse now, before the replicated fence is ever
+		// touched, unless the replicated entry already proves an earlier
+		// attempt finished the local half elsewhere.
+		committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+		if cerr != nil {
+			return cerr
+		}
+		if !committed {
+			return dbErr
+		}
+	default:
+		// No placement wired in at all (a single-node deployment with no
+		// scheduler): there is no replicated signal to consult, so a
+		// missing local record is unconditionally a genuine failure.
+		return dbErr
 	}
-	if err := s.manager.DropForTenant(ctx, name); err != nil {
+
+	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, name)
+	if err != nil {
 		return err
 	}
+
+	if err := s.manager.DropForTenant(ctx, name); err != nil {
+		var notFound *database.NotFoundError
+		if hadPlacement && errors.As(err, &notFound) {
+			committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+			if cerr != nil {
+				return cerr
+			}
+			if committed {
+				return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+			}
+			// Defense in depth: the upfront GetForTenantIgnoringFence check
+			// above already refuses a request with no local record and no
+			// DropCommitted proof, so manager.DropForTenant should not be
+			// able to reach here with a fresh, non-committed NotFoundError.
+			// Falling through to return err below reports it truthfully
+			// regardless (go-qrdb#482 round 3, findings 5 and 6).
+		}
+		if hadPlacement && owned && isReclamationFailure(err) {
+			s.clearRaftPlacementFence(ctx, tenantID, name)
+		}
+		return err
+	}
+
 	if wasRaft && s.quotaUsage != nil {
 		_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1)
 		if replicaCount > 0 {
@@ -1482,16 +1772,19 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceDedicatedWALGroups, 1)
 		}
 	}
+
 	// Phase 4c-1b: remove the database's placement entry so the reconciler
-	// tears down its replicas. Best-effort: the catalog drop already succeeded,
-	// so a stale placement entry must not fail the drop; it is logged instead.
-	if wasRaft && s.placementStore != nil {
-		if err := s.placementStore.Delete(ctx, tenantID, name); err != nil {
-			s.logger.Warn("failed to remove placement entry on drop",
-				slog.String("tenant", tenantID),
-				slog.String("database", name),
-				slog.Any("error", err))
+	// tears down its replicas -- see finishRaftPlacementTeardown for why a
+	// failure here is no longer swallowed. markRaftPlacementDropCommitted
+	// runs first so a retry that reaches finishRaftPlacementTeardown after a
+	// failure here (or lands on a different node entirely) can tell this
+	// drop apart from one that never actually happened -- see
+	// raftPlacementDropAlreadyCommitted above.
+	if hadPlacement {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+			return err
 		}
+		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
 	}
 	return nil
 }
@@ -1697,6 +1990,14 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 			return nil, &NotDedicatedRaftDatabaseError{Database: name}
 		}
 		return nil, err
+	}
+	if p.Dropping {
+		// A snapshot read after the fence was set must never proceed: a
+		// scale that mutates quota and Raft membership while the database
+		// is being torn down would leave the drop with a moving RF to
+		// reconcile against, or resurrect capacity a completed drop already
+		// released (go-qrdb#482 round 3, finding 5).
+		return nil, &database.DroppingError{Name: name, TenantID: tenantID}
 	}
 
 	// A membership change must be issued on the dedicated group's current

@@ -52,7 +52,7 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -79,7 +79,7 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -96,7 +96,7 @@ func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, er
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}

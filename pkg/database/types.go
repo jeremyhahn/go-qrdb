@@ -387,6 +387,16 @@ const (
 
 	// StatusSealed indicates the database barrier is sealed and operations are blocked.
 	StatusSealed StatusType = "sealed"
+
+	// StatusDropping is the status a database REPORTS while Manager.Drop
+	// fences it ahead of reclaiming its keyspace (see Database.Dropping):
+	// Manager.Get refuses every caller with DroppingError whatever the
+	// underlying status is (open or sealed). It is never stored as the
+	// status itself -- the fence is a separate flag, which is what lets Drop
+	// keep asking whether there is an open backend to release -- and it ends
+	// when the drop completes (the catalog entry is removed) or a failed
+	// drop rolls the fence back so the drop can be retried.
+	StatusDropping StatusType = "dropping"
 )
 
 // ---------------------------------------------------------------------------
@@ -673,6 +683,22 @@ type DatabaseMeta struct {
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *SQLConfig                `json:"sql,omitempty"`
+
+	// Dropping is true from the moment Manager.Drop fences this database
+	// (step 0, before it reclaims the keyspace) until the drop finishes and
+	// removes this record entirely. A node that restarts while it is true
+	// reopens the database fenced (it reports StatusDropping; its stored
+	// status is StatusOpen), so a crash mid-drop does not silently drop the
+	// fence and let a write land in a keyspace whose reclamation was
+	// interrupted (go-qrdb#482). A failed drop that rolls its store fence
+	// back clears it again, which is what makes the drop retryable rather
+	// than stuck.
+	Dropping bool `json:"dropping,omitempty"`
+
+	// Incarnation is the database's incarnation (see
+	// Database.Incarnation). Absent in metadata written before incarnations
+	// existed, which reopens the database with an empty one.
+	Incarnation string `json:"incarnation,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

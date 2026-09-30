@@ -17,6 +17,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,6 +81,14 @@ type Manager struct {
 	// was what used to decide the race: DropForTenant releases quota on a
 	// successful drop, so two successes would release it twice.
 	dropping sync.Map // name (string) -> struct{}
+
+	// inFlight holds the name of every database with a Create or Open in
+	// flight. See CreateWithCredentials for why two of them must not
+	// interleave.
+	inFlight sync.Map // name (string) -> struct{}
+
+	// shardHWMu serializes updates of the persisted shard high-water mark.
+	shardHWMu sync.Mutex
 }
 
 // NewManager creates a new Manager rooted at the given data directory.
@@ -211,6 +220,33 @@ func (m *Manager) Create(cfg DatabaseConfig) (*Database, error) {
 // and barrier credentials. When barrier encryption is enabled, the credentials
 // are used to initialize the barrier and the database is immediately usable.
 func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials) (*Database, error) {
+	return m.create(ctx, cfg, creds, false)
+}
+
+// Provision returns the database cfg names, creating it when this node holds
+// no record of it. It is how a node provisions the databases its
+// configuration lists at boot -- every node of a cluster lists the same ones.
+//
+// A database created here gets the SHARED (empty) incarnation, not a fresh
+// one: the database catalog is node-local, so every node provisions the same
+// name independently, and the only incarnation they can all agree on without
+// a replicated catalog is the empty one. The marker is cleared from the
+// dropped tombstone to absent, which is live for the empty incarnation; a
+// marker holding a live incarnation -- the name created through the API on
+// some node -- refuses the provisioning with *AlreadyExistsError.
+func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
+	if db, err := m.GetIgnoringFence(cfg.Name); err == nil {
+		return db, nil
+	}
+	if _, err := os.Stat(filepath.Join(m.dbDir(cfg.Name), metaFile)); err == nil {
+		return m.Open(cfg.Name)
+	}
+	return m.create(ctx, cfg, seal.Credentials{}, true)
+}
+
+// create is CreateWithCredentials and Provision. shared selects the empty,
+// node-shared incarnation (see Provision).
+func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -228,17 +264,60 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 		return nil, &AlreadyExistsError{Name: cfg.Name}
 	}
 
+	// One create or open of a name at a time. Two concurrent creates would
+	// each mark their own incarnation live in the store and only one could
+	// win the catalog, leaving the loser's marker to refuse every write to
+	// the winner; Open takes the same claim, so the catalog insert below
+	// can never lose to it either.
+	if _, inFlight := m.inFlight.LoadOrStore(cfg.Name, struct{}{}); inFlight {
+		return nil, &AlreadyExistsError{Name: cfg.Name}
+	}
+	defer m.inFlight.Delete(cfg.Name)
+	if _, loaded := m.databases.Load(cfg.Name); loaded {
+		return nil, &AlreadyExistsError{Name: cfg.Name}
+	}
+
+	// A name this node dropped left a tombstone in its store. Without a
+	// reclaimer there is no way to replace it with a live incarnation, so
+	// the database created here would refuse every write, forever. Refuse
+	// the create instead; it succeeds once the data plane is attached.
+	if m.reclaimer == nil {
+		dropped, err := m.droppedHere(cfg.Name)
+		if err != nil {
+			return nil, err
+		}
+		if dropped {
+			return nil, &ReclaimerRequiredError{Name: cfg.Name}
+		}
+	}
+
+	// The new database's incarnation: the value its writes will be guarded
+	// by. With no reclaimer there is no store to mark it in, and the
+	// database is live while its marker is absent (an empty incarnation);
+	// a provisioned database shares the empty incarnation on purpose.
+	incarnation := ""
+	if m.reclaimer != nil && !shared {
+		var err error
+		if incarnation, err = NewIncarnation(); err != nil {
+			return nil, err
+		}
+	}
+
 	dbDir := m.dbDir(cfg.Name)
 	dataDir := filepath.Join(dbDir, dataSubDir)
 	if cfg.DataDir != "" {
 		dataDir = cfg.DataDir
 	}
 
-	// Create directory structure for both dbDir (meta.json) and dataDir (storage).
-	if err := os.MkdirAll(dbDir, 0o750); err != nil {
+	// Everything this call creates on disk and in the barrier manager, so a
+	// failure at any later step removes exactly that and nothing else: a
+	// directory that existed before the call belongs to someone else.
+	undo := &createUndo{m: m, name: cfg.Name}
+	if err := undo.mkdirAll(dbDir); err != nil {
 		return nil, &OpenError{Name: cfg.Name, Err: err}
 	}
-	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+	if err := undo.mkdirAll(dataDir); err != nil {
+		undo.run()
 		return nil, &OpenError{Name: cfg.Name, Err: err}
 	}
 
@@ -253,18 +332,30 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 	if m.allocator != nil && cfg.Raft != nil && cfg.Raft.ShardID == 0 {
 		cfg.Raft.ShardID = m.allocator.Allocate()
 	}
+	// A shard ID is issued once, ever: it is recorded as used before the
+	// database exists, so neither a drop nor a restart can let it be issued
+	// again (see recordShardID).
+	if cfg.Raft != nil && cfg.Raft.ShardID != 0 {
+		if err := m.recordShardID(cfg.Raft.ShardID); err != nil {
+			undo.run()
+			return nil, err
+		}
+	}
 
-	// Write meta.json.
-	meta := DatabaseMeta(cfg)
+	// Write meta.json. A freshly created database is never already dropping.
+	meta := metaFromConfig(cfg, false, incarnation)
 	if err := m.writeMeta(dbDir, meta); err != nil {
+		undo.run()
 		return nil, err
 	}
 
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
+		undo.run()
 		return nil, err
 	}
+	undo.backends = append(undo.backends, backend)
 
 	// Register a dedicated per-database barrier when enabled, and wrap the
 	// data-plane backend so every value it stores is encrypted under the
@@ -276,19 +367,19 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		barrierMetaBackend, err = m.openBarrierMetaBackend(dbDir, cfg.Name)
 		if err != nil {
-			_ = backend.Close()
+			undo.run()
 			return nil, err
 		}
+		undo.backends = append(undo.backends, barrierMetaBackend)
 		storageAdapter := NewBackendStorageAdapter(barrierMetaBackend)
 		if err := m.barrierMgr.EnsureBarrier(ctx, cfg.Name, cfg.Barrier, storageAdapter, creds); err != nil {
-			_ = backend.Close()
-			_ = barrierMetaBackend.Close()
+			undo.run()
 			return nil, err
 		}
+		undo.barrier = true
 		encryptor := m.barrierMgr.GetBarrier(cfg.Name)
 		if encryptor == nil {
-			_ = backend.Close()
-			_ = barrierMetaBackend.Close()
+			undo.run()
 			return nil, &BarrierEncryptorUnavailableError{Name: cfg.Name}
 		}
 		dataBackend = NewBarrierBackend(backend, encryptor)
@@ -302,16 +393,37 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		db.SetBarrierEnabled(true)
 	}
+	db.incarnation = incarnation
 
-	// Store in map (race-safe with LoadOrStore).
-	if _, loaded := m.databases.LoadOrStore(cfg.Name, db); loaded {
-		// Another goroutine created it concurrently.
-		_ = db.Backend().Close()
-		if barrierMetaBackend != nil {
-			_ = barrierMetaBackend.Close()
+	// Mark the new incarnation live in the store holding the database's
+	// data. This is the LAST fallible step before the database becomes
+	// resolvable, and it is what makes the name writable: until it lands,
+	// the store still holds whatever a previous database of this name left
+	// -- its tombstone -- and every write is refused. Marking it earlier
+	// would unfence the store for a create that could still fail, leaving a
+	// name with no database writable to a previous incarnation's handles.
+	// The mark succeeds only over an absent marker or a tombstone: a marker
+	// holding another live incarnation is a database of this name created
+	// on another node, and this create is refused rather than taking it
+	// over.
+	if m.reclaimer != nil {
+		if err := m.reclaimer.UnfenceDatabaseKeyspace(ctx, cfg.TenantID, cfg.Name, incarnation); err != nil {
+			undo.run()
+			var exists *AlreadyExistsError
+			if errors.As(err, &exists) {
+				return nil, exists
+			}
+			return nil, &KeyspaceFenceError{Name: cfg.Name, TenantID: cfg.TenantID, Err: err}
 		}
-		return nil, &AlreadyExistsError{Name: cfg.Name}
+		if err := m.forgetDrop(cfg.Name); err != nil {
+			m.logger.Warn("failed to clear the record of an earlier drop of a re-created database",
+				slog.String("name", cfg.Name), slog.Any("error", err))
+		}
 	}
+
+	// Creates and opens of one name are serialized (see inFlight), so the
+	// catalog cannot already hold it.
+	m.databases.Store(cfg.Name, db)
 
 	m.logger.Info("database created",
 		slog.String("name", cfg.Name),
@@ -325,6 +437,13 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // initializing its storage backend.
 func (m *Manager) Open(name string) (*Database, error) {
 	// Already open?
+	if val, ok := m.databases.Load(name); ok {
+		return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	}
+	if _, inFlight := m.inFlight.LoadOrStore(name, struct{}{}); inFlight {
+		return nil, &AlreadyExistsError{Name: name}
+	}
+	defer m.inFlight.Delete(name)
 	if val, ok := m.databases.Load(name); ok {
 		return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
@@ -431,6 +550,19 @@ func (m *Manager) Open(name string) (*Database, error) {
 		db.SetStatus(StatusSealed)
 	}
 
+	// A node that restarted with a Drop's fence still set in meta.json
+	// (see Drop step 0) reopens the database fenced, in ADDITION to
+	// whichever status above applies: a crash between the fence and the
+	// catalog record's removal must not silently drop the fence and let a
+	// write land in a keyspace whose reclamation may be incomplete
+	// (go-qrdb#482). This is independent of Status precisely so the owning
+	// tenant can retry the drop to completion afterward -- Drop's step 2
+	// needs Status to still say whether there is an open backend to close.
+	if meta.Dropping {
+		db.SetDropping(true)
+	}
+	db.incarnation = meta.Incarnation
+
 	if actual, loaded := m.databases.LoadOrStore(name, db); loaded {
 		// Another goroutine opened it concurrently.
 		_ = db.Backend().Close()
@@ -448,8 +580,32 @@ func (m *Manager) Open(name string) (*Database, error) {
 	return db, nil
 }
 
-// Get returns an already-open database by name.
-func (m *Manager) Get(name string) (*Database, error) {
+// loadDatabase returns the catalog entry for name, refusing with
+// DroppingError while Manager.Drop is fencing it (see Database.Dropping)
+// even though the catalog entry itself is not removed until the drop
+// completes. It is the resolution seam every write and read path uses --
+// directly via Get, or via one of the Update* methods below, which resolve
+// against m.databases the same way Get does rather than calling Get itself
+// -- so refusing here is what stops a caller from reaching, or mutating the
+// metadata of, a database whose keyspace is already being, or about to be,
+// reclaimed (go-qrdb#482).
+func (m *Manager) loadDatabase(name string) (*Database, error) {
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return nil, &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if db.Dropping() {
+		return nil, &DroppingError{Name: name, TenantID: db.TenantID()}
+	}
+	return db, nil
+}
+
+// GetIgnoringFence returns an already-open database by name WITHOUT the
+// drop-fence refusal Get applies. It is for the drop itself -- the one
+// caller that must reach a database its own fence refuses -- and nothing
+// else: every data-plane resolution goes through Get.
+func (m *Manager) GetIgnoringFence(name string) (*Database, error) {
 	val, ok := m.databases.Load(name)
 	if !ok {
 		return nil, &NotFoundError{Name: name}
@@ -457,28 +613,71 @@ func (m *Manager) Get(name string) (*Database, error) {
 	return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
-// Drop closes and removes a database: the data it owns in the shared store,
-// its barrier, its data directory and finally its catalog entry.
+// Get returns an already-open database by name. See loadDatabase for the
+// drop-fence refusal.
+func (m *Manager) Get(name string) (*Database, error) {
+	return m.loadDatabase(name)
+}
+
+// Drop fences the database against new operations, then closes and removes
+// it: the data it owns in the shared store, its barrier, its data directory
+// and finally its catalog entry.
 //
-// Ordering: DEPENDENTS FIRST, THE RECORD THAT MAKES THE DATABASE RESOLVABLE
-// LAST. This is the ordering pkg/sql/provider's Database.DropTable and
-// CollectionService.DropCollection already use, and reversing it is exactly
-// the defect go-qrdb#412 reports. Until this change the catalog entry went
-// first, so a shared-store database's keys were orphaned the instant the
-// entry was gone: nothing in the system named that keyspace again, the
-// residue was permanent, and a database recreated under the same name
-// inherited all of it.
+// Ordering: FENCE FIRST, DEPENDENTS NEXT, THE RECORD THAT MAKES THE DATABASE
+// RESOLVABLE LAST. The dependents-before-record half is the ordering
+// pkg/sql/provider's Database.DropTable and CollectionService.DropCollection
+// already use, and reversing it is exactly the defect go-qrdb#412 reports:
+// until that change the catalog entry went first, so a shared-store
+// database's keys were orphaned the instant the entry was gone. The fence
+// (step 0) is go-qrdb#482: reclaiming first closed the #412 window only for
+// a drop that runs alone. A write that resolved the database — still open,
+// still in the catalog — after the keyspace scan but before the catalog
+// entry was removed survived the reclamation, orphaned under a name the
+// catalog no longer named. The fence has two halves, both set BEFORE the
+// reclamation that follows can run:
 //
-// The worst state an interrupted Drop can leave is therefore a LIVE, EMPTY
-// database — still resolvable, still serving, with some or all of its data
-// already reclaimed. Re-issuing the drop completes it, because every step is
-// idempotent and the name stays occupied until the last one. No state exists
-// in which a later CREATE silently adopts a previous database's data.
+//   - the LOCAL fence (Database.Dropping, persisted in meta.json) makes the
+//     database unresolvable to Manager.Get, the seam every new handle is
+//     resolved through;
+//   - the STORE fence (KeyspaceReclaimer.FenceDatabaseKeyspace) writes the
+//     dropped tombstone into the marker key the Raft group holding the
+//     database's data keeps for it. Every write to the database carries a
+//     guard that the marker still names the database's own incarnation
+//     (absent, for the empty incarnation and a dedicated store), evaluated
+//     by the state machine in the same command as the write, so a write
+//     resolved before the drop -- a handle already in hand, a proposal
+//     already in the log -- is refused at apply time if it did not apply
+//     before the fence. The local fence alone cannot do that: it is checked
+//     before a write is proposed, and a write can wait in the log after the
+//     check.
 //
-// A reclamation failure fails the whole drop rather than being skipped:
-// reporting success over data that is still there is the defect itself, and
-// the surviving catalog entry is what makes the retry possible.
+// The fence (Database.Dropping) is deliberately independent of Status: this
+// step never calls db.SetStatus. That is what lets step 2 keep asking
+// db.Status() the exact question it always has -- was there an open backend
+// to release -- undisturbed by the fence, and what makes a fenced database
+// that survives a crash and a restart (Open restores Dropping from
+// meta.json onto a freshly-StatusOpen database) still resolvable to a fresh
+// Drop retry rather than stuck because Status reads as if a drop already
+// closed it.
+//
+// The worst state an interrupted Drop can leave is therefore a FENCED, EMPTY
+// database — unresolvable to ordinary operations, with some or all of its
+// data already reclaimed. Re-issuing the drop completes it, because every
+// step is idempotent and the name stays occupied until the last one. No
+// state exists in which a later CREATE silently adopts a previous
+// database's data, and no write can land in one being torn down.
+//
+// A fencing or reclamation failure fails the whole drop rather than being
+// skipped: reporting success over data that is still there is the defect
+// itself. It also clears both fences, so the surviving catalog entry is
+// resolvable and writable again and the retry an operator issues is not
+// permanently refused.
+//
+// The default database cannot be dropped (CheckDroppable).
 func (m *Manager) Drop(ctx context.Context, name string) error {
+	if err := CheckDroppable(name); err != nil {
+		return err
+	}
 	val, ok := m.databases.Load(name)
 	if !ok {
 		return &NotFoundError{Name: name}
@@ -490,17 +689,61 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 	}
 	defer m.dropping.Delete(name)
 
-	// 1. The data the database owns in a store it shares with others. Nothing
-	//    below this line can reach it, and everything below this line makes it
-	//    unreachable.
+	// 0. Fence: refuse every new caller before the data they would touch
+	//    starts being reclaimed (go-qrdb#482). The IN-MEMORY flag is set
+	//    FIRST, not the durable one: loadDatabase -- the seam every
+	//    Update*/Get resolution goes through -- refuses the instant
+	//    db.Dropping() reads true, and rewriteMeta always reads
+	//    db.Dropping() freshly at call time (never a value cached earlier),
+	//    so flipping the in-memory flag first closes the window a
+	//    durable-first ordering left open: a concurrent Update* call that
+	//    had already passed loadDatabase's check (observing Dropping()
+	//    still false) could run rewriteMeta AFTER the durable write below
+	//    committed but BEFORE the in-memory flag caught up, read the
+	//    stale-at-that-instant false, and silently overwrite meta.json with
+	//    the fence cleared -- reopening a mid-drop database as fully
+	//    resolvable after a crash during reclamation (go-qrdb#482 round 3,
+	//    finding 10). The durable write still follows immediately after, so
+	//    a crash between the two still resumes fenced (Open restores
+	//    Dropping from meta.json); only the commit order changed, and a
+	//    durable-write failure rolls the in-memory flag back rather than
+	//    leaving the two disagreeing. Idempotent: re-marking an
+	//    already-fenced database (a retry after a crash or a failed
+	//    reclamation) is a no-op write of the same value.
+	db.SetDropping(true)
+	if err := m.setDroppingFlag(name, db, true); err != nil {
+		db.SetDropping(false)
+		return &LocalFenceError{Name: name, Err: err}
+	}
+
+	// 1. The data the database owns in a store it shares with others. The
+	//    store fence goes in first, in the same Raft group as that data, so
+	//    no write the fence did not precede can land in the keyspace being
+	//    reclaimed -- see the doc comment. Nothing below this line can reach
+	//    the data, and everything below this line makes it unreachable.
 	if m.reclaimer != nil {
+		if err := m.reclaimer.FenceDatabaseKeyspace(ctx, db.TenantID(), name); err != nil {
+			rolledBack := m.rollbackDropFence(ctx, name, db)
+			return &KeyspaceFenceError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
+		}
+		// The store now holds this name's tombstone; remember that here,
+		// where a later create of the name with no reclaimer consults it.
+		if err := m.recordDrop(name); err != nil {
+			rolledBack := m.rollbackDropFence(ctx, name, db)
+			return &KeyspaceFenceError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
+		}
 		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name); err != nil {
-			return &KeyspaceReclaimError{Name: name, TenantID: db.TenantID(), Err: err}
+			rolledBack := m.rollbackDropFence(ctx, name, db)
+			return &KeyspaceReclaimError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}
 	}
 
 	// 2. Close the database's own backend, so a dedicated store releases its
-	//    files before the directory holding them is removed.
+	//    files before the directory holding them is removed. Status is
+	//    exactly what it was before step 0 -- the fence never touches it --
+	//    so a database that was already closed (a retry of a drop that got
+	//    this far before failing or crashing) is correctly left alone rather
+	//    than closed twice.
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
@@ -527,35 +770,52 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 	return nil
 }
 
+// rollbackDropFence clears the fences a failed drop set, so the database it
+// failed to drop is resolvable and writable again.
+//
+// The store fence is ALWAYS cleared, whether or not writing it reported
+// success: a proposal can commit and still return an error (a timeout, a
+// lost leader), so "the fence write failed" does not mean "there is no
+// fence". Clearing is idempotent, and it runs under DropRollbackContext
+// because the drop most often failed on the request's own cancellation.
+//
+// The local fence is cleared only once the store fence is: a database the
+// store still refuses writes to must not look live. If the store cannot be
+// reached the database stays fenced -- refused with DroppingError, honestly
+// -- until the drop is retried. Neither failure is returned: the drop
+// already failed and that is what the caller reports. The result says
+// whether the drop was rolled back completely, which is what decides whether
+// a caller may roll back fences of its own (DropRolledBack).
+func (m *Manager) rollbackDropFence(ctx context.Context, name string, db *Database) bool {
+	rollbackCtx, cancel := DropRollbackContext(ctx)
+	defer cancel()
+	if err := m.reclaimer.UnfenceDatabaseKeyspace(rollbackCtx, db.TenantID(), name, db.Incarnation()); err != nil {
+		m.logger.Warn("failed to clear the store drop fence after a failed drop; the database stays fenced until the drop is retried",
+			slog.String("name", name),
+			slog.Any("error", err))
+		return false
+	}
+	db.SetDropping(false)
+	if err := m.setDroppingFlag(name, db, false); err != nil {
+		m.logger.Warn("failed to clear the drop fence after a failed drop",
+			slog.String("name", name),
+			slog.Any("error", err))
+	}
+	return true
+}
+
 // UpdateProtocol updates the wire protocol configuration for a database.
 // It updates both the in-memory config and the on-disk meta.json.
 func (m *Manager) UpdateProtocol(name string, protocol ProtocolConfig) error {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.UpdateProtocol(protocol)
 
-	// Rewrite meta.json with the updated protocol config.
-	cfg := db.Config()
-	meta := DatabaseMeta{
-		TenantID:     cfg.TenantID,
-		Name:         cfg.Name,
-		Engine:       cfg.Engine,
-		Backend:      cfg.Backend,
-		Protocol:     cfg.Protocol,
-		Mode:         cfg.Mode,
-		StorageCodec: cfg.StorageCodec,
-		Replicas:     cfg.Replicas,
-		DedicatedWAL: cfg.DedicatedWAL,
-		Raft:         cfg.Raft,
-		Barrier:      cfg.Barrier,
-		Connection:   cfg.Connection,
-		SQL:          cfg.SQL,
-	}
-	dbDir := m.dbDir(name)
-	if err := m.writeMeta(dbDir, meta); err != nil {
+	// Rewrite meta.json with the updated protocol config, preserving whatever
+	// the drop fence is currently set to (see metaFromConfig).
+	if err := m.rewriteMeta(name, db); err != nil {
 		return err
 	}
 
@@ -574,11 +834,10 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 			return err
 		}
 	}
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	if err := etcdEngineError(name, db.Config().Engine, etcd); err != nil {
 		return err
 	}
@@ -595,11 +854,10 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 			return err
 		}
 	}
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateRaft(raft)
 
 	return m.rewriteMeta(name, db)
@@ -614,11 +872,10 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 // itself change cluster membership or placement -- callers update those
 // first and call UpdateReplicas last, once the new replica count is durable.
 func (m *Manager) UpdateReplicas(name string, replicas int) error {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateReplicas(replicas)
 
 	return m.rewriteMeta(name, db)
@@ -642,11 +899,10 @@ func (m *Manager) UpdateReplicas(name string, replicas int) error {
 // Mode/SharesRequired/SharesTotal ahead of a future Shamir strategy) --
 // are the only ones this method actually performs.
 func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) error {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 
 	wantEnabled := barrier != nil && barrier.Enabled
 	activeNow := db.BarrierEnabled()
@@ -679,11 +935,10 @@ func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) 
 			return err
 		}
 	}
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateConnection(conn)
 
 	return m.rewriteMeta(name, db)
@@ -697,11 +952,10 @@ func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
 			return err
 		}
 	}
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateSQL(sqlCfg)
 
 	if err := m.rewriteMeta(name, db); err != nil {
@@ -713,16 +967,18 @@ func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
 	return nil
 }
 
-// rewriteMeta rebuilds and rewrites the meta.json for a database from its
-// current in-memory configuration.
-func (m *Manager) rewriteMeta(name string, db *Database) error {
-	cfg := db.Config()
-	meta := DatabaseMeta{
+// metaFromConfig builds the DatabaseMeta persisted to meta.json from cfg.
+// dropping is threaded through explicitly, rather than always false, so a
+// caller that rewrites meta.json for an unrelated reason (a configuration
+// update) while Drop's fence happens to be set does not silently clear it.
+func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) DatabaseMeta {
+	return DatabaseMeta{
 		TenantID:     cfg.TenantID,
 		Name:         cfg.Name,
 		Engine:       cfg.Engine,
 		Backend:      cfg.Backend,
 		Protocol:     cfg.Protocol,
+		DataDir:      cfg.DataDir,
 		Mode:         cfg.Mode,
 		StorageCodec: cfg.StorageCodec,
 		Replicas:     cfg.Replicas,
@@ -731,9 +987,28 @@ func (m *Manager) rewriteMeta(name string, db *Database) error {
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Dropping:     dropping,
+		Incarnation:  incarnation,
 	}
-	dbDir := m.dbDir(name)
-	return m.writeMeta(dbDir, meta)
+}
+
+// rewriteMeta rebuilds and rewrites the meta.json for a database from its
+// current in-memory configuration, preserving whatever the drop fence
+// (DatabaseMeta.Dropping) is currently set to.
+func (m *Manager) rewriteMeta(name string, db *Database) error {
+	meta := metaFromConfig(db.Config(), db.Dropping(), db.Incarnation())
+	return m.writeMeta(m.dbDir(name), meta)
+}
+
+// setDroppingFlag persists dropping to name's meta.json, which is what lets
+// a restart mid-drop (see Open) tell a fenced database apart from an
+// ordinary open one across a crash. It does not touch db's in-memory
+// status -- Drop sets that itself, separately, so a failed reclamation can
+// restore the exact prior status (open or sealed) instead of always
+// falling back to StatusOpen.
+func (m *Manager) setDroppingFlag(name string, db *Database, dropping bool) error {
+	meta := metaFromConfig(db.Config(), dropping, db.Incarnation())
+	return m.writeMeta(m.dbDir(name), meta)
 }
 
 // List returns information about all open databases, sorted by name.
@@ -810,6 +1085,17 @@ func (m *Manager) OpenAll() error {
 	// Advance the allocator so the next allocation starts after every known
 	// shard ID. Only advance when the discovered maximum is at or above the
 	// allocator's current next value to avoid rolling the counter backwards.
+	// The persisted high-water mark covers IDs of databases dropped since
+	// they were issued, which no remaining database carries.
+	if m.allocator != nil {
+		hw, err := m.readShardHighWater()
+		if err != nil {
+			return err
+		}
+		if hw > maxShardID {
+			maxShardID = hw
+		}
+	}
 	if m.allocator != nil && maxShardID > 0 {
 		m.allocator.AdvanceTo(maxShardID + 1)
 	}
@@ -1006,15 +1292,72 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 	return conflict
 }
 
-// writeMeta writes the DatabaseMeta as JSON to the meta.json file.
+// writeMeta writes the DatabaseMeta as JSON to the meta.json file via a
+// write-temp-file/fsync/rename sequence, not a direct write to the final
+// path (go-qrdb#482 round 3, finding 10): a crash mid-write to path itself
+// can leave meta.json truncated or otherwise corrupt, and two concurrent
+// writers to the same path (Drop's fence and an Update*'s rewriteMeta,
+// racing) can interleave their writes with no serialization between them.
+// os.Rename is atomic on the same filesystem -- guaranteed by every POSIX
+// platform this ships on -- so every writer instead writes its own
+// uniquely-named temp file (no interleaving possible), fsyncs it so the
+// data is durable BEFORE the rename makes it visible, and only then renames
+// it over path in one atomic step: a reader (readMeta) never observes a
+// partial write, and two racing writers settle on "the later rename wins"
+// -- the same last-writer-wins semantics this package already documents
+// elsewhere for the fence -- rather than a corrupt file. The containing
+// directory is also best-effort fsynced after the rename so the directory
+// entry itself survives a crash immediately after; a platform where that
+// second fsync is unsupported still has a fully-written, correctly-named
+// file from the rename itself, so this failure is logged, not returned.
 func (m *Manager) writeMeta(dbDir string, meta DatabaseMeta) error {
-	path := filepath.Join(dbDir, metaFile)
 	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return &MetaWriteError{Path: filepath.Join(dbDir, metaFile), Err: err}
+	}
+	return writeFileAtomic(dbDir, metaFile, data)
+}
+
+// writeFileAtomic writes data to dir/name through a temp-file, fsync, rename
+// sequence, so a crash mid-write never leaves the file truncated and two
+// writers settle on "the later rename wins" rather than an interleaved file.
+func writeFileAtomic(dir, name string, data []byte) error {
+	path := filepath.Join(dir, name)
+	tmp, err := os.CreateTemp(dir, "."+name+"-*.tmp")
 	if err != nil {
 		return &MetaWriteError{Path: path, Err: err}
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tmpPath := tmp.Name()
+	// Any return before the rename below must not leave the temp file
+	// behind; the rename itself removes tmpPath by moving it onto path, so
+	// this is a no-op on the success path (os.Remove on an already-renamed
+	// path fails harmlessly and is discarded).
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	// os.CreateTemp already creates tmp with mode 0o600 (before umask), the
+	// permissions these files need, so there is nothing left to tighten.
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return &MetaWriteError{Path: path, Err: err}
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return &MetaWriteError{Path: path, Err: err}
+	}
+	if err := tmp.Close(); err != nil {
+		return &MetaWriteError{Path: path, Err: err}
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return &MetaWriteError{Path: path, Err: err}
+	}
+
+	// Best-effort: the rename above already made the write durable and
+	// visible under its final name, so a platform where the directory
+	// entry itself cannot be fsynced (or dir cannot even be reopened) still
+	// has a fully-written, correctly-named file.
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

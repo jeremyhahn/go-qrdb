@@ -28,6 +28,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -62,11 +63,93 @@ type QuicraftHost interface {
 type HostAdapter struct {
 	*quicraft.Host
 	inner QuicraftHost
+	gate  *featuregate.Gate
+}
+
+// Option configures a HostAdapter.
+type Option func(*HostAdapter)
+
+// WithFeatureGate makes the adapter answer FeatureEnabled from gate. Every
+// adapter over a host with a transport -- one whose groups can hold other
+// nodes, and so other binaries -- needs one; see FeatureEnabled. A nil gate
+// is the host with no transport NewFeatureGate returns it for, and leaves
+// the adapter ungated.
+func WithFeatureGate(gate *featuregate.Gate) Option {
+	return func(a *HostAdapter) { a.gate = gate }
+}
+
+// NewFeatureGate returns the feature gate for the groups of host, whose
+// system-shard replica is replicaID on systemShardID -- or nil when host has
+// no transport: its groups hold only this process, so every replica runs
+// this binary and needs no gate.
+func NewFeatureGate(host *quicraft.Host, replicaID, systemShardID uint64) (*featuregate.Gate, error) {
+	if host.NodeIdentity() == "" {
+		return nil, nil
+	}
+	return featuregate.New(featuregate.Config{
+		Self:          featuregate.Self{ReplicaID: replicaID},
+		SystemShardID: systemShardID,
+		Members:       featuregate.HostMembership(host),
+	})
 }
 
 // New creates a HostAdapter backed by the given quicraft.Host.
-func New(h *quicraft.Host) *HostAdapter {
-	return &HostAdapter{Host: h, inner: h}
+func New(h *quicraft.Host, opts ...Option) *HostAdapter {
+	a := &HostAdapter{Host: h, inner: h}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+// HealthCheck reports the host's health, degraded when the feature gate has
+// found that the cluster activated a feature this binary lacks: the node
+// cannot take part in the cluster, and a composer that cannot refuse to
+// start (an embedded node) surfaces that here, on every transport's health
+// check, rather than only in its log.
+func (a *HostAdapter) HealthCheck() *quicraft.HealthStatus {
+	return a.withGateVerdict(a.Host.HealthCheck())
+}
+
+// withGateVerdict degrades an "ok" verdict when the feature gate has refused
+// this binary; a worse verdict is never masked.
+func (a *HostAdapter) withGateVerdict(hs *quicraft.HealthStatus) *quicraft.HealthStatus {
+	if a.gate == nil || a.gate.Refusal() == nil || hs.Status != healthOK {
+		return hs
+	}
+	degraded := *hs
+	degraded.Status = healthDegraded
+	return &degraded
+}
+
+// Health verdicts HealthCheck reads and reports (see quicraft.HealthStatus).
+const (
+	healthOK       = "ok"
+	healthDegraded = "degraded"
+)
+
+// AdmitReplica refuses, with *featuregate.UnsupportedReplicaError, to add a
+// replica of shardID on the node at raftAddr when that node does not
+// advertise every feature the group uses (see featuregate.Gate.AdmitReplica).
+// Without a gate no feature is ever enabled, so every node is admitted.
+func (a *HostAdapter) AdmitReplica(shardID uint64, raftAddr string) error {
+	if a.gate == nil {
+		return nil
+	}
+	return a.gate.AdmitReplica(shardID, raftAddr)
+}
+
+// FeatureEnabled reports whether every replica of shardID's group can apply
+// commands that use feature. With a feature gate the gate decides. Without
+// one, a host with no transport -- every replica is this process -- and a
+// test adapter with no host are enabled, while a host with a transport is
+// not: its groups can hold nodes running an older binary, and without a
+// gate nothing establishes that they do not.
+func (a *HostAdapter) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
+	if a.gate != nil {
+		return a.gate.Enabled(shardID, feature)
+	}
+	return a.Host == nil || a.Host.NodeIdentity() == ""
 }
 
 // NewWithInner creates a HostAdapter backed by any QuicraftHost. Useful

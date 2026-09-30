@@ -214,17 +214,18 @@ func (s testLogSink) Write(p []byte) (int, error) {
 }
 
 // startNode starts the qrdbd binary with the given arguments and returns
-// the exec.Cmd. Stdout and stderr are piped through t.Log with the given prefix.
-// The process is killed on test cleanup.
+// the exec.Cmd. Stdout and stderr are piped through t.Log with the given
+// prefix, and copied to every tee writer. The process is killed on test
+// cleanup.
 //
 // The raw exec.Cmd is returned rather than the harness Daemon because these
 // tests drive process lifecycle themselves — SIGTERM restarts, crash
 // simulations, and their own Wait calls — and must not share reaping with the
 // harness.
-func startNode(t *testing.T, binary string, args []string, prefix string) *exec.Cmd {
+func startNode(t *testing.T, binary string, args []string, prefix string, tee ...io.Writer) *exec.Cmd {
 	t.Helper()
-	daemon, err := qrdbdharness.Start(binary, args,
-		qrdbdharness.WithOutput(&logWriter{t: t, prefix: prefix}))
+	out := io.MultiWriter(append([]io.Writer{&logWriter{t: t, prefix: prefix}}, tee...)...)
+	daemon, err := qrdbdharness.Start(binary, args, qrdbdharness.WithOutput(out))
 	if err != nil {
 		t.Fatalf("startNode: %v", err)
 	}

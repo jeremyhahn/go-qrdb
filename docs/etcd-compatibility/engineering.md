@@ -100,6 +100,7 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Missing permission for the mapped operation | permission denied on the RPC | **yes** |
 | Compacted revision requested | etcd's compacted-revision error | **yes** |
 | Barrier sealed | requests refused | **yes** |
+| The state machine keeps no MVCC revision history (the default `pebble`) | the server refuses to start (`RevisionHistoryRequiredError`); a `Put` that reaches one is `FailedPrecondition`, never revision 0 | **yes** |
 
 **Streams end when their database stops serving.** A `Watch` or
 `LeaseKeepAlive` stream is guarded by its database (`etcd.StreamGuard`): the

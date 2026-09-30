@@ -59,7 +59,10 @@ kube-apiserver \
 The `kube-apiserver` client certificate's role needs `kv:range`, `kv:put`,
 `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and the
 `lease:*` permissions, and must belong to the tenant that owns the database. The daemon's `sm_type` must be `mvcc` — Kubernetes depends on
-revisions, watches, leases and transactions.
+revisions, watches, leases and transactions. On a state machine without MVCC
+revision history (the default `pebble`) the etcd server refuses to start
+(`etcd.RevisionHistoryRequiredError`), and a put that reached one would be
+refused with `FAILED_PRECONDITION` rather than answered with revision 0.
 
 **Run more than one etcd cluster.** Create a second database with etcd enabled.
 Each listener serves only its own database's keys, watches and leases, so two

@@ -103,3 +103,14 @@ func TestLookupTypeError_ImplementsError(t *testing.T) {
 		t.Fatal("expected non-empty error message")
 	}
 }
+
+func TestUndecodableCommandError(t *testing.T) {
+	inner := errors.New("short")
+	err := &UndecodableCommandError{Err: inner}
+	if !errors.Is(err, inner) {
+		t.Fatal("UndecodableCommandError must unwrap to the decode error")
+	}
+	if err.Error() == "" {
+		t.Fatal("UndecodableCommandError must describe itself")
+	}
+}

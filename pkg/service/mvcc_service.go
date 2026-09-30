@@ -23,6 +23,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -158,16 +159,54 @@ type changeIndexUnsupportedErr interface {
 type MVCCKVService struct {
 	host    Host
 	shardID uint64
+
+	// noRevisionHistory is set when the shard's state machine keeps no MVCC
+	// revision history (see WithoutRevisionHistory).
+	noRevisionHistory bool
 }
+
+// MVCCKVServiceOption configures an MVCCKVService.
+type MVCCKVServiceOption func(*MVCCKVService)
+
+// WithoutRevisionHistory declares that the shard's state machine keeps no
+// MVCC revision history -- the default pebble state machine. It applies a
+// lease-attached put and attaches the lease, but has no revision to report
+// and serves no revision query, so PutWithLease reports the write without
+// reading it back. The composer knows the state machine it configured
+// (statemachine.CapabilityMVCC in its descriptor) and declares it; the
+// service never infers it from a failed read.
+func WithoutRevisionHistory() MVCCKVServiceOption {
+	return func(s *MVCCKVService) { s.noRevisionHistory = true }
+}
+
+// RevisionHistoryReporter is implemented by an MVCC servicer that knows
+// whether its state machine keeps revision history. A surface whose answers
+// are revisions -- the etcd API -- refuses to serve over one that does not.
+type RevisionHistoryReporter interface {
+	KeepsRevisionHistory() bool
+}
+
+var _ RevisionHistoryReporter = (*MVCCKVService)(nil)
 
 // NewMVCCKVService creates a new MVCCKVServicer that operates on the specified
 // shard. The shard must be running an MVCCStateMachine for MVCC operations
 // to succeed.
-func NewMVCCKVService(host Host, shardID uint64) MVCCKVServicer {
-	return &MVCCKVService{
+func NewMVCCKVService(host Host, shardID uint64, opts ...MVCCKVServiceOption) MVCCKVServicer {
+	s := &MVCCKVService{
 		host:    host,
 		shardID: shardID,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// KeepsRevisionHistory reports whether the shard's state machine keeps MVCC
+// revision history (false when the composer declared
+// WithoutRevisionHistory).
+func (s *MVCCKVService) KeepsRevisionHistory() bool {
+	return !s.noRevisionHistory
 }
 
 // Put stores a key-value pair through Raft consensus with MVCC revision
@@ -177,7 +216,7 @@ func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -203,7 +242,7 @@ func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byt
 	if encErr != nil {
 		return false, &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -220,7 +259,7 @@ func (s *MVCCKVService) CompareAndDelete(ctx context.Context, key string, expect
 	if err != nil {
 		return false, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -238,7 +277,7 @@ func (s *MVCCKVService) CompareAndSwap(ctx context.Context, key string, expected
 	if err != nil {
 		return false, &EncodeRequestError{Err: err}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return false, translateProposeError(err)
 	}
@@ -270,7 +309,7 @@ func (s *MVCCKVService) Delete(ctx context.Context, key string) error {
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -453,7 +492,7 @@ func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byt
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -470,7 +509,7 @@ func (s *MVCCKVService) DeleteWithMode(ctx context.Context, key string, mode wri
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -577,13 +616,15 @@ func (s *MVCCKVService) ExistsWithConsistency(ctx context.Context, key string, o
 // ---------------------------------------------------------------------------
 
 // PutWithLease stores a key-value pair with an attached lease through Raft
-// consensus. Returns the resulting KeyValue with full revision metadata.
+// consensus. Returns the resulting KeyValue with full revision metadata, or,
+// on a state machine that keeps no revision history, the key, value and
+// lease it wrote (see leasedPutResult).
 func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*KeyValue, error) {
 	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
 	if encErr != nil {
 		return nil, &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -591,35 +632,18 @@ func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []by
 		return nil, resultErr
 	}
 
-	// The state machine returns the assigned revision in Result.Value.
-	// Perform a follow-up read to get the full KeyValue with metadata.
-	rev := int64(result.Value)
-
-	readResult, err := s.host.SyncRead(ctx, s.shardID, MVCCGetAtRevisionQuery{
-		Key:      []byte(key),
-		Revision: rev,
-	})
-	if err != nil {
-		return nil, s.translateReadError(err)
-	}
-
-	kv, ok := readResult.(*KeyValue)
-	if !ok {
-		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
-	}
-
-	return kv, nil
+	return s.leasedPutResult(ctx, key, value, leaseID, result)
 }
 
 // PutWithLeaseAndMode stores a key-value pair with an attached lease and
-// the specified write durability through Raft consensus. Returns the
-// resulting KeyValue with full revision metadata.
+// the specified write durability through Raft consensus. Returns what
+// PutWithLease returns.
 func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*KeyValue, error) {
 	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
 	if encErr != nil {
 		return nil, &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := proposeWithMode(ctx, s.host, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, translateProposeError(err)
 	}
@@ -627,23 +651,31 @@ func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, val
 		return nil, resultErr
 	}
 
-	// The state machine returns the assigned revision in Result.Value.
-	// Perform a follow-up read to get the full KeyValue with metadata.
-	rev := int64(result.Value)
+	return s.leasedPutResult(ctx, key, value, leaseID, result)
+}
 
+// leasedPutResult reports an applied lease-attached put. A state machine
+// with revision history returns the write's revision in result.Value, and
+// the write is read back at it for its full metadata. A state machine
+// without one -- declared with WithoutRevisionHistory; the default pebble
+// state machine -- applies the put and attaches the lease just the same,
+// but has no revision to report: the put is reported as the key, value and
+// lease it wrote, with zero revisions, and nothing is read back.
+func (s *MVCCKVService) leasedPutResult(ctx context.Context, key string, value []byte, leaseID int64, result sm.Result) (*KeyValue, error) {
+	if s.noRevisionHistory {
+		return &KeyValue{Key: []byte(key), Value: value, LeaseID: leaseID}, nil
+	}
 	readResult, err := s.host.SyncRead(ctx, s.shardID, MVCCGetAtRevisionQuery{
 		Key:      []byte(key),
-		Revision: rev,
+		Revision: int64(result.Value),
 	})
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
-
 	kv, ok := readResult.(*KeyValue)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
-
 	return kv, nil
 }
 
@@ -787,7 +819,7 @@ func (s *MVCCKVService) Compact(ctx context.Context, revision int64) error {
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}

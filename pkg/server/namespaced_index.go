@@ -29,6 +29,7 @@ import (
 // stored under the same namespace prefix when written through the namespaced
 // KV/MVCC services, so those returned keys also have the prefix stripped.
 type namespacedIndexService struct {
+	dbGuard
 	inner  service.IndexServicer
 	prefix string
 }
@@ -56,17 +57,20 @@ func (s *namespacedIndexService) stripByteSlices(keys [][]byte) [][]byte {
 
 // CreateIndex creates a secondary index under the prefixed name.
 func (s *namespacedIndexService) CreateIndex(ctx context.Context, name, fieldName string, config index.IndexConfig) error {
+	ctx = s.scope(ctx)
 	return s.unscopeOwnership(s.inner.CreateIndex(ctx, s.prefix+name, fieldName, config), name)
 }
 
 // DropIndex removes a secondary index by prefixed name.
 func (s *namespacedIndexService) DropIndex(ctx context.Context, name string) error {
+	ctx = s.scope(ctx)
 	return s.inner.DropIndex(ctx, s.prefix+name)
 }
 
 // DropOwnedIndex removes a secondary index by prefixed name when it is
 // recorded under owner.
 func (s *namespacedIndexService) DropOwnedIndex(ctx context.Context, name, owner string) error {
+	ctx = s.scope(ctx)
 	return s.unscopeOwnership(s.inner.DropOwnedIndex(ctx, s.prefix+name, owner), name)
 }
 

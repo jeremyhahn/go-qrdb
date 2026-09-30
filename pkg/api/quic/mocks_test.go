@@ -694,7 +694,7 @@ func (m *mockTimeSeriesService) GetRetentionPolicy(metric string) (*timeseries.R
 	return nil, nil
 }
 
-func (m *mockTimeSeriesService) SetRetentionPolicy(metric string, policy *timeseries.RetentionPolicy) error {
+func (m *mockTimeSeriesService) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetentionFn != nil {
 		return m.setRetentionFn(metric, policy)
 	}

@@ -124,8 +124,12 @@ type Transport struct {
 	encMigrator       service.EncryptionMigrator
 
 	// registry is the node's per-(tenant, database) service registry, the
-	// seam WithDatabase scopes the data plane through. nil means the
-	// transport can serve only the node's default service set.
+	// seam WithDatabase scopes the data plane through and every named-
+	// database SQL query resolves through. nil means the transport can
+	// serve only the node's default service set. It is a live-resolving
+	// adapter value (e.g. the node's own, which reads its current server on
+	// every call), not a snapshot, so the field itself never needs to
+	// change once WithServiceRegistry sets it.
 	registry service.Registry
 
 	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
@@ -1665,7 +1669,7 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 		return translateError(err)
 	}
 	policy := toServiceRetentionPolicy(req.Policy)
-	return translateError(svc.SetRetentionPolicy(req.Metric, policy))
+	return translateError(svc.SetRetentionPolicy(ctx, req.Metric, policy))
 }
 
 // TSListMetrics lists metric names matching a prefix through the

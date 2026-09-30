@@ -133,6 +133,7 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 |---|---|---|
 | Success | 200 | `OK` |
 | Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
+| Database already live on another node (the catalog is node-local until it is replicated) | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` with `Elsewhere` set; the other node's database is untouched |
 | Name reserved for node state (`wal`, `nodehost`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
 | Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; this refusal is Unprocessable)* |
@@ -143,6 +144,10 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | etcd enabled on a non-`raft` database (target — no check exists today) | 400 | `FAILED_PRECONDITION` — `database.EtcdRequiresRaftBackendError` |
 | Wrong unseal secret | 403 | `PERMISSION_DENIED` — the database stays sealed |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
+| Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
+| A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
+| A write that was accepted before a drop and reached the store after it | 409 | `ABORTED` — `database.DroppingError`; nothing was written |
+| `DROP DATABASE` of the default database (`system`) | 400 | `INVALID_ARGUMENT` — `database.DefaultDatabaseDropError`; it can never be dropped |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |

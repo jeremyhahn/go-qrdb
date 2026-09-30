@@ -66,6 +66,26 @@ type Database struct {
 	// serving is closed when the database stops serving -- sealed, closed by
 	// a drop, or failed -- and replaced by a fresh one when it opens again.
 	serving atomic.Pointer[chan struct{}]
+
+	// dropping is set by Manager.Drop (step 0) BEFORE it reclaims this
+	// database's keyspace, and is what Manager.Get refuses on -- see
+	// Dropping. It is deliberately NOT folded into status: status already
+	// answers "is there an open backend to close" (see Close, and Drop
+	// step 2, which is unaffected by a drop in progress), and Manager.
+	// SetBarrierManager and Close both write status for reasons that have
+	// nothing to do with a drop in flight. Overloading status with a third
+	// meaning made both of those able to silently clear the fence; keeping
+	// the two orthogonal is what makes the fence monotonic except through
+	// Manager.Drop's own explicit rollback on a failed reclaim.
+	dropping atomic.Bool
+
+	// incarnation distinguishes this database from every other database
+	// ever created under its name: the value its drop-fence marker holds
+	// while it is live, and the value every write to it is guarded by. Set
+	// once, by Manager.Create or Manager.Open, before the database is
+	// published; empty for a database created before incarnations existed
+	// or with no store to mark. See Incarnation.
+	incarnation string
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -219,6 +239,35 @@ func (d *Database) Unserved() <-chan struct{} {
 	return *d.serving.Load()
 }
 
+// Incarnation returns the value that distinguishes this database from every
+// other database ever created under its name. Every write to the database is
+// guarded by it: its drop-fence marker holds exactly this value while the
+// database is live, and a drop, or a new database created under the name,
+// replaces it. Empty means the database has no incarnation of its own -- it
+// predates incarnations, or it was created with no store to mark -- and is
+// live while the marker is absent.
+func (d *Database) Incarnation() string {
+	return d.incarnation
+}
+
+// Dropping reports whether Manager.Drop has fenced this database ahead of
+// reclaiming its keyspace (go-qrdb#482). It is independent of Status: a
+// dropping database's underlying backend may still be open (Drop closes it
+// in a later step) or, after a crash and restart, freshly reopened as
+// StatusOpen or StatusSealed by Manager.Open -- Dropping stays true across
+// either because it is restored from the database's own persisted metadata
+// (DatabaseMeta.Dropping), not derived from Status.
+func (d *Database) Dropping() bool {
+	return d.dropping.Load()
+}
+
+// SetDropping sets or clears the drop fence. Manager.Drop sets it before
+// reclaiming the keyspace and clears it again if the reclamation fails, so
+// a failed drop is retryable rather than stuck permanently refusing.
+func (d *Database) SetDropping(dropping bool) {
+	d.dropping.Store(dropping)
+}
+
 // BarrierEnabled reports whether this database has barrier encryption enabled.
 func (d *Database) BarrierEnabled() bool {
 	return d.barrierEnabled.Load()
@@ -328,6 +377,20 @@ func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
 	}
 }
 
+// reportedStatus returns StatusDropping when a drop is fencing the database
+// (see Dropping), overriding whatever Status() would otherwise answer. This
+// is the ONLY place StatusDropping is exposed -- the underlying status field
+// is never itself set to it (see the dropping field's doc comment) -- so
+// Info()/List() report a mid-drop database honestly without disturbing the
+// separate bookkeeping Close() and Manager.SetBarrierManager depend on
+// Status() for.
+func (d *Database) reportedStatus() StatusType {
+	if d.Dropping() {
+		return StatusDropping
+	}
+	return d.Status()
+}
+
 // Info returns runtime information about this database.
 func (d *Database) Info() DatabaseInfo {
 	cfg := d.config.Load()
@@ -336,7 +399,7 @@ func (d *Database) Info() DatabaseInfo {
 		Name:         cfg.Name,
 		Engine:       cfg.Engine,
 		Backend:      cfg.Backend,
-		Status:       d.Status(),
+		Status:       d.reportedStatus(),
 		Protocol:     cfg.Protocol,
 		DataDir:      d.dataDir,
 		Mode:         cfg.Mode,
@@ -359,6 +422,11 @@ func (d *Database) Info() DatabaseInfo {
 // StatusClosed. Closing the data-plane backend when it is barrier-wrapped
 // also closes the underlying raw backend (BarrierBackend.Close forwards to
 // its inner backend), so no separate close of rawDataBackend is needed.
+//
+// This is unaffected by Dropping: Manager.Drop's fence never touches Status,
+// precisely so that Close (called from Drop step 2) keeps answering "was
+// there an open backend to release" from Status alone, exactly as it did
+// before the fence existed.
 func (d *Database) Close() error {
 	status := d.Status()
 	if status != StatusOpen && status != StatusSealed {

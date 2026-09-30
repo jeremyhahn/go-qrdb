@@ -79,6 +79,10 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		protocol.OpCompareAndDelete: k.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   k.handleCompareAndSwap,
 
+		// A write wrapped with a guard evaluated at this entry's log
+		// position -- the drop fence rides on it. See guarded_write.go.
+		protocol.OpGuarded: k.handleGuarded,
+
 		// MVCC
 		protocol.OpMVCCPut:     k.handleMVCCPut,
 		protocol.OpMVCCDelete:  k.handleMVCCDelete,

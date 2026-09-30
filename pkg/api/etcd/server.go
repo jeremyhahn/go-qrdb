@@ -125,10 +125,15 @@ func NewServer(dbName, addr string, opts ...ServerOption) *Server {
 // Start creates a TCP listener and starts serving etcd gRPC services. It
 // refuses with AuthRequiredError when no TLS configuration or no
 // RequestAuthorizer is set: the etcd Auth service is a stub, so either gap
-// would serve the database to anyone who can reach the port.
+// would serve the database to anyone who can reach the port. It also
+// refuses, with *RevisionHistoryRequiredError, when the MVCC service reports
+// that its state machine keeps no revision history.
 func (s *Server) Start() error {
 	if s.opts.tlsConfig == nil || s.opts.authorizer == nil {
 		return &AuthRequiredError{Database: s.dbName}
+	}
+	if !keepsRevisionHistory(s.opts.mvccSvc) {
+		return &StartError{Addr: s.addr, Err: &RevisionHistoryRequiredError{}}
 	}
 	lis, err := net.Listen("tcp", s.addr)
 	if err != nil {

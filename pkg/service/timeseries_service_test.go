@@ -834,7 +834,7 @@ func TestTimeSeriesService_SetRetentionPolicy(t *testing.T) {
 		},
 	}
 	svc := NewTimeSeriesService(host, 1)
-	err := svc.SetRetentionPolicy("cpu.usage", &RetentionPolicy{
+	err := svc.SetRetentionPolicy(context.Background(), "cpu.usage", &RetentionPolicy{
 		Duration: 7 * 24 * time.Hour, Resolution: time.Minute, Aggregation: 1,
 	})
 	if err != nil {
@@ -849,7 +849,7 @@ func TestTimeSeriesService_SetRetentionPolicy_ProposeError(t *testing.T) {
 		},
 	}
 	svc := NewTimeSeriesService(host, 1)
-	err := svc.SetRetentionPolicy("cpu", &RetentionPolicy{Duration: time.Hour})
+	err := svc.SetRetentionPolicy(context.Background(), "cpu", &RetentionPolicy{Duration: time.Hour})
 	if err == nil {
 		t.Fatal("expected error")
 	}

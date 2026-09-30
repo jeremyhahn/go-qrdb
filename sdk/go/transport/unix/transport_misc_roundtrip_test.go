@@ -478,7 +478,7 @@ func (m *mockTimeSeriesSvc) GetRetentionPolicy(metric string) (*timeseries.Reten
 	}, nil
 }
 
-func (m *mockTimeSeriesSvc) SetRetentionPolicy(metric string, policy *timeseries.RetentionPolicy) error {
+func (m *mockTimeSeriesSvc) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetFn != nil {
 		return m.setRetFn(metric, policy)
 	}

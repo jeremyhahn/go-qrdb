@@ -154,8 +154,23 @@ func (e *AuthBootstrapError) Unwrap() error {
 	return e.Err
 }
 
-// LeaderElectionTimeoutError is the cause recorded in an AuthBootstrapError when
-// no Raft leader is elected within the bounded number of attempts.
+// DatabaseProvisionError reports that boot provisioning of the configured
+// databases could not start: Step names what failed, Err is its cause.
+type DatabaseProvisionError struct {
+	Step string
+	Err  error
+}
+
+// Error returns a human-readable description of the provisioning failure.
+func (e *DatabaseProvisionError) Error() string {
+	return "qrdbd: database provisioning: " + e.Step + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying cause.
+func (e *DatabaseProvisionError) Unwrap() error { return e.Err }
+
+// LeaderElectionTimeoutError is the cause recorded when no Raft leader is
+// elected within the bounded number of attempts.
 type LeaderElectionTimeoutError struct {
 	Attempts int
 }

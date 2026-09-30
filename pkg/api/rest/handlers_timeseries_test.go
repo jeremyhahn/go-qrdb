@@ -129,7 +129,7 @@ func (m *tsMock) GetRetentionPolicy(metric string) (*timeseries.RetentionPolicy,
 	return nil, nil
 }
 
-func (m *tsMock) SetRetentionPolicy(metric string, policy *timeseries.RetentionPolicy) error {
+func (m *tsMock) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
 	if m.setRetentionFn != nil {
 		return m.setRetentionFn(metric, policy)
 	}

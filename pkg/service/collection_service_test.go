@@ -75,13 +75,13 @@ func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (
 	return true, nil
 }
 
-// CompareAndSwap replaces key's value only while it still equals expected,
-// and leaves an absent key absent -- the KVServicer contract.
+// CompareAndSwap replaces key's value only when it holds exactly expected.
+// An absent key matches nothing, as in every KVServicer.
 func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cur, ok := m.data[key]
-	if !ok || !bytes.Equal(cur, expected) {
+	current, present := m.data[key]
+	if !present || !bytes.Equal(current, expected) {
 		return false, nil
 	}
 	cp := make([]byte, len(next))
@@ -90,12 +90,12 @@ func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, ne
 	return true, nil
 }
 
-// CompareAndDelete removes key only while its value still equals expected.
+// CompareAndDelete removes key only when it holds exactly expected.
 func (m *memoryKVSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cur, ok := m.data[key]
-	if !ok || !bytes.Equal(cur, expected) {
+	current, present := m.data[key]
+	if !present || !bytes.Equal(current, expected) {
 		return false, nil
 	}
 	delete(m.data, key)

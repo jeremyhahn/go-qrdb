@@ -224,7 +224,47 @@ for ev := range ch {
 `WatchMembership` polls rather than streaming, so it works on every transport
 including REST.
 
+## Upgrading a cluster
+
+Upgrade one node at a time, as for any rolling upgrade. A release that
+introduces a new replicated command -- guarded writes, which make a database
+drop atomic with every write, are the first -- does not use it in a Raft group
+until every node in that group runs a release that advertises it, so a
+half-upgraded cluster keeps working and never diverges.
+
+When every node advertises the feature, the cluster **activates** it, and
+activation is permanent. **After activation, no node may be started or added on
+an older release** -- neither an existing node rolled back nor a new one. A
+release that knows about feature activation refuses to start with an error
+naming the feature, and the cluster refuses to add a replica on a node that does
+not advertise it (see below), but a release from before activation existed can
+do neither; roll forward instead.
+
+A new node is added only once it advertises every feature the cluster uses.
+Membership changes, scale-ups and rebalances that would place a replica on a
+node that does not are refused with an error naming the node, the feature, and
+the missing advertisement (`featuregate.UnsupportedReplicaError`; REST 409,
+gRPC and QUIC `FAILED_PRECONDITION`). A joining node's advertisement is
+published by its enrollment; a `qrdbd` node otherwise advertises only once it
+is a member. So after activation, `qrdb admin member add` of a node that has
+not advertised is refused -- until enrollment publishes its advertisement, plan
+capacity additions before the last node of a rolling upgrade. From the Go SDK, a node can instead be registered through
+dynamic membership over a client of the running cluster, with its features in
+the registration.
+
+Before activation, rolling a node back is safe. A node stopped gracefully
+withdraws its advertisement at once. After a crash its advertisement lapses
+only when its lease expires, so **after a crash, wait out the lease TTL (10
+seconds by default) before starting the node on an older release**.
+
 ## Troubleshooting
+
+**A node refuses to start: "the cluster has activated feature ...".** The
+cluster activated a feature this node's release does not implement. Install a
+release that does; activation cannot be undone. A node embedded in an
+application through the Go SDK cannot refuse to start after it is built:
+it logs the same error, takes no part in the feature, and reports its health
+as `degraded` until it is upgraded.
 
 **Bootstrap fails at the quorum check.** Discovery did not find enough peers.
 Check the method's inputs: the `raft.peers` list, the DNS SRV record, the

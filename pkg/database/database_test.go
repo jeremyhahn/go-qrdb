@@ -449,3 +449,78 @@ func TestDatabase_ShardID_WithRaft(t *testing.T) {
 		t.Errorf("ShardID() = %d, want 1042", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// go-qrdb#482: Dropping is independent of Status.
+// ---------------------------------------------------------------------------
+
+// TestDatabase_Dropping_DefaultsFalse pins the zero value: a freshly created
+// database is never dropping.
+func TestDatabase_Dropping_DefaultsFalse(t *testing.T) {
+	db := newTestDatabase("fresh-db", EngineKV, BackendMemory)
+	if db.Dropping() {
+		t.Error("Dropping() = true for a freshly created database, want false")
+	}
+}
+
+// TestDatabase_Close_DoesNotClearTheDropFlag is the direct, non-racy pin for
+// the bug a review of go-qrdb#482's first fix caught: Close used to fold the
+// fence into Status (StatusDropping), and Close itself unconditionally
+// overwrote Status to StatusClosed/StatusError -- so completing Drop's own
+// step 2 silently cleared the fence between the reclamation finishing and
+// the catalog record actually being removed in step 4, reopening exactly
+// the window the fence exists to close. Dropping is now a field of its own
+// that Close never touches.
+func TestDatabase_Close_DoesNotClearTheDropFlag(t *testing.T) {
+	db := newTestDatabase("closing-drop-db", EngineKV, BackendMemory)
+	db.SetDropping(true)
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() returned unexpected error: %v", err)
+	}
+
+	if got := db.Status(); got != StatusClosed {
+		t.Errorf("Status() after Close() = %q, want %q", got, StatusClosed)
+	}
+	if !db.Dropping() {
+		t.Error("Dropping() = false after Close(), want true: Close must not clear the drop fence")
+	}
+}
+
+// TestDatabase_SetDropping_RoundTrips is the direct unit test for the
+// setter/getter pair Manager.Drop and Manager.Open depend on.
+func TestDatabase_SetDropping_RoundTrips(t *testing.T) {
+	db := newTestDatabase("dropping-roundtrip-db", EngineKV, BackendMemory)
+
+	db.SetDropping(true)
+	if !db.Dropping() {
+		t.Error("Dropping() = false after SetDropping(true)")
+	}
+
+	db.SetDropping(false)
+	if db.Dropping() {
+		t.Error("Dropping() = true after SetDropping(false)")
+	}
+}
+
+// TestDatabase_Info_ReportsDroppingOverStatus pins that Info() -- and
+// therefore Manager.List/GetForTenant -- surfaces the fence honestly even
+// though the underlying Status field never itself becomes StatusDropping.
+func TestDatabase_Info_ReportsDroppingOverStatus(t *testing.T) {
+	db := newTestDatabase("info-dropping-db", EngineKV, BackendMemory)
+	db.SetDropping(true)
+
+	info := db.Info()
+	if info.Status != StatusDropping {
+		t.Errorf("Info().Status = %q, want %q while dropping", info.Status, StatusDropping)
+	}
+	if got := db.Status(); got != StatusOpen {
+		t.Errorf("Status() = %q, want %q -- Dropping must not disturb the underlying status", got, StatusOpen)
+	}
+
+	db.SetDropping(false)
+	info = db.Info()
+	if info.Status != StatusOpen {
+		t.Errorf("Info().Status = %q after clearing the fence, want %q", info.Status, StatusOpen)
+	}
+}

@@ -53,7 +53,7 @@ func (s *TimeSeriesService) Write(ctx context.Context, metric string, value floa
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -82,7 +82,7 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -182,7 +182,7 @@ func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) er
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -243,7 +243,7 @@ func (s *TimeSeriesService) DeleteSeries(ctx context.Context, req *DeleteRequest
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}
@@ -275,7 +275,7 @@ func (s *TimeSeriesService) GetRetentionPolicy(metric string) (*RetentionPolicy,
 
 // SetRetentionPolicy sets the retention policy for a metric through
 // Raft consensus.
-func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionPolicy) error {
+func (s *TimeSeriesService) SetRetentionPolicy(ctx context.Context, metric string, policy *RetentionPolicy) error {
 	cmd, encErr := protocol.EncodeTSSetRetention(
 		metric,
 		int64(policy.Duration),
@@ -285,7 +285,7 @@ func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionP
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
-	result, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}

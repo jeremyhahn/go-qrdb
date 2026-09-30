@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -32,9 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -657,23 +656,17 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 // start.go: runStart — dynamic membership path (lines 1373-1382)
 // ---------------------------------------------------------------------------
 
-// TestRunStart_DynamicMembership_FailsAndReturns covers the dynamic membership
-// conditional (lines 1373-1379) by using dynamicMembership=true with the
-// "pebble" SM, causing startDynamicMembership to fail.
+// TestRunStart_DynamicMembership_StartsOnPebble covers the dynamic
+// membership block of runStart on the default "pebble" state machine.
 //
-// "pebble" is used deliberately rather than "memory": go-qrdb#555's boot-time
-// capability probe now refuses "memory" (and "concurrent") before first boot
-// completes at all, which would make this test fail at an earlier, unrelated
-// point and never reach the dynamic-membership code path under test.
-// "pebble" gets past first boot (it supports the guarded-batch capability
-// atomic role/user creation needs) but still has no MVCC revision history —
-// membership registration grants a lease, which requires one — so
-// startDynamicMembership fails for the SAME reason "memory" used to,
-// verified below by asserting on the actual error text rather than merely
-// its presence, so a future change that gives "pebble" real MVCC support
-// (unlike this test's premise) turns this red instead of silently
-// vacuous.
-func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
+// "pebble" keeps no MVCC revision history. Membership registration is a
+// lease-attached put, which pebble applies; it used to fail anyway, on the
+// revision read-back only an MVCC state machine serves, and this test
+// asserted that failure. The read-back is no longer required on such a state
+// machine (service.MVCCKVService.PutWithLease), so the node must now register
+// and reach its listener -- and a runStart that returned early, with the old
+// registration error or any other, fails the test.
+func TestRunStart_DynamicMembership_StartsOnPebble(t *testing.T) {
 	dir := t.TempDir()
 
 	raftPort, err := freePortOn(raftListenHost, networkUDP)
@@ -687,7 +680,7 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:           dir,
-		smType:            "pebble", // guarded-batch capable, but no MVCC/lease support
+		smType:            "pebble", // no MVCC revision history
 		discoveryMethod:   "static",
 		peers:             []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:            fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -695,20 +688,41 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 		shardID:           1,
 		replicaID:         1,
 		deploymentID:      1,
-		adminPort:         adminPort, // valid port so srv.Start succeeds
+		adminPort:         adminPort,
 		grpcPort:          grpcPort,
 		authEnabled:       false,
 		enableREST:        true,
 		enableGRPC:        true,
-		dynamicMembership: true, // enters the if block at line 1373
+		dynamicMembership: true,
 		host:              testBindHost,
 	}
 
-	err = runStart(f)
-	require.Error(t, err,
-		"runStart must fail when startDynamicMembership fails due to the state machine lacking MVCC/lease support")
-	require.Contains(t, err.Error(), "MVCC",
-		"expected the failure to name the missing MVCC/lease capability, not some unrelated error")
+	registered := make(chan struct{}, 1)
+	orig := dynamicMembershipStarted
+	t.Cleanup(func() { dynamicMembershipStarted = orig })
+	dynamicMembershipStarted = func() {
+		select {
+		case registered <- struct{}{}:
+		default:
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runStart(f)
+	}()
+	var seen atomic.Bool
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM, func() bool {
+		select {
+		case <-registered:
+			seen.Store(true)
+		default:
+		}
+		return seen.Load()
+	}); runErr != nil {
+		t.Fatalf("runStart with dynamic membership on pebble did not start cleanly: %v", runErr)
+	}
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -948,40 +962,6 @@ func occupiedTCPPort(t *testing.T) int {
 // ---------------------------------------------------------------------------
 // start.go: startDynamicMembership — cover lines 1598-1618 via mock services
 // ---------------------------------------------------------------------------
-
-// minimalAdminServicer is a minimal implementation of service.AdminServicer
-// that returns zero values for all methods. Used to cover the path through
-// embedded.New (which requires non-nil AdminServicer).
-type minimalAdminServicer struct{}
-
-func (m *minimalAdminServicer) Health(_ context.Context) (*service.HealthStatus, error) {
-	return &service.HealthStatus{Status: "ok"}, nil
-}
-func (m *minimalAdminServicer) Status(_ context.Context) (*service.StatusInfo, error) {
-	return &service.StatusInfo{}, nil
-}
-func (m *minimalAdminServicer) Peers(_ context.Context) (*service.PeersInfo, error) {
-	return &service.PeersInfo{}, nil
-}
-func (m *minimalAdminServicer) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
-	return nil
-}
-func (m *minimalAdminServicer) RemoveMember(_ context.Context, _, _ uint64) error { return nil }
-func (m *minimalAdminServicer) RequestSnapshot(_ context.Context, _ uint64) error { return nil }
-func (m *minimalAdminServicer) Drain(_ context.Context) error                     { return nil }
-func (m *minimalAdminServicer) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
-	return &capabilities.Capabilities{}, nil
-}
-func (m *minimalAdminServicer) StartShard(_ context.Context, _ *service.StartShardRequest) error {
-	return nil
-}
-func (m *minimalAdminServicer) StopShard(_ context.Context, _ uint64) error { return nil }
-func (m *minimalAdminServicer) GetShardState(_ context.Context, _ uint64) (*service.ShardStateResponse, error) {
-	return &service.ShardStateResponse{}, nil
-}
-func (m *minimalAdminServicer) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
-	return &service.TopologyResponse{}, nil
-}
 
 // TestStartDynamicMembership_WithMockServices verifies that passing valid
 // non-nil KVServicer and AdminServicer allows embedded.New and sdkgo.NewClient

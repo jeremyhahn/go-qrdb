@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -61,6 +62,30 @@ var ErrRaftBackendUnavailable = errors.New("server: raft backend factory not con
 // once the keyed barrier is installed and the shards re-attach, the resolve
 // succeeds.
 var ErrShardMigrationInProgress = errors.New("server: tenant raft shard encryption migration in progress")
+
+// refusalFromPlacement returns *database.DroppingError when p's replicated
+// drop fence (placement.Placement.Dropping) is set, so Services refuses a
+// dedicated-raft database's shard -- before starting one for a database
+// already being torn down, and before returning an already-cached bundle
+// for a drop that started after it was cached (go-qrdb#482).
+//
+// Unlike database.Manager's own local fence, this one is checked
+// identically on every node: the placement table is replicated, so every
+// replica answers the same way regardless of which node issued the Drop or
+// which one currently leads the shard.
+//
+// p is nil when the configured info source carries no placement entry at
+// all -- a Phase-4b single-node database created before placement existed,
+// or a fallback-only info source with no replicated table behind it -- and
+// that is not a refusal: there is no replicated fence to check, and the
+// database's own local database.Manager fence (see Manager.Get) already
+// covers it.
+func refusalFromPlacement(db string, p *placement.Placement) error {
+	if p != nil && p.Dropping {
+		return &database.DroppingError{Name: db}
+	}
+	return nil
+}
 
 // RaftBackendError wraps a failure starting, resolving, or stopping a dedicated
 // per-database raft shard. It identifies the (tenant, db) pair and the operation.
@@ -135,6 +160,23 @@ type raftShard struct {
 	// TenantShardReconciler reads this through StartedAsObserver to drive
 	// exactly that restart.
 	startedObserver bool
+
+	// hadPlacement records whether THIS shard was resolved through a real
+	// placement entry (pInfo != nil) at the time it was started, as opposed
+	// to the Phase-4b fallback path (no placement store wired in at all, or
+	// no entry for this database). Services' cache-hit branch uses it to
+	// tell two identically-shaped "placementInfo returned ok=false" results
+	// apart: a fallback shard that never had placement to check in the
+	// first place (ok=false forever, by design) versus a placement-resolved
+	// shard whose entry has since been deleted entirely -- which only
+	// happens at the very end of a completed drop
+	// (finishRaftPlacementTeardown) -- and must be refused even though there
+	// is no longer a Dropping flag anywhere to read (go-qrdb#482 round 3,
+	// finding 6). The reconciler evicts a dropped database's cache entry
+	// asynchronously (on its next tick), so without this check a request
+	// landing in the window between the placement delete and that eviction
+	// would succeed against a database gone everywhere else in the cluster.
+	hadPlacement bool
 }
 
 // raftDatabaseInfoSource resolves the dedicated shard ID and on-disk DataDir for
@@ -144,15 +186,20 @@ type raftShard struct {
 type raftDatabaseInfoSource interface {
 	// databaseInfo returns the allocated shard ID and on-disk DataDir for the
 	// (tenant, db) database, or ok=false when no such database exists or it is
-	// not owned by the tenant.
-	databaseInfo(tenantID, db string) (shardID uint64, dataDir string, ok bool)
+	// not owned by the tenant. ignoreFence resolves a database whose local
+	// drop fence is set: the drop itself (FenceServices) is the one caller
+	// that must reach a database its own fence refuses.
+	databaseInfo(tenantID, db string, ignoreFence bool) (shardID uint64, dataDir string, ok bool)
 
 	// placementInfo returns the full Placement for (tenantID, db) when
 	// placement-based routing is configured and the local node hosts a replica
 	// of that database. It reports false when no placement entry exists, when
 	// the local node has no assigned replica, or when placement routing is not
-	// configured (meta-derived sources always return false).
-	placementInfo(tenantID, db string) (*placement.Placement, bool)
+	// configured (meta-derived sources always return false). A placement
+	// table that cannot be READ is an error, never "no entry": answering a
+	// read failure with "unknown" is what a drop reads as "no store to
+	// clear".
+	placementInfo(tenantID, db string) (*placement.Placement, bool, error)
 
 	// dedicatedWAL reports whether the (tenant, db) database opted into a
 	// per-tenant-KEY WAL (4d Option C). Meta-derived sources read the persisted
@@ -176,6 +223,7 @@ type RaftBackendFactory struct {
 	// GetLeaderID; LeadsShard reads leadership through it alone.
 	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
 	adapter        *raftbackend.HostAdapter
+	featureGate    *featuregate.Gate
 	localReplicaID uint64
 	localRaftAddr  string
 	barrierReg     *seal.BarrierRegistry
@@ -215,6 +263,15 @@ type RaftBackendFactory struct {
 
 // RaftBackendOption customizes a RaftBackendFactory.
 type RaftBackendOption func(*RaftBackendFactory)
+
+// WithFeatureGate makes the factory's shards propose guarded writes only once
+// gate enables them for the shard's group. It is required whenever the shared
+// Host has a transport: without it such a Host's shards are never sent a
+// command an older replica could not apply (see raftbackend.HostAdapter.
+// FeatureEnabled).
+func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.featureGate = gate }
+}
 
 // WithMultiplexLogDB wires the shared host's multiplex LogDB so the factory can
 // register a dedicated per-tenant-KEY WAL for shards that opted into 4d Option C.
@@ -305,6 +362,9 @@ func NewRaftBackendFactory(
 	for _, opt := range opts {
 		opt(f)
 	}
+	if host != nil {
+		f.adapter = raftbackend.New(host, raftbackend.WithFeatureGate(f.featureGate))
+	}
 	return f
 }
 
@@ -324,6 +384,133 @@ func NewRaftBackendFactoryFromManager(
 		&managerRaftInfoSource{manager: manager, systemTenant: systemTenant}, logger, opts...)
 }
 
+// refuseIfDroppingLocked re-checks the replicated placement fence for
+// (tenantID, db) against a shard already known to be cached (rs), and is
+// what Services' cache-hit branch and RefuseIfDropping both delegate to.
+// The caller MUST already hold f.mu.
+//
+// pInfo, infoOK are re-read from the info source on every call rather than
+// cached on rs, because the whole point is to observe a fence set (or an
+// entry deleted) AFTER rs was populated (go-qrdb#482).
+func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raftShard) error {
+	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
+	if err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
+	}
+	if infoOK {
+		return refusalFromPlacement(db, pInfo)
+	}
+	if rs.hadPlacement {
+		// This shard was originally resolved through a real placement
+		// entry, and that entry is now gone entirely -- not merely marked
+		// dropping, but deleted, which only happens at the very end of a
+		// completed drop (finishRaftPlacementTeardown). There is no
+		// Dropping flag left anywhere to read, and the reconciler has not
+		// evicted this cache entry yet (its teardown is asynchronous), so
+		// without this check a request landing in this window would
+		// succeed against a database that no longer exists anywhere else
+		// in the cluster (go-qrdb#482 round 3, finding 6). A shard that
+		// never had placement to begin with (rs.hadPlacement false -- the
+		// Phase-4b fallback path) reports infoOK=false permanently and
+		// must not be refused on that basis alone.
+		return &database.DroppingError{Name: db}
+	}
+	return nil
+}
+
+// cachedServicesLocked decides what a cached shard may serve. The caller
+// MUST hold f.mu.
+//
+// A shard is cached by (tenant, database) NAME, but a database dropped and
+// created again under that name is a different database on a different
+// shard -- shard IDs are never issued twice (database.Manager), so the shard
+// ID identifies the incarnation. The cached shard is therefore checked
+// against the current placement on every call:
+//
+//   - placement names a DIFFERENT shard: the cached one belongs to a dropped
+//     incarnation. It is removed from the cache and reported stale, and the
+//     caller retires it (stop, purge its state-machine directory) and
+//     resolves the current shard instead. Serving it would route the new
+//     database's writes into the old one; fencing through it would unfence
+//     a shard being torn down.
+//   - placement is GONE for a shard resolved through placement: its database
+//     was dropped. Services refuses with DroppingError; FenceServices
+//     reports the database unknown -- it has no current store to mark, and
+//     the doomed one must not be.
+//   - placement cannot be READ: an error, on either path. It is never
+//     treated as "gone".
+//   - otherwise the cached services are served, after Services re-consults
+//     the replicated drop marker (a drop that started after the shard was
+//     cached).
+func (f *RaftBackendFactory) cachedServicesLocked(tenantID, db string, rs *raftShard, honorFence bool) (svcs *DatabaseServices, stale bool, err error) {
+	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
+	if err != nil {
+		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
+	}
+	switch {
+	case infoOK && pInfo.ShardID != rs.shardID:
+		delete(f.shards, raftShardKey{tenantID: tenantID, database: db})
+		f.logger.Info("evicting a dropped incarnation's shard; the database was created again on a new shard",
+			slog.String("tenant", tenantID), slog.String("database", db),
+			slog.Uint64("old_shard_id", rs.shardID), slog.Uint64("shard_id", pInfo.ShardID))
+		return nil, true, nil
+	case !infoOK && rs.hadPlacement && !honorFence:
+		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftDatabaseUnknown}
+	}
+	if honorFence {
+		if err := f.refuseIfDroppingLocked(tenantID, db, rs); err != nil {
+			return nil, false, err
+		}
+	}
+	return rs.services, false, nil
+}
+
+// retireShard stops a shard evicted from the cache and removes its own
+// state-machine directory. It MUST be called without f.mu: stopping waits on
+// the Raft host. The database's data directory is shared by every
+// incarnation of the name, so only the retired shard's shard-<id>
+// subdirectory is removed and the current shard's survives.
+func (f *RaftBackendFactory) retireShard(rs *raftShard) {
+	if err := f.stopShard(rs); err != nil {
+		f.logger.Warn("failed to stop a dropped incarnation's shard",
+			slog.String("tenant", rs.tenantID), slog.String("database", rs.database),
+			slog.Uint64("shard_id", rs.shardID), slog.Any("error", err))
+		return
+	}
+	smDir := filepath.Join(rs.dataDir, "shard-"+strconv.FormatUint(rs.shardID, 10))
+	if err := os.RemoveAll(smDir); err != nil {
+		f.logger.Warn("failed to remove a dropped incarnation's shard data",
+			slog.String("tenant", rs.tenantID), slog.String("database", rs.database),
+			slog.Uint64("shard_id", rs.shardID), slog.Any("error", err))
+	}
+}
+
+// RefuseIfDropping re-checks the replicated placement fence for (tenantID,
+// db) against whatever shard bundle is currently cached for it, WITHOUT
+// resolving or caching a new one.
+//
+// Writes to a dedicated-raft database do not need it: they carry the drop
+// fence guard into the database's own shard, which refuses them at apply
+// time. Its one caller is the vector view of such a database, whose writes
+// are node-local rather than Raft proposals and so can only be checked
+// before they are made (see databaseFence).
+//
+// A database this factory has never resolved at all reports no refusal:
+// there is nothing cached to check staleness against, and the NEXT
+// Services call for it performs the identical cold-path check on its own.
+func (f *RaftBackendFactory) RefuseIfDropping(tenantID, db string) error {
+	if f == nil || f.dbInfo == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	if !ok {
+		return nil
+	}
+	return f.refuseIfDroppingLocked(tenantID, db, rs)
+}
+
 // Services returns the data-plane service set backing the dedicated raft
 // database (tenantID, db), starting and caching the shard on first access. The
 // tenant's barrier must already be registered and unsealed; a sealed or missing
@@ -337,17 +524,51 @@ func NewRaftBackendFactoryFromManager(
 // creation and restart re-attach. If no placement is found the existing
 // single-node path is used unchanged (Phase-4b compatibility).
 func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
+	return f.services(ctx, tenantID, db, true)
+}
+
+// FenceServices returns the same service set Services does, WITHOUT
+// refusing a database whose replicated placement entry is marked dropping.
+//
+// It exists for exactly one caller: DROP DATABASE writing -- or, on a failed
+// drop, removing -- the drop fence inside the database's own shard
+// (service.StoreResolver.FenceTarget). The replicated placement marker is
+// set before that write, so Services would refuse the very drop that set
+// it. Nothing else may use it: every data-plane resolution goes through
+// Services, which is what keeps a database being dropped unresolvable.
+func (f *RaftBackendFactory) FenceServices(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
+	return f.services(ctx, tenantID, db, false)
+}
+
+// services is Services and FenceServices. honorFence selects whether the
+// replicated placement drop marker refuses the resolution.
+func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, honorFence bool) (*DatabaseServices, error) {
 	if f == nil || f.host == nil || f.barrierReg == nil || f.dbInfo == nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftBackendUnavailable}
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	key := raftShardKey{tenantID: tenantID, database: db}
-	if rs, ok := f.shards[key]; ok {
-		return rs.services, nil
+	f.mu.Lock()
+	for {
+		rs, ok := f.shards[key]
+		if !ok {
+			break
+		}
+		services, stale, err := f.cachedServicesLocked(tenantID, db, rs, honorFence)
+		if !stale {
+			f.mu.Unlock()
+			return services, err
+		}
+		// The cached shard belonged to a dropped incarnation of the name
+		// and is already out of the cache. It is stopped and purged with
+		// f.mu RELEASED -- stopping a shard waits on the Raft host -- and
+		// the cache is consulted again, in case another caller started
+		// the current incarnation's shard meanwhile.
+		f.mu.Unlock()
+		f.retireShard(rs)
+		f.mu.Lock()
 	}
+	defer f.mu.Unlock()
 	// Do not lazily rebuild any shard whose TENANT barrier is mid-recycle: it would
 	// open the stale (pre-migration) barrier against data being re-encrypted and
 	// cache the broken shard. Guard is tenant-granular (keyed by tenantID) so a db
@@ -374,22 +595,41 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		pInfo   *placement.Placement
 	)
 	if src, ok := f.dbInfo.(*placementRaftInfoSource); ok {
-		var resolved bool
-		shardID, dataDir, pInfo, resolved = src.databaseAndPlacementInfo(tenantID, db)
+		var (
+			resolved bool
+			perr     error
+		)
+		shardID, dataDir, pInfo, resolved, perr = src.databaseAndPlacementInfo(tenantID, db)
+		if perr != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: perr}
+		}
 		if !resolved {
 			// Placement table had no entry (or resolver not wired); fall back.
-			shardID, dataDir, resolved = src.fallback.databaseInfo(tenantID, db)
+			shardID, dataDir, resolved = src.fallback.databaseInfo(tenantID, db, !honorFence)
 			if !resolved {
 				return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "db-info", Err: ErrRaftDatabaseUnknown}
 			}
 		}
 	} else {
 		var resolved bool
-		shardID, dataDir, resolved = f.dbInfo.databaseInfo(tenantID, db)
+		shardID, dataDir, resolved = f.dbInfo.databaseInfo(tenantID, db, !honorFence)
 		if !resolved {
 			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "db-info", Err: ErrRaftDatabaseUnknown}
 		}
-		pInfo, _ = f.dbInfo.placementInfo(tenantID, db)
+		var perr error
+		pInfo, _, perr = f.dbInfo.placementInfo(tenantID, db)
+		if perr != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: perr}
+		}
+	}
+
+	// Cold-path check, mirroring the cache-hit one above: refuse before
+	// ever starting or attaching a shard for a database whose replicated
+	// placement entry is already marked dropping (go-qrdb#482).
+	if honorFence {
+		if err := refusalFromPlacement(db, pInfo); err != nil {
+			return nil, err
+		}
 	}
 
 	// Phase 4c-1d: when the info source carries a placement entry that assigns a
@@ -473,7 +713,7 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 				members = nil
 			}
 			rs, merr := f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, join, isObserver, members, peers, dedicatedWAL)
+				localReplica.ReplicaID, join, isObserver, members, peers, dedicatedWAL, true)
 			if merr != nil && isObserver && !join && errors.Is(merr, quicraft.ErrNonVotingRoleInMembers) {
 				// An ObserverReady replica with NO persisted shard state: its
 				// prior join bootstrap was wiped (demotion purge racing a
@@ -490,7 +730,7 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 					slog.Uint64("shard_id", shardID),
 					slog.Uint64("replica_id", localReplica.ReplicaID))
 				rs, merr = f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
-					localReplica.ReplicaID, true, true, nil, peers, dedicatedWAL)
+					localReplica.ReplicaID, true, true, nil, peers, dedicatedWAL, true)
 			}
 			if merr != nil {
 				return nil, merr
@@ -594,7 +834,7 @@ func (f *RaftBackendFactory) StartedAsObserver(tenantID, db string) bool {
 // replica bootstrapped with join=false. Caller holds f.mu.
 func (f *RaftBackendFactory) startShard(ctx context.Context, tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
 	members := map[uint64]string{f.localReplicaID: f.localRaftAddr}
-	return f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, members, dedicatedWAL)
+	return f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, members, dedicatedWAL, false)
 }
 
 // startShardAsMember builds the per-shard subsystems and starts the shard on
@@ -618,6 +858,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 	members map[uint64]string,
 	peers map[uint64]string,
 	dedicatedWAL bool,
+	hadPlacement bool,
 ) (*raftShard, error) {
 	// quicraftconfig.Config.DataDir must be an absolute path; the volume-pool
 	// DataRoot is contained but normalize defensively so a relative pool path
@@ -698,6 +939,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		dedicatedWAL: registeredWAL,
 
 		startedObserver: isObserver,
+		hadPlacement:    hadPlacement,
 	}
 	rs.services.Name = db
 
@@ -983,11 +1225,15 @@ type managerRaftInfoSource struct {
 // databaseInfo resolves the shard ID and DataDir for a dedicated-raft database
 // owned by the tenant. It returns ok=false when the database does not exist, is
 // not raft-backed, or is owned by a different tenant.
-func (s *managerRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, bool) {
+func (s *managerRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bool) (uint64, string, bool) {
 	if s.manager == nil {
 		return 0, "", false
 	}
-	dbase, err := s.manager.Get(db)
+	get := s.manager.Get
+	if ignoreFence {
+		get = s.manager.GetIgnoringFence
+	}
+	dbase, err := get(db)
 	if err != nil {
 		return 0, "", false
 	}
@@ -1011,8 +1257,8 @@ func (s *managerRaftInfoSource) databaseInfo(tenantID, db string) (uint64, strin
 
 // placementInfo always returns false for the meta-derived source: it does not
 // carry a replicated placement table.
-func (s *managerRaftInfoSource) placementInfo(_ string, _ string) (*placement.Placement, bool) {
-	return nil, false
+func (s *managerRaftInfoSource) placementInfo(_ string, _ string) (*placement.Placement, bool, error) {
+	return nil, false, nil
 }
 
 // dedicatedWAL reports the persisted per-tenant-KEY WAL opt-in for the database.
@@ -1055,61 +1301,69 @@ type placementRaftInfoSource struct {
 // each follower resolves its own local pool path. When DataRoot is empty and
 // localRootResolver is configured, databaseInfo calls the resolver to compute
 // {pool_root}/{tenantID} and returns {pool_root}/{tenantID}/databases/{db}.
-func (s *placementRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, bool) {
-	shardID, dataDir, p, ok := s.databaseAndPlacementInfo(tenantID, db)
+func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bool) (uint64, string, bool) {
+	shardID, dataDir, _, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	if err != nil {
+		return 0, "", false
+	}
 	if ok {
 		return shardID, dataDir, true
 	}
-	_ = p
-	return s.fallback.databaseInfo(tenantID, db)
+	return s.fallback.databaseInfo(tenantID, db, ignoreFence)
 }
 
 // databaseAndPlacementInfo performs a single placement-table lookup and returns
 // the shard ID, resolved DataDir, the full Placement, and ok=true when the
 // local node hosts a replica for (tenantID, db). This avoids two separate
 // store.Get calls in Services (M2 optimization).
-func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) (shardID uint64, dataDir string, p *placement.Placement, ok bool) {
+func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) (shardID uint64, dataDir string, p *placement.Placement, ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	p, err := s.store.Get(ctx, tenantID, db)
-	if err != nil || p == nil || p.ShardID == 0 {
-		return 0, "", nil, false
+	p, err = s.store.Get(ctx, tenantID, db)
+	if err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return 0, "", nil, false, nil
+		}
+		return 0, "", nil, false, err
+	}
+	if p == nil || p.ShardID == 0 {
+		return 0, "", nil, false, nil
 	}
 	r, assigned := p.ReplicaForNode(s.localNodeID)
 	if !assigned {
-		return 0, "", nil, false
+		return 0, "", nil, false, nil
 	}
 	if r.DataRoot != "" {
-		return p.ShardID, r.DataRoot, p, true
+		return p.ShardID, r.DataRoot, p, true, nil
 	}
 	// DataRoot is empty — this node is a follower replica recorded with "" by
 	// the leader's persistPlacement. Resolve the local pool path if a resolver
 	// is wired in.
 	if s.localRootResolver == nil {
-		return 0, "", nil, false
+		return 0, "", nil, false, nil
 	}
 	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), s.timeout)
 	defer resolveCancel()
 	tenantRoot, rerr := s.localRootResolver(resolveCtx, tenantID)
 	if rerr != nil {
-		return 0, "", nil, false
+		return 0, "", nil, false, rerr
 	}
-	return p.ShardID, filepath.Join(tenantRoot, "databases", db), p, true
+	return p.ShardID, filepath.Join(tenantRoot, "databases", db), p, true, nil
 }
 
 // placementInfo returns the full Placement for (tenantID, db) when an entry
 // exists and assigns a replica to the local node. It delegates to
 // databaseAndPlacementInfo so callers do not pay an additional store.Get.
-func (s *placementRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool) {
-	_, _, p, ok := s.databaseAndPlacementInfo(tenantID, db)
-	return p, ok
+func (s *placementRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool, error) {
+	_, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	return p, ok, err
 }
 
 // dedicatedWAL reads the per-tenant-KEY WAL opt-in from the replicated placement
 // entry (authoritative cluster-wide) and falls back to the meta-derived source
 // for databases without a placement entry.
 func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
-	if _, _, p, ok := s.databaseAndPlacementInfo(tenantID, db); ok && p != nil {
+	if _, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db); err == nil && ok && p != nil {
 		return p.DedicatedWAL
 	}
 	return s.fallback.dedicatedWAL(tenantID, db)

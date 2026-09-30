@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -182,5 +183,34 @@ func TestMapServiceError_CollectionDocumentNotFoundStillMapsToNotFound(t *testin
 	err := mapServiceError(&service.CollectionDocumentNotFoundError{Database: "db", Collection: "c", ID: 7})
 	if got := status.Code(err); got != codes.NotFound {
 		t.Fatalf("code = %v, want %v", got, codes.NotFound)
+	}
+}
+
+// A database whose Drop is already in flight on this node is Aborted: the
+// request is well-formed and retryable once the drop finishes or a failed
+// one restores the database (go-qrdb#482).
+func TestMapServiceError_DatabaseDroppingIsAborted(t *testing.T) {
+	err := mapServiceError(&database.DroppingError{Name: "reports"})
+	if got := status.Code(err); got != codes.Aborted {
+		t.Fatalf("code = %v, want %v", got, codes.Aborted)
+	}
+}
+
+// A second DROP for the same database while one is already running on this
+// node (Manager.Drop's own in-flight guard) is the identical shape as
+// DroppingError above -- Aborted, not Internal (go-qrdb#482 round 3).
+func TestMapServiceError_DatabaseDropInProgressIsAborted(t *testing.T) {
+	err := mapServiceError(&database.DropInProgressError{Name: "reports"})
+	if got := status.Code(err); got != codes.Aborted {
+		t.Fatalf("code = %v, want %v", got, codes.Aborted)
+	}
+}
+
+// The default database can never be dropped, whatever state it is in: the
+// argument is invalid, not the system's state.
+func TestMapServiceError_DefaultDatabaseDropIsInvalidArgument(t *testing.T) {
+	err := mapServiceError(&database.DefaultDatabaseDropError{Name: "system"})
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("code = %v, want %v", got, codes.InvalidArgument)
 	}
 }

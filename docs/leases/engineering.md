@@ -44,7 +44,13 @@ PutWithLease(ctx, key, value, leaseID, opts...) (*MVCCKeyValue, error)
 ```
 
 The resulting `MVCCKeyValue` carries the `lease` field, so a reader can see
-which lease a key hangs off.
+which lease a key hangs off. On an MVCC state machine the write is read back
+at its revision, so the result carries its full revision metadata. The default
+`pebble` state machine attaches the lease just the same but keeps no revision
+history: there the result is the key, value and lease written, with zero
+revisions, rather than an error after the write applied. This is what lets
+lease-backed registrations -- dynamic membership, feature advertisements --
+run on the default state machine.
 
 ## Invariants
 

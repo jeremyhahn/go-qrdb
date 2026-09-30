@@ -654,12 +654,19 @@ would change the key format and require moving existing documents, and this
 design moves no keys (see the upgrade note in
 [engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)).
 
-Two compositions legitimately keep a single collection servicer, and both are
-recorded rather than treated as exceptions to explain away:
+These compositions legitimately keep a single collection servicer, and each is
+recorded rather than treated as an exception to explain away:
 
-- **A registry-less composition** — the embedded transport and single-database
-  servers — where the whole store and the caller's own keyspace are the same
-  set.
+- **A registry-less composition** — single-database servers, and the
+  embedded transport when its composition configures no service registry —
+  where the whole store and the caller's own keyspace are the same set. An
+  embedded transport given a registry (`embedded.WithServiceRegistry`)
+  resolves each named database through it, exactly as the network
+  transports do.
+- **A dedicated-raft database's collection service** is the one its shard
+  was built with, not rebuilt per resolution — its ID generators make its
+  lifetime observable — and carries the database's drop-fence write guard on
+  the context of each mutating call instead of through the engines it holds.
 - **A resolution that already reached a dedicated store** — a `raft`-isolated
   tenant's per-database shard, a `volume`-isolated tenant's own Host, or a
   database carrying its own barrier over its own store. Those bundles are built

@@ -371,36 +371,327 @@ store only.
 
 ## Data flow
 
-Every data-plane request resolves `(tenant, database)` server side and looks
-the pair up in `service.Registry`, which returns the servicer bound to that
-database. This is the single point where a database becomes a concrete set of
-services, and it is why a database's configuration cannot leak into another's
-request path. In the target design it is also the single point where the
-binding is chosen, and every servicer it returns is built over that binding.
+Every data-plane request resolves `(tenant, database)` server side and looks the
+pair up in `service.Registry`, which returns the servicer bound to that
+database's engine, backend, shard and barrier. This is the single point where a
+database becomes a concrete set of services, and it is why a database's
+configuration cannot leak into another's request path. In the target design it
+is also the single point where the binding is chosen, and every servicer it
+returns is built over that binding. The in-process (embedded) transport
+resolves every operation that names a database — a collection call, a SQL
+query — through the same registry whenever the embedding composition
+configures one; with none configured, it serves the same single service set
+the network transports fall back to.
 
 ### What a drop reclaims (current state)
 
 A database in a shared store is a keyspace, not a directory, and its teardown
 has to reclaim the keyspace. `DROP DATABASE` therefore reclaims, in this order:
 
+0. **A fence**, so no new operation can resolve the database once reclamation
+   starts, and no write already in flight can land after it.
 1. **The data the database owns in the store it shares with other databases**
-   — done first, while the database is still resolvable.
+   — done next, against a database no caller can reach and no write can
+   enter anymore.
 2. Its barrier, if it had one.
 3. Its configuration directory, which for a database with a dedicated store
    also holds that store's files.
 4. Its catalog entry.
 
-**Dependents first, the record that makes the database resolvable last.** The
-reverse order is what makes a residue permanent rather than merely present:
-once the catalog record is gone, nothing in the system names the keyspace
-again, so no later drop and no operator command can reach it. With this
-order, the worst an interrupted drop leaves is a **live, empty database**,
-and re-issuing the drop finishes it — the reclamation is idempotent, and an
-already-empty keyspace is a success.
+**Fence first, dependents next, the record that makes the database
+resolvable last.** The dependents-before-record half is what makes a residue
+permanent rather than merely present: once the catalog record is gone,
+nothing in the system names the keyspace again, so no later drop and no
+operator command can reach it. The fence closes the window that order alone
+leaves open: without it, a write that resolved the database between the
+keyspace scan and the catalog removal survived the reclamation that ran
+concurrently with it, orphaned under a name the catalog no longer named.
+The fence has two halves, and they answer different questions:
+
+- **The local fence** (`Database.Dropping`, persisted in the database's
+  metadata) answers "may a caller resolve this database now?".
+  `Manager.Get` — the seam every read and write path resolves a database
+  through — refuses with `database.DroppingError` for the whole of steps
+  1-3, even though the catalog entry itself does not go until step 4.
+- **The store fence** answers "may this write apply?", for writes that were
+  resolved, checked and proposed before the drop began. Each database has a
+  fence marker — `service.DropFenceKey(tenant, db)`, under the reserved
+  `__sys:dropfence/` prefix — in the **same Raft group as its data**: the
+  system shard for a shared-store database, the tenant's own Host shard
+  under volume isolation, and the database's own shard for a dedicated-raft
+  database. While the database is live the marker holds its
+  **incarnation**, a random value chosen when the database is created and
+  recorded with it; every write the database's views propose carries a
+  guard, "the marker holds exactly my incarnation", **inside the same Raft
+  command as the write** (`protocol.OpGuarded`). A drop sets the marker to a
+  tombstone no incarnation equals. The state machine evaluates the guard at
+  the write's own log position, on every replica, so the log decides every
+  race: a write applied before the fence landed before it and is removed by
+  the reclamation that follows; a write applied after it is refused and its
+  caller receives `database.DroppingError`. There is no check-then-write
+  window, because there is no separate check.
+
+**Handles are scoped to an incarnation.** Creating a database marks its new
+incarnation live as the last step before it becomes resolvable. A handle
+resolved before a drop names the old incarnation, so it is refused after the
+drop and stays refused after the name is created again: it can never write
+into the new database. A database with no incarnation of its own — one
+created before incarnations existed, or with no store to mark at the time —
+is live while its marker is absent; the tombstone a drop leaves is what
+refuses its stale handles, which is why the tombstone stays after the drop
+completes rather than being removed. A dedicated-raft database's marker is
+absent while it is live, because its shard identifies its incarnation: a
+node never issues a shard ID twice — the manager persists a high-water mark
+covering every ID it has issued, dropped ones included, and moves its
+allocator past it at startup — so a database created again under the name
+always gets a new shard, and a shard cached under the dropped one's ID is
+evicted (and its directory purged) rather than served.
+
+**Marking an incarnation live never overwrites another one.** The marker is
+claimed only from absent or from the tombstone, by compare-and-swap. The
+database catalog is node-local while the marker is replicated, so a marker
+already holding a different live incarnation means the name was created on
+another node; the create is refused with `*database.AlreadyExistsError`
+(`Elsewhere` set) rather than taking the name over and refusing every write
+to the other node's database. Until the catalog is replicated, a name is
+created through the API on one node only.
+
+**A dropped name needs the store to be re-created.** A drop's tombstone
+outlives the drop, and only the keyspace reclaimer can replace it. A manager
+with no reclaimer attached refuses to create a name this node dropped —
+`*database.ReclaimerRequiredError` — instead of creating a database every
+write to which the tombstone would refuse; the node records its drops beside
+the catalog (`dropped/<name>`) so it can tell. For the same reason the
+daemon provisions its configured databases only after the data plane has
+attached the reclaimer. Boot provisioning (`Manager.Provision`) uses the
+empty incarnation, the one every node provisioning the same configured name
+agrees on without a replicated catalog; it clears a tombstone to absent and
+refuses a name live elsewhere, like a create.
+
+A failed drop is rolled back: the marker is restored to the database's own
+incarnation — always, because a fence write that reported failure may still
+have committed — under a context the failed request's cancellation cannot
+reach. Only once that succeeds is the local fence cleared, and only then is
+a dedicated-raft database's replicated placement fence cleared; if the store
+cannot be reached, the database stays fenced (refused, honestly) until the
+drop is retried, rather than looking live while the store refuses its
+writes. A failure to read the placement table while checking the fence is
+reported as that failure, never mistaken for "no such database".
+
+**Mixed binary versions: the cluster feature gate.** A replica running a
+binary that predates guarded writes would refuse one as an unknown opcode
+and write nothing while its up-to-date peers applied it, leaving the
+replicas diverged. So a guarded write is only ever proposed to a group every
+replica of which runs a binary that advertises the `guarded-writes` feature
+(see [../clustering/architecture.md](../clustering/architecture.md), "Cluster
+feature gate"). Until then the group's writes are proposed unguarded and the
+drop fence is the check made when the database is resolved, before the
+write — the protection the fence gave before guarded writes existed, with
+its check-then-write window. Once every node advertises the feature it is
+activated cluster-wide, permanently, and from then on a node whose binary
+lacks an activated feature refuses to start. A standalone node, and a
+single-node or transportless group, has one binary and uses guarded writes
+from the start.
+
+The fence (`Database.Dropping`) is its own field, deliberately independent
+of `Database.Status`. Status keeps answering the question it always has —
+was there an open backend for step 2 to close — undisturbed by the fence;
+Close, and the boot-time barrier re-registration that also writes Status,
+would otherwise be able to silently clear the fence as a side effect of
+work that has nothing to do with a drop. It also means a database a crash
+left mid-drop reopens on restart as an ordinary `StatusOpen` (or
+`StatusSealed`) database with `Dropping` true: the retried `Drop`'s own
+step 2 still finds a backend to close, and the OWNING tenant's
+`DropForTenant` — which checks ownership directly against the catalog
+rather than through the fenced `Get`, precisely so this retry is possible —
+can still finish the job.
+
+With this order, the worst an interrupted drop leaves is a **fenced, empty
+database**: unresolvable to ordinary operations, but still in the catalog, so
+re-issuing the drop finishes it — the reclamation is idempotent, and an
+already-empty keyspace is a success. A crash between the fence and the
+catalog removal is indistinguishable from an interrupted drop still in
+progress: the fence is persisted in the database's own metadata, so a
+restart reopens it fenced rather than silently resolvable again.
 
 A reclamation that fails **fails the whole drop**. The database, its catalog
-record and its data are left exactly as they were, because reporting a
-successful drop over data that is still in the store is worse than refusing.
+record and its data are left exactly as they were — the fence clears, and
+Status was never touched in the first place — because reporting a
+successful drop over data that is still in the store is worse than
+refusing, and a permanently fenced database from a failed attempt would
+turn one failure into an outage.
+
+**A dedicated-raft (`IsolationRaft`) database needs a second, REPLICATED
+fence, and has one.** Its existence and ownership are authoritative in the
+replicated placement table, not the local catalog — a follower's local
+`database.Manager` entry may legitimately be absent even though the
+follower hosts a live replica (see `RaftBackendFactory`) — so a fence that
+only lived in `database.Manager` would close the race solely on the node
+that issued the `Drop`. `DropForTenant` (and `Drop`, which shares the same
+logic) therefore commits a second fence, `placement.Placement.Dropping`,
+to the database's replicated placement entry, in the same step-0 position
+relative to reclamation as the local one. `RaftBackendFactory.Services` —
+the resolution seam every node's data-plane request reaches for a
+dedicated-raft database, cold-starting a shard or returning one already
+cached — checks it on every call and refuses with the same
+`database.DroppingError` when it is set, so every replica answers
+identically regardless of which node issued the `Drop` or which one
+currently leads the shard. That marker refuses NEW handles; the store fence,
+written into the database's own shard as for every database, is what
+refuses the writes of handles already in hand. The placement entry, and the
+fence with it, is
+removed at the very end of a successful drop, once the manager-level drop
+and the tenant's quota release have both completed; a failed reclamation
+clears the fence the same way the local one is cleared. Unlike the
+best-effort placement cleanup this replaced, a failure removing the
+placement entry itself is no longer swallowed: the fence survives with the
+entry, so the database stays refused rather than becoming simultaneously
+unreachable (the local catalog record is already gone) and unrefused (no
+replica has any signal that it is still being torn down) — an operator's
+retry (or a resumed `DropForTenant`) finishes the removal.
+
+**Every write the fence can refuse carries it, on every transport, because
+the guard rides the request, not the verb.** A database's views attach the
+guard to the request context (`service.WithWriteGuard`), and every Raft
+proposal `pkg/service` makes goes through one path that wraps the command
+with the context's guard. A write verb cannot forget the guard, because no
+verb proposes any other way — which is what a per-verb re-check kept
+getting wrong, one method at a time. The views that carry it are the
+namespaced KV, MVCC, batch, transaction, time-series and index views behind
+every transport, the collection and SQL services built over them, and the
+pass-through views of a dedicated-raft database. The default database
+carries no guard: it cannot be dropped.
+
+Two writes are not Raft proposals and so cannot carry the guard. **Vector
+writes** go to a node-local vector store: they are refused by a check made
+before the write, which leaves a window between the check and the write.
+**A database with a dedicated local store** (an explicit data directory)
+writes to that store directly; its drop closes and removes the whole store,
+so a late write has no keyspace to survive in, and the check before the
+write only turns a closed-store failure into `database.DroppingError`.
+Leases are global, not scoped to a database; attaching a lease to a key is
+a KV or MVCC write and is guarded.
+
+**The default database cannot be dropped.** Every tenant's unscoped requests
+resolve to it and the bootstrap records live in it, so every drop entry
+point refuses it with `database.DefaultDatabaseDropError` before touching
+anything, on every transport.
+
+**A stale record can never overwrite a newer one, for every placement
+mutation, not only the fence — and a backend that cannot compare-and-swap
+is refused outright, never silently downgraded.** `Store.
+CompareAndSwapPlacement` is the one primitive every placement write commits
+through when it is updating an EXISTING entry — the fence
+(`SetDropping`/`TryMarkDropping`/`MarkDropCommitted`), a scale-driven
+membership change (`addObserverReplica`/`removeReplicaFromGroup`), and the
+reconciler's own observer-promotion writes all read-then-CAS against the
+exact snapshot they read, so a write that lands between that read and the
+CAS is retried against the fresh value instead of silently discarding it or
+being silently discarded itself. A KV backend with no `AtomicKV` support
+is refused with `*placement.AtomicWriteUnsupportedError` (inside the
+`*placement.StoreError` naming the entry) rather than falling back to an
+unconditional `Put`: an early version of this fence degraded that way,
+which reintroduced the exact lost-update race the CAS exists to close (two
+concurrent claims could both observe `owned=true`). `ScaleForTenant` and
+the rebalance MOVE path both reject a placement snapshot that already shows
+`Dropping=true` before reserving quota or mutating membership, and the
+reconciler additionally refuses outright to promote a replica of a database
+that is mid-drop, rather than relying on the CAS alone to notice — though
+this is still a check against a snapshot read moments earlier, not a
+compare folded into the same mutation. It guards control-plane membership,
+not data: the data plane's writes are refused by the store fence itself.
+
+**A request never claims the fence at all unless this node can actually
+service the drop.** `DropForTenant` resolves the local record through
+`Manager.GetForTenantIgnoringFence` -- which, unlike `GetForTenant`, still
+returns the database while its own local fence is set, since resuming this
+very drop's claim is exactly the one caller that fence must never refuse --
+BEFORE it ever touches the replicated placement fence. A request that
+reaches a node with no local record at all (an ordinary, load-balanced
+client landing on a non-authoritative replica -- a dedicated-raft
+database's local `database.Manager` record exists only on the node that
+created it) is refused immediately, unless `Placement.DropCommitted` (see
+below) already proves an earlier attempt, on whichever node held the
+record, finished the local half. This closes the cross-node half of two-
+`Drop`-attempts-racing outright: only the one node that can legitimately
+progress a drop is ever allowed to claim its fence in the first place.
+
+**On that SAME node, a rollback still undoes only a fence THIS call set,
+and never on `DropInProgress`.** `Manager.Drop`'s own in-flight guard
+(`m.dropping`) already serializes two concurrent same-node attempts to one
+winner and one immediate `DropInProgressError`, but the loser must still
+never be the one to clear the replicated fence on that error: it never set
+it, and clearing it out from under the winner would unrefuse a database
+still genuinely mid-drop. `TryMarkDropping` reports whether THIS call
+performed the not-dropping-to-dropping transition (`owned`); a caller's
+rollback is gated on `owned` being true, so a call that merely observed the
+fence already set (a resumed retry finding its OWN earlier, still-recorded
+claim, or a `DropInProgress` loser) never touches it. The gate has a second
+half: the replicated fence is rolled back only when the manager-level drop
+reports that it rolled back ITS fences — `database.DropRolledBack(err)`,
+true for a `*database.LocalFenceError` (the local fence could not be
+persisted, so nothing else was touched) and for a
+`*database.KeyspaceFenceError` or `*database.KeyspaceReclaimError` whose
+`RolledBack` is set because the store marker was confirmed restored. A drop
+whose store fence could not be cleared, and a backend-close or
+directory-removal failure, leave both fences set, so the database stays
+refused everywhere rather than becoming un-fenced on the replicated table
+while the store still refuses its writes. Persisting `Placement.
+DropCommitted` (below) is held to the identical standard: a failure to set
+it fails the whole `Drop`/`DropForTenant` call rather than being logged and
+discarded, so a later retry is never stranded believing a marker was set
+that never actually committed.
+
+**`Placement.DropCommitted` tells a legitimate retry-after-teardown apart
+from a request that reached a node with no local record.**
+`manager.DropForTenant` returning `NotFoundError` is otherwise ambiguous:
+it means either "an earlier attempt on this node already finished the local
+drop" (a legitimate retry that only needs to finish the placement teardown)
+or "this node never had the local record at all" (now refused upfront, per
+above, before this point is ever reached in practice). `DropCommitted`, set
+once — via `Store.MarkDropCommitted` — right before the placement entry is
+removed at the end of a successful drop, is the signal that tells them
+apart: only when it is already true does `DropForTenant` finish the
+placement teardown on a `NotFoundError`; otherwise the error is returned as
+the genuine failure it is, and the fenced placement entry survives for a
+retry against the node that actually holds the record. The same
+`GetForTenantIgnoringFence` resolution also recovers Backend/Replicas/
+DedicatedWAL for a RESUMED drop (one whose local fence survived a restart),
+so the tenant's quota is still released correctly even though `GetForTenant`
+itself would refuse with `DroppingError`.
+
+**A drop resumes after a restart even though the local fence refuses the
+usual lookup.** `Manager.Get` keeps answering `*database.DroppingError` for
+a database whose local fence survived the restart, which is exactly the
+resolution path `Drop`'s tenant-ID lookup used to depend on. The error
+itself now carries the tenant ID, recovered from the fenced record before
+the refusal, so `Drop` can still identify which tenant's placement entry to
+finish tearing down instead of leaving it permanently stranded.
+
+**A cached shard cannot outlive the placement entry it was resolved
+through.** `RaftBackendFactory.Services`'s cache-hit path re-checks the
+fence on every call, but a completed drop's last step removes the WHOLE
+placement entry, not merely its `Dropping` flag — at that point there is no
+fence left to read at all, and the resolver's own placement lookup reports
+"no entry," identically to a Phase-4b (pre-placement) database that never
+had one. The factory tells the two apart by recording, on the cached shard
+itself, whether it was originally resolved through a real placement entry;
+if it was, and that entry is now gone entirely, the shard is refused rather
+than served stale — closing the asynchronous window between the placement
+delete and the `TenantShardReconciler`'s own (later) cache eviction.
+
+**The local fence's in-memory flag commits before its durable one, not
+after.** `Manager.Drop`'s step 0 sets `Database.Dropping` in memory FIRST,
+then persists it to `meta.json`: `loadDatabase` (the seam every
+`Update*`/`Get` resolution goes through) refuses the instant the in-memory
+flag reads true, and `rewriteMeta` always reads it fresh at call time, never
+a cached value, so a concurrent `Update*` call can never observe the flag
+still false and silently persist a stale `Dropping: false` over the durable
+write moments later. `meta.json` itself is written through a temp-file/
+fsync/rename sequence rather than a direct write to the final path, so a
+crash mid-write can never leave it truncated or otherwise corrupt, and two
+writers racing the same path settle on "the later rename wins" rather than
+an interleaved, invalid file.
 
 The data a database owns is addressed in these shapes, and a teardown that
 reclaimed only the first would leave every document behind:

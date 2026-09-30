@@ -42,6 +42,7 @@ var ErrEmptyCompareKey = errors.New("server: transaction compare key cannot be e
 // response. Entity-typed transactions have their entity ID prefixed, mirroring
 // the namespaced KV entity methods so the resulting entity keys match.
 type namespacedTransactionService struct {
+	dbGuard
 	inner  service.TransactionServicer
 	prefix string
 }
@@ -117,6 +118,7 @@ func (s *namespacedTransactionService) stripResponse(resp *service.TransactionRe
 // Execute evaluates the prefixed compares and applies the prefixed operations
 // atomically.
 func (s *namespacedTransactionService) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	ctx = s.scope(ctx)
 	prefixedCompares, err := s.prefixCompares(compares)
 	if err != nil {
 		return nil, err
@@ -131,6 +133,7 @@ func (s *namespacedTransactionService) Execute(ctx context.Context, compares []s
 // ExecuteWithMode evaluates the prefixed compares and applies the prefixed
 // operations atomically with the specified write durability.
 func (s *namespacedTransactionService) ExecuteWithMode(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op, mode writemode.Mode) (*service.TransactionResponse, error) {
+	ctx = s.scope(ctx)
 	prefixedCompares, err := s.prefixCompares(compares)
 	if err != nil {
 		return nil, err
@@ -147,6 +150,7 @@ func (s *namespacedTransactionService) ExecuteWithMode(ctx context.Context, comp
 // the namespace. The response carries raw operation payloads (no keys), so it
 // is forwarded unchanged.
 func (s *namespacedTransactionService) ExecuteEntity(ctx context.Context, req *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	ctx = s.scope(ctx)
 	if req == nil {
 		return s.inner.ExecuteEntity(ctx, req)
 	}

@@ -1612,7 +1612,7 @@ func (s *qrdbServiceServer) TSSetRetention(ctx context.Context, req *pb.TSSetRet
 		Aggregation: protoAggFuncMap[req.GetAggregation()],
 	}
 
-	if err := tsSvc.SetRetentionPolicy(req.GetMetric(), policy); err != nil {
+	if err := tsSvc.SetRetentionPolicy(ctx, req.GetMetric(), policy); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil

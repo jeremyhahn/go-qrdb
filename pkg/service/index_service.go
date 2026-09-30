@@ -100,7 +100,7 @@ func (s *IndexService) DropOwnedIndex(ctx context.Context, name, owner string) e
 // result. requested is the owner the command claims, reported on an ownership
 // refusal.
 func (s *IndexService) proposeIndexCommand(ctx context.Context, requested string, cmd []byte) error {
-	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
 	}

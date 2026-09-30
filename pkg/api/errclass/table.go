@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
@@ -165,6 +166,16 @@ var dataPlaneRules = []rule{
 	as(&service.NotLeaderError{}, Unavailable),
 	// A request the protocol cannot encode was never proposed (go-qrdb#52).
 	as(&service.EncodeRequestError{}, InvalidArgument),
+	// A guard that could not be built or applied to a command -- a compare
+	// that cannot be encoded, a target no state machine can evaluate, a
+	// command already guarded -- is raised before anything is proposed, the
+	// same shape as EncodeRequestError above (go-qrdb#482).
+	as(&service.WriteGuardError{}, InvalidArgument),
+	// A write's guard did not hold when the state machine applied it: a lost
+	// concurrency race, the same shape TransactionConflictError answers below.
+	// A refused drop fence decodes as *database.DroppingError instead (see
+	// databaseRules); this is every other guard (go-qrdb#482).
+	as(&service.WriteGuardRefusedError{}, Aborted),
 	as(&service.DrainError{}, Unavailable),
 	as(&service.RevisionCompactedError{}, OutOfRange),
 	as(&service.RevisionNotFoundError{}, NotFound),
@@ -296,6 +307,20 @@ var databaseRules = []rule{
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
+	// A database mid-drop is not gone (NotFoundError, above) and not a naming
+	// conflict (AlreadyExistsError) -- it is a resource whose current state
+	// conflicts with the request. The caller can retry once the drop finishes
+	// (the name is free) or once a failed drop restores the database
+	// (go-qrdb#482).
+	as(&database.DroppingError{}, Aborted),
+	// A second DROP for the same database while one is already running on
+	// this node (Manager.Drop's own in-flight guard): the identical shape as
+	// DroppingError above -- a well-formed, retryable request whose target is
+	// momentarily busy, not a client error or a server fault (go-qrdb#482).
+	as(&database.DropInProgressError{}, Aborted),
+	// The default database can never be dropped, whatever state it is in: the
+	// request itself is invalid, not in conflict with anything.
+	as(&database.DefaultDatabaseDropError{}, InvalidArgument),
 }
 
 // placementRules are the quota, placement and raft-topology conditions.
@@ -319,6 +344,10 @@ var placementRules = []rule{
 	// rather than collapse to one local replica.
 	as(&service.RaftDistributedUnavailableError{}, Unavailable),
 	as(&tenant.InvalidTenantIDCharError{}, InvalidArgument),
+	// A replica refused on a node that does not advertise a feature the group
+	// uses: the request is well formed and conflicts with the node's release,
+	// which the operator resolves by upgrading it (go-qrdb#482).
+	as(&featuregate.UnsupportedReplicaError{}, FailedPrecondition),
 }
 
 // lockRules are the distributed-lock conditions.

@@ -109,6 +109,14 @@ type compositeCollectionCache struct {
 type compositeCollectionEntry struct {
 	src *DatabaseServices
 	svc service.CollectionServicer
+
+	// guard is the write guard of the database incarnation svc was built
+	// for. A database dropped and created again under the same name has a
+	// new incarnation, and a collection service built over the old one's
+	// views would propose every write under the old guard -- refused by the
+	// store forever. A different guard is therefore a miss, and rebuilding
+	// replaces the old incarnation's entry.
+	guard service.WriteGuard
 }
 
 // newCompositeCollectionCache creates an empty cache.
@@ -129,13 +137,13 @@ func newCompositeCollectionCache() *compositeCollectionCache {
 // applyComposite must not depend on NewRESTServiceRegistry having run. The
 // uncached path is correct, only slower, and it keeps the composite collection
 // service namespaced in every construction shape.
-func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices, tenantID, db string) service.CollectionServicer {
+func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices, tenantID, db string, guard service.WriteGuard) service.CollectionServicer {
 	prefix := tenant.ComposeNamespace(tenantID, db)
 	if c == nil {
 		return buildCompositeCollectionService(namespaced, collectionJournalFor(src, tenantID))
 	}
 	c.mu.RLock()
-	if e, ok := c.entries[prefix]; ok && e.src == src {
+	if e, ok := c.entries[prefix]; ok && e.src == src && e.guard.Equal(guard) {
 		c.mu.RUnlock()
 		return e.svc
 	}
@@ -143,10 +151,10 @@ func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices,
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if e, ok := c.entries[prefix]; ok && e.src == src {
+	if e, ok := c.entries[prefix]; ok && e.src == src && e.guard.Equal(guard) {
 		return e.svc
 	}
 	svc := buildCompositeCollectionService(namespaced, collectionJournalFor(src, tenantID))
-	c.entries[prefix] = &compositeCollectionEntry{src: src, svc: svc}
+	c.entries[prefix] = &compositeCollectionEntry{src: src, svc: svc, guard: guard}
 	return svc
 }

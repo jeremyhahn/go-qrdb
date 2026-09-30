@@ -152,15 +152,23 @@ func (v *reclaimVectorStore) remaining() []string {
 
 // fixedStoreResolver reports one answer for every tenant.
 type fixedStoreResolver struct {
-	target    ReclaimTarget
-	dedicated bool
-	err       error
-	calls     int
+	target      ReclaimTarget
+	dedicated   bool
+	perDatabase bool
+	err         error
+	calls       int
 }
 
 func (r *fixedStoreResolver) ReclaimTarget(context.Context, string) (ReclaimTarget, bool, error) {
 	r.calls++
 	return r.target, r.dedicated, r.err
+}
+
+// FenceTarget answers with the same store ReclaimTarget does: the fixture
+// routes a database's fence to where its keys are.
+func (r *fixedStoreResolver) FenceTarget(context.Context, string, string) (FenceStore, bool, error) {
+	r.calls++
+	return FenceStore{KV: r.target.KV, PerDatabase: r.perDatabase}, r.dedicated, r.err
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +650,7 @@ type failingReclaimKV struct {
 	keys      []string
 	listErr   error
 	deleteErr error
+	putErr    error
 }
 
 func (f *failingReclaimKV) List(context.Context, string) ([]string, error) {
@@ -649,6 +658,24 @@ func (f *failingReclaimKV) List(context.Context, string) ([]string, error) {
 }
 
 func (f *failingReclaimKV) Delete(context.Context, string) error { return f.deleteErr }
+
+func (f *failingReclaimKV) Put(context.Context, string, []byte) error { return f.putErr }
+
+func (f *failingReclaimKV) Get(_ context.Context, key string) ([]byte, error) {
+	return nil, &KeyNotFoundError{Key: key}
+}
+
+func (f *failingReclaimKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, f.putErr
+}
+
+func (f *failingReclaimKV) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, f.putErr
+}
+
+func (f *failingReclaimKV) CompareAndDelete(context.Context, string, []byte) (bool, error) {
+	return false, f.deleteErr
+}
 
 // ---------------------------------------------------------------------------
 // Scope

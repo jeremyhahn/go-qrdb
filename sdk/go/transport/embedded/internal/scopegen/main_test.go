@@ -119,7 +119,7 @@ func TestGenerated_ContextFreeMethodsRefuse(t *testing.T) {
 	if strings.Contains(string(src), "context.Background()") {
 		t.Fatal("a generated method resolves for a background context instead of refusing")
 	}
-	for _, m := range []string{"GetRetentionPolicy", "ListMetrics", "SetRetentionPolicy"} {
+	for _, m := range []string{"GetRetentionPolicy", "ListMetrics"} {
 		if !strings.Contains(string(src), "// "+m+" refuses:") {
 			t.Errorf("%s is not generated as a refusal", m)
 		}

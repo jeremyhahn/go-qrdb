@@ -21,6 +21,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -124,6 +125,10 @@ type TenantInfraConfig struct {
 	// MultiplexLogDB, when non-nil, routes opted-in IsolationRaft shards to
 	// per-tenant-KEY WALs inside the shared host's multiplex LogDB.
 	MultiplexLogDB *database.MultiplexLogDB
+
+	// FeatureGate, when non-nil, decides when the IsolationRaft shards on
+	// Host may be sent guarded writes. Required when Host has a transport.
+	FeatureGate *featuregate.Gate
 }
 
 // BuildTenantInfra assembles the per-tenant isolation stack from cfg and
@@ -237,6 +242,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		}
 		if cfg.MultiplexLogDB != nil {
 			raftOpts = append(raftOpts, WithMultiplexLogDB(cfg.MultiplexLogDB))
+		}
+		if cfg.FeatureGate != nil {
+			raftOpts = append(raftOpts, WithFeatureGate(cfg.FeatureGate))
 		}
 		ti.Raft = NewRaftBackendFactoryFromManager(
 			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, cfg.SystemTenant, logger, raftOpts...)

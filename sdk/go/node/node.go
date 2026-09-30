@@ -86,6 +86,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -109,6 +110,7 @@ import (
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -766,6 +768,14 @@ type Node struct {
 	bgCtx    context.Context //nolint:containedctx
 	bgCancel context.CancelFunc
 
+	// featureGate decides when the clustered host's Raft groups may be sent
+	// guarded writes; nil for a host with no transport. featureAdv is its
+	// lease-backed advertisement once startFeatureGate has brought it up, and
+	// featureWG tracks that goroutine so Close can wait it out.
+	featureGate *featuregate.Gate
+	featureAdv  atomic.Pointer[cluster.Advertiser]
+	featureWG   sync.WaitGroup
+
 	// encMigrator is the scoped encryption migrator built in wireClientAndServer.
 	// It routes system scope to the nodeSystemMigrator (which holds the lifecycle gate)
 	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
@@ -1132,6 +1142,19 @@ func clusteredProfile(cfg *qrdbconfig.Config) (capabilities.Capabilities, error)
 	return narrowed, nil
 }
 
+// clusteredKeepsRevisionHistory reports whether the state machine
+// clusteredCreateFunc selects for cfg keeps MVCC revision history: the
+// default ("", "pebble", "mvcc") is the MVCC store; any other type is judged
+// by its registered descriptor.
+func clusteredKeepsRevisionHistory(cfg *qrdbconfig.Config) bool {
+	switch cfg.Raft.SMType {
+	case "", "pebble", "mvcc":
+		return true
+	default:
+		return lifecycle.StateMachineKeepsRevisionHistory(cfg.Raft.SMType)
+	}
+}
+
 // background returns the node-lifetime context for long-running goroutines,
 // creating it on first use. Goroutines started from a boot path must NOT use
 // the boot request's ctx: that ctx is cancelled when the caller's Unseal or
@@ -1277,7 +1300,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.dbManager = dbManager
 
-	hostAdapter := raftbackend.New(host)
+	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
+	if err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		n.dbManager = nil
+		return &HostCreateError{Err: err}
+	}
+	n.featureGate = gate
+	hostAdapter := raftbackend.New(host, raftbackend.WithFeatureGate(gate))
 
 	// Per-instance effective capability profile: the raft composition,
 	// narrowed to the state machine this node runs.
@@ -1291,6 +1322,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              hostAdapter,
+		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
@@ -1378,6 +1410,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			RaftAddr:       pending.cfg.Raft.RaftAddress,
 			SystemTenant:   tenant.SystemTenantID,
 			PlacementStore: svcNode.PlacementStore,
+			FeatureGate:    n.featureGate,
 		})
 		if tiErr != nil {
 			_ = svcNode.Stop(context.Background())
@@ -1455,6 +1488,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 		return err
 	}
+	n.startFeatureGate(host, svcNode.KV)
 	return nil
 }
 
@@ -1552,6 +1586,7 @@ func (n *Node) Close() error {
 		n.bgCancel()
 		n.bgCancel = nil
 	}
+	record(n.stopFeatureGate())
 
 	// Retract every handle this node published BEFORE stopping what backs
 	// them. A caller that loads one after Close gets nil rather than a
@@ -1996,7 +2031,13 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 	n.host = host
 
-	hostAdapter := raftbackend.New(host)
+	gate, err := raftbackend.NewFeatureGate(host, cfg.Raft.ReplicaID, shard.ShardKV)
+	if err != nil {
+		_ = host.Close()
+		return nil, &HostCreateError{Err: err}
+	}
+	n.featureGate = gate
+	hostAdapter := raftbackend.New(host, raftbackend.WithFeatureGate(gate))
 
 	// Pinned per instance, as the sealed path pins it: without it the node
 	// would report the process-global profile, not its own state machine's.
@@ -2007,13 +2048,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
-		Host:        hostAdapter,
-		WatchHub:    watchHub,
-		DataDir:     dataDir,
-		ReplicaID:   cfg.Raft.ReplicaID,
-		Profile:     &profile,
-		Logger:      log,
-		SealEnabled: cfg.Seal.Enabled,
+		Host:              hostAdapter,
+		NoRevisionHistory: !clusteredKeepsRevisionHistory(cfg),
+		WatchHub:          watchHub,
+		DataDir:           dataDir,
+		ReplicaID:         cfg.Raft.ReplicaID,
+		Profile:           &profile,
+		Logger:            log,
+		SealEnabled:       cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
@@ -2042,6 +2084,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		_ = host.Close()
 		return nil, err
 	}
+	n.startFeatureGate(host, svcNode.KV)
 
 	return n, nil
 }

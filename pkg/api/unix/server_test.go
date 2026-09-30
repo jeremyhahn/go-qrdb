@@ -1357,7 +1357,7 @@ func (s *stubTimeSeriesSvc) DeleteSeries(_ context.Context, _ *timeseries.Delete
 func (s *stubTimeSeriesSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, error) {
 	return nil, nil
 }
-func (s *stubTimeSeriesSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (s *stubTimeSeriesSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return nil
 }
 func (s *stubTimeSeriesSvc) ListMetrics(_ string, _ int) ([]string, error) { return nil, nil }

@@ -38,7 +38,7 @@ func NewHostProposerAdapter(host Host) *HostProposerAdapter {
 // (go-qrdb#62). checkResultError answers nil for an ordinary result, so this
 // changes nothing for a batch that actually applied.
 func (a *HostProposerAdapter) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) error {
-	result, err := a.host.SyncPropose(ctx, shardID, cmd)
+	result, err := propose(ctx, a.host, shardID, cmd)
 	if err != nil {
 		return err
 	}

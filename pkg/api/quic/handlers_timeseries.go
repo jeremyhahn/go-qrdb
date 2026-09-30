@@ -480,7 +480,7 @@ func (s *Server) handleTSSetRetention(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := tsSvc.SetRetentionPolicy(req.Metric, &timeseries.RetentionPolicy{
+	if err := tsSvc.SetRetentionPolicy(ctx, req.Metric, &timeseries.RetentionPolicy{
 		Duration:    time.Duration(req.DurationNs),
 		Resolution:  time.Duration(req.ResolutionNs),
 		Aggregation: timeseries.AggFunc(req.Aggregation),

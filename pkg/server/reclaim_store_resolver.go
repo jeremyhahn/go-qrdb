@@ -145,12 +145,19 @@ func (r *reclaimStoreResolver) ReclaimStore(_ context.Context, entry service.Rec
 
 // resolveSharedStore resolves the tenant (for its quota wrapping) and returns
 // the shared, composite-namespaced view of db. See resolveShared.
+//
+// It passes resolveShared a zero managedRecord rather than looking one up:
+// this view is for the reclaim sweeper's own cleanup writes, which must
+// reach a keyspace DROP DATABASE has already fenced against every other
+// writer -- the sweeper is what retires the fence (KeyspaceReclaimService),
+// not another writer racing it. A guarded view here would refuse the
+// sweeper's own deletes.
 func (r *restServiceRegistry) resolveSharedStore(tenantID, db string) (*DatabaseServices, error) {
 	_, info, err := r.resolveTenant(tenantID)
 	if err != nil {
 		return nil, err
 	}
-	return r.resolveShared(tenantID, db, info)
+	return r.resolveShared(tenantID, db, info, managedRecord{})
 }
 
 // isNilShardLeader reports whether s is nil or a typed-nil pointer.

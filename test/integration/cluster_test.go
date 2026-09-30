@@ -25,9 +25,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 )
 
 func TestCluster_HealthEndpoint(t *testing.T) {
@@ -129,7 +132,7 @@ func writePeerAdminURLConfig(t *testing.T, peerAdminURLs map[string]string) stri
 // authenticateOnBehalf) to re-authorize a forwarded request as the ORIGINAL
 // caller rather than falling back to the forwarding node's own
 // (unprivileged) identity.
-func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
+func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *testCA) {
 	t.Helper()
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
@@ -194,7 +197,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
-	return adminPorts, ca
+	return adminPorts, grpcPorts, ca
 }
 
 // waitForSettledFollowerView polls port's own /status until it reports a
@@ -247,7 +250,7 @@ func waitForSettledFollowerView(t *testing.T, ca *testCA, port int, timeout time
 // committed there -- so the follower-originated request succeeds end to
 // end, exactly as if it had been issued directly to the leader.
 func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -274,38 +277,7 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 	// leader's /peers -- unlike /status (which only reports the LOCAL
 	// node's own shard entry), /peers lists every member of the shard, so
 	// the computed next replica ID is guaranteed unused cluster-wide.
-	peersBefore := httpPeers(t, ca, leaderPort)
-	shardsPeersBefore, ok := peersBefore["shards"].([]interface{})
-	if !ok || len(shardsPeersBefore) == 0 {
-		t.Fatalf("leader /peers missing shards: %v", peersBefore)
-	}
-	var shardID, maxReplicaID uint64
-	for _, raw := range shardsPeersBefore {
-		sp, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		sid, _ := sp["shard_id"].(float64)
-		shardID = uint64(sid)
-		peerList, ok := sp["peers"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, pRaw := range peerList {
-			p, ok := pRaw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			rid, _ := p["replica_id"].(float64)
-			if rid := uint64(rid); rid > maxReplicaID {
-				maxReplicaID = rid
-			}
-		}
-	}
-	if maxReplicaID == 0 {
-		t.Fatalf("could not determine an existing replica_id from leader /peers: %v", peersBefore)
-	}
-	newReplicaID := maxReplicaID + 1
+	shardID, newReplicaID := nextReplicaID(t, ca, leaderPort)
 
 	// Issue the add against the FOLLOWER. A 500 here means the
 	// leader-forward fix regressed; a 200 means the follower forwarded the
@@ -366,7 +338,7 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 // the leader commits the removal -- so the follower-originated remove
 // succeeds end to end and the replica disappears from the leader's /peers.
 func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -388,38 +360,7 @@ func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
 
 	// Discover the shard ID and the highest existing replica ID from the
 	// leader's /peers, exactly as the add-forward test does.
-	peersBefore := httpPeers(t, ca, leaderPort)
-	shardsPeersBefore, ok := peersBefore["shards"].([]interface{})
-	if !ok || len(shardsPeersBefore) == 0 {
-		t.Fatalf("leader /peers missing shards: %v", peersBefore)
-	}
-	var shardID, maxReplicaID uint64
-	for _, raw := range shardsPeersBefore {
-		sp, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		sid, _ := sp["shard_id"].(float64)
-		shardID = uint64(sid)
-		peerList, ok := sp["peers"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, pRaw := range peerList {
-			p, ok := pRaw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			rid, _ := p["replica_id"].(float64)
-			if rid := uint64(rid); rid > maxReplicaID {
-				maxReplicaID = rid
-			}
-		}
-	}
-	if maxReplicaID == 0 {
-		t.Fatalf("could not determine an existing replica_id from leader /peers: %v", peersBefore)
-	}
-	extraReplicaID := maxReplicaID + 1
+	shardID, extraReplicaID := nextReplicaID(t, ca, leaderPort)
 
 	// Setup: add a throwaway replica directly against the LEADER. This is
 	// not the behavior under test (that is
@@ -929,5 +870,60 @@ func TestCluster_MVCCSingleNode(t *testing.T) {
 	keys := httpList(t, ca, adminPort, "mvcc/")
 	if len(keys) != 2 {
 		t.Fatalf("mvcc list: got %d keys, want 2: %v", len(keys), keys)
+	}
+}
+
+// TestCluster_MembershipAdd_RefusedWithoutAdvertisement is the companion of
+// TestCluster_MembershipAdd_ForwardsToLeader: the phantom node publishes no
+// feature advertisement, so after activation the feature gate refuses to add
+// it. The refusal must be the same whichever node the add reaches -- the
+// follower forwards it and relays the leader's answer -- and nothing changes.
+func TestCluster_MembershipAdd_RefusedWithoutAdvertisement(t *testing.T) {
+	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	var followerPort int
+	for _, p := range adminPorts {
+		if p != leaderPort {
+			followerPort = p
+			break
+		}
+	}
+	if followerPort == 0 {
+		t.Fatal("no follower admin port found in a 3-node cluster")
+	}
+	waitForSettledFollowerView(t, ca, followerPort, 30*time.Second)
+	shardID, newReplicaID := nextReplicaID(t, ca, leaderPort)
+
+	// Wait for the cluster to activate guarded writes: every node's gate
+	// then refuses a replica on a node with no advertisement.
+	deadline := time.Now().Add(60 * time.Second)
+	var leaderCode int
+	var leaderBody string
+	for {
+		leaderCode, leaderBody = httpMembershipAdd(t, ca, leaderPort, shardID, newReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
+		if leaderCode == http.StatusConflict || time.Now().After(deadline) {
+			break
+		}
+		if leaderCode == http.StatusOK {
+			t.Fatalf("the leader added a replica on a node with no feature advertisement: %s", leaderBody)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if leaderCode != http.StatusConflict {
+		t.Fatalf("leader: status %d, body %s, want 409", leaderCode, leaderBody)
+	}
+	for _, want := range []string{"127.0.0.1:1", string(featuregate.GuardedWrites), "advertisement", "enrollment"} {
+		if !strings.Contains(leaderBody, want) {
+			t.Fatalf("leader refusal %s does not name %q", leaderBody, want)
+		}
+	}
+
+	followerCode, followerBody := httpMembershipAdd(t, ca, followerPort, shardID, newReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
+	if followerCode != leaderCode || followerBody != leaderBody {
+		t.Fatalf("follower answered %d %s, leader %d %s: the refusal must be the same on every node",
+			followerCode, followerBody, leaderCode, leaderBody)
+	}
+	if membershipPeersContainsReplica(httpPeers(t, ca, leaderPort), shardID, newReplicaID) {
+		t.Fatalf("replica %d was added despite the refusal", newReplicaID)
 	}
 }

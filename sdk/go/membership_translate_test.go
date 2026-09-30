@@ -19,50 +19,61 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TestTranslateMemberEvent lives in package sdk because translateMemberEvent
 // is unexported. It used to reach it from package sdk_test through an
 // export_test.go alias, which gosec -tests cannot typecheck (#408).
+//
+// prefix is parameterized because translateMemberEvent serves two watchers
+// under two different key prefixes: cluster.MembershipPrefix (the system
+// shard's committed membership) and featuregate.AdvertisementPrefix (a
+// node's own feature advertisement, go-qrdb#540) -- the same translation,
+// over two disjoint keyspaces.
 func TestTranslateMemberEvent(t *testing.T) {
-	m := cluster.Member{NodeID: 2, Address: "10.0.0.2:5000"}
-	data, _ := json.Marshal(m)
-	key := []byte(cluster.MembershipPrefix + "2")
+	for _, prefix := range []string{cluster.MembershipPrefix, featuregate.AdvertisementPrefix} {
+		t.Run(prefix, func(t *testing.T) {
+			m := cluster.Member{NodeID: 2, Address: "10.0.0.2:5000"}
+			data, _ := json.Marshal(m)
+			key := []byte(prefix + "2")
 
-	// PUT -> joined.
-	ev, ok := translateMemberEvent(&transport.WatchEvent{
-		Type: transport.EventPut,
-		Kv:   &transport.MVCCKeyValue{Key: key, Value: data},
-	})
-	if !ok || ev.Type != cluster.MemberJoined || ev.Member.NodeID != 2 {
-		t.Fatalf("PUT translate = %+v ok=%v, want joined node 2", ev, ok)
-	}
+			// PUT -> joined.
+			ev, ok := translateMemberEvent(prefix, &transport.WatchEvent{
+				Type: transport.EventPut,
+				Kv:   &transport.MVCCKeyValue{Key: key, Value: data},
+			})
+			if !ok || ev.Type != cluster.MemberJoined || ev.Member.NodeID != 2 {
+				t.Fatalf("PUT translate = %+v ok=%v, want joined node 2", ev, ok)
+			}
 
-	// DELETE with PrevKv -> left with full member.
-	ev, ok = translateMemberEvent(&transport.WatchEvent{
-		Type:   transport.EventDelete,
-		PrevKv: &transport.MVCCKeyValue{Key: key, Value: data},
-	})
-	if !ok || ev.Type != cluster.MemberLeft || ev.Member.NodeID != 2 {
-		t.Fatalf("DELETE(prevkv) translate = %+v ok=%v, want left node 2", ev, ok)
-	}
+			// DELETE with PrevKv -> left with full member.
+			ev, ok = translateMemberEvent(prefix, &transport.WatchEvent{
+				Type:   transport.EventDelete,
+				PrevKv: &transport.MVCCKeyValue{Key: key, Value: data},
+			})
+			if !ok || ev.Type != cluster.MemberLeft || ev.Member.NodeID != 2 {
+				t.Fatalf("DELETE(prevkv) translate = %+v ok=%v, want left node 2", ev, ok)
+			}
 
-	// DELETE without PrevKv -> left, node derived from key.
-	ev, ok = translateMemberEvent(&transport.WatchEvent{
-		Type: transport.EventDelete,
-		Kv:   &transport.MVCCKeyValue{Key: key},
-	})
-	if !ok || ev.Type != cluster.MemberLeft || ev.Member.NodeID != 2 {
-		t.Fatalf("DELETE(no prevkv) translate = %+v ok=%v, want left node 2", ev, ok)
-	}
+			// DELETE without PrevKv -> left, node derived from key.
+			ev, ok = translateMemberEvent(prefix, &transport.WatchEvent{
+				Type: transport.EventDelete,
+				Kv:   &transport.MVCCKeyValue{Key: key},
+			})
+			if !ok || ev.Type != cluster.MemberLeft || ev.Member.NodeID != 2 {
+				t.Fatalf("DELETE(no prevkv) translate = %+v ok=%v, want left node 2", ev, ok)
+			}
 
-	// PUT with nil Kv -> skipped.
-	if _, ok := translateMemberEvent(&transport.WatchEvent{Type: transport.EventPut}); ok {
-		t.Fatal("PUT with nil Kv should be skipped")
-	}
-	// Unknown type -> skipped.
-	if _, ok := translateMemberEvent(&transport.WatchEvent{Type: transport.EventType(42)}); ok {
-		t.Fatal("unknown event type should be skipped")
+			// PUT with nil Kv -> skipped.
+			if _, ok := translateMemberEvent(prefix, &transport.WatchEvent{Type: transport.EventPut}); ok {
+				t.Fatal("PUT with nil Kv should be skipped")
+			}
+			// Unknown type -> skipped.
+			if _, ok := translateMemberEvent(prefix, &transport.WatchEvent{Type: transport.EventType(42)}); ok {
+				t.Fatal("unknown event type should be skipped")
+			}
+		})
 	}
 }

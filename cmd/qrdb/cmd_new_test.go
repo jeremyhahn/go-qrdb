@@ -484,7 +484,7 @@ func (m *mockTimeSeriesService) GetRetentionPolicy(_ string) (*timeseries.Retent
 	return &timeseries.RetentionPolicy{}, nil
 }
 
-func (m *mockTimeSeriesService) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (m *mockTimeSeriesService) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return nil
 }
 

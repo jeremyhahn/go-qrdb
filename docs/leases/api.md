@@ -20,6 +20,14 @@ Attachment is a KV capability rather than a lease one; it is listed here because
 a reader looking for "how do I use a lease" needs it, and cross-referenced from
 [../key-value/api.md](../key-value/api.md).
 
+**Revisions in the attach response depend on the state machine.** On a state
+machine with MVCC revision history (`sm_type: mvcc`) the response carries the
+write's `create_revision`, `mod_revision` and `version`. The default `pebble`
+state machine attaches the lease and stores the value the same way but keeps no
+revision history, so on every transport the response carries the key, value and
+lease with all three revisions `0`. A client that needs revisions runs the
+`mvcc` state machine; the etcd API refuses to serve without one.
+
 ## Schemas
 
 `LeaseInfo`, returned by grant, keep-alive and time-to-live, and in the list:

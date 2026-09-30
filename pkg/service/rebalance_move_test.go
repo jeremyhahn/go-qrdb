@@ -22,6 +22,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -430,6 +431,43 @@ func TestMoveTenantGroupShard_LeaderRouting_ForwardsWhenNotLeader(t *testing.T) 
 // the source of the MOVE is some OTHER replica (the ordinary case). See
 // TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource for
 // the case where the leader is ALSO the MOVE's source.
+// TestMoveTenantGroupShard_RejectsDroppingPlacement proves finding 5's fix
+// for the rebalance path: a MOVE plan computed against a placement snapshot
+// that already shows Dropping=true must be refused before leader routing,
+// quota, or any placement mutation -- a database mid-drop is never
+// rebalanced.
+func TestMoveTenantGroupShard_RejectsDroppingPlacement(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	p.Dropping = true
+	store := newTestPlacementStore(t, p)
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("error = %v, want *RebalanceMoveError", err)
+	}
+	if mve.Step != "dropping" {
+		t.Errorf("Step = %q, want \"dropping\"", mve.Step)
+	}
+	var de *database.DroppingError
+	if !errors.As(err, &de) {
+		t.Fatalf("wrapped error = %v, want *database.DroppingError", errors.Unwrap(err))
+	}
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Error("no AddObserver/RemoveFollowerNode calls expected against a dropping database")
+	}
+}
+
 func TestMoveTenantGroupShard_LeaderRouting_ExecutesLocallyWhenLeader(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
@@ -748,6 +786,18 @@ func (f *failingPutKV) Scan(ctx context.Context, prefix string, fn func(string, 
 		return errors.New("kv: scan unavailable")
 	}
 	return f.inner.Scan(ctx, prefix, fn)
+}
+
+// CompareAndSwap applies the identical fault-injection rules as Put: every
+// call addObserverReplica/removeReplicaFromGroup make against placement now
+// goes through CompareAndSwapPlacement rather than a bare Put, so this
+// double's "placement write fails" behavior must be reachable from both.
+func (f *failingPutKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	f.putCount++
+	if f.failPut || (f.failOnPutN > 0 && f.putCount == f.failOnPutN) {
+		return false, errors.New("kv: storage full")
+	}
+	return f.inner.CompareAndSwap(ctx, key, expected, next)
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,44 @@ func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, err
 	return m.getOwned(name, tenantID)
 }
 
+// GetForTenantIgnoringFence returns a database by name after verifying
+// tenant ownership, WITHOUT refusing when the database's local drop fence
+// is set -- unlike GetForTenant, which refuses through Get's DroppingError
+// check.
+//
+// Ownership is checked directly against the catalog (m.databases), the same
+// way DropForTenant's own bypass works and for the identical reason: a
+// caller resolving THIS information -- Backend/Replicas/DedicatedWAL, the
+// bookkeeping DropForTenant needs to release the tenant's quota once its
+// drop succeeds -- is the drop resuming its own claim after a restart, not
+// an ordinary operation the fence exists to refuse (go-qrdb#482 round 3,
+// finding 9). Returns NotFoundError when this node has no local record for
+// name at all: that absence is itself meaningful to DropForTenant (finding
+// 6), which is why this returns the error rather than silently reporting
+// a zero-value database. Also NotFoundError -- never a distinguishable
+// access-denied type -- when the record belongs to a different tenant
+// (SEC-8(b)): the two must be indistinguishable to the caller.
+func (m *Manager) GetForTenantIgnoringFence(ctx context.Context, name string) (*Database, error) {
+	tenantID := tenant.FromContext(ctx)
+	if tenant.IsSystemTenant(tenantID) {
+		return nil, &TenantIDRequiredError{Operation: "GetForTenantIgnoringFence"}
+	}
+
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return nil, &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if db.TenantID() != tenantID {
+		// NotFoundError, not TenantAccessDeniedError: another tenant's
+		// database is answered exactly as a missing one is, never revealing
+		// that the name is held by someone else (SEC-8(b)).
+		return nil, &NotFoundError{Name: name}
+	}
+
+	return db, nil
+}
+
 // ListForTenant returns databases owned by the tenant from the context.
 // Results are sorted by name.
 func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
@@ -80,15 +118,33 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 
 // DropForTenant drops a database after verifying tenant ownership. A database
 // of another tenant is answered with NotFoundError, exactly as a missing one
-// is (see getOwned).
+// is: it never reveals that the name is held by someone else.
+//
+// Ownership is checked directly against the catalog (m.databases), NOT
+// through Get: every other *ForTenant accessor in this file uses Get
+// deliberately, because refusing a dropping database is exactly what it
+// should do for a read or a config update. DropForTenant is the one
+// exception -- it must still let the OWNING tenant retry a drop that a
+// restart (Open restores the fence from meta.json) or a failed reclamation
+// left fenced (go-qrdb#482). Routing the ownership check through Get would
+// refuse the tenant issuing the retry exactly as it refuses everyone else,
+// permanently locking them out of finishing their own interrupted drop.
 func (m *Manager) DropForTenant(ctx context.Context, name string) error {
+	if err := CheckDroppable(name); err != nil {
+		return err
+	}
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "DropForTenant"}
 	}
 
-	if _, err := m.getOwned(name, tenantID); err != nil {
-		return err
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if db.TenantID() != tenantID {
+		return &NotFoundError{Name: name}
 	}
 
 	return m.Drop(ctx, name)

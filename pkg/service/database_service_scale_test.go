@@ -419,6 +419,16 @@ func (k *orderingPlacementKV) Put(ctx context.Context, key string, value []byte)
 	return k.memPlacementKV.Put(ctx, key, value)
 }
 
+// CompareAndSwap records the identical "placement-put" step as Put:
+// addObserverReplica/removeReplicaFromGroup persist every scale-driven
+// placement change through CompareAndSwapPlacement now, not a bare Put, so
+// the ordering these tests assert (placement before key delivery before the
+// Raft membership call) must still be observable from this step log.
+func (k *orderingPlacementKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	k.log.record("placement-put")
+	return k.memPlacementKV.CompareAndSwap(ctx, key, expected, next)
+}
+
 // TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering
 // verifies the per-new-replica step ordering: the placement update is
 // persisted BEFORE the tenant barrier key is delivered, which in turn
@@ -591,6 +601,44 @@ func TestScaleForTenant_ScaleUp_AddObserverErrorFailsCall(t *testing.T) {
 	}
 	if f.decTotal != decTotalBefore+1 {
 		t.Errorf("unconsumed quota reservation not rolled back: decTotal before=%d after=%d", decTotalBefore, f.decTotal)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#482 round 3, finding 5: a snapshot read after the fence was set
+// must never let a scale mutate quota or Raft membership for a database
+// that is mid-drop.
+// ---------------------------------------------------------------------------
+
+// TestScaleForTenant_RejectsDroppingPlacement proves ScaleForTenant refuses
+// with *database.DroppingError, before any quota reservation or placement
+// mutation, when the placement entry it resolves already has Dropping set.
+func TestScaleForTenant_RejectsDroppingPlacement(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}}
+	svc, store, _ := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3"), f.q, nil)
+	createScaleDB(t, svc, "db1", 2)
+
+	if err := store.SetDropping(scaleCtx(), scaleTenantID, "db1", true); err != nil {
+		t.Fatalf("SetDropping: %v", err)
+	}
+	incTotalBefore := f.incTotal
+
+	_, err := svc.ScaleForTenant(scaleCtx(), "db1", 3)
+	var dropping *database.DroppingError
+	if !errors.As(err, &dropping) {
+		t.Fatalf("ScaleForTenant error = %v (%T), want *database.DroppingError", err, err)
+	}
+	if f.incTotal != incTotalBefore {
+		t.Errorf("quota reservation attempted (incTotal %d -> %d), want untouched", incTotalBefore, f.incTotal)
+	}
+	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	if gerr != nil {
+		t.Fatalf("placement Get: %v", gerr)
+	}
+	if p.RF != 2 {
+		t.Errorf("placement RF = %d, want 2 (unchanged)", p.RF)
 	}
 }
 
@@ -1720,5 +1768,124 @@ func TestRemoveReplicaFromGroup_NeverCallsLeaderTransfer(t *testing.T) {
 	}
 	if len(host.removeCalls) != 1 || host.removeCalls[0].replicaID != 1 {
 		t.Fatalf("removeCalls = %+v, want exactly 1 call removing replica 1", host.removeCalls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-qrdb#482 round-3 finding (3): addObserverReplica/removeReplicaFromGroup
+// must persist their placement mutation via a compare-and-swap against the
+// exact snapshot they were handed, not an unconditional Put -- otherwise a
+// concurrent mutation (another scale step, a reconciler promotion, a Drop's
+// fence) committed between that snapshot's read and this write is silently
+// discarded.
+// ---------------------------------------------------------------------------
+
+// TestAddObserverReplica_RejectsStaleCurrentSnapshot proves addObserverReplica
+// refuses to persist when the placement entry has changed since current was
+// read: it must report a placement conflict, leave the stored entry exactly
+// as the concurrent writer left it, and never attempt AddObserver at all
+// (the config change must not run against a config the store itself just
+// rejected as stale).
+func TestAddObserverReplica_RejectsStaleCurrentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	host := &fakeRaftHost{}
+	store, err := placement.NewStore(newMemPlacementKV())
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	current := transferPlacement()
+	if err := store.Put(context.Background(), current); err != nil {
+		t.Fatalf("initial Put: %v", err)
+	}
+
+	// A concurrent mutation lands after `current` was read but before
+	// addObserverReplica's own compare-and-swap: bump RF the way a
+	// concurrent scale-up plan would, through the store directly (never
+	// through `current`, which addObserverReplica still holds the
+	// now-stale copy of).
+	racing := *current
+	racing.RF = current.RF + 1
+	if err := store.Put(context.Background(), &racing); err != nil {
+		t.Fatalf("racing Put: %v", err)
+	}
+
+	r := placement.Replica{ReplicaID: 3, NodeID: "node3", RaftAddr: "node3:1", State: placement.ReplicaStateObserver}
+	updated, kerr, placementFailed, err := addObserverReplica(context.Background(), host, store, nil, nil, current, r, "local")
+	if kerr != nil {
+		t.Fatalf("unexpected key-delivery error: %v", kerr)
+	}
+	if !placementFailed {
+		t.Error("placementFailed = false, want true (the write must be attributed to the placement step)")
+	}
+	if cerr := (*placement.ConflictError)(nil); !errors.As(err, &cerr) {
+		t.Fatalf("err = %v, want to wrap *placement.ConflictError", err)
+	}
+	if updated != current {
+		t.Error("updated must equal the caller's stale snapshot on a rejected swap, not a mutated copy")
+	}
+	if len(host.observerCalls) != 0 {
+		t.Errorf("AddObserver called %d times, want 0 (a rejected placement write must never reach Raft)", len(host.observerCalls))
+	}
+
+	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.RF != racing.RF {
+		t.Errorf("stored RF = %d, want %d (the racing writer's change must survive untouched)", got.RF, racing.RF)
+	}
+	for _, rep := range got.Replicas {
+		if rep.ReplicaID == r.ReplicaID {
+			t.Error("the rejected observer replica must not appear in the stored placement")
+		}
+	}
+}
+
+// TestRemoveReplicaFromGroup_RejectsStaleCurrentSnapshot is
+// TestAddObserverReplica_RejectsStaleCurrentSnapshot's mirror for the
+// scale-down / MOVE-source removal path.
+func TestRemoveReplicaFromGroup_RejectsStaleCurrentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	store, err := placement.NewStore(newMemPlacementKV())
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	current := transferPlacement()
+	if err := store.Put(context.Background(), current); err != nil {
+		t.Fatalf("initial Put: %v", err)
+	}
+
+	racing := *current
+	racing.RF = current.RF + 1
+	if err := store.Put(context.Background(), &racing); err != nil {
+		t.Fatalf("racing Put: %v", err)
+	}
+
+	updated, placementFailed, err := removeReplicaFromGroup(context.Background(), host, store, current, 2)
+	if !placementFailed {
+		t.Error("placementFailed = false, want true")
+	}
+	if cerr := (*placement.ConflictError)(nil); !errors.As(err, &cerr) {
+		t.Fatalf("err = %v, want to wrap *placement.ConflictError", err)
+	}
+	if updated != current {
+		t.Error("updated must equal the caller's stale snapshot on a rejected swap, not a mutated copy")
+	}
+	if len(host.removeCalls) != 0 {
+		t.Errorf("RemoveFollowerNode called %d times, want 0 (a rejected placement write must never reach Raft)", len(host.removeCalls))
+	}
+
+	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.RF != racing.RF {
+		t.Errorf("stored RF = %d, want %d (the racing writer's change must survive untouched)", got.RF, racing.RF)
+	}
+	if len(got.Replicas) != 2 {
+		t.Errorf("stored Replicas = %+v, want both replicas still present (the removal must not have applied)", got.Replicas)
 	}
 }

@@ -209,6 +209,13 @@ dropped with a WARN and the approved method is used. The first node's
 validated, and open no listener. See
 [user.md](user.md#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
 
+## Startup refusal under an activated feature
+
+No command manages the cluster feature gate: nodes advertise their features and
+the cluster activates them on its own. A `qrdbd start` whose release lacks a
+feature the cluster has activated exits with an error naming the feature; see
+[user.md](user.md#upgrading-a-cluster).
+
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite. The

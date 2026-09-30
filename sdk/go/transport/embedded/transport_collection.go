@@ -18,11 +18,26 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Compile-time interface assertion.
 var _ transport.CollectionClient = (*Transport)(nil)
+
+// collectionSvcFor returns the collection service for database, resolved the
+// way the network transports resolve it: through the service registry when
+// one is configured, scoped to the caller's tenant and that database, and
+// otherwise the singleton service this transport was built with.
+func (t *Transport) collectionSvcFor(ctx context.Context, database string) (service.CollectionServicer, error) {
+	if t.registry != nil {
+		return t.registry.CollectionService(tenant.FromContext(ctx), database)
+	}
+	if t.collectionSvc == nil {
+		return nil, &NilServiceError{Service: "CollectionServicer"}
+	}
+	return t.collectionSvc, nil
+}
 
 // ---------------------------------------------------------------------------
 // CollectionClient implementation
@@ -32,10 +47,11 @@ var _ transport.CollectionClient = (*Transport)(nil)
 // CollectionServicer. Returns NilServiceError when no collection service
 // has been configured.
 func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCollectionRequest) (*transport.CollectionInfo, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, req.Database)
+	if err != nil {
+		return nil, err
 	}
-	info, err := t.collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
+	info, err := svc.CreateCollection(ctx, &service.CreateCollectionRequest{
 		Name:         req.Name,
 		Database:     req.Database,
 		IDStrategy:   req.IDStrategy,
@@ -53,10 +69,11 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string) (*transport.CollectionInfo, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, database)
+	if err != nil {
+		return nil, err
 	}
-	info, err := t.collectionSvc.GetCollectionInfo(ctx, database, name)
+	info, err := svc.GetCollectionInfo(ctx, database, name)
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +84,11 @@ func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string
 // to the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) ListCollections(ctx context.Context, database string) (*transport.ListCollectionsResponse, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, database)
+	if err != nil {
+		return nil, err
 	}
-	resp, err := t.collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
+	resp, err := svc.ListCollections(ctx, &service.ListCollectionsRequest{
 		Database: database,
 	})
 	if err != nil {
@@ -89,10 +107,11 @@ func (t *Transport) ListCollections(ctx context.Context, database string) (*tran
 // the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) DropCollection(ctx context.Context, database, name string) error {
-	if t.collectionSvc == nil {
-		return &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, database)
+	if err != nil {
+		return err
 	}
-	return t.collectionSvc.DropCollection(ctx, &service.DropCollectionRequest{
+	return svc.DropCollection(ctx, &service.DropCollectionRequest{
 		Database: database,
 		Name:     name,
 	})
@@ -102,10 +121,11 @@ func (t *Transport) DropCollection(ctx context.Context, database, name string) e
 // assigned document ID by delegating to the injected CollectionServicer.
 // Returns NilServiceError when no collection service has been configured.
 func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocumentRequest) (*transport.InsertDocumentResponse, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, req.Database)
+	if err != nil {
+		return nil, err
 	}
-	resp, err := t.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+	resp, err := svc.InsertDocument(ctx, &service.InsertDocumentRequest{
 		Database:   req.Database,
 		Collection: req.Collection,
 		Document:   req.Document,
@@ -122,10 +142,11 @@ func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocu
 // injected CollectionServicer. Returns NilServiceError when no collection
 // service has been configured.
 func (t *Transport) GetDocument(ctx context.Context, database, collection string, id uint64) (*transport.DocumentResponse, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, database)
+	if err != nil {
+		return nil, err
 	}
-	resp, err := t.collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
+	resp, err := svc.GetDocument(ctx, &service.GetDocumentRequest{
 		Database:   database,
 		Collection: collection,
 		ID:         id,
@@ -140,10 +161,11 @@ func (t *Transport) GetDocument(ctx context.Context, database, collection string
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocumentRequest) error {
-	if t.collectionSvc == nil {
-		return &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, req.Database)
+	if err != nil {
+		return err
 	}
-	_, err := t.collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
+	_, err = svc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
 		Database:   req.Database,
 		Collection: req.Collection,
 		ID:         req.ID,
@@ -156,10 +178,11 @@ func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocu
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) DeleteDocument(ctx context.Context, database, collection string, id uint64) error {
-	if t.collectionSvc == nil {
-		return &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, database)
+	if err != nil {
+		return err
 	}
-	_, err := t.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+	_, err = svc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
 		Database:   database,
 		Collection: collection,
 		ID:         id,
@@ -171,10 +194,11 @@ func (t *Transport) DeleteDocument(ctx context.Context, database, collection str
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) ListDocuments(ctx context.Context, req transport.ListDocumentsRequest) (*transport.ListDocumentsResponse, error) {
-	if t.collectionSvc == nil {
-		return nil, &NilServiceError{Service: "CollectionServicer"}
+	svc, err := t.collectionSvcFor(ctx, req.Database)
+	if err != nil {
+		return nil, err
 	}
-	resp, err := t.collectionSvc.ListDocuments(ctx, &service.ListDocumentsRequest{
+	resp, err := svc.ListDocuments(ctx, &service.ListDocumentsRequest{
 		Database:   req.Database,
 		Collection: req.Collection,
 		PageSize:   req.PageSize,

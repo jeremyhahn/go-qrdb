@@ -51,7 +51,17 @@ var refusalErrors = map[protocol.AppErrorKind]func(msg string) error{
 // error (see protocol.EncodeAppError) and returns the typed error for its
 // kind. The discriminated prefix is required so ordinary result payloads —
 // notably the one-byte transaction success flag — are never misread as errors.
+//
+// A refused write guard (OpGuarded) is decoded FIRST, ahead of the generic
+// kind dispatch below: its payload carries the key of the compare that
+// failed, which guardRefusalError needs to tell a refused drop fence (a
+// *database.DroppingError, the database is being dropped) apart from any
+// other caller-supplied guard (*WriteGuardRefusedError) -- reading it as a
+// generic AppErrorGuardRefused would lose which precondition failed.
 func checkResultError(result sm.Result) error {
+	if key, refused := protocol.DecodeGuardRefusal(result.Data); refused {
+		return guardRefusalError(key)
+	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		return nil
@@ -126,6 +136,50 @@ func (e *CommandCorruptError) Error() string { return "service: " + e.Message }
 
 // Is reports the ErrNotStored marker: the command changed nothing.
 func (e *CommandCorruptError) Is(target error) bool { return target == ErrNotStored }
+
+// WriteGuardError reports that a WriteGuard could not be built or applied to
+// a command: a compare that cannot be encoded, a target a guard cannot
+// evaluate on every state machine, or a command that is empty or already
+// guarded. It is raised before anything is proposed.
+type WriteGuardError struct {
+	// Err is the underlying encoding or validation failure.
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *WriteGuardError) Error() string {
+	return "service: write guard: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying failure.
+func (e *WriteGuardError) Unwrap() error {
+	return e.Err
+}
+
+// Is reports the ErrNotStored marker: the command was never proposed.
+func (e *WriteGuardError) Is(target error) bool {
+	return target == ErrNotStored
+}
+
+// WriteGuardRefusedError reports that a write's guard did not hold when the
+// state machine applied it, so the write changed nothing. A refused drop
+// fence is reported as *database.DroppingError instead; this is every other
+// guard.
+type WriteGuardRefusedError struct {
+	// Key is the key of the compare that did not hold.
+	Key string
+}
+
+// Error returns a human-readable description.
+func (e *WriteGuardRefusedError) Error() string {
+	return "service: write guard refused on key " + strconv.Quote(e.Key)
+}
+
+// Is reports the ErrNotStored marker: the entry committed and applied
+// nothing.
+func (e *WriteGuardRefusedError) Is(target error) bool {
+	return target == ErrNotStored
+}
 
 // CapabilityUnsupportedError reports that the state machine serving this
 // request was not built to perform the operation: an opcode it has no handler

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -389,7 +390,7 @@ func (m *mockTimeSeriesService) GetRetentionPolicy(_ string) (*timeseries.Retent
 	return nil, nil
 }
 
-func (m *mockTimeSeriesService) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (m *mockTimeSeriesService) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return nil
 }
 
@@ -2616,6 +2617,9 @@ func TestMapHTTPError_AllTypes(t *testing.T) {
 		{"ImportParseError", &service.ImportParseError{Err: errors.New("parse")}, http.StatusBadRequest},
 		{"ImportArchiveError", &service.ImportArchiveError{Err: errors.New("archive")}, http.StatusBadRequest},
 		{"ImportTransactionAborted", &service.ImportTransactionAbortedError{Row: 1, Key: "k", Message: "fail"}, http.StatusConflict},
+		{"DatabaseDropping", &database.DroppingError{Name: "reports"}, http.StatusConflict},
+		{"DatabaseDropInProgress", &database.DropInProgressError{Name: "reports"}, http.StatusConflict},
+		{"DefaultDatabaseDrop", &database.DefaultDatabaseDropError{Name: "system"}, http.StatusBadRequest},
 		{"Unknown", errors.New("generic"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {

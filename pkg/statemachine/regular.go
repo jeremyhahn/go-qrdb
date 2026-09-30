@@ -141,6 +141,10 @@ func NewRegularStateMachine(opts ...RegularOption) *RegularStateMachine {
 		protocol.OpCompareAndDelete: r.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   r.handleCompareAndSwap,
 
+		// A write wrapped with a guard evaluated at this entry's log
+		// position -- the drop fence rides on it. See guarded_write.go.
+		protocol.OpGuarded: r.handleGuarded,
+
 		// MVCC
 		protocol.OpMVCCPut:     r.handleMVCCPut,
 		protocol.OpMVCCDelete:  r.handleMVCCDelete,

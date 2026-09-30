@@ -86,3 +86,21 @@ type LookupTypeError struct {
 func (e *LookupTypeError) Error() string {
 	return "backend: unsupported lookup type: " + e.Type
 }
+
+// UndecodableCommandError reports a committed command SimpleStateMachine
+// cannot decode as a base KV command. It is refused in the entry's result,
+// not returned from Update: the bytes are the same on every replica, so the
+// refusal is too.
+type UndecodableCommandError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *UndecodableCommandError) Error() string {
+	return "backend: undecodable command: " + e.Err.Error()
+}
+
+// Unwrap returns the decode error.
+func (e *UndecodableCommandError) Unwrap() error {
+	return e.Err
+}

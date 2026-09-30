@@ -1017,7 +1017,7 @@ func (m *errorTSSvc) DeleteSeries(_ context.Context, _ *timeseries.DeleteRequest
 func (m *errorTSSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy, error) {
 	return nil, nil
 }
-func (m *errorTSSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (m *errorTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return m.setRetErr
 }
 func (m *errorTSSvc) ListMetrics(_ string, _ int) ([]string, error) {

@@ -140,3 +140,51 @@ func (e *ReclaimStoreGoneError) Error() string {
 	return "service: the store of tenant " + strconv.Quote(e.TenantID) +
 		", database " + strconv.Quote(e.Database) + " no longer exists"
 }
+
+// DropFenceError reports that a database's drop fence could not be written
+// to, or removed from, the store holding the database's data.
+type DropFenceError struct {
+	TenantID string
+	Database string
+	// Op is "write" or "remove".
+	Op  string
+	Err error
+}
+
+// Error returns a human-readable description of the fence failure.
+func (e *DropFenceError) Error() string {
+	return "service: failed to " + e.Op + " the drop fence of database " +
+		strconv.Quote(e.Database) + " (tenant " + strconv.Quote(e.TenantID) + "): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *DropFenceError) Unwrap() error {
+	return e.Err
+}
+
+// FenceStoreMissingError reports that a database's dedicated store does not
+// exist, so there is nowhere to write its drop fence. A drop refuses rather
+// than fencing the system store, where the database's writes are not
+// guarded against it.
+type FenceStoreMissingError struct {
+	TenantID string
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *FenceStoreMissingError) Error() string {
+	return "service: the dedicated store of database " + strconv.Quote(e.Database) +
+		" (tenant " + strconv.Quote(e.TenantID) + ") does not exist"
+}
+
+// MarkerContendedError reports that a database's fence marker kept changing
+// while a create or rollback tried to claim it: another create or drop of the
+// same name is racing it. Retrying decides it.
+type MarkerContendedError struct {
+	Key string
+}
+
+// Error returns a human-readable description.
+func (e *MarkerContendedError) Error() string {
+	return "service: the drop-fence marker " + strconv.Quote(e.Key) + " kept changing while it was being claimed"
+}

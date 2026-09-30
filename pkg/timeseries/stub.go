@@ -366,7 +366,7 @@ type TimeSeriesServicer interface {
 	GetRetentionPolicy(metric string) (*RetentionPolicy, error)
 
 	// SetRetentionPolicy sets the retention policy for a metric.
-	SetRetentionPolicy(metric string, policy *RetentionPolicy) error
+	SetRetentionPolicy(ctx context.Context, metric string, policy *RetentionPolicy) error
 
 	// ListMetrics returns metric names matching the optional prefix.
 	ListMetrics(prefix string, limit int) ([]string, error)

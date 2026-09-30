@@ -2794,11 +2794,11 @@ func (e *errorTSService) GetRetentionPolicy(metric string) (*timeseries.Retentio
 	}
 	return e.inner.GetRetentionPolicy(metric)
 }
-func (e *errorTSService) SetRetentionPolicy(metric string, p *timeseries.RetentionPolicy) error {
+func (e *errorTSService) SetRetentionPolicy(ctx context.Context, metric string, p *timeseries.RetentionPolicy) error {
 	if e.setRetErr != nil {
 		return e.setRetErr
 	}
-	return e.inner.SetRetentionPolicy(metric, p)
+	return e.inner.SetRetentionPolicy(ctx, metric, p)
 }
 func (e *errorTSService) ListMetrics(prefix string, limit int) ([]string, error) {
 	if e.listMetErr != nil {

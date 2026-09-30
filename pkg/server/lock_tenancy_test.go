@@ -209,9 +209,9 @@ func (staticDataRoot) dataRootOf(context.Context, string) (string, error) { retu
 // hit in Services returns before any of them is consulted.
 type staticRaftInfo struct{}
 
-func (staticRaftInfo) databaseInfo(string, string) (uint64, string, bool) { return 0, "", false }
-func (staticRaftInfo) placementInfo(string, string) (*placement.Placement, bool) {
-	return nil, false
+func (staticRaftInfo) databaseInfo(string, string, bool) (uint64, string, bool) { return 0, "", false }
+func (staticRaftInfo) placementInfo(string, string) (*placement.Placement, bool, error) {
+	return nil, false, nil
 }
 func (staticRaftInfo) dedicatedWAL(string, string) bool { return false }
 

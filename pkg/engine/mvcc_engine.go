@@ -546,6 +546,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpTransaction:      e.handleTransaction,
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
+		protocol.OpGuarded:          e.handleGuarded,
 		protocol.OpBatch:            e.handleBatch,
 		protocol.OpLeaseGrant:       handleLeaseGrant,
 		protocol.OpLeaseRevoke:      handleLeaseRevoke,
@@ -846,6 +847,37 @@ func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch
 		PrevKV:    current,
 	}}
 	return sm.Result{Value: protocol.ResultSwapped}, notifs, nil
+}
+
+// handleGuarded applies an OpGuarded entry. The guard is read through
+// getInBatchAllowingAbsence -- the read handleCompareAndSwap uses, which sees
+// the writes of earlier entries in the same batch -- and the inner command is
+// dispatched through the same handler table, into the same batch, only when
+// every compare holds. A refused guard is a successful application that
+// changes nothing (see protocol.OpGuarded).
+func (e *MVCCEngine) handleGuarded(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	inner, refusal, err := protocol.OpenGuarded(payload, func(key []byte) ([]byte, error) {
+		current, gerr := getInBatchAllowingAbsence(s, batch, key)
+		if gerr != nil || current == nil {
+			return nil, gerr
+		}
+		if current.Value == nil {
+			// Present with an empty value: presence must not read as absence.
+			return []byte{}, nil
+		}
+		return current.Value, nil
+	})
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if refusal != nil {
+		return sm.Result{Data: refusal}, nil, nil
+	}
+	handler, ok := e.updateHandlers[inner[0]]
+	if !ok {
+		return sm.Result{}, nil, &protocol.UnknownOpError{Op: inner[0]}
+	}
+	return handler(s, lr, batch, inner[1:])
 }
 
 // getInBatchAllowingAbsence reads a key inside the apply batch, reporting a

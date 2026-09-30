@@ -221,6 +221,72 @@ auto-removal quorum floor comes from `--cluster-min-peers` /
 via `client.NewMembershipManager(self, shardID, cfg)` (or the lower-level
 `client.NewMembershipStore()` / `client.NewMembershipReconfigurer()`).
 
+## Cluster feature gate
+
+A command only a newer binary understands must never reach a Raft group that
+still holds an older one: the older replica refuses it and writes nothing while
+its peers apply it, and the group diverges. `pkg/cluster/featuregate` decides,
+per group, when such a command may be sent. Guarded writes (`OpGuarded`, the
+drop fence's atomic write) are the first feature it gates; a future opcode is
+one more entry in the same list.
+
+- **Advertisement.** Every node with a transport advertises the features its
+  binary implements in a **lease-backed** record,
+  `__sys:cluster/features/nodes/{replicaID}`, keyed by its system-shard replica
+  ID and carrying the raft address the system shard committed for it. It is the
+  same `cluster.Advertiser` and lease + watch store dynamic membership uses,
+  under its own prefix, and it runs whether or not dynamic membership is on. A
+  node stopped gracefully withdraws its record at once, before its host shuts
+  down; one that crashes -- or is rolled back to a binary that does not
+  advertise -- stops refreshing its lease, and its record expires with it.
+  Under dynamic membership a node's member registration carries its features
+  too (`cluster.Member.Features`), and the gate follows both.
+- **Per-group decision.** A feature is enabled for a group when every replica
+  that applies its log (voters and observers; witnesses keep no state machine)
+  runs a binary that advertises it. A record counts only while its (replica ID,
+  address) pair is a current system-shard member; a dedicated shard, whose
+  replica IDs placement assigns, matches its members to records by raft
+  address. The decision is read from committed membership and cached per group
+  on a generation that every advertisement change and every background refresh
+  advances -- a write reads neither membership nor the store on a cache hit.
+- **Admission.** A replica -- voter, observer or witness -- is added to a group
+  only on a node that advertises every feature the group uses: every activated
+  feature, and every feature enabled for the group. Go-quicraft catches a new
+  member up by replaying the group's log, so a replica on a node that cannot
+  apply a feature would diverge on the first entry that uses it, and a proposal
+  racing the config change could not be told apart from one before it; refusing
+  the add makes both impossible. Every add path asks first and changes nothing
+  when refused (`featuregate.UnsupportedReplicaError`): an explicit member add,
+  a dynamic-membership join, a scale-up, a rebalance move, and the placement
+  scheduler's candidate list for a new group. A node that is not yet a member
+  is judged by its own lease-backed record, feature advertisement or member
+  registration. Because of admission, a cached per-group decision that lags a
+  membership change by one refresh can only be lagging a removal, never an
+  addition the group cannot use.
+- **Activation.** Once every system-shard member -- every node, witnesses
+  included, since activation enables the feature everywhere -- advertises a
+  feature, it is **activated**: recorded permanently under
+  `__sys:cluster/features/activated/{feature}`, and enabled for every group from
+  then on with one atomic load. A node whose binary lacks an activated feature
+  **refuses to start** (`featuregate.UnsupportedFeatureError`), which makes a
+  downgrade impossible for every binary that has the gate. A node embedded
+  through the Go SDK is built before it can read the activations, so it
+  cannot refuse; it never advertises, logs the error, and reports its health
+  as `degraded`. A binary from before the gate cannot refuse, so **after
+  activation, no node may be started or added on an older release**, and after
+  a crash, wait out the lease TTL before starting a node on an older release.
+  An activation record is trusted as replicated system state: it is written
+  only by a gate, with `PutIfAbsent`, once every member advertises the feature;
+  anyone able to forge one can already rewrite any system record. Its
+  `activated_by` field is kept for audit, not re-verified.
+- **Before activation** a group that is not enabled keeps the path every binary
+  understands: for guarded writes, the write is proposed unguarded and the drop
+  fence is the check made when the database is resolved.
+- **One binary, no gate.** A standalone node, and a host with no transport
+  (a single-node cluster, a volume tenant's host), holds only this binary: it
+  uses every feature from the start. A single-node cluster with a transport
+  activates at once, since its only member is itself.
+
 ## SDK `Cluster()` client
 
 The SDK exposes cluster membership through a thin facade over the already-wired

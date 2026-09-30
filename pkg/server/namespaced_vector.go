@@ -32,6 +32,7 @@ import (
 // isolation — and keeps a single tenant.ComposeNamespace formula in use
 // across every engine.
 type namespacedVectorService struct {
+	dropFence
 	inner  service.VectorServicer
 	prefix string
 }
@@ -52,6 +53,9 @@ func (s *namespacedVectorService) strip(ns string) string {
 
 // CreateNamespace creates a vector namespace under the prefixed name.
 func (s *namespacedVectorService) CreateNamespace(ctx context.Context, req *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.CreateNamespace(ctx, &cp)
@@ -64,6 +68,9 @@ func (s *namespacedVectorService) CreateNamespace(ctx context.Context, req *serv
 
 // DeleteNamespace removes the prefixed vector namespace.
 func (s *namespacedVectorService) DeleteNamespace(ctx context.Context, req *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.DeleteNamespace(ctx, &cp)
@@ -104,6 +111,9 @@ func (s *namespacedVectorService) GetNamespaceInfo(ctx context.Context, req *ser
 
 // UpsertVector inserts or updates a vector in the prefixed namespace.
 func (s *namespacedVectorService) UpsertVector(ctx context.Context, req *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.UpsertVector(ctx, &cp)
@@ -126,6 +136,9 @@ func (s *namespacedVectorService) GetVector(ctx context.Context, req *service.Ge
 
 // DeleteVector removes a vector from the prefixed namespace.
 func (s *namespacedVectorService) DeleteVector(ctx context.Context, req *service.DeleteVectorRequest) (*service.DeleteVectorResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.DeleteVector(ctx, &cp)
@@ -137,6 +150,9 @@ func (s *namespacedVectorService) DeleteVector(ctx context.Context, req *service
 
 // BatchUpsert inserts or updates multiple vectors in the prefixed namespace.
 func (s *namespacedVectorService) BatchUpsert(ctx context.Context, req *service.BatchUpsertRequest) (*service.BatchUpsertResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.BatchUpsert(ctx, &cp)
@@ -148,6 +164,9 @@ func (s *namespacedVectorService) BatchUpsert(ctx context.Context, req *service.
 
 // BatchDeleteVectors removes multiple vectors from the prefixed namespace.
 func (s *namespacedVectorService) BatchDeleteVectors(ctx context.Context, req *service.BatchDeleteVectorsRequest) (*service.BatchDeleteVectorsResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.BatchDeleteVectors(ctx, &cp)
@@ -170,6 +189,9 @@ func (s *namespacedVectorService) ListVectors(ctx context.Context, req *service.
 
 // UpdateMetadata updates a vector's metadata in the prefixed namespace.
 func (s *namespacedVectorService) UpdateMetadata(ctx context.Context, req *service.UpdateVectorMetadataRequest) (*service.UpdateVectorMetadataResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.UpdateMetadata(ctx, &cp)
@@ -226,6 +248,9 @@ func (s *namespacedVectorService) SearchByID(ctx context.Context, req *service.S
 
 // RebuildIndex rebuilds the index for the prefixed namespace.
 func (s *namespacedVectorService) RebuildIndex(ctx context.Context, req *service.RebuildIndexRequest) (*service.RebuildIndexResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.RebuildIndex(ctx, &cp)
@@ -261,6 +286,9 @@ func (s *namespacedVectorService) GetIndexStats(ctx context.Context, req *servic
 
 // CompactNamespace triggers compaction for the prefixed namespace.
 func (s *namespacedVectorService) CompactNamespace(ctx context.Context, req *service.CompactNamespaceRequest) (*service.CompactNamespaceResponse, error) {
+	if err := s.refuse(); err != nil {
+		return nil, err
+	}
 	cp := *req
 	cp.Namespace = s.prefix + req.Namespace
 	resp, err := s.inner.CompactNamespace(ctx, &cp)

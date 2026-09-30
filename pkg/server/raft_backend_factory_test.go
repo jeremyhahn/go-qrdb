@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -101,7 +102,7 @@ func (s *fakeRaftInfoSource) add(tenantID, db string, shardID uint64, dataRoot s
 	}{shardID: shardID, dataDir: filepath.Join(dataRoot, "databases", db)}
 }
 
-func (s *fakeRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, bool) {
+func (s *fakeRaftInfoSource) databaseInfo(tenantID, db string, _ bool) (uint64, string, bool) {
 	e, ok := s.entries[raftShardKey{tenantID: tenantID, database: db}]
 	if !ok {
 		return 0, "", false
@@ -111,9 +112,9 @@ func (s *fakeRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, 
 
 // placementInfo always returns false: the fake source is meta-derived and does
 // not carry a replicated placement table (same semantics as managerRaftInfoSource).
-func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool) {
+func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool, error) {
 	p, ok := s.placements[raftShardKey{tenantID: tenantID, database: db}]
-	return p, ok
+	return p, ok, nil
 }
 
 func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
@@ -771,16 +772,16 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 
 	src := &managerRaftInfoSource{manager: mgr, systemTenant: "system"}
 
-	if _, _, ok := src.databaseInfo("owner", "rdb"); !ok {
+	if _, _, ok := src.databaseInfo("owner", "rdb", false); !ok {
 		t.Error("owner should resolve its own raft database")
 	}
-	if _, _, ok := src.databaseInfo("intruder", "rdb"); ok {
+	if _, _, ok := src.databaseInfo("intruder", "rdb", false); ok {
 		t.Error("a non-owner tenant must NOT resolve another tenant's database")
 	}
-	if _, _, ok := src.databaseInfo("owner", "mdb"); ok {
+	if _, _, ok := src.databaseInfo("owner", "mdb", false); ok {
 		t.Error("a non-raft database must not resolve through the raft info source")
 	}
-	if _, _, ok := src.databaseInfo("owner", "missing"); ok {
+	if _, _, ok := src.databaseInfo("owner", "missing", false); ok {
 		t.Error("an unknown database must not resolve")
 	}
 }
@@ -789,7 +790,7 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 // a manager.
 func TestManagerRaftInfoSource_NilManager(t *testing.T) {
 	src := &managerRaftInfoSource{manager: nil, systemTenant: "system"}
-	if _, _, ok := src.databaseInfo("t", "db"); ok {
+	if _, _, ok := src.databaseInfo("t", "db", false); ok {
 		t.Error("nil-manager source must return ok=false")
 	}
 }
@@ -1049,3 +1050,36 @@ func (fakeLogDBForServer) GetBootstrap(uint64, uint64) (logdblib.Bootstrap, bool
 }
 func (fakeLogDBForServer) ListNodeInfo() ([]logdblib.NodeInfo, error) { return nil, nil }
 func (fakeLogDBForServer) Close() error                               { return nil }
+
+// staticGroups is a featuregate.MembershipSource over fixed groups.
+type staticGroups map[uint64]featuregate.GroupMembership
+
+func (g staticGroups) GroupMembership(shardID uint64) (featuregate.GroupMembership, error) {
+	return g[shardID], nil
+}
+
+// The factory's shards answer the feature gate the composer wires in, so a
+// dedicated shard placed with a node that does not advertise guarded writes
+// is never sent one.
+func TestRaftBackendFactory_ShardsAnswerTheFeatureGate(t *testing.T) {
+	host, addr := newSharedTestHost(t)
+	gate, err := featuregate.New(featuregate.Config{
+		Self:          featuregate.Self{ReplicaID: 1},
+		SystemShardID: 1,
+		Members: staticGroups{
+			1:   {ConfigChangeID: 1, Replicas: map[uint64]string{1: addr, 2: "peer:1"}},
+			900: {ConfigChangeID: 1, Replicas: map[uint64]string{50: addr, 51: "peer:1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("featuregate.New: %v", err)
+	}
+	f := NewRaftBackendFactory(host, 1, addr, nil, &fakeRaftInfoSource{}, nil, WithFeatureGate(gate))
+	if f.adapter.FeatureEnabled(900, featuregate.GuardedWrites) {
+		t.Fatal("a shard placed with a node that advertises nothing was enabled")
+	}
+	ungated := NewRaftBackendFactory(host, 1, addr, nil, &fakeRaftInfoSource{}, nil)
+	if !ungated.adapter.FeatureEnabled(900, featuregate.GuardedWrites) {
+		t.Fatal("a transportless host needs no gate")
+	}
+}

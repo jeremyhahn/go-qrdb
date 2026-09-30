@@ -46,6 +46,18 @@ type BackendKVService struct {
 	// barrier is sealed. Empty for callers that do not care (e.g. the
 	// embedded SQL connector), which do not need error attribution.
 	name string
+
+	// dropCheck, when non-nil, is run by every mutating method before it
+	// delegates to backend, so a handle resolved before a
+	// database.Manager.Drop began answers database.DroppingError. It is a
+	// check before the write, not a guard inside it: this backend is a
+	// dedicated local store, not a Raft group, so there is no command for a
+	// guard to ride on. That is enough here because the drop closes and
+	// removes the whole store -- a write that passes the check just before
+	// the drop has no keyspace to survive in. nil for a BackendKVService with
+	// nothing to check (NewBackendKVService, used by the embedded SDK
+	// connector's single-database, no-manager composition).
+	dropCheck func() error
 }
 
 // NewBackendKVService creates a new BackendKVService wrapping the given
@@ -61,8 +73,25 @@ func NewBackendKVService(backend database.Backend) *BackendKVService {
 // service.BarrierSealedError naming the database instead of the bare
 // database.SealedError, letting transports map it to their standard
 // sealed-barrier status instead of a generic internal error.
-func NewNamedBackendKVService(name string, backend database.Backend) *BackendKVService {
-	return &BackendKVService{backend: backend, name: name}
+//
+// dropCheck is variadic, not a plain trailing parameter, purely so the
+// existing single-argument-pair call sites keep compiling; passing one
+// non-nil func is the only supported use. When present it is re-run by
+// every mutating method at call time -- see the dropCheck field.
+func NewNamedBackendKVService(name string, backend database.Backend, dropCheck ...func() error) *BackendKVService {
+	var check func() error
+	if len(dropCheck) > 0 {
+		check = dropCheck[0]
+	}
+	return &BackendKVService{backend: backend, name: name, dropCheck: check}
+}
+
+// refuseIfDropping calls the configured dropCheck, if any.
+func (s *BackendKVService) refuseIfDropping() error {
+	if s.dropCheck == nil {
+		return nil
+	}
+	return s.dropCheck()
 }
 
 // translateSealed maps a database.SealedError (returned by a barrier-wrapped
@@ -80,6 +109,9 @@ func (s *BackendKVService) translateSealed(err error) error {
 
 // Put stores a key-value pair via the underlying backend.
 func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) error {
+	if err := s.refuseIfDropping(); err != nil {
+		return err
+	}
 	return s.translateSealed(s.backend.Put(ctx, []byte(key), value))
 }
 
@@ -95,6 +127,9 @@ func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) er
 // would need the operation added to its wire protocol first — so the refusal
 // names the limitation instead of failing obscurely.
 func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := s.refuseIfDropping(); err != nil {
+		return false, err
+	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
@@ -114,6 +149,9 @@ func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []
 // one refuses with kvstore.ErrAtomicWriteUnsupported rather than degrading
 // to a read-then-delete, which is the window the operation exists to close.
 func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if err := s.refuseIfDropping(); err != nil {
+		return false, err
+	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
@@ -133,6 +171,9 @@ func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, exp
 // than degraded to a read-then-write, which would deliver the exact race the
 // capability exists to eliminate while reporting success.
 func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := s.refuseIfDropping(); err != nil {
+		return false, err
+	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
@@ -162,6 +203,9 @@ func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) 
 
 // Delete removes a key via the underlying backend.
 func (s *BackendKVService) Delete(ctx context.Context, key string) error {
+	if err := s.refuseIfDropping(); err != nil {
+		return err
+	}
 	return s.translateSealed(s.backend.Delete(ctx, []byte(key)))
 }
 

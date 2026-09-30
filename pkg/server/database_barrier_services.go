@@ -71,7 +71,19 @@ import (
 // for non-Raft backends; that is an architecture decision outside the scope
 // of this change.
 func buildDedicatedStoreServices(db *database.Database) *DatabaseServices {
-	kv := service.NewNamedBackendKVService(db.Name(), db.Backend())
+	// dropCheck is run by every mutating BackendKVService method before it
+	// delegates to db.Backend(), so a handle resolved before a
+	// Manager.Drop began answers database.DroppingError instead of reaching
+	// a store the drop is about to close and remove (see the dropCheck field
+	// of service.BackendKVService for why a check suffices for a dedicated
+	// local store).
+	dropCheck := func() error {
+		if db.Dropping() {
+			return &database.DroppingError{Name: db.Name()}
+		}
+		return nil
+	}
+	kv := service.NewNamedBackendKVService(db.Name(), db.Backend(), dropCheck)
 	return &DatabaseServices{
 		Name:       db.Name(),
 		KV:         kv,

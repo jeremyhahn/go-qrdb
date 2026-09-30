@@ -11,6 +11,130 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Cluster feature gate (`pkg/cluster/featuregate`).** A command only newer binaries
+  understand is sent to a Raft group only once every replica in it runs a binary that
+  advertises the feature. Each node advertises its features in a lease-backed record in the
+  system store (`__sys:cluster/features/nodes/{replicaID}`), so a stopped or rolled-back
+  node stops counting when its lease expires; a dedicated shard matches its members to
+  records by raft address. Once every node advertises a feature it is activated
+  permanently (witnesses included), and a node whose binary lacks an activated feature
+  refuses to start with `featuregate.UnsupportedFeatureError`. A replica is added to a group
+  only on a node that advertises every feature the group uses -- member add, dynamic
+  membership, scale-up, rebalance and the placement scheduler all ask first and are refused
+  with `featuregate.UnsupportedReplicaError` (REST 409, gRPC/QUIC `FAILED_PRECONDITION`) --
+  because a new replica is caught up by replaying the group's log. `qrdbd` withdraws its
+  advertisement on a graceful stop; after a crash it lapses with the lease. **After
+  activation, no node may be started or added on an older release.** A brand-new `qrdbd`
+  node advertises only once it is a member, so after activation it cannot yet be added with
+  `member add`. Guarded writes are the first gated feature;
+  standalone nodes and hosts with no transport use them from the start, and a single-node
+  cluster activates them at once. A node embedded through the Go SDK cannot refuse to start
+  after it is built; it logs the refusal and reports its health as `degraded`. New:
+  `service.FeatureGatedHost` and `service.ReplicaAdmitter`,
+  `raftbackend.WithFeatureGate` / `NewFeatureGate`, `server.WithFeatureGate` and
+  `TenantInfraConfig.FeatureGate`, `placement.WithReplicaFilter`,
+  `sdk.Client.StartFeatureGate` and `NewMembershipStoreAt`, and `cluster.Member.Features`.
+  **Downstream composers:** a `raftbackend.HostAdapter` over a host with a transport and no
+  `WithFeatureGate` now proposes every write UNGUARDED -- no feature is enabled without a
+  gate -- so a composer that builds its own adapters must attach the node's gate to each of
+  them, or its drop fence falls back to the check made when the database is resolved.
+- **Guarded write commands.** A new Raft opcode, `protocol.OpGuarded`, wraps any write
+  command with compares (the transaction compare encoding; `version` and `value` targets)
+  that the state machine evaluates at the entry's own log position. It is served by the four
+  `pkg/statemachine` state machines, `PebbleStateMachine`, `MVCCStateMachine`, `KVEngine` and
+  `MVCCEngine`; `SimpleStateMachine` refuses it. A command without the wrapper is
+  byte-for-byte unchanged and applies unconditionally. See `docs/databases/engineering.md`.
+  A refused guard travels the same typed-kind encoding as every other state-machine
+  refusal (`protocol.AppErrorKind`): a new `AppErrorGuardRefused` kind carries the key of
+  the compare that failed, decoded ahead of the generic kind dispatch so a refused drop
+  fence renders as `database.DroppingError` (409 / `ABORTED`) and any other refused guard
+  as `service.WriteGuardRefusedError` (409 / `ABORTED`) through the one `pkg/api/errclass`
+  table every transport already renders from -- neither type needed its own per-transport
+  mapper. `service.WriteGuardError` (a guard that could not be built -- an unencodable
+  compare, a command already guarded) is 400 / `INVALID_ARGUMENT`, the same shape as
+  `EncodeRequestError`: raised before anything is proposed.
+- `embedded.WithServiceRegistry`: the embedded transport resolves collection calls and SQL
+  queries that name a database through the same per-(tenant, database) registry as the
+  network transports when the composition configures one. `sdk/go/node` wires its server's
+  registry in.
+
+### Changed
+
+- **Breaking:** `TimeSeriesServicer.SetRetentionPolicy` takes a `context.Context` first, so
+  a retention change carries the request's database scope like every other write.
+- **Breaking:** `database.KeyspaceReclaimer` gains `FenceDatabaseKeyspace` and
+  `UnfenceDatabaseKeyspace(ctx, tenantID, database, incarnation)`; every implementation must
+  add them.
+- **Breaking:** `service.StoreResolver` gains `FenceTarget`, returning a
+  `service.FenceStore`; every implementation must add it.
+- **Breaking:** `service.ReclaimKV` gains `Put`; every implementation must add it.
+- **Embedded collections move to the per-database keyspace.** When a service registry is
+  configured, collection calls through the embedded transport that name a database now read
+  and write that database's `<tenant>/<db>/` keyspace -- the one the network transports use
+  and `DROP DATABASE` reclaims -- instead of the root-keyed layout the embedded transport
+  wrote before. Collections an embedder wrote through the old path are not visible through
+  the new one; migrate them as for the earlier collection namespace change (export with the
+  previous binary, re-import).
+- Database metadata records an `incarnation` (see Fixed). Metadata without one reopens with
+  an empty incarnation and keeps working.
+
+### Fixed
+
+- **Dynamic membership works on the default `pebble` state machine.** A lease-attached put
+  (`MVCCKVService.PutWithLease` / `PutWithLeaseAndMode`) applied on a state machine without
+  MVCC revision history and then failed its revision read-back, so `--dynamic-membership`
+  on `--sm pebble` failed to register each node and the node did not start. The composer now
+  declares a state machine without revision history (`service.WithoutRevisionHistory`,
+  `lifecycle.Infra.NoRevisionHistory`, from the state machine's descriptor), and the put
+  there reports the key, value and lease it wrote with all revisions `0`, without a
+  read-back; on an MVCC state machine it still returns the write's full revision metadata.
+  The etcd API refuses to start over a state machine without revision history
+  (`etcd.RevisionHistoryRequiredError`), and its `Put` answers `FAILED_PRECONDITION` there
+  rather than revision 0.
+
+- **DROP DATABASE is atomic with every write to the database.** Each database now has a
+  fence marker in the Raft group holding its data (the system shard, a volume tenant's Host
+  shard, or a dedicated-raft database's own shard). While the database is live the marker
+  holds the database's incarnation, and every write its views propose carries "the marker
+  holds my incarnation" in the same Raft command. A drop fences the database locally, so no
+  new handle resolves it, and sets the marker to a tombstone before reclaiming anything. A
+  write resolved and proposed before the drop but applied after the fence is refused at
+  apply time with `database.DroppingError` (REST 409 / gRPC and QUIC `ABORTED`) instead of
+  landing in a keyspace being reclaimed; a write applied before the fence is reclaimed with
+  the rest. Because handles are scoped to an incarnation, a handle from before a drop is
+  still refused after the name is created again. A failed drop always restores the marker,
+  under a context the failed request's cancellation cannot reach, and stays fenced if the
+  store cannot be reached. A dedicated-raft database is additionally fenced in its replicated
+  placement entry, cleared on a failed drop only once the store marker is confirmed
+  restored; a shard cached for a dropped incarnation is evicted and its directory purged
+  rather than served, and a never-cached dedicated-raft database can be dropped. Shard IDs
+  are never issued twice on a node, dropped ones included (a persisted high-water mark), so
+  a re-created dedicated-raft database always gets a new shard. The marker is claimed only
+  from absent or the tombstone: creating a name already live on another node is refused
+  with `database.AlreadyExistsError` (`Elsewhere` set) rather than taking it over. A name
+  this node dropped is refused with `database.ReclaimerRequiredError` by a manager with no
+  keyspace reclaimer, and `qrdbd` now provisions its configured databases only after the
+  data plane has attached one, so a restart can no longer re-create a dropped name that
+  refuses every write. A placement read failure on the fence path surfaces as itself rather
+  than as an unknown database, and a collection service cached for a dropped database is
+  never reused by the name's next incarnation.
+  Vector writes, which are node-local rather than Raft proposals, keep a check made
+  immediately before the write.
+- **Guarded writes never reach a mixed-version group.** A replica running a binary that
+  predates guarded writes would refuse one and write nothing while its peers applied it. The
+  new cluster feature gate (below) sends a guarded write to a Raft group only once every
+  replica in it advertises support; until then the group's writes are proposed unguarded and
+  the drop fence is checked when the database is resolved, as before guarded writes.
+- **The default database cannot be dropped.** Every drop entry point refuses `system` with
+  `database.DefaultDatabaseDropError` (REST 400 / gRPC and QUIC `INVALID_ARGUMENT`) before
+  touching anything.
+- A second concurrent drop of one database is `ABORTED` on QUIC as on gRPC and REST, rather
+  than an internal error.
+- `SimpleStateMachine` reports a command it cannot decode as a refusal in the result instead
+  of the success value, so such a write is no longer acknowledged unwritten.
+
 ## [0.25.2-alpha] - 2026-10-01
 
 Security patch. It closes a family of privilege escalations in which a tenant-scoped identity could act on node-wide or cluster-wide resources. The cause was a permission check that compared the caller's tenant with itself on routes that name no tenant.

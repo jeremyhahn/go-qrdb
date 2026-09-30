@@ -386,7 +386,7 @@ func (m *tsRec) GetRetentionPolicy(metric string) (*timeseries.RetentionPolicy, 
 	m.lastMetric = metric
 	return &timeseries.RetentionPolicy{}, m.err
 }
-func (m *tsRec) SetRetentionPolicy(metric string, _ *timeseries.RetentionPolicy) error {
+func (m *tsRec) SetRetentionPolicy(_ context.Context, metric string, _ *timeseries.RetentionPolicy) error {
 	m.lastMetric = metric
 	return m.err
 }
@@ -501,7 +501,7 @@ func TestNamespacedTimeSeries_RichAndBatch(t *testing.T) {
 	if rec.lastMetric != "p/cpu" {
 		t.Errorf("GetRetentionPolicy metric = %q", rec.lastMetric)
 	}
-	if err := w.SetRetentionPolicy("mem", &timeseries.RetentionPolicy{}); err != nil {
+	if err := w.SetRetentionPolicy(context.Background(), "mem", &timeseries.RetentionPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 	if rec.lastMetric != "p/mem" {

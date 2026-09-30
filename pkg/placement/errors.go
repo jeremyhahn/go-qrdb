@@ -59,6 +59,31 @@ var (
 	ErrWatchUnsupported = errors.New("placement: watch not supported by kv backend")
 )
 
+// ConflictError reports that a placement entry kept changing between being
+// read and being compare-and-swapped: every attempt in a bounded
+// optimistic-retry loop (SetDropping, TryMarkDropping, MarkDropCommitted), or
+// the single attempt of a caller that does not retry, lost the race against
+// a concurrent mutation -- another drop's fence, a scale, a reconciler
+// promotion. It is the inner error of a *StoreError naming the entry.
+type ConflictError struct{}
+
+// Error implements the error interface.
+func (e *ConflictError) Error() string {
+	return "placement: entry changed since it was read"
+}
+
+// AtomicWriteUnsupportedError reports that the backing KV does not implement
+// AtomicKV, so CompareAndSwapPlacement cannot run. It is a refusal, not a
+// fallback: degrading to an unconditional Put would reintroduce the
+// lost-update race compare-and-swap exists to close, and no caller in this
+// package degrades. It is the inner error of a *StoreError naming the entry.
+type AtomicWriteUnsupportedError struct{}
+
+// Error implements the error interface.
+func (e *AtomicWriteUnsupportedError) Error() string {
+	return "placement: kv backend does not support compare-and-swap"
+}
+
 // InsufficientNodesError reports that the cluster cannot satisfy a placement's
 // replication factor with distinct healthy nodes. It unwraps to
 // ErrInsufficientNodes.

@@ -478,6 +478,49 @@ func TestManager_SetBarrierManager_ReregistersAlreadyOpenDatabases(t *testing.T)
 	}
 }
 
+// TestManager_SetBarrierManager_DoesNotClearTheDropFlag pins go-qrdb#482
+// finding (h): SetBarrierManager unconditionally sets Status to
+// StatusSealed for every barrier-enabled database it re-registers (see the
+// assertion above). Status used to be where the drop fence lived too, so
+// replaying this boot-time barrier wiring over a database a crash left
+// mid-drop would have silently resolved it again. Dropping is a field of
+// its own, independent of Status, so SetBarrierManager cannot touch it.
+func TestManager_SetBarrierManager_DoesNotClearTheDropFlag(t *testing.T) {
+	dataDir := t.TempDir()
+
+	bm1 := newTestBarrierManager(t)
+	mgr1 := NewManager(nil, dataDir, WithBarrierManager(bm1))
+	cfg := validDedicatedMemoryConfig(t, "sealed-dropping-db")
+	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	if _, err := mgr1.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
+		t.Fatalf("CreateWithCredentials() error = %v", err)
+	}
+	if err := mgr1.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	mgr2 := NewManager(nil, dataDir)
+	defer func() { _ = mgr2.Close() }()
+	if err := mgr2.OpenAll(); err != nil {
+		t.Fatalf("OpenAll() error = %v", err)
+	}
+	db, err := mgr2.Get("sealed-dropping-db")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	db.SetDropping(true)
+
+	bm2 := newTestBarrierManager(t)
+	mgr2.SetBarrierManager(bm2)
+
+	if db.Status() != StatusSealed {
+		t.Errorf("Status() after SetBarrierManager = %q, want %q", db.Status(), StatusSealed)
+	}
+	if !db.Dropping() {
+		t.Error("Dropping() = false after SetBarrierManager, want true: re-registering the barrier must not clear the drop fence")
+	}
+}
+
 // TestManager_SetBarrierManager_CalledTwice_RewrapsWithoutNesting covers
 // case (2) from SetBarrierManager's doc comment: an in-process cluster
 // migration rebuilds the registry against a new root key and calls

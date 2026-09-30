@@ -15,7 +15,10 @@
 package database
 
 import (
+	"errors"
 	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // InvalidNameError is returned when a database name is empty or contains
@@ -66,10 +69,18 @@ func (e *InvalidBackendError) Error() string {
 // a name that is already in use.
 type AlreadyExistsError struct {
 	Name string
+
+	// Elsewhere reports that the name is live in the replicated store under
+	// another database's incarnation -- created on another node, whose
+	// catalog this node does not share -- rather than in this node's catalog.
+	Elsewhere bool
 }
 
 // Error returns a human-readable description of the duplicate database.
 func (e *AlreadyExistsError) Error() string {
+	if e.Elsewhere {
+		return "database: database already exists on another node: " + strconv.Quote(e.Name)
+	}
 	return "database: database already exists: " + strconv.Quote(e.Name)
 }
 
@@ -192,6 +203,151 @@ func (e *DropInProgressError) Error() string {
 	return "database: drop already in progress for database " + strconv.Quote(e.Name)
 }
 
+// DroppingError is returned by Manager.Get when the named database has a
+// Drop in flight on this node. Manager.Drop sets this fence (step 0) BEFORE
+// it reclaims the database's keyspace, so a caller that resolves the
+// database after that point -- rather than before it, as go-qrdb#412 left
+// possible -- is refused instead of being served into a keyspace that is
+// already being, or about to be, reclaimed. The catalog record itself
+// survives until the drop completes, so the database is still
+// there for a retry; it is simply no longer resolvable for ordinary
+// operations while its drop is in progress (go-qrdb#482).
+//
+// TenantID is populated from the fenced database's own record so a caller
+// that needs it -- DatabaseService.Drop's tenant lookup, in particular --
+// can recover it without resolving the database, which is exactly what this
+// error refuses (go-qrdb#482 round 3): a node that restarts mid-drop reopens
+// the database still fenced (Open restores Dropping from meta.json), so
+// Manager.Get keeps returning this error across the restart, and a caller
+// that could only get the tenant ID from a successful Get would never be
+// able to resume the drop at all.
+type DroppingError struct {
+	Name     string
+	TenantID string
+}
+
+// Error returns a human-readable description of the in-flight drop.
+func (e *DroppingError) Error() string {
+	return "database: database is being dropped: " + strconv.Quote(e.Name)
+}
+
+// KeyspaceFenceError is returned when a database's drop fence could not be
+// written to -- or, when a database of that name is created, cleared from --
+// the Raft group holding its data. A failed drop is rolled back and changes
+// nothing, and re-issuing it retries; a failed create creates nothing.
+type KeyspaceFenceError struct {
+	Name     string
+	TenantID string
+	Err      error
+
+	// RolledBack reports that the failed drop was rolled back completely:
+	// the store fence was cleared, and then the local one.
+	RolledBack bool
+}
+
+// Error returns a human-readable description of the fence failure.
+func (e *KeyspaceFenceError) Error() string {
+	return "database: failed to update the drop fence of database " +
+		strconv.Quote(e.Name) + " (tenant: " + strconv.Quote(e.TenantID) + "): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying store error.
+func (e *KeyspaceFenceError) Unwrap() error {
+	return e.Err
+}
+
+// DropRolledBack reports whether the drop that failed was rolled back
+// completely. See DropRolledBack.
+func (e *KeyspaceFenceError) DropRolledBack() bool {
+	return e.RolledBack
+}
+
+// LocalFenceError is returned when a drop could not persist its local fence,
+// the first thing it does. Nothing was fenced or reclaimed: the in-memory
+// fence is rolled back with it, so the drop changed nothing.
+type LocalFenceError struct {
+	Name string
+	Err  error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *LocalFenceError) Error() string {
+	return "database: failed to persist the drop fence of database " + strconv.Quote(e.Name) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying write error.
+func (e *LocalFenceError) Unwrap() error {
+	return e.Err
+}
+
+// DropRolledBack is always true: the drop changed nothing.
+func (e *LocalFenceError) DropRolledBack() bool {
+	return true
+}
+
+// DropRolledBack reports whether err is a failed drop that was rolled back
+// completely -- every fence the Manager set is cleared again -- so a caller
+// that set fences of its own around the drop may roll those back too. A
+// failed drop that could NOT be rolled back leaves the database fenced, and
+// the caller's fences must stay with it.
+func DropRolledBack(err error) bool {
+	var rb interface{ DropRolledBack() bool }
+	return errors.As(err, &rb) && rb.DropRolledBack()
+}
+
+// ReclaimerRequiredError is returned when a database is created under a name
+// this node dropped, while no keyspace reclaimer is attached. The drop left
+// a tombstone in the store; only the reclaimer can replace it with the new
+// database's live incarnation, so the database would refuse every write. The
+// create succeeds once the data plane is up.
+type ReclaimerRequiredError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ReclaimerRequiredError) Error() string {
+	return "database: database " + strconv.Quote(e.Name) +
+		" was dropped on this node; creating it again requires the data plane to be attached"
+}
+
+// IncarnationError reports that a new database incarnation could not be
+// generated because the system random source failed.
+type IncarnationError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *IncarnationError) Error() string {
+	return "database: cannot generate a database incarnation: " + e.Err.Error()
+}
+
+// Unwrap returns the random source's error.
+func (e *IncarnationError) Unwrap() error {
+	return e.Err
+}
+
+// DefaultDatabaseDropError is returned when a drop names the default
+// database. Every tenant's unscoped requests resolve to it and the bootstrap
+// records live in it, so it is not a database a caller can remove.
+type DefaultDatabaseDropError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *DefaultDatabaseDropError) Error() string {
+	return "database: the default database " + strconv.Quote(e.Name) + " cannot be dropped"
+}
+
+// CheckDroppable reports whether name may be dropped: every database except
+// the default one, tenant.DefaultDatabase. Each drop entry point calls it
+// before it touches anything, so every transport refuses identically.
+func CheckDroppable(name string) error {
+	if name == tenant.DefaultDatabase {
+		return &DefaultDatabaseDropError{Name: name}
+	}
+	return nil
+}
+
 // KeyspaceReclaimError is returned when a database's data could not be
 // reclaimed from the store it shares with other databases, which fails the
 // whole drop: the database, its catalog entry and its data are all left
@@ -200,6 +356,16 @@ type KeyspaceReclaimError struct {
 	Name     string
 	TenantID string
 	Err      error
+
+	// RolledBack reports that the failed drop was rolled back completely:
+	// the store fence was cleared, and then the local one.
+	RolledBack bool
+}
+
+// DropRolledBack reports whether the drop that failed was rolled back
+// completely. See DropRolledBack.
+func (e *KeyspaceReclaimError) DropRolledBack() bool {
+	return e.RolledBack
 }
 
 // Error returns a human-readable description of the reclamation failure.

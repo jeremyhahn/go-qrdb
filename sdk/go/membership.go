@@ -73,7 +73,15 @@ func (c *Client) NewNodeAdvertiser(self cluster.Member, cfg cluster.AdvertiseCon
 // under cluster.MembershipPrefix and attached to a lease so that node death
 // triggers automatic expiry and a watch delete.
 func (c *Client) NewMembershipStore() cluster.MembershipStore {
-	return &sdkMembershipStore{client: c}
+	return c.NewMembershipStoreAt(cluster.MembershipPrefix)
+}
+
+// NewMembershipStoreAt returns a cluster.MembershipStore like
+// NewMembershipStore whose entries live under prefix instead, for a
+// lease-backed per-node registry other than cluster membership -- the
+// feature advertisements of pkg/cluster/featuregate among them.
+func (c *Client) NewMembershipStoreAt(prefix string) cluster.MembershipStore {
+	return &sdkMembershipStore{client: c, prefix: prefix}
 }
 
 // NewMembershipReconfigurer returns a cluster.Reconfigurer backed by this
@@ -85,6 +93,7 @@ func (c *Client) NewMembershipReconfigurer() cluster.Reconfigurer {
 // sdkMembershipStore implements cluster.MembershipStore over the qrdb SDK.
 type sdkMembershipStore struct {
 	client *Client
+	prefix string
 
 	mu      sync.Mutex
 	leaseID int64
@@ -111,7 +120,7 @@ func (s *sdkMembershipStore) PutMember(ctx context.Context, nodeID uint64, data 
 		if err != nil {
 			return err
 		}
-		if _, err := s.client.MVCC().PutWithLease(ctx, memberKey(nodeID), data, info.ID); err != nil {
+		if _, err := s.client.MVCC().PutWithLease(ctx, memberKey(s.prefix, nodeID), data, info.ID); err != nil {
 			// Best-effort cleanup of the orphaned lease on a fresh context so
 			// it runs even when the caller's context is already cancelled.
 			revokeQuietly(s.client, info.ID)
@@ -167,7 +176,7 @@ func (s *sdkMembershipStore) DeleteMember(ctx context.Context, _ uint64) error {
 // watching are visible — a keepalive refreshes a lease without re-emitting a
 // PUT, so a watch-only view would miss them.
 func (s *sdkMembershipStore) ListMembers(ctx context.Context) ([]cluster.Member, error) {
-	pairs, err := s.client.KV().Scan(ctx, cluster.MembershipPrefix)
+	pairs, err := s.client.KV().Scan(ctx, s.prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +200,7 @@ func revokeQuietly(client *Client, leaseID int64) {
 // WatchMembers watches the membership prefix and translates qrdb watch events
 // into cluster.MemberEvent values.
 func (s *sdkMembershipStore) WatchMembers(ctx context.Context) (<-chan cluster.MemberEvent, error) {
-	src, err := s.client.Watch().WatchPrefix(ctx, cluster.MembershipPrefix, transport.WatchOptions{PrevKV: true})
+	src, err := s.client.Watch().WatchPrefix(ctx, s.prefix, transport.WatchOptions{PrevKV: true})
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +211,7 @@ func (s *sdkMembershipStore) WatchMembers(ctx context.Context) (<-chan cluster.M
 		defer close(out)
 		for resp := range src {
 			for _, ev := range resp.Events {
-				event, ok := translateMemberEvent(ev)
+				event, ok := translateMemberEvent(s.prefix, ev)
 				if !ok {
 					continue
 				}
@@ -218,7 +227,7 @@ func (s *sdkMembershipStore) WatchMembers(ctx context.Context) (<-chan cluster.M
 }
 
 // translateMemberEvent converts a qrdb watch event into a cluster.MemberEvent.
-func translateMemberEvent(ev *transport.WatchEvent) (cluster.MemberEvent, bool) {
+func translateMemberEvent(prefix string, ev *transport.WatchEvent) (cluster.MemberEvent, bool) {
 	switch ev.Type {
 	case transport.EventPut:
 		if ev.Kv == nil {
@@ -242,21 +251,21 @@ func translateMemberEvent(ev *transport.WatchEvent) (cluster.MemberEvent, bool) 
 		} else if ev.PrevKv != nil {
 			key = string(ev.PrevKv.Key)
 		}
-		return cluster.MemberEvent{Type: cluster.MemberLeft, Member: cluster.Member{NodeID: nodeIDFromKey(key)}}, true
+		return cluster.MemberEvent{Type: cluster.MemberLeft, Member: cluster.Member{NodeID: nodeIDFromKey(prefix, key)}}, true
 	default:
 		return cluster.MemberEvent{}, false
 	}
 }
 
 // memberKey builds the membership key for a node.
-func memberKey(nodeID uint64) string {
-	return cluster.MembershipPrefix + strconv.FormatUint(nodeID, 10)
+func memberKey(prefix string, nodeID uint64) string {
+	return prefix + strconv.FormatUint(nodeID, 10)
 }
 
 // nodeIDFromKey parses the node ID out of a membership key. Returns 0 when the
 // key does not parse.
-func nodeIDFromKey(key string) uint64 {
-	id, err := strconv.ParseUint(strings.TrimPrefix(key, cluster.MembershipPrefix), 10, 64)
+func nodeIDFromKey(prefix, key string) uint64 {
+	id, err := strconv.ParseUint(strings.TrimPrefix(key, prefix), 10, 64)
 	if err != nil {
 		return 0
 	}

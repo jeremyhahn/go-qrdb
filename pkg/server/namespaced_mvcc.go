@@ -42,6 +42,7 @@ import (
 // A lease this namespace does not own is answered with the not-found a
 // missing lease gets. Lease ID 0 is no lease.
 type namespacedMVCCService struct {
+	dbGuard
 	*namespacedKVService
 	inner  service.MVCCKVServicer
 	prefix string
@@ -89,6 +90,7 @@ func (s *namespacedMVCCService) PutWithLease(ctx context.Context, key string, va
 	if err := s.requireOwnedLease(ctx, leaseID); err != nil {
 		return nil, err
 	}
+	ctx = s.scope(ctx)
 	kvp, err := s.inner.PutWithLease(ctx, s.prefix+key, value, leaseID)
 	if err != nil {
 		return nil, err
@@ -103,6 +105,7 @@ func (s *namespacedMVCCService) PutWithLeaseAndMode(ctx context.Context, key str
 	if err := s.requireOwnedLease(ctx, leaseID); err != nil {
 		return nil, err
 	}
+	ctx = s.scope(ctx)
 	kvp, err := s.inner.PutWithLeaseAndMode(ctx, s.prefix+key, value, leaseID, mode)
 	if err != nil {
 		return nil, err
@@ -186,6 +189,7 @@ func (s *namespacedMVCCService) RangeWithConsistency(ctx context.Context, start,
 // the mvcc:compact permission. The system tenant — the legitimate store-global
 // admin — is forwarded unchanged.
 func (s *namespacedMVCCService) Compact(ctx context.Context, revision int64) error {
+	ctx = s.scope(ctx)
 	if callerTenant := tenant.FromContext(ctx); !tenant.IsSystemTenant(callerTenant) {
 		return &service.CompactSystemOnlyError{TenantID: callerTenant}
 	}
@@ -226,6 +230,7 @@ func (s *namespacedMVCCService) CurrentRevision(ctx context.Context) (int64, err
 // prefix+key, so neither can name another tenant's or database's keyspace.
 // Returned plan keys are stripped back to the caller's view.
 func (s *namespacedMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	ctx = s.scope(ctx)
 	if err := service.ValidateRestoreRequest(req); err != nil {
 		return nil, err
 	}

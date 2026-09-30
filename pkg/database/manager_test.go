@@ -839,6 +839,11 @@ func TestManager_Drop_CloseError(t *testing.T) {
 	}
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-drop-db")
 	mgr.databases.Store("fail-drop-db", db)
+	// The catalog directory a real database has, so the drop gets past
+	// persisting its local fence to the close under test.
+	if err := os.MkdirAll(mgr.dbDir("fail-drop-db"), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
 	err := mgr.Drop(context.Background(), "fail-drop-db")
 	if err == nil {

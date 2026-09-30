@@ -291,8 +291,8 @@ func TestApplyCompositeNamespacesTheCollectionEngines(t *testing.T) {
 	reg := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID).(*restServiceRegistry)
 	ctx := context.Background()
 
-	a := reg.applyComposite(svcs, "tenant-a", "appdb")
-	b := reg.applyComposite(svcs, "tenant-b", "appdb")
+	a := reg.applyComposite(svcs, "tenant-a", "appdb", databaseFence{})
+	b := reg.applyComposite(svcs, "tenant-b", "appdb", databaseFence{})
 
 	if _, err := a.Collection.CreateCollection(ctx, &service.CreateCollectionRequest{
 		Database: "appdb", Name: "users",

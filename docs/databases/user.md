@@ -138,7 +138,11 @@ qrdb database drop scratch
 ```
 
 Creating a database under a name you dropped gives you an empty one. It does
-not pick up anything the old database left.
+not pick up anything the old database left — including writes that were still
+in flight when the drop began: those are refused with "database is being
+dropped" rather than stored.
+
+The default database, `system`, cannot be dropped.
 
 ## Troubleshooting
 
@@ -155,6 +159,15 @@ intended behaviour: a drop that cannot reclaim the database's data does not
 report success and does not remove anything. Fix what it reported — most often
 a store or a per-tenant volume that is unreachable, or a sealed barrier — and
 run the same command again.
+
+**A write failed with "database is being dropped".** The database was dropped
+while the write was on its way, and the write was refused so it could not
+reappear in the dropped database. Nothing was stored. If you meant to keep
+writing, create the database again.
+
+**`qrdb database drop` refused the `system` database.** The default database
+holds the bootstrap records every request falls back to and cannot be
+dropped.
 
 **`qrdb database drop` says a drop is already in progress.** Another drop of
 the same database has not finished. Wait for it rather than re-running; only

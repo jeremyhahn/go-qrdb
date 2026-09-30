@@ -55,10 +55,11 @@ type StatusType = database.StatusType
 
 // StatusType constants.
 const (
-	StatusOpen   = database.StatusOpen
-	StatusClosed = database.StatusClosed
-	StatusError  = database.StatusError
-	StatusSealed = database.StatusSealed
+	StatusOpen     = database.StatusOpen
+	StatusClosed   = database.StatusClosed
+	StatusError    = database.StatusError
+	StatusSealed   = database.StatusSealed
+	StatusDropping = database.StatusDropping
 )
 
 // ---------------------------------------------------------------------------
@@ -207,6 +208,13 @@ type DBAlreadyExistsError = database.AlreadyExistsError
 
 // DBNotFoundError is returned when a database is not found.
 type DBNotFoundError = database.NotFoundError
+
+// DBDroppingError is returned when an operation resolves a database whose
+// Drop is in flight (go-qrdb#482). Transports map it to a retryable status
+// (REST 409 / gRPC and QUIC Aborted): the database exists and is not being
+// merely refused, so an SDK caller distinguishes it from DBNotFoundError to
+// retry after the drop finishes, or after a failed one restores it.
+type DBDroppingError = database.DroppingError
 
 // DBNotOpenError is returned when an operation requires an open database.
 type DBNotOpenError = database.NotOpenError

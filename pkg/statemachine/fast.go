@@ -178,6 +178,10 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 		protocol.OpCompareAndDelete: f.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   f.handleCompareAndSwap,
 
+		// A write wrapped with a guard evaluated at this entry's log
+		// position -- the drop fence rides on it. See guarded_write.go.
+		protocol.OpGuarded: f.handleGuarded,
+
 		// MVCC
 		protocol.OpMVCCPut:     f.handleMVCCPut,
 		protocol.OpMVCCDelete:  f.handleMVCCDelete,

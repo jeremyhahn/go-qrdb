@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -78,6 +80,15 @@ func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *te
 // blocks until all nodes are healthy and a leader has been elected.
 func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]int, []string, *testCA) {
 	t.Helper()
+	adminPorts, dataDirs, ca, _ := startThreeNodeClusterLogged(t, smType, extraArgs...)
+	return adminPorts, dataDirs, ca
+}
+
+// startThreeNodeClusterLogged is startThreeNodeCluster that also returns
+// each node's captured log output, for assertions on what a node reported.
+func startThreeNodeClusterLogged(t *testing.T, smType string, extraArgs ...string) ([]int, []string, *testCA, []*nodeLog) {
+	t.Helper()
+	logs := make([]*nodeLog, 3)
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
 	ports := allocatePorts(t, 3)
@@ -109,7 +120,8 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 		args = append(args, extraArgs...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
-		startNode(t, bin, args, prefix)
+		logs[i] = &nodeLog{}
+		logs[i].cmd = startNode(t, bin, args, prefix, logs[i])
 	}
 
 	for i, dir := range dataDirs {
@@ -123,7 +135,30 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 	// the ReadIndex pipeline is operational.
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
-	return adminPorts, dataDirs, ca
+	return adminPorts, dataDirs, ca, logs
+}
+
+// nodeLog captures a node's log output for assertions. It is safe for the
+// daemon's output goroutine to write while a test reads.
+type nodeLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+
+	// cmd is the node's process, for tests that stop it.
+	cmd *exec.Cmd
+}
+
+func (l *nodeLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// Contains reports whether the node has logged s.
+func (l *nodeLog) Contains(s string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Contains(l.buf.String(), s)
 }
 
 // ---------------------------------------------------------------------------

@@ -241,6 +241,14 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	if err != nil {
 		return nil, err
 	}
+	// The database's catalog record, resolved ONCE: the same lookup refuses
+	// a database being dropped and supplies the incarnation its views are
+	// guarded by, so no drop can start between the two (see
+	// managedDatabase).
+	managed, err := r.managedDatabase(db)
+	if err != nil {
+		return nil, err
+	}
 
 	// A sealed database fails closed on every engine, whichever store serves
 	// it. This is checked here, ahead of the isolation branches, because most
@@ -270,7 +278,11 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		if err != nil {
 			return nil, err
 		}
-		svcs := r.applyQuota(r.applyComposite(base, tenantID, db), tenantID, info)
+		fence, err := r.sharedStoreFence(tenantID, db, managed)
+		if err != nil {
+			return nil, err
+		}
+		svcs := r.applyQuota(r.applyComposite(base, tenantID, db, fence), tenantID, info)
 		svcs.Placement = service.StorePlacementNode
 		return svcs, nil
 	}
@@ -306,7 +318,33 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			}
 			return nil, err
 		}
-		svcs := r.applyQuota(base, tenantID, info)
+		// Every write to the dedicated shard carries the database's drop
+		// fence guard, and DROP DATABASE writes the fence into this same
+		// shard before tearing it down (KeyspaceReclaimService.
+		// FenceDatabaseKeyspace), so a write resolved before the drop and
+		// applied after the fence is refused by the shard's own state
+		// machine. The replicated placement marker RaftBackendFactory checks
+		// at resolution refuses new handles; the guard is what refuses the
+		// ones already in hand.
+		//
+		// The views are wrapped without a namespace (the shard IS the
+		// database's keyspace), and Watch and Lease are left exactly as
+		// RaftBackendFactory built them. Collection keeps the instance the
+		// factory built -- routing it through the composite cache keyed by
+		// the empty prefix every raft database shares would thrash that
+		// cache -- and carries the guard on the context of its writes.
+		// The shard is the incarnation: a database created again under
+		// this name gets a new shard, so the guard carries no incarnation
+		// and the marker is absent while the database is live.
+		fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.raftBackend.RefuseIfDropping(tenantID, db) })
+		if err != nil {
+			return nil, err
+		}
+		fenced := fence.apply(base, "", false)
+		if base.Collection != nil {
+			fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
+		}
+		svcs := r.applyQuota(fenced, tenantID, info)
 		svcs.Placement = service.StorePlacementShard
 		return svcs, nil
 	}
@@ -335,7 +373,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
-	return r.resolveShared(tenantID, db, info)
+	return r.resolveShared(tenantID, db, info, managed)
 }
 
 // resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped
@@ -345,7 +383,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 // the existence check reads this NODE's catalog, which a node other than the
 // one that created the database does not hold -- while the shared store
 // itself is replicated and reachable from every node.
-func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
+func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.TenantInfo, managed managedRecord) (*DatabaseServices, error) {
 	svcs := r.dbReg.GetOrDefault(db)
 	if svcs == nil {
 		svcs = r.dbReg.Default()
@@ -359,7 +397,11 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 	// which yields "system/system/". Every engine is wrapped so that keys are
 	// transparently scoped, which keeps each database's keyspace disjoint from
 	// every other database and every other tenant.
-	out := r.applyQuota(r.applyComposite(svcs, tenantID, db), tenantID, info)
+	fence, err := r.sharedStoreFence(tenantID, db, managed)
+	if err != nil {
+		return nil, err
+	}
+	out := r.applyQuota(r.applyComposite(svcs, tenantID, db, fence), tenantID, info)
 	out.Placement = service.StorePlacementShared
 	return out, nil
 }
@@ -525,6 +567,42 @@ func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 	return r.dbReg.Get(db) != nil
 }
 
+// refuseIfDropping fails closed when db has a Manager.Drop fence set,
+// closing a window every isolation branch below does NOT otherwise cover:
+// resolve's dbReg.GetOrDefault short-circuit returns a pre-registered
+// service bundle (e.g. the default database, or an embedding's own
+// registrations) WITHOUT ever calling databaseExists/Manager.Get, so a
+// database fenced mid-drop but still pre-registered would otherwise resolve
+// successfully for the rest of that database's teardown (go-qrdb#482).
+//
+// It is a no-op for the unscoped ("") database name and when no
+// database.Manager is wired in (an embedding with no local catalog to
+// race against). A database.Manager.Get error OTHER than DroppingError --
+// typically NotFoundError -- is deliberately NOT surfaced here: this check
+// exists only to enforce the fence, not to duplicate the not-found handling
+// every isolation branch below already owns. That distinction matters most
+// for IsolationRaft: a dedicated-raft database's local catalog entry is
+// authoritatively absent on every node except the one that created it (see
+// the IsolationRaft branch's own comment), so NotFoundError here has to
+// mean "no local fence information available" and fall through, never
+// "refuse". A dedicated-raft database's cluster-wide refusal comes from its
+// replicated placement marker (RaftBackendFactory.Services) instead.
+//
+// This is a RESOLUTION-time refusal: it keeps new handles from being handed
+// out. Handles already in hand are refused by the store fence their writes
+// carry (see databaseFence), not by this check.
+func (r *restServiceRegistry) refuseIfDropping(db string) error {
+	if db == "" || r.dbManager == nil {
+		return nil
+	}
+	_, err := r.dbManager.Get(db)
+	var dropping *database.DroppingError
+	if errors.As(err, &dropping) {
+		return dropping
+	}
+	return nil
+}
+
 // resolveTenant looks up the tenant metadata (when a tenant service is
 // configured) and validates the barrier state. It returns the effective
 // IsolationType for the tenant and, when available, the tenant's metadata
@@ -627,6 +705,12 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // tenant.ComposeNamespace, so every (tenant, db) pair — including the
 // bootstrap (system, "system") pair — is wrapped and isolated.
 //
+// Every write-capable view also carries fence.guard, the database's drop
+// fence guard (see dbGuard): each write it proposes is refused by the state
+// machine once DROP DATABASE has fenced the database -- or the name has been
+// created again -- in the same Raft command as the write. The vector view, whose writes are not Raft
+// proposals, is given fence.vectorCheck instead (see dropFence).
+//
 // Collection is REBUILT over the wrapped engines rather than copied. This
 // comment previously claimed the opposite — that Collection "is intentionally
 // not wrapped: it composes the namespaced KV and MVCC engines below it rather
@@ -638,17 +722,134 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // under prefix isolation two tenants naming the same database and collection
 // wrote the same "__col:{database}:{collection}/{id}" keys. A service inherits
 // isolation from the engines it HOLDS, never from the engines its neighbours
-// in the struct hold. See buildCompositeCollectionService.
-func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, db string) *DatabaseServices {
+// in the struct hold. See buildCompositeCollectionService. Because it is
+// built over the guarded views, every collection write carries the fence
+// guard too.
+func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, db string, fence databaseFence) *DatabaseServices {
 	prefix := tenant.ComposeNamespace(tenantID, db)
-	out := *svcs
-	if svcs.KV != nil {
-		out.KV = &namespacedKVService{inner: svcs.KV, prefix: prefix}
+	out := fence.apply(svcs, prefix, true)
+	if svcs.Watch != nil {
+		out.Watch = newNamespacedWatchService(svcs.Watch, prefix)
 	}
-	// The lease view is built first: the MVCC view attaches only leases it
-	// owns.
+	out.Collection = r.collections.getOrBuild(svcs, out, tenantID, db, fence.guard)
+	return out
+}
+
+// databaseFence is what a database's views need to refuse writes once DROP
+// DATABASE has fenced it: the write guard every Raft write carries, and the
+// check the vector view -- whose writes are not Raft proposals -- runs
+// before it writes.
+type databaseFence struct {
+	guard       service.WriteGuard
+	vectorCheck func() error
+}
+
+// newDatabaseFence builds the fence for incarnation of (tenantID, db). The
+// default database cannot be dropped (database.CheckDroppable), so its views
+// carry no guard and its writes pay no extra read.
+func newDatabaseFence(tenantID, db, incarnation string, vectorCheck func() error) (databaseFence, error) {
+	if db == "" || db == tenant.DefaultDatabase {
+		return databaseFence{}, nil
+	}
+	guard, err := service.DropFenceGuard(tenantID, db, incarnation)
+	if err != nil {
+		return databaseFence{}, err
+	}
+	return databaseFence{guard: guard, vectorCheck: vectorCheck}, nil
+}
+
+// sharedStoreFence builds the fence for a database whose data is in a store
+// it shares with other databases (the system store, or a volume tenant's
+// Host): the guard names the incarnation of managed, the catalog record
+// resolve looked up once (managedDatabase). A name the manager has never
+// held -- a pre-registered service bundle an embedding manages itself --
+// cannot be dropped through it and gets no guard; a name this node dropped
+// is refused.
+func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed managedRecord) (databaseFence, error) {
+	if managed.db == nil {
+		if managed.droppedHere {
+			// The store this catalog governs holds the name's tombstone: a
+			// view of it would be unguarded over a reclaimed keyspace.
+			return databaseFence{}, managed.notFound
+		}
+		return databaseFence{}, nil
+	}
+	return newDatabaseFence(tenantID, db, managed.db.Incarnation(), func() error { return r.refuseIfDropping(db) })
+}
+
+// managedDatabase returns db's catalog record, or nil for a name the
+// database.Manager has never held (and nil for the unscoped name, or when
+// no manager is wired in).
+//
+// It is resolve's ONE catalog lookup, and that is the point: the refusal of
+// a database being dropped and the incarnation its views are guarded by come
+// from the same record. Two lookups -- a refusal check, then a separate
+// incarnation read -- let a drop that started between them produce a view
+// with no guard at all, writing into a keyspace the drop reclaims.
+//
+// Every error is returned: *database.DroppingError for a database being
+// dropped, and anything else the lookup reports. A missing record reports
+// whether this node dropped the name (database.Manager.WasDropped): for a
+// database in a store this node's catalog governs, that is a database that
+// no longer exists, not a name it never held.
+func (r *restServiceRegistry) managedDatabase(db string) (managedRecord, error) {
+	if db == "" || r.dbManager == nil {
+		return managedRecord{}, nil
+	}
+	dbase, err := r.dbManager.Get(db)
+	if err == nil {
+		return managedRecord{db: dbase}, nil
+	}
+	var notFound *database.NotFoundError
+	if !errors.As(err, &notFound) {
+		return managedRecord{}, err
+	}
+	dropped, derr := r.dbManager.WasDropped(db)
+	if derr != nil {
+		return managedRecord{}, derr
+	}
+	return managedRecord{droppedHere: dropped, notFound: notFound}, nil
+}
+
+// managedRecord is what managedDatabase found for a name.
+type managedRecord struct {
+	// db is the catalog record; nil when the manager holds none.
+	db *database.Database
+
+	// droppedHere reports that the manager holds no record because this
+	// node dropped the name, and notFound is the lookup's refusal.
+	droppedHere bool
+	notFound    *database.NotFoundError
+}
+
+// apply returns a copy of svcs whose write-capable engines are namespaced
+// views under prefix carrying f. An empty prefix is a pass-through view: a
+// dedicated-raft database's keyspace is its own shard, so it needs the
+// guard and not the namespace. wrapLease selects whether Lease is wrapped in
+// a namespaced view carrying the ownership check the namespaced MVCC view
+// consults -- see the doc comment above the lease-view construction below.
+func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bool) *DatabaseServices {
+	out := *svcs
+	g := dbGuard{guard: f.guard}
+	if svcs.KV != nil {
+		// A struct literal, not newNamespacedKVService: prefix is already
+		// the full "<tenant>/<db>/" namespace (or empty), and that
+		// constructor appends the separator itself.
+		out.KV = &namespacedKVService{dbGuard: g, inner: svcs.KV, prefix: prefix}
+	}
+	// The lease view is built first, over the RAW (unwrapped) lease and MVCC
+	// services -- a lease attach is a KV/MVCC write, which the namespaced MVCC
+	// view below guards, so the lease view itself carries no guard -- so the
+	// namespaced MVCC view can attach it as the ownership check that confines
+	// lease attachment to leases this namespace owns.
+	//
+	// wrapLease is false only for a dedicated-raft database's empty-prefix
+	// call (applyComposite's IsolationRaft branch): the shard IS the
+	// database's keyspace, so Watch and Lease are left exactly as
+	// RaftBackendFactory built them, and the namespaced MVCC view gets no
+	// ownership check over them.
 	var leases *namespacedLeaseService
-	if svcs.Lease != nil {
+	if wrapLease && svcs.Lease != nil {
 		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
 		out.Lease = leases
 	}
@@ -657,27 +858,36 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 		if leases != nil {
 			owned = leases
 		}
-		out.MVCC = newNamespacedMVCCService(svcs.MVCC, prefix, owned)
+		mvcc := newNamespacedMVCCService(svcs.MVCC, prefix, owned)
+		mvcc.dbGuard = g
+		mvcc.namespacedKVService.dbGuard = g
+		out.MVCC = mvcc
 	}
 	if svcs.Batch != nil {
-		out.Batch = newNamespacedBatchService(svcs.Batch, prefix)
+		batch := newNamespacedBatchService(svcs.Batch, prefix)
+		batch.dbGuard = g
+		out.Batch = batch
 	}
 	if svcs.Transaction != nil {
-		out.Transaction = newNamespacedTransactionService(svcs.Transaction, prefix)
+		txn := newNamespacedTransactionService(svcs.Transaction, prefix)
+		txn.dbGuard = g
+		out.Transaction = txn
 	}
 	if svcs.TimeSeries != nil {
-		out.TimeSeries = newNamespacedTimeSeriesService(svcs.TimeSeries, prefix)
+		ts := newNamespacedTimeSeriesService(svcs.TimeSeries, prefix)
+		ts.dbGuard = g
+		out.TimeSeries = ts
 	}
 	if svcs.Index != nil {
-		out.Index = newNamespacedIndexService(svcs.Index, prefix)
-	}
-	if svcs.Watch != nil {
-		out.Watch = newNamespacedWatchService(svcs.Watch, prefix)
+		idx := newNamespacedIndexService(svcs.Index, prefix)
+		idx.dbGuard = g
+		out.Index = idx
 	}
 	if svcs.Vector != nil {
-		out.Vector = newNamespacedVectorService(svcs.Vector, prefix)
+		vec := newNamespacedVectorService(svcs.Vector, prefix)
+		vec.dropFence = dropFence{check: f.vectorCheck}
+		out.Vector = vec
 	}
-	out.Collection = r.collections.getOrBuild(svcs, &out, tenantID, db)
 	return &out
 }
 

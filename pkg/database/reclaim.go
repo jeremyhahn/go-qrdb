@@ -47,6 +47,25 @@ type KeyspaceReclaimer interface {
 	// serving it. An empty tenantID means the system tenant, matching
 	// tenant.ComposeNamespace.
 	ReclaimDatabaseKeyspace(ctx context.Context, tenantID, database string) error
+
+	// FenceDatabaseKeyspace fences the (tenantID, database) database in the
+	// Raft group that holds its data, before any of it is reclaimed. Every
+	// write to the database carries a guard naming the database's live
+	// incarnation, evaluated by the state machine in the same command as the
+	// write, and the fence is a value no incarnation matches -- so once this
+	// returns no write the fence did not precede can land, including one
+	// already proposed. It must be idempotent: a retried drop fences an
+	// already-fenced database.
+	FenceDatabaseKeyspace(ctx context.Context, tenantID, database string) error
+
+	// UnfenceDatabaseKeyspace makes incarnation the live incarnation of the
+	// (tenantID, database) database in the store holding its data. Create
+	// calls it with a new incarnation just before the database becomes
+	// resolvable -- which is what keeps a handle to an earlier incarnation
+	// of the name refused -- and Drop calls it with the database's own
+	// incarnation to roll a failed drop back. It must be idempotent, and
+	// marking a store that does not exist yet is success.
+	UnfenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation string) error
 }
 
 // WithKeyspaceReclaimer sets the KeyspaceReclaimer a Drop uses to reclaim a

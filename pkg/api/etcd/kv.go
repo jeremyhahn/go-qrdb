@@ -109,6 +109,13 @@ func (s *kvServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.PutResponse
 		prevKV, _ = s.mvccSvc.GetRevision(ctx, string(req.Key))
 	}
 
+	// An etcd put answers with the write's revision; a store without
+	// revision history has none, and answering revision 0 would tell the
+	// client its write is older than every other.
+	if !keepsRevisionHistory(s.mvccSvc) {
+		return nil, status.Error(codes.FailedPrecondition, (&RevisionHistoryRequiredError{}).Error())
+	}
+
 	// Use PutWithLease for all puts (lease 0 = no lease).
 	kv, err := s.mvccSvc.PutWithLease(ctx, string(req.Key), req.Value, req.Lease)
 	if err != nil {
@@ -308,4 +315,14 @@ func compareInt64(a, b int64) int {
 		return 1
 	}
 	return 0
+}
+
+// keepsRevisionHistory reports whether svc's state machine keeps MVCC
+// revision history. A service that does not say is taken at its word as
+// the MVCC service it is typed as.
+func keepsRevisionHistory(svc service.MVCCKVServicer) bool {
+	if r, ok := svc.(service.RevisionHistoryReporter); ok {
+		return r.KeepsRevisionHistory()
+	}
+	return true
 }

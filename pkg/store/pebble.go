@@ -138,6 +138,7 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpTransaction:      pebbleHandleTransaction,
 		protocol.OpCompareAndDelete: pebbleHandleCompareAndDelete,
 		protocol.OpCompareAndSwap:   pebbleHandleCompareAndSwap,
+		protocol.OpGuarded:          pebbleHandleGuarded,
 
 		// Lease operations.
 		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
@@ -155,6 +156,54 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpTSDeleteSeries: s.pebbleHandleTSDeleteSeries,
 		protocol.OpTSSetRetention: s.pebbleHandleTSSetRetention,
 	}
+}
+
+// dispatch applies one complete, non-empty command into batch through the
+// handler table. It is the single dispatch point for both a log entry and the
+// inner command of an OpGuarded entry, so the two can never disagree about
+// which opcodes exist or how their payloads are framed.
+func (s *PebbleStateMachine) dispatch(batch *pebble.Batch, cmd []byte) (sm.Result, []pebbleNotification, error) {
+	op := cmd[0]
+	handler, ok := s.updateHandlers[op]
+	if !ok {
+		return sm.Result{}, nil, &protocol.UnknownOpError{Op: op}
+	}
+	// Base KV handlers decode through kv.DecodeCommand and therefore need the
+	// full command including its op byte; extended protocol handlers take the
+	// payload with the op byte stripped. The split is by decoder, not by
+	// numeric range: kv.OpPutIfAbsent sorts above kv.OpDelete but is still a
+	// base KV command.
+	payload := cmd
+	if !isBaseKVOp(op) {
+		payload = cmd[1:]
+	}
+	return handler(s, batch, payload)
+}
+
+// pebbleHandleGuarded applies an OpGuarded entry: the guard is read through
+// the indexed batch -- the read pebbleHandleCompareAndSwap uses, which sees
+// the writes of earlier entries in the same Update -- and the inner command
+// is applied through dispatch only when every compare holds. A refused guard
+// is a successful application that changes nothing (see protocol.OpGuarded).
+func pebbleHandleGuarded(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	inner, refusal, err := protocol.OpenGuarded(payload, func(key []byte) ([]byte, error) {
+		val, gerr := s.getKeyInBatch(batch, key)
+		if gerr != nil {
+			var notFound *kv.KeyNotFoundError
+			if errors.As(gerr, &notFound) {
+				return nil, nil
+			}
+			return nil, gerr
+		}
+		return val, nil
+	})
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if refusal != nil {
+		return sm.Result{Data: refusal}, nil, nil
+	}
+	return s.dispatch(batch, inner)
 }
 
 // SetWatchHub attaches a watch hub to the store. When set, the store
@@ -303,26 +352,7 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			return &protocol.InvalidCommandError{Reason: "empty command"}
 		}
 
-		var result sm.Result
-		var notifs []pebbleNotification
-		var err error
-
-		op := e.Cmd[0]
-		handler, ok := s.updateHandlers[op]
-		if ok {
-			// Base KV handlers decode through kv.DecodeCommand and therefore
-			// need the full command including its op byte; extended protocol
-			// handlers take the payload with the op byte stripped. The split is
-			// by decoder, not by numeric range: kv.OpPutIfAbsent sorts above
-			// kv.OpDelete but is still a base KV command.
-			payload := e.Cmd
-			if !isBaseKVOp(op) {
-				payload = e.Cmd[1:]
-			}
-			result, notifs, err = handler(s, batch, payload)
-		} else {
-			err = &protocol.UnknownOpError{Op: op}
-		}
+		result, notifs, err := s.dispatch(batch, e.Cmd)
 
 		// An opcode this state machine has no handler for is a refusal, not a
 		// fault: it is answered in the result payload rather than halting Apply
@@ -1279,7 +1309,7 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	// application error rather than returned as a Go error: returning an error
 	// from Update() would stall the Raft apply loop for every client.
 	for _, dc := range txn.Compares {
-		if dc.Target == compareTargetCreateRevision || dc.Target == compareTargetModRevision {
+		if dc.Target == protocol.CompareTargetCreateRevision || dc.Target == protocol.CompareTargetModRevision {
 			return statemachine.CapabilityResult("transaction: create_revision/mod_revision compares require " +
 				"an MVCC state machine; this node runs a non-MVCC backend (set raft.sm_type: mvcc). " +
 				"Compare on value or version instead."), nil, nil
@@ -1327,85 +1357,19 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	return sm.Result{Value: uint64(len(ops)), Data: data[:]}, notifs, nil
 }
 
-// Transaction compare targets on the wire. The values mirror lock.CompareTarget
-// (CompareVersion, CompareCreateRevision, CompareModRevision, CompareValue in
-// iota order); they are duplicated here as untyped byte constants because
-// protocol.DecodedCompare carries Target as a raw byte and pkg/store does not
-// import pkg/lock.
-const (
-	compareTargetVersion        byte = 0
-	compareTargetCreateRevision byte = 1
-	compareTargetModRevision    byte = 2
-	compareTargetValue          byte = 3
-)
-
 // pebbleEvaluateCompare evaluates a single transaction compare against the
 // current PebbleDB state. This state machine keeps no MVCC revisions, so only
 // value and version comparisons are meaningful: version degrades honestly (0
 // when the key is absent, 1 when present), while create/mod-revision compares
 // are rejected up front by pebbleHandleTransaction and therefore never reach
-// this function. They fall through to the fail-closed default rather than
-// silently comparing every key against revision 0.
+// this function. protocol.CompareHolds fails them closed rather than silently
+// comparing every key against revision 0 if one ever arrives by another path.
 func pebbleEvaluateCompare(s *PebbleStateMachine, batch *pebble.Batch, dc protocol.DecodedCompare) bool {
 	val, err := s.getKeyInBatch(batch, dc.Key)
-
-	// Build the target value for comparison.
-	switch dc.Target {
-	case compareTargetValue:
-		if err != nil {
-			// Key does not exist: only equal-to-zero-length succeeds.
-			return (dc.Result == 0) && len(dc.Value) == 0
-		}
-		cmp := bytes.Compare(val, dc.Value)
-		return evaluateCompareResult(dc.Result, cmp)
-
-	case compareTargetVersion:
-		// Without MVCC, version is 0 if key doesn't exist, 1 if it does.
-		var version int64
-		if err == nil {
-			version = 1
-		}
-		return evaluateCompareInt(dc.Result, version, dc.Version)
-
-	default:
-		// Includes compareTargetCreateRevision and compareTargetModRevision,
-		// which pebbleHandleTransaction rejects before evaluation. Fail closed
-		// if one ever reaches here by another path.
-		return false
+	if err != nil {
+		val = nil
 	}
-}
-
-// evaluateCompareResult maps a comparison result (from bytes.Compare) to
-// the expected compare result byte.
-func evaluateCompareResult(result byte, cmp int) bool {
-	switch result {
-	case 0: // Equal
-		return cmp == 0
-	case 1: // Greater
-		return cmp > 0
-	case 2: // Less
-		return cmp < 0
-	case 3: // NotEqual
-		return cmp != 0
-	default:
-		return false
-	}
-}
-
-// evaluateCompareInt compares two int64 values using the compare result byte.
-func evaluateCompareInt(result byte, actual, expected int64) bool {
-	switch result {
-	case 0: // Equal
-		return actual == expected
-	case 1: // Greater
-		return actual > expected
-	case 2: // Less
-		return actual < expected
-	case 3: // NotEqual
-		return actual != expected
-	default:
-		return false
-	}
+	return protocol.CompareHolds(dc, val)
 }
 
 // pebbleOpSupported reports whether pebbleExecuteOp can execute op. It is the

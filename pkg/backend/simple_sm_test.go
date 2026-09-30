@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -218,8 +219,10 @@ func TestSimpleStateMachine_Update_InvalidCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error for invalid command, got %v", err)
 	}
-	if results[0].Value != 1 {
-		t.Fatalf("expected failure result for invalid command, got %d", results[0].Value)
+	// Refused in the result, where a proposer reads a refusal: Value:1 alone
+	// is what a successful write looks like to KVService.
+	if _, refused := protocol.DecodeAppError(results[0].Data); !refused {
+		t.Fatalf("expected an application-error refusal for an invalid command, got %+v", results[0])
 	}
 }
 
@@ -234,8 +237,39 @@ func TestSimpleStateMachine_Update_InvalidCommand_EmptyCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error for nil command, got %v", err)
 	}
-	if results[0].Value != 1 {
-		t.Fatalf("expected failure result for nil command, got %d", results[0].Value)
+	if _, refused := protocol.DecodeAppError(results[0].Data); !refused {
+		t.Fatalf("expected an application-error refusal for a nil command, got %+v", results[0])
+	}
+}
+
+// SimpleStateMachine does not serve guarded writes (protocol.OpGuarded). A
+// guarded write it receives must be refused, never acknowledged unwritten.
+func TestSimpleStateMachine_Update_GuardedWriteIsRefused(t *testing.T) {
+	ssm := newTestSSM()
+	defer func() { _ = ssm.Close(context.Background()) }()
+
+	c, err := protocol.EncodeCompare([]byte("fence"), protocol.CompareTargetValue, protocol.CompareResultEqual, nil, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("EncodeCompare: %v", err)
+	}
+	put, err := kv.EncodePut([]byte("k"), []byte("v"))
+	if err != nil {
+		t.Fatalf("EncodePut: %v", err)
+	}
+	cmd, err := protocol.EncodeGuarded([][]byte{c}, put)
+	if err != nil {
+		t.Fatalf("EncodeGuarded: %v", err)
+	}
+	results := make([]sm.Result, 1)
+	if err := ssm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	msg, refused := protocol.DecodeAppError(results[0].Data)
+	if !refused {
+		t.Fatalf("a guarded write was acknowledged by a state machine that cannot evaluate it: %+v", results[0])
+	}
+	if msg == "" {
+		t.Fatal("the refusal must say why")
 	}
 }
 

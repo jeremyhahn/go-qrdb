@@ -114,7 +114,7 @@ func (m *captureTSSvc) GetRetentionPolicy(_ string) (*timeseries.RetentionPolicy
 	return &timeseries.RetentionPolicy{}, nil
 }
 
-func (m *captureTSSvc) SetRetentionPolicy(_ string, _ *timeseries.RetentionPolicy) error {
+func (m *captureTSSvc) SetRetentionPolicy(_ context.Context, _ string, _ *timeseries.RetentionPolicy) error {
 	return nil
 }
 

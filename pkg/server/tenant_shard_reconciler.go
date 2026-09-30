@@ -354,14 +354,25 @@ func (r *TenantShardReconciler) maybeRestartPromotedLocal(ctx context.Context, p
 // ObserverReady -> Active (voter) transition, which only the shard's
 // current leader may perform.
 //
-// A concurrent scale-down that has already dropped this replica from the
-// placement table is tolerated: p is the pre-mutation snapshot already used
-// to call ensureStarted, so a stale Put here lands harmlessly — the
-// reconciler's next tick re-lists the current placement and reconciles from
-// it (last-writer-wins, matching the existing convention elsewhere in this
-// package).
+// A concurrent scale-down (or Drop, or another promotion) that has already
+// changed this placement entry since p was read is tolerated: the
+// CompareAndSwapPlacement below targets p exactly, so a stale write here is
+// declined rather than landing over newer state — the reconciler's next
+// tick re-lists the current placement and reconciles from it (matching the
+// existing lost-update convention elsewhere in this package, now enforced
+// rather than merely accepted).
 func (r *TenantShardReconciler) maybePromoteToObserverReady(ctx context.Context, p *placement.Placement) {
 	if r.joinObserver == nil {
+		return
+	}
+	if p.Dropping {
+		// A database mid-Drop is not scaled: promoting a member here would
+		// also overwrite the replicated fence with this stale, pre-Drop
+		// snapshot's Dropping=false, via the CompareAndSwapPlacement below
+		// racing the Drop's own SetDropping. Refusing outright, rather than
+		// relying on the CAS to merely decline, keeps this no-op cheap and
+		// avoids a log line for an outcome that recurs every tick until the
+		// drop completes.
 		return
 	}
 	local, ok := p.ReplicaForNode(r.selfNodeID)
@@ -384,11 +395,22 @@ func (r *TenantShardReconciler) maybePromoteToObserverReady(ctx context.Context,
 	updated := *p
 	updated.Replicas = replicas
 
-	if err := r.placement.Put(ctx, &updated); err != nil {
+	// CompareAndSwapPlacement, not Put: p is the exact snapshot this
+	// function read Dropping and Replicas from, so a swap declined because
+	// the entry changed since -- a concurrent Drop's fence, a scale, another
+	// promotion -- must never overwrite that newer state with this stale
+	// one. The next reconcile tick re-lists the current placement and
+	// retries from it, matching this package's existing last-writer-wins
+	// convention for lost updates.
+	swapped, err := r.placement.CompareAndSwapPlacement(ctx, p, &updated)
+	if err != nil {
 		r.logger.Warn("placement reconciler: failed to promote observer replica to observer-ready",
 			slog.String("tenant", p.TenantID),
 			slog.String("database", p.Database),
 			slog.Any("error", err))
+		return
+	}
+	if !swapped {
 		return
 	}
 	r.logger.Info("placement reconciler: observer replica caught up, awaiting leader voter promotion",
@@ -421,6 +443,13 @@ func (r *TenantShardReconciler) maybePromoteToObserverReady(ctx context.Context,
 // is safe to defer indefinitely.
 func (r *TenantShardReconciler) maybePromoteReadyObservers(ctx context.Context, p *placement.Placement) {
 	if r.promoter == nil {
+		return
+	}
+	if p.Dropping {
+		// See the identical guard in maybePromoteToObserverReady: a database
+		// mid-Drop is never promoted, and the CompareAndSwapPlacement below
+		// must never have the chance to overwrite the replicated fence with
+		// this stale, pre-Drop snapshot's Dropping=false.
 		return
 	}
 	local, ok := p.ReplicaForNode(r.selfNodeID)
@@ -458,11 +487,18 @@ func (r *TenantShardReconciler) maybePromoteReadyObservers(ctx context.Context, 
 
 	updated := *p
 	updated.Replicas = replicas
-	if err := r.placement.Put(ctx, &updated); err != nil {
+	// CompareAndSwapPlacement against p, the exact snapshot read above --
+	// see maybePromoteToObserverReady's identical comment on why a stale
+	// write must never win here.
+	swapped, err := r.placement.CompareAndSwapPlacement(ctx, p, &updated)
+	if err != nil {
 		r.logger.Warn("placement reconciler: failed to persist observer voter promotion",
 			slog.String("tenant", p.TenantID),
 			slog.String("database", p.Database),
 			slog.Any("error", err))
+		return
+	}
+	if !swapped {
 		return
 	}
 	r.logger.Info("placement reconciler: promoted observer replica(s) to voting member",

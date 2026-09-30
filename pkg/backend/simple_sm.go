@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -70,7 +71,14 @@ func (s *SimpleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 	for i := range entries {
 		cmd, err := kv.DecodeCommand(entries[i].Cmd)
 		if err != nil {
-			results[i] = sm.Result{Value: 1}
+			// A command this state machine cannot decode -- an extended
+			// protocol opcode, a guarded write (protocol.OpGuarded), or
+			// corrupt bytes -- applied nothing. That is reported as an
+			// application error in the result, the encoding every proposer
+			// reads a refusal from; the Value:1 this used to report is
+			// what a successful write looks like to KVService, so the
+			// write was acknowledged and silently dropped.
+			results[i] = sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorCorrupt, (&UndecodableCommandError{Err: err}).Error())}
 			continue
 		}
 

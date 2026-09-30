@@ -15,10 +15,14 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -82,4 +86,16 @@ func TestNodeServiceRegistry_ResolvesThroughServer(t *testing.T) {
 	if c, _ := r.current(); c == a {
 		t.Fatal("the registry was not rebuilt for a replaced server")
 	}
+}
+
+// The default database cannot be dropped through the embedded client, with
+// the same typed refusal every network transport returns.
+func TestNode_EmbeddedDropOfTheDefaultDatabaseIsRefused(t *testing.T) {
+	n := newStandaloneNodeForTX(t)
+	dbc := n.Client().Database()
+	require.NotNil(t, dbc)
+
+	err := dbc.DropDatabase(context.Background(), tenant.DefaultDatabase)
+	var refused *database.DefaultDatabaseDropError
+	require.True(t, errors.As(err, &refused), "DropDatabase(%q) error = %v (%T)", tenant.DefaultDatabase, err, err)
 }

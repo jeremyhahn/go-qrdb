@@ -82,6 +82,12 @@ type Member struct {
 
 	// Metadata carries optional descriptive key-value pairs.
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// Features names the cluster features the member's binary implements
+	// (see pkg/cluster/featuregate). A member registered by a binary that
+	// predates feature advertisement carries none, which is exactly what it
+	// supports.
+	Features []string `json:"features,omitempty"`
 }
 
 // MemberEventType distinguishes member join from member leave events.

@@ -58,6 +58,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -1142,73 +1143,15 @@ func runStart(f *startFlags) (err error) {
 	if len(f.databases) == 0 {
 		f.databases = qrdbconfig.DefaultConfig().Databases
 	}
-
-	// Create or open configured databases.
-	for _, dbCfg := range f.databases {
-		dCfg := database.DatabaseConfig{
-			Name:    dbCfg.Name,
-			Engine:  database.EngineType(dbCfg.Engine),
-			Backend: database.BackendType(dbCfg.Backend),
-			SQL:     databaseSQLConfig(dbCfg.SQL),
-		}
-		if _, err := dbManager.Create(dCfg); err != nil {
-			// Try opening if it already exists (idempotent startup).
-			var ae *database.AlreadyExistsError
-			if errors.As(err, &ae) {
-				if _, err := dbManager.Open(dbCfg.Name); err != nil {
-					return err
-				}
-				// The file declares the database's SQL settings: a
-				// database that already existed takes them too.
-				if dCfg.SQL != nil {
-					if err := dbManager.UpdateSQL(dbCfg.Name, dCfg.SQL); err != nil {
-						return err
-					}
-				}
-				continue
-			}
-			return err
-		}
+	if err := validateConfiguredDatabases(f); err != nil {
+		return err
 	}
 
-	// Ensure the SQL database exists when --sql-database is set and at
-	// least one SQL wire protocol is enabled. This covers the common case
-	// where the CLI flag specifies a database name that is not in the
-	// static Databases config list.
-	if f.sqlDatabase != "" && (f.enableMySQL || f.enablePgSQL) {
-		if _, err := dbManager.Get(f.sqlDatabase); err != nil {
-			var nfe *database.NotFoundError
-			if errors.As(err, &nfe) {
-				// Determine backend from the state machine type.
-				backend := database.BackendPebble
-				if f.smType == "memory" || f.smType == "concurrent" {
-					backend = database.BackendMemory
-				}
-				sqlCfg := database.DatabaseConfig{
-					Name:    f.sqlDatabase,
-					Engine:  database.EngineKV,
-					Backend: backend,
-					Protocol: database.ProtocolConfig{
-						MySQL:      f.enableMySQL,
-						PostgreSQL: f.enablePgSQL,
-					},
-				}
-				if _, err := dbManager.Create(sqlCfg); err != nil {
-					return err
-				}
-			} else {
-				return err
-			}
-		} else {
-			// Database already exists; ensure SQL protocols are enabled.
-			if err := dbManager.UpdateProtocol(f.sqlDatabase, database.ProtocolConfig{
-				MySQL:      f.enableMySQL,
-				PostgreSQL: f.enablePgSQL,
-			}); err != nil {
-				return err
-			}
-		}
-	}
+	// The configured databases -- and --sql-database -- are provisioned
+	// AFTER lifecycle.BuildServices below attaches the keyspace reclaimer
+	// to dbManager (provisionDatabases): a database created without one
+	// cannot clear a tombstone an earlier drop of its name left in the
+	// store, and would refuse every write.
 
 	// Register the signal handler before any blocking initialization
 	// (seal subsystem build, optional pre-host unseal wait, host
@@ -1363,6 +1306,10 @@ func runStart(f *startFlags) (err error) {
 			var svcHost service.Host
 			var rnode raftNode
 			var nodeCloser io.Closer
+			// featureGate decides when this host's Raft groups may be sent
+			// guarded writes; nil for a host with no transport, whose groups
+			// hold only this binary (see raftbackend.NewFeatureGate).
+			var featureGate *featuregate.Gate
 			if standalone {
 				localBackend := database.BackendPebble
 				if len(f.databases) > 0 && f.databases[0].Backend != "" {
@@ -1396,7 +1343,13 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				host = h
-				svcHost = newHostAdapter(host)
+				gate, gerr := raftbackend.NewFeatureGate(host, f.replicaID, shard.ShardKV)
+				if gerr != nil {
+					_ = shutdownNode(host)
+					return gerr
+				}
+				featureGate = gate
+				svcHost = newHostAdapter(host, raftbackend.WithFeatureGate(featureGate))
 				rnode = host
 				nodeCloser = host
 			}
@@ -1422,7 +1375,7 @@ func runStart(f *startFlags) (err error) {
 			// ReadIndex pipeline, so standalone uses it directly.
 			bootHost := svcHost
 			if host != nil {
-				bootHost = newBootstrapHostAdapter(newHostAdapter(host))
+				bootHost = newBootstrapHostAdapter(newHostAdapter(host, raftbackend.WithFeatureGate(featureGate)))
 			}
 			bootKVSvc := service.NewKVService(bootHost, shard.ShardKV)
 
@@ -1518,8 +1471,12 @@ func runStart(f *startFlags) (err error) {
 			authMethods := &middleware.AuthMethodVocabulary{}
 
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
-				AuthMethodVocabulary:      authMethods.IsAuthMethod,
-				Host:                      svcHost,
+				AuthMethodVocabulary: authMethods.IsAuthMethod,
+				Host:                 svcHost,
+				// The raft system shard runs --sm; a type without MVCC revision
+				// history (the default pebble) is declared so, rather than
+				// discovered from a failed read.
+				NoRevisionHistory:         host != nil && !lifecycle.StateMachineKeepsRevisionHistory(f.smType),
 				Profile:                   &profile,
 				WatchHub:                  watchHub,
 				BackupSink:                backupSink,
@@ -1555,6 +1512,45 @@ func runStart(f *startFlags) (err error) {
 					_ = svcNode.Stop(context.Background())
 				}
 			}()
+
+			// Provision the configured databases now that BuildServices has
+			// attached the keyspace reclaimer (see provisionDatabases). It is
+			// idempotent, so the in-process migration recycle that re-runs
+			// this body finds every database already present.
+			if err := provisionDatabases(bootCtx, f, dbManager, rnode); err != nil {
+				_ = shutdownNode(nodeCloser)
+				// A shutdown signal during the leader wait is a clean
+				// shutdown, as it is during the auth bootstrap below.
+				if sigCtx.Err() != nil {
+					slog.Info("database provisioning canceled by shutdown signal")
+					return nil
+				}
+				return err
+			}
+
+			// Refuse to run under a cluster that has activated a feature this
+			// binary lacks, then advertise this binary's features and start
+			// the gate. Provisioning above has already waited for the system
+			// shard's leader, which the activation read needs.
+			//
+			// gateCloser withdraws the advertisement. Every shutdown path closes
+			// it explicitly while the host is still up (see withdrawFeatures):
+			// the deferred close below runs after shutdownNode, against a
+			// closed host, and is only the backstop for an error return.
+			var gateCloser io.Closer = nopCloser{}
+			if host != nil {
+				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode)
+				if err != nil {
+					_ = shutdownNode(nodeCloser)
+					var unsupported *featuregate.UnsupportedFeatureError
+					if sigCtx.Err() != nil && !errors.As(err, &unsupported) {
+						slog.Info("feature gate start canceled by shutdown signal")
+						return nil
+					}
+					return err
+				}
+				defer func() { _ = gateCloser.Close() }()
+			}
 
 			// Unpack the services that the rest of this function references by name.
 			// The lifecycle Node owns lifecycle management (vector storage close, etc.);
@@ -1755,6 +1751,7 @@ func runStart(f *startFlags) (err error) {
 				SystemTenant:   tenant.SystemTenantID,
 				PlacementStore: svcNode.PlacementStore,
 				MultiplexLogDB: f.walMux,
+				FeatureGate:    featureGate,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -1971,7 +1968,7 @@ func runStart(f *startFlags) (err error) {
 			// into the narrow service.RaftHost interface; the SAME instance is shared
 			// by both services since it is stateless beyond the host reference.
 			if raftBackendReg != nil {
-				raftHostAdapter := &raftFollowerAdder{host: host}
+				raftHostAdapter := &raftFollowerAdder{host: host, gate: featureGate}
 				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
 					concrete.SetRaftHost(raftHostAdapter)
 				}
@@ -2330,6 +2327,9 @@ func runStart(f *startFlags) (err error) {
 				}
 				slog.Info("dynamic membership manager started",
 					"shard_id", f.shardID, "node_id", f.replicaID)
+				if dynamicMembershipStarted != nil {
+					dynamicMembershipStarted()
+				}
 			}
 
 			slog.Info("qrdbd node started, waiting for signals")
@@ -2344,6 +2344,7 @@ func runStart(f *startFlags) (err error) {
 						slog.Error("membership manager close failed", slog.Any("error", err))
 					}
 				}
+				withdrawFeatures(gateCloser)
 
 				// Clean up bootstrap servers and cert reloader.
 				if bootServers != nil {
@@ -2399,6 +2400,7 @@ func runStart(f *startFlags) (err error) {
 				// system host's stores, adopt the keyed root key, and signal the boot
 				// loop to re-initialize (the barrier comes back up sealed, pending
 				// operator unseal with the newly-set credential).
+				withdrawFeatures(gateCloser)
 				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, membershipMgr, bootCancel, sealSub)
 				// handleSystemMigration stopped svcNode to release its store locks
 				// for re-encryption; nil it so the deferred Stop above is skipped.
@@ -2835,15 +2837,7 @@ func startDynamicMembership(
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
 ) (*cluster.MembershipManager, error) {
-	tr, err := embedded.New(kvSvc, adminSvc,
-		embedded.WithMVCCService(mvccSvc),
-		embedded.WithLeaseService(leaseSvc),
-		embedded.WithWatchService(watchSvc),
-	)
-	if err != nil {
-		return nil, err
-	}
-	client, err := sdkgo.NewClient(tr)
+	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
 		return nil, err
 	}
@@ -2858,7 +2852,10 @@ func startDynamicMembership(
 	}
 
 	mgr, err := client.NewMembershipManager(
-		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints},
+		// Features: a node that registers here before it is a member is admitted
+		// only if it advertises what the cluster's groups use (see
+		// featuregate.Gate.AdmitReplica).
+		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
 	)
@@ -2869,6 +2866,28 @@ func startDynamicMembership(
 		return nil, err
 	}
 	return mgr, nil
+}
+
+// newEmbeddedClient builds an in-process (embedded) qrdb SDK client over the
+// live service layer: one lessor and one watch subsystem behind the data it
+// serves and the node registries (membership, feature advertisements) it
+// keeps.
+func newEmbeddedClient(
+	kvSvc service.KVServicer,
+	adminSvc service.AdminServicer,
+	mvccSvc service.MVCCKVServicer,
+	leaseSvc service.LeaseServicer,
+	watchSvc service.WatchServicer,
+) (*sdkgo.Client, error) {
+	tr, err := embedded.New(kvSvc, adminSvc,
+		embedded.WithMVCCService(mvccSvc),
+		embedded.WithLeaseService(leaseSvc),
+		embedded.WithWatchService(watchSvc),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return sdkgo.NewClient(tr)
 }
 
 // waitForSignal blocks until SIGINT or SIGTERM is received.
@@ -3792,8 +3811,24 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 	return nil
 }
 
-// waitForLeaderElection polls GetLeaderID until a leader is known.
+// waitForLeaderElection polls GetLeaderID until a leader is known, reporting
+// a failure as an auth-bootstrap step (see awaitLeader).
 func waitForLeaderElection(ctx context.Context, node raftNode, shardID uint64) error {
+	if err := awaitLeader(ctx, node, shardID); err != nil {
+		return &AuthBootstrapError{Step: "wait for leader", Err: err}
+	}
+	return nil
+}
+
+// leaderReporter is the slice of a Raft node awaitLeader polls.
+type leaderReporter interface {
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+}
+
+// awaitLeader polls GetLeaderID until shardID has a known leader, with a
+// capped backoff. It returns *LeaderElectionTimeoutError when none emerges
+// within its attempts, or the context's error.
+func awaitLeader(ctx context.Context, node leaderReporter, shardID uint64) error {
 	backoff := 50 * time.Millisecond
 	const maxAttempts = 30
 	for attempt := range maxAttempts {
@@ -3802,16 +3837,13 @@ func waitForLeaderElection(ctx context.Context, node raftNode, shardID uint64) e
 			return nil
 		}
 		if attempt == maxAttempts-1 {
-			return &AuthBootstrapError{
-				Step: "wait for leader",
-				Err:  &LeaderElectionTimeoutError{Attempts: maxAttempts},
-			}
+			return &LeaderElectionTimeoutError{Attempts: maxAttempts}
 		}
-		slog.Debug("auth bootstrap: waiting for leader election",
-			"attempt", attempt+1, "backoff", backoff)
+		slog.Debug("waiting for leader election",
+			"shard_id", shardID, "attempt", attempt+1, "backoff", backoff)
 		select {
 		case <-ctx.Done():
-			return &AuthBootstrapError{Step: "wait for leader", Err: ctx.Err()}
+			return ctx.Err()
 		case <-time.After(backoff):
 		}
 		backoff *= 2
@@ -3936,6 +3968,15 @@ var barrierUnsealed func()
 // is named for (go-qrdb#83).
 var volumePoolAttached func()
 
+// dynamicMembershipStarted is invoked once the dynamic membership manager has
+// registered this node and started. It is nil in production and set only by
+// tests.
+//
+// Registration runs after the server is listening, so a test that signals
+// when the port accepts can cancel it mid-flight and see the cancellation,
+// not the outcome it is named for.
+var dynamicMembershipStarted func()
+
 // sighupHandled is invoked after each SIGHUP has been processed. It is nil in
 // production and set only by tests.
 //
@@ -3968,6 +4009,21 @@ func handleSIGHUP(reloader *CertReloader, logger *slog.Logger) {
 // and from RequestState lifecycle management.
 type raftFollowerAdder struct {
 	host *quicraft.Host
+	gate *featuregate.Gate
+}
+
+var _ service.ReplicaAdmitter = (*raftFollowerAdder)(nil)
+
+// AdmitReplica refuses to add a replica of shardID on raftAddr when the node
+// does not advertise every feature the group uses (see
+// featuregate.Gate.AdmitReplica). DatabaseService and RebalanceService ask it
+// before they persist a placement change; AddFollowerNode and AddObserver ask
+// again before the config change, so no caller can add around it.
+func (a *raftFollowerAdder) AdmitReplica(shardID uint64, raftAddr string) error {
+	if a.gate == nil {
+		return nil
+	}
+	return a.gate.AdmitReplica(shardID, raftAddr)
 }
 
 // AddFollowerNode calls RequestAddNodeWithIdentity on the shared Raft host and blocks
@@ -3978,6 +4034,9 @@ type raftFollowerAdder struct {
 // The replica's host is an existing cluster node, so the identity committed
 // with it is the one go-quicraft already committed for that host.
 func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if err := a.AdmitReplica(shardID, raftAddr); err != nil {
+		return err
+	}
 	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
 	if err != nil {
 		return err
@@ -4006,6 +4065,9 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 // RequestAddNodeWithIdentity against this same, already-admitted replica ID -- go-quicraft
 // treats that as an observer -> voter promotion rather than a fresh add.
 func (a *raftFollowerAdder) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if err := a.AdmitReplica(shardID, raftAddr); err != nil {
+		return err
+	}
 	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
 	if err != nil {
 		return err

@@ -103,3 +103,21 @@ type PermissionDeniedError struct{}
 func (e *PermissionDeniedError) Error() string {
 	return "etcd: permission denied"
 }
+
+// AuthNotEnabledError is returned for all Auth service RPCs.
+type AuthNotEnabledError struct{}
+
+// Error returns a human-readable description.
+func (e *AuthNotEnabledError) Error() string {
+	return "etcd: authentication is not enabled"
+}
+
+// RevisionHistoryRequiredError refuses to serve the etcd API over a store
+// that keeps no MVCC revision history: every etcd answer carries a revision,
+// and such a store has none to give.
+type RevisionHistoryRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *RevisionHistoryRequiredError) Error() string {
+	return "etcd: the etcd API requires a state machine with MVCC revision history (raft.sm_type: mvcc)"
+}
