@@ -58,7 +58,11 @@ REST entries are paths, or method-qualified `METHOD /path` entries where
 one path serves several verbs. `officer-register` is `POST
 /v1/barrier/officers`, because `GET` on the same path is the officer list, and
 `recovery-officer-register` is `POST /v1/barrier/recovery/officers`.
-A path ending in `/` matches by prefix, and anything else matches exactly
+A path ending in `/` matches by prefix; a path with a `{name}` segment
+matches one non-empty path segment in that place, which is how the claim
+routes (`POST /v1/barrier/officers/{username}/claim/begin` and
+`.../complete`, and their recovery forms) are listed, so that
+`/v1/barrier/officers/revoke` is not admitted; anything else matches exactly
 (`sealedwindow.RESTEntryMatches`). REST additionally allowlists one
 transport-specific prefix with no transport-neutral verb
 (`sealedwindow.RESTExtra`): `/v1/cluster/`, the cluster peer key transport.
@@ -144,9 +148,10 @@ Never allowlisted, on any transport:
 - **rekey start and holder revocation** (`BarrierRekeyStart`,
   `BarrierOfficerRevoke` and their QUIC and MCP forms) — governance
   operations served post-unseal. On REST, `/v1/barrier/officers/revoke`
-  falls under the `/v1/barrier/officers/` claim prefix and so reaches its
-  handler while sealed; it is still gated by `seal:officer_revoke` and the SO
-  PIN, and a rekey of a sealed barrier is refused with `ErrSealed`.
+  sits beside the claim routes but is not on the allowlist: the claims are
+  listed as one-segment patterns rather than an `/v1/barrier/officers/`
+  prefix, so a sealed node answers the revocation 503 like any other
+  excluded route.
 - **enable-encryption** — the migration requires an unsealed data
   plane.
 - **holder list** (`GET /v1/barrier/officers`, `BarrierOfficerList`,

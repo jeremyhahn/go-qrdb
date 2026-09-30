@@ -3283,6 +3283,12 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   running ceremony service across (`ceremony.CeremonyService.Rebind` moves it
   to the rebuilt barrier), in the daemon and in `sdk/go/node`, so the holders
   claim from the sealed node and a quorum unseals it.
+- **The REST sealed window no longer admits holder revocation.** The claim
+  routes were allowlisted by an `/v1/barrier/officers/` prefix, which also let
+  `POST /v1/barrier/officers/revoke` through while the barrier was sealed. The
+  allowlist now names the claim routes as one-segment patterns
+  (`/v1/barrier/officers/{username}/claim/begin` and `.../complete`, and the
+  recovery forms), so a sealed node answers the revocation 503.
 - **A distributed Shamir share is destroyed if it is not claimed in time.**
   Every envelope held for a share holder now carries its own expiry timer
   (`CeremonyConfig.ShareTTL`, default `ceremony.DefaultShareTTL` = 24h) and is

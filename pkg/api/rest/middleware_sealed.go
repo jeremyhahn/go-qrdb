@@ -31,7 +31,8 @@ type sealedWindowProbe interface {
 
 // SealedWindowAllowlist is the set of REST entries that remain operative
 // while the barrier is sealed. Each entry is a path or a method-qualified
-// "METHOD /path"; a path ending in "/" is matched as a prefix (see
+// "METHOD /path"; a path ending in "/" is matched as a prefix and a path
+// with a "{name}" segment as a one-segment pattern (see
 // sealedwindow.RESTEntryMatches). The list is derived from the canonical
 // transport-neutral verb table in pkg/api/sealedwindow so it cannot drift
 // from the other transports; it remains exposed as a package-level var so

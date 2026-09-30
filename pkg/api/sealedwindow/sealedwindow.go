@@ -87,8 +87,10 @@ const (
 // empty field means the verb has no surface on that transport.
 type Names struct {
 	// REST entries: a path, or a method-qualified "METHOD /path". A path
-	// ending in "/" is a prefix match; anything else matches exactly. An
-	// unqualified entry matches every method (see RESTEntryMatches).
+	// ending in "/" is a prefix match; a "{name}" segment matches exactly
+	// one non-empty path segment, as in a net/http.ServeMux pattern;
+	// anything else matches exactly. An unqualified entry matches every
+	// method (see RESTEntryMatches).
 	REST []string
 	// GRPC is the method tail — the suffix after the last "/" in
 	// grpc.UnaryServerInfo.FullMethod.
@@ -182,16 +184,18 @@ var Table = map[Verb]Names{
 	// exemption must lapse the moment the enrollment ceremony reaches
 	// operational (see Names.PreOperationalOnly).
 	VerbOfficerRegister: {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
-	// The path-param claim routes (/{username}/claim/begin|complete) are
-	// covered by the /v1/barrier/officers/ prefix, shared by both verbs.
-	VerbShareClaimBegin:    {REST: []string{"/v1/barrier/officers/"}, GRPC: "BarrierShareClaimBegin", QUIC: "barrier.ShareClaimBegin", MCP: "qrdb_barrier_share_claim_begin"},
-	VerbShareClaimComplete: {REST: []string{"/v1/barrier/officers/"}, GRPC: "BarrierShareClaimComplete", QUIC: "barrier.ShareClaimComplete", MCP: "qrdb_barrier_share_claim_complete"},
+	// The claim routes carry the holder in a path segment. They are listed
+	// as one-segment patterns, never as an /v1/barrier/officers/ prefix: a
+	// prefix would also admit POST /v1/barrier/officers/revoke, a rekey that
+	// removes a holder, which is not a sealed-window operation.
+	VerbShareClaimBegin:    {REST: []string{"POST /v1/barrier/officers/{username}/claim/begin"}, GRPC: "BarrierShareClaimBegin", QUIC: "barrier.ShareClaimBegin", MCP: "qrdb_barrier_share_claim_begin"},
+	VerbShareClaimComplete: {REST: []string{"POST /v1/barrier/officers/{username}/claim/complete"}, GRPC: "BarrierShareClaimComplete", QUIC: "barrier.ShareClaimComplete", MCP: "qrdb_barrier_share_claim_complete"},
 
 	// recovery-officer-register shares officer-register's PreOperationalOnly
 	// rationale: it enrols a recovery holder through the same flow.
 	VerbRecoveryOfficerRegister:    {REST: []string{"POST /v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", PreOperationalOnly: true},
-	VerbRecoveryShareClaimBegin:    {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
-	VerbRecoveryShareClaimComplete: {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
+	VerbRecoveryShareClaimBegin:    {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/begin"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
+	VerbRecoveryShareClaimComplete: {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/complete"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
 
 	// The holder quorum: a holder answers a factor challenge and submits its
 	// share. Unseal and recovery happen here, so both must be reachable
@@ -312,8 +316,10 @@ func MCPAllowlist() map[string]struct{} {
 
 // RESTEntryMatches reports whether one REST allowlist entry admits a request
 // with the given method and path. An entry is "/path" (every method) or
-// "METHOD /path". A path ending in "/" matches by prefix; anything else
-// matches exactly.
+// "METHOD /path". A path ending in "/" matches by prefix; a path with a
+// "{name}" segment matches paths of the same shape, the "{name}" segment
+// matching exactly one non-empty path segment; anything else matches
+// exactly.
 func RESTEntryMatches(entry, method, path string) bool {
 	if m, p, qualified := strings.Cut(entry, " "); qualified {
 		if m != method {
@@ -321,10 +327,37 @@ func RESTEntryMatches(entry, method, path string) bool {
 		}
 		entry = p
 	}
-	if strings.HasSuffix(entry, "/") {
+	switch {
+	case strings.HasSuffix(entry, "/"):
 		return strings.HasPrefix(path, entry)
+	case strings.Contains(entry, "{"):
+		return segmentsMatch(path, entry)
+	default:
+		return path == entry
 	}
-	return path == entry
+}
+
+// segmentsMatch reports whether path has pattern's shape: the same number of
+// "/"-separated segments, each equal to the pattern's, except that a "{name}"
+// pattern segment matches any one non-empty segment.
+func segmentsMatch(path, pattern string) bool {
+	got := strings.Split(path, "/")
+	want := strings.Split(pattern, "/")
+	if len(got) != len(want) {
+		return false
+	}
+	for i, w := range want {
+		if strings.HasPrefix(w, "{") && strings.HasSuffix(w, "}") {
+			if got[i] == "" {
+				return false
+			}
+			continue
+		}
+		if got[i] != w {
+			return false
+		}
+	}
+	return true
 }
 
 // RESTPreOperationalOnly derives the REST entries of the PreOperationalOnly

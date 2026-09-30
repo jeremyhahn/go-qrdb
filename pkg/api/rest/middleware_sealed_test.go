@@ -288,7 +288,7 @@ func TestRequestInAllowlist_PrefixExactAndMethod(t *testing.T) {
 // TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: on the
 // boot-time listener, anonymous officer and recovery-officer registration is
 // served while enrollment is open and refused 403 ENROLLMENT_CLOSED once it
-// has closed; the claim-status view and the regular gate are unaffected.
+// has closed; the claims and the regular gate are unaffected.
 func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T) {
 	probe := newFakeSealed(true)
 	listener := SealedWindowListenerMiddleware(probe, nil)(okHandler)
@@ -310,8 +310,8 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 			t.Errorf("regular gate, POST %s: status %d, want 200 (authentication decides)", path, rr.Code)
 		}
 	}
-	if rr := send(listener, http.MethodGet, "/v1/barrier/officers/claim-status"); rr.Code != http.StatusOK {
-		t.Errorf("claim-status with enrollment closed: status %d, want 200", rr.Code)
+	if rr := send(listener, http.MethodPost, "/v1/barrier/officers/alice/claim/begin"); rr.Code != http.StatusOK {
+		t.Errorf("a claim with enrollment closed: status %d, want 200", rr.Code)
 	}
 	probe.enrollment.Store(true)
 	for _, path := range []string{"/v1/barrier/officers", "/v1/barrier/recovery/officers"} {
@@ -338,5 +338,40 @@ func TestSealedWindowGate_MarksListenerRequestsAnonymous(t *testing.T) {
 	SealedWindowMiddleware(probe, nil)(h).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil))
 	if anonymous {
 		t.Error("a regular gate marked a request anonymous")
+	}
+}
+
+// TestSealedWindow_HolderRoutesAdmitOnlyTheClaims proves the sealed window
+// admits a holder's claim steps and nothing else under the officer paths. The
+// claims were admitted by an "/v1/barrier/officers/" prefix, which let
+// POST /v1/barrier/officers/revoke -- a rekey that removes a holder -- through
+// the sealed window too.
+func TestSealedWindow_HolderRoutesAdmitOnlyTheClaims(t *testing.T) {
+	mw := SealedWindowMiddleware(newFakeSealed(true), nil)
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/v1/barrier/officers/revoke", http.StatusServiceUnavailable},
+		{"/v1/barrier/recovery/officers/revoke", http.StatusServiceUnavailable},
+		{"/v1/barrier/officers/alice/claim/begin", http.StatusOK},
+		{"/v1/barrier/officers/alice/claim/complete", http.StatusOK},
+		{"/v1/barrier/recovery/officers/alice/claim/begin", http.StatusOK},
+		{"/v1/barrier/recovery/officers/alice/claim/complete", http.StatusOK},
+		{"/v1/barrier/officers", http.StatusOK},
+		{"/v1/barrier/recovery/officers", http.StatusOK},
+		{"/v1/barrier/officers/alice/claim/other", http.StatusServiceUnavailable},
+		{"/v1/barrier/officers/alice/claim/begin/extra", http.StatusServiceUnavailable},
+		{"/v1/barrier/officers//claim/begin", http.StatusServiceUnavailable},
+		{"/v1/barrier/officers/alice", http.StatusServiceUnavailable},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mw(okHandler).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, c.path, nil))
+			if rr.Code != c.want {
+				t.Errorf("status = %d, want %d", rr.Code, c.want)
+			}
+		})
 	}
 }
