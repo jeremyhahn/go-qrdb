@@ -166,20 +166,17 @@ import type {
     EnableEncryptionRequest,
     EnableEncryptionResponse,
 
-    // Officer / share-claim
+    // Share-holder administration
     OfficerRegisterRequest,
     OfficerRegisterResponse,
     OfficerStatus,
-    ShareClaimBeginRequest,
-    ShareClaimBeginResponse,
-    ShareClaimCompleteRequest,
-    ShareClaimCompleteResponse,
-    ShamirSealVoteRequest,
-    ShamirSealVoteResponse,
+    OfficerRevokeRequest,
+    QuorumRound,
+    RekeyStartRequest,
+    ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
-    TenantShareClaimBeginRequest,
-    TenantShareClaimCompleteRequest,
-    TenantShamirSealVoteRequest,
+    TenantOfficerRevokeRequest,
+    TenantRekeyStartRequest,
 
     // Tenant
     CreateTenantRequest,
@@ -191,8 +188,6 @@ import type {
     TenantBarrierInitRequest,
     TenantBarrierInitResponse,
     TenantBarrierUnsealRequest,
-    TenantBarrierUnsealShareRequest,
-    TenantBarrierUnsealProgress,
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
@@ -1361,32 +1356,31 @@ export interface SealClient {
     initialize(secret: string): Promise<void>;
 
     /**
-     * Initializes the encryption barrier using Shamir secret sharing.
-     * Must be called once during first-run setup after all Security Officers
-     * have been registered via OfficerClient.registerOfficer. Returns only
-     * the root token and share distribution metadata; share bytes are never
-     * returned here — each SO claims their own share independently.
+     * Initializes the barrier under Shamir custody. Every unseal-domain
+     * holder must be enrolled first (OfficerClient.registerOfficer): the
+     * unseal key is split to them and each share is sealed to its holder.
+     * There is no secret, and no share is returned.
      *
-     * @param secret - Optional passphrase used to derive the master key.
-     * @param threshold - Minimum number of shares required to unseal.
-     * @param totalShares - Total number of shares to generate.
-     * @returns Root token and share count; no share bytes.
+     * @param req - Threshold, share count (the enrolled holder count),
+     *   factor policy and optional PINs.
+     * @returns The share-free distribution result.
      */
-    initializeShamir(secret: string, threshold: number, totalShares: number): Promise<BootstrapResult>;
+    initializeShamir(req: ShamirInitializeRequest): Promise<BootstrapResult>;
 
     /**
-     * Submits a single key share toward unsealing the server. Shares
-     * are accumulated until the required threshold is met.
+     * Unseals a barrier held by a credential strategy with its passphrase.
+     * A Shamir barrier is unsealed by a quorum of its holders from the CLI or
+     * the desktop app; the server refuses this request for it.
      *
-     * @param share - A single Shamir key share.
-     * @returns Progress indicating how many shares have been provided.
+     * @param secret - The unseal passphrase.
+     * @returns The barrier's state after the request.
      */
-    unseal(share: string): Promise<UnsealProgress>;
+    unseal(secret: string): Promise<UnsealProgress>;
 
     /**
      * Transitions the server back to sealed state, zeroing the master
-     * key. For Shamir-strategy barriers, use OfficerClient.submitSealVote
-     * instead — direct seal is rejected with ErrShamirBarrierRequiresQuorum.
+     * key. A Shamir barrier is sealed by a holder quorum instead; the
+     * server refuses this request for it.
      */
     seal(): Promise<void>;
 
@@ -1429,146 +1423,91 @@ export interface SealClient {
 }
 
 // ---------------------------------------------------------------------------
-// Security Officer operations
+// Share-holder administration
 // ---------------------------------------------------------------------------
 
 /**
- * OfficerClient manages Security Officer enrollment and the per-SO share
- * claim flow for both the system barrier and per-tenant barriers.
+ * OfficerClient administers share holders — Security Officers and key
+ * custodians — for the system barrier's unseal and recovery domains and for
+ * tenant barriers: enrolment, listing, rekey and revocation.
  *
- * Share bytes are NEVER returned by officer registration or barrier
- * initialization. They appear only in ShareClaimCompleteResponse, returned
- * exactly once per officer per initialization round.
+ * It never handles share material. Claiming an envelope and submitting a
+ * share to a quorum need the holder's private keys, and happen in the CLI or
+ * the desktop app, where those keys stay in Go.
  */
 export interface OfficerClient {
     /**
-     * Registers a new Security Officer for the system barrier.
-     * The admin submits the officer's CSR; the server signs it and returns
-     * the certificate PEM. The share is not split at registration time —
-     * splitting happens when initializeShamir is called.
+     * Enrols an unseal-domain holder of the system barrier from its CSR. The
+     * ceremony CA issues the holder certificate; no share exists yet.
      *
-     * @param req - Officer registration parameters including CSR PEM.
-     * @returns Signed certificate PEM and assigned share index.
+     * @param req - The enrolment.
+     * @returns The issued certificate and what was enrolled.
      */
     registerOfficer(req: OfficerRegisterRequest): Promise<OfficerRegisterResponse>;
 
     /**
-     * Lists all registered Security Officers for the system barrier.
+     * Enrols a recovery-domain holder of the system barrier.
      *
-     * @returns Array of officer status records (no share bytes).
-     */
-    listOfficers(): Promise<OfficerStatus[]>;
-
-    /**
-     * Returns the per-officer claim status for the system barrier.
-     * Used by admins to monitor which SOs have claimed their shares.
-     *
-     * @returns Array of officer status records including claim timestamps.
-     */
-    officerClaimStatus(): Promise<OfficerStatus[]>;
-
-    /**
-     * Begins a share claim for the named officer by issuing a challenge
-     * nonce. The officer must sign the nonce with their private key and
-     * present the signature to claimComplete.
-     *
-     * @param req - Username of the officer initiating the claim.
-     * @returns Challenge nonce and expiry timestamp.
-     */
-    claimBegin(req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse>;
-
-    /**
-     * Completes the share claim by verifying the officer's nonce signature.
-     * Returns the officer's share bytes EXACTLY ONCE; the server destroys
-     * the enclave immediately after returning this response.
-     *
-     * @param req - Username, nonce, and signature.
-     * @returns Share index and share bytes (one-time only).
-     */
-    claimComplete(req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse>;
-
-    /**
-     * Registers a new Security Officer for the system barrier's recovery
-     * key set (distinct from the unseal officer set).
-     *
-     * @param req - Officer registration parameters.
-     * @returns Signed certificate PEM and assigned share index.
+     * @param req - The enrolment.
+     * @returns The issued certificate and what was enrolled.
      */
     registerRecoveryOfficer(req: OfficerRegisterRequest): Promise<OfficerRegisterResponse>;
 
     /**
-     * Begins a recovery share claim for the named officer.
+     * Lists the system barrier's unseal-domain holders.
      *
-     * @param req - Username of the officer initiating the recovery claim.
-     * @returns Challenge nonce and expiry timestamp.
+     * @returns Holder status records; never a share.
      */
-    recoveryClaimBegin(req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse>;
+    listOfficers(): Promise<OfficerStatus[]>;
 
     /**
-     * Completes a recovery share claim for the named officer.
+     * Opens a rekey round on a system-barrier domain. A quorum of current
+     * holders completes it.
      *
-     * @param req - Username, nonce, and signature.
-     * @returns Share index and share bytes (one-time only).
+     * @param req - Domain, new threshold and policy, and the SO PIN.
+     * @returns The open round.
      */
-    recoveryClaimComplete(req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse>;
+    startRekey(req: RekeyStartRequest): Promise<QuorumRound>;
 
     /**
-     * Submits a Shamir share as a seal vote for a Shamir-protected system
-     * barrier. When the threshold of votes is reached, the barrier is sealed
-     * and all vote enclaves are destroyed.
+     * Revokes a system-barrier holder: opens a rekey round that removes it.
      *
-     * @param req - Share value to submit.
-     * @returns Quorum progress; complete=true when the barrier has been sealed.
+     * @param req - Domain, holder, optional new threshold, and the SO PIN.
+     * @returns The open round.
      */
-    submitSealVote(req: ShamirSealVoteRequest): Promise<ShamirSealVoteResponse>;
+    revokeOfficer(req: OfficerRevokeRequest): Promise<QuorumRound>;
 
     /**
-     * Lists all registered Security Officers for a tenant's barrier.
+     * Enrols a holder of a tenant's barrier.
      *
-     * @param tenantId - Target tenant identifier.
-     * @returns Array of officer status records.
-     */
-    listTenantOfficers(tenantId: string): Promise<OfficerStatus[]>;
-
-    /**
-     * Returns the per-officer claim status for a tenant's barrier.
-     *
-     * @param tenantId - Target tenant identifier.
-     * @returns Array of officer status records including claim timestamps.
-     */
-    tenantOfficerClaimStatus(tenantId: string): Promise<OfficerStatus[]>;
-
-    /**
-     * Registers a Security Officer for a tenant's barrier.
-     *
-     * @param req - Tenant ID, officer username, and CSR PEM.
-     * @returns Signed certificate PEM and assigned share index.
+     * @param req - The tenant and the enrolment.
+     * @returns The issued certificate and what was enrolled.
      */
     registerTenantOfficer(req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse>;
 
     /**
-     * Begins a share claim for a tenant-barrier officer.
+     * Lists the holders of a tenant's barrier.
      *
-     * @param req - Tenant ID and officer username.
-     * @returns Challenge nonce and expiry timestamp.
+     * @param tenantId - Target tenant identifier.
+     * @returns Holder status records; never a share.
      */
-    tenantClaimBegin(req: TenantShareClaimBeginRequest): Promise<ShareClaimBeginResponse>;
+    listTenantOfficers(tenantId: string): Promise<OfficerStatus[]>;
 
     /**
-     * Completes a share claim for a tenant-barrier officer.
+     * Opens a rekey round on a tenant's barrier.
      *
-     * @param req - Tenant ID, username, nonce, and signature.
-     * @returns Share index and share bytes (one-time only).
+     * @param req - The tenant, new threshold and policy.
+     * @returns The open round.
      */
-    tenantClaimComplete(req: TenantShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse>;
+    startTenantRekey(req: TenantRekeyStartRequest): Promise<QuorumRound>;
 
     /**
-     * Submits a Shamir share as a seal vote for a tenant's barrier.
+     * Revokes a holder of a tenant's barrier.
      *
-     * @param req - Tenant ID and share value.
-     * @returns Quorum progress; complete=true when the barrier has been sealed.
+     * @param req - The tenant, the holder and an optional new threshold.
+     * @returns The open round.
      */
-    submitTenantSealVote(req: TenantShamirSealVoteRequest): Promise<ShamirSealVoteResponse>;
+    revokeTenantOfficer(req: TenantOfficerRevokeRequest): Promise<QuorumRound>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1800,22 +1739,13 @@ export interface TenantClient {
     barrierInit(req: TenantBarrierInitRequest): Promise<TenantBarrierInitResponse>;
 
     /**
-     * Submits a single unseal share toward opening a tenant's encryption
-     * barrier. Shares are accumulated until the threshold is met.
+     * Unseals a tenant barrier held by a credential strategy with its
+     * passphrase. A Shamir tenant barrier is unsealed by a quorum of its
+     * holders from the CLI or the desktop app.
      *
-     * @param req - Unseal share parameters.
+     * @param req - The tenant and its unseal passphrase.
      */
     barrierUnseal(req: TenantBarrierUnsealRequest): Promise<void>;
-
-    /**
-     * Submits a single Shamir unseal share toward opening a tenant's encryption
-     * barrier and returns the quorum progress. Shares are accumulated until the
-     * threshold is met, at which point the barrier is unsealed.
-     *
-     * @param req - Unseal share parameters.
-     * @returns Quorum progress (submitted/required, complete, sealed).
-     */
-    barrierUnsealShare(req: TenantBarrierUnsealShareRequest): Promise<TenantBarrierUnsealProgress>;
 
     /**
      * Returns the current seal state of a tenant's encryption barrier,
@@ -2196,7 +2126,7 @@ export interface Client {
     /** Seal/unseal lifecycle management. */
     readonly seal: SealClient;
 
-    /** Security Officer enrollment, share claim, and quorum seal-vote management. */
+    /** Share-holder administration: enrolment, listing, rekey and revocation. */
     readonly officers: OfficerClient;
 
     /** Embedded server lifecycle (desktop mode only). */

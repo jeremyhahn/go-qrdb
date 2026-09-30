@@ -133,8 +133,8 @@
   // Barrier init form fields. Per the platform architecture the tenant admin
   // chooses the per-tenant barrier strategy (none / passphrase / shamir);
   // passphrase is the back-compat default. The Shamir strategy initializes the
-  // tenant barrier and distributes shares to enrolled Security Officers via the
-  // officer claim flow — NO shares are returned here.
+  // tenant barrier and seals each share to an enrolled holder, who claims it
+  // from the CLI or the desktop app — NO shares are returned here.
   let barrierStrategy = $state<SealMode>("passphrase");
   let barrierPassphrase: string = $state("");
   let barrierPassphraseConfirm: string = $state("");
@@ -143,26 +143,21 @@
   let barrierLoading: boolean = $state(false);
 
   // Shamir init result (share-free: only threshold + shareCount).
-  // Populated after a Shamir tenant barrier init to show officer claim status.
+  // Populated after a Shamir tenant barrier init to show holder claim status.
   let shamirResult = $state<TenantBarrierInitResponse | null>(null);
-  // Officer claim status for the tenant barrier after Shamir init.
+  // Holder claim status for the tenant barrier after Shamir init.
   let tenantOfficerStatuses = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
   let tenantOfficerStatusLoading: boolean = $state(false);
 
-  // Per-tenant unseal (Shamir quorum) state.
+  // Per-tenant unseal state. A passphrase barrier is unsealed here; a Shamir
+  // barrier opens through a quorum of its holders, who submit from the CLI
+  // or the desktop app with their own keys.
   let showUnsealForm: boolean = $state(false);
   let unsealTenantId: string = $state("");
   let unsealStatus = $state<TenantBarrierStatusResponse | null>(null);
-  let unsealShareInput: string = $state("");
-  let unsealSubmitted: number = $state(0);
-  let unsealRequired: number = $state(0);
+  let unsealPassphraseInput: string = $state("");
   let unsealLoading: boolean = $state(false);
   let unsealStatusLoading: boolean = $state(false);
-
-  /** Percentage of shares submitted toward the unseal threshold. */
-  let unsealProgress = $derived(
-    unsealRequired > 0 ? Math.round((unsealSubmitted / unsealRequired) * 100) : 0,
-  );
 
   // ---------------------------------------------------------------------------
   // Per-tenant enable-encryption migration (committed "none" barrier → keyed)
@@ -385,11 +380,11 @@
     tenantOfficerStatuses = [];
   }
 
-  /** Refreshes the officer claim status for a tenant barrier. */
+  /** Refreshes the holder claim status for a tenant barrier. */
   async function refreshTenantOfficerStatus(tenantId: string): Promise<void> {
     tenantOfficerStatusLoading = true;
     try {
-      tenantOfficerStatuses = await client.officers.tenantOfficerClaimStatus(tenantId);
+      tenantOfficerStatuses = await client.officers.listTenantOfficers(tenantId);
     } catch {
       // Non-fatal.
     } finally {
@@ -420,7 +415,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Per-tenant unseal (Shamir quorum)
+  // Per-tenant unseal
   // ---------------------------------------------------------------------------
 
   /** Fetches the barrier status for the tenant being unsealed. */
@@ -429,7 +424,6 @@
       unsealStatusLoading = true;
       const status = await client.tenants.barrierStatus(tenantId);
       unsealStatus = status;
-      unsealRequired = status.shamirThreshold ?? 0;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to fetch tenant barrier status";
       showToast("error", msg);
@@ -438,52 +432,39 @@
     }
   }
 
-  /** Opens the per-tenant Shamir unseal form. */
+  /** Opens the per-tenant unseal panel. */
   function handleUnseal(tenantId: string): void {
     unsealTenantId = tenantId;
-    unsealShareInput = "";
-    unsealSubmitted = 0;
-    unsealRequired = 0;
+    unsealPassphraseInput = "";
     unsealStatus = null;
     showUnsealForm = true;
     void fetchUnsealStatus(tenantId);
   }
 
-  /** Cancels the per-tenant unseal form. */
+  /** Closes the per-tenant unseal panel. */
   function handleCancelUnseal(): void {
     showUnsealForm = false;
     unsealTenantId = "";
-    unsealShareInput = "";
-    unsealSubmitted = 0;
-    unsealRequired = 0;
+    unsealPassphraseInput = "";
     unsealStatus = null;
   }
 
-  /** Submits a single Shamir share toward the per-tenant unseal quorum. */
-  async function handleSubmitUnsealShare(): Promise<void> {
-    const share = unsealShareInput.trim();
-    if (share === "") {
-      showToast("warning", "A key share is required.");
+  /** Unseals a passphrase-held tenant barrier. */
+  async function handleSubmitUnsealPassphrase(): Promise<void> {
+    const key = unsealPassphraseInput;
+    if (key === "") {
+      showToast("warning", "The passphrase is required.");
       return;
     }
     try {
       unsealLoading = true;
-      const progress = await client.tenants.barrierUnsealShare({
-        tenantId: unsealTenantId,
-        share,
-      });
-      unsealShareInput = "";
-      unsealSubmitted = progress.submitted;
-      unsealRequired = progress.required;
-      if (progress.complete && !progress.sealed) {
-        showToast("success", `Tenant "${unsealTenantId}" barrier unsealed.`);
-        handleCancelUnseal();
-        await fetchTenants();
-      } else {
-        showToast("info", `Share accepted (${progress.submitted}/${progress.required}).`);
-      }
+      await client.tenants.barrierUnseal({ tenantId: unsealTenantId, key });
+      unsealPassphraseInput = "";
+      showToast("success", `Tenant "${unsealTenantId}" barrier unsealed.`);
+      handleCancelUnseal();
+      await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to submit share";
+      const msg = err instanceof Error ? err.message : "Failed to unseal the tenant barrier";
       showToast("error", msg);
       await fetchUnsealStatus(unsealTenantId);
     } finally {
@@ -842,8 +823,9 @@
 
     <div class="card bg-base-200 w-full max-w-lg shadow">
       {#if shamirResult !== null}
-        <!-- Shamir barrier initialized: show officer claim status. No share
-             bytes are displayed here — each SO must claim via OfficerClaimPage. -->
+        <!-- Shamir barrier initialized: show holder claim status. No share is
+             displayed here — each holder claims its envelope with its own keys
+             from the qrdb CLI or the desktop app. -->
         <div class="card-body gap-5">
           <div class="flex flex-col items-center gap-2 text-center">
             <ShieldCheck class="text-success h-12 w-12" strokeWidth={1.5} />
@@ -854,17 +836,17 @@
             <AlertTriangle class="h-5 w-5 shrink-0" />
             <span>
               A <strong>{shamirResult.threshold ?? 0}-of-{shamirResult.shareCount ?? shamirResult.totalShares ?? 0}</strong>
-              Shamir scheme has been initialized. Each Security Officer must
-              authenticate with their mTLS certificate and navigate to
-              <span class="font-mono">/officer/claim?u=&lt;username&gt;&amp;t={barrierTenantId}</span>
-              to claim their share. No share bytes are shown here.
+              Shamir scheme has been initialized. Each holder claims its sealed
+              envelope over its own holder certificate from the qrdb CLI
+              (<span class="font-mono">qrdb tenant barrier-officer claim --tenant-id {barrierTenantId}</span>)
+              or the desktop app. No share is shown here.
             </span>
           </div>
 
-          <!-- Officer claim status table -->
+          <!-- Holder claim status table -->
           <div class="form-control">
             <div class="flex items-center justify-between mb-2">
-              <span class="label-text font-semibold">Officer Claim Status</span>
+              <span class="label-text font-semibold">Holder Claim Status</span>
               <button
                 class="btn btn-ghost btn-xs"
                 onclick={() => void refreshTenantOfficerStatus(barrierTenantId)}
@@ -1030,7 +1012,7 @@
   </div>
 
 {:else if showUnsealForm}
-  <!-- Per-tenant Shamir unseal form -->
+  <!-- Per-tenant unseal panel -->
   <div class="flex flex-col gap-6">
     <div class="flex items-center gap-3">
       <button class="btn btn-ghost btn-sm" onclick={handleCancelUnseal}>
@@ -1046,44 +1028,46 @@
           <div class="flex justify-center py-6">
             <span class="loading loading-spinner loading-md"></span>
           </div>
-        {:else}
-          <p class="text-base-content/70 text-sm">
-            Submit Shamir key shares to unseal this tenant's encryption barrier.
-            {unsealRequired} of {unsealStatus?.shamirTotal ?? 0} shares are required.
+        {:else if unsealStatus !== null && !unsealStatus.sealed}
+          <p class="text-base-content/70 text-sm">This tenant's barrier is unsealed.</p>
+        {:else if unsealStatus?.strategy === "shamir"}
+          <!-- A Shamir barrier opens through a holder quorum; the holders'
+               keys never enter this page. -->
+          <p class="text-base-content/70 text-sm" data-testid="tenant-unseal-quorum">
+            This barrier is held by its share holders:
+            {unsealStatus.shamirThreshold ?? 0} of {unsealStatus.shamirTotal ?? 0} must
+            submit. Each holder submits from the qrdb CLI
+            (<span class="font-mono">qrdb tenant barrier-quorum submit --op unseal</span>)
+            or the desktop app.
           </p>
-
-          <!-- Quorum progress -->
-          <div class="flex items-center gap-3">
-            <progress
-              class="progress progress-primary w-full"
-              value={unsealProgress}
-              max="100"
-            ></progress>
-            <span class="text-sm font-mono whitespace-nowrap">
-              {unsealSubmitted} / {unsealRequired}
-            </span>
-          </div>
-
+          <button
+            class="btn btn-outline btn-sm"
+            onclick={() => void fetchUnsealStatus(unsealTenantId)}
+            disabled={unsealStatusLoading}
+          >
+            Check again
+          </button>
+        {:else}
           <div class="form-control gap-3">
             <input
               type="password"
               class="input input-bordered w-full"
-              placeholder="Enter key share"
-              data-testid="tenant-unseal-share"
-              bind:value={unsealShareInput}
+              placeholder="Unseal passphrase"
+              data-testid="tenant-unseal-passphrase"
+              bind:value={unsealPassphraseInput}
               onkeydown={(e: KeyboardEvent) => {
-                if (e.key === "Enter") void handleSubmitUnsealShare();
+                if (e.key === "Enter") void handleSubmitUnsealPassphrase();
               }}
             />
             <button
               class="btn btn-primary btn-sm"
-              onclick={() => void handleSubmitUnsealShare()}
-              disabled={unsealLoading || unsealShareInput.trim() === ""}
+              onclick={() => void handleSubmitUnsealPassphrase()}
+              disabled={unsealLoading || unsealPassphraseInput === ""}
             >
               {#if unsealLoading}
                 <span class="loading loading-spinner loading-xs"></span>
               {/if}
-              Submit Share
+              Unseal
             </button>
           </div>
         {/if}
@@ -1294,7 +1278,7 @@
                 <span class="text-sm font-mono mr-1">{tenant.id}</span>
                 <button
                   class="btn btn-outline btn-sm"
-                  title="Initialize the encryption barrier for tenant {tenant.id}. For Shamir strategy, Security Officers claim their shares via the officer claim flow."
+                  title="Initialize the encryption barrier for tenant {tenant.id}. For Shamir strategy, each enrolled holder claims its envelope from the CLI or the desktop app."
                   onclick={() => handleBarrierInit(tenant.id)}
                 >
                   <ShieldCheck class="h-4 w-4" />
@@ -1302,7 +1286,7 @@
                 </button>
                 <button
                   class="btn btn-outline btn-sm"
-                  title="Submit Shamir key shares to unseal the encryption barrier for tenant {tenant.id}."
+                  title="Unseal the encryption barrier for tenant {tenant.id}: with its passphrase, or by a quorum of its share holders."
                   onclick={() => handleUnseal(tenant.id)}
                 >
                   <Unlock class="h-4 w-4" />

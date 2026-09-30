@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, OfficerStatus, OfficerRegisterResponse } from "@qrdb/sdk";
+  import type { Client, HolderRole, OfficerStatus, OfficerRegisterResponse } from "@qrdb/sdk";
   import { ShieldCheck, AlertCircle, AlertTriangle, RefreshCw, CheckCircle, Clock, UserPlus, Copy, Download } from "lucide-svelte";
   import StepIndicator from "./wizard/StepIndicator.svelte";
   import StepGlobalBarrier from "./wizard/setup/StepGlobalBarrier.svelte";
@@ -66,7 +66,7 @@
   let shamirShareCount: number = $state(0);
   let rootToken: string = $state("");
 
-  // Officer claim status (polled after shamir init).
+  // Holder claim status (polled after shamir init).
   let officerStatuses: OfficerStatus[] = $state([]);
   let claimStatusLoading: boolean = $state(false);
 
@@ -74,9 +74,10 @@
   // Officer-registration step state
   // ---------------------------------------------------------------------------
 
-  /** Per-officer registration form state. */
+  /** Per-holder enrolment form state. */
   interface OfficerFormEntry {
     username: string;
+    role: HolderRole;
     csrPem: string;
     /** null = not yet registered, OfficerRegisterResponse = success, string = error message */
     result: OfficerRegisterResponse | null;
@@ -92,6 +93,7 @@
   function resetOfficerForms(count: number): void {
     officerForms = Array.from({ length: count }, () => ({
       username: "",
+      role: "so" as HolderRole,
       csrPem: "",
       result: null,
       error: "",
@@ -149,11 +151,10 @@
       if (cfg.mode === "passphrase") {
         await client.seal.initialize(cfg.passphrase);
       } else if (cfg.mode === "shamir") {
-        const result = await client.seal.initializeShamir(
-          "",
-          cfg.shamirThreshold,
-          cfg.shamirShares,
-        );
+        const result = await client.seal.initializeShamir({
+          threshold: cfg.shamirThreshold,
+          totalShares: cfg.shamirShares,
+        });
         shamirThreshold = result.threshold;
         shamirShareCount = result.shareCount;
         rootToken = result.rootToken;
@@ -172,7 +173,7 @@
   async function refreshClaimStatus(): Promise<void> {
     claimStatusLoading = true;
     try {
-      officerStatuses = await client.officers.officerClaimStatus();
+      officerStatuses = await client.officers.listOfficers();
     } catch {
       // Non-fatal: status polling failure should not block wizard progress.
     } finally {
@@ -193,7 +194,7 @@
     try {
       for (;;) {
         try {
-          const statuses = await client.officers.officerClaimStatus();
+          const statuses = await client.officers.listOfficers();
           if (statuses.length > 0) {
             officerStatuses = statuses;
             return;
@@ -212,18 +213,6 @@
   // ---------------------------------------------------------------------------
   // Per-officer registration
   // ---------------------------------------------------------------------------
-
-  /**
-   * The sealed-window listener answers claim status anonymously, so it omits
-   * officer usernames. Name each row from this wizard's own registrations by
-   * share index, and fall back to the index alone.
-   */
-  function officerLabel(officer: OfficerStatus): string {
-    if (officer.username) return officer.username;
-    const registered = officerForms.find((f) => f.result?.shareIndex === officer.shareIndex);
-    return registered?.username || `Officer #${officer.shareIndex}`;
-  }
-
   async function registerOfficer(index: number): Promise<void> {
     const form = officerForms[index];
     if (form === undefined) return;
@@ -242,7 +231,7 @@
 
     officerForms[index] = { ...form, loading: true, error: "" };
     try {
-      const resp = await client.officers.registerOfficer({ username, csrPem });
+      const resp = await client.officers.registerOfficer({ username, role: form.role, csrPem });
       officerForms[index] = { ...officerForms[index], loading: false, result: resp, error: "" };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Registration failed";
@@ -259,6 +248,7 @@
       if (current !== undefined) {
         officerForms[index] = {
           username: current.username,
+          role: current.role,
           csrPem: current.csrPem,
           result: current.result,
           error: current.error,
@@ -375,7 +365,7 @@
                       Officer {i + 1}
                       {#if form.result !== null}
                         <span class="text-base-content/60 font-normal">
-                          — {form.username} (share #{form.result.shareIndex})
+                          — {form.username} ({form.result.role === "custodian" ? "custodian" : "Security Officer"})
                         </span>
                       {/if}
                     </h3>
@@ -397,6 +387,23 @@
                         disabled={form.loading}
                         data-testid={`officer-username-${i}`}
                       />
+                    </div>
+
+                    <div class="form-control">
+                      <label class="label" for={`officer-role-${i}`}>
+                        <span class="label-text text-xs">Role</span>
+                      </label>
+                      <select
+                        id={`officer-role-${i}`}
+                        class="select select-bordered select-sm"
+                        value={form.role}
+                        onchange={(e: Event) => { if (officerForms[i]) officerForms[i].role = (e.currentTarget as HTMLSelectElement).value as HolderRole; }}
+                        disabled={form.loading}
+                        data-testid={`officer-role-${i}`}
+                      >
+                        <option value="so">Security Officer</option>
+                        <option value="custodian">Key custodian</option>
+                      </select>
                     </div>
 
                     <div class="form-control">
@@ -518,10 +525,9 @@
         {:else if currentStep === "complete"}
           {#if shamirShareCount > 0}
             <!-- -----------------------------------------------------------
-              Shamir initialization complete: officer enrollment status panel.
-              Share bytes are NEVER shown here. Each SO must authenticate with
-              their mTLS certificate and claim their share independently by
-              navigating to their OfficerClaimPage.
+              Shamir initialization complete: holder claim status panel.
+              No share is ever shown here. Each holder claims its sealed
+              envelope with its own keys from the qrdb CLI or the desktop app.
             ----------------------------------------------------------- -->
             <div class="flex flex-col gap-5 py-2">
               <div class="flex flex-col items-center gap-2 text-center">
@@ -533,11 +539,11 @@
                 <AlertTriangle class="h-5 w-5 shrink-0" />
                 <span>
                   The barrier has been initialized with a <strong>{shamirThreshold}-of-{shamirShareCount}</strong>
-                  Shamir scheme. Each Security Officer must now log in with
-                  their <strong>own mTLS certificate</strong> and navigate to
-                  <strong>/officer/claim</strong> to retrieve their share.
-                  Share bytes are NEVER displayed here — they are returned
-                  exactly once to the authenticated officer at claim time.
+                  Shamir scheme. Each holder's share is sealed to that holder.
+                  Every holder now claims its envelope, exactly once, over its
+                  <strong>own holder certificate</strong> from the qrdb CLI
+                  (<span class="font-mono">qrdb barrier officer claim</span>) or
+                  the desktop app. No share is ever displayed here.
                 </span>
               </div>
 
@@ -557,7 +563,7 @@
               <div class="form-control">
                 <div class="flex items-center justify-between mb-2">
                   <span class="label-text font-semibold">
-                    Officer Share Claim Status ({officerStatuses.filter((o) => o.claimedAt).length}/{shamirShareCount} claimed)
+                    Holder Claim Status ({officerStatuses.filter((o) => o.claimedAt).length}/{shamirShareCount} claimed)
                   </span>
                   <button
                     class="btn btn-ghost btn-xs gap-1"
@@ -572,14 +578,15 @@
 
                 {#if officerStatuses.length === 0}
                   <div class="bg-base-200 rounded-lg p-4 text-center text-sm text-base-content/60">
-                    {claimStatusLoading ? "Loading..." : "No officer claim status available. Ensure officers are registered and refresh."}
+                    {claimStatusLoading ? "Loading..." : "No holder status available. Ensure the holders are enrolled and refresh."}
                   </div>
                 {:else}
                   <div class="overflow-x-auto">
                     <table class="table table-sm" data-testid="officer-claim-status-table">
                       <thead>
                         <tr>
-                          <th>Officer</th>
+                          <th>Holder</th>
+                          <th>Role</th>
                           <th>Share #</th>
                           <th>Enrolled</th>
                           <th>Status</th>
@@ -588,7 +595,8 @@
                       <tbody>
                         {#each officerStatuses as officer (officer.shareIndex)}
                           <tr>
-                            <td class="font-mono text-sm">{officerLabel(officer)}</td>
+                            <td class="font-mono text-sm">{officer.username}</td>
+                            <td class="text-xs">{officer.role}</td>
                             <td class="text-center">{officer.shareIndex}</td>
                             <td class="text-xs text-base-content/60">
                               {new Date(officer.enrolledAt).toLocaleDateString()}
@@ -616,14 +624,14 @@
 
               <div class="flex flex-col gap-2 text-sm text-base-content/70">
                 <p>
-                  <strong>Next steps:</strong> Direct each Security Officer to
-                  authenticate using their newly-issued mTLS certificate and
-                  navigate to the <span class="font-mono">/officer/claim</span> page
-                  to complete their share claim.
+                  <strong>Next steps:</strong> Give each holder its issued
+                  certificate and have it claim its envelope from the qrdb CLI
+                  or the desktop app.
                 </p>
                 <p>
-                  The barrier remains fully operational. Officers can claim their
-                  shares at any time — there is no deadline on the claim window.
+                  An unclaimed envelope is destroyed when its time-to-live
+                  expires (24 hours by default); a holder that misses the
+                  window needs a rekey.
                 </p>
               </div>
 

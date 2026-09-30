@@ -18,10 +18,10 @@
  * These guard the web-parity fixes to the REST SealClient:
  *   - connect() tolerates a sealed server (503 on /health) as connected.
  *   - initialize() targets the passphrase endpoint (not Shamir).
- *   - initializeShamir() splits shares then mints a root token, and ALWAYS
- *     returns the shares even if the root-token step is unavailable.
- *   - unseal() routes by strategy: passphrase -> /v1/barrier/unseal {secret},
- *     shamir -> /v1/barrier/shamir/unseal-share {share}.
+ *   - initializeShamir() sends the share-holder split parameters and no
+ *     secret; the response is share-free and mints no root token.
+ *   - unseal() posts the credential to /v1/barrier/unseal {secret}; a Shamir
+ *     barrier opens through a holder quorum, never through this client.
  *   - status() maps the server's shamir_threshold/shamir_total into the share
  *     counts and derives initialized from initialized_at.
  */
@@ -150,7 +150,7 @@ describe('seal client – initialize (passphrase / none)', () => {
 describe('seal client – initializeShamir', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('POSTs share-free init and returns threshold+shareCount with no root token', async () => {
+    it('POSTs the split parameters and returns threshold+shareCount with no root token', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
             'POST /v1/barrier/shamir/initialize': {
@@ -159,52 +159,30 @@ describe('seal client – initializeShamir', () => {
             },
         });
 
-        const result = await client.seal.initializeShamir('', 3, 5);
+        const result = await client.seal.initializeShamir({ threshold: 3, totalShares: 5 });
 
-        // Request carries snake_case total_shares.
+        // No secret: the unseal key is split to the enrolled holders.
         const initReq = calls.find((c) => c.path === '/v1/barrier/shamir/initialize');
-        expect(initReq?.body).toEqual({ secret: '', threshold: 3, total_shares: 5 });
+        expect(initReq?.body).toEqual({ threshold: 3, total_shares: 5 });
 
-        // No root-token call is made: root-token generation requires a share
-        // quorum, and shares are only obtainable by SOs via the claim flow.
-        const rtReq = calls.find((c) => c.path === '/v1/barrier/root-token');
-        expect(rtReq).toBeUndefined();
+        // No root-token call is made: a Shamir root token needs a holder quorum.
+        expect(calls.some((c) => c.path.includes('root-token'))).toBe(false);
 
-        // Result carries threshold and shareCount — never keyShares or a token.
-        expect(result.rootToken).toBe('');
-        expect(result.threshold).toBe(3);
-        expect(result.shareCount).toBe(5);
-        // Confirm keyShares is not present on the result type at runtime.
-        expect((result as unknown as Record<string, unknown>)['keyShares']).toBeUndefined();
-    });
-
-    it('returns shareCount from total_shares fallback when share_count absent', async () => {
-        const client = await connectedClient();
-        installRouter({
-            'POST /v1/barrier/shamir/initialize': {
-                body: { threshold: 2, total_shares: 3 },
-            },
-        });
-
-        const result = await client.seal.initializeShamir('', 2, 3);
-        expect(result.threshold).toBe(2);
-        expect(result.shareCount).toBe(3);
+        expect(result).toEqual({ rootToken: '', threshold: 3, shareCount: 5 });
     });
 });
 
-describe('seal client – unseal routes by strategy', () => {
+describe('seal client – unseal', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('passphrase barrier: posts the secret to /v1/barrier/unseal', async () => {
+    it('posts the secret to /v1/barrier/unseal', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
-            'GET /v1/barrier/status': { body: { sealed: true, strategy: 'passphrase', hardware_backed: false, initialized_at: '2026-01-01T00:00:00Z' } },
             'POST /v1/barrier/unseal': { status: 204 },
         });
 
         const progress = await client.seal.unseal('my-passphrase');
 
-        expect(calls.some((c) => c.path === '/v1/barrier/shamir/unseal-share')).toBe(false);
         const unseal = calls.find((c) => c.path === '/v1/barrier/unseal');
         expect(unseal?.method).toBe('POST');
         // base64 on the wire; see the initialize contract test.
@@ -212,19 +190,19 @@ describe('seal client – unseal routes by strategy', () => {
         expect(progress.sealed).toBe(false);
     });
 
-    it('shamir barrier: posts the share to /v1/barrier/shamir/unseal-share and reports progress', async () => {
+    it('never submits a share: a Shamir barrier refuses the request itself', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
-            'GET /v1/barrier/status': { body: { sealed: true, strategy: 'shamir', hardware_backed: false, initialized_at: '2026-01-01T00:00:00Z' } },
-            'POST /v1/barrier/shamir/unseal-share': { body: { required: 3, submitted: 2, complete: false } },
+            'POST /v1/barrier/unseal': {
+                status: 412,
+                body: { error: 'qrdb/seal: a Shamir barrier unseals through a holder quorum' },
+            },
         });
 
-        const progress = await client.seal.unseal('share-2');
+        await expect(client.seal.unseal('not-a-share')).rejects.toThrow();
 
-        expect(calls.some((c) => c.path === '/v1/barrier/unseal')).toBe(false);
-        const share = calls.find((c) => c.path === '/v1/barrier/shamir/unseal-share');
-        expect(share?.body).toEqual({ share: 'share-2' });
-        expect(progress).toEqual({ sealed: true, sharesProvided: 2, sharesRequired: 3 });
+        // One request, to the credential route; no share route is named.
+        expect(calls.map((c) => c.path)).toEqual(['/v1/barrier/unseal']);
     });
 });
 
@@ -305,16 +283,16 @@ describe('seal client – seal', () => {
 describe('seal client – secret-bearing fields are base64 on the wire', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('base64-encodes the shamir initialize secret', async () => {
+    it('base64-encodes the tenant barrier unseal key', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({
-            'POST /v1/barrier/shamir/initialize': { body: { threshold: 2, total_shares: 3, share_count: 3 } },
+            'POST /v1/tenants/acme/barrier/unseal': { body: {} },
         });
 
-        await client.seal.initializeShamir('hunter2', 2, 3);
+        await client.tenants.barrierUnseal({ tenantId: 'acme', key: 'hunter2' });
 
-        const req = calls.find((c) => c.path === '/v1/barrier/shamir/initialize');
-        expect(req?.body).toEqual({ secret: 'aHVudGVyMg==', threshold: 2, total_shares: 3 });
+        const req = calls.find((c) => c.path === '/v1/tenants/acme/barrier/unseal');
+        expect(req?.body).toEqual({ key: 'aHVudGVyMg==' });
     });
 
     it('base64-encodes the enable-encryption passphrase', async () => {

@@ -87,6 +87,10 @@ key is useless without it. If your key lives on a smart card, use
 Claim within 24 hours; an unclaimed envelope is wiped, and only a rekey
 replaces it.
 
+The web UI does not claim or submit: your keys never enter a browser page. It
+enrols and lists holders, opens rekey and revocation rounds, and shows who has
+claimed. Claim and submit with the CLI, as here, or from the desktop app.
+
 ## For holders: take part in a quorum
 
 When the node is sealed — after a restart, for instance — it serves the holder

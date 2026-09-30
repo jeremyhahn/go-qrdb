@@ -3436,6 +3436,23 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   `grpc.ClientCertRequiredError`, `quic.ClientCertRequiredError` and the SDK's
   `embedded.ClientCertRequiredError`; match `*service.ClientCertRequiredError`
   instead.
+- **The TypeScript SDK and web UI follow the share-holder model.** They called
+  routes the server no longer serves (`/v1/barrier/shamir/unseal-share`,
+  `/unseal-shares`, `/seal-vote`, `/v1/barrier/officers/claim-status`, the
+  tenant `unseal-share` and `seal-vote`) and read share bytes from claims.
+  `OfficerClient` now administers holders only: `registerOfficer`,
+  `registerRecoveryOfficer`, `listOfficers`, `startRekey`, `revokeOfficer` and
+  their tenant forms (`registerTenantOfficer`, `listTenantOfficers`,
+  `startTenantRekey`, `revokeTenantOfficer`), with the enrolment fields `role`,
+  `encryptionKem`, `encryptionKey`, `factors` and `designated`; the claim and
+  seal-vote methods are removed. `SealClient.initializeShamir` takes
+  `{threshold, totalShares, policy, soPin, userPin}` and no secret;
+  `SealClient.unseal` and `TenantClient.barrierUnseal` serve passphrase
+  barriers only, and `TenantClient.barrierUnsealShare` is removed. The web UI
+  drops the officer claim page and the share and seal-vote inputs: a sealed
+  Shamir barrier shows which command its holders run, and the Seal Manager
+  enrols, lists, rekeys and revokes holders. Holder keys never enter the page;
+  holders claim and submit from the CLI or the desktop app.
 - **The desktop `SealBinding`**: `InitializeShamir(threshold, total, policy)`;
   `Unseal` refuses a Shamir barrier, which its holders unseal. The embedded
   node no longer auto-unseals a Shamir barrier.

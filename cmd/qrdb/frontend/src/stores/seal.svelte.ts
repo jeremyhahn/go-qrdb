@@ -97,17 +97,6 @@ export function updateSealStatus(status: SealStatus): void {
 }
 
 /**
- * Increments the local share counter by one. This provides immediate
- * UI feedback before the server round-trip confirms the share was accepted.
- * The counter is clamped to `sharesRequired` to prevent overshooting.
- */
-export function addShare(): void {
-    if (sealStore.sharesProvided < sealStore.sharesRequired) {
-        sealStore.sharesProvided += 1;
-    }
-}
-
-/**
  * Replaces the officer list in the store with the latest server response.
  *
  * @param officers - Officer status records returned by listOfficers() or

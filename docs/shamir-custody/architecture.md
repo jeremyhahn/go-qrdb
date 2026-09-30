@@ -278,6 +278,12 @@ distinct, authenticated holders present.
 - **No multi-node custody.** Custody is per node: each node's barrier has its
   own holders and shares.
 - **No quorum on `none` or `passphrase` barriers.**
+- **No holder keys in the web UI.** The web UI and the TypeScript SDK
+  administer holders — enrol, list, rekey, revoke, status — and nothing more.
+  Claiming an envelope and submitting a share use the holder's private keys,
+  which stay in the qrdb CLI or the desktop app (where the Go binding answers
+  the `mtls` factor and opens the envelope in process). A sealed Shamir
+  barrier's web view says which command its holders run and waits for them.
 
 ## Companion documents
 

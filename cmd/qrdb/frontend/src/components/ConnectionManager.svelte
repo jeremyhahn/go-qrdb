@@ -519,11 +519,10 @@
           // Barrier was auto-initialized by the embedded server; honor the
           // phase for UX continuity but do not call initialize again.
         } else if (embeddedBarrierMode === "shamir") {
-          const result = await client.seal.initializeShamir(
-            "",
-            embeddedShamirThreshold,
-            embeddedShamirShares,
-          );
+          const result = await client.seal.initializeShamir({
+            threshold: embeddedShamirThreshold,
+            totalShares: embeddedShamirShares,
+          });
           shamirShareCount = result.shareCount;
           shamirThresholdResult = result.threshold;
           shamirRootToken = result.rootToken;

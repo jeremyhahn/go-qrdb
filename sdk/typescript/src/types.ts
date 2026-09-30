@@ -1656,9 +1656,10 @@ export interface SealStatus {
 }
 
 /**
- * Result of a Shamir barrier initialization or rekey. The root token is
- * returned once; shares are never included here — each Security Officer
- * claims their own share via the officer claim flow.
+ * Result of a barrier initialization. Shares are never included: a Shamir
+ * initialization seals each share to its enrolled holder, who claims it from
+ * the CLI or the desktop app. The root token is empty for Shamir, where a
+ * root token needs a holder quorum.
  */
 export interface BootstrapResult {
     /** Administrative root token. */
@@ -1720,192 +1721,199 @@ export interface EnableEncryptionResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Security Officer (SO) and share-claim types
+// Share-holder administration types
 // ---------------------------------------------------------------------------
 
 /**
- * Authenticator type for a Security Officer. "software" means the officer's
- * private key is a PEM-encoded software key; "pkcs11" / "piv" / "fido2"
- * indicate hardware-backed keys routed through the xkms extension.
+ * A share holder's role. Security Officers and key custodians are the same
+ * kind of holder — enrolled the same way, submitting to the same quorum — and
+ * differ only in governance rights.
  */
-export type AuthenticatorType = 'software' | 'pkcs11' | 'piv' | 'fido2';
+export type HolderRole = 'so' | 'custodian';
 
 /**
- * Request to register a Security Officer for a barrier (system or tenant).
- * The admin submits the officer's CSR; the server signs it with the
- * ceremony CA and returns the signed certificate PEM + share index.
+ * A barrier key domain. The system barrier has an unseal and a recovery
+ * domain, each with its own holders; a tenant barrier has the unseal domain
+ * only.
+ */
+export type QuorumDomain = 'unseal' | 'recovery';
+
+/**
+ * Which enrolled factor a holder may answer a quorum challenge with: only its
+ * designated factor, or any factor it enrolled.
+ */
+export type FactorPolicy = 'designated' | 'any-enrolled';
+
+/**
+ * A factor to enrol for a holder beyond the built-in `mtls` factor. `params`
+ * belong to the factor and are sent verbatim — their keys are never re-cased.
+ */
+export interface HolderFactorEnrolment {
+    /** Registered factor name (for example "fido2"). */
+    readonly name: string;
+    /** Factor-specific enrolment parameters, sent as given. */
+    readonly params?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Request to enrol a share holder. An Admin or a Security Officer enrols a
+ * holder from the holder's CSR; the ceremony CA takes only the CSR's public
+ * key and assigns the certificate's identity. No share exists at enrolment.
  */
 export interface OfficerRegisterRequest {
-    /** Unique username for the Security Officer. */
+    /** Unique holder username. */
     readonly username: string;
-    /** PEM-encoded Certificate Signing Request from the officer. */
+    /** Holder role; the server defaults it to "so". */
+    readonly role?: HolderRole;
+    /** PEM-encoded certificate signing request from the holder. */
     readonly csrPem: string;
-    /** Authenticator type used by the officer. Defaults to "software". */
-    readonly authenticatorType?: AuthenticatorType;
-    /** Optional authenticator reference (e.g. PKCS#11 slot ID). */
-    readonly authenticatorRef?: string;
+    /**
+     * HPKE suite of a separate envelope key (for example "dhkem-x25519" or
+     * "mlkem768-x25519"). Without it the envelope is sealed to the
+     * certificate key (P-256 or P-384).
+     */
+    readonly encryptionKem?: string;
+    /** Base64 envelope public key for `encryptionKem`. */
+    readonly encryptionKey?: string;
+    /** Factors to enrol beyond the built-in `mtls`. */
+    readonly factors?: readonly HolderFactorEnrolment[];
+    /** The designated factor; the server defaults it to "mtls". */
+    readonly designated?: string;
 }
 
 /**
- * Response from registering a Security Officer. The signed certificate PEM
- * must be transmitted to the officer out of band. No share bytes are present.
+ * Result of enrolling a share holder: the CA-issued certificate (handed to
+ * the holder out of band) and what was enrolled. Never a share.
  */
 export interface OfficerRegisterResponse {
-    /** PEM-encoded certificate signed by the ceremony CA. */
+    /** PEM-encoded holder certificate issued by the ceremony CA. */
     readonly certPem: string;
-    /**
-     * Share index assigned to this officer (1-based, order of registration).
-     * Informational only; the share itself is never returned here.
-     */
-    readonly shareIndex: number;
+    /** The holder's role. */
+    readonly role: string;
+    /** The designated factor. */
+    readonly designated?: string;
+    /** The envelope key's HPKE suite. */
+    readonly encryptionKem?: string;
+    /** Every factor enrolled for the holder, `mtls` included. */
+    readonly factors?: readonly string[];
 }
 
-/**
- * Non-secret status view of an enrolled Security Officer. Contains only
- * public metadata; no share bytes are ever present.
- */
+/** Non-secret view of an enrolled share holder. Never carries a share. */
 export interface OfficerStatus {
-    /**
-     * Officer username. Empty when the boot-time sealed-window listener
-     * answers, because it answers anonymously; key rows by shareIndex.
-     */
+    /** Holder username. */
     readonly username: string;
-    /**
-     * SHA-256 thumbprint of the officer's mTLS certificate. Empty from the
-     * sealed-window listener.
-     */
-    readonly certThumbprint: string;
-    /** 1-based share index assigned at registration time. */
+    /** Holder role ("so" or "custodian"). */
+    readonly role: string;
+    /** SHA-256 thumbprint of the holder's certificate. */
+    readonly certThumbprint?: string;
+    /** The holder's share index in the current share set (0 before one). */
     readonly shareIndex: number;
-    /** Authenticator type registered for this officer. */
-    readonly authFactor: string;
-    /** ISO-8601 timestamp when the officer was enrolled. */
+    /** The designated factor. */
+    readonly designated?: string;
+    /** Every enrolled factor. */
+    readonly factors?: readonly string[];
+    /** The envelope key's HPKE suite. */
+    readonly encryptionKem?: string;
+    /** RFC 3339 enrolment time. */
     readonly enrolledAt: string;
-    /**
-     * ISO-8601 timestamp when the officer successfully claimed their share.
-     * Empty string when the share has not yet been claimed.
-     */
-    readonly claimedAt: string;
-    /**
-     * True when a share is sealed in the store and awaiting claim.
-     * False after the share has been claimed or destroyed.
-     */
+    /** RFC 3339 time the current envelope was claimed, if it was. */
+    readonly claimedAt?: string;
+    /** True while an envelope is held for the holder, unclaimed. */
     readonly sharePending: boolean;
 }
 
-/** Request to begin a share claim challenge for the named officer. */
-export interface ShareClaimBeginRequest {
-    /** Username of the officer initiating the claim. */
+/**
+ * Request to open a rekey round. Opening needs RBAC and the SO PIN;
+ * completing the rekey needs a fresh quorum of current holders, who submit
+ * from the CLI or the desktop app.
+ */
+export interface RekeyStartRequest {
+    /** Key domain; defaults to "unseal". */
+    readonly domain?: QuorumDomain;
+    /** Threshold of the new share set. */
+    readonly threshold: number;
+    /** Factor policy of the new share set. */
+    readonly policy?: FactorPolicy;
+    /** Security Officer PIN. */
+    readonly soPin?: string;
+}
+
+/**
+ * Request to revoke a holder: a rekey round that leaves the holder out of the
+ * new share set.
+ */
+export interface OfficerRevokeRequest {
+    /** Key domain; defaults to "unseal". */
+    readonly domain?: QuorumDomain;
+    /** The holder to remove. */
     readonly username: string;
+    /** Threshold of the new share set; omitted or 0 keeps the current one. */
+    readonly threshold?: number;
+    /** Security Officer PIN. */
+    readonly soPin?: string;
 }
 
-/**
- * Challenge nonce issued by the server as the first step of share claim.
- * The officer must sign this nonce with their private key and present the
- * signature in the claim-complete call.
- */
-export interface ShareClaimBeginResponse {
-    /**
-     * 32-byte random nonce encoded as a hexadecimal string. The officer
-     * must sign exactly these bytes (not the hex string) with their key.
-     */
-    readonly nonceHex: string;
-    /** ISO-8601 timestamp when this nonce expires (5-minute TTL). */
-    readonly expiresAt: string;
-}
-
-/** Request to complete a share claim by presenting the signed nonce. */
-export interface ShareClaimCompleteRequest {
-    /** Username of the officer completing the claim. */
-    readonly username: string;
-    /** The nonce hex string from the begin response. */
-    readonly nonceHex: string;
-    /**
-     * Base64-encoded DER-encoded signature over the raw nonce bytes,
-     * produced by the officer's private key.
-     */
-    readonly signature: string;
-}
-
-/**
- * Response from a successful share claim. Returned EXACTLY ONCE per officer
- * per initialization round. The server destroys the share enclave immediately
- * after returning this response. The share bytes must never be persisted to
- * localStorage or any client-side store.
- */
-export interface ShareClaimCompleteResponse {
-    /** The officer's assigned share index (1-based). */
-    readonly shareIndex: number;
-    /**
-     * The raw share bytes encoded as a base64 string. This is the ONLY
-     * place share bytes appear on the wire; they are not included in any
-     * other response type.
-     */
-    readonly shareBytes: string;
-}
-
-/** Request to submit a Shamir share as a seal vote. */
-export interface ShamirSealVoteRequest {
-    /** The Shamir share value to submit as a seal vote. */
-    readonly share: string;
-}
-
-/**
- * Progress of a Shamir seal-vote quorum. When `complete` is true, the
- * required threshold of votes has been reached and the barrier has been
- * sealed.
- */
-export interface ShamirSealVoteResponse {
-    /** Number of distinct votes required to seal the barrier. */
+/** An open quorum round, as a rekey or a revocation answers it. */
+export interface QuorumRound {
+    /** Key domain of the round. */
+    readonly domain: string;
+    /** Operation the round completes ("rekey" for rekey and revocation). */
+    readonly op: string;
+    /** Submissions required to complete the round. */
     readonly required: number;
-    /** Number of distinct votes submitted so far. */
+    /** Submissions counted so far. */
     readonly submitted: number;
-    /** True when the quorum threshold has been met and the barrier is sealed. */
-    readonly complete: boolean;
+    /** RFC 3339 time the round expires. */
+    readonly expiresAt: string;
+    /** Threshold of the new share set, for a rekey. */
+    readonly newThreshold?: number;
+    /** Factor policy of the new share set, for a rekey. */
+    readonly policy?: string;
+    /** Holders the rekey removes. */
+    readonly remove?: readonly string[];
 }
 
-// Tenant-scoped variants (include tenantId as the first field).
-
-/** Request to register a Security Officer for a tenant's barrier. */
-export interface TenantOfficerRegisterRequest {
+/** Request to enrol a share holder for a tenant's barrier. */
+export interface TenantOfficerRegisterRequest extends OfficerRegisterRequest {
     /** Target tenant identifier. */
     readonly tenantId: string;
-    /** Unique username for the Security Officer. */
+}
+
+/** Request to open a rekey round on a tenant's barrier. */
+export interface TenantRekeyStartRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** Threshold of the new share set. */
+    readonly threshold: number;
+    /** Factor policy of the new share set. */
+    readonly policy?: FactorPolicy;
+}
+
+/** Request to revoke a holder of a tenant's barrier. */
+export interface TenantOfficerRevokeRequest {
+    /** Target tenant identifier. */
+    readonly tenantId: string;
+    /** The holder to remove. */
     readonly username: string;
-    /** PEM-encoded Certificate Signing Request from the officer. */
-    readonly csrPem: string;
-    /** Authenticator type used by the officer. */
-    readonly authenticatorType?: AuthenticatorType;
-    /** Optional authenticator reference. */
-    readonly authenticatorRef?: string;
+    /** Threshold of the new share set; omitted or 0 keeps the current one. */
+    readonly threshold?: number;
 }
 
-/** Request to begin a share claim challenge for a tenant-barrier officer. */
-export interface TenantShareClaimBeginRequest {
-    /** Target tenant identifier. */
-    readonly tenantId: string;
-    /** Username of the officer initiating the claim. */
-    readonly username: string;
-}
-
-/** Request to complete a share claim for a tenant-barrier officer. */
-export interface TenantShareClaimCompleteRequest {
-    /** Target tenant identifier. */
-    readonly tenantId: string;
-    /** Username of the officer completing the claim. */
-    readonly username: string;
-    /** The nonce hex string from the begin response. */
-    readonly nonceHex: string;
-    /** Base64-encoded signature over the raw nonce bytes. */
-    readonly signature: string;
-}
-
-/** Request to submit a seal vote for a tenant barrier. */
-export interface TenantShamirSealVoteRequest {
-    /** Target tenant identifier. */
-    readonly tenantId: string;
-    /** The Shamir share value to submit as a seal vote. */
-    readonly share: string;
+/**
+ * Request to initialize the system barrier under Shamir custody. The unseal
+ * key is split to the enrolled unseal-domain holders; there is no secret.
+ */
+export interface ShamirInitializeRequest {
+    /** Shares required to unseal (M). */
+    readonly threshold: number;
+    /** Share count (N); must equal the number of enrolled unseal holders. */
+    readonly totalShares: number;
+    /** Factor policy of the share set; the server defaults it to "designated". */
+    readonly policy?: FactorPolicy;
+    /** Provisions the SO PIN first, when a PIN backend is configured. */
+    readonly soPin?: string;
+    /** Provisions the User PIN first, when a PIN backend is configured. */
+    readonly userPin?: string;
 }
 
 /** Progress of an unseal operation after providing a share. */
@@ -2662,13 +2670,15 @@ export interface TenantBarrierInitRequest {
     readonly strategy?: string;
 }
 
-/** Request to contribute an unseal share for a tenant barrier. */
+/**
+ * Request to unseal a tenant barrier held by a credential strategy (the
+ * passphrase). A Shamir tenant barrier is unsealed by a quorum of its holders
+ * from the CLI or the desktop app, not by this request.
+ */
 export interface TenantBarrierUnsealRequest {
     /** Target tenant identifier. */
     readonly tenantId: string;
-    /** A single Shamir key share. */
-    readonly share: string;
-    /** Optional unseal key (used when share alone is insufficient). */
+    /** The unseal passphrase; base64 on the wire. */
     readonly key: string;
 }
 
@@ -2693,28 +2703,6 @@ export interface TenantBarrierInitResponse {
      * Always equals the number of enrolled officers at init time.
      */
     readonly shareCount?: number;
-}
-
-/** Request to submit a single Shamir unseal share for a tenant barrier. */
-export interface TenantBarrierUnsealShareRequest {
-    /** Target tenant identifier. */
-    readonly tenantId: string;
-    /** A single Shamir key share. */
-    readonly share: string;
-}
-
-/** Quorum progress after submitting a tenant barrier unseal share. */
-export interface TenantBarrierUnsealProgress {
-    /** Target tenant identifier. */
-    readonly tenantId: string;
-    /** Number of distinct shares required to reconstruct the barrier key. */
-    readonly required: number;
-    /** Number of distinct shares submitted so far. */
-    readonly submitted: number;
-    /** Whether the quorum has been met (all required shares submitted). */
-    readonly complete: boolean;
-    /** Whether the tenant barrier is still sealed after this share. */
-    readonly sealed: boolean;
 }
 
 /** Current seal state of a tenant's encryption barrier. */

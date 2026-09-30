@@ -22,6 +22,8 @@ import {
     deepCamelToSnake,
     distanceMetricToRestWire,
     encodeBase64Utf8,
+    holderEnrolmentWire,
+    normalizeOfficerStatus,
     indexTypeToRestWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
@@ -198,8 +200,6 @@ import type {
     TenantBarrierInitRequest,
     TenantBarrierInitResponse,
     TenantBarrierUnsealRequest,
-    TenantBarrierUnsealShareRequest,
-    TenantBarrierUnsealProgress,
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
@@ -222,16 +222,13 @@ import type {
     OfficerRegisterRequest,
     OfficerRegisterResponse,
     OfficerStatus,
-    ShareClaimBeginRequest,
-    ShareClaimBeginResponse,
-    ShareClaimCompleteRequest,
-    ShareClaimCompleteResponse,
-    ShamirSealVoteRequest,
-    ShamirSealVoteResponse,
+    OfficerRevokeRequest,
+    QuorumRound,
+    RekeyStartRequest,
+    ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
-    TenantShareClaimBeginRequest,
-    TenantShareClaimCompleteRequest,
-    TenantShamirSealVoteRequest,
+    TenantOfficerRevokeRequest,
+    TenantRekeyStartRequest,
     CredentialVersionInfo,
     CredentialRotateResult,
 } from './types.js';
@@ -416,6 +413,17 @@ function jsonBody(data: unknown): RequestInit {
     return {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(deepCamelToSnake(data)),
+    };
+}
+
+/**
+ * Builds a JSON request body from an object already in wire form, without
+ * re-casing any key (see holderEnrolmentWire).
+ */
+function wireBody(data: Record<string, unknown>): RequestInit {
+    return {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
     };
 }
 
@@ -1885,65 +1893,30 @@ export class RestClient implements Client {
                     ...jsonBody({ secret: encodeBase64Utf8(secret) }),
                 });
             },
-            initializeShamir: async (secret: string, threshold: number, totalShares: number): Promise<BootstrapResult> => {
+            initializeShamir: async (req: ShamirInitializeRequest): Promise<BootstrapResult> => {
                 this.ensureConnected();
-                // Step 1: initialize the Shamir barrier. The server splits the
-                // root key, seals each share into the corresponding SO's memguard
-                // enclave, and returns ONLY the threshold and share_count — no
-                // share bytes. SOs claim their shares independently via the
-                // officer claim flow.
+                // The unseal key is split to the enrolled holders and each
+                // share sealed to its holder; the response is share-free.
                 interface ShamirInitResponse {
                     readonly threshold: number;
                     readonly totalShares: number;
                     readonly shareCount: number;
                 }
-                // secret is base64 on the wire; see initialize.
                 const init = await this.fetchJSON<ShamirInitResponse>('/v1/barrier/shamir/initialize',
-                    { method: 'POST', ...jsonBody({ secret: encodeBase64Utf8(secret), threshold, total_shares: totalShares }) },
+                    { method: 'POST', ...jsonBody(req) },
                 );
-                // No root token is derived here: root-token generation
-                // requires a quorum of Shamir shares as a deliberate consent
-                // signal, and shares are only obtainable by Security Officers
-                // through the claim flow. Officers generate a root token
-                // post-claim via POST /v1/barrier/root-token.
-                return {
-                    rootToken: '',
-                    threshold: init.threshold,
-                    shareCount: init.shareCount ?? init.totalShares,
-                };
+                // A Shamir root token needs a holder quorum, so none is minted
+                // here.
+                return { rootToken: '', threshold: init.threshold, shareCount: init.shareCount };
             },
-            unseal: async (share: string): Promise<UnsealProgress> => {
+            unseal: async (secret: string): Promise<UnsealProgress> => {
                 this.ensureConnected();
-                // Route to the correct unseal endpoint based on the active
-                // strategy. Shamir accumulates shares; passphrase/none take the
-                // secret directly. (The previous implementation always hit the
-                // Shamir endpoint, which failed on passphrase barriers with
-                // "shamir not configured".)
-                interface BarrierStrategyResponse {
-                    readonly strategy: string;
-                }
-                const { strategy } = await this.fetchJSON<BarrierStrategyResponse>('/v1/barrier/status',
-                );
-                if (strategy === 'shamir') {
-                    interface UnsealShareProgressResponse {
-                        readonly required: number;
-                        readonly submitted: number;
-                        readonly complete: boolean;
-                    }
-                    const resp = await this.fetchJSON<UnsealShareProgressResponse>('/v1/barrier/shamir/unseal-share',
-                        { method: 'POST', ...jsonBody({ share }) },
-                    );
-                    return {
-                        sealed: !resp.complete,
-                        sharesProvided: resp.submitted,
-                        sharesRequired: resp.required,
-                    };
-                }
-                // Passphrase / none: the provided value carries the secret.
+                // Credential strategies only: a Shamir barrier opens through a
+                // holder quorum, and the server refuses this request for it.
                 // base64 on the wire; see initialize.
                 await this.fetchVoid('/v1/barrier/unseal', {
                     method: 'POST',
-                    ...jsonBody({ secret: encodeBase64Utf8(share) }),
+                    ...jsonBody({ secret: encodeBase64Utf8(secret) }),
                 });
                 return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
             },
@@ -1970,8 +1943,8 @@ export class RestClient implements Client {
                         initialized: resp.initializedAt !== undefined && resp.initializedAt !== '',
                         strategy: resp.strategy ?? '',
                         // For Shamir the server reports the M-of-N scheme; other
-                        // strategies have no shares. sharesProvided is only known
-                        // mid-ceremony (from unseal-share responses), not from status.
+                        // strategies have no shares. Quorum progress belongs to
+                        // an open round, not to the status.
                         sharesRequired: resp.shamirThreshold ?? 0,
                         sharesProvided: 0,
                         sharesTotal: resp.shamirTotal ?? 0,
@@ -2013,103 +1986,69 @@ export class RestClient implements Client {
     }
 
     // -----------------------------------------------------------------------
-    // Security Officers (enrollment + share-claim + quorum seal-vote)
+    // Share-holder administration
     // -----------------------------------------------------------------------
 
     /** @inheritdoc */
     get officers(): OfficerClient {
+        const tenantPath = (tenantId: string, rest: string): string =>
+            `/v1/tenants/${encodeURIComponent(tenantId)}/barrier${rest}`;
+        const list = async (path: string): Promise<OfficerStatus[]> => {
+            interface ListResponse { readonly officers?: OfficerStatus[] }
+            const resp = await this.fetchJSON<ListResponse>(path);
+            return (resp.officers ?? []).map(normalizeOfficerStatus);
+        };
         return {
             registerOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<OfficerRegisterResponse>('/v1/barrier/officers',
-                    { method: 'POST', ...jsonBody(deepCamelToSnake(req)) },
-                );
-            },
-            listOfficers: async (): Promise<OfficerStatus[]> => {
-                this.ensureConnected();
-                interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await this.fetchJSON<ListResponse>('/v1/barrier/officers');
-                return resp.officers ?? [];
-            },
-            officerClaimStatus: async (): Promise<OfficerStatus[]> => {
-                this.ensureConnected();
-                interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await this.fetchJSON<ListResponse>('/v1/barrier/officers/claim-status');
-                return resp.officers ?? [];
-            },
-            claimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
-                this.ensureConnected();
-                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
-                    { method: 'POST', ...jsonBody({}) },
-                );
-            },
-            claimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
-                this.ensureConnected();
-                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
-                    { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
+                    { method: 'POST', ...wireBody(holderEnrolmentWire(req)) },
                 );
             },
             registerRecoveryOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<OfficerRegisterResponse>('/v1/barrier/recovery/officers',
-                    { method: 'POST', ...jsonBody(deepCamelToSnake(req)) },
+                    { method: 'POST', ...wireBody(holderEnrolmentWire(req)) },
                 );
             },
-            recoveryClaimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
+            listOfficers: async (): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/begin`,
-                    { method: 'POST', ...jsonBody({}) },
+                return list('/v1/barrier/officers');
+            },
+            startRekey: async (req: RekeyStartRequest): Promise<QuorumRound> => {
+                this.ensureConnected();
+                return this.fetchJSON<QuorumRound>('/v1/barrier/rekey/start',
+                    { method: 'POST', ...jsonBody({ ...req, domain: req.domain ?? 'unseal' }) },
                 );
             },
-            recoveryClaimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
+            revokeOfficer: async (req: OfficerRevokeRequest): Promise<QuorumRound> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/barrier/recovery/officers/${encodeURIComponent(req.username)}/claim/complete`,
-                    { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
+                return this.fetchJSON<QuorumRound>('/v1/barrier/officers/revoke',
+                    { method: 'POST', ...jsonBody({ ...req, domain: req.domain ?? 'unseal' }) },
                 );
             },
-            submitSealVote: async (req: ShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
+            registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShamirSealVoteResponse>('/v1/barrier/shamir/seal-vote',
-                    { method: 'POST', ...jsonBody(req) },
+                return this.fetchJSON<OfficerRegisterResponse>(tenantPath(req.tenantId, '/officers'),
+                    { method: 'POST', ...wireBody(holderEnrolmentWire(req)) },
                 );
             },
             listTenantOfficers: async (tenantId: string): Promise<OfficerStatus[]> => {
                 this.ensureConnected();
-                interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await this.fetchJSON<ListResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
-                );
-                return resp.officers ?? [];
+                return list(tenantPath(tenantId, '/officers'));
             },
-            tenantOfficerClaimStatus: async (tenantId: string): Promise<OfficerStatus[]> => {
+            startTenantRekey: async (req: TenantRekeyStartRequest): Promise<QuorumRound> => {
                 this.ensureConnected();
-                interface ListResponse { readonly officers: OfficerStatus[] }
-                const resp = await this.fetchJSON<ListResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers/claim-status`,
-                );
-                return resp.officers ?? [];
-            },
-            registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
-                this.ensureConnected();
-                const { tenantId, ...rest } = req;
-                return this.fetchJSON<OfficerRegisterResponse>(`/v1/tenants/${encodeURIComponent(tenantId)}/barrier/officers`,
-                    { method: 'POST', ...jsonBody(deepCamelToSnake(rest)) },
+                const { tenantId, ...body } = req;
+                return this.fetchJSON<QuorumRound>(tenantPath(tenantId, '/rekey/start'),
+                    { method: 'POST', ...jsonBody(body) },
                 );
             },
-            tenantClaimBegin: async (req: TenantShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
+            revokeTenantOfficer: async (req: TenantOfficerRevokeRequest): Promise<QuorumRound> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShareClaimBeginResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/begin`,
-                    { method: 'POST', ...jsonBody({}) },
-                );
-            },
-            tenantClaimComplete: async (req: TenantShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
-                this.ensureConnected();
-                return this.fetchJSON<ShareClaimCompleteResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/officers/${encodeURIComponent(req.username)}/claim/complete`,
-                    { method: 'POST', ...jsonBody({ nonce_hex: req.nonceHex, signature: req.signature }) },
-                );
-            },
-            submitTenantSealVote: async (req: TenantShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
-                this.ensureConnected();
-                return this.fetchJSON<ShamirSealVoteResponse>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/seal-vote`,
-                    { method: 'POST', ...jsonBody({ share: req.share }) },
+                const { tenantId, ...body } = req;
+                return this.fetchJSON<QuorumRound>(tenantPath(tenantId, '/officers/revoke'),
+                    { method: 'POST', ...jsonBody(body) },
                 );
             },
         };
@@ -2246,14 +2185,10 @@ export class RestClient implements Client {
             },
             barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
                 this.ensureConnected();
+                // The key is `[]byte` on the server so it can be zeroized:
+                // base64 on the wire.
                 await this.fetchJSON<unknown>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
-                    { method: 'POST', ...jsonBody(req) },
-                );
-            },
-            barrierUnsealShare: async (req: TenantBarrierUnsealShareRequest): Promise<TenantBarrierUnsealProgress> => {
-                this.ensureConnected();
-                return this.fetchJSON<TenantBarrierUnsealProgress>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal-share`,
-                    { method: 'POST', ...jsonBody(req) },
+                    { method: 'POST', ...jsonBody({ key: encodeBase64Utf8(req.key) }) },
                 );
             },
             barrierStatus: async (tenantId: string): Promise<TenantBarrierStatusResponse> => {

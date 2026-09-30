@@ -75,9 +75,20 @@ determine whether to render the corresponding views.
 | `UserClient`           | 7       | create, get, update, delete, list, enable, disable |
 | `RoleClient`           | 8       | create, get, update, delete, list, assign, unassign, listPermissions |
 | `CertClient`           | 4       | generate, export, revoke, list               |
-| `SealClient`           | 5       | initialize, initializeShamir, unseal, seal, status |
+| `SealClient`           | 6       | initialize, initializeShamir, unseal, seal, status, enableEncryption |
+| `OfficerClient`        | 9       | share-holder administration: register(Recovery/Tenant)Officer, list(Tenant)Officers, start(Tenant)Rekey, revoke(Tenant)Officer |
 | `WizardClient`         | 4       | isFirstRun, saveState, loadState, getConfigDir |
 | `EmbeddedServerClient` | 3       | startEmbedded, stopEmbedded, isEmbedded      |
+
+### Share holders
+
+`OfficerClient` administers the share holders of a Shamir barrier and never
+handles share material: `initializeShamir` takes the split parameters and no
+secret, and `unseal` / `seal` serve credential barriers only — a Shamir barrier
+is unsealed and sealed by a quorum of its holders. Claiming an envelope and
+submitting a share need the holder's private keys, so the SDK does not offer
+them; holders use the qrdb CLI or the desktop app (see
+[../shamir-custody/](../shamir-custody/)).
 
 ## Factory
 

@@ -15,6 +15,8 @@
 import type {
     DistanceMetric,
     MVCCKeyValue,
+    OfficerRegisterRequest,
+    OfficerStatus,
     OpResponse,
     RestoreKeyChange,
     RestoreRevisionResult,
@@ -396,4 +398,40 @@ export function decodeRestoreResult(result: RestoreRevisionResult): RestoreRevis
         changes: result.changes.map(decodeRestoreKeyChange),
         conflicts: result.conflicts ? result.conflicts.map(decodeRestoreKeyChange) : result.conflicts,
     };
+}
+
+/**
+ * Renders a share-holder enrolment in the server's wire form.
+ *
+ * It is built field by field, not through {@link deepCamelToSnake}: a
+ * factor's `params` belong to the factor and are sent exactly as given, so
+ * their keys must never be re-cased. Optional fields left unset are omitted.
+ * Both transports send this object: REST as the JSON body, Wails as the
+ * argument the Go binding decodes.
+ */
+export function holderEnrolmentWire(req: OfficerRegisterRequest): Record<string, unknown> {
+    const wire: Record<string, unknown> = { username: req.username };
+    if (req.role) wire.role = req.role;
+    wire.csr_pem = req.csrPem;
+    if (req.encryptionKem) wire.encryption_kem = req.encryptionKem;
+    if (req.encryptionKey) wire.encryption_key = req.encryptionKey;
+    if (req.factors && req.factors.length > 0) {
+        wire.factors = req.factors.map((f) => (f.params ? { name: f.name, params: f.params } : { name: f.name }));
+    }
+    if (req.designated) wire.designated = req.designated;
+    return wire;
+}
+
+/**
+ * Normalizes a holder status decoded from either transport: a holder whose
+ * envelope was never claimed arrives with the zero timestamp of the server's
+ * time type ("0001-01-01T00:00:00Z"), which is reported as no claim at all so
+ * `claimedAt` is present only for a real claim.
+ */
+export function normalizeOfficerStatus(status: OfficerStatus): OfficerStatus {
+    if (status.claimedAt === undefined || !status.claimedAt.startsWith('0001-01-01')) {
+        return status;
+    }
+    const { claimedAt: _unclaimed, ...rest } = status;
+    return rest;
 }

@@ -21,7 +21,6 @@
   import { Lock, XCircle } from "lucide-svelte";
   import MainApp from "./views/MainApp.svelte";
   import ServerInitWizard from "./components/ServerInitWizard.svelte";
-  import OfficerClaimPage from "./components/OfficerClaimPage.svelte";
   import ToastContainer from "./components/ToastContainer.svelte";
   import { showToast } from "./stores/toast.svelte.ts";
   import { initTheme } from "./stores/theme.svelte.ts";
@@ -35,12 +34,14 @@
    * Top-level routing states:
    *   loading       - SDK initializing, profile list not yet fetched.
    *   init          - Connected embedded server needs first-run barrier setup.
-   *   unseal        - Connected server is sealed; user provides key shares.
-   *   officer-claim - SO-facing share claim page (hash: #/officer/claim?u=<username>).
+   *   unseal        - Connected server is sealed. A passphrase barrier is
+   *                   unsealed here; a Shamir barrier opens through a quorum
+   *                   of its share holders, who submit from the CLI or the
+   *                   desktop app, and this screen waits for them.
    *   app           - Fully ready; MainApp handles empty state and connections.
    *   error         - Unrecoverable startup failure.
    */
-  type AppState = "loading" | "init" | "unseal" | "officer-claim" | "app" | "error";
+  type AppState = "loading" | "init" | "unseal" | "app" | "error";
 
   let appState: AppState = $state("loading");
   let client: Client | null = $state(null);
@@ -51,10 +52,6 @@
   let unsealShare: string = $state("");
   let unsealError: string = $state("");
   let unsealSubmitting: boolean = $state(false);
-
-  // Officer claim state (parsed from URL hash fragment #/officer/claim?u=<username>&t=<tenantId>)
-  let officerClaimUsername: string = $state("");
-  let officerClaimTenantId: string | undefined = $state(undefined);
 
   /**
    * Whether the sealed barrier uses Shamir secret sharing (M-of-N shares)
@@ -90,22 +87,6 @@
         console.debug("[App] initialize: connecting REST client to", origin);
         await sdk.connection.connect(origin);
         console.debug("[App] initialize: REST client connected");
-
-        // Check if the URL hash requests the officer claim flow before any
-        // other routing. Hash format: #/officer/claim?u=<username>&t=<tenantId>
-        const hash = window.location.hash;
-        if (hash.startsWith('#/officer/claim')) {
-          const params = new URLSearchParams(hash.slice(hash.indexOf('?') + 1));
-          const u = params.get('u') ?? '';
-          const t = params.get('t') ?? undefined;
-          if (u) {
-            officerClaimUsername = u;
-            officerClaimTenantId = t ?? undefined;
-            appState = "officer-claim";
-            console.debug("[App] initialize: officer claim flow for", u);
-            return;
-          }
-        }
 
         // A sealed server only serves the barrier endpoints. Inspect the seal
         // state and route to the bootstrap (uninitialized) or unseal
@@ -156,7 +137,7 @@
   }
 
   async function handleUnsealSubmit(): Promise<void> {
-    if (client === null || unsealShare.trim() === "") return;
+    if (client === null || unsealIsShamir || unsealShare.trim() === "") return;
 
     console.debug("[App] handleUnsealSubmit");
     unsealError = "";
@@ -186,13 +167,12 @@
       console.error("[App] handleUnsealSubmit: error", err);
       const raw = err instanceof Error ? err.message : "Invalid share";
       // A wrong passphrase surfaces as the server's 403 decryption-failure
-      // signature. Show a clean, friendly message in passphrase mode rather
-      // than leaking the raw transport string; preserve the raw message for
-      // Shamir mode and for genuine (non-credential) transport failures.
-      unsealError =
-        !unsealIsShamir && isCredentialFailure(raw)
-          ? "Incorrect passphrase. Please try again."
-          : raw;
+      // signature. Show a clean, friendly message rather than leaking the raw
+      // transport string; preserve the raw message for genuine
+      // (non-credential) transport failures.
+      unsealError = isCredentialFailure(raw)
+        ? "Incorrect passphrase. Please try again."
+        : raw;
     } finally {
       unsealSubmitting = false;
     }
@@ -219,13 +199,6 @@
 {:else if appState === "init" && client !== null}
   <ServerInitWizard {client} onComplete={initialize} />
 
-{:else if appState === "officer-claim" && client !== null}
-  <OfficerClaimPage
-    {client}
-    username={officerClaimUsername}
-    {...(officerClaimTenantId !== undefined ? { tenantId: officerClaimTenantId } : {})}
-  />
-
 {:else if appState === "unseal" && client !== null}
   <div class="flex min-h-screen items-center justify-center px-4">
     <div class="card bg-base-100 w-full max-w-md shadow-xl">
@@ -235,70 +208,74 @@
           <h2 class="card-title">QRDB is Sealed</h2>
           <p class="text-base-content/60 text-center text-sm">
             {#if unsealIsShamir}
-              Provide Shamir key shares to unseal the encryption barrier.
+              This barrier is held by its share holders.
             {:else}
               Enter the barrier passphrase to unseal the encryption barrier.
             {/if}
           </p>
         </div>
 
-        <!-- Progress -->
-        {#if sealStatus !== null && sealStatus.sharesRequired > 0}
-          <div class="mt-4">
-            <div class="flex justify-between text-sm">
-              <span class="text-base-content/60">Unseal progress</span>
-              <span class="font-mono text-base-content/80">
-                {sealStatus.sharesProvided} / {sealStatus.sharesRequired}
-              </span>
-            </div>
-            <progress
-              class="progress progress-warning mt-1 w-full"
-              value={sealStatus.sharesProvided}
-              max={sealStatus.sharesRequired}
-            ></progress>
-          </div>
-        {/if}
-
-        <!-- Share input -->
-        <form
-          class="mt-4 space-y-3"
-          onsubmit={(e) => {
-            e.preventDefault();
-            handleUnsealSubmit();
-          }}
-        >
-          <div class="form-control">
-            <label class="label" for="unseal-share">
-              <span class="label-text">{unsealIsShamir ? "Key Share" : "Passphrase"}</span>
-            </label>
-            <input
-              id="unseal-share"
-              type="password"
-              placeholder={unsealIsShamir ? "share-..." : "Enter passphrase"}
-              class="input input-bordered w-full font-mono"
-              bind:value={unsealShare}
-              disabled={unsealSubmitting}
-            />
-          </div>
-
-          {#if unsealError}
-            <div role="alert" class="alert alert-error py-2 text-sm">
-              <XCircle class="h-5 w-5 shrink-0" />
-              <span>{unsealError}</span>
-            </div>
-          {/if}
-
-          <button
-            type="submit"
-            class="btn btn-warning btn-block"
-            disabled={unsealSubmitting || unsealShare.trim() === ""}
-          >
-            {#if unsealSubmitting}
-              <span class="loading loading-spinner loading-sm"></span>
+        {#if unsealIsShamir}
+          <!-- A Shamir barrier opens through a holder quorum. Holders claim
+               and submit with their own keys, which never enter this page. -->
+          <div class="mt-4 space-y-3 text-sm">
+            {#if sealStatus !== null && sealStatus.sharesRequired > 0}
+              <p class="text-base-content/80">
+                Unsealing needs <span class="font-mono">{sealStatus.sharesRequired}</span>
+                of <span class="font-mono">{sealStatus.sharesTotal}</span> share holders.
+              </p>
             {/if}
-            {unsealIsShamir ? "Submit Share" : "Unseal"}
-          </button>
-        </form>
+            <p class="text-base-content/60">
+              Each holder submits from the qrdb CLI
+              (<code class="font-mono">qrdb barrier quorum submit --op unseal</code>)
+              or the desktop app. This page continues once the quorum is met.
+            </p>
+            <button class="btn btn-outline btn-block" onclick={initialize}>
+              Check again
+            </button>
+          </div>
+        {:else}
+          <!-- Passphrase input -->
+          <form
+            class="mt-4 space-y-3"
+            onsubmit={(e) => {
+              e.preventDefault();
+              handleUnsealSubmit();
+            }}
+          >
+            <div class="form-control">
+              <label class="label" for="unseal-share">
+                <span class="label-text">Passphrase</span>
+              </label>
+              <input
+                id="unseal-share"
+                type="password"
+                placeholder="Enter passphrase"
+                class="input input-bordered w-full font-mono"
+                bind:value={unsealShare}
+                disabled={unsealSubmitting}
+              />
+            </div>
+
+            {#if unsealError}
+              <div role="alert" class="alert alert-error py-2 text-sm">
+                <XCircle class="h-5 w-5 shrink-0" />
+                <span>{unsealError}</span>
+              </div>
+            {/if}
+
+            <button
+              type="submit"
+              class="btn btn-warning btn-block"
+              disabled={unsealSubmitting || unsealShare.trim() === ""}
+            >
+              {#if unsealSubmitting}
+                <span class="loading loading-spinner loading-sm"></span>
+              {/if}
+              Unseal
+            </button>
+          </form>
+        {/if}
       </div>
     </div>
   </div>

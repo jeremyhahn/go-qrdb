@@ -13,23 +13,26 @@
 // limitations under the License.
 
 /**
- * Officer client REST contract tests.
+ * Share-holder administration REST contract tests.
  *
- * Guards the new security-officer enrollment and share-claim REST surface
- * introduced in the SO share-distribution redesign (§7.3 of the design doc).
+ * The SDK administers share holders — enrolment, listing, rekey and
+ * revocation — for the system barrier's unseal and recovery domains and for
+ * tenant barriers. Claiming an envelope and submitting a share are holder
+ * operations that need the holder's private keys; the SDK does not implement
+ * them (see docs/shamir-custody).
  *
- * For every new route the test verifies:
- *   - The correct HTTP verb and path are used.
- *   - The request body carries the expected JSON fields.
- *   - The response is mapped to the correct TypeScript shape.
- *   - No share bytes appear in registration or init responses.
+ * For every route the tests pin the HTTP verb and path, the exact JSON body,
+ * and the mapping of the response, and they assert no share material appears
+ * in any administration response.
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 
 // ---------------------------------------------------------------------------
-// Fetch mock helpers (same pattern as existing contract tests)
+// Fetch mock helpers (same pattern as the other contract tests)
 // ---------------------------------------------------------------------------
 
 interface CapturedRequest {
@@ -82,399 +85,335 @@ async function connectedClient(): Promise<RestClient> {
     return client;
 }
 
-const OFFICER_STATUS = {
+const HOLDER_STATUS = {
     username: 'alice',
+    role: 'so',
     cert_thumbprint: 'abc123',
     share_index: 1,
-    auth_factor: 'software',
+    designated: 'mtls',
+    factors: ['mtls', 'fido2'],
+    encryption_kem: 'dhkem-p256',
     enrolled_at: '2026-06-01T00:00:00Z',
-    claimed_at: '',
+    claimed_at: '0001-01-01T00:00:00Z',
     share_pending: true,
 };
 
+const OPEN_ROUND = {
+    domain: 'unseal',
+    op: 'rekey',
+    required: 2,
+    submitted: 0,
+    expires_at: '2026-06-01T00:10:00Z',
+    new_threshold: 3,
+    policy: 'any-enrolled',
+    remove: ['erin'],
+};
+
+const ENROLMENT = {
+    username: 'carol',
+    role: 'custodian' as const,
+    csrPem: '-----BEGIN CERTIFICATE REQUEST-----\n...',
+    encryptionKem: 'dhkem-x25519',
+    encryptionKey: 'cHVibGljLWtleQ==',
+    factors: [{ name: 'fido2', params: { credentialId: 'Y3JlZA==', rpId: 'db.example.com' } }],
+    designated: 'fido2',
+};
+
+// The wire body an enrolment must produce: snake_case field names, with each
+// factor's params passed through verbatim — they belong to the factor, not to
+// the SDK, so their keys are never re-cased.
+const ENROLMENT_WIRE = {
+    username: 'carol',
+    role: 'custodian',
+    csr_pem: '-----BEGIN CERTIFICATE REQUEST-----\n...',
+    encryption_kem: 'dhkem-x25519',
+    encryption_key: 'cHVibGljLWtleQ==',
+    factors: [{ name: 'fido2', params: { credentialId: 'Y3JlZA==', rpId: 'db.example.com' } }],
+    designated: 'fido2',
+};
+
+const REGISTERED = {
+    cert_pem: '-----BEGIN CERTIFICATE-----\n...',
+    role: 'custodian',
+    designated: 'fido2',
+    encryption_kem: 'dhkem-x25519',
+    factors: ['mtls', 'fido2'],
+};
+
+function expectNoShareMaterial(v: unknown): void {
+    const json = JSON.stringify(v);
+    for (const field of ['share"', 'shares"', 'shareBytes', 'envelope', 'share_bytes']) {
+        expect(json).not.toContain(field);
+    }
+}
+
 // ---------------------------------------------------------------------------
-// System barrier officer routes
+// System barrier
 // ---------------------------------------------------------------------------
 
-describe('officers – registerOfficer', () => {
+describe('holders – enrolment', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('POSTs CSR to /v1/barrier/officers and returns cert+shareIndex', async () => {
+    it('registerOfficer POSTs the enrolment to /v1/barrier/officers', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/officers': {
-                body: { cert_pem: '-----BEGIN CERT-----\n...', share_index: 1 },
-            },
-        });
+        const { calls } = installRouter({ 'POST /v1/barrier/officers': { body: REGISTERED } });
 
-        const result = await client.officers.registerOfficer({
-            username: 'alice',
-            csrPem: '-----BEGIN CERTIFICATE REQUEST-----\n...',
-            authenticatorType: 'software',
-        });
+        const result = await client.officers.registerOfficer(ENROLMENT);
 
         const req = calls.find((c) => c.path === '/v1/barrier/officers');
         expect(req?.method).toBe('POST');
-        // Body must contain csr_pem (snake_case via deepCamelToSnake).
-        expect((req?.body as Record<string, unknown>)['csr_pem']).toBeDefined();
-
-        expect(result.certPem).toContain('BEGIN CERT');
-        expect(result.shareIndex).toBe(1);
-        // Confirm no share bytes in the response.
-        expect((result as unknown as Record<string, unknown>)['shareBytes']).toBeUndefined();
-        expect((result as unknown as Record<string, unknown>)['share']).toBeUndefined();
-    });
-});
-
-describe('officers – listOfficers', () => {
-    beforeEach(() => vi.unstubAllGlobals());
-
-    it('GETs /v1/barrier/officers and returns officer array', async () => {
-        const client = await connectedClient();
-        installRouter({
-            'GET /v1/barrier/officers': { body: { officers: [OFFICER_STATUS] } },
+        expect(req?.body).toEqual(ENROLMENT_WIRE);
+        expect(result).toEqual({
+            certPem: '-----BEGIN CERTIFICATE-----\n...',
+            role: 'custodian',
+            designated: 'fido2',
+            encryptionKem: 'dhkem-x25519',
+            factors: ['mtls', 'fido2'],
         });
-
-        const officers = await client.officers.listOfficers();
-
-        expect(officers).toHaveLength(1);
-        expect(officers[0].username).toBe('alice');
-        expect(officers[0].sharePending).toBe(true);
+        expectNoShareMaterial(result);
     });
-
-    it('returns empty array when officers key is missing', async () => {
-        const client = await connectedClient();
-        installRouter({ 'GET /v1/barrier/officers': { body: {} } });
-
-        const officers = await client.officers.listOfficers();
-        expect(officers).toEqual([]);
-    });
-});
-
-describe('officers – officerClaimStatus', () => {
-    beforeEach(() => vi.unstubAllGlobals());
-
-    it('GETs /v1/barrier/officers/claim-status', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'GET /v1/barrier/officers/claim-status': {
-                body: {
-                    officers: [{ ...OFFICER_STATUS, claimed_at: '2026-06-02T00:00:00Z', share_pending: false }],
-                },
-            },
-        });
-
-        const status = await client.officers.officerClaimStatus();
-
-        const req = calls.find((c) => c.path === '/v1/barrier/officers/claim-status');
-        expect(req?.method).toBe('GET');
-        expect(status[0].claimedAt).toBe('2026-06-02T00:00:00Z');
-        expect(status[0].sharePending).toBe(false);
-    });
-});
-
-describe('officers – claimBegin', () => {
-    beforeEach(() => vi.unstubAllGlobals());
-
-    it('POSTs to /v1/barrier/officers/{username}/claim/begin and returns nonce', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/officers/alice/claim/begin': {
-                body: { nonce_hex: 'deadbeef01234567', expires_at: '2026-06-01T00:05:00Z' },
-            },
-        });
-
-        const resp = await client.officers.claimBegin({ username: 'alice' });
-
-        const req = calls.find((c) => c.path === '/v1/barrier/officers/alice/claim/begin');
-        expect(req?.method).toBe('POST');
-        expect(resp.nonceHex).toBe('deadbeef01234567');
-        expect(resp.expiresAt).toBeDefined();
-    });
-});
-
-describe('officers – claimComplete', () => {
-    beforeEach(() => vi.unstubAllGlobals());
-
-    it('POSTs signature to /v1/barrier/officers/{username}/claim/complete and returns share', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/officers/alice/claim/complete': {
-                body: { share_index: 1, share_bytes: 'c2hhcmU=' },
-            },
-        });
-
-        const resp = await client.officers.claimComplete({
-            username: 'alice',
-            nonceHex: 'deadbeef',
-            signature: 'c2ln',
-        });
-
-        const req = calls.find((c) => c.path === '/v1/barrier/officers/alice/claim/complete');
-        expect(req?.method).toBe('POST');
-        // Wire body must use snake_case for nonce_hex and signature.
-        expect((req?.body as Record<string, unknown>)['nonce_hex']).toBe('deadbeef');
-        expect((req?.body as Record<string, unknown>)['signature']).toBe('c2ln');
-
-        expect(resp.shareIndex).toBe(1);
-        // share_bytes is the ONLY place share material appears.
-        expect(resp.shareBytes).toBe('c2hhcmU=');
-    });
-
-    it('completeClaimResponse contains shareBytes — never absent', async () => {
-        const client = await connectedClient();
-        installRouter({
-            'POST /v1/barrier/officers/bob/claim/complete': {
-                body: { share_index: 2, share_bytes: 'Ynl0ZXM=' },
-            },
-        });
-
-        const resp = await client.officers.claimComplete({
-            username: 'bob',
-            nonceHex: 'ff',
-            signature: 'sig',
-        });
-        expect(typeof resp.shareBytes).toBe('string');
-        expect(resp.shareBytes.length).toBeGreaterThan(0);
-    });
-});
-
-describe('officers – recovery routes', () => {
-    beforeEach(() => vi.unstubAllGlobals());
 
     it('registerRecoveryOfficer POSTs to /v1/barrier/recovery/officers', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/recovery/officers': { body: { cert_pem: 'pem', share_index: 1 } },
-        });
+        const { calls } = installRouter({ 'POST /v1/barrier/recovery/officers': { body: REGISTERED } });
 
-        await client.officers.registerRecoveryOfficer({ username: 'carol', csrPem: 'csr' });
+        await client.officers.registerRecoveryOfficer({ username: 'dave', csrPem: 'CSR' });
 
         const req = calls.find((c) => c.path === '/v1/barrier/recovery/officers');
         expect(req?.method).toBe('POST');
-    });
-
-    it('recoveryClaimBegin POSTs to /v1/barrier/recovery/officers/{username}/claim/begin', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/recovery/officers/carol/claim/begin': {
-                body: { nonce_hex: 'abc', expires_at: '2026-01-01T00:05:00Z' },
-            },
-        });
-
-        const resp = await client.officers.recoveryClaimBegin({ username: 'carol' });
-
-        expect(calls.some((c) => c.path === '/v1/barrier/recovery/officers/carol/claim/begin')).toBe(true);
-        expect(resp.nonceHex).toBe('abc');
-    });
-
-    it('recoveryClaimComplete POSTs to /v1/barrier/recovery/officers/{username}/claim/complete', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/recovery/officers/carol/claim/complete': {
-                body: { share_index: 1, share_bytes: 'cmVj' },
-            },
-        });
-
-        const resp = await client.officers.recoveryClaimComplete({
-            username: 'carol',
-            nonceHex: 'abc',
-            signature: 'sig',
-        });
-
-        expect(calls.some((c) => c.path === '/v1/barrier/recovery/officers/carol/claim/complete')).toBe(true);
-        expect(resp.shareBytes).toBe('cmVj');
+        // Optional fields are omitted, not sent empty.
+        expect(req?.body).toEqual({ username: 'dave', csr_pem: 'CSR' });
     });
 });
 
-describe('officers – submitSealVote', () => {
+describe('holders – listing', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('POSTs share to /v1/barrier/shamir/seal-vote and returns quorum progress', async () => {
+    it('listOfficers GETs /v1/barrier/officers and maps each holder', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/barrier/shamir/seal-vote': {
-                body: { required: 3, submitted: 2, complete: false },
-            },
+        installRouter({ 'GET /v1/barrier/officers': { body: { officers: [HOLDER_STATUS] } } });
+
+        const list = await client.officers.listOfficers();
+
+        expect(list).toHaveLength(1);
+        expect(list[0]).toMatchObject({
+            username: 'alice',
+            role: 'so',
+            certThumbprint: 'abc123',
+            shareIndex: 1,
+            designated: 'mtls',
+            factors: ['mtls', 'fido2'],
+            encryptionKem: 'dhkem-p256',
+            sharePending: true,
         });
-
-        const resp = await client.officers.submitSealVote({ share: 'my-share-value' });
-
-        const req = calls.find((c) => c.path === '/v1/barrier/shamir/seal-vote');
-        expect(req?.method).toBe('POST');
-        expect((req?.body as Record<string, unknown>)['share']).toBe('my-share-value');
-        expect(resp.required).toBe(3);
-        expect(resp.submitted).toBe(2);
-        expect(resp.complete).toBe(false);
+        expectNoShareMaterial(list);
     });
 
-    it('reports complete=true when quorum is met', async () => {
+    it('reports a never-claimed envelope as no claim, and a real claim as its time', async () => {
         const client = await connectedClient();
         installRouter({
-            'POST /v1/barrier/shamir/seal-vote': {
-                body: { required: 2, submitted: 2, complete: true },
+            'GET /v1/barrier/officers': {
+                body: { officers: [HOLDER_STATUS, { ...HOLDER_STATUS, username: 'bob', claimed_at: '2026-06-02T00:00:00Z', share_pending: false }] },
             },
         });
 
-        const resp = await client.officers.submitSealVote({ share: 'share-3' });
-        expect(resp.complete).toBe(true);
+        const [alice, bob] = await client.officers.listOfficers();
+
+        expect(alice).not.toHaveProperty('claimedAt');
+        expect(bob?.claimedAt).toBe('2026-06-02T00:00:00Z');
+    });
+
+    it('listOfficers returns an empty array when the officers key is missing', async () => {
+        const client = await connectedClient();
+        installRouter({ 'GET /v1/barrier/officers': { body: {} } });
+        expect(await client.officers.listOfficers()).toEqual([]);
+    });
+});
+
+describe('holders – rekey and revocation', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('startRekey POSTs to /v1/barrier/rekey/start and returns the open round', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/barrier/rekey/start': { body: OPEN_ROUND } });
+
+        const round = await client.officers.startRekey({
+            domain: 'unseal',
+            threshold: 3,
+            policy: 'any-enrolled',
+            soPin: '1234',
+        });
+
+        const req = calls.find((c) => c.path === '/v1/barrier/rekey/start');
+        expect(req?.method).toBe('POST');
+        expect(req?.body).toEqual({ domain: 'unseal', threshold: 3, policy: 'any-enrolled', so_pin: '1234' });
+        expect(round).toEqual({
+            domain: 'unseal',
+            op: 'rekey',
+            required: 2,
+            submitted: 0,
+            expiresAt: '2026-06-01T00:10:00Z',
+            newThreshold: 3,
+            policy: 'any-enrolled',
+            remove: ['erin'],
+        });
+    });
+
+    it('startRekey defaults the domain to unseal', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/barrier/rekey/start': { body: OPEN_ROUND } });
+
+        await client.officers.startRekey({ threshold: 2 });
+
+        expect(calls.find((c) => c.path === '/v1/barrier/rekey/start')?.body).toEqual({ domain: 'unseal', threshold: 2 });
+    });
+
+    it('revokeOfficer POSTs to /v1/barrier/officers/revoke and returns the open round', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/barrier/officers/revoke': { body: OPEN_ROUND } });
+
+        const round = await client.officers.revokeOfficer({ domain: 'recovery', username: 'erin', soPin: '1234' });
+
+        const req = calls.find((c) => c.path === '/v1/barrier/officers/revoke');
+        expect(req?.method).toBe('POST');
+        expect(req?.body).toEqual({ domain: 'recovery', username: 'erin', so_pin: '1234' });
+        expect(round.remove).toEqual(['erin']);
     });
 });
 
 // ---------------------------------------------------------------------------
-// Tenant barrier officer routes
+// Tenant barrier
 // ---------------------------------------------------------------------------
 
-describe('officers – tenant officer routes', () => {
+describe('holders – tenant barrier', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('registerTenantOfficer POSTs to /v1/tenants/{id}/barrier/officers', async () => {
+    it('registerTenantOfficer POSTs the enrolment to /v1/tenants/{id}/barrier/officers', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/tenants/tenant-1/barrier/officers': {
-                body: { cert_pem: 'pem', share_index: 1 },
-            },
-        });
+        const { calls } = installRouter({ 'POST /v1/tenants/acme/barrier/officers': { body: REGISTERED } });
 
-        const resp = await client.officers.registerTenantOfficer({
-            tenantId: 'tenant-1',
-            username: 'dave',
-            csrPem: 'csr-pem',
-        });
+        await client.officers.registerTenantOfficer({ tenantId: 'acme', ...ENROLMENT });
 
-        const req = calls.find((c) => c.path === '/v1/tenants/tenant-1/barrier/officers');
+        const req = calls.find((c) => c.path === '/v1/tenants/acme/barrier/officers');
         expect(req?.method).toBe('POST');
-        expect(resp.shareIndex).toBe(1);
+        expect(req?.body).toEqual(ENROLMENT_WIRE);
     });
 
     it('listTenantOfficers GETs /v1/tenants/{id}/barrier/officers', async () => {
         const client = await connectedClient();
-        installRouter({
-            'GET /v1/tenants/tenant-1/barrier/officers': {
-                body: { officers: [{ ...OFFICER_STATUS, username: 'dave' }] },
-            },
-        });
+        installRouter({ 'GET /v1/tenants/acme/barrier/officers': { body: { officers: [HOLDER_STATUS] } } });
 
-        const officers = await client.officers.listTenantOfficers('tenant-1');
-        expect(officers[0].username).toBe('dave');
+        const list = await client.officers.listTenantOfficers('acme');
+
+        expect(list.map((h) => h.username)).toEqual(['alice']);
     });
 
-    it('tenantOfficerClaimStatus GETs /v1/tenants/{id}/barrier/officers/claim-status', async () => {
+    it('startTenantRekey POSTs to /v1/tenants/{id}/barrier/rekey/start', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'GET /v1/tenants/tenant-1/barrier/officers/claim-status': {
-                body: { officers: [] },
-            },
-        });
+        const { calls } = installRouter({ 'POST /v1/tenants/acme/barrier/rekey/start': { body: OPEN_ROUND } });
 
-        await client.officers.tenantOfficerClaimStatus('tenant-1');
-        expect(calls.some((c) => c.path === '/v1/tenants/tenant-1/barrier/officers/claim-status')).toBe(true);
+        await client.officers.startTenantRekey({ tenantId: 'acme', threshold: 3, policy: 'designated' });
+
+        expect(calls.find((c) => c.path === '/v1/tenants/acme/barrier/rekey/start')?.body)
+            .toEqual({ threshold: 3, policy: 'designated' });
     });
 
-    it('tenantClaimBegin POSTs to /v1/tenants/{id}/barrier/officers/{username}/claim/begin', async () => {
+    it('revokeTenantOfficer POSTs to /v1/tenants/{id}/barrier/officers/revoke', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/tenants/tenant-1/barrier/officers/dave/claim/begin': {
-                body: { nonce_hex: 'nonce01', expires_at: '2026-01-01T00:05:00Z' },
-            },
-        });
+        const { calls } = installRouter({ 'POST /v1/tenants/acme/barrier/officers/revoke': { body: OPEN_ROUND } });
 
-        const resp = await client.officers.tenantClaimBegin({ tenantId: 'tenant-1', username: 'dave' });
+        await client.officers.revokeTenantOfficer({ tenantId: 'acme', username: 'erin', threshold: 2 });
 
-        expect(calls.some((c) => c.path === '/v1/tenants/tenant-1/barrier/officers/dave/claim/begin')).toBe(true);
-        expect(resp.nonceHex).toBe('nonce01');
+        expect(calls.find((c) => c.path === '/v1/tenants/acme/barrier/officers/revoke')?.body)
+            .toEqual({ username: 'erin', threshold: 2 });
     });
 
-    it('tenantClaimComplete POSTs to /v1/tenants/{id}/barrier/officers/{username}/claim/complete', async () => {
+    it('tenant ids and usernames are path-escaped', async () => {
         const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/tenants/tenant-1/barrier/officers/dave/claim/complete': {
-                body: { share_index: 1, share_bytes: 'dGVuYW50' },
-            },
-        });
+        const { calls } = installRouter({});
 
-        const resp = await client.officers.tenantClaimComplete({
-            tenantId: 'tenant-1',
-            username: 'dave',
-            nonceHex: 'nonce01',
-            signature: 'sig',
-        });
+        await client.officers.listTenantOfficers('a/b');
 
-        expect(calls.some((c) => c.path === '/v1/tenants/tenant-1/barrier/officers/dave/claim/complete')).toBe(true);
-        expect(resp.shareBytes).toBe('dGVuYW50');
-    });
-
-    it('submitTenantSealVote POSTs to /v1/tenants/{id}/barrier/seal-vote', async () => {
-        const client = await connectedClient();
-        const { calls } = installRouter({
-            'POST /v1/tenants/tenant-1/barrier/seal-vote': {
-                body: { required: 2, submitted: 1, complete: false },
-            },
-        });
-
-        const resp = await client.officers.submitTenantSealVote({ tenantId: 'tenant-1', share: 'sv' });
-
-        const req = calls.find((c) => c.path === '/v1/tenants/tenant-1/barrier/seal-vote');
-        expect(req?.method).toBe('POST');
-        expect((req?.body as Record<string, unknown>)['share']).toBe('sv');
-        expect(resp.submitted).toBe(1);
+        expect(calls.some((c) => c.url.endsWith('/v1/tenants/a%2Fb/barrier/officers'))).toBe(true);
     });
 });
 
 // ---------------------------------------------------------------------------
-// Invariant: init response never contains share bytes
+// Shamir initialization
 // ---------------------------------------------------------------------------
 
-describe('initializeShamir – share bytes never present in response', () => {
+describe('initializeShamir – holders, not a secret', () => {
     beforeEach(() => vi.unstubAllGlobals());
 
-    it('BootstrapResult has no keyShares or shares field at runtime', async () => {
-        installRouter({ 'GET /health': { body: { status: 'ok' } } });
-        const client = new RestClient('https://localhost:63002');
-        await client.connection.connect('https://localhost:63002');
-
-        installRouter({
+    it('POSTs threshold, total shares and policy, and never carries share material', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
             'POST /v1/barrier/shamir/initialize': {
-                // Even if server accidentally returned shares, they must not appear.
+                // Even if a server returned shares, they must not surface.
                 body: { threshold: 2, total_shares: 3, share_count: 3, shares: ['SHOULD_NOT_APPEAR'] },
             },
-            'POST /v1/barrier/root-token': { body: { token: 'tok', created_at: '2026-01-01T00:00:00Z' } },
         });
 
-        const result = await client.seal.initializeShamir('', 2, 3);
+        const result = await client.seal.initializeShamir({ threshold: 2, totalShares: 3, policy: 'designated' });
 
-        // The BootstrapResult type has no keyShares field; verify at runtime too.
-        expect((result as unknown as Record<string, unknown>)['keyShares']).toBeUndefined();
-        expect((result as unknown as Record<string, unknown>)['shares']).toBeUndefined();
-        expect(result.threshold).toBe(2);
-        expect(result.shareCount).toBe(3);
+        const req = calls.find((c) => c.path === '/v1/barrier/shamir/initialize');
+        expect(req?.method).toBe('POST');
+        expect(req?.body).toEqual({ threshold: 2, total_shares: 3, policy: 'designated' });
+        expect(result).toEqual({ rootToken: '', threshold: 2, shareCount: 3 });
+    });
+
+    it('sends the PINs only when given', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/barrier/shamir/initialize': { body: { threshold: 2, total_shares: 2, share_count: 2 } },
+        });
+
+        await client.seal.initializeShamir({ threshold: 2, totalShares: 2, soPin: 'so', userPin: 'user' });
+
+        expect(calls.find((c) => c.path === '/v1/barrier/shamir/initialize')?.body)
+            .toEqual({ threshold: 2, total_shares: 2, so_pin: 'so', user_pin: 'user' });
     });
 
     it('TenantBarrierInitResponse has no shares field', async () => {
-        installRouter({ 'GET /health': { body: { status: 'ok' } } });
-        const client = new RestClient('https://localhost:63002');
-        await client.connection.connect('https://localhost:63002');
-
+        const client = await connectedClient();
         installRouter({
             'POST /v1/tenants/t1/barrier/init': {
-                body: {
-                    tenant_id: 't1',
-                    strategy: 'shamir',
-                    threshold: 2,
-                    total_shares: 3,
-                    share_count: 3,
-                },
+                body: { tenant_id: 't1', strategy: 'shamir', threshold: 2, total_shares: 3, share_count: 3 },
             },
         });
 
-        const result = await client.tenants.barrierInit({
-            tenantId: 't1',
-            threshold: 2,
-            shares: 3,
-            strategy: 'shamir',
-        });
+        const result = await client.tenants.barrierInit({ tenantId: 't1', threshold: 2, shares: 3, strategy: 'shamir' });
 
         expect((result as unknown as Record<string, unknown>)['shares']).toBeUndefined();
         expect(result.shareCount).toBe(3);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Retired routes
+// ---------------------------------------------------------------------------
+
+describe('retired holder routes', () => {
+    // The raw-share routes and the claim-status listing are gone from the
+    // server. No transport in this SDK may name them again: a call to one is a
+    // 404 at runtime that no type check catches.
+    const retired = [
+        '/unseal-share',
+        '/unseal-shares',
+        '/seal-vote',
+        '/claim-status',
+        '/v1/barrier/rekey\'',
+        '/v1/barrier/root-token',
+        '/v1/barrier/recovery/recover',
+    ];
+
+    it('no SDK source file names a retired route', () => {
+        const dir = join(__dirname, '..', 'src');
+        for (const name of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+            const src = readFileSync(join(dir, name), 'utf8');
+            for (const route of retired) {
+                expect(src.includes(route), `${name} names the retired route ${route}`).toBe(false);
+            }
+        }
     });
 });

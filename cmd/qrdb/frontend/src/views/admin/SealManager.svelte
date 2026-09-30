@@ -15,10 +15,10 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, FactorPolicy, HolderRole, QuorumDomain, QuorumRound } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
-  import { sealStore, updateSealStatus, addShare, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
+  import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
@@ -27,29 +27,27 @@
     onReconfigure?: () => void;
   } = $props();
 
-  let shareInput: string = $state("");
+  let passphraseInput: string = $state("");
   let unsealLoading: boolean = $state(false);
   let sealLoading: boolean = $state(false);
   let statusLoading: boolean = $state(true);
   let showSealConfirm: boolean = $state(false);
 
-  // Shamir quorum seal-vote state. Sealing a Shamir-protected barrier is
-  // blocked for a single admin; a threshold of Security Officers must each
-  // submit their share as a seal vote (server: BarrierShamirSealVote).
-  let sealVoteInput: string = $state("");
-  let sealVoteLoading: boolean = $state(false);
-  let sealVotesSubmitted: number = $state(0);
-  let sealVotesRequired: number = $state(0);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---------------------------------------------------------------------------
-  // Security Officers panel state
+  // Share-holder administration state
+  //
+  // Holders — Security Officers and key custodians — are enrolled, listed,
+  // rekeyed and revoked here. Claiming an envelope and submitting a share need
+  // the holder's own keys and happen in the qrdb CLI or the desktop app.
   // ---------------------------------------------------------------------------
 
   let showOfficersPanel: boolean = $state(false);
 
   // Register form state
   let officerRegUsername: string = $state("");
+  let officerRegRole: HolderRole = $state("so");
   let officerRegCsrPem: string = $state("");
   let officerRegLoading: boolean = $state(false);
   let officerRegError: string = $state("");
@@ -58,23 +56,32 @@
   let officerRegCertPem: string = $state("");
   let officerRegCertCopied: boolean = $state(false);
 
-  /** Claim status for the officer panel (distinct from the loading state used by the store). */
-  let officerClaimStatusLoading: boolean = $state(false);
+  // Rekey / revocation state. Opening a round needs RBAC and the SO PIN; a
+  // quorum of current holders completes it from the CLI or the desktop app.
+  let showRekeyPanel: boolean = $state(false);
+  let rekeyDomain: QuorumDomain = $state("unseal");
+  let rekeyThreshold: number = $state(2);
+  let rekeyPolicy: FactorPolicy = $state("designated");
+  let revokeUsername: string = $state("");
+  let revokeThreshold: number = $state(0);
+  let rekeySoPin: string = $state("");
+  let rekeyLoading: boolean = $state(false);
+  /** The round the last rekey or revocation opened. */
+  let openRound = $state<QuorumRound | null>(null);
 
   // ---------------------------------------------------------------------------
-  // Recovery Officers panel state
+  // Recovery holders panel state
   //
-  // Recovery officers hold shares of a distinct recovery key set (separate
-  // from the unseal officer set above). The SDK exposes registration and the
-  // begin/complete claim challenge-response flow, but no list/status query —
-  // claim status for the recovery set is tracked out of band by the officers
-  // themselves.
+  // Recovery holders hold shares of a distinct recovery key, separate from the
+  // unseal holders above. They are enrolled here; they claim and submit from
+  // the CLI or the desktop app.
   // ---------------------------------------------------------------------------
 
   let showRecoveryOfficersPanel: boolean = $state(false);
 
   // Register form state
   let recoveryRegUsername: string = $state("");
+  let recoveryRegRole: HolderRole = $state("so");
   let recoveryRegCsrPem: string = $state("");
   let recoveryRegLoading: boolean = $state(false);
   let recoveryRegError: string = $state("");
@@ -82,20 +89,6 @@
   /** Result of the last successful registration: signed cert PEM. */
   let recoveryRegCertPem: string = $state("");
   let recoveryRegCertCopied: boolean = $state(false);
-
-  // Claim challenge-response tester state
-  let showRecoveryClaimPanel: boolean = $state(false);
-  let recoveryClaimUsername: string = $state("");
-  let recoveryClaimBeginLoading: boolean = $state(false);
-  let recoveryClaimNonceHex: string = $state("");
-  let recoveryClaimExpiresAt: string = $state("");
-  let recoveryClaimSignature: string = $state("");
-  let recoveryClaimCompleteLoading: boolean = $state(false);
-  let recoveryClaimError: string = $state("");
-  /** The officer's share bytes, returned exactly once by claim completion. */
-  let recoveryClaimShareBytes: string = $state("");
-  let recoveryClaimShareIndex: number | null = $state(null);
-  let recoveryClaimShareCopied: boolean = $state(false);
 
   // Re-initialization state
   let showReinit: boolean = $state(false);
@@ -107,21 +100,9 @@
   let reinitLoading: boolean = $state(false);
   let reinitConfirm: boolean = $state(false);
 
-  /** Percentage of shares provided toward the unseal threshold. */
-  let unsealProgress = $derived(
-    sealStore.sharesRequired > 0
-      ? Math.round((sealStore.sharesProvided / sealStore.sharesRequired) * 100)
-      : 0,
-  );
-
-  /** Human-readable share progress string. */
-  let shareProgressLabel = $derived(
-    `${sealStore.sharesProvided} / ${sealStore.sharesRequired}`,
-  );
-
   /**
-   * Whether the active barrier uses Shamir secret sharing. Drives whether the
-   * Unseal panel prompts for key shares (M-of-N) or a single passphrase.
+   * Whether the active barrier uses Shamir secret sharing. A Shamir barrier
+   * unseals and seals through a quorum of its holders, not from this page.
    * Falls back to the share count for transports that don't report strategy.
    */
   let isShamir = $derived(
@@ -215,41 +196,28 @@
     );
   }
 
-  /** Submits a single Shamir share toward the unseal ceremony. */
-  async function handleSubmitShare(): Promise<void> {
-    const share = shareInput.trim();
-    if (share === "") {
-      showToast("warning", isShamir ? "A key share is required" : "The passphrase is required");
+  /** Unseals a passphrase-held barrier. */
+  async function handleSubmitPassphrase(): Promise<void> {
+    const secret = passphraseInput;
+    if (secret === "") {
+      showToast("warning", "The passphrase is required");
       return;
     }
 
     try {
       unsealLoading = true;
-      addShare();
-      const progress: UnsealProgress = await client.seal.unseal(share);
-      shareInput = "";
-
+      const progress: UnsealProgress = await client.seal.unseal(secret);
+      passphraseInput = "";
       if (!progress.sealed) {
         showToast("success", "Server unsealed successfully");
-        await fetchSealStatus();
-      } else {
-        showToast(
-          "info",
-          `Share accepted (${progress.sharesProvided}/${progress.sharesRequired})`,
-        );
       }
+      await fetchSealStatus();
     } catch (err: unknown) {
-      const raw = err instanceof Error ? err.message : "Failed to submit share";
+      const raw = err instanceof Error ? err.message : "Failed to unseal";
       // A wrong passphrase surfaces as the server's 403 decryption-failure
-      // signature. Show a clean message in passphrase mode rather than leaking
-      // the raw transport string; preserve the raw message for Shamir mode and
-      // for genuine (non-credential) transport failures.
-      const msg =
-        !isShamir && isCredentialFailure(raw)
-          ? "Incorrect passphrase. Please try again."
-          : raw;
-      showToast("error", msg);
-      // Re-fetch to correct optimistic counter on failure.
+      // signature. Show a clean message rather than leaking the raw transport
+      // string; preserve the raw message for genuine transport failures.
+      showToast("error", isCredentialFailure(raw) ? "Incorrect passphrase. Please try again." : raw);
       await fetchSealStatus();
     } finally {
       unsealLoading = false;
@@ -272,44 +240,6 @@
     }
   }
 
-  /**
-   * Submits a Shamir share as a seal vote toward the quorum-seal ceremony.
-   * When the threshold of distinct votes is reached the server seals the
-   * barrier and destroys all vote enclaves.
-   */
-  async function handleSubmitSealVote(): Promise<void> {
-    const share = sealVoteInput.trim();
-    if (share === "") {
-      showToast("warning", "A key share is required");
-      return;
-    }
-
-    try {
-      sealVoteLoading = true;
-      const progress = await client.officers.submitSealVote({ share });
-      sealVoteInput = "";
-      sealVotesSubmitted = progress.submitted;
-      sealVotesRequired = progress.required;
-
-      if (progress.complete) {
-        showToast("success", "Quorum reached — server sealed");
-        sealVotesSubmitted = 0;
-        sealVotesRequired = 0;
-        await fetchSealStatus();
-      } else {
-        showToast(
-          "info",
-          `Seal vote accepted (${progress.submitted}/${progress.required})`,
-        );
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to submit seal vote";
-      showToast("error", msg);
-    } finally {
-      sealVoteLoading = false;
-    }
-  }
-
   /** Re-initializes the barrier with a new configuration. */
   async function handleReinitialize(): Promise<void> {
     try {
@@ -326,11 +256,12 @@
         }
         await client.seal.initialize(reinitPassphrase);
       } else if (reinitMode === "shamir") {
-        await client.seal.initializeShamir(
-          reinitPassphrase || "auto-generated",
-          reinitShamirThreshold,
-          reinitShamirShares,
-        );
+        // The unseal key is split to the enrolled unseal holders; their
+        // number must equal the share count.
+        await client.seal.initializeShamir({
+          threshold: reinitShamirThreshold,
+          totalShares: reinitShamirShares,
+        });
       }
 
       showToast("success", "Barrier re-initialized successfully");
@@ -429,38 +360,24 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Security Officers actions
+  // Share-holder actions
   // ---------------------------------------------------------------------------
 
-  /** Fetches the officer list and updates the store. */
+  /** Fetches the unseal holders and updates the store. */
   async function fetchOfficers(): Promise<void> {
     setOfficersLoading(true);
     try {
       const officers: OfficerStatus[] = await client.officers.listOfficers();
       updateOfficers(officers);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch officers";
+      const msg = err instanceof Error ? err.message : "Failed to fetch share holders";
       showToast("error", msg);
     } finally {
       setOfficersLoading(false);
     }
   }
 
-  /** Fetches the current officer claim status and updates the store. */
-  async function fetchOfficerClaimStatus(): Promise<void> {
-    officerClaimStatusLoading = true;
-    try {
-      const officers: OfficerStatus[] = await client.officers.officerClaimStatus();
-      updateOfficers(officers);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch claim status";
-      showToast("error", msg);
-    } finally {
-      officerClaimStatusLoading = false;
-    }
-  }
-
-  /** Submits a new officer registration. */
+  /** Enrols a new unseal holder. */
   async function handleRegisterOfficer(): Promise<void> {
     const username = officerRegUsername.trim();
     const csrPem = officerRegCsrPem.trim();
@@ -477,11 +394,11 @@
     officerRegCertPem = "";
     officerRegCertCopied = false;
     try {
-      const resp = await client.officers.registerOfficer({ username, csrPem });
+      const resp = await client.officers.registerOfficer({ username, role: officerRegRole, csrPem });
       officerRegCertPem = resp.certPem;
       officerRegUsername = "";
       officerRegCsrPem = "";
-      showToast("success", `Officer ${username} registered (share #${resp.shareIndex})`);
+      showToast("success", `Holder ${username} enrolled as ${resp.role}`);
       // Refresh the list after a successful registration.
       await fetchOfficers();
     } catch (err: unknown) {
@@ -528,11 +445,11 @@
     recoveryRegCertPem = "";
     recoveryRegCertCopied = false;
     try {
-      const resp = await client.officers.registerRecoveryOfficer({ username, csrPem });
+      const resp = await client.officers.registerRecoveryOfficer({ username, role: recoveryRegRole, csrPem });
       recoveryRegCertPem = resp.certPem;
       recoveryRegUsername = "";
       recoveryRegCsrPem = "";
-      showToast("success", `Recovery officer ${username} registered (share #${resp.shareIndex})`);
+      showToast("success", `Recovery holder ${username} enrolled as ${resp.role}`);
     } catch (err: unknown) {
       recoveryRegError = err instanceof Error ? err.message : "Registration failed";
     } finally {
@@ -556,60 +473,48 @@
     URL.revokeObjectURL(url);
   }
 
-  /** Begins a recovery share claim by issuing a challenge nonce. */
-  async function handleRecoveryClaimBegin(): Promise<void> {
-    const username = recoveryClaimUsername.trim();
-    if (username === "") {
-      recoveryClaimError = "Username is required.";
-      return;
-    }
-    recoveryClaimBeginLoading = true;
-    recoveryClaimError = "";
-    recoveryClaimShareBytes = "";
-    recoveryClaimShareIndex = null;
-    recoveryClaimShareCopied = false;
+  /** Opens a rekey round on the chosen domain. */
+  async function handleStartRekey(): Promise<void> {
     try {
-      const resp = await client.officers.recoveryClaimBegin({ username });
-      recoveryClaimNonceHex = resp.nonceHex;
-      recoveryClaimExpiresAt = resp.expiresAt;
-      showToast("success", `Challenge issued for ${username}. Sign the nonce and complete the claim.`);
-    } catch (err: unknown) {
-      recoveryClaimError = err instanceof Error ? err.message : "Claim begin failed";
-    } finally {
-      recoveryClaimBeginLoading = false;
-    }
-  }
-
-  /** Completes a recovery share claim by verifying the officer's signature. */
-  async function handleRecoveryClaimComplete(): Promise<void> {
-    const username = recoveryClaimUsername.trim();
-    const signature = recoveryClaimSignature.trim();
-    if (username === "" || recoveryClaimNonceHex === "" || signature === "") {
-      recoveryClaimError = "Username, nonce, and signature are all required.";
-      return;
-    }
-    recoveryClaimCompleteLoading = true;
-    recoveryClaimError = "";
-    try {
-      const resp = await client.officers.recoveryClaimComplete({
-        username,
-        nonceHex: recoveryClaimNonceHex,
-        signature,
+      rekeyLoading = true;
+      openRound = await client.officers.startRekey({
+        domain: rekeyDomain,
+        threshold: rekeyThreshold,
+        policy: rekeyPolicy,
+        ...(rekeySoPin === "" ? {} : { soPin: rekeySoPin }),
       });
-      recoveryClaimShareBytes = resp.shareBytes;
-      recoveryClaimShareIndex = resp.shareIndex;
-      showToast("success", `Share #${resp.shareIndex} claimed for ${username}.`);
+      rekeySoPin = "";
+      showToast("success", `Rekey round opened: ${openRound.required} holders must submit`);
     } catch (err: unknown) {
-      recoveryClaimError = err instanceof Error ? err.message : "Claim completion failed";
+      showToast("error", err instanceof Error ? err.message : "Failed to start the rekey");
     } finally {
-      recoveryClaimCompleteLoading = false;
+      rekeyLoading = false;
     }
   }
 
-  function copyRecoveryClaimShare(): void {
-    void navigator.clipboard.writeText(recoveryClaimShareBytes).then(() => {
-      recoveryClaimShareCopied = true;
-    });
+  /** Revokes a holder: opens a rekey round that removes it. */
+  async function handleRevokeHolder(): Promise<void> {
+    const username = revokeUsername.trim();
+    if (username === "") {
+      showToast("warning", "The holder to revoke is required");
+      return;
+    }
+    try {
+      rekeyLoading = true;
+      openRound = await client.officers.revokeOfficer({
+        domain: rekeyDomain,
+        username,
+        ...(revokeThreshold > 0 ? { threshold: revokeThreshold } : {}),
+        ...(rekeySoPin === "" ? {} : { soPin: rekeySoPin }),
+      });
+      rekeySoPin = "";
+      revokeUsername = "";
+      showToast("success", `Revocation of ${username} opened: ${openRound.required} holders must submit`);
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : "Failed to revoke the holder");
+    } finally {
+      rekeyLoading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -690,9 +595,9 @@
     </div>
 
     <div class="stat">
-      <div class="stat-title">Shares Provided</div>
-      <div class="stat-value text-xl font-mono">{shareProgressLabel}</div>
-      <div class="stat-desc">Toward unseal threshold</div>
+      <div class="stat-title">Threshold</div>
+      <div class="stat-value text-xl font-mono">{sealStore.sharesRequired}</div>
+      <div class="stat-desc">Holders needed to unseal (M)</div>
     </div>
 
     <div class="stat">
@@ -707,49 +612,41 @@
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <h2 class="card-title text-lg">Unseal</h2>
-        <p class="text-base-content/70 text-sm">
-          {#if isShamir}
-            Submit Shamir key shares to unseal the encryption barrier.
-            {sealStore.sharesRequired} of {sealStore.sharesTotal} shares are required.
-          {:else}
-            Enter the barrier passphrase to unseal the encryption barrier.
-          {/if}
-        </p>
-
-        <!-- Progress bar (Shamir only) -->
         {#if isShamir}
-          <div class="mt-2 flex items-center gap-3">
-            <progress
-              class="progress progress-primary w-full"
-              value={unsealProgress}
-              max="100"
-            ></progress>
-            <span class="text-sm font-mono whitespace-nowrap">{unsealProgress}%</span>
+          <!-- A Shamir barrier opens through a quorum of its holders. Their
+               keys never enter this page. -->
+          <p class="text-base-content/70 text-sm" data-testid="unseal-quorum-note">
+            This barrier is held by its share holders: {sealStore.sharesRequired}
+            of {sealStore.sharesTotal} must submit. Each holder submits from the
+            qrdb CLI (<span class="font-mono">qrdb barrier quorum submit --op unseal</span>)
+            or the desktop app; this page updates when the quorum is met.
+          </p>
+        {:else}
+          <p class="text-base-content/70 text-sm">
+            Enter the barrier passphrase to unseal the encryption barrier.
+          </p>
+          <div class="form-control mt-3 gap-5">
+            <input
+              type="password"
+              class="input input-bordered input-sm"
+              placeholder="Enter passphrase"
+              bind:value={passphraseInput}
+              onkeydown={(e: KeyboardEvent) => {
+                if (e.key === "Enter") void handleSubmitPassphrase();
+              }}
+            />
+            <button
+              class="btn btn-primary btn-sm"
+              onclick={() => void handleSubmitPassphrase()}
+              disabled={unsealLoading || passphraseInput === ""}
+            >
+              {#if unsealLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Unseal
+            </button>
           </div>
         {/if}
-
-        <!-- Unseal input -->
-        <div class="form-control mt-3 gap-5">
-          <input
-            type="password"
-            class="input input-bordered input-sm"
-            placeholder={isShamir ? "Enter key share" : "Enter passphrase"}
-            bind:value={shareInput}
-            onkeydown={(e: KeyboardEvent) => {
-              if (e.key === "Enter") void handleSubmitShare();
-            }}
-          />
-          <button
-            class="btn btn-primary btn-sm"
-            onclick={() => void handleSubmitShare()}
-            disabled={unsealLoading || shareInput.trim() === ""}
-          >
-            {#if unsealLoading}
-              <span class="loading loading-spinner loading-xs"></span>
-            {/if}
-            {isShamir ? "Submit Share" : "Unseal"}
-          </button>
-        </div>
       </div>
     </div>
   {/if}
@@ -760,57 +657,14 @@
       <div class="card-body">
         <h2 class="card-title text-lg">Seal</h2>
         {#if isShamir}
-          <!-- ---------------------------------------------------------------
-            Shamir quorum seal-vote panel. A single admin cannot seal a
-            Shamir-protected barrier; the server rejects BarrierSeal with
-            ErrShamirBarrierRequiresQuorum. A threshold of Security Officers
-            must each submit their claimed share as a seal vote.
-          --------------------------------------------------------------- -->
-          <p class="text-base-content/70 text-sm">
-            Sealing a Shamir-protected barrier requires a quorum of Security
-            Officers. {sealStore.sharesRequired} of {sealStore.sharesTotal}
-            officers must each submit their key share as a seal vote. When the
-            threshold is reached the barrier seals and all vote enclaves are
-            destroyed.
+          <!-- A single admin cannot seal a Shamir barrier: the server refuses
+               it. A quorum of holders seals it from the CLI or the desktop app. -->
+          <p class="text-base-content/70 text-sm" data-testid="seal-quorum-note">
+            Sealing a Shamir barrier needs a quorum of its share holders:
+            {sealStore.sharesRequired} of {sealStore.sharesTotal} must submit
+            (<span class="font-mono">qrdb barrier quorum submit --op seal</span>,
+            or the desktop app).
           </p>
-
-          {#if sealVotesRequired > 0}
-            <div class="mt-2 flex items-center gap-3">
-              <progress
-                class="progress progress-warning w-full"
-                value={sealVotesSubmitted}
-                max={sealVotesRequired}
-              ></progress>
-              <span class="text-sm font-mono whitespace-nowrap" data-testid="seal-vote-progress">
-                {sealVotesSubmitted} / {sealVotesRequired}
-              </span>
-            </div>
-          {/if}
-
-          <div class="form-control mt-3 gap-5">
-            <input
-              type="password"
-              class="input input-bordered input-sm"
-              placeholder="Enter key share"
-              data-testid="seal-vote-input"
-              bind:value={sealVoteInput}
-              onkeydown={(e: KeyboardEvent) => {
-                if (e.key === "Enter") void handleSubmitSealVote();
-              }}
-            />
-            <button
-              class="btn btn-warning btn-sm"
-              data-testid="submit-seal-vote-btn"
-              onclick={() => void handleSubmitSealVote()}
-              disabled={sealVoteLoading || sealVoteInput.trim() === ""}
-            >
-              {#if sealVoteLoading}
-                <span class="loading loading-spinner loading-xs"></span>
-              {/if}
-              <Lock class="h-4 w-4" />
-              Submit Seal Vote
-            </button>
-          </div>
         {:else}
           <p class="text-base-content/70 text-sm">
             Seal the encryption barrier. All in-flight operations will complete, but
@@ -1245,22 +1099,29 @@
     </div>
   {/if}
 
-  <!-- Security Officers panel (Shamir barriers only) -->
+  <!-- Share holders panel (Shamir barriers only) -->
   {#if sealStore.strategy === "shamir" || sealStore.sharesTotal > 0}
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <div class="flex items-center justify-between">
-          <h2 class="card-title text-lg">Security Officers</h2>
+          <h2 class="card-title text-lg">Share Holders</h2>
           <div class="flex gap-2">
             <button
               class="btn btn-ghost btn-sm gap-1"
-              onclick={() => void fetchOfficerClaimStatus()}
-              disabled={officerClaimStatusLoading || sealStore.officersLoading}
-              aria-label="Refresh officer claim status"
+              onclick={() => void fetchOfficers()}
+              disabled={sealStore.officersLoading}
+              aria-label="Refresh share holders"
               data-testid="refresh-officers-btn"
             >
-              <RefreshCw class={`h-4 w-4 ${(officerClaimStatusLoading || sealStore.officersLoading) ? 'animate-spin' : ''}`} />
+              <RefreshCw class={`h-4 w-4 ${sealStore.officersLoading ? 'animate-spin' : ''}`} />
               Refresh
+            </button>
+            <button
+              class="btn btn-ghost btn-sm"
+              onclick={() => { showRekeyPanel = !showRekeyPanel; }}
+              data-testid="toggle-rekey-btn"
+            >
+              {showRekeyPanel ? "Cancel" : "Rekey / Revoke"}
             </button>
             <button
               class="btn btn-ghost btn-sm"
@@ -1268,14 +1129,16 @@
               data-testid="toggle-register-officer-btn"
             >
               <UserPlus class="h-4 w-4" />
-              {showOfficersPanel ? "Cancel" : "Register Officer"}
+              {showOfficersPanel ? "Cancel" : "Enrol Holder"}
             </button>
           </div>
         </div>
 
         <p class="text-base-content/70 text-sm">
-          Security Officers hold individual Shamir shares needed to unseal the barrier.
-          Register officers here before performing a rekey, or to enroll additional officers.
+          Share holders — Security Officers and key custodians — each hold one
+          share of the unseal key. Enrol holders here; each claims its sealed
+          envelope and submits to quorum rounds from the qrdb CLI or the
+          desktop app, with keys that never enter this page.
         </p>
 
         <!-- Officer claim status table -->
@@ -1285,16 +1148,17 @@
           </div>
         {:else if sealStore.officers.length === 0}
           <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60" data-testid="no-officers-msg">
-            No Security Officers registered.
+            No share holders enrolled.
           </div>
         {:else}
           <div class="overflow-x-auto">
             <table class="table table-sm" data-testid="seal-manager-officers-table">
               <thead>
                 <tr>
-                  <th>Officer</th>
+                  <th>Holder</th>
+                  <th>Role</th>
                   <th>Share #</th>
-                  <th>Auth Factor</th>
+                  <th>Factors</th>
                   <th>Enrolled</th>
                   <th>Claim Status</th>
                 </tr>
@@ -1303,8 +1167,11 @@
                 {#each sealStore.officers as officer (officer.username)}
                   <tr>
                     <td class="font-mono text-sm">{officer.username}</td>
+                    <td class="text-xs">{officer.role}</td>
                     <td class="text-center">{officer.shareIndex}</td>
-                    <td class="text-xs">{officer.authFactor || "software"}</td>
+                    <td class="text-xs">
+                      {(officer.factors ?? []).join(", ")}{officer.designated ? ` (designated: ${officer.designated})` : ""}
+                    </td>
                     <td class="text-xs text-base-content/60">
                       {officer.enrolledAt ? new Date(officer.enrolledAt).toLocaleDateString() : "—"}
                     </td>
@@ -1335,7 +1202,7 @@
         <!-- Register new officer form -->
         {#if showOfficersPanel}
           <div class="mt-4 space-y-3 border-t border-base-300 pt-4">
-            <h3 class="font-semibold text-sm">Register New Officer</h3>
+            <h3 class="font-semibold text-sm">Enrol a Holder</h3>
 
             <div class="form-control">
               <label class="label" for="so-username">
@@ -1353,8 +1220,24 @@
             </div>
 
             <div class="form-control">
+              <label class="label" for="so-role">
+                <span class="label-text text-xs">Role</span>
+              </label>
+              <select
+                id="so-role"
+                class="select select-bordered select-sm"
+                bind:value={officerRegRole}
+                disabled={officerRegLoading}
+                data-testid="so-role-select"
+              >
+                <option value="so">Security Officer</option>
+                <option value="custodian">Key custodian</option>
+              </select>
+            </div>
+
+            <div class="form-control">
               <label class="label" for="so-csr">
-                <span class="label-text text-xs">CSR PEM (officer's public key, generated offline)</span>
+                <span class="label-text text-xs">CSR PEM (the holder's public key, generated offline)</span>
               </label>
               <textarea
                 id="so-csr"
@@ -1408,7 +1291,7 @@
                   data-testid="so-reg-cert-output"
                 ></textarea>
                 <p class="text-base-content/50 mt-1 text-xs">
-                  Transmit this certificate to the officer out of band. They will use it to authenticate and claim their share.
+                  Give this certificate to the holder out of band. The holder uses it to claim its envelope from the qrdb CLI or the desktop app.
                 </p>
               </div>
             {/if}
@@ -1426,45 +1309,131 @@
             </button>
           </div>
         {/if}
+
+        <!-- Rekey / revoke -->
+        {#if showRekeyPanel}
+          <div class="mt-4 space-y-3 border-t border-base-300 pt-4" data-testid="rekey-panel">
+            <h3 class="font-semibold text-sm">Rekey or Revoke</h3>
+            <p class="text-base-content/60 text-xs">
+              Opening a round needs the SO PIN. A quorum of the current holders
+              completes it (<span class="font-mono">qrdb barrier quorum submit --op rekey</span>);
+              each holder in the new share set then claims a new envelope.
+            </p>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div class="form-control">
+                <label class="label" for="rekey-domain">
+                  <span class="label-text text-xs">Domain</span>
+                </label>
+                <select id="rekey-domain" class="select select-bordered select-sm" bind:value={rekeyDomain}>
+                  <option value="unseal">Unseal</option>
+                  <option value="recovery">Recovery</option>
+                </select>
+              </div>
+              <div class="form-control">
+                <label class="label" for="rekey-so-pin">
+                  <span class="label-text text-xs">SO PIN</span>
+                </label>
+                <input id="rekey-so-pin" type="password" class="input input-bordered input-sm" bind:value={rekeySoPin} />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-3 items-end gap-4">
+              <div class="form-control">
+                <label class="label" for="rekey-threshold">
+                  <span class="label-text text-xs">New threshold</span>
+                </label>
+                <input id="rekey-threshold" type="number" min="2" class="input input-bordered input-sm" bind:value={rekeyThreshold} />
+              </div>
+              <div class="form-control">
+                <label class="label" for="rekey-policy">
+                  <span class="label-text text-xs">Factor policy</span>
+                </label>
+                <select id="rekey-policy" class="select select-bordered select-sm" bind:value={rekeyPolicy}>
+                  <option value="designated">Designated factor</option>
+                  <option value="any-enrolled">Any enrolled factor</option>
+                </select>
+              </div>
+              <button
+                class="btn btn-primary btn-sm"
+                onclick={() => void handleStartRekey()}
+                disabled={rekeyLoading || rekeyThreshold < 2}
+                data-testid="start-rekey-btn"
+              >
+                Start Rekey
+              </button>
+            </div>
+
+            <div class="grid grid-cols-3 items-end gap-4">
+              <div class="form-control">
+                <label class="label" for="revoke-username">
+                  <span class="label-text text-xs">Holder to revoke</span>
+                </label>
+                <input id="revoke-username" type="text" class="input input-bordered input-sm" bind:value={revokeUsername} />
+              </div>
+              <div class="form-control">
+                <label class="label" for="revoke-threshold">
+                  <span class="label-text text-xs">New threshold (0 keeps it)</span>
+                </label>
+                <input id="revoke-threshold" type="number" min="0" class="input input-bordered input-sm" bind:value={revokeThreshold} />
+              </div>
+              <button
+                class="btn btn-error btn-sm"
+                onclick={() => void handleRevokeHolder()}
+                disabled={rekeyLoading || revokeUsername.trim() === ""}
+                data-testid="revoke-holder-btn"
+              >
+                Revoke
+              </button>
+            </div>
+
+            {#if openRound !== null}
+              <div role="status" class="alert alert-info py-2 text-xs" data-testid="open-round">
+                <Info class="h-3 w-3 shrink-0" />
+                <span>
+                  Open {openRound.op} round on the {openRound.domain} domain:
+                  {openRound.submitted} of {openRound.required} submissions,
+                  expires {new Date(openRound.expiresAt).toLocaleString()}.
+                  {#if openRound.remove && openRound.remove.length > 0}
+                    Removes {openRound.remove.join(", ")}.
+                  {/if}
+                </span>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
 
-  <!-- Recovery Officers panel (Shamir barriers only) -->
+  <!-- Recovery holders panel (Shamir barriers only) -->
   {#if sealStore.strategy === "shamir" || sealStore.sharesTotal > 0}
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <div class="flex items-center justify-between">
-          <h2 class="card-title text-lg">Recovery Officers</h2>
+          <h2 class="card-title text-lg">Recovery Holders</h2>
           <div class="flex gap-2">
-            <button
-              class="btn btn-ghost btn-sm"
-              onclick={() => { showRecoveryClaimPanel = !showRecoveryClaimPanel; recoveryClaimError = ""; }}
-              data-testid="toggle-recovery-claim-btn"
-            >
-              {showRecoveryClaimPanel ? "Cancel Claim" : "Claim Share"}
-            </button>
             <button
               class="btn btn-ghost btn-sm"
               onclick={() => { showRecoveryOfficersPanel = !showRecoveryOfficersPanel; recoveryRegError = ""; recoveryRegCertPem = ""; }}
               data-testid="toggle-register-recovery-officer-btn"
             >
               <UserPlus class="h-4 w-4" />
-              {showRecoveryOfficersPanel ? "Cancel" : "Register Recovery Officer"}
+              {showRecoveryOfficersPanel ? "Cancel" : "Enrol Recovery Holder"}
             </button>
           </div>
         </div>
 
         <p class="text-base-content/70 text-sm">
-          Recovery Officers hold shares of a distinct recovery key set, separate from the unseal
-          officer set above. Register recovery officers here, then have each officer sign a
-          challenge nonce out of band and complete their claim below.
+          Recovery holders hold shares of a distinct recovery key, separate from the unseal
+          holders above. Enrol them here; each claims its envelope from the qrdb CLI or the
+          desktop app.
         </p>
 
         <!-- Register new recovery officer form -->
         {#if showRecoveryOfficersPanel}
           <div class="mt-4 space-y-3 border-t border-base-300 pt-4">
-            <h3 class="font-semibold text-sm">Register New Recovery Officer</h3>
+            <h3 class="font-semibold text-sm">Enrol a Recovery Holder</h3>
 
             <div class="form-control">
               <label class="label" for="ro-username">
@@ -1482,8 +1451,24 @@
             </div>
 
             <div class="form-control">
+              <label class="label" for="ro-role">
+                <span class="label-text text-xs">Role</span>
+              </label>
+              <select
+                id="ro-role"
+                class="select select-bordered select-sm"
+                bind:value={recoveryRegRole}
+                disabled={recoveryRegLoading}
+                data-testid="ro-role-select"
+              >
+                <option value="so">Security Officer</option>
+                <option value="custodian">Key custodian</option>
+              </select>
+            </div>
+
+            <div class="form-control">
               <label class="label" for="ro-csr">
-                <span class="label-text text-xs">CSR PEM (officer's public key, generated offline)</span>
+                <span class="label-text text-xs">CSR PEM (the holder's public key, generated offline)</span>
               </label>
               <textarea
                 id="ro-csr"
@@ -1537,7 +1522,7 @@
                   data-testid="ro-reg-cert-output"
                 ></textarea>
                 <p class="text-base-content/50 mt-1 text-xs">
-                  Transmit this certificate to the officer out of band. They will use it to authenticate and claim their recovery share.
+                  Give this certificate to the holder out of band. The holder uses it to claim its recovery envelope from the qrdb CLI or the desktop app.
                 </p>
               </div>
             {/if}
@@ -1556,118 +1541,6 @@
           </div>
         {/if}
 
-        <!-- Claim challenge-response tester -->
-        {#if showRecoveryClaimPanel}
-          <div class="mt-4 space-y-3 border-t border-base-300 pt-4">
-            <h3 class="font-semibold text-sm">Claim Recovery Share</h3>
-
-            <div class="form-control">
-              <label class="label" for="ro-claim-username">
-                <span class="label-text text-xs">Username</span>
-              </label>
-              <input
-                id="ro-claim-username"
-                type="text"
-                class="input input-bordered input-sm"
-                placeholder="recovery-officer-alice"
-                bind:value={recoveryClaimUsername}
-                disabled={recoveryClaimBeginLoading || recoveryClaimCompleteLoading}
-                data-testid="ro-claim-username-input"
-              />
-            </div>
-
-            <button
-              class="btn btn-outline btn-sm"
-              onclick={() => void handleRecoveryClaimBegin()}
-              disabled={recoveryClaimBeginLoading || recoveryClaimUsername.trim() === ""}
-              data-testid="ro-claim-begin-btn"
-            >
-              {#if recoveryClaimBeginLoading}
-                <span class="loading loading-spinner loading-xs"></span>
-              {/if}
-              Begin Claim
-            </button>
-
-            {#if recoveryClaimNonceHex !== ""}
-              <div class="bg-base-300 rounded p-3 space-y-2">
-                <div>
-                  <span class="label-text text-xs">Challenge Nonce (hex)</span>
-                  <div class="font-mono text-xs break-all">{recoveryClaimNonceHex}</div>
-                </div>
-                {#if recoveryClaimExpiresAt}
-                  <div class="text-xs text-base-content/50">Expires: {recoveryClaimExpiresAt}</div>
-                {/if}
-                <p class="text-xs text-base-content/60">
-                  The officer signs the raw nonce bytes with their private key, out of band. Paste the
-                  base64-encoded DER signature below to complete the claim.
-                </p>
-                <div class="form-control">
-                  <label class="label" for="ro-claim-signature">
-                    <span class="label-text text-xs">Signature (base64 DER)</span>
-                  </label>
-                  <input
-                    id="ro-claim-signature"
-                    type="text"
-                    class="input input-bordered input-sm font-mono text-xs"
-                    placeholder="base64 signature"
-                    bind:value={recoveryClaimSignature}
-                    disabled={recoveryClaimCompleteLoading}
-                    data-testid="ro-claim-signature-input"
-                  />
-                </div>
-                <button
-                  class="btn btn-primary btn-sm"
-                  onclick={() => void handleRecoveryClaimComplete()}
-                  disabled={recoveryClaimCompleteLoading || recoveryClaimSignature.trim() === ""}
-                  data-testid="ro-claim-complete-btn"
-                >
-                  {#if recoveryClaimCompleteLoading}
-                    <span class="loading loading-spinner loading-xs"></span>
-                  {/if}
-                  Complete Claim
-                </button>
-              </div>
-            {/if}
-
-            {#if recoveryClaimError}
-              <div role="alert" class="alert alert-error py-2 text-xs" data-testid="ro-claim-error">
-                <AlertCircle class="h-3 w-3 shrink-0" />
-                <span>{recoveryClaimError}</span>
-              </div>
-            {/if}
-
-            <!-- Returned share bytes after a successful claim -->
-            {#if recoveryClaimShareBytes !== ""}
-              <div class="form-control">
-                <div class="flex items-center justify-between mb-1">
-                  <span class="label-text text-xs font-semibold text-success">
-                    Share #{recoveryClaimShareIndex} (returned exactly once)
-                  </span>
-                  <button
-                    class="btn btn-ghost btn-xs gap-1"
-                    onclick={copyRecoveryClaimShare}
-                    aria-label="Copy share bytes"
-                    data-testid="ro-copy-share-btn"
-                  >
-                    <Copy class="h-3 w-3" />
-                    {recoveryClaimShareCopied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-                <textarea
-                  class="textarea textarea-bordered textarea-xs font-mono text-xs leading-tight bg-base-300"
-                  rows={3}
-                  readonly
-                  value={recoveryClaimShareBytes}
-                  data-testid="ro-claim-share-output"
-                ></textarea>
-                <p class="text-base-content/50 mt-1 text-xs">
-                  Store this share securely out of band. The server enclave holding it is destroyed
-                  immediately after this response — it cannot be retrieved again.
-                </p>
-              </div>
-            {/if}
-          </div>
-        {/if}
       </div>
     </div>
   {/if}

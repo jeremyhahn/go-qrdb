@@ -177,8 +177,6 @@ import type {
     TenantBarrierInitRequest,
     TenantBarrierInitResponse,
     TenantBarrierUnsealRequest,
-    TenantBarrierUnsealShareRequest,
-    TenantBarrierUnsealProgress,
     TenantBarrierStatusResponse,
     UpdateTenantQuotasRequest,
     UpdateTenantQuotasResponse,
@@ -201,16 +199,13 @@ import type {
     OfficerRegisterRequest,
     OfficerRegisterResponse,
     OfficerStatus,
-    ShareClaimBeginRequest,
-    ShareClaimBeginResponse,
-    ShareClaimCompleteRequest,
-    ShareClaimCompleteResponse,
-    ShamirSealVoteRequest,
-    ShamirSealVoteResponse,
+    OfficerRevokeRequest,
+    QuorumRound,
+    RekeyStartRequest,
+    ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
-    TenantShareClaimBeginRequest,
-    TenantShareClaimCompleteRequest,
-    TenantShamirSealVoteRequest,
+    TenantOfficerRevokeRequest,
+    TenantRekeyStartRequest,
     CredentialVersionInfo,
     CredentialRotateResult,
 } from './types.js';
@@ -224,6 +219,8 @@ import {
     deepCamelToSnake,
     distanceMetricToIpcWire,
     encodeBase64Utf8,
+    holderEnrolmentWire,
+    normalizeOfficerStatus,
     indexTypeToIpcWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
@@ -1194,11 +1191,14 @@ export class WailsClient implements Client {
             initialize: async (secret: string): Promise<void> => {
                 await b.Initialize(secret);
             },
-            initializeShamir: async (secret: string, threshold: number, totalShares: number): Promise<BootstrapResult> => {
-                return b.InitializeShamir(secret, threshold, totalShares) as Promise<BootstrapResult>;
+            initializeShamir: async (req: ShamirInitializeRequest): Promise<BootstrapResult> => {
+                // SealBinding.InitializeShamir(threshold, totalShares, policy):
+                // the desktop provisions PINs through its own settings, so the
+                // PIN fields have no binding argument.
+                return b.InitializeShamir(req.threshold, req.totalShares, req.policy ?? '') as Promise<BootstrapResult>;
             },
-            unseal: async (share: string): Promise<UnsealProgress> => {
-                return b.Unseal(share) as Promise<UnsealProgress>;
+            unseal: async (secret: string): Promise<UnsealProgress> => {
+                return b.Unseal(secret) as Promise<UnsealProgress>;
             },
             seal: async (): Promise<void> => {
                 await b.Seal();
@@ -1207,9 +1207,8 @@ export class WailsClient implements Client {
                 return b.Status() as Promise<SealStatus>;
             },
             enableEncryption: async (req: EnableEncryptionRequest): Promise<EnableEncryptionResponse> => {
-                // Mirrors the other write-barrier bindings (e.g. BarrierUnseal,
-                // SubmitSealVote): the desktop Go SealBinding exposes a matching
-                // EnableEncryption method that delegates to the SDK seal client.
+                // The desktop Go SealBinding exposes a matching EnableEncryption
+                // method that delegates to the SDK seal client.
                 return b.EnableEncryption(toSnake(req)) as Promise<EnableEncryptionResponse>;
             },
         };
@@ -1309,10 +1308,9 @@ export class WailsClient implements Client {
                 return { tenantId: req.tenantId, strategy: req.strategy ?? '' };
             },
             barrierUnseal: async (req: TenantBarrierUnsealRequest): Promise<void> => {
-                await b.BarrierUnseal(toSnake(req));
-            },
-            barrierUnsealShare: async (req: TenantBarrierUnsealShareRequest): Promise<TenantBarrierUnsealProgress> => {
-                return b.BarrierUnsealShare(toSnake(req)) as Promise<TenantBarrierUnsealProgress>;
+                // The binding decodes transport.TenantBarrierUnsealRequest,
+                // whose key is []byte: base64, as on REST.
+                await b.BarrierUnseal({ tenant_id: req.tenantId, key: encodeBase64Utf8(req.key) });
             },
             barrierStatus: async (tenantId: string): Promise<TenantBarrierStatusResponse> => {
                 return b.BarrierStatus(tenantId) as Promise<TenantBarrierStatusResponse>;
@@ -1495,57 +1493,41 @@ export class WailsClient implements Client {
     }
 
     // -----------------------------------------------------------------------
-    // Security Officers (delegates to the Go OfficerBinding)
+    // Share-holder administration (delegates to the Go OfficerBinding)
     // -----------------------------------------------------------------------
 
     /** @inheritdoc */
     get officers(): OfficerClient {
         const b = wrapBindings(getBindings().main.OfficerBinding);
+        // A HolderScope selects the barrier: the system barrier in a domain,
+        // or a tenant's barrier.
+        const system = (domain?: string): Record<string, unknown> => ({ domain: domain ?? 'unseal' });
+        const tenant = (tenantId: string): Record<string, unknown> => ({ tenant_id: tenantId });
+        const list = async (scope: Record<string, unknown>): Promise<OfficerStatus[]> =>
+            (((await b.ListHolders(scope)) ?? []) as OfficerStatus[]).map(normalizeOfficerStatus);
         return {
             registerOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
-                return b.RegisterOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
-            },
-            listOfficers: async (): Promise<OfficerStatus[]> => {
-                return ((await b.ListOfficers()) ?? []) as OfficerStatus[];
-            },
-            officerClaimStatus: async (): Promise<OfficerStatus[]> => {
-                return ((await b.OfficerClaimStatus()) ?? []) as OfficerStatus[];
-            },
-            claimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
-                return b.ClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
-            },
-            claimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
-                return b.ClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
+                return b.RegisterHolder(system('unseal'), holderEnrolmentWire(req)) as Promise<OfficerRegisterResponse>;
             },
             registerRecoveryOfficer: async (req: OfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
-                return b.RegisterRecoveryOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
+                return b.RegisterHolder(system('recovery'), holderEnrolmentWire(req)) as Promise<OfficerRegisterResponse>;
             },
-            recoveryClaimBegin: async (req: ShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
-                return b.RecoveryClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
+            listOfficers: async (): Promise<OfficerStatus[]> => list(system('unseal')),
+            startRekey: async (req: RekeyStartRequest): Promise<QuorumRound> => {
+                return b.StartRekey({ ...system(req.domain), ...toSnake({ threshold: req.threshold, policy: req.policy, soPin: req.soPin }) }) as Promise<QuorumRound>;
             },
-            recoveryClaimComplete: async (req: ShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
-                return b.RecoveryClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
-            },
-            submitSealVote: async (req: ShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
-                return b.SubmitSealVote(toSnake(req)) as Promise<ShamirSealVoteResponse>;
-            },
-            listTenantOfficers: async (tenantId: string): Promise<OfficerStatus[]> => {
-                return ((await b.ListTenantOfficers(tenantId)) ?? []) as OfficerStatus[];
-            },
-            tenantOfficerClaimStatus: async (tenantId: string): Promise<OfficerStatus[]> => {
-                return ((await b.TenantOfficerClaimStatus(tenantId)) ?? []) as OfficerStatus[];
+            revokeOfficer: async (req: OfficerRevokeRequest): Promise<QuorumRound> => {
+                return b.RevokeHolder({ ...system(req.domain), ...toSnake({ username: req.username, threshold: req.threshold ?? 0, soPin: req.soPin }) }) as Promise<QuorumRound>;
             },
             registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
-                return b.RegisterTenantOfficer(toSnake(req)) as Promise<OfficerRegisterResponse>;
+                return b.RegisterHolder(tenant(req.tenantId), holderEnrolmentWire(req)) as Promise<OfficerRegisterResponse>;
             },
-            tenantClaimBegin: async (req: TenantShareClaimBeginRequest): Promise<ShareClaimBeginResponse> => {
-                return b.TenantClaimBegin(toSnake(req)) as Promise<ShareClaimBeginResponse>;
+            listTenantOfficers: async (tenantId: string): Promise<OfficerStatus[]> => list(tenant(tenantId)),
+            startTenantRekey: async (req: TenantRekeyStartRequest): Promise<QuorumRound> => {
+                return b.StartRekey({ ...tenant(req.tenantId), threshold: req.threshold, policy: req.policy }) as Promise<QuorumRound>;
             },
-            tenantClaimComplete: async (req: TenantShareClaimCompleteRequest): Promise<ShareClaimCompleteResponse> => {
-                return b.TenantClaimComplete(toSnake(req)) as Promise<ShareClaimCompleteResponse>;
-            },
-            submitTenantSealVote: async (req: TenantShamirSealVoteRequest): Promise<ShamirSealVoteResponse> => {
-                return b.SubmitTenantSealVote(toSnake(req)) as Promise<ShamirSealVoteResponse>;
+            revokeTenantOfficer: async (req: TenantOfficerRevokeRequest): Promise<QuorumRound> => {
+                return b.RevokeHolder({ ...tenant(req.tenantId), username: req.username, threshold: req.threshold ?? 0 }) as Promise<QuorumRound>;
             },
         };
     }
