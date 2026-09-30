@@ -84,6 +84,12 @@ are not reconstructed here — their history is in the git log.
   there is one) is re-exported as `sdk.DAOAtomicWriteUnsupportedError`, with
   its marker `sdk.DAOErrAtomicWriteUnsupported`, so an SDK consumer fails closed
   on a non-atomic store without importing `pkg/dao`.
+- **The MCP tool-error contract is exported through the SDK.**
+  `sdk/go/types_mcp_wire.go` re-exports `pkg/api/mcp/wire`: `sdk.MCPCode` and
+  its seventeen constants, `sdk.MCPErrorPayload`, `sdk.MCPErrorEnvelope`,
+  `sdk.NewMCPErrorEnvelope`, `sdk.DecodeMCPErrorPayload` and `sdk.MCPCodes`. A
+  module's MCP tools already receive the classified envelope from the server's
+  error-code middleware when they return an error; a test now pins that.
 
 ### Changed — BREAKING
 

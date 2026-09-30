@@ -318,6 +318,20 @@ the ones that used to render one as text: a tool that cannot resolve the
 service for its `(tenant, database)` scope now returns the error rather than
 its message, so it is classified like everything else.
 
+**A module's tools get the envelope without building it.** The error-code
+middleware is server-wide and outermost, so a tool a `ServiceModule` registers
+through `RegisterMCP` is classified exactly like a `qrdb_*` tool: a handler that
+fails by returning a gRPC status gets that code verbatim, one that returns a
+qrdb typed error gets its mapped code, and anything else is `INTERNAL`. A
+module reports failure by returning an error and never constructs the envelope
+itself.
+
+**The contract is exported through the SDK** for clients and tests, so a
+composing host does not import the server's wire package: `sdk.MCPCode` and the
+seventeen `sdk.MCPCode*` constants, `sdk.MCPErrorPayload`,
+`sdk.MCPErrorEnvelope`, `sdk.NewMCPErrorEnvelope`, `sdk.DecodeMCPErrorPayload`
+and `sdk.MCPCodes`.
+
 **Version skew** behaves as it does on QUIC: a client built before a code
 existed reads an unrecognised number and falls through to its generic request
 error — degraded to the behaviour it had before, never a misclassification. An

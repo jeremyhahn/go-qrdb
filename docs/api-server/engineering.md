@@ -47,6 +47,22 @@ type ModuleAuthFallback           = apimodule.ModuleAuthFallback
 var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 ```
 
+`sdk/go/types_mcp_wire.go` — the MCP tool-error contract (`pkg/api/mcp/wire`):
+
+```go
+type MCPCode          = wire.Code          // + MCPCodeOK … MCPCodeInternal, all seventeen
+type MCPErrorPayload  = wire.ErrorPayload
+type MCPErrorEnvelope = wire.ErrorEnvelope
+
+var NewMCPErrorEnvelope   = wire.NewErrorEnvelope
+var DecodeMCPErrorPayload = wire.DecodeErrorPayload
+var MCPCodes              = wire.Codes
+```
+
+A module does not use these to report a failure: its MCP tool returns an error
+and the server's outermost `errorCodeMiddleware` renders the envelope, exactly
+as for a built-in tool (`TestModuleTool_ErrorsCarryTheClassifiedEnvelope`).
+
 ## `ServiceModule`
 
 ```go
