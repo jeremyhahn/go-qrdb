@@ -261,9 +261,9 @@ test.describe("Admin Views - Seal Manager", () => {
 });
 
 // Single-admin sealing only exists for non-shamir barriers: when
-// sharesRequired > 0 the Seal Manager renders the quorum seal-vote panel
-// instead of the Seal button (shamir barriers reject single-admin
-// BarrierSeal with ErrShamirBarrierRequiresQuorum).
+// sharesRequired > 0 the Seal Manager shows the holder-quorum note
+// instead of the Seal button (a Shamir barrier refuses a single-admin
+// BarrierSeal; a quorum of its share holders seals it).
 test.describe("Admin Views - Seal Manager (single-admin)", () => {
   test.use({
     mockState: {

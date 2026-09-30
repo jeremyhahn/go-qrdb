@@ -1,181 +1,98 @@
 // Copyright 2026 Jeremy Hahn
 // SPDX-License-Identifier: Apache-2.0
 
+import type { Page } from "@playwright/test";
 import {
   test,
   expect,
   injectError,
   clearError,
   defaultMockState,
+  type MockState,
 } from "./fixtures/wails-mock.ts";
 
 const LOAD_TIMEOUT = 10_000;
 
 /**
- * In desktop mode (Wails), the sealed state is surfaced through the
- * Seal Manager admin section rather than a standalone unseal screen.
- * The server tree shows the "sealed" indicator and clicking Seal Manager
- * presents the unseal form.
+ * In desktop mode (Wails) the sealed state is surfaced through the Seal
+ * Manager. A passphrase barrier is unsealed there with its passphrase; a
+ * Shamir barrier is unsealed by a quorum of its share holders from the CLI or
+ * the desktop app, so the page shows which command they run and takes no
+ * share.
  */
+function sealedState(strategy: "passphrase" | "shamir"): MockState {
+  const shamir = strategy === "shamir";
+  return {
+    ...defaultMockState,
+    isFirstRun: false,
+    configInitialized: true,
+    sealStatus: {
+      sealed: true,
+      initialized: true,
+      strategy,
+      sharesRequired: shamir ? 2 : 0,
+      sharesProvided: 0,
+      sharesTotal: shamir ? 3 : 0,
+    },
+    unsealProgress: { sealed: true, sharesProvided: 0, sharesRequired: 0 },
+  };
+}
+
+async function openSealManager(page: Page): Promise<void> {
+  await page.goto("/");
+  await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await page.locator("aside").getByText("Seal Manager").click();
+  await expect(page.locator(".breadcrumbs").getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.locator("main").locator(".badge-warning").getByText("Sealed")).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
 test.describe("Unseal flow", () => {
-  test.describe("single-share threshold", () => {
-    test.use({
-      mockState: {
-        ...defaultMockState,
-        isFirstRun: false,
-        configInitialized: true,
-        sealStatus: {
-          sealed: true,
-          initialized: true,
-          sharesRequired: 1,
-          sharesProvided: 0,
-          sharesTotal: 1,
-        },
-        unsealProgress: {
-          sealed: true,
-          sharesProvided: 0,
-          sharesRequired: 1,
-        },
-      },
-    });
+  test.describe("passphrase barrier", () => {
+    test.use({ mockState: sealedState("passphrase") });
 
-    test("successful single-share unseal via Seal Manager", async ({ page }) => {
-      await page.goto("/");
-
-      // Wait for MainApp to load.
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // Navigate to Seal Manager to perform unseal.
-      await page.locator("aside").getByText("Seal Manager").click();
-      await expect(
-        page.locator(".breadcrumbs").getByText("Seal Manager"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
+    test("the passphrase unseals the barrier", async ({ page }) => {
+      await openSealManager(page);
       const main = page.locator("main");
 
-      // Verify seal status shows as Sealed.
-      await expect(
-        main.locator(".stat-title", { hasText: "Seal Status" }),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await main.getByPlaceholder("Enter passphrase").fill("correct horse");
+      await main.getByRole("button", { name: "Unseal", exact: true }).click();
 
-      // Verify progress shows 0 / 1.
-      await expect(
-        main.locator(".font-mono").filter({ hasText: "0 / 1" }),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(main.locator(".badge-success").getByText("Unsealed")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    });
 
-      // Fill share and submit.
-      await main.locator("input[type='text'], input[type='password']").last().fill("test-share-1");
-      await main.getByRole("button", { name: "Submit Share" }).click();
+    test("an empty passphrase keeps Unseal disabled", async ({ page }) => {
+      await openSealManager(page);
+      await expect(page.locator("main").getByRole("button", { name: "Unseal", exact: true })).toBeDisabled();
+    });
 
-      // Progress should update after submit.
-      await expect(
-        main.locator(".badge-success").getByText("Unsealed"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+    test("a wrong passphrase shows a clean error and allows a retry", async ({ page }) => {
+      await openSealManager(page);
+      const main = page.locator("main");
+
+      await injectError(page, "SealBinding.Unseal", "decryption failed: invalid credentials");
+      await main.getByPlaceholder("Enter passphrase").fill("wrong");
+      await main.getByRole("button", { name: "Unseal", exact: true }).click();
+      await expect(page.locator('[role="alert"]').filter({ hasText: "Incorrect passphrase" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await clearError(page, "SealBinding.Unseal");
+
+      await main.getByPlaceholder("Enter passphrase").fill("correct horse");
+      await main.getByRole("button", { name: "Unseal", exact: true }).click();
+      await expect(main.locator(".badge-success").getByText("Unsealed")).toBeVisible({ timeout: LOAD_TIMEOUT });
     });
   });
 
-  test.describe("multi-share threshold (2-of-3)", () => {
-    test.use({
-      mockState: {
-        ...defaultMockState,
-        isFirstRun: false,
-        configInitialized: true,
-        sealStatus: {
-          sealed: true,
-          initialized: true,
-          sharesRequired: 2,
-          sharesProvided: 0,
-          sharesTotal: 3,
-        },
-        unsealProgress: {
-          sealed: true,
-          sharesProvided: 0,
-          sharesRequired: 2,
-        },
-      },
-    });
+  test.describe("Shamir barrier", () => {
+    test.use({ mockState: sealedState("shamir") });
 
-    test("multi-share unseal completes after threshold reached", async ({
-      page,
-    }) => {
-      await page.goto("/");
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      await page.locator("aside").getByText("Seal Manager").click();
-      await expect(
-        page.locator(".breadcrumbs").getByText("Seal Manager"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
+    test("the page points to the holder quorum and takes no share", async ({ page }) => {
+      await openSealManager(page);
       const main = page.locator("main");
 
-      // Verify progress shows 0 / 2.
-      await expect(
-        main.locator(".font-mono").filter({ hasText: "0 / 2" }),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      const shareInput = main.locator("input[type='text'], input[type='password']").last();
-
-      // Submit first share.
-      await shareInput.fill("share-1");
-      await main.getByRole("button", { name: "Submit Share" }).click();
-
-      // Verify progress updates to 1 / 2.
-      await expect(
-        main.locator(".font-mono").filter({ hasText: "1 / 2" }),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // Submit second share to reach threshold.
-      await shareInput.fill("share-2");
-      await main.getByRole("button", { name: "Submit Share" }).click();
-
-      // Server is now unsealed.
-      await expect(
-        main.locator(".badge-success").getByText("Unsealed"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-    });
-
-    test("invalid share displays error and allows retry", async ({ page }) => {
-      await page.goto("/");
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      await page.locator("aside").getByText("Seal Manager").click();
-      await expect(
-        page.locator(".breadcrumbs").getByText("Seal Manager"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      const main = page.locator("main");
-
-      // Inject an error for the Unseal binding.
-      await injectError(page, "SealBinding.Unseal", "invalid share format");
-
-      const shareInput = main.locator("input[type='text'], input[type='password']").last();
-
-      // Submit a bad share.
-      await shareInput.fill("bad-share");
-      await main.getByRole("button", { name: "Submit Share" }).click();
-
-      // Verify error toast appears with the expected message.
-      const alert = page.locator('[role="alert"]');
-      await expect(alert).toBeVisible({ timeout: 5_000 });
-      await expect(alert.locator("span")).toContainText("invalid share format");
-
-      // Clear the injected error.
-      await clearError(page, "SealBinding.Unseal");
-
-      // Retry with a valid share.
-      await shareInput.fill("valid-share-1");
-      await main.getByRole("button", { name: "Submit Share" }).click();
-
-      // Progress updates to show 1 / 2 after successful share.
-      await expect(
-        main.locator(".font-mono").filter({ hasText: "1 / 2" }),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      const note = page.getByTestId("unseal-quorum-note");
+      await expect(note).toContainText("2 of 3 must submit");
+      await expect(note).toContainText("qrdb barrier quorum submit --op unseal");
+      await expect(main.getByPlaceholder("Enter passphrase")).toHaveCount(0);
+      await expect(main.getByRole("button", { name: "Submit Share" })).toHaveCount(0);
     });
   });
 });

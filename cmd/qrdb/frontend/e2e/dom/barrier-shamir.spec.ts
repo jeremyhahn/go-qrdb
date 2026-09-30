@@ -5,20 +5,18 @@
  * barrier-shamir.spec.ts (real-backend DOM tier)
  *
  * Drives the real UI against a live Shamir-sealed qrdbd to guard:
- *   - The init wizard requires officers to be registered (count equal to
- *     total_shares) BEFORE the Initialize button is enabled. The admin
- *     registers each officer by providing a username and CSR PEM generated
- *     offline; the server returns a signed certificate that the admin
- *     distributes out of band.
- *   - The Initialize button is disabled until all officers are registered,
- *     then enabled.
+ *   - The init wizard requires the share holders to be enrolled (count equal
+ *     to total_shares) BEFORE the Initialize button is enabled. The admin
+ *     enrols each holder from a username, a role and a CSR generated
+ *     offline; the server returns the issued certificate, which the admin
+ *     hands to the holder out of band.
  *   - After initialization, the completion step shows the Shamir Barrier
- *     Initialized heading with the officer enrollment status panel — shares
- *     are NEVER displayed in the UI (regression guard against the old flow
- *     that returned share bytes; new design routes them through per-officer
- *     claim).
+ *     Initialized heading with the holder claim-status panel — no share is
+ *     ever displayed in the UI: each holder claims its sealed envelope with
+ *     its own keys from the qrdb CLI or the desktop app.
  *   - The "Open Database" button is immediately available.
- *   - Seal Manager shows Shamir unseal copy with the real M-of-N counts.
+ *   - Seal Manager shows the Share Holders panel and points a seal to the
+ *     holder quorum, with the real M-of-N counts.
  *
  * CSR generation: each test generates a fresh EC P-256 CSR using openssl
  * via a child_process exec, so the spec exercises the real server-side CSR
@@ -96,7 +94,7 @@ test("shamir: wizard officer-registration step gates Initialize button until all
   await page.getByRole("button", { name: "Next" }).click();
 
   // Should be on the Officers step now.
-  await expect(page.getByRole("heading", { name: "Register Security Officers" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
 
   // Initialize button must be disabled — no officers registered yet.
   await expect(page.getByTestId("initialize-btn")).toBeDisabled();
@@ -140,7 +138,7 @@ test("shamir: completing officer registration and initializing shows enrollment 
   await page.getByRole("button", { name: "Next" }).click();
 
   // Officers step.
-  await expect(page.getByRole("heading", { name: "Register Security Officers" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
 
   const csrDirs: string[] = [];
   try {
@@ -175,12 +173,11 @@ test("shamir: completing officer registration and initializing shows enrollment 
   const shareElements = page.getByTestId("shamir-share");
   await expect(shareElements).toHaveCount(0);
 
-  // Officer claim status table is rendered.
+  // Holder claim-status table is rendered.
   await expect(page.getByTestId("officer-claim-status-table")).toBeVisible();
 
-  // Alert instructs SOs to navigate to /officer/claim. The claim path also
-  // appears per-officer in the status table, so scope to the alert.
-  await expect(page.getByRole("alert").getByText(/officer\/claim/)).toBeVisible();
+  // The alert tells holders to claim with the CLI or the desktop app.
+  await expect(page.getByRole("alert").getByText(/qrdb barrier officer claim/)).toBeVisible();
 
   // "Open Database" is immediately enabled.
   const openBtn = page.getByTestId("open-database-btn");
@@ -193,13 +190,13 @@ test("shamir: completing officer registration and initializing shows enrollment 
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
 });
 
-test("shamir: after init, Seal Manager shows Security Officers panel and Shamir M-of-N counts", async ({ page }) => {
+test("shamir: after init, Seal Manager shows the Share Holders panel and the holder quorum", async ({ page }) => {
   await page.goto(UI_BASE_URL);
   await expect(page.getByRole("heading", { name: "Server Initialization" })).toBeVisible({ timeout: 15_000 });
 
   await page.getByText("Shamir (M-of-N)").click();
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("heading", { name: "Register Security Officers" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
 
   const csrDirs: string[] = [];
   try {
@@ -233,23 +230,17 @@ test("shamir: after init, Seal Manager shows Security Officers panel and Shamir 
   await expect(page.getByRole("heading", { name: "Seal Manager" })).toBeVisible();
   await expect(page.getByText("Unsealed").first()).toBeVisible();
 
-  // Security Officers panel must be visible for shamir barriers.
-  await expect(page.getByRole("heading", { name: "Security Officers" })).toBeVisible();
+  // The Share Holders panel lists the five enrolled holders.
+  await expect(page.getByRole("heading", { name: "Share Holders" })).toBeVisible();
+  await expect(page.getByTestId("seal-manager-officers-table").locator("tbody tr")).toHaveCount(TOTAL);
 
-  // Shamir barriers cannot be sealed by a single admin: the server rejects
-  // BarrierSeal with ErrShamirBarrierRequiresQuorum. The Seal Manager must
-  // therefore present the quorum seal-vote panel instead of the single-admin
-  // Seal button.
+  // A single admin cannot seal a Shamir barrier, and the page takes no share:
+  // it points to the holder quorum (the quorum seal itself is covered by the
+  // real-backend tier, where holders submit with the CLI).
   await expect(page.getByRole("button", { name: "Seal", exact: true })).toHaveCount(0);
-  // String matchers normalize whitespace (the copy wraps across source lines).
-  await expect(page.getByText("quorum of Security Officers")).toBeVisible();
-  await expect(
-    page.getByText(`${THRESHOLD} of ${TOTAL} officers must each submit`),
-  ).toBeVisible();
-  await expect(page.getByTestId("seal-vote-input")).toBeVisible();
-
-  // The vote button stays disabled until a share is entered (shares are only
-  // obtainable by officers through the mTLS claim ceremony, so the actual
-  // quorum-seal e2e lives in the real-backend tier).
-  await expect(page.getByTestId("submit-seal-vote-btn")).toBeDisabled();
+  const note = page.getByTestId("seal-quorum-note");
+  await expect(note).toContainText(`${THRESHOLD}`);
+  await expect(note).toContainText(`${TOTAL} must submit`);
+  await expect(note).toContainText("qrdb barrier quorum submit --op seal");
+  await expect(page.getByTestId("seal-vote-input")).toHaveCount(0);
 });

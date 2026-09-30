@@ -147,6 +147,17 @@ test.describe("Admin - Seal Manager Re-initialization Complete Flow", () => {
     await main.locator("#reinit-threshold").fill("2");
     await main.locator("#reinit-shares").fill("4");
 
+    // Shamir initialization splits the unseal key to exactly the enrolled
+    // holders, so the four holders are enrolled first; Re-initialize stays
+    // unavailable until they are.
+    await expect(main.getByTestId("shamir-holder-enrolment")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    for (let i = 0; i < 4; i++) {
+      await main.getByTestId(`officer-username-${i}`).fill(`holder-${i}`);
+      await main.getByTestId(`officer-csr-${i}`).fill("-----BEGIN CERTIFICATE REQUEST-----\nmock\n-----END CERTIFICATE REQUEST-----");
+      await main.getByTestId(`register-officer-btn-${i}`).click();
+      await expect(main.getByTestId(`officer-cert-${i}`)).toBeVisible({ timeout: LOAD_TIMEOUT });
+    }
+
     // Advance to the confirmation step.
     await main.getByRole("button", { name: "Re-initialize" }).click();
 

@@ -48,15 +48,25 @@ export interface MockTenantInfo {
 }
 
 /** Minimal mock officer status for mock responses. */
+/**
+ * A share holder as the Go OfficerBinding returns it: transport.OfficerStatus,
+ * snake_case per its json tags. A never-claimed holder carries Go's zero time.
+ */
 export interface MockOfficerStatus {
   username: string;
-  certThumbprint: string;
-  shareIndex: number;
-  authFactor: string;
-  enrolledAt: string;
-  claimedAt: string;
-  sharePending: boolean;
+  role: "so" | "custodian";
+  cert_thumbprint: string;
+  share_index: number;
+  designated: string;
+  factors: string[];
+  encryption_kem: string;
+  enrolled_at: string;
+  claimed_at: string;
+  share_pending: boolean;
 }
+
+/** Go's zero time.Time, which a never-claimed holder's claimed_at carries. */
+export const GO_ZERO_TIME = "0001-01-01T00:00:00Z";
 
 /** Mock state that controls binding responses. */
 export interface MockState {
@@ -89,12 +99,16 @@ export interface MockState {
   configDir: string;
   databases: MockDatabaseInfo[];
   tenants: MockTenantInfo[];
-  /** Pre-seeded security officers (for Shamir mode tests). */
+  /** Enrolled unseal-domain holders of the system barrier. */
   officers: MockOfficerStatus[];
+  /** Enrolled recovery-domain holders of the system barrier. */
+  recoveryOfficers?: MockOfficerStatus[];
+  /** Enrolled holders of each tenant barrier, keyed by tenant ID. */
+  tenantOfficers?: Record<string, MockOfficerStatus[]>;
   /**
-   * Per-tenant barrier state keyed by tenant ID (for per-tenant Shamir
-   * unseal-quorum tests). Tenants without an entry report "barrier not
-   * initialized" from BarrierStatus / BarrierUnsealShare.
+   * Per-tenant barrier state keyed by tenant ID (for the per-tenant unseal
+   * tests). Tenants without an entry report "barrier not initialized" from
+   * BarrierStatus / BarrierUnseal.
    */
   tenantBarriers?: Record<string, MockTenantBarrierState>;
   /**
@@ -116,8 +130,8 @@ export interface MockTenantBarrierState {
   strategy: string;
   shamir_threshold?: number;
   shamir_total?: number;
-  /** Distinct shares submitted toward the current unseal quorum. */
-  submitted?: number;
+  /** The passphrase a passphrase-held tenant barrier unseals with. */
+  passphrase?: string;
 }
 
 /** Default mock state for a fresh first-run scenario. */
@@ -236,21 +250,27 @@ export const shamirSealState: MockState = {
   officers: [
     {
       username: "alice",
-      certThumbprint: "aa:bb:cc",
-      shareIndex: 1,
-      authFactor: "software",
-      enrolledAt: "2026-01-01T00:00:00Z",
-      claimedAt: "2026-01-02T00:00:00Z",
-      sharePending: false,
+      role: "so",
+      cert_thumbprint: "aabbcc",
+      share_index: 1,
+      designated: "mtls",
+      factors: ["mtls"],
+      encryption_kem: "dhkem-p256",
+      enrolled_at: "2026-01-01T00:00:00Z",
+      claimed_at: "2026-01-02T00:00:00Z",
+      share_pending: false,
     },
     {
       username: "bob",
-      certThumbprint: "dd:ee:ff",
-      shareIndex: 2,
-      authFactor: "software",
-      enrolledAt: "2026-01-01T00:00:00Z",
-      claimedAt: "",
-      sharePending: true,
+      role: "custodian",
+      cert_thumbprint: "ddeeff",
+      share_index: 2,
+      designated: "mtls",
+      factors: ["mtls", "fido2"],
+      encryption_kem: "dhkem-x25519",
+      enrolled_at: "2026-01-01T00:00:00Z",
+      claimed_at: GO_ZERO_TIME,
+      share_pending: true,
     },
   ],
 };
@@ -492,17 +512,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         SealBinding: {
-          Unseal: async (_share: string) => {
+          // SealBinding.Unseal(secret): credential barriers only. A Shamir
+          // barrier opens through a holder quorum, and the real binding
+          // refuses this call for it.
+          Unseal: async (_secret: string) => {
             maybeReject("SealBinding.Unseal");
             const s = getState();
-            s.unsealProgress.sharesProvided++;
-            if (
-              s.unsealProgress.sharesProvided >= s.unsealProgress.sharesRequired
-            ) {
-              s.unsealProgress.sealed = false;
-              s.sealStatus.sealed = false;
+            if (s.sealStatus.strategy === "shamir") {
+              throw new Error("qrdb/seal: a Shamir barrier unseals through a quorum of its share holders");
             }
-            return { ...s.unsealProgress };
+            s.sealStatus.sealed = false;
+            s.unsealProgress.sealed = false;
+            return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
           },
           Seal: async () => {
             maybeReject("SealBinding.Seal");
@@ -516,24 +537,26 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.sealStatus.sealed = false;
             s.configInitialized = true;
           },
-          InitializeShamir: async (_secret: string, threshold: number, totalShares: number) => {
+          // SealBinding.InitializeShamir(threshold, totalShares, policy):
+          // the unseal key is split to exactly the enrolled unseal holders,
+          // so the real server refuses a share count that differs from them.
+          // The response is share-free.
+          InitializeShamir: async (threshold: number, totalShares: number, _policy: string) => {
             maybeReject("SealBinding.InitializeShamir");
             const s = getState();
+            if (s.officers.length !== totalShares) {
+              throw new Error(
+                `qrdb/seal: ${totalShares} shares were requested but ${s.officers.length} holders are enrolled`,
+              );
+            }
             s.sealStatus.initialized = true;
             s.sealStatus.sealed = false;
             s.sealStatus.sharesRequired = threshold;
             s.sealStatus.sharesTotal = totalShares;
             s.sealStatus.strategy = "shamir";
             s.configInitialized = true;
-            // INV-1 share-free contract: the real binding returns neither
-            // share bytes nor a root token (the token requires a post-claim
-            // share quorum). The stray `shares` field below is deliberately
-            // NON-contractual — specs assert the UI discards it.
-            const shares: string[] = [];
-            for (let i = 0; i < totalShares; i++) {
-              shares.push(`share-${i + 1}-mock`);
-            }
-            return { shares, rootToken: "", threshold, shareCount: totalShares };
+            s.officers = s.officers.map((o, i) => ({ ...o, share_index: i + 1, share_pending: true }));
+            return { rootToken: "", threshold, shareCount: totalShares };
           },
           Status: async () => {
             maybeReject("SealBinding.Status");
@@ -541,99 +564,91 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         OfficerBinding: (() => {
-          // In-memory officer registry for the mock.
-          // Counter tracks share index assignment (1-based).
-          //
-          // Requests arrive with snake_case keys: the SDK's wails.ts applies
-          // toSnake() to every request object before invoking the binding
-          // (mirroring the Go binding structs' snake_case json tags).
-          // Responses may use camelCase here because wrapBindings() applies
-          // fromSnake(), which leaves camelCase keys untouched.
-          let officerShareCounter = 0;
+          // Mirrors the Go OfficerBinding: RegisterHolder, ListHolders,
+          // ClaimEnvelope, SubmitShare, StartRekey and RevokeHolder, each over
+          // a HolderScope ({tenant_id} or {domain}). Arguments arrive
+          // snake_case, as the SDK sends them; results are the snake_case
+          // transport structs the real binding returns.
+          type Scope = { tenant_id?: string; domain?: string };
+          const holdersOf = (scope: Scope): MockOfficerStatus[] => {
+            const s = getState();
+            if (scope.tenant_id) {
+              s.tenantOfficers = s.tenantOfficers ?? {};
+              s.tenantOfficers[scope.tenant_id] = s.tenantOfficers[scope.tenant_id] ?? [];
+              return s.tenantOfficers[scope.tenant_id]!;
+            }
+            if (scope.domain === "recovery") {
+              s.recoveryOfficers = s.recoveryOfficers ?? [];
+              return s.recoveryOfficers;
+            }
+            return s.officers;
+          };
+          const round = (scope: Scope, threshold: number, policy: string, remove: string[]) => ({
+            domain: scope.tenant_id ? "unseal" : (scope.domain ?? "unseal"),
+            op: "rekey",
+            required: getState().sealStatus.sharesRequired || 2,
+            submitted: 0,
+            expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+            ...(threshold > 0 ? { new_threshold: threshold } : {}),
+            ...(policy ? { policy } : {}),
+            ...(remove.length > 0 ? { remove } : {}),
+          });
           return {
-            RegisterOfficer: async (req: { username: string; csr_pem: string }) => {
-              maybeReject("OfficerBinding.RegisterOfficer");
-              const s = getState();
-              officerShareCounter++;
-              const now = new Date().toISOString();
-              const officer: MockOfficerStatus = {
+            RegisterHolder: async (
+              scope: Scope,
+              req: { username: string; role?: string; csr_pem: string; factors?: { name: string }[]; designated?: string },
+            ) => {
+              maybeReject("OfficerBinding.RegisterHolder");
+              if (!req.username || !req.csr_pem) throw new Error("ceremony: username and CSR are required");
+              const holders = holdersOf(scope);
+              if (holders.some((h) => h.username === req.username)) {
+                throw new Error(`ceremony: holder "${req.username}" already enrolled`);
+              }
+              const role = req.role === "custodian" ? "custodian" : "so";
+              const factors = ["mtls", ...(req.factors ?? []).map((f) => f.name)];
+              holders.push({
                 username: req.username,
-                certThumbprint: `mock:thumbprint:${req.username}`,
-                shareIndex: officerShareCounter,
-                authFactor: "software",
-                enrolledAt: now,
-                claimedAt: "",
-                sharePending: false,
-              };
-              s.officers = [...s.officers, officer];
+                role,
+                cert_thumbprint: `mock${req.username}`,
+                share_index: 0,
+                designated: req.designated ?? "mtls",
+                factors,
+                encryption_kem: "dhkem-p256",
+                enrolled_at: new Date().toISOString(),
+                // In-page code: module constants are not in scope here.
+                claimed_at: "0001-01-01T00:00:00Z",
+                share_pending: false,
+              });
               return {
-                certPem: `-----BEGIN CERTIFICATE-----\nmock-cert-for-${req.username}\n-----END CERTIFICATE-----`,
-                shareIndex: officerShareCounter,
+                cert_pem: `-----BEGIN CERTIFICATE-----\nmock-holder-cert-for-${req.username}\n-----END CERTIFICATE-----`,
+                role,
+                designated: req.designated ?? "mtls",
+                encryption_kem: "dhkem-p256",
+                factors,
               };
             },
-            ListOfficers: async () => {
-              maybeReject("OfficerBinding.ListOfficers");
-              return [...getState().officers];
+            ListHolders: async (scope: Scope) => {
+              maybeReject("OfficerBinding.ListHolders");
+              return holdersOf(scope).map((h) => ({ ...h }));
             },
-            OfficerClaimStatus: async () => {
-              maybeReject("OfficerBinding.OfficerClaimStatus");
-              return [...getState().officers];
+            ClaimEnvelope: async (_req: Scope & { username: string; key_pem: string }) => {
+              maybeReject("OfficerBinding.ClaimEnvelope");
+              return { share_index: 1, envelope: "bW9jay1lbnZlbG9wZQ==" };
             },
-            ClaimBegin: async (_req: { username: string }) => {
-              maybeReject("OfficerBinding.ClaimBegin");
-              return { nonceHex: "deadbeefdeadbeef", expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() };
+            SubmitShare: async (req: Scope & { op: string; username: string }) => {
+              maybeReject("OfficerBinding.SubmitShare");
+              return { domain: req.domain ?? "unseal", op: req.op, required: 2, submitted: 1, complete: false };
             },
-            ClaimComplete: async (_req: { username: string; nonce_hex: string; signature: string }) => {
-              maybeReject("OfficerBinding.ClaimComplete");
-              return { shareIndex: 1, shareBytes: "bW9jay1zaGFyZS1ieXRlcw==" };
+            StartRekey: async (req: Scope & { threshold: number; policy?: string; so_pin?: string }) => {
+              maybeReject("OfficerBinding.StartRekey");
+              return round(req, req.threshold, req.policy ?? "", []);
             },
-            RegisterRecoveryOfficer: async (req: { username: string; csr_pem: string }) => {
-              maybeReject("OfficerBinding.RegisterRecoveryOfficer");
-              officerShareCounter++;
-              return {
-                certPem: `-----BEGIN CERTIFICATE-----\nmock-recovery-cert-for-${req.username}\n-----END CERTIFICATE-----`,
-                shareIndex: officerShareCounter,
-              };
-            },
-            RecoveryClaimBegin: async (_req: { username: string }) => {
-              maybeReject("OfficerBinding.RecoveryClaimBegin");
-              return { nonceHex: "cafebabecafebabe", expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() };
-            },
-            RecoveryClaimComplete: async (_req: { username: string; nonce_hex: string; signature: string }) => {
-              maybeReject("OfficerBinding.RecoveryClaimComplete");
-              return { shareIndex: 1, shareBytes: "bW9jay1yZWNvdmVyeS1zaGFyZQ==" };
-            },
-            SubmitSealVote: async (_req: { share: string }) => {
-              maybeReject("OfficerBinding.SubmitSealVote");
-              return { required: 3, submitted: 1, complete: false };
-            },
-            ListTenantOfficers: async (_tenantId: string) => {
-              maybeReject("OfficerBinding.ListTenantOfficers");
-              return [];
-            },
-            TenantOfficerClaimStatus: async (_tenantId: string) => {
-              maybeReject("OfficerBinding.TenantOfficerClaimStatus");
-              return [];
-            },
-            RegisterTenantOfficer: async (req: { tenant_id: string; username: string; csr_pem: string }) => {
-              maybeReject("OfficerBinding.RegisterTenantOfficer");
-              officerShareCounter++;
-              return {
-                certPem: `-----BEGIN CERTIFICATE-----\nmock-tenant-cert-for-${req.username}\n-----END CERTIFICATE-----`,
-                shareIndex: officerShareCounter,
-              };
-            },
-            TenantClaimBegin: async (_req: { tenant_id: string; username: string }) => {
-              maybeReject("OfficerBinding.TenantClaimBegin");
-              return { nonceHex: "aabbccddaabbccdd", expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() };
-            },
-            TenantClaimComplete: async (_req: { tenant_id: string; username: string; nonce_hex: string; signature: string }) => {
-              maybeReject("OfficerBinding.TenantClaimComplete");
-              return { shareIndex: 1, shareBytes: "bW9jay10ZW5hbnQtc2hhcmU=" };
-            },
-            SubmitTenantSealVote: async (_req: { tenant_id: string; share: string }) => {
-              maybeReject("OfficerBinding.SubmitTenantSealVote");
-              return { required: 3, submitted: 1, complete: false };
+            RevokeHolder: async (req: Scope & { username: string; threshold: number; so_pin?: string }) => {
+              maybeReject("OfficerBinding.RevokeHolder");
+              if (!holdersOf(req).some((h) => h.username === req.username)) {
+                throw new Error(`ceremony: holder "${req.username}" not found`);
+              }
+              return round(req, req.threshold, "", [req.username]);
             },
           };
         })(),
@@ -1916,32 +1931,20 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           BarrierInit: async (_req: unknown) => {
             maybeReject("TenantBinding.BarrierInit");
           },
-          BarrierUnseal: async (_req: unknown) => {
+          // TenantBinding.BarrierUnseal: credential barriers only, with the
+          // passphrase base64 in `key` (the Go field is []byte).
+          BarrierUnseal: async (req: { tenant_id: string; key: string }) => {
             maybeReject("TenantBinding.BarrierUnseal");
-          },
-          BarrierUnsealShare: async (req: { tenant_id: string; share: string }) => {
-            maybeReject("TenantBinding.BarrierUnsealShare");
             const s = getState();
             const tb = s.tenantBarriers?.[req.tenant_id];
             if (!tb) throw new Error(`tenant "${req.tenant_id}" barrier not initialized`);
-            const required = tb.shamir_threshold ?? 0;
-            const submitted = (tb.submitted ?? 0) + 1;
-            const complete = submitted >= required;
-            if (complete) {
-              // Quorum reached: unseal and reset the accumulator, mirroring
-              // the server's TenantBarrierUnsealShare semantics.
-              tb.sealed = false;
-              tb.submitted = 0;
-            } else {
-              tb.submitted = submitted;
+            if (tb.strategy === "shamir") {
+              throw new Error("qrdb/seal: a Shamir barrier unseals through a quorum of its share holders");
             }
-            return {
-              tenant_id: req.tenant_id,
-              required,
-              submitted,
-              complete,
-              sealed: tb.sealed,
-            };
+            if (tb.passphrase !== undefined && atob(req.key) !== tb.passphrase) {
+              throw new Error("tenant barrier: decryption failed: invalid credentials");
+            }
+            tb.sealed = false;
           },
           BarrierStatus: async (tenantId: string) => {
             maybeReject("TenantBinding.BarrierStatus");

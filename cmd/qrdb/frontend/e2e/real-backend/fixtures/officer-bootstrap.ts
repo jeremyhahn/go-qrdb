@@ -4,500 +4,328 @@
 /**
  * officer-bootstrap.ts
  *
- * Shared helpers for the Security Officer (SO) enrollment and share-claim
- * flows described in §6 of docs/seal/so-share-distribution-design.md.
+ * Shared helpers for share-holder flows against a real qrdbd.
  *
- * The helpers cover:
- *   - EC P-256 key-pair generation and CSR production (via openssl CLI)
- *   - Officer registration against the system-barrier REST API
- *   - Share claim (begin → sign nonce → complete) using a per-officer
- *     mTLS request context
- *   - A convenience bootstrap function that registers N officers,
- *     initialises the Shamir barrier, and claims all shares
+ * Holders (Security Officers and key custodians) are ENROLLED over REST, the
+ * way the web UI enrols them. Everything that needs a holder's private key —
+ * claiming the sealed envelope and submitting a share to a quorum round — is
+ * done with the qrdb CLI, the canonical holder tool, exactly as a holder
+ * does it. The envelope is HPKE-sealed and a submission carries a factor
+ * proof, so re-implementing either here would mean doing holder cryptography
+ * in test code; the CLI keeps it in Go.
  *
- * Signature scheme (mirrors verifyNonceSignature in pkg/ceremony/crypto.go):
- *   ECDSA P-256: sign SHA-256(rawNonceBytes) → ASN.1 DER bytes → base64-StdEncoding
- *   In Node: crypto.createSign("SHA256").update(<rawNonceBytes>).sign(<privateKeyPem>)
- *   produces exactly this encoding.
- *
- * share_bytes decoding:
- *   The REST handler base64-StdEncoding-encodes JSON(shamir.Share{}).
- *   Decode: base64 → JSON → .value  (the combinable share value string).
+ * Binaries: the daemon is QRDBD_BIN (default <repo>/bin/qrdbd); the client
+ * CLI is QRDB_BIN (default <repo>/bin/qrdb), a headless build of ./cmd/qrdb.
  */
 
 import type { APIRequest, APIRequestContext } from "playwright-core";
-import { execFileSync } from "child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
+import { execFileSync, spawnSync } from "child_process";
+import { mkdtempSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
-import { createSign, generateKeyPairSync } from "crypto";
-import { waitForHealthExported, waitForSealedWindow } from "./daemon-helpers.ts";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { generateKeyPairSync } from "crypto";
+import { waitForHealthExported } from "./daemon-helpers.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** A generated EC P-256 key pair with a signed CSR. */
-export interface OfficerKey {
+/** A holder's role. */
+export type HolderRole = "so" | "custodian";
+
+/** Where a holder belongs: a system-barrier domain or a tenant barrier. */
+export interface HolderScope {
+  domain?: "unseal" | "recovery";
+  tenantId?: string;
+}
+
+/** A holder's key material and files on disk. */
+export interface Holder {
   username: string;
-  privateKeyPem: string;
-  publicKeyPem: string;
+  role: HolderRole;
+  /** PKCS#8 PEM private key of the holder's certificate. */
+  keyPath: string;
   csrPem: string;
+  /** The CA-issued certificate, written once the holder is enrolled. */
+  certPath: string;
+  /** Where the claimed envelope is written. */
+  envelopePath: string;
 }
 
-/** The result of registering an officer with the barrier API. */
-export interface RegisteredOfficer {
-  username: string;
-  privateKeyPem: string;
-  publicKeyPem: string;
-  certPem: string;
-  shareIndex: number;
+/** The daemon a holder talks to. */
+export interface HolderDaemon {
+  adminUrl: string;
+  dataDir: string;
 }
 
-/** A claimed Shamir share. */
-export interface ClaimedShare {
-  username: string;
-  shareIndex: number;
-  /** The combinable share value extracted from the claim response. */
-  shareValue: string;
+/** A quorum outcome, as the CLI prints it with --output json. */
+export interface QuorumOutcome {
+  domain: string;
+  op: string;
+  required: number;
+  submitted: number;
+  complete: boolean;
+  root_token?: string;
+  threshold?: number;
+  total_shares?: number;
+  share_count?: number;
 }
 
-/** The complete bootstrap result returned by bootstrapShamirBarrier. */
-export interface BootstrapResult {
-  /** Claimed share values in registration order (officer[0].shareValue, ...). */
-  shareValues: string[];
-  /** Registered officer information in registration order. */
-  officers: RegisteredOfficer[];
+/** The result of a CLI run. */
+export interface CliResult {
+  status: number;
+  stdout: string;
+  stderr: string;
 }
 
 // ---------------------------------------------------------------------------
-// Key and CSR generation
+// Keys and CSRs
 // ---------------------------------------------------------------------------
 
 /**
- * generateOfficerKeyAndCSR generates an EC P-256 key pair and produces a
- * PEM-encoded CSR for the given username via the system openssl CLI.
- *
- * openssl is used for CSR generation because Node's `crypto` module does not
- * expose a CSR builder. The key is generated natively via Node's
- * `generateKeyPairSync` so it stays in-process and only the private key PEM
- * is written to a temp file for openssl req.
+ * newHolder generates an EC P-256 key and a CSR for username in a private
+ * temporary directory. openssl builds the CSR because Node's crypto has no
+ * CSR builder.
  */
-export function generateOfficerKeyAndCSR(username: string): OfficerKey {
-  // Generate EC P-256 key pair in process.
-  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+export function newHolder(username: string, role: HolderRole = "so"): Holder {
+  const { privateKey } = generateKeyPairSync("ec", {
     namedCurve: "P-256",
-    publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
   });
-
-  const privateKeyPem = privateKey as string;
-  const publicKeyPem = publicKey as string;
-
-  // Write private key to a temp file for openssl req.
-  const tmpDir = mkdtempSync(join(tmpdir(), `qrdb-officer-csr-`));
-  const keyPath = join(tmpDir, "key.pem");
-  const csrPath = join(tmpDir, "csr.pem");
-
-  try {
-    writeFileSync(keyPath, privateKeyPem, { mode: 0o600 });
-
-    // Generate CSR. openssl req -new -key <key> -out <csr> -subj "/CN=<username>"
-    execFileSync(
-      "openssl",
-      [
-        "req",
-        "-new",
-        "-key",
-        keyPath,
-        "-out",
-        csrPath,
-        "-subj",
-        `/CN=${username}`,
-      ],
-      { stdio: ["ignore", "ignore", "ignore"] },
-    );
-
-    // Node's built-in fs.readFileSync for reading the generated CSR.
-    const csrPem = readFileSync(csrPath, "utf8");
-    return { username, privateKeyPem, publicKeyPem, csrPem };
-  } finally {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // best effort cleanup
-    }
-  }
+  const dir = mkdtempSync(join(tmpdir(), `qrdb-holder-${username}-`));
+  const keyPath = join(dir, "key.pem");
+  const csrPath = join(dir, "csr.pem");
+  writeFileSync(keyPath, privateKey as string, { mode: 0o600 });
+  execFileSync("openssl", ["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${username}`], {
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  return {
+    username,
+    role,
+    keyPath,
+    csrPem: readFileSync(csrPath, "utf8"),
+    certPath: join(dir, "cert.pem"),
+    envelopePath: join(dir, "envelope.json"),
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Officer registration
+// Enrolment (REST, as the web UI does it)
 // ---------------------------------------------------------------------------
 
+/** The REST route that enrols a holder in scope. */
+export function enrolRoute(adminUrl: string, scope: HolderScope = {}): string {
+  if (scope.tenantId) return `${adminUrl}/v1/tenants/${encodeURIComponent(scope.tenantId)}/barrier/officers`;
+  if (scope.domain === "recovery") return `${adminUrl}/v1/barrier/recovery/officers`;
+  return `${adminUrl}/v1/barrier/officers`;
+}
+
 /**
- * registerOfficers submits each officer CSR to POST /v1/barrier/officers and
- * returns the registered officers with their signed certificates.
- *
- * Uses the base `request` fixture context (no client cert) because
- * registration is an admin operation, not a per-officer mTLS operation.
+ * enrolHolders enrols each holder in scope and writes its issued certificate
+ * to certPath. It fails the test on any non-2xx answer.
  */
-export async function registerOfficers(
+export async function enrolHolders(
   request: APIRequestContext,
   adminUrl: string,
-  officers: OfficerKey[],
-): Promise<RegisteredOfficer[]> {
-  const registered: RegisteredOfficer[] = [];
-
-  for (const officer of officers) {
-    const resp = await request.post(`${adminUrl}/v1/barrier/officers`, {
-      data: {
-        username: officer.username,
-        csr_pem: officer.csrPem,
-      },
-      headers: { "Content-Type": "application/json" },
+  holders: Holder[],
+  scope: HolderScope = {},
+): Promise<void> {
+  for (const h of holders) {
+    const resp = await request.post(enrolRoute(adminUrl, scope), {
+      data: { username: h.username, role: h.role, csr_pem: h.csrPem },
     });
-
     if (!resp.ok()) {
-      const body = await resp.text();
-      throw new Error(
-        `Failed to register officer ${officer.username}: HTTP ${resp.status()} — ${body}`,
-      );
+      throw new Error(`enrol ${h.username}: ${resp.status()} ${await resp.text()}`);
     }
-
-    const body = (await resp.json()) as {
-      cert_pem: string;
-      share_index: number;
-    };
-
-    registered.push({
-      username: officer.username,
-      privateKeyPem: officer.privateKeyPem,
-      publicKeyPem: officer.publicKeyPem,
-      certPem: body.cert_pem,
-      shareIndex: body.share_index,
-    });
+    const body = (await resp.json()) as { cert_pem: string };
+    writeFileSync(h.certPath, body.cert_pem);
   }
-
-  return registered;
 }
 
 // ---------------------------------------------------------------------------
-// Share claim
+// The qrdb CLI
 // ---------------------------------------------------------------------------
 
+function qrdbBin(): string {
+  return process.env["QRDB_BIN"] ?? join(__dirname, "..", "..", "..", "..", "..", "..", "bin", "qrdb");
+}
+
 /**
- * claimShare performs the two-step share claim for a single officer:
- *
- *  1. POST /v1/barrier/officers/{username}/claim/begin (mTLS with officer cert)
- *     → {nonce_hex, expires_at}
- *  2. Sign nonce: createSign("SHA256").update(Buffer.from(nonceHex, "hex")).sign(privateKeyPem)
- *     → ASN.1-DER ECDSA signature → base64-StdEncoding
- *  3. POST /v1/barrier/officers/{username}/claim/complete {nonce_hex, signature}
- *     → {share_index, share_bytes}
- *  4. Decode share_bytes: base64 → JSON → .value
- *
- * Accepts `playwright.request` (APIRequest) to create a per-officer request
- * context with client certificate material for the officer's mTLS session.
- * The context is disposed after the claim completes.
+ * qrdbAs runs the qrdb CLI against the daemon over REST, presenting the
+ * holder's certificate on the connection and trusting the daemon's CA.
  */
-export async function claimShare(
-  playwrightRequest: APIRequest,
-  adminUrl: string,
-  officer: RegisteredOfficer,
-): Promise<ClaimedShare> {
-  const ctx: APIRequestContext = await playwrightRequest.newContext({
-    ignoreHTTPSErrors: true,
-    clientCertificates: [
-      {
-        origin: adminUrl,
-        cert: Buffer.from(officer.certPem),
-        key: Buffer.from(officer.privateKeyPem),
-      },
+export function qrdbAs(daemon: HolderDaemon, holder: Holder, args: string[]): CliResult {
+  const res = spawnSync(
+    qrdbBin(),
+    [
+      "--server", daemon.adminUrl,
+      "--ca-file", join(daemon.dataDir, "ca.pem"),
+      "--cert-file", holder.certPath,
+      "--key-file", holder.keyPath,
+      "--timeout", "20s",
+      "--output", "json",
+      ...args,
     ],
-  });
+    { encoding: "utf8" },
+  );
+  return { status: res.status ?? -1, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+}
 
-  try {
-    // Step 1: begin claim.
-    const beginResp = await ctx.post(
-      `${adminUrl}/v1/barrier/officers/${officer.username}/claim/begin`,
-      { headers: { "Content-Type": "application/json" } },
-    );
+/** The CLI verbs and scope flags for a holder scope. */
+function scoped(scope: HolderScope, verb: "officer" | "quorum"): string[] {
+  if (scope.tenantId) {
+    return ["tenant", verb === "officer" ? "barrier-officer" : "barrier-quorum", "--tenant-id", scope.tenantId];
+  }
+  return ["barrier", verb, "--domain", scope.domain ?? "unseal"];
+}
 
-    if (!beginResp.ok()) {
-      const body = await beginResp.text();
-      throw new Error(
-        `claim/begin failed for ${officer.username}: HTTP ${beginResp.status()} — ${body}`,
-      );
-    }
+/** claimEnvelope claims the holder's envelope with the CLI; returns the run. */
+export function claimEnvelope(daemon: HolderDaemon, holder: Holder, scope: HolderScope = {}): CliResult {
+  const [group, verb, ...flags] = scoped(scope, "officer");
+  return qrdbAs(daemon, holder, [
+    group!, verb!, "claim", ...flags,
+    "--username", holder.username,
+    "--key", holder.keyPath,
+    "--out", holder.envelopePath,
+  ]);
+}
 
-    const beginBody = (await beginResp.json()) as {
-      nonce_hex: string;
-      expires_at: string;
-    };
-
-    const nonceHex = beginBody.nonce_hex;
-
-    // Step 2: sign the raw nonce bytes.
-    // verifyNonceSignature (pkg/ceremony/crypto.go) for ECDSA P-256 expects:
-    //   digest = SHA-256(rawNonceBytes)
-    //   signature = ASN.1 DER encoding of ECDSA(digest)
-    // Node's crypto.createSign("SHA256").update(rawBytes).sign(key) produces
-    // exactly SHA-256 + ASN.1-DER for EC keys.
-    const rawNonce = Buffer.from(nonceHex, "hex");
-    const sign = createSign("SHA256");
-    sign.update(rawNonce);
-    const signatureDer = sign.sign(officer.privateKeyPem);
-    const signatureB64 = signatureDer.toString("base64");
-
-    // Step 3: complete claim.
-    const completeResp = await ctx.post(
-      `${adminUrl}/v1/barrier/officers/${officer.username}/claim/complete`,
-      {
-        data: { nonce_hex: nonceHex, signature: signatureB64 },
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    if (!completeResp.ok()) {
-      const body = await completeResp.text();
-      throw new Error(
-        `claim/complete failed for ${officer.username}: HTTP ${completeResp.status()} — ${body}`,
-      );
-    }
-
-    const completeBody = (await completeResp.json()) as {
-      share_index: number;
-      share_bytes: string;
-    };
-
-    // Step 4: decode share_bytes → JSON → .value.
-    // share_bytes = base64-StdEncoding of JSON-marshaled shamir.Share.
-    // The combinable share value is the .value string field in that JSON.
-    const shareJson = Buffer.from(completeBody.share_bytes, "base64").toString(
-      "utf8",
-    );
-    const share = JSON.parse(shareJson) as { value: string };
-
-    return {
-      username: officer.username,
-      shareIndex: completeBody.share_index,
-      shareValue: share.value,
-    };
-  } finally {
-    await ctx.dispose();
+/** mustClaim claims the envelope and fails the test if the claim fails. */
+export function mustClaim(daemon: HolderDaemon, holder: Holder, scope: HolderScope = {}): void {
+  const res = claimEnvelope(daemon, holder, scope);
+  if (res.status !== 0) {
+    throw new Error(`claim ${holder.username}: exit ${res.status}: ${res.stderr}${res.stdout}`);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Recovery officer claim (mirrors claimShare but uses recovery routes)
-// ---------------------------------------------------------------------------
-
 /**
- * claimRecoveryShare performs the two-step recovery share claim for a single
- * officer using the /v1/barrier/recovery/officers/{username}/claim/* routes.
+ * submitShare opens the holder's envelope and submits its share to the open
+ * round for op, answering the mtls factor with the certificate key.
  */
-export async function claimRecoveryShare(
-  playwrightRequest: APIRequest,
-  adminUrl: string,
-  officer: RegisteredOfficer,
-): Promise<ClaimedShare> {
-  const ctx: APIRequestContext = await playwrightRequest.newContext({
-    ignoreHTTPSErrors: true,
-    clientCertificates: [
-      {
-        origin: adminUrl,
-        cert: Buffer.from(officer.certPem),
-        key: Buffer.from(officer.privateKeyPem),
-      },
-    ],
-  });
+export function submitShare(
+  daemon: HolderDaemon,
+  holder: Holder,
+  op: "unseal" | "seal" | "root-token" | "rekey" | "recover",
+  scope: HolderScope = {},
+): CliResult {
+  const [group, verb, ...flags] = scoped(scope, "quorum");
+  return qrdbAs(daemon, holder, [
+    group!, verb!, "submit", ...flags,
+    "--op", op,
+    "--username", holder.username,
+    "--envelope", holder.envelopePath,
+    "--key", holder.keyPath,
+  ]);
+}
 
-  try {
-    const beginResp = await ctx.post(
-      `${adminUrl}/v1/barrier/recovery/officers/${officer.username}/claim/begin`,
-      { headers: { "Content-Type": "application/json" } },
-    );
-
-    if (!beginResp.ok()) {
-      const body = await beginResp.text();
-      throw new Error(
-        `recovery claim/begin failed for ${officer.username}: HTTP ${beginResp.status()} — ${body}`,
-      );
-    }
-
-    const beginBody = (await beginResp.json()) as {
-      nonce_hex: string;
-      expires_at: string;
-    };
-
-    const nonceHex = beginBody.nonce_hex;
-    const rawNonce = Buffer.from(nonceHex, "hex");
-    const sign = createSign("SHA256");
-    sign.update(rawNonce);
-    const signatureDer = sign.sign(officer.privateKeyPem);
-    const signatureB64 = signatureDer.toString("base64");
-
-    const completeResp = await ctx.post(
-      `${adminUrl}/v1/barrier/recovery/officers/${officer.username}/claim/complete`,
-      {
-        data: { nonce_hex: nonceHex, signature: signatureB64 },
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    if (!completeResp.ok()) {
-      const body = await completeResp.text();
-      throw new Error(
-        `recovery claim/complete failed for ${officer.username}: HTTP ${completeResp.status()} — ${body}`,
-      );
-    }
-
-    const completeBody = (await completeResp.json()) as {
-      share_index: number;
-      share_bytes: string;
-    };
-
-    const shareJson = Buffer.from(completeBody.share_bytes, "base64").toString(
-      "utf8",
-    );
-    const share = JSON.parse(shareJson) as { value: string };
-
-    return {
-      username: officer.username,
-      shareIndex: completeBody.share_index,
-      shareValue: share.value,
-    };
-  } finally {
-    await ctx.dispose();
+/** mustSubmit submits and returns the parsed outcome, failing the test on error. */
+export function mustSubmit(
+  daemon: HolderDaemon,
+  holder: Holder,
+  op: "unseal" | "seal" | "root-token" | "rekey" | "recover",
+  scope: HolderScope = {},
+): QuorumOutcome {
+  const res = submitShare(daemon, holder, op, scope);
+  if (res.status !== 0) {
+    throw new Error(`submit ${op} by ${holder.username}: exit ${res.status}: ${res.stderr}${res.stdout}`);
   }
+  return JSON.parse(res.stdout) as QuorumOutcome;
 }
 
 // ---------------------------------------------------------------------------
-// Full bootstrap helper
+// Composite flows
 // ---------------------------------------------------------------------------
 
+/** The result of bootstrapShamirBarrier. */
+export interface ShamirBootstrap {
+  holders: Holder[];
+  threshold: number;
+}
+
 /**
- * bootstrapShamirBarrier performs the complete register-N → initialize →
- * claim-all flow for the system Shamir barrier.
- *
- * Steps:
- *  1. Generate officer keys and CSRs (one per entry in officerUsernames).
- *  2. Register all officers via POST /v1/barrier/officers.
- *  3. POST /v1/barrier/shamir/initialize with the given threshold and total.
- *     (total must equal officerUsernames.length; init HARD-FAILS otherwise.)
- *  4. Each officer claims their share via the mTLS claim handshake.
- *
- * Returns { shareValues, officers } where shareValues[i] is the combinable
- * share value for officers[i].
- *
- * @param request - The test's base APIRequestContext (no client cert).
- * @param playwrightRequest - playwright.request (APIRequest) for creating
- *   per-officer mTLS contexts during the claim step.
+ * bootstrapShamirBarrier enrols n unseal holders, initializes the Shamir
+ * barrier with the given threshold, and has every holder claim its envelope.
+ * The barrier is unsealed on return. soPin, when given, provisions the SO PIN
+ * at initialization; rekey and revocation require it.
  */
 export async function bootstrapShamirBarrier(
   request: APIRequestContext,
-  playwrightRequest: APIRequest,
-  adminUrl: string,
-  opts: {
-    officerUsernames: string[];
-    threshold: number;
-    total: number;
-    secret: string;
-  },
-): Promise<BootstrapResult> {
-  const { officerUsernames, threshold, total, secret } = opts;
-
-  if (officerUsernames.length !== total) {
-    throw new Error(
-      `bootstrapShamirBarrier: officerUsernames.length (${officerUsernames.length}) must equal total (${total})`,
-    );
-  }
-
-  // 1. Generate keys + CSRs.
-  const keys = officerUsernames.map((u) => generateOfficerKeyAndCSR(u));
-
-  // 2. Register officers.
-  const officers = await registerOfficers(request, adminUrl, keys);
-
-  // 3. Initialize the barrier (share-free; shares go to officer enclaves).
-  const initResp = await request.post(
-    `${adminUrl}/v1/barrier/shamir/initialize`,
-    {
-      data: { secret, threshold, total_shares: total },
-      headers: { "Content-Type": "application/json" },
-    },
-  );
-
-  if (!initResp.ok()) {
-    const body = await initResp.text();
-    throw new Error(
-      `shamir/initialize failed: HTTP ${initResp.status()} — ${body}`,
-    );
-  }
-
-  // shamir/initialize auto-unseals the barrier, which swaps the daemon's
-  // sealed-window listener for the full server: the sealed-window server
-  // drains while the host + first-boot phases run (several seconds), and
-  // requests issued during the swap fail with socket-hang-up/ECONNREFUSED.
-  // Wait for /health 200 (full server up) before claiming any shares.
-  await waitForHealthExported(adminUrl, 60_000);
-
-  // 4. Claim all shares.
-  const claims: ClaimedShare[] = [];
-  for (const officer of officers) {
-    const claimed = await claimShare(playwrightRequest, adminUrl, officer);
-    claims.push(claimed);
-  }
-
-  // Align shareValues to the officers slice by shareIndex.
-  const shareValues = officers.map((o) => {
-    const claim = claims.find((c) => c.shareIndex === o.shareIndex);
-    if (!claim) {
-      throw new Error(
-        `No claim found for officer ${o.username} (shareIndex=${o.shareIndex})`,
-      );
-    }
-    return claim.shareValue;
+  daemon: HolderDaemon,
+  n: number,
+  threshold: number,
+  soPin?: string,
+): Promise<ShamirBootstrap> {
+  const holders = Array.from({ length: n }, (_, i) => newHolder(`holder-${i + 1}`, i === 0 ? "so" : "custodian"));
+  await enrolHolders(request, daemon.adminUrl, holders);
+  const init = await request.post(`${daemon.adminUrl}/v1/barrier/shamir/initialize`, {
+    data: { threshold, total_shares: n, ...(soPin ? { so_pin: soPin } : {}) },
   });
-
-  return { shareValues, officers };
+  if (!init.ok()) {
+    throw new Error(`shamir/initialize: ${init.status()} ${await init.text()}`);
+  }
+  // Initialization unseals and swaps the sealed-window listener for the full
+  // server; wait out the swap before the holders connect.
+  await waitForHealthExported(daemon.adminUrl, 60_000);
+  for (const h of holders) mustClaim(daemon, h);
+  return { holders, threshold };
 }
 
-// ---------------------------------------------------------------------------
-// Seal-vote quorum helper
-// ---------------------------------------------------------------------------
-
 /**
- * sealBarrierViaQuorum seals an UNSEALED shamir barrier by submitting one
- * POST /v1/barrier/shamir/seal-vote per provided share value.
- *
- * Shamir barriers cannot be sealed via POST /v1/barrier/seal (the server
- * rejects it with 422 seal.ErrShamirBarrierRequiresQuorum); a quorum of
- * threshold seal votes is required. The final vote triggers the seal, after
- * which the daemon transitions back to the sealed window — this helper polls
- * /v1/barrier/status until it reports sealed:true so callers can immediately
- * submit unseal shares.
- *
- * Pass exactly `threshold` share values.
+ * quorum has the first `count` holders submit to op in turn and returns the
+ * last outcome.
  */
-export async function sealBarrierViaQuorum(
+export function quorum(
+  daemon: HolderDaemon,
+  holders: Holder[],
+  count: number,
+  op: "unseal" | "seal" | "root-token" | "rekey" | "recover",
+  scope: HolderScope = {},
+): QuorumOutcome {
+  let last: QuorumOutcome | undefined;
+  for (const h of holders.slice(0, count)) last = mustSubmit(daemon, h, op, scope);
+  if (last === undefined) throw new Error("quorum: no holder submitted");
+  return last;
+}
+
+/** waitForSealed polls the barrier status until it reports sealed:want. */
+export async function waitForSealed(
   request: APIRequestContext,
   adminUrl: string,
-  shareValues: string[],
+  want: boolean,
+  timeoutMs = 30_000,
 ): Promise<void> {
-  for (const share of shareValues) {
-    const resp = await request.post(
-      `${adminUrl}/v1/barrier/shamir/seal-vote`,
-      {
-        data: { share },
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    if (!resp.ok()) {
-      const body = await resp.text();
-      throw new Error(`seal-vote failed: HTTP ${resp.status()} — ${body}`);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const resp = await request.get(`${adminUrl}/v1/barrier/status`);
+      if (resp.ok() && ((await resp.json()) as { sealed: boolean }).sealed === want) return;
+    } catch {
+      // The daemon may be swapping listeners; retry.
     }
+    if (Date.now() >= deadline) throw new Error(`barrier did not report sealed=${want} within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 500));
   }
+}
 
-  await waitForSealedWindow(adminUrl, 60_000);
+/**
+ * holderContext returns a request context presenting cert (and its key) on
+ * the TLS connection to adminUrl — for asserting how the REST claim routes
+ * answer a given certificate. The caller disposes it.
+ */
+export async function holderContext(
+  apiRequest: APIRequest,
+  adminUrl: string,
+  cert: Holder,
+  key: Holder = cert,
+): Promise<APIRequestContext> {
+  return apiRequest.newContext({
+    ignoreHTTPSErrors: true,
+    clientCertificates: [
+      { origin: adminUrl, cert: readFileSync(cert.certPath), key: readFileSync(key.keyPath) },
+    ],
+  });
 }

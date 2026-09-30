@@ -593,7 +593,7 @@ test.describe("Scenario E2 - passphrase server sealed/unsealed transition", () =
   // threshold (/v1/barrier/status only includes shamir_threshold/shamir_total
   // for shamir barriers), so sharesRequired/sharesTotal are 0. SealManager
   // therefore renders the single-admin Seal button and the passphrase Unseal
-  // panel (not the quorum seal-vote / Submit Share surfaces).
+  // panel (not the Shamir holder-quorum note).
   test.use({
     mockState: {
       ...secondLaunchEmbeddedState,

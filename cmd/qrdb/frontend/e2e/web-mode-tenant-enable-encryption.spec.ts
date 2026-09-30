@@ -141,7 +141,9 @@ test.describe("Web mode - tenant enable encryption wizard", () => {
     const body = enableBody as unknown as Record<string, unknown>;
     expect(body.tenant_id).toBe(TENANT_ID);
     expect(body.strategy).toBe("passphrase");
-    expect(body.passphrase).toBe("hunter2hunter2");
+    // The passphrase is []byte on the server so it can be zeroized: base64
+    // on the wire.
+    expect(body.passphrase).toBe(btoa("hunter2hunter2"));
   });
 
   test("surfaces a 409 migration-in-progress rejection as an error toast", async ({

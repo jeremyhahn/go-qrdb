@@ -89,12 +89,11 @@ test.describe("Admin - Seal Manager", () => {
       await expect(main.getByText("5", { exact: true })).toBeVisible();
     });
 
-    test("hides single-admin Seal button and shows quorum seal panel", async ({ page }) => {
-      // sharesRequired > 0 marks this barrier as Shamir-protected. Shamir
-      // barriers cannot be sealed by a single admin (the server rejects
-      // BarrierSeal with ErrShamirBarrierRequiresQuorum), so the Seal
-      // Manager presents the quorum seal-vote panel instead of the
-      // single-admin Seal button.
+    test("hides single-admin Seal button and points to the holder quorum", async ({ page }) => {
+      // sharesRequired > 0 marks this barrier as Shamir-protected. A single
+      // admin cannot seal it (the server refuses BarrierSeal), and the page
+      // takes no share: its holders seal it through a quorum from the CLI or
+      // the desktop app.
       await navigateToSealManager(page);
 
       const main = page.locator("main");
@@ -102,12 +101,11 @@ test.describe("Admin - Seal Manager", () => {
       await expect(
         main.getByRole("button", { name: "Seal", exact: true }),
       ).toHaveCount(0);
-      // String matcher: the copy wraps across source lines.
-      await expect(main.getByText("quorum of Security Officers")).toBeVisible({
-        timeout: LOAD_TIMEOUT,
-      });
-      await expect(page.getByTestId("seal-vote-input")).toBeVisible();
-      await expect(page.getByTestId("submit-seal-vote-btn")).toBeDisabled();
+      const note = page.getByTestId("seal-quorum-note");
+      await expect(note).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(note).toContainText("quorum of its share holders");
+      await expect(note).toContainText("qrdb barrier quorum submit --op seal");
+      await expect(page.getByTestId("seal-vote-input")).toHaveCount(0);
     });
 
     test("status error shows error toast", async ({ page }) => {
@@ -148,7 +146,7 @@ test.describe("Admin - Seal Manager", () => {
     test("shows single-admin Seal button when unsealed", async ({ page }) => {
       // sharesRequired === 0 and a non-shamir strategy mark this barrier as
       // single-admin sealable, so the Seal button renders instead of the
-      // quorum seal-vote panel.
+      // holder-quorum note.
       await navigateToSealManager(page);
 
       const main = page.locator("main");
@@ -219,7 +217,7 @@ test.describe("Admin - Seal Manager", () => {
     });
   });
 
-  test.describe("sealed initialized state with share progress", () => {
+  test.describe("sealed initialized Shamir state", () => {
     test.use({
       mockState: {
         ...secondLaunchEmbeddedState,
@@ -262,48 +260,23 @@ test.describe("Admin - Seal Manager", () => {
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
     });
 
-    test("submit share advances progress counter in Seal Manager", async ({ page }) => {
+    test("a sealed Shamir barrier points to the holder quorum and takes no share", async ({ page }) => {
       await page.goto("/");
       await expect(
         page.locator(".breadcrumbs").getByText("Dashboard"),
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
-      // Navigate to Seal Manager.
       await page.locator("aside").getByText("Seal Manager").click();
       await expect(
         page.locator(".breadcrumbs").getByText("Seal Manager"),
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const main = page.locator("main");
-
-      // Submit one share.
-      await main.locator("input[type='password'], input[type='text']").filter({ hasNot: page.locator("[disabled]") }).last().fill("partial-share");
-      await main.getByRole("button", { name: "Submit Share" }).click();
-
-      // The progress counter updates to show 1 / 2.
-      await expect(
-        main.locator(".font-mono").filter({ hasText: /1 \/ 2/ }),
-      ).toBeVisible({ timeout: 5_000 });
-    });
-
-    test("empty share keeps Submit Share button disabled", async ({ page }) => {
-      await page.goto("/");
-      await expect(
-        page.locator(".breadcrumbs").getByText("Dashboard"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      // Navigate to Seal Manager.
-      await page.locator("aside").getByText("Seal Manager").click();
-      await expect(
-        page.locator(".breadcrumbs").getByText("Seal Manager"),
-      ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-      const main = page.locator("main");
-
-      // The Submit Share button must be disabled when the input is empty.
-      await expect(
-        main.getByRole("button", { name: "Submit Share" }),
-      ).toBeDisabled({ timeout: LOAD_TIMEOUT });
+      const note = page.getByTestId("unseal-quorum-note");
+      await expect(note).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(note).toContainText("2 of 3 must submit");
+      await expect(note).toContainText("qrdb barrier quorum submit --op unseal");
+      await expect(main.getByRole("button", { name: "Submit Share" })).toHaveCount(0);
     });
   });
 
@@ -314,9 +287,10 @@ test.describe("Admin - Seal Manager", () => {
         sealStatus: {
           sealed: true,
           initialized: true,
-          sharesRequired: 2,
+          strategy: "passphrase",
+          sharesRequired: 0,
           sharesProvided: 0,
-          sharesTotal: 3,
+          sharesTotal: 0,
         },
         unsealProgress: {
           sealed: true,
@@ -342,8 +316,8 @@ test.describe("Admin - Seal Manager", () => {
 
       await injectError(page, "SealBinding.Unseal", "unseal operation failed");
 
-      await main.locator("input[type='password'], input[type='text']").filter({ hasNot: page.locator("[disabled]") }).last().fill("bad-share");
-      await main.getByRole("button", { name: "Submit Share" }).click();
+      await main.getByPlaceholder("Enter passphrase").fill("bad-passphrase");
+      await main.getByRole("button", { name: "Unseal", exact: true }).click();
 
       const alert = page.locator('[role="alert"]');
       await expect(alert).toBeVisible({ timeout: 5_000 });

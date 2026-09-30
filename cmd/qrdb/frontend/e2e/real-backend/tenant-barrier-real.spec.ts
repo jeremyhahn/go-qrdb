@@ -11,10 +11,12 @@
  *   - POST /v1/tenants/{id}/barrier/init {passphrase} -> 204, status initialized.
  *   - The same call WITHOUT a passphrase -> 400 "empty passphrase" (the bug the
  *     UI fix addresses: the form now collects a passphrase).
- *   - strategy "shamir" is supported but share-free (INV-1): init requires
- *     enrolled Security Officers so shares can be sealed to their enclaves.
- *     With no officers registered the init is rejected and no share material
- *     ever appears in the response.
+ *   - strategy "shamir" splits the tenant's unseal key to the tenant's
+ *     enrolled share holders: with none enrolled the init is refused; with
+ *     them enrolled it is share-free, each holder claims its envelope with the
+ *     qrdb CLI, and a quorum of them completes a rekey or a revocation.
+ *
+ * Secrets are []byte on the server so they can be zeroized: base64 in JSON.
  *
  * The daemon is spawned with seal enabled + a volume pool; the system barrier
  * is initialized via REST before tenants are created.
@@ -27,6 +29,12 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { findFreePort, waitForSealedWindow, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
+import { enrolHolders, mustClaim, newHolder, quorum, submitShare } from "./fixtures/officer-bootstrap.ts";
+
+/** b64 encodes a secret for a []byte JSON field. */
+function b64(s: string): string {
+  return Buffer.from(s, "utf8").toString("base64");
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -101,7 +109,7 @@ test.beforeAll(async () => {
       "start", "--config", configPath, "--data-dir", dataDir,
       "--listen", `127.0.0.1:${raftPort}`, "--raft-address", `127.0.0.1:${raftPort}`,
       "--admin-port", String(adminPort), "--grpc-port", String(grpcPort),
-      "--auth-enabled=false", "--tls-client-auth=none", "--discovery", "static",
+      "--auth-enabled=false", "--tls-client-auth=request", "--discovery", "static",
       "--peers", `1=127.0.0.1:${raftPort}`, "--replica-id", "1", "--log-level", "warn",
       "--enable-grpc=false", "--enable-unix=false", "--enable-quic=false", "--enable-mcp=false",
     ],
@@ -113,7 +121,7 @@ test.beforeAll(async () => {
   await new Promise((r) => setTimeout(r, 300));
   await waitForSealedWindow(adminUrl);
   // Initialize the system barrier, then wait for full bootstrap.
-  const init = await https("POST", `${adminUrl}/v1/barrier/initialize`, { secret: "system-secret" });
+  const init = await https("POST", `${adminUrl}/v1/barrier/initialize`, { secret: b64("system-secret") });
   expect(init.status).toBe(204);
   await waitForHealthExported(adminUrl, 30_000);
 });
@@ -142,7 +150,7 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     expect(create.status).toBe(201);
 
     const init = await https("POST", `${daemon.adminUrl}/v1/tenants/acme/barrier/init`, {
-      passphrase: "acme-tenant-secret",
+      passphrase: b64("acme-tenant-secret"),
       strategy: "passphrase",
     });
     expect(init.status).toBe(204);
@@ -161,19 +169,56 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     expect(String(init.json?.error ?? "").toLowerCase()).toContain("passphrase");
   });
 
-  test("per-tenant Shamir init without enrolled officers is rejected, share-free", async () => {
+  test("per-tenant Shamir init without enrolled holders is refused, share-free", async () => {
     await https("POST", `${daemon.adminUrl}/v1/tenants`, { id: "gamma", name: "Gamma", isolation_type: "prefix" });
     const init = await https("POST", `${daemon.adminUrl}/v1/tenants/gamma/barrier/init`, {
-      threshold: 3,
-      shares: 5,
+      threshold: 2,
+      shares: 3,
       strategy: "shamir",
     });
-    // Per-tenant Shamir is supported, but shares are sealed to enrolled
-    // Security Officers (INV-1) — with none registered, init must fail.
     expect(init.status).toBeGreaterThanOrEqual(400);
-    expect(String(init.json?.error ?? "").toLowerCase()).toMatch(/officer|distributor/);
-    // INV-1: no share material may ever appear in an init response.
-    expect(JSON.stringify(init.json ?? "")).not.toContain("share_bytes");
+    expect(JSON.stringify(init.json ?? "")).not.toMatch(/share_bytes|envelope/);
     expect(init.json?.shares ?? null).toBeNull();
+  });
+
+  test("per-tenant Shamir with enrolled holders: share-free init, CLI claims, quorum rekey and revocation", async () => {
+    const tenantId = "delta";
+    const scope = { tenantId };
+    await https("POST", `${daemon.adminUrl}/v1/tenants`, { id: tenantId, name: "Delta", isolation_type: "prefix" });
+
+    const holders = ["t-a", "t-b", "t-c"].map((n, i) => newHolder(n, i === 0 ? "so" : "custodian"));
+    const { request: apiRequest } = await import("@playwright/test");
+    const req = await apiRequest.newContext({ ignoreHTTPSErrors: true });
+    try {
+      await enrolHolders(req, daemon.adminUrl, holders, scope);
+    } finally {
+      await req.dispose();
+    }
+
+    const init = await https("POST", `${daemon.adminUrl}/v1/tenants/${tenantId}/barrier/init`, {
+      threshold: 2,
+      shares: 3,
+      strategy: "shamir",
+    });
+    expect(init.status).toBe(200);
+    expect(init.json).toMatchObject({ tenant_id: tenantId, strategy: "shamir", threshold: 2, total_shares: 3 });
+    expect(JSON.stringify(init.json)).not.toMatch(/share_bytes|envelope/);
+
+    for (const h of holders) mustClaim(daemon, h, scope);
+
+    // A tenant rekey needs RBAC (no SO PIN) and a quorum of current holders.
+    const rekey = await https("POST", `${daemon.adminUrl}/v1/tenants/${tenantId}/barrier/rekey/start`, { threshold: 2 });
+    expect(rekey.status).toBe(200);
+    expect(quorum(daemon, holders, 2, "rekey", scope)).toMatchObject({ complete: true, share_count: 3 });
+    for (const h of holders) mustClaim(daemon, h, scope);
+
+    // Revoking t-c: the remaining two complete it, and t-c cannot take part.
+    const revoke = await https("POST", `${daemon.adminUrl}/v1/tenants/${tenantId}/barrier/officers/revoke`, {
+      username: "t-c",
+    });
+    expect(revoke.status).toBe(200);
+    expect(revoke.json.remove).toEqual(["t-c"]);
+    expect(submitShare(daemon, holders[2]!, "rekey", scope).status).not.toBe(0);
+    expect(quorum(daemon, holders, 2, "rekey", scope)).toMatchObject({ complete: true, share_count: 2 });
   });
 });
