@@ -109,6 +109,40 @@ func NewCeremonyService(config *CeremonyConfig, barrier *seal.StorageBarrier, lo
 	return s, nil
 }
 
+// Barrier returns the barrier the service is the distributor and holder
+// verifier of.
+func (s *CeremonyService) Barrier() *seal.StorageBarrier {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.barrier
+}
+
+// Rebind moves the service to barrier, a new barrier instance over the same
+// storage, and installs it there as the distributor and holder verifier.
+// The enrolled holders, the envelopes not yet claimed and the pending
+// challenges all stay with the service; holder records are read and written
+// through barrier from now on, and are reconciled with its storage the first
+// time it is seen unsealed.
+//
+// It exists for an in-process data-plane restart, such as the one a
+// system-scope encryption migration performs: the restart builds a new
+// barrier, and a new ceremony service would lose the envelopes the migration
+// has just distributed, leaving a sealed barrier no holder could open.
+// Rebinding to the barrier the service already serves changes nothing.
+func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier) {
+	s.mu.Lock()
+	if barrier == nil || barrier == s.barrier {
+		s.mu.Unlock()
+		return
+	}
+	s.barrier = barrier
+	s.system.rebind(barrier)
+	s.recovery.rebind(barrier)
+	s.mu.Unlock()
+	barrier.SetCeremonyDistributor(s)
+	barrier.SetHolderVerifier(s)
+}
+
 // SetCA wires the CeremonyCA used to issue holder and login certificates.
 // It never overwrites a CA already set: the first CA wired is authoritative.
 func (s *CeremonyService) SetCA(ca CeremonyCA) {

@@ -837,9 +837,6 @@ var migrationRules = []rule{
 	is(seal.ErrMigrationInProgress, FailedPrecondition),
 	is(service.ErrSharedBarrierImmutable, PermissionDenied),
 	is(service.ErrMigrationProviderUnavailable, Unimplemented),
-	// A system-scope migration to Shamir would restart the data plane in
-	// process and discard the envelopes it distributed.
-	is(service.ErrShamirSystemMigrationUnsupported, FailedPrecondition),
 }
 
 // contextRules are the caller's own context ending. They sit after every

@@ -1166,6 +1166,11 @@ func runStart(f *startFlags) (err error) {
 	// is handled separately by the per-tenant Host registry.
 	migrateCh := make(chan *systemMigrationRequest, 1)
 	sysMigrator := buildSysMigrator(f, migrateCh)
+	// carriedCeremony is the ceremony service an in-process migration carries
+	// from one boot iteration to the next. It holds the enrolled share holders
+	// and the envelopes a migration to Shamir has just distributed; a fresh
+	// instance would lose them and leave a sealed barrier no holder can open.
+	var carriedCeremony *ceremony.CeremonyService
 	for {
 		var rebootForMigration bool
 		bootErr := func() error {
@@ -1278,7 +1283,7 @@ func runStart(f *startFlags) (err error) {
 			// survive into the post-unseal service graph.
 			var sealedWindowNode *lifecycle.Node
 			if sealSub != nil && sealSub.SealBarrier.IsSealed() {
-				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA)
+				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA, carriedCeremony)
 				if err == nil && barrierUnsealed != nil {
 					barrierUnsealed()
 				}
@@ -1413,12 +1418,13 @@ func runStart(f *startFlags) (err error) {
 			// one exists: officer registrations performed while sealed are
 			// cache-only and distributed shares live in the service's in-memory
 			// enclaves, so constructing a fresh instance here would orphan both.
-			var ceremonyCoreSvc *ceremony.CeremonyService
+			ceremonyCoreSvc := carriedCeremony
 			if sealedWindowNode != nil && sealedWindowNode.Ceremony != nil {
 				if coreSvc, ok := service.CeremonyServiceCore(sealedWindowNode.Ceremony); ok {
 					ceremonyCoreSvc = coreSvc
 				}
 			}
+			carriedCeremony = nil
 
 			// A durable backup repository makes the Backup service's artifacts
 			// survive a daemon restart -- required for disaster recovery, since
@@ -2416,7 +2422,14 @@ func runStart(f *startFlags) (err error) {
 				// In-process system encryption migration: quiesce, re-encrypt the
 				// system host's stores, adopt the keyed root key, and signal the boot
 				// loop to re-initialize (the barrier comes back up sealed, pending
-				// operator unseal with the newly-set credential).
+				// operator unseal with the newly-set credential). The ceremony service
+				// is carried into the next iteration: a Shamir target's envelopes
+				// live in it and must survive the restart.
+				if svcNode != nil && svcNode.Ceremony != nil {
+					if core, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
+						carriedCeremony = core
+					}
+				}
 				withdrawFeatures(gateCloser)
 				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, membershipMgr, bootCancel, sealSub)
 				// handleSystemMigration stopped svcNode to release its store locks

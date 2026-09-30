@@ -199,9 +199,6 @@ func (m *scopedEncryptionMigrator) EnableEncryption(ctx context.Context, scope s
 		if m.system == nil {
 			return service.ErrMigrationProviderUnavailable
 		}
-		if err := service.CheckSystemMigrationTarget(scope, opts); err != nil {
-			return err
-		}
 		return m.system.EnableEncryption(ctx, scope, opts)
 	default:
 		return service.ErrMigrationProviderUnavailable

@@ -931,12 +931,19 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 }
 
 // ceremonyService returns the node's core ceremony service — infra's when
-// one is threaded through from the sealed-window phase, a new one otherwise —
-// configured with the CA, the holder trust domain, the factor registry and
-// the PIN backend. Configuration is applied to a threaded instance too, so
-// the post-unseal graph cannot run with dependencies the sealed window had.
+// one is threaded through from the sealed-window phase or across an
+// in-process data-plane restart, a new one otherwise — configured with the
+// CA, the holder trust domain, the factor registry and the PIN backend.
+// Configuration is applied to a threaded instance too, so the post-unseal
+// graph cannot run with dependencies the sealed window had, and a threaded
+// instance is rebound to this graph's barrier: a restart builds a new barrier
+// instance, and the ceremony service carries the holders and the unclaimed
+// envelopes across to it.
 func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, error) {
 	svc := infra.CeremonyCoreSvc
+	if svc != nil {
+		svc.Rebind(infra.SealBarrier)
+	}
 	if svc == nil {
 		dataDir := infra.CeremonyDataDir
 		if dataDir == "" {

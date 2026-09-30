@@ -472,10 +472,15 @@ func (n *Node) pinBackend(serverOpts []server.ServerOption) pin.PINBackend {
 // sealedWindowCeremonyCore returns the core ceremony service of the node's
 // sealed-window service graph, or nil when there is none. The full boot reuses
 // it rather than building a second instance, exactly as the daemon does.
+//
+// Across an in-process data-plane restart there is no service graph between
+// the teardown and the rebuild; the ceremony service the teardown carried is
+// returned instead, so the envelopes an encryption migration to Shamir has
+// just distributed survive into the rebuilt graph.
 func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 	prior := n.svcNode.Load()
 	if prior == nil || prior.Ceremony == nil {
-		return nil
+		return n.carriedCeremony.Load()
 	}
 	core, _ := service.CeremonyServiceCore(prior.Ceremony)
 	return core
@@ -636,8 +641,13 @@ type Node struct {
 	srv     atomic.Pointer[server.Server]
 	client  atomic.Pointer[sdk.Client]
 	svcNode atomic.Pointer[lifecycle.Node]
-	host    quicraftCloser // nil for standalone
-	stg     storage.Storage
+
+	// carriedCeremony is the ceremony service a data-plane teardown carried
+	// out of the stopped service graph, for the rebuild to reuse. See
+	// sealedWindowCeremonyCore.
+	carriedCeremony atomic.Pointer[ceremony.CeremonyService]
+	host            quicraftCloser // nil for standalone
+	stg             storage.Storage
 	// pebbleDB is the main data-plane pebble instance; nil for memory/file
 	// backends and for sealed nodes before Unseal completes.
 	pebbleDB *pebble.DB

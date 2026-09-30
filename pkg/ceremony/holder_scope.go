@@ -144,6 +144,16 @@ func (h *holderScope) sync(ctx context.Context) error {
 	return nil
 }
 
+// rebind moves the scope to barrier, a new barrier instance over the same
+// storage. The registry cache, the held envelopes and the pending challenges
+// stay; the registry is reconciled with barrier's storage the next time it is
+// seen unsealed.
+func (h *holderScope) rebind(barrier *seal.StorageBarrier) {
+	h.registry.rebind(barrier)
+	h.sealed = barrier.IsSealed
+	h.synced = false
+}
+
 // persist saves rec, or caches it while the backing barrier is sealed.
 func (h *holderScope) persist(ctx context.Context, rec *PersistentOfficer) error {
 	if h.sealed() {

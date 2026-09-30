@@ -131,6 +131,13 @@ func NewScopedOfficerRegistry(backend seal.StorageBackend, scope BarrierScope) (
 	}, nil
 }
 
+// rebind points the registry at backend, keeping its cache.
+func (r *OfficerRegistry) rebind(backend seal.StorageBackend) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.backend = backend
+}
+
 // Save persists the officer record. If a record with the same Username
 // already exists, it is overwritten. If EnrolledAt is the zero value,
 // the current UTC time is recorded.

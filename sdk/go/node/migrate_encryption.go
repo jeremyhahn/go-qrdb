@@ -177,9 +177,6 @@ type nodeSystemMigrator struct {
 func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	switch scope.Kind {
 	case service.ScopeSystem:
-		if err := service.CheckSystemMigrationTarget(scope, opts); err != nil {
-			return err
-		}
 		// The node's lifecycle lock: Close waits for this migration to finish
 		// rather than retracting the barrier underneath it (go-qrdb#226), and a
 		// migration that arrives after Close is refused.
@@ -434,14 +431,15 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		}
 
 		if keyed.IsSealed() {
-			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
+			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
 				DataDir:           pending.dataDir,
 				SealBarrier:       keyed,
 				BarrierRegistry:   n.barrierRegistry.Load(),
 				CredentialCoreSvc: n.credCoreSvc,
 				CeremonyDataDir:   filepath.Join(pending.dataDir, "seal"),
+				CeremonyCoreSvc:   n.sealedWindowCeremonyCore(),
 				Logger:            n.logger,
-			})
+			}, pending.cfg, pending.serverOpts))
 			if serr != nil {
 				return &MigrationReopenError{Reason: "rebuild seal-window services after shamir migration", Err: serr}
 			}
@@ -496,6 +494,14 @@ func (n *Node) teardownDataPlane() {
 	// through THAT window is exactly the stale handle this closes.
 	n.retractDataPlaneServices()
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
+		// The ceremony service holds the enrolled share holders and the
+		// envelopes a Shamir migration has just distributed; the rebuild
+		// reuses it rather than building a new one that would lose them.
+		if svcNode.Ceremony != nil {
+			if core, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
+				n.carriedCeremony.Store(core)
+			}
+		}
 		_ = svcNode.Stop(context.Background())
 	}
 	if n.host != nil {

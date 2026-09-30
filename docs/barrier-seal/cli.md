@@ -140,10 +140,10 @@ node's data plane in process, so the command returns once the migration has
 
 A tenant on the shared system barrier cannot change its encryption; the server
 rejects it. A migration to `shamir` splits the new unseal key to the holders
-already enrolled on the barrier, `--shamir-total` of them. At system scope a
-migration to `shamir` is currently refused with
-`service.ErrShamirSystemMigrationUnsupported`: the in-process data-plane
-restart would discard the envelopes it distributes.
+already enrolled on the barrier, `--shamir-total` of them. The node comes back
+sealed; each holder claims its envelope from the sealed node and M of them
+unseal it through the quorum (the in-process restart carries the ceremony
+service, and with it the envelopes, across).
 
 ```bash
 qrdb barrier enable-encryption --strategy passphrase --passphrase 'hunter2'

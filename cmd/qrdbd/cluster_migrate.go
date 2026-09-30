@@ -331,9 +331,6 @@ var _ service.EncryptionMigrator = (*clusterCoordinatorMigrator)(nil)
 // synchronously — before any credential is sealed or any intent is persisted —
 // mirroring the scoped local migrator's gates (fail-fast + defense-in-depth).
 func (m *clusterCoordinatorMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	if err := service.CheckSystemMigrationTarget(scope, opts); err != nil {
-		return err
-	}
 	tenantID := ""
 	if scope.Kind == service.ScopeTenant {
 		tenantID = scope.TenantID

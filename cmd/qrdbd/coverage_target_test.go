@@ -138,7 +138,7 @@ func TestAwaitUnseal_SuccessPath(t *testing.T) {
 	}
 	ch := make(chan callResult, 1)
 	go func() {
-		n, e := awaitUnseal(sigCtx, f, bundle, sub, nil)
+		n, e := awaitUnseal(sigCtx, f, bundle, sub, nil, nil)
 		if n != nil {
 			_ = n.Stop(context.Background())
 		}

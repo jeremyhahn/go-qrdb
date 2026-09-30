@@ -316,9 +316,12 @@ func ceremonyCAFromBundle(bundle *TLSBundle) (ceremony.CeremonyCA, error) {
 // during the sealed window are cache-only (the persistent registry is
 // barrier-encrypted) and distributed shares live in the ceremony
 // service's in-memory enclaves — discarding the instance would orphan
-// both.
-func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA) (*lifecycle.Node, error) {
+// both. For the same reason carried, the ceremony service an in-process
+// migration carried out of the previous boot iteration (nil on a cold
+// boot), is reused here rather than replaced.
+func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService) (*lifecycle.Node, error) {
 	sealNode, err := lifecycle.BuildSealServicesOnly(sigCtx, lifecycle.Infra{
+		CeremonyCoreSvc:           carried,
 		DataDir:                   f.dataDir,
 		SealBarrier:               sub.SealBarrier,
 		BarrierRegistry:           sub.BarrierRegistry,

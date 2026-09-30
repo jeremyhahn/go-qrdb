@@ -39,6 +39,7 @@ func (s *CeremonyService) BeginClaimShare(ctx, domain, username, callerThumbprin
 func (s *CeremonyService) CompleteClaimShare(ctx, domain, username, nonceHex string, sig []byte, callerThumbprint string) (*ShareClaimResult, error)
 func (s *CeremonyService) BeginQuorum(ctx, domain, op, username, factor string) (*QuorumChallenge, error)
 func (s *CeremonyService) RevokeOfficer(ctx, domain, username string, threshold int) (*seal.QuorumRoundInfo, error)
+func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier)
 func ParseShareEnvelope(raw []byte) (*ShareEnvelope, error)
 func (e *ShareEnvelope) Open(priv *hpke.PrivateKey) ([]byte, error)
 func (e *ShareEnvelope) OpenWithKey(priv crypto.PrivateKey) ([]byte, error)
@@ -98,6 +99,12 @@ what a sealed node authenticates submissions against.
 
 A failure before step 4 leaves the previous blob, and the previous share set,
 in force; the operation can be re-run.
+
+Envelopes live only in the running ceremony service, so an in-process
+data-plane restart (the one a system-scope encryption migration performs)
+must keep that service: the daemon and `sdk/go/node` carry it across and
+`CeremonyService.Rebind` moves it to the rebuilt barrier, keeping the enrolled
+holders, the unclaimed envelopes and the pending challenges.
 
 ## Envelopes
 
