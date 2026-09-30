@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.23.0-alpha] - 2026-09-30
+
+Tracks go-quicraft v0.15.0-alpha. BREAKING: wipe each node's Raft WAL directory and re-sync from peers when upgrading.
+
 ### Changed — BREAKING
 
 - **go-quicraft v0.14.1-alpha → v0.15.0-alpha** (and go-enclave v0.6.0-alpha →
