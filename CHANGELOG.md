@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- `rest.SealedWindowListenerMiddleware`,
+  `grpc.SealedWindowListenerUnaryInterceptor` /
+  `SealedWindowListenerStreamInterceptor` (re-exported from the Go SDK), a
+  `WithSealedWindowListener` option on the REST, gRPC, Unix, QUIC and MCP
+  servers, and `sealedwindow.Decide` / `RESTEntryMatches`: the gate of a
+  boot-time sealed-window listener, which refuses every request once the
+  barrier is unsealed.
+
 ### Changed — BREAKING
 
 - **A per-database barrier is accepted only where it is on the database's data
@@ -83,6 +93,23 @@ are not reconstructed here — their history is in the git log.
   and watches are raft-only on every other transport, and the listener used to
   serve them anyway. `backend: raft` is not required -- the documentation
   said it was, and nothing checked it.
+- **The sealed-window allowlist is trimmed to verbs that are justified as
+  anonymous.** Officer list, rekey, recovery-key generate / delete / status,
+  external officer enrollment (`/v1/init/enroll-external-officer`,
+  `CeremonyEnrollExternalOfficer`), and the `/v1/init/` and `/v1/bootstrap/`
+  REST prefixes are no longer reachable while the barrier is sealed, on any
+  transport: they answer `503` / `UNAVAILABLE`. Rekey and the recovery-key
+  verbs already refused while sealed. Use `barrier officer claim-status`
+  during first boot, and `barrier officer list` once the node is unsealed.
+  The REST allowlist can now hold method-qualified entries (`POST
+  /v1/barrier/officers`), so a composer matching entries itself must use
+  `sealedwindow.RESTEntryMatches`.
+- **The boot-time sealed-window listener refuses every request once the
+  barrier is unsealed**, with `503` and `{"code":"SEALED_WINDOW_CLOSED"}` on
+  REST, and `UNAVAILABLE` with `sealed-window listener closed: barrier
+  unsealed` on gRPC, Unix, QUIC and MCP. A client polling it across the unseal
+  retries against the regular listener. It no longer starts the MySQL or
+  PostgreSQL wire protocols, which carry no sealed-window verb.
 
 ### Fixed
 
@@ -223,6 +250,23 @@ are not reconstructed here — their history is in the git log.
   them against the caller's tenant through the database service the server
   composes (`service.NewProvisioningAuthorizedDatabaseService`); a refusal is
   `service.ProvisioningDeniedError`, `403` / `PERMISSION_DENIED`.
+- **The boot-time sealed-window listener served anonymous requests against an
+  unsealed barrier (high).** That listener has no authentication middleware,
+  because while the barrier is sealed there is no identity plane. Its gate
+  became a pass-through the moment the barrier unsealed, and the listener kept
+  serving until the next 250 ms poll noticed and `Stop` completed. In that
+  window every route registered on it ran anonymously against an unsealed
+  barrier, including `DELETE /v1/barrier/recovery` (proven by
+  `TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal`, which destroyed
+  the recovery keys with an anonymous request on the unfixed tree) and the
+  credential routes. The gate now samples the barrier on every request and
+  refuses everything once it is unsealed, on REST, gRPC, Unix, QUIC and MCP.
+- **Anonymous sealed-window verbs are limited to liveness, credential
+  possession, first-boot trust on first use, and handler-bound handshakes.**
+  The officer list disclosed officer enrollment anonymously. Recovery-key
+  delete, rekey and external officer enrollment were destructive or
+  SO-only verbs that were allowlisted, and only the service's own refusal
+  while sealed kept the first two inert.
 
 ### Known limits
 

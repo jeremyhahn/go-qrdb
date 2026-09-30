@@ -98,9 +98,12 @@ type Server struct {
 	tlsErr            error
 	authMW            *authmw.AuthMiddleware
 	sealedWindowProbe sealedWindowProbe
-	server            *grpc.Server
-	listener          net.Listener
-	serveWg           sync.WaitGroup
+	// sealedWindowListener selects the boot-time sealed-window listener's
+	// interceptors, which refuse every method once the barrier is unsealed.
+	sealedWindowListener bool
+	server               *grpc.Server
+	listener             net.Listener
+	serveWg              sync.WaitGroup
 }
 
 // ServerOption configures optional Server dependencies.
@@ -213,7 +216,23 @@ type sealedWindowProbe interface {
 // While probe.IsSealed() returns true, every method whose trailing
 // component is not on the allowlist is rejected with codes.Unavailable.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = false
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// interceptors (grpcpkg.SealedWindowListenerUnaryInterceptor and
+// grpcpkg.SealedWindowListenerStreamInterceptor), exactly as the TCP gRPC
+// server's WithSealedWindowListener does: the allowlist while the barrier is
+// sealed, and codes.Unavailable for every method once it is unsealed. It
+// replaces WithSealedWindowProbe; the last of the two applied wins.
+func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = true
+	}
 }
 
 // WithPINBackend configures the Unix socket server with the canonical
@@ -473,9 +492,12 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
+	sealedUnary, sealedStream := grpcpkg.SealedWindowUnaryInterceptor, grpcpkg.SealedWindowStreamInterceptor
+	if s.sealedWindowListener {
+		sealedUnary, sealedStream = grpcpkg.SealedWindowListenerUnaryInterceptor, grpcpkg.SealedWindowListenerStreamInterceptor
+	}
 	if s.sealedWindowProbe != nil {
-		unaryInterceptors = append(unaryInterceptors,
-			grpcpkg.SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+		unaryInterceptors = append(unaryInterceptors, sealedUnary(s.sealedWindowProbe, nil))
 	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
@@ -486,8 +508,7 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
 	}
 	if s.sealedWindowProbe != nil {
-		streamInterceptors = append(streamInterceptors,
-			grpcpkg.SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
+		streamInterceptors = append(streamInterceptors, sealedStream(s.sealedWindowProbe, nil))
 	}
 
 	serverOpts := []grpc.ServerOption{

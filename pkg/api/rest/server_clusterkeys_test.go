@@ -111,15 +111,15 @@ func TestWithClusterKeyReceiver_NotRegisteredWhenNil(t *testing.T) {
 func TestWithClusterKeyReceiver_SealedWindowAllowlist(t *testing.T) {
 	t.Parallel()
 
-	paths := []string{
-		"/v1/cluster/keydelivery",
-		"/v1/cluster/nodekey",
+	reqs := []struct{ method, path string }{
+		{http.MethodPost, "/v1/cluster/keydelivery"},
+		{http.MethodGet, "/v1/cluster/nodekey"},
 	}
-	for _, path := range paths {
-		t.Run(path, func(t *testing.T) {
+	for _, req := range reqs {
+		t.Run(req.path, func(t *testing.T) {
 			t.Parallel()
-			if !pathInAllowlist(path, SealedWindowAllowlist) {
-				t.Errorf("path %q is not on the SealedWindowAllowlist", path)
+			if !requestInAllowlist(httptest.NewRequest(req.method, req.path, nil), SealedWindowAllowlist) {
+				t.Errorf("%s %s is not on the SealedWindowAllowlist", req.method, req.path)
 			}
 		})
 	}

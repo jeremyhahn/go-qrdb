@@ -31,7 +31,23 @@
 //     operations served by the regular post-unseal listener.
 //   - custodian enroll/revoke — SO-gated governance operations served
 //     post-unseal.
+//   - officer list, recovery-key generate / delete / status, and rekey.
+//     Every verb that reaches the boot-time sealed-window listener does so
+//     WITHOUT authentication, because that listener has no identity plane
+//     to authenticate against. Rekey and the three recovery-key verbs
+//     refuse while the barrier is sealed (seal.ErrSealed), so allowlisting
+//     them bought nothing but an anonymous destructive surface. Officer
+//     list is served post-unseal to authenticated callers.
+//
+// Every entry in Table is therefore an ANONYMOUS verb on that listener and
+// must be justified as one: liveness, credential possession (unseal,
+// recovery-recover, root-token), first-boot trust-on-first-use
+// (initialize, officer registration), or a handshake whose binding
+// authorization the handler enforces (the share and certificate claim
+// flows, and ceremony-sign-csr's SO PIN).
 package sealedwindow
+
+import "strings"
 
 // Verb is a transport-neutral identifier for one sealed-window operation.
 type Verb string
@@ -50,19 +66,12 @@ const (
 	VerbShamirInitialize   Verb = "shamir-initialize"
 	VerbShamirUnsealShare  Verb = "shamir-unseal-share"
 	VerbShamirUnsealShares Verb = "shamir-unseal-shares"
-	VerbShamirVerify       Verb = "shamir-verify"
 
-	VerbRekey Verb = "rekey"
-
-	VerbRecoveryGenerate Verb = "recovery-generate"
-	VerbRecoveryRecover  Verb = "recovery-recover"
-	VerbRecoveryDelete   Verb = "recovery-delete"
-	VerbRecoveryStatus   Verb = "recovery-status"
+	VerbRecoveryRecover Verb = "recovery-recover"
 
 	VerbRootToken Verb = "root-token"
 
 	VerbOfficerRegister    Verb = "officer-register"
-	VerbOfficerList        Verb = "officer-list"
 	VerbOfficerClaimStatus Verb = "officer-claim-status"
 	VerbShareClaimBegin    Verb = "share-claim-begin"
 	VerbShareClaimComplete Verb = "share-claim-complete"
@@ -81,14 +90,14 @@ const (
 	VerbCeremonyClaimShareBegin      Verb = "ceremony-claim-share-begin"
 	VerbCeremonyClaimShareEnd        Verb = "ceremony-claim-share-complete"
 	VerbCeremonySubmitUnsealShare    Verb = "ceremony-submit-unseal-share"
-	VerbCeremonyEnrollExtOfficer     Verb = "ceremony-enroll-external-officer"
 )
 
 // Names holds the per-transport wire names for one canonical verb. An
 // empty field means the verb has no surface on that transport.
 type Names struct {
-	// REST paths. Entries ending in "/" are prefix matches; everything
-	// else matches exactly (see rest.SealedWindowMiddleware).
+	// REST entries: a path, or a method-qualified "METHOD /path". A path
+	// ending in "/" is a prefix match; anything else matches exactly. An
+	// unqualified entry matches every method (see RESTEntryMatches).
 	REST []string
 	// GRPC is the method tail — the suffix after the last "/" in
 	// grpc.UnaryServerInfo.FullMethod.
@@ -137,15 +146,9 @@ var Verbs = []Verb{
 	VerbShamirInitialize,
 	VerbShamirUnsealShare,
 	VerbShamirUnsealShares,
-	VerbShamirVerify,
-	VerbRekey,
-	VerbRecoveryGenerate,
 	VerbRecoveryRecover,
-	VerbRecoveryDelete,
-	VerbRecoveryStatus,
 	VerbRootToken,
 	VerbOfficerRegister,
-	VerbOfficerList,
 	VerbOfficerClaimStatus,
 	VerbShareClaimBegin,
 	VerbShareClaimComplete,
@@ -162,7 +165,6 @@ var Verbs = []Verb{
 	VerbCeremonyClaimShareBegin,
 	VerbCeremonyClaimShareEnd,
 	VerbCeremonySubmitUnsealShare,
-	VerbCeremonyEnrollExtOfficer,
 }
 
 // Table maps every canonical verb to its per-transport names. This is the
@@ -185,26 +187,19 @@ var Table = map[Verb]Names{
 	VerbShamirInitialize:   {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize"},
 	VerbShamirUnsealShare:  {REST: []string{"/v1/barrier/shamir/unseal-share"}, GRPC: "BarrierShamirUnsealShare", QUIC: "barrier.ShamirUnsealShare", MCP: "qrdb_barrier_shamir_unseal_share"},
 	VerbShamirUnsealShares: {REST: []string{"/v1/barrier/shamir/unseal-shares"}, GRPC: "BarrierShamirUnsealShares", QUIC: "barrier.ShamirUnsealShares", MCP: "qrdb_barrier_shamir_unseal_shares"},
-	// shamir-verify has no gRPC RPC or MCP tool; REST and native QUIC only.
-	VerbShamirVerify: {REST: []string{"/v1/barrier/shamir/verify"}, QUIC: "barrier.ShamirVerify"},
 
-	VerbRekey: {REST: []string{"/v1/barrier/rekey"}, GRPC: "BarrierRekey", QUIC: "barrier.Rekey", MCP: "qrdb_barrier_rekey"},
-
-	VerbRecoveryGenerate: {REST: []string{"/v1/barrier/recovery/generate"}, GRPC: "BarrierRecoveryGenerate", QUIC: "barrier.RecoveryGenerate", MCP: "qrdb_barrier_recovery_generate"},
-	VerbRecoveryRecover:  {REST: []string{"/v1/barrier/recovery/recover"}, GRPC: "BarrierRecoveryRecover", QUIC: "barrier.RecoveryRecover", MCP: "qrdb_barrier_recovery_recover"},
-	// REST recovery-delete is DELETE /v1/barrier/recovery (exact path).
-	VerbRecoveryDelete: {REST: []string{"/v1/barrier/recovery"}, GRPC: "BarrierRecoveryDelete", QUIC: "barrier.RecoveryDelete", MCP: "qrdb_barrier_recovery_delete"},
-	VerbRecoveryStatus: {REST: []string{"/v1/barrier/recovery/status"}, GRPC: "BarrierRecoveryStatus", QUIC: "barrier.RecoveryStatus", MCP: "qrdb_barrier_recovery_status"},
+	VerbRecoveryRecover: {REST: []string{"/v1/barrier/recovery/recover"}, GRPC: "BarrierRecoveryRecover", QUIC: "barrier.RecoveryRecover", MCP: "qrdb_barrier_recovery_recover"},
 
 	VerbRootToken: {REST: []string{"/v1/barrier/root-token"}, GRPC: "BarrierRootToken", QUIC: "barrier.RootToken", MCP: "qrdb_barrier_root_token"},
 
-	// GET and POST /v1/barrier/officers share one path (method-dispatched).
+	// GET and POST /v1/barrier/officers share one path (method-dispatched),
+	// so officer-register is method-qualified: GET, the officer list, is not
+	// allowlisted.
 	// officer-register is PreOperationalOnly: RegisterOfficer CA-signs any
 	// caller-supplied CSR and assigns a share index with no service-layer
 	// auth, so its authentication exemption must lapse the moment the
 	// enrollment ceremony reaches operational (see Names.PreOperationalOnly).
-	VerbOfficerRegister:    {REST: []string{"/v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
-	VerbOfficerList:        {REST: []string{"/v1/barrier/officers"}, GRPC: "BarrierOfficerList", QUIC: "barrier.OfficerList", MCP: "qrdb_barrier_officer_list"},
+	VerbOfficerRegister:    {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
 	VerbOfficerClaimStatus: {REST: []string{"/v1/barrier/officers/claim-status"}, GRPC: "BarrierOfficerClaimStatus", QUIC: "barrier.OfficerClaimStatus", MCP: "qrdb_barrier_officer_claim_status"},
 	// The path-param claim routes (/{username}/claim/begin|complete) are
 	// covered by the /v1/barrier/officers/ prefix, shared by both verbs.
@@ -231,19 +226,20 @@ var Table = map[Verb]Names{
 	VerbCeremonyClaimShareBegin:      {REST: []string{"/v1/ceremony/claim-share/begin"}, GRPC: "CeremonyClaimShareBegin", QUIC: "ceremony.ClaimShareBegin", MCP: "qrdb_ceremony_claim_share_begin"},
 	VerbCeremonyClaimShareEnd:        {REST: []string{"/v1/ceremony/claim-share/complete"}, GRPC: "CeremonyClaimShareComplete", QUIC: "ceremony.ClaimShareComplete", MCP: "qrdb_ceremony_claim_share_complete"},
 	VerbCeremonySubmitUnsealShare:    {REST: []string{"/v1/barrier/unseal-share"}, GRPC: "CeremonySubmitUnsealShare", QUIC: "ceremony.SubmitUnsealShare", MCP: "qrdb_ceremony_submit_unseal_share"},
-	// REST serves this verb at /v1/init/enroll-external-officer, which is
-	// already covered by the /v1/init/ prefix in RESTExtra. No native QUIC
-	// method or MCP tool exists.
-	VerbCeremonyEnrollExtOfficer: {GRPC: "CeremonyEnrollExternalOfficer"},
 }
 
 // RESTExtra lists REST-only allowlist entries that have no
-// transport-neutral verb: the first-boot / bootstrap flows and the
-// cluster peer key-transport receiver, all of which must operate in
-// every daemon state. Entries ending in "/" are prefix matches.
+// transport-neutral verb: the cluster peer key-transport receiver, which
+// must operate in every daemon state. Entries ending in "/" are prefix
+// matches.
+//
+// There is deliberately no /v1/bootstrap/ entry, because no route lives
+// under it: a prefix allowlisted over an empty subtree silently exempts
+// whatever is registered there next. There is no /v1/init/ entry either.
+// Its one route, enroll-external-officer, is an SO-only administrative
+// enrollment that records caller-supplied trust material. On the
+// sealed-window listener it would have been anonymous.
 var RESTExtra = []string{
-	"/v1/init/",
-	"/v1/bootstrap/",
 	// Cluster peer key-transport paths must work regardless of sealed
 	// state so follower replicas can receive their tenant barrier key
 	// before unsealing. The receiver self-authorises via node-cert +
@@ -334,4 +330,66 @@ func MCPAllowlist() map[string]struct{} {
 		}
 	}
 	return out
+}
+
+// RESTEntryMatches reports whether one REST allowlist entry admits a request
+// with the given method and path. An entry is "/path" (every method) or
+// "METHOD /path". A path ending in "/" matches by prefix; anything else
+// matches exactly.
+func RESTEntryMatches(entry, method, path string) bool {
+	if m, p, qualified := strings.Cut(entry, " "); qualified {
+		if m != method {
+			return false
+		}
+		entry = p
+	}
+	if strings.HasSuffix(entry, "/") {
+		return strings.HasPrefix(path, entry)
+	}
+	return path == entry
+}
+
+// Decision is a sealed-window gate's verdict on one request.
+type Decision int
+
+const (
+	// Serve passes the request on to the listener's own handling.
+	Serve Decision = iota
+	// RefuseSealed refuses a request that is not on the allowlist while the
+	// barrier is sealed.
+	RefuseSealed
+	// RefuseClosed refuses a request on the boot-time sealed-window listener
+	// once the barrier is unsealed.
+	RefuseClosed
+)
+
+// ClosedMessage is the refusal text of the boot-time sealed-window listener
+// once its barrier is unsealed. The regular listener takes over, and the
+// client retries there.
+const ClosedMessage = "sealed-window listener closed: barrier unsealed"
+
+// Decide is the one sealed-window admission rule every transport applies.
+//
+// sealed is the barrier state sampled for THIS request. allowlisted reports
+// whether the request names a Table verb on its transport.
+//
+// A gate on a regular listener (listener false) serves every request once
+// the barrier is unsealed, and the listener's own authentication decides.
+//
+// The boot-time sealed-window listener (listener true) has no
+// authentication middleware, because while the barrier is sealed there is no
+// identity plane to authenticate against, so its allowlist is anonymous. It
+// must stop serving the moment the barrier unseals, not when it is next
+// polled and stopped: otherwise every route registered on it runs
+// anonymously against an unsealed barrier. It therefore refuses every
+// request once unsealed, allowlisted or not.
+func Decide(sealed, allowlisted, listener bool) Decision {
+	switch {
+	case !sealed && listener:
+		return RefuseClosed
+	case !sealed, allowlisted:
+		return Serve
+	default:
+		return RefuseSealed
+	}
 }

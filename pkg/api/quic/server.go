@@ -88,6 +88,9 @@ type Server struct {
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
 	sealedWindowProbe sealedWindowProbe
+	// sealedWindowListener selects the boot-time sealed-window listener's
+	// gate, which refuses every method once the barrier is unsealed.
+	sealedWindowListener bool
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
@@ -306,7 +309,24 @@ type sealedWindowProbe interface {
 // admin.Health / admin.Status) is rejected with wire.StatusUnavailable,
 // mirroring SealedWindowAllowlist on the gRPC/REST servers.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = false
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// gate backed by probe: the allowlist while the barrier is sealed, and
+// wire.StatusUnavailable for every method once it is unsealed, sampled per
+// request. That listener runs without authentication, so it must not serve
+// anything against an unsealed barrier, even in the moment before it is
+// stopped. It replaces WithSealedWindowProbe; the last of the two applied
+// wins.
+func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = true
+	}
 }
 
 // WithPINBackend configures the QUIC server with the canonical
@@ -786,10 +806,11 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// Sealed-window gate: while the barrier is sealed, every method not on
 	// SealedWindowAllowlist is rejected so operators can still drive the
 	// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
-	// admin.Status) over the native QUIC transport. Mirrors the REST/gRPC
-	// sealed-window middleware/interceptors.
-	if s.sealedWindowProbe != nil && s.sealedWindowProbe.IsSealed() && !sealedWindowAllowed(method) {
-		_ = s.writeResponse(stream, requestID, wire.StatusUnavailable, []byte("barrier sealed"))
+	// admin.Status) over the native QUIC transport. On the boot-time
+	// sealed-window listener every method is rejected once the barrier is
+	// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
+	if msg, refused := s.sealedWindowRefusal(method); refused {
+		_ = s.writeResponse(stream, requestID, wire.StatusUnavailable, []byte(msg))
 		s.logRequest(method, requestID, wire.StatusUnavailable, start)
 		return
 	}

@@ -230,10 +230,14 @@ type Server struct {
 	serviceRegistry ServiceRegistry
 
 	// sealedWindowProbe controls the sealed-window middleware. When set
-	// and IsSealed() returns true, every request whose path is not on
+	// and IsSealed() returns true, every request not on
 	// SealedWindowAllowlist is rejected with 503. When nil, the
 	// middleware is not installed and the server behaves as before.
 	sealedWindowProbe sealedWindowProbe
+
+	// sealedWindowListener selects the boot-time sealed-window listener's
+	// gate, which refuses every request once the barrier is unsealed.
+	sealedWindowListener bool
 
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
@@ -645,17 +649,30 @@ func WithServiceRegistry(reg ServiceRegistry) ServerOption {
 
 // WithSealedWindowProbe installs the sealed-window middleware backed by
 // the supplied probe. While probe.IsSealed() returns true, every request
-// whose path is not on SealedWindowAllowlist is rejected with 503.
-// Once unsealed the middleware is a passthrough; on re-seal it engages
-// again.
+// not on SealedWindowAllowlist is rejected with 503. Once unsealed the
+// middleware is a passthrough; on re-seal it engages again.
 //
-// The middleware is wrapped just outside the per-request mux but inside
-// any auth middleware, so allowlisted endpoints (notably /v1/barrier/*)
-// remain reachable without authentication during the sealed window —
-// the Vault model where possession of the unseal credential is itself
-// the authorization to drive unseal.
+// The middleware wraps the authentication middleware, so an allowlisted
+// request is still authenticated and authorized by it when one is
+// installed. The allowlist is anonymous only on a listener without one:
+// the boot-time sealed-window listener (see WithSealedWindowListener).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = false
+	}
+}
+
+// WithSealedWindowListener installs the gate of the boot-time sealed-window
+// listener (SealedWindowListenerMiddleware) backed by probe: the allowlist
+// while the barrier is sealed, and a 503 for every request once it is
+// unsealed, sampled per request. It replaces WithSealedWindowProbe; the last
+// of the two applied wins.
+func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = true
+	}
 }
 
 // WithClusterKeyReceiver registers the cluster peer key-delivery routes when
@@ -795,10 +812,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// scopeMiddleware runs before auth so that auth middleware can read the
 	// tenant/database from context if it needs to (future-proof). CORS is the
 	// outermost layer so that preflight OPTIONS requests are handled before any
-	// other processing. The sealed-window middleware sits between auth and
-	// scope so that allowlisted endpoints (e.g. /v1/barrier/unseal) bypass
-	// auth — possession of the unseal credential is the authorization, per
-	// the Vault model.
+	// other processing. The sealed-window middleware wraps auth, so it
+	// refuses a non-allowlisted request while the barrier is sealed before
+	// any authentication work, and an allowlisted request still reaches auth
+	// when auth is installed. Only a listener without auth -- the boot-time
+	// sealed-window listener -- serves its allowlist anonymously.
 	// The SO dual-factor middleware is the innermost wrapper (directly
 	// around the mux) so it runs AFTER the auth middleware has resolved
 	// the caller's identity into the request context. It gates only the
@@ -813,7 +831,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		handler = s.authMW.RESTMiddleware(s.routePerms, handler)
 	}
 	if s.sealedWindowProbe != nil {
-		handler = SealedWindowMiddleware(s.sealedWindowProbe, nil)(handler)
+		handler = sealedWindowGate(s.sealedWindowProbe, nil, s.sealedWindowListener)(handler)
 	}
 	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {

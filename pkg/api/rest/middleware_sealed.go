@@ -16,7 +16,6 @@ package rest
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
@@ -30,66 +29,82 @@ type sealedWindowProbe interface {
 	IsSealed() bool
 }
 
-// SealedWindowAllowlist is the set of REST paths that remain operative
-// while the barrier is sealed. Each entry is either an exact path match
-// or a prefix (entries ending in "/" are matched as prefixes). The list
-// is derived from the canonical transport-neutral verb table in
-// pkg/api/sealedwindow so it cannot drift from the other transports; it
-// remains exposed as a package-level var so callers can compose with
-// project-specific extensions if they ever need to.
+// SealedWindowAllowlist is the set of REST entries that remain operative
+// while the barrier is sealed. Each entry is a path or a method-qualified
+// "METHOD /path"; a path ending in "/" is matched as a prefix (see
+// sealedwindow.RESTEntryMatches). The list is derived from the canonical
+// transport-neutral verb table in pkg/api/sealedwindow so it cannot drift
+// from the other transports; it remains exposed as a package-level var so
+// callers can compose with project-specific extensions if they ever need to.
 var SealedWindowAllowlist = sealedwindow.RESTAllowlist()
 
 // sealedResponseBody is the JSON envelope returned to clients while
 // the barrier is sealed and they hit a non-allowlist endpoint.
 const sealedResponseBody = `{"error":"barrier sealed","code":"SEALED"}`
 
+// closedResponseBody is the JSON envelope the boot-time sealed-window
+// listener returns for every request once the barrier is unsealed.
+const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code":"SEALED_WINDOW_CLOSED"}`
+
 // SealedWindowMiddleware returns an http middleware that 503s every
 // request not on the allowlist while the supplied barrier is
 // sealed. Once the barrier is unsealed the middleware becomes a
 // passthrough; on re-seal it engages again. The same middleware
 // instance is safe to keep installed across the lifetime of the
-// process.
+// process. It is the gate of a regular listener, whose own
+// authentication middleware decides every request it passes.
 //
 // allowlist may be nil, in which case SealedWindowAllowlist is used.
-// Path matching: entries ending in "/" match by prefix; everything
-// else matches exactly.
 //
 // The middleware sets a Retry-After: 5 header on rejected responses
 // so well-behaved clients back off during the unseal window.
 func SealedWindowMiddleware(barrier sealedWindowProbe, allowlist []string) func(http.Handler) http.Handler {
+	return sealedWindowGate(barrier, allowlist, false)
+}
+
+// SealedWindowListenerMiddleware returns the gate of the boot-time
+// sealed-window listener. While the barrier is sealed it serves only the
+// allowlist, exactly as SealedWindowMiddleware does. Once the barrier is
+// unsealed it refuses EVERY request with 503: that listener runs without
+// authentication, so it must not serve anything against an unsealed
+// barrier, even in the moment before it is stopped. The barrier state is
+// sampled on every request; a nil barrier refuses every request.
+func SealedWindowListenerMiddleware(barrier sealedWindowProbe, allowlist []string) func(http.Handler) http.Handler {
+	return sealedWindowGate(barrier, allowlist, true)
+}
+
+// sealedWindowGate applies sealedwindow.Decide to every request.
+func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener bool) func(http.Handler) http.Handler {
 	if allowlist == nil {
 		allowlist = SealedWindowAllowlist
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if barrier == nil || !barrier.IsSealed() {
+			sealed := barrier != nil && barrier.IsSealed()
+			switch sealedwindow.Decide(sealed, requestInAllowlist(r, allowlist), listener) {
+			case sealedwindow.Serve:
 				next.ServeHTTP(w, r)
-				return
+			case sealedwindow.RefuseClosed:
+				writeSealedWindowRefusal(w, closedResponseBody)
+			default:
+				writeSealedWindowRefusal(w, sealedResponseBody)
 			}
-			if pathInAllowlist(r.URL.Path, allowlist) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "5")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(sealedResponseBody))
 		})
 	}
 }
 
-// pathInAllowlist returns true if path matches an entry in the
-// allowlist. Entries ending in "/" are treated as prefix matches;
-// all others match exactly.
-func pathInAllowlist(path string, allowlist []string) bool {
+// writeSealedWindowRefusal writes a sealed-window 503 with body.
+func writeSealedWindowRefusal(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "5")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(body))
+}
+
+// requestInAllowlist reports whether r matches an entry in the allowlist.
+func requestInAllowlist(r *http.Request, allowlist []string) bool {
 	for _, entry := range allowlist {
-		if strings.HasSuffix(entry, "/") {
-			if strings.HasPrefix(path, entry) {
-				return true
-			}
-			continue
-		}
-		if path == entry {
+		if sealedwindow.RESTEntryMatches(entry, r.Method, r.URL.Path) {
 			return true
 		}
 	}

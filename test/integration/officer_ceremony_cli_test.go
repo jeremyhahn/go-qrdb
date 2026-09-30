@@ -806,10 +806,18 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 		t.Errorf("expected cert_pem to decode into a PEM certificate, got: %s", reg.CertPEM)
 	}
 
-	// The registry now carries exactly the two registered officers.
-	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json")
+	// The officer list is not an anonymous sealed-window verb: the listener
+	// runs without authentication, and the list is served post-unseal to
+	// authenticated callers.
+	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json"); err == nil {
+		t.Fatalf("barrier officer list succeeded anonymously on the sealed-window listener: %s", out)
+	}
+
+	// The registry now carries exactly the two registered officers, as the
+	// first-boot claim-status view reports them.
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "claim-status", "--output", "json")
 	if err != nil {
-		t.Fatalf("barrier officer list: %v\noutput: %s", err, out)
+		t.Fatalf("barrier officer claim-status: %v\noutput: %s", err, out)
 	}
 	var officers []struct {
 		Username   string `json:"username"`

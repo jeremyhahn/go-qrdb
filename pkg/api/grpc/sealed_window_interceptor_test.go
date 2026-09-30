@@ -22,6 +22,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 type fakeSealProbe struct{ sealed atomic.Bool }
@@ -249,5 +251,62 @@ func TestMethodAllowed_FullMatch(t *testing.T) {
 		if got := methodAllowed(c.full, allowSet); got != c.want {
 			t.Errorf("methodAllowed(%q) = %v, want %v", c.full, got, c.want)
 		}
+	}
+}
+
+// TestSealedWindowListener_RefusesEverythingOnceUnsealed pins the boot-time
+// listener's interceptors: that listener has no authentication behind it,
+// so once the barrier is unsealed every method -- allowlisted ones
+// included -- is refused on the call itself, unary and stream alike.
+func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
+	probe := newProbe(true)
+	unary := SealedWindowListenerUnaryInterceptor(probe, nil)
+	stream := SealedWindowListenerStreamInterceptor(probe, nil)
+	unseal := "/qrdb.v1.QRDBService/BarrierUnseal"
+
+	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: unseal}, dummyHandler); err != nil {
+		t.Fatalf("allowlisted method while sealed: %v", err)
+	}
+	if err := stream(nil, fakeServerStream{}, &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}, dummyStreamHandler); status.Code(err) != codes.Unavailable {
+		t.Fatalf("non-allowlisted stream while sealed: %v, want Unavailable", err)
+	}
+
+	probe.unseal()
+	for _, method := range []string{unseal, "/qrdb.v1.QRDBService/BarrierStatus", "/qrdb.v1.QRDBService/KVGet"} {
+		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+		st, _ := status.FromError(err)
+		if st.Code() != codes.Unavailable || st.Message() != sealedwindow.ClosedMessage {
+			t.Errorf("%s after unseal: %v, want Unavailable %q", method, err, sealedwindow.ClosedMessage)
+		}
+		err = stream(nil, fakeServerStream{}, &grpc.StreamServerInfo{FullMethod: method}, dummyStreamHandler)
+		if status.Code(err) != codes.Unavailable {
+			t.Errorf("stream %s after unseal: %v, want Unavailable", method, err)
+		}
+	}
+}
+
+// TestSealedWindowListener_NilProbeFailsClosed: without a probe the
+// listener's interceptor cannot know the barrier is sealed, so it refuses.
+func TestSealedWindowListener_NilProbeFailsClosed(t *testing.T) {
+	_, err := SealedWindowListenerUnaryInterceptor(nil, nil)(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}, dummyHandler)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want Unavailable", err)
+	}
+}
+
+// TestWithSealedWindowListener_SelectsListenerGate verifies the server
+// option selects the listener's interceptors and that WithSealedWindowProbe
+// applied after it restores the regular ones.
+func TestWithSealedWindowListener_SelectsListenerGate(t *testing.T) {
+	s := &Server{}
+	probe := newProbe(false)
+	WithSealedWindowListener(probe)(s)
+	if s.sealedWindowProbe == nil || !s.sealedWindowListener {
+		t.Fatal("WithSealedWindowListener did not install the listener gate")
+	}
+	WithSealedWindowProbe(probe)(s)
+	if s.sealedWindowListener {
+		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
 	}
 }

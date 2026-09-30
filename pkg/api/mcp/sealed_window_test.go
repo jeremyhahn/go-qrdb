@@ -16,6 +16,8 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -133,5 +135,67 @@ func TestWithSealedWindowProbe_MCP_Configures(t *testing.T) {
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowProbe(probe))
 	if srv.sealedWindowProbe == nil {
 		t.Fatal("expected sealedWindowProbe to be set")
+	}
+}
+
+// TestSealedWindowListener_RefusesEverythingOnceUnsealed pins the boot-time
+// listener's MCP gate: once the barrier is unsealed a tool call is refused,
+// allowlisted or not, and the HTTP endpoint answers 503 before mcp-go reads
+// anything, so not even initialize or tools/list is served anonymously.
+func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
+	probe := &fakeMCPSealedProbe{sealed: true}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(probe))
+	called := false
+	next := func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		called = true
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	mw := srv.sealedWindowMiddleware()
+	httpCalled := false
+	endpoint := srv.sealedWindowClosedHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		httpCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	if _, err := mw(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_unseal", map[string]any{})); err != nil || !called {
+		t.Fatalf("allowlisted tool while sealed: called=%v err=%v", called, err)
+	}
+	rec := httptest.NewRecorder()
+	endpoint.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	if rec.Code != http.StatusOK || !httpCalled {
+		t.Fatalf("endpoint while sealed: status %d, reached %v", rec.Code, httpCalled)
+	}
+
+	probe.sealed = false
+	called, httpCalled = false, false
+	result, err := mw(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_unseal", map[string]any{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called || !result.IsError {
+		t.Fatal("allowlisted tool was served after unseal")
+	}
+	if payload, ok := wire.DecodeErrorPayload(result.StructuredContent); !ok || payload.Code != wire.CodeUnavailable {
+		t.Errorf("refusal payload = %+v (%v), want UNAVAILABLE", payload, ok)
+	}
+	rec = httptest.NewRecorder()
+	endpoint.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	if rec.Code != http.StatusServiceUnavailable || httpCalled {
+		t.Fatalf("endpoint after unseal: status %d, reached %v; want 503 before mcp-go", rec.Code, httpCalled)
+	}
+}
+
+// TestWithSealedWindowListener_MCP_Configures verifies the option selects
+// the listener's gate and that WithSealedWindowProbe applied after it
+// restores the regular one.
+func TestWithSealedWindowListener_MCP_Configures(t *testing.T) {
+	probe := &fakeMCPSealedProbe{}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(probe))
+	if srv.sealedWindowProbe == nil || !srv.sealedWindowListener {
+		t.Fatal("WithSealedWindowListener did not install the listener gate")
+	}
+	WithSealedWindowProbe(probe)(srv)
+	if srv.sealedWindowListener {
+		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
 	}
 }

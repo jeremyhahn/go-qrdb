@@ -55,28 +55,25 @@ var SealedWindowAllowlist = sealedwindow.GRPCFullMethodAllowlist(pb.QRDBService_
 // barrier is sealed. Once the barrier is unsealed the interceptor
 // becomes a passthrough; on re-seal it engages again. The same
 // interceptor instance is safe to keep installed across the
-// lifetime of the process.
+// lifetime of the process. It is the gate of a regular listener, whose
+// own authentication interceptor decides every request it passes.
 //
 // allowlist may be nil, in which case SealedWindowAllowlist is
 // used. Entries are fully-qualified gRPC method paths
 // ("/qrdb.v1.QRDBService/Health") matched in full against info.FullMethod.
 func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
-	if allowlist == nil {
-		allowlist = SealedWindowAllowlist
-	}
-	allowSet := make(map[string]struct{}, len(allowlist))
-	for _, m := range allowlist {
-		allowSet[m] = struct{}{}
-	}
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if barrier == nil || !barrier.IsSealed() {
-			return handler(ctx, req)
-		}
-		if methodAllowed(info.FullMethod, allowSet) {
-			return handler(ctx, req)
-		}
-		return nil, status.Error(codes.Unavailable, "barrier sealed")
-	}
+	return sealedWindowUnary(barrier, allowlist, false)
+}
+
+// SealedWindowListenerUnaryInterceptor returns the unary gate of the
+// boot-time sealed-window listener. While the barrier is sealed it admits
+// only the allowlist, exactly as SealedWindowUnaryInterceptor does. Once
+// the barrier is unsealed it refuses EVERY method with codes.Unavailable:
+// that listener runs without authentication, so it must not serve anything
+// against an unsealed barrier, even in the moment before it is stopped. The
+// barrier state is sampled on every call; a nil barrier refuses every call.
+func SealedWindowListenerUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
+	return sealedWindowUnary(barrier, allowlist, true)
 }
 
 // SealedWindowStreamInterceptor returns the streaming-RPC sibling of
@@ -85,6 +82,40 @@ func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string)
 // with codes.Unavailable before the handler is invoked, so partial
 // streams cannot leak past the seal boundary.
 func SealedWindowStreamInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.StreamServerInterceptor {
+	return sealedWindowStream(barrier, allowlist, false)
+}
+
+// SealedWindowListenerStreamInterceptor returns the streaming-RPC sibling
+// of SealedWindowListenerUnaryInterceptor.
+func SealedWindowListenerStreamInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.StreamServerInterceptor {
+	return sealedWindowStream(barrier, allowlist, true)
+}
+
+// sealedWindowUnary applies sealedwindow.Decide to every unary call.
+func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener bool) grpc.UnaryServerInterceptor {
+	allowSet := sealedWindowAllowSet(allowlist)
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+// sealedWindowStream applies sealedwindow.Decide to every stream.
+func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener bool) grpc.StreamServerInterceptor {
+	allowSet := sealedWindowAllowSet(allowlist)
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
+			return err
+		}
+		return handler(srv, ss)
+	}
+}
+
+// sealedWindowAllowSet indexes allowlist, defaulting to
+// SealedWindowAllowlist when it is nil.
+func sealedWindowAllowSet(allowlist []string) map[string]struct{} {
 	if allowlist == nil {
 		allowlist = SealedWindowAllowlist
 	}
@@ -92,15 +123,21 @@ func SealedWindowStreamInterceptor(barrier sealedWindowProbe, allowlist []string
 	for _, m := range allowlist {
 		allowSet[m] = struct{}{}
 	}
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if barrier == nil || !barrier.IsSealed() {
-			return handler(srv, ss)
-		}
-		if methodAllowed(info.FullMethod, allowSet) {
-			return handler(srv, ss)
-		}
-		return status.Error(codes.Unavailable, "barrier sealed")
-	}
+	return allowSet
+}
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to its
+// status. sealedwindow.Serve is absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]error{
+	sealedwindow.RefuseSealed: status.Error(codes.Unavailable, "barrier sealed"),
+	sealedwindow.RefuseClosed: status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
+}
+
+// sealedWindowAdmit returns nil when the gate admits fullMethod, and the
+// refusal status otherwise.
+func sealedWindowAdmit(barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener bool) error {
+	sealed := barrier != nil && barrier.IsSealed()
+	return sealedWindowRefusals[sealedwindow.Decide(sealed, methodAllowed(fullMethod, allowSet), listener)]
 }
 
 // methodAllowed checks whether the fully-qualified info.FullMethod

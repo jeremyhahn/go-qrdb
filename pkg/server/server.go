@@ -248,6 +248,11 @@ type serverOptions struct {
 	// same envelope on every transport.
 	sealedWindowProbe SealedWindowProbe
 
+	// sealedWindowListener marks the boot-time sealed-window listener built
+	// by ServeSealedWindow. Its gates refuse every request once the barrier
+	// is unsealed, and it serves no SQL wire protocol.
+	sealedWindowListener bool
+
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
@@ -416,7 +421,34 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // option drives all protocol surfaces so operators see consistent
 // behavior across transports.
 func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
-	return func(o *serverOptions) { o.sealedWindowProbe = probe }
+	return func(o *serverOptions) {
+		o.sealedWindowProbe = probe
+		o.sealedWindowListener = false
+	}
+}
+
+// withSealedWindowListener installs the boot-time sealed-window listener's
+// gates on every transport, backed by probe: the allowlist while the barrier
+// is sealed, and a refusal of every request once it is unsealed, sampled per
+// request. The listener runs without authentication -- while sealed there is
+// no identity plane to authenticate against -- so nothing may be served
+// through it against an unsealed barrier, even in the moment between the
+// unseal and the listener's Stop. Only ServeSealedWindow applies it.
+func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
+	return func(o *serverOptions) {
+		o.sealedWindowProbe = probe
+		o.sealedWindowListener = true
+	}
+}
+
+// sealedWindowGate selects a transport's sealed-window option: the
+// boot-time listener's gate when listener is set, the regular gate
+// otherwise.
+func sealedWindowGate[F any](listener bool, gate, closed F) F {
+	if listener {
+		return closed
+	}
+	return gate
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
@@ -1126,7 +1158,11 @@ func (s *Server) start() error {
 		}
 	}
 
-	if s.config.Protocols.MySQL && startMySQLFn != nil {
+	// The SQL wire protocols carry no sealed-window verb, so the boot-time
+	// sealed-window listener has nothing to serve on them. It does not
+	// start them: a listener that refuses everything is still an
+	// unauthenticated surface.
+	if s.config.Protocols.MySQL && startMySQLFn != nil && !s.opts.sealedWindowListener {
 		if err := startMySQLFn(s); err != nil {
 			s.stopMCP()
 			s.stopUnix()
@@ -1137,7 +1173,7 @@ func (s *Server) start() error {
 		}
 	}
 
-	if s.config.Protocols.PostgreSQL && startPgSQLFn != nil {
+	if s.config.Protocols.PostgreSQL && startPgSQLFn != nil && !s.opts.sealedWindowListener {
 		if err := startPgSQLFn(s); err != nil {
 			s.stopMySQL()
 			s.stopMCP()
@@ -1304,7 +1340,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		restOpts = append(restOpts, sealedWindowGate(s.opts.sealedWindowListener, rest.WithSealedWindowProbe, rest.WithSealedWindowListener)(s.opts.sealedWindowProbe))
 	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
@@ -1537,7 +1573,7 @@ func (s *Server) startGRPC() error {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		grpcOpts = append(grpcOpts, sealedWindowGate(s.opts.sealedWindowListener, grpcapi.WithSealedWindowProbe, grpcapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
@@ -1659,7 +1695,7 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		quicOpts = append(quicOpts, sealedWindowGate(s.opts.sealedWindowListener, quicapi.WithSealedWindowProbe, quicapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
 	}
 	if s.opts.collectionSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCollectionService(s.opts.collectionSvc))
@@ -1778,7 +1814,7 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		unixOpts = append(unixOpts, sealedWindowGate(s.opts.sealedWindowListener, unixapi.WithSealedWindowProbe, unixapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
@@ -1907,7 +1943,7 @@ func (s *Server) startMCP() error {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		mcpOpts = append(mcpOpts, sealedWindowGate(s.opts.sealedWindowListener, mcpapi.WithSealedWindowProbe, mcpapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))

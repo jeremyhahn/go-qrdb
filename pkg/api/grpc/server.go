@@ -109,6 +109,10 @@ type Server struct {
 	// codes.Unavailable. When nil the interceptors are not installed.
 	sealedWindowProbe sealedWindowProbe
 
+	// sealedWindowListener selects the boot-time sealed-window listener's
+	// interceptors, which refuse every method once the barrier is unsealed.
+	sealedWindowListener bool
+
 	// modules holds capability modules whose gRPC services are attached
 	// to the *grpc.Server at construction. Set via WithServiceModules by
 	// the server orchestrator.
@@ -357,13 +361,29 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // "barrier sealed". Once unsealed the interceptors are passthrough;
 // on re-seal they engage again.
 //
-// The interceptors are appended to the chain after auth so that
-// allowlisted methods (notably Barrier* and Ceremony*) remain
-// reachable without authentication during the sealed window — the
-// Vault model where possession of the unseal credential is itself
-// the authorization to drive unseal.
+// The interceptors are appended to the chain after auth, so an
+// allowlisted method is still authenticated and authorized when an auth
+// middleware is installed. The allowlist is anonymous only on a server
+// without one: the boot-time sealed-window listener (see
+// WithSealedWindowListener).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = false
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// interceptors (SealedWindowListenerUnaryInterceptor and
+// SealedWindowListenerStreamInterceptor) backed by probe: the allowlist
+// while the barrier is sealed, and codes.Unavailable for every method once
+// it is unsealed, sampled per call. It replaces WithSealedWindowProbe; the
+// last of the two applied wins.
+func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = true
+	}
 }
 
 // WithServiceRegistry configures the gRPC server with a per-(tenant, database)
@@ -482,7 +502,7 @@ func (s *Server) Start() error {
 	}
 	if s.sealedWindowProbe != nil {
 		unaryInterceptors = append(unaryInterceptors,
-			SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+			sealedWindowUnary(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
@@ -494,7 +514,7 @@ func (s *Server) Start() error {
 	}
 	if s.sealedWindowProbe != nil {
 		streamInterceptors = append(streamInterceptors,
-			SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
+			sealedWindowStream(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),

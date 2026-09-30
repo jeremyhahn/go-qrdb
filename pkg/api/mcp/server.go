@@ -110,6 +110,10 @@ type Server struct {
 	// envelope on every transport.
 	sealedWindowProbe sealedWindowProbe
 
+	// sealedWindowListener selects the boot-time sealed-window listener's
+	// gate, which refuses every request once the barrier is unsealed.
+	sealedWindowListener bool
+
 	// bearerChallenge, when non-empty, is the exact WWW-Authenticate header
 	// value returned with 401 Unauthorized when a request to the MCP
 	// endpoint carries no credential any configured authenticator accepts.
@@ -422,7 +426,24 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 // operators the same sealed-window envelope on MCP as on REST, gRPC, and
 // native QUIC.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = false
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// gate backed by probe: the allowlist while the barrier is sealed, and a
+// refusal of every request once it is unsealed -- a 503 at the HTTP layer
+// and CodeUnavailable for a tool call -- sampled per request. That listener
+// runs without authentication, so it must not serve anything against an
+// unsealed barrier, even in the moment before it is stopped. It replaces
+// WithSealedWindowProbe; the last of the two applied wins.
+func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = true
+	}
 }
 
 // WithServiceRegistry configures the MCP server with a per-(tenant, database)
@@ -699,6 +720,9 @@ func (s *Server) Start() error {
 	var mcpHandler http.Handler = streamHandler
 	if s.authMW != nil && s.bearerChallenge != "" {
 		mcpHandler = s.bearerChallengeHandler(streamHandler)
+	}
+	if s.sealedWindowListener {
+		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)
 	}
 
 	mux := http.NewServeMux()

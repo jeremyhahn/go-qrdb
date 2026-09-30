@@ -32,3 +32,22 @@ func sealedWindowAllowed(method string) bool {
 	_, ok := SealedWindowAllowlist[method]
 	return ok
 }
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to the
+// message of its wire.StatusUnavailable response. sealedwindow.Serve is
+// absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]string{
+	sealedwindow.RefuseSealed: "barrier sealed",
+	sealedwindow.RefuseClosed: sealedwindow.ClosedMessage,
+}
+
+// sealedWindowRefusal applies the sealed-window gate to method. It reports
+// the refusal message and true when the gate refuses the request, and ""
+// and false when it admits it or no gate is installed.
+func (s *Server) sealedWindowRefusal(method string) (string, bool) {
+	if s.sealedWindowProbe == nil {
+		return "", false
+	}
+	msg, refused := sealedWindowRefusals[sealedwindow.Decide(s.sealedWindowProbe.IsSealed(), sealedWindowAllowed(method), s.sealedWindowListener)]
+	return msg, refused
+}
