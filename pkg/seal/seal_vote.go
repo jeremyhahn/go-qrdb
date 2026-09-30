@@ -107,6 +107,7 @@ func (b *StorageBarrier) SubmitSealVote(ctx context.Context, shareValue string) 
 	}
 	defer secretBuf.Destroy()
 
+	//secure:unborrowed injected-interface verifySecretAndGetRootKey dispatches to a SealingStrategy (go-qrdb#428)
 	rootKey, verifyErr := b.verifySecretAndGetRootKey(ctx, secretBuf.Bytes())
 	if verifyErr != nil {
 		acc.Reset()

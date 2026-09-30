@@ -93,6 +93,7 @@ func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []st
 	}
 	defer secretBuf.Destroy()
 
+	//secure:unborrowed injected-interface verifySecretAndGetRootKey dispatches to a SealingStrategy (go-qrdb#428)
 	rootKey, err := b.verifySecretAndGetRootKey(ctx, secretBuf.Bytes())
 	if err != nil {
 		return nil, err

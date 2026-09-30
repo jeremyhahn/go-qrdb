@@ -81,6 +81,7 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 	}
 	defer secretBuf.Destroy()
 
+	//secure:unborrowed injected-interface b.distributor is a consumer-supplied share distributor (go-qrdb#428)
 	shareCount, err := b.distributor.SealAndDistribute(ctx, secretBuf.Bytes(), threshold, total)
 	if err != nil {
 		return nil, err
@@ -357,10 +358,11 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		// Direct mode: the reconstructed secret is the unseal key (or, on
 		// legacy barriers, the root key itself); unsealDirect resolves it.
+		//secure:unborrowed injected-interface unsealDirect dispatches to a SealingStrategy (go-qrdb#428)
 		if err := b.unsealDirect(ctx, secretBuf.Bytes()); err != nil {
 			return nil, err
 		}
-	} else if err := b.unsealWithSecret(ctx, secretBuf.Bytes()); err != nil {
+	} else if err := b.unsealWithSecret(ctx, secretBuf.Bytes()); err != nil { //secure:unborrowed injected-interface unsealWithSecret dispatches to a SealingStrategy (go-qrdb#428)
 		// Credential mode: the reconstructed secret is the password.
 		return nil, err
 	}
@@ -477,8 +479,10 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	defer secretBuf.Destroy()
 
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
+		//secure:unborrowed injected-interface unsealDirect dispatches to a SealingStrategy (go-qrdb#428)
 		return b.unsealDirect(ctx, secretBuf.Bytes())
 	}
+	//secure:unborrowed injected-interface unsealWithSecret dispatches to a SealingStrategy (go-qrdb#428)
 	return b.unsealWithSecret(ctx, secretBuf.Bytes())
 }
 
