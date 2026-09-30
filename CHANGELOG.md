@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.21.2-alpha] - 2026-09-30
+
+Security hotfix: the cluster CA private key never leaves the node that holds it (/v1/ca/bootstrap and every enrollment method serve the certificate only). Treat existing cluster CA keys as compromised; joining new nodes is unavailable until member-side issuance lands.
+
 ### Security
 
 - **The cluster CA private key no longer leaves the node that holds it, in
