@@ -285,6 +285,24 @@ distinct, authenticated holders present.
   the `mtls` factor and opens the envelope in process). A sealed Shamir
   barrier's web view says which command its holders run and waits for them.
 
+## Decided: not in the browser
+
+Claiming an envelope and submitting a share are **not** offered in the browser,
+by the owner's decision. A browser path was designed, using the JavaScript HPKE
+library `@hpke/core` over WebCrypto, and rejected for two reasons:
+
+- **The library is unaudited.** `@hpke/core` passes the RFC 9180 test vectors
+  and is widely adopted, but it has not been formally audited, and the envelope
+  is the only thing standing between a share and its holder.
+- **Cross-site scripting would become key disclosure.** Holder private keys in
+  a browser tab can be reached by anything that runs script in the page, so an
+  XSS bug would expose keys, not just a session.
+
+Claims and submissions go through the qrdb CLI or the desktop app, where the
+holder's keys stay in Go. The web UI administers holders and shows which
+command they run. This will be revisited when an audited JavaScript HPKE
+implementation exists.
+
 ## Companion documents
 
 - [../seal/so-dual-factor.md](../seal/so-dual-factor.md) — SO PIN
