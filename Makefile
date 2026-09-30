@@ -1168,7 +1168,19 @@ endef
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
 COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest
-COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)"
+#
+# THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
+# so in its `# build-tags:` line. A package's coverage depends on which of its
+# files the tags compile: on one tree pkg/api/grpc reads 90.7% under BUILD_TAGS
+# and 77.1% under `codec_json raft` alone (quic 97.0 vs 88.6, mcp 91.3 vs 80.7).
+# Lanes that measured under the minimal rung read a 13-point regression that
+# was never there. The ratchet now takes the tag set the profile was measured
+# under -- as the CALLER'S ASSERTION: a coverage profile does not record its
+# tags, so the tool cannot derive them. This recipe keeps the assertion true by
+# passing the same $(BUILD_TAGS) its `go test` expands. The ratchet refuses a
+# baseline recorded under a different set. A per-package
+# figure taken by hand is comparable only under `make print-build-tags`.
+COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)" -tags "$(strip $(BUILD_TAGS))"
 
 # COVERAGE_MERGE_SUBPROCESS builds the combined profile from two DISJOINT
 # package sets: the bulk `-coverprofile` run below, over every package EXCEPT
@@ -2206,6 +2218,13 @@ vet-tags:
 .PHONY: print-tag-sets
 print-tag-sets:
 	@printf '%s\n' $(SUPPORTED_TAG_SETS)
+
+# print-build-tags prints BUILD_TAGS, the default feature set `make test` and
+# `make coverage` compile, and so the only tag set a coverage figure is
+# comparable with test/coverage-baseline.txt under.
+.PHONY: print-build-tags
+print-build-tags:
+	@printf '%s\n' "$(strip $(BUILD_TAGS))"
 
 # print-trivy-version prints TRIVY_VERSION for the same reason: ci.yml's
 # blocking trivy job installs the scanner PINNED to it, and a workflow that

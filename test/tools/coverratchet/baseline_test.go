@@ -31,7 +31,7 @@ example.com/m/b 0.00
 	if err != nil {
 		t.Fatalf("ReadBaseline: %v", err)
 	}
-	if len(got) != 2 || got["example.com/m/a"] != 91.50 || got["example.com/m/b"] != 0 {
+	if len(got.Held) != 2 || got.Held["example.com/m/a"] != 91.50 || got.Held["example.com/m/b"] != 0 || got.Tags != "" {
 		t.Errorf("got %v", got)
 	}
 }
@@ -65,7 +65,7 @@ func TestWriteBaseline_RoundTripsAndSorts(t *testing.T) {
 	if err := WriteBaseline(&buf, map[string]Stats{
 		"example.com/m/z": {Covered: 1, Total: 2},
 		"example.com/m/a": {Covered: 3, Total: 4},
-	}); err != nil {
+	}, "t"); err != nil {
 		t.Fatalf("WriteBaseline: %v", err)
 	}
 	var pkgLines []string
@@ -81,7 +81,7 @@ func TestWriteBaseline_RoundTripsAndSorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadBaseline of written file: %v", err)
 	}
-	if back["example.com/m/a"] != 75 || back["example.com/m/z"] != 50 {
+	if back.Held["example.com/m/a"] != 75 || back.Held["example.com/m/z"] != 50 || back.Tags != "t" {
 		t.Errorf("round trip = %v", back)
 	}
 }
@@ -92,7 +92,7 @@ func TestWriteBaseline_RoundTripsAndSorts(t *testing.T) {
 // would regress by 0.003pp. Flooring writes 66.66.
 func TestWriteBaseline_FloorsNeverRoundsUp(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteBaseline(&buf, map[string]Stats{"example.com/m/a": {Covered: 2, Total: 3}}); err != nil {
+	if err := WriteBaseline(&buf, map[string]Stats{"example.com/m/a": {Covered: 2, Total: 3}}, "t"); err != nil {
 		t.Fatalf("WriteBaseline: %v", err)
 	}
 	if !strings.Contains(buf.String(), "example.com/m/a 66.66\n") {
@@ -104,7 +104,7 @@ func TestWriteBaseline_FloorsNeverRoundsUp(t *testing.T) {
 // must learn from the file that a LOWERED number is the one to question.
 func TestWriteBaseline_ExplainsItself(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteBaseline(&buf, map[string]Stats{}); err != nil {
+	if err := WriteBaseline(&buf, map[string]Stats{}, "t"); err != nil {
 		t.Fatalf("WriteBaseline: %v", err)
 	}
 	if !strings.Contains(buf.String(), "LOWERED number") {

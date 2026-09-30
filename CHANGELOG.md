@@ -312,6 +312,19 @@ are not reconstructed here — their history is in the git log.
   verification. The `export_test.go` idiom is gone from
   `pkg/seal` and `sdk/go`, because gosec's loader cannot typecheck an external
   test package that relies on it. Those tests now run in-package.
+- **The coverage baseline records the build tags it was measured under, and
+  the gate refuses a profile measured under any other set.** Coverage depends
+  on which files the tags compile. On the same tree, `pkg/api/grpc`, `quic`
+  and `mcp` read 90.7/97.0/91.3% under `BUILD_TAGS` but 77.1/88.6/80.7% under
+  `codec_json raft` alone, which lanes had misread as regressions.
+  `coverratchet` takes `-tags`, and `make print-build-tags` prints the set.
+  The baseline was regenerated under `BUILD_TAGS`. No number was lowered;
+  seven packages that measured fractionally under their baseline, within the
+  tolerance, keep their previous number.
+- **`pkg/server` is at 91.5%, above the 91% floor** (baseline 90.71). New
+  tests cover the raft observer promoter, `StartedAsObserver`, and
+  `CloseAndPurge`. `CloseAndPurge` is the demotion teardown that deletes a
+  demoted replica's ciphertext, and it had no test.
 
 ### Removed
 
