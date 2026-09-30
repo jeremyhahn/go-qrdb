@@ -218,6 +218,26 @@ assert "the DEFAULT audit now covers a deeper module, because it derives the set
 assert_args "the same, when the set is passed explicitly" 1 \
 	"MISSING  sdk/go/gorm/conformance/v2.0.0" "${DIR}" sdk/go sdk/go/gorm/conformance
 
+# All three tags of a release exist, but the DEEPEST module's leg sits on a
+# different commit. This is the skewed set the Release workflow's atomic push
+# must never publish (#13): the audit that release-alpha runs on the tags it
+# just created, before pushing, has to see a skew in any module, not only
+# sdk/go.
+DIR=$(fixture multi-skew)
+printf '%s\n' 'sdk/go/gorm/conformance v1.0.0' >> "${DIR}/lockstep-baseline"
+mkdir -p "${DIR}/sdk/go/gorm/conformance"
+printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
+	> "${DIR}/sdk/go/gorm/conformance/go.mod"
+commit "${DIR}" one
+tag "${DIR}" v1.0.0
+tag "${DIR}" sdk/go/v1.0.0
+tag "${DIR}" sdk/go/gorm/conformance/v1.0.0
+commit "${DIR}" two
+tag "${DIR}" v2.0.0
+tag "${DIR}" sdk/go/v2.0.0
+tag "${DIR}" sdk/go/gorm/conformance/v2.0.0 HEAD~1
+assert "a skewed three-module tag set is refused" 1 "SKEW" "${DIR}"
+
 # A module DECLARED unreleased is out of scope for the history audit -- and it is
 # out of scope because somebody wrote it down, not because the audit inferred it
 # from an absence. That distinction is the whole of this file's design: an

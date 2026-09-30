@@ -1,0 +1,145 @@
+# Release -- the ONLY path that creates a release tag (#13; owner ruling
+# 2026-09-30, "workflow wraps release-alpha").
+#
+# WHY A WORKFLOW. check-tag-lockstep and the Release Lockstep workflow are
+# audits: they report a skewed tag set after it has been published, and a
+# published tag cannot be retracted (a consumer's go.sum already holds it).
+# Prevention needs two things together: one path that creates tags correctly,
+# and tag protection that makes it the only path. This workflow is the first;
+# the second is repository configuration the owner applies. docs/release/
+# user.md lists both steps.
+#
+# WHAT IT DOES, in order:
+#   1. reads VERSION on main. VERSION is AUTHORITATIVE: the release is whatever
+#      the merged VERSION bump says, so a release is reviewed like any change,
+#      as a VERSION + CHANGELOG commit, before it is cut;
+#   2. runs `make release-alpha` -- the same recipe, lockstep audit,
+#      CHANGELOG reconciliation, standalone-resolution and duplicate-tag checks
+#      a manual release runs. Because VERSION already names the release, the
+#      recipe takes its VERSION-authoritative path: HEAD is the release commit
+#      and only the tags are created, signed by the release bot;
+#   3. pushes the root tag and every lockstep module's tag (sdk/go/vX,
+#      sdk/go/gorm/conformance/vX) in ONE `git push --atomic`, which the recipe
+#      does itself, so the server applies all of them or none;
+#   4. fetches the published tags back and runs the lockstep audit over them,
+#      so the run ends on what the server now holds, not on what it sent.
+#
+# The secrets and variable it needs are listed under "Require the release-bot
+# credentials" below, and it refuses to start without any one of them.
+#
+# NOT ON github.com. Releases are cut on the internal forge; publishing to
+# GitHub is a separate, owner-approved step (handbook version-control.md 5a).
+# The job is guarded off github.com, and release-alpha independently refuses a
+# remote that points there.
+
+name: Release
+
+on:
+  workflow_dispatch:
+
+# One release at a time, and never cancelled mid-flight: a cancelled run could
+# stop between the tag creation and the push, and the recipe's own rollback is
+# what should handle that, not a runner kill.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Kept in lockstep with ci.yml, including the reason (#540).
+  GO_VERSION: "1.27.0"
+  GOWORK: "off"
+  GOFLAGS: "-buildvcs=false"
+
+jobs:
+  release:
+    name: Cut the release VERSION names
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The release bot's token authenticates the checkout AND the push the
+      # recipe makes, because actions/checkout persists it for this clone.
+      # Tag protection allows only this principal to create release tags.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_BOT_TOKEN }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Fail closed, naming what is missing. An empty token would check out
+      # anonymously and fail at the push, after the tags existed locally; an
+      # empty signing key would fail at the first tag. Both are cheaper here.
+      - name: Require the release-bot credentials
+        env:
+          RELEASE_BOT_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          RELEASE_BOT_SIGNING_KEY: ${{ secrets.RELEASE_BOT_SIGNING_KEY }}
+          RELEASE_BOT_NAME: ${{ vars.RELEASE_BOT_NAME }}
+          RELEASE_BOT_EMAIL: ${{ vars.RELEASE_BOT_EMAIL }}
+        run: |
+          set -eu
+          missing=''
+          [ -n "${RELEASE_BOT_TOKEN:-}" ] || missing="${missing} secret RELEASE_BOT_TOKEN"
+          [ -n "${RELEASE_BOT_SIGNING_KEY:-}" ] || missing="${missing} secret RELEASE_BOT_SIGNING_KEY"
+          [ -n "${RELEASE_BOT_NAME:-}" ] || missing="${missing} variable RELEASE_BOT_NAME"
+          [ -n "${RELEASE_BOT_EMAIL:-}" ] || missing="${missing} variable RELEASE_BOT_EMAIL"
+          if [ -n "${missing}" ]; then
+            echo "::error::not configured on this repository:${missing}. See docs/release/user.md."
+            exit 1
+          fi
+
+      # VERSION is authoritative. It is validated here for a readable error;
+      # release-alpha re-validates it, since it is the recipe that publishes.
+      - name: Read VERSION
+        id: version
+        run: |
+          set -eu
+          v="v$(tr -d '[:space:]' < VERSION)"
+          printf '%s' "$v" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha$' || {
+            echo "::error::VERSION does not name a vX.Y.Z-alpha release: $v"
+            exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing $v"
+
+      # The key lives in the runner's temp directory for this job only, mode
+      # 0600, and is removed in the always() step at the end.
+      - name: Install the release-bot signing key
+        env:
+          RELEASE_BOT_SIGNING_KEY: ${{ secrets.RELEASE_BOT_SIGNING_KEY }}
+        run: |
+          set -eu
+          umask 077
+          printf '%s\n' "$RELEASE_BOT_SIGNING_KEY" > "$RUNNER_TEMP/release-bot.key"
+          ssh-keygen -y -f "$RUNNER_TEMP/release-bot.key" > /dev/null
+
+      - name: make release-alpha
+        env:
+          RELEASE_BOT_NAME: ${{ vars.RELEASE_BOT_NAME }}
+          RELEASE_BOT_EMAIL: ${{ vars.RELEASE_BOT_EMAIL }}
+          VERSION_TAG: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          export RELEASE_BOT_SIGNING_KEY_FILE="$RUNNER_TEMP/release-bot.key"
+          make release-alpha \
+            VERSION="$VERSION_TAG" \
+            RELEASE_REMOTE=origin \
+            AGENT_GIT="$GITHUB_WORKSPACE/scripts/release-bot-git.sh"
+
+      # The recipe audits its own tags before the push. This re-reads the
+      # remote's tag set after it, so a skew the server holds -- whatever put
+      # it there -- fails the run that published it.
+      - name: Lockstep audit of the published tags
+        run: |
+          set -eu
+          git fetch --quiet --tags origin
+          make check-tag-lockstep
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release-bot.key"

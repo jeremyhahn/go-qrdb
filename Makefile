@@ -2270,6 +2270,7 @@ fmt:
 check-tag-lockstep:
 	@./scripts/check-tag-lockstep.sh
 
+
 .PHONY: test-tag-lockstep
 test-tag-lockstep:
 	@./scripts/check-tag-lockstep_test.sh
@@ -3482,6 +3483,16 @@ export GOWORK=off
 #
 #     make release-alpha VERSION=v0.17.0-alpha
 #
+# THE RELEASE WORKFLOW IS THE CALLER (#13, owner ruling 2026-09-30: "workflow
+# wraps release-alpha"). .github/workflows/release.yml reads VERSION from main,
+# which is authoritative, and runs this recipe as the release bot, whose token
+# tag protection alone admits. VERSION on main then already names the release,
+# so the recipe takes its VERSION-AUTHORITATIVE path: HEAD is the release
+# commit, only the tags are created, and HEAD must be signed. When VERSION names
+# an older release, the original path runs: the recipe writes and signs the
+# VERSION commit itself. docs/release/ has the whole flow and the owner's
+# one-time setup.
+#
 # Overridable inputs, all with sane defaults for this repository:
 #
 #   AGENT_GIT       the identity/signing wrapper, resolved from PATH. Not an
@@ -3875,12 +3886,17 @@ release-alpha: check-tag-lockstep
 	  echo '  Nothing was published. The release commit and any tag this run created have been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
 	  exit 1; \
 	}; \
-	printf '%s\n' "$${REL_VERSION#v}" > VERSION; \
-	"$$REL_AGENT_GIT" "$$REL_REPO" add VERSION || fail "ERROR: could not stage VERSION"; \
-	"$$REL_AGENT_GIT" "$$REL_REPO" commit -q -m "chore(release): $$REL_VERSION" || fail 'ERROR: the release VERSION commit failed - v1 swallowed this with || true and tagged anyway, which is how a tag comes to disagree with its own VERSION file'; \
-	test "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" || fail "ERROR: HEAD is not the release commit for $$REL_VERSION - refusing to tag"; \
-	test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: the release commit carries no SSH signature. main enforces signed commits, so this would be rejected at push time - and without this check that rejection would arrive after the tags already existed'; \
-	test "$$(git log -1 --format='%an %cn')" = "agent-$${REL_REPO#agent-} agent-$${REL_REPO#agent-}" || fail "ERROR: the release commit is authored/committed by $$(git log -1 --format='%an / %cn'), not the repository agent. AGENT_GIT is not the identity wrapper"; \
+	if [ "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" ]; then \
+	  echo "release-alpha: VERSION on main already names $${REL_VERSION#v}, so HEAD is the release commit and only the tags are cut (the VERSION-authoritative path the Release workflow takes)"; \
+	  test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: HEAD names this version but carries no SSH signature. main enforces signed commits, so an unsigned HEAD here means this clone is not what main holds'; \
+	else \
+	  printf '%s\n' "$${REL_VERSION#v}" > VERSION; \
+	  "$$REL_AGENT_GIT" "$$REL_REPO" add VERSION || fail "ERROR: could not stage VERSION"; \
+	  "$$REL_AGENT_GIT" "$$REL_REPO" commit -q -m "chore(release): $$REL_VERSION" || fail 'ERROR: the release VERSION commit failed - v1 swallowed this with || true and tagged anyway, which is how a tag comes to disagree with its own VERSION file'; \
+	  test "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" || fail "ERROR: HEAD is not the release commit for $$REL_VERSION - refusing to tag"; \
+	  test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: the release commit carries no SSH signature. main enforces signed commits, so this would be rejected at push time - and without this check that rejection would arrive after the tags already existed'; \
+	  test "$$(git log -1 --format='%an %cn')" = "agent-$${REL_REPO#agent-} agent-$${REL_REPO#agent-}" || fail "ERROR: the release commit is authored/committed by $$(git log -1 --format='%an / %cn'), not the repository agent. AGENT_GIT is not the identity wrapper"; \
+	fi; \
 	REL_COMMIT=$$(git rev-parse HEAD); \
 	TAGS="$$REL_VERSION"; \
 	REFS="refs/tags/$$REL_VERSION"; \

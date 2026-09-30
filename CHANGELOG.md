@@ -134,6 +134,19 @@ are not reconstructed here — their history is in the git log.
   or a file goes unread. A line whose meaning *is* the value can carry an
   inline `public-release-ok: <reason>` waiver. `make test-public-releasable`
   covers the gate's rejecting paths.
+- **A Release workflow is the only path that creates release tags.**
+  `.github/workflows/release.yml` is `workflow_dispatch` only. It reads
+  `VERSION` from `main`, which is authoritative, and runs
+  `make release-alpha` as a dedicated release bot. That creates signed tags
+  for the root module, `sdk/go` and `sdk/go/gorm/conformance`, and publishes
+  them in one atomic push. It then fetches the remote's tags and runs the
+  lockstep audit over them. `release-alpha`
+  gains a VERSION-authoritative path: when `VERSION` on `HEAD` already names
+  the release, it tags `HEAD` and creates no commit. `docs/release/` covers
+  the flow and the owner's one-time setup (tag protection for `v*`,
+  `sdk/go/v*` and `sdk/go/gorm/conformance/v*`, plus the
+  `RELEASE_BOT_TOKEN` / `RELEASE_BOT_SIGNING_KEY` secrets and
+  `RELEASE_BOT_NAME` / `RELEASE_BOT_EMAIL` variables).
 
 ### Changed — BREAKING
 

@@ -1401,6 +1401,68 @@ fi
 
 fi
 
+# ---------------------------------------------------------------------------
+# The VERSION-authoritative path (#13, owner ruling 2026-09-30). The Release
+# workflow reads VERSION from main and passes it back as VERSION=, so main
+# already holds the release commit: the recipe must tag HEAD, make no commit of
+# its own, and still refuse a HEAD that is not signed.
+# ---------------------------------------------------------------------------
+
+# bump_version DIR SIGN -- land the reviewed VERSION bump on main, as a merged
+# release PR would, signed or not.
+bump_version() {
+	printf '0.2.0-alpha\n' > "$1/VERSION"
+	git -C "$1" add VERSION
+	if [ "$2" = signed ]; then
+		git -C "$1" -c gpg.format=ssh -c "user.signingkey=${WORK}/signing.key" \
+			commit -q -S -m "chore(release): v0.2.0-alpha"
+	else
+		git -C "$1" commit -q --no-gpg-sign -m "chore(release): v0.2.0-alpha"
+	fi
+	git -C "$1" push -q dev main
+}
+
+NAME="VERSION already naming the release tags HEAD and commits nothing"
+fixture authoritative
+DIR="${WORK}/authoritative"
+bump_version "${DIR}" signed
+HEAD_BEFORE=$(git -C "${DIR}" rev-parse HEAD)
+run "${DIR}" VERSION=v0.2.0-alpha
+if [ "${STATUS}" -ne 0 ]; then
+	bad "${NAME}" "exit ${STATUS}"
+	echo "${OUTPUT}" | sed 's/^/        /'
+elif [ "$(git -C "${DIR}" rev-parse HEAD)" != "${HEAD_BEFORE}" ]; then
+	bad "${NAME}" "HEAD moved: the recipe made a commit of its own"
+elif grep -q '^go-qrdb|commit' "${DIR}.gitlog"; then
+	bad "${NAME}" "the wrapper was asked to commit"
+else
+	ok "${NAME}"
+fi
+
+NAME="the authoritative path puts every lockstep tag on the reviewed commit"
+BAD_TAG=''
+for T in v0.2.0-alpha sdk/go/v0.2.0-alpha; do
+	[ "$(git -C "${DIR}" rev-parse "${T}^{commit}" 2>/dev/null)" = "${HEAD_BEFORE}" ] || BAD_TAG="${BAD_TAG} ${T}"
+	git -C "${DIR}" cat-file tag "${T}" 2>/dev/null | grep -q 'BEGIN SSH SIGNATURE' || BAD_TAG="${BAD_TAG} ${T}(unsigned)"
+done
+if [ -n "${BAD_TAG}" ]; then
+	bad "${NAME}" "wrong or unsigned:${BAD_TAG}"
+else
+	ok "${NAME}"
+fi
+
+NAME="the authoritative path publishes main plus exactly the two tags"
+if [ "$(git ls-remote "${DIR}.git" | awk '{print $2}' | grep -c -v '\^{}$')" -ne 3 ]; then
+	bad "${NAME}" "remote holds: $(git ls-remote "${DIR}.git" | awk '{print $2}' | tr '\n' ' ')"
+else
+	ok "${NAME}"
+fi
+
+fixture authoritative-unsigned
+bump_version "${WORK}/authoritative-unsigned" unsigned
+refuse "an unsigned HEAD that already names the release is refused" \
+	"${WORK}/authoritative-unsigned" "carries no SSH signature" VERSION=v0.2.0-alpha
+
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "${FAILURES} case(s) failed"
 	exit 1

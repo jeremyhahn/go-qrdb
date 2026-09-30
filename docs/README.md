@@ -74,6 +74,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
 | [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
+| [release](release/) | cutting a release: the Release workflow, VERSION as the release record, lockstep module tags, tag protection |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
 
 ### Security and identity
