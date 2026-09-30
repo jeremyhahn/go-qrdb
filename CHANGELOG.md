@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.21.3-alpha] - 2026-09-30
+
+Security hotfix: tenant isolation on the tenant-administration surface of every network transport (REST, gRPC, Unix socket, QUIC, MCP).
+
 ### Changed — BREAKING
 
 - **A tenant's plan is set by the platform operator only (owner ruling
