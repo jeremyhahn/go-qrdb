@@ -7,10 +7,10 @@ require (
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/google/uuid v1.6.0
-	github.com/jeremyhahn/go-enclave v0.6.0-alpha
+	github.com/jeremyhahn/go-enclave v0.6.1-alpha
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
 	github.com/jeremyhahn/go-qrdb v0.22.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.14.1-alpha
+	github.com/jeremyhahn/go-quicraft v0.15.0-alpha
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.63.0
 	github.com/stretchr/testify v1.12.1

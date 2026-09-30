@@ -288,12 +288,12 @@ github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 h1:njuLRcjAuMKr7
 github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1/go.mod h1:alcuEEnZsY1WQsagKhZDsoPCRoOijYqhZvPwLG0kzVs=
 github.com/jeremyhahn/go-codec v1.4.0 h1:ORbXlqpzg5RDlYGKyqKmbVNdF7TFjabO/7lVgpJ96W8=
 github.com/jeremyhahn/go-codec v1.4.0/go.mod h1:WsKvb0GxD0jRyLQRCpNCb5RsXBg4GY1LfwqK3kbIqF4=
-github.com/jeremyhahn/go-enclave v0.6.0-alpha h1:PmUhFGoj8gqMI5CNY1t2xOfAZXd2SAdN1TsIRc4kC7k=
-github.com/jeremyhahn/go-enclave v0.6.0-alpha/go.mod h1:NzaV85d7/iJuP8eTFIJogPZwGcGkKR3RHm3i2bthPNA=
+github.com/jeremyhahn/go-enclave v0.6.1-alpha h1:iSerl9hJbM+WrdC6lixklrDJF6E+Mtr2UVyDSbzDEF8=
+github.com/jeremyhahn/go-enclave v0.6.1-alpha/go.mod h1:NzaV85d7/iJuP8eTFIJogPZwGcGkKR3RHm3i2bthPNA=
 github.com/jeremyhahn/go-objstore v0.3.0-alpha h1:G/KiZBLcojP9rFnH+UuqyTk1CM8ogM2ZRfrt0Ps3WcI=
 github.com/jeremyhahn/go-objstore v0.3.0-alpha/go.mod h1:bLqSB64gltrsEsxMx7DyNjjxcHXz82grpkyZJ0gv+tw=
-github.com/jeremyhahn/go-quicraft v0.14.1-alpha h1:OiApYn7CKXusk8+4B91RhhPyT9v5uMGqpqg4zOQEHLU=
-github.com/jeremyhahn/go-quicraft v0.14.1-alpha/go.mod h1:P6hdAI1r2Ke8x2PB5eoIq+IC4y37I9hZ+KCy/K4gOkk=
+github.com/jeremyhahn/go-quicraft v0.15.0-alpha h1:3GBGhN8fZOtkLuc5jpPdJLRH6r7GvD1DsxWdQkUxCKc=
+github.com/jeremyhahn/go-quicraft v0.15.0-alpha/go.mod h1:TOCT7knr4Wxho6x2rQxkIgjXF+st+diRFmyLhn8AKJg=
 github.com/jeremyhahn/go-truststrap v0.2.0-alpha h1:By3+U4pXgAGtO8Og9C9jcAr99132BrcZNjpZ396NhOA=
 github.com/jeremyhahn/go-truststrap v0.2.0-alpha/go.mod h1:ScGXVFBsxtFiGhSGbvKEX3T+Zzy/+nDo9rWK49F0Odk=
 github.com/jeroenrinzema/psql-wire v0.18.0 h1:w8VZLCbyzx5UHQb3zojTBWYuOd9L2TlgrboD5jpsC4E=

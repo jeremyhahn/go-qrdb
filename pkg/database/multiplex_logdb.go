@@ -292,6 +292,12 @@ func (m *MultiplexLogDB) RemoveNodeData(shardID, replicaID uint64) error {
 	return m.routeFor(shardID).RemoveNodeData(shardID, replicaID)
 }
 
+// NodeRemoved dispatches to the WAL that owns the node's shard, the same WAL
+// RemoveNodeData retired the replica ID in.
+func (m *MultiplexLogDB) NodeRemoved(shardID, replicaID uint64) (bool, error) {
+	return m.routeFor(shardID).NodeRemoved(shardID, replicaID)
+}
+
 // SaveBootstrap dispatches to the WAL that owns the node's shard.
 func (m *MultiplexLogDB) SaveBootstrap(shardID, replicaID uint64, bootstrap logdb.Bootstrap) error {
 	return m.routeFor(shardID).SaveBootstrap(shardID, replicaID, bootstrap)

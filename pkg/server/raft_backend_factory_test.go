@@ -1042,6 +1042,7 @@ func (fakeLogDBForServer) GetSnapshot(uint64, uint64) (logdblib.Snapshot, error)
 	return logdblib.Snapshot{}, nil
 }
 func (fakeLogDBForServer) RemoveNodeData(uint64, uint64) error                    { return nil }
+func (fakeLogDBForServer) NodeRemoved(uint64, uint64) (bool, error)               { return false, nil }
 func (fakeLogDBForServer) SaveBootstrap(uint64, uint64, logdblib.Bootstrap) error { return nil }
 func (fakeLogDBForServer) GetBootstrap(uint64, uint64) (logdblib.Bootstrap, bool, error) {
 	return logdblib.Bootstrap{}, false, nil

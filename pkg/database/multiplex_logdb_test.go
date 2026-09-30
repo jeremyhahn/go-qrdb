@@ -112,6 +112,11 @@ func (f *fakeLogDB) RemoveNodeData(shardID, replicaID uint64) error {
 	return nil
 }
 
+func (f *fakeLogDB) NodeRemoved(shardID, replicaID uint64) (bool, error) {
+	f.record(shardID)
+	return false, nil
+}
+
 func (f *fakeLogDB) SaveBootstrap(shardID, replicaID uint64, bootstrap logdb.Bootstrap) error {
 	f.record(shardID)
 	return nil
@@ -170,6 +175,7 @@ func (p *plainFake) Compact(uint64, uint64) error                        { retur
 func (p *plainFake) SaveSnapshot(uint64, uint64, logdb.Snapshot) error   { return nil }
 func (p *plainFake) GetSnapshot(uint64, uint64) (logdb.Snapshot, error)  { return logdb.Snapshot{}, nil }
 func (p *plainFake) RemoveNodeData(uint64, uint64) error                 { return nil }
+func (p *plainFake) NodeRemoved(uint64, uint64) (bool, error)            { return false, nil }
 func (p *plainFake) SaveBootstrap(uint64, uint64, logdb.Bootstrap) error { return nil }
 func (p *plainFake) GetBootstrap(uint64, uint64) (logdb.Bootstrap, bool, error) {
 	return logdb.Bootstrap{}, false, nil
@@ -411,6 +417,7 @@ func TestMultiplexPerShardDispatch(t *testing.T) {
 	_ = m.SaveSnapshot(11, 1, logdb.Snapshot{})
 	_, _ = m.GetSnapshot(11, 1)
 	_ = m.RemoveNodeData(11, 1)
+	_, _ = m.NodeRemoved(11, 1)
 	_ = m.SaveBootstrap(11, 1, logdb.Bootstrap{})
 	_, _, _ = m.GetBootstrap(11, 1)
 
@@ -425,8 +432,8 @@ func TestMultiplexPerShardDispatch(t *testing.T) {
 		}
 	}
 	ded.mu.Unlock()
-	if dedHits != 10 {
-		t.Fatalf("dedicated WAL hit %d times, want 10", dedHits)
+	if dedHits != 11 {
+		t.Fatalf("dedicated WAL hit %d times, want 11", dedHits)
 	}
 
 	shared.mu.Lock()

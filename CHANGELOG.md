@@ -11,6 +11,21 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **go-quicraft v0.14.1-alpha → v0.15.0-alpha** (and go-enclave v0.6.0-alpha →
+  v0.6.1-alpha) in all three modules. go-quicraft 0.15 changes its WAL
+  format in place (hard-state record `0x02` → `0x0d`; the remove-node record
+  `0x06` is retired): **before upgrading a node, wipe its Raft WAL directory
+  and let it re-sync from its peers** (or restore from a snapshot). A replica
+  removed with `RemoveData` is retired for good; rejoining needs a new replica
+  ID. Snapshot artifacts exported by earlier builds carry no integrity trailer
+  and are refused on import; export them again after upgrading. The release
+  also hardens snapshot integrity end to end and keeps lease reads safe across
+  follower restarts.
+- `database.MultiplexLogDB` implements the new `logdb.LogDB.NodeRemoved`,
+  dispatching to the WAL that owns the shard.
+
 ## [0.22.0-alpha] - 2026-09-30
 
 Merge train 2: transactions and guarded batches on every state machine type, O(1) TRUNCATE, one error-classification table, node lifecycle and go-quicraft 0.14 member identities, tenancy reconcile and atomic tenant create, certificate/auth posture (SPIFFE SAN, mTLS binding policy, single-owner REST routes, attested-caller gate), and collection lifecycle states.
