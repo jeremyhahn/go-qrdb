@@ -288,6 +288,13 @@ are not reconstructed here — their history is in the git log.
   authenticated at the HTTP layer and refused with `401` if it fails, with
   `WWW-Authenticate` when a bearer challenge is configured. Every body is
   bounded at the batch-import limit plus 1 MiB of envelope.
+- **gRPC server reflection is no longer exempt from authentication (low).**
+  The gRPC and Unix interceptors let `/grpc.reflection.*` through with no
+  credentials. qrdb registers no reflection service, but a composer that
+  registered one exposed the node's whole schema anonymously. Reflection is
+  now authenticated and default-denied like any other unmapped method. A
+  composer that wants it anonymous declares it through
+  `GRPCPublicMethodLister`.
 
 ### Known limits
 

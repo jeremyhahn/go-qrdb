@@ -80,21 +80,19 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	}
 }
 
-// isPublicGRPCMethod reports whether a gRPC full method belongs to an
-// infrastructure service (health checking, server reflection) that is
-// intentionally reachable without an application permission. Application
-// services (QRDBService, TenantBarrierService) are NOT public — every method
-// must carry a permission mapping, or be declared public by a capability
-// module via RegisterPublicGRPCMethods, or it is denied.
+// isPublicGRPCMethod reports whether a gRPC full method belongs to the one
+// infrastructure service intentionally reachable without credentials: health
+// checking, which reports liveness and nothing else. Application services
+// (QRDBService, TenantBarrierService) are NOT public — every method must
+// carry a permission mapping, or be declared public by a capability module
+// via RegisterPublicGRPCMethods, or it is denied.
+//
+// Server reflection is deliberately NOT exempt. It answers with the node's
+// whole schema -- every service, method and message -- so a composer that
+// registers it and wants it anonymous must declare that explicitly through
+// RegisterPublicGRPCMethods.
 func isPublicGRPCMethod(fullMethod string) bool {
-	switch {
-	case strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/"):
-		return true
-	case strings.HasPrefix(fullMethod, "/grpc.reflection."):
-		return true
-	default:
-		return false
-	}
+	return strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/")
 }
 
 // RegisterPublicGRPCMethods declares gRPC full method names that must be

@@ -193,6 +193,8 @@ type ModuleAuthFallback interface {
 | `GET /v1/ca/bootstrap` | **public**, only when a bootstrap certificate is configured |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |
 | `GET /metrics` | **authenticated**, no specific permission, only when a gatherer is configured |
+| gRPC / Unix `/grpc.health.v1.Health/*` | **public**: liveness only |
+| gRPC / Unix server reflection (`/grpc.reflection.*`) | **not public**. qrdb registers none. One a composer registers is authenticated and default-denied like any other unmapped method, unless the composer declares it public through `GRPCPublicMethodLister` |
 | MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
 | MCP `/mcp`, every JSON-RPC method (`initialize`, `ping` and `tools/list` included) | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
 

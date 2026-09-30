@@ -248,8 +248,8 @@ func TestIsPublicGRPCMethod_Health(t *testing.T) {
 }
 
 func TestIsPublicGRPCMethod_Reflection(t *testing.T) {
-	if !isPublicGRPCMethod("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo") {
-		t.Error("reflection method should be public")
+	if isPublicGRPCMethod("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo") {
+		t.Error("reflection exposes the whole schema and must not be public by default")
 	}
 }
 
