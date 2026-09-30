@@ -81,6 +81,7 @@ func TestAuthFactorSeamErrorsAreAllExported(t *testing.T) {
 		_ *AuthFactorEnrollmentInvalidError   = (*authfactors.EnrollmentInvalidError)(nil)
 		_ *AuthFactorChallengeExpiredError    = (*authfactors.ChallengeExpiredError)(nil)
 		_ *AuthFactorVerificationFailedError  = (*authfactors.VerificationFailedError)(nil)
+		_ *AuthFactorMismatchError            = (*authfactors.FactorMismatchError)(nil)
 		_ *AuthFactorHardwareUnavailableError = (*authfactors.HardwareUnavailableError)(nil)
 	)
 	if ErrAuthFactorHardwareUnavailable == nil {

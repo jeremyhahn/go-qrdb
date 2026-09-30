@@ -15,6 +15,7 @@
 package authfactors_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,24 @@ func TestEnrollmentRevokedError_Error(t *testing.T) {
 	want := "authfactors: enrollment already revoked: e42"
 	if err.Error() != want {
 		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestFactorMismatchError_Error(t *testing.T) {
+	err := &authfactors.FactorMismatchError{EnrollmentID: "e7", Enrolled: "piv", Requested: "presence"}
+	want := "authfactors: enrollment e7 was made with factor piv, not presence"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestFactorMismatchError_NamesBothFactors(t *testing.T) {
+	err := &authfactors.FactorMismatchError{EnrollmentID: "e8", Enrolled: "fido2", Requested: "pkcs11"}
+	msg := err.Error()
+	for _, part := range []string{"e8", "fido2", "pkcs11"} {
+		if !strings.Contains(msg, part) {
+			t.Errorf("Error() = %q, missing %q", msg, part)
+		}
 	}
 }
 

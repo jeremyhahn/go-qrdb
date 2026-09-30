@@ -643,8 +643,14 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 // ---------------------------------------------------------------------------
 
 // mapGRPCError translates a gRPC status error into the appropriate SDK
-// transport error type.
+// transport error type. A nil err is success and maps to nil: status.FromError
+// reports a nil error as codes.OK with ok=true, which the switch below would
+// otherwise have turned into a RequestError, so VerifyFactor and RevokeFactor,
+// which return the mapped error unconditionally, failed every successful call.
 func mapGRPCError(method string, err error) error {
+	if err == nil {
+		return nil
+	}
 	st, ok := status.FromError(err)
 	if !ok {
 		return &transport.RequestError{Method: method, Err: err}

@@ -436,6 +436,7 @@ var conditions = []conditionRow{
 	{"auth-factor factor not registered", &authfactors.FactorNotFoundError{Name: "totp"}, wire.StatusNotFound, codes.NotFound},
 	{"auth-factor record invalid", &authfactors.EnrollmentInvalidError{EnrollmentID: "e1", Reason: "unmarshal failed"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"auth-factor tenant mismatch", &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"auth-factor caller named a factor other than the enrollment's", &authfactors.FactorMismatchError{EnrollmentID: "e1", Enrolled: "piv", Requested: "presence"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"auth-factor enrollment revoked", &authfactors.EnrollmentRevokedError{EnrollmentID: "e1"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"auth-factor challenge expired", &authfactors.ChallengeExpiredError{ChallengeID: "000000000001.c"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"auth-factor verification failed", &authfactors.VerificationFailedError{FactorName: "piv", Reason: "bad signature"}, wire.StatusUnauthenticated, codes.Unauthenticated},

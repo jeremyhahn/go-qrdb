@@ -66,6 +66,12 @@ type AuthFactorChallengeExpiredError = authfactors.ChallengeExpiredError
 // fails. (Aliases pkg/authfactors.VerificationFailedError.)
 type AuthFactorVerificationFailedError = authfactors.VerificationFailedError
 
+// AuthFactorMismatchError is returned when VerifyFactor names a factor other
+// than the one the challenge's enrollment was made with. The enrollment's
+// factor is authoritative and the challenge is consumed.
+// (Aliases pkg/authfactors.FactorMismatchError.)
+type AuthFactorMismatchError = authfactors.FactorMismatchError
+
 // AuthFactorHardwareUnavailableError is returned when the underlying hardware
 // device (HSM, smart card reader, FIDO2 authenticator) cannot be reached.
 // (Aliases pkg/authfactors.HardwareUnavailableError.)

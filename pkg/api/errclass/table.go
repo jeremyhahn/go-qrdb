@@ -553,6 +553,9 @@ var authFactorRules = []rule{
 	// An enrolment naming a tenant other than the caller's context
 	// (go-qrdb#464): the caller's input, not a server fault.
 	as(&service.AuthFactorTenantMismatchError{}, InvalidArgument),
+	// A verify naming a factor other than the enrollment's own (go-qrdb#577):
+	// the caller's input, refused rather than corrected.
+	as(&authfactors.FactorMismatchError{}, InvalidArgument),
 	as(&authfactors.EnrollmentRevokedError{}, Gone),
 	as(&authfactors.ChallengeExpiredError{}, Gone),
 	as(&authfactors.VerificationFailedError{}, Unauthenticated),

@@ -31,6 +31,10 @@ are not reconstructed here — their history is in the git log.
 - `ceremony.CeremonyService.InstanceID` and `service.SignCSRThrottledError`.
 - `sealedwindow.WithAnonymous` / `Anonymous`, the mark the boot-time
   sealed-window listener sets on every request it admits.
+- `pkg/authfactors/authfactorstest`: a software `authfactors.Factor` for tests
+  that drive the real auth-factor service, with a strict variant that
+  verifies a possession proof over each nonce and a permissive one. Imported
+  by tests only.
 
 ### Changed — BREAKING
 
@@ -130,6 +134,9 @@ are not reconstructed here — their history is in the git log.
   no role service refuses SO-gated routes with `503`.
 - `auth.Identity.HasRole` documents that it compares role identifiers, and
   its parameter is renamed `roleID`.
+- REST `POST /v1/authfactors/{id}/verify` reads the body's `factor_name`
+  (which the SDK REST client already sent) and passes it to the service, like
+  the other five transports, so a mismatch is refused rather than ignored.
 
 ### Fixed
 
@@ -144,6 +151,9 @@ are not reconstructed here — their history is in the git log.
   node's server gains the same wiring. A scoped embedded client serves exactly
   the families its unscoped transport serves, so on a standalone node MVCC,
   leases and watches stay refused.
+- **Unix SDK: a successful `VerifyFactor` or `RevokeFactor` no longer returns
+  an error.** `mapGRPCError` turned a nil gRPC error into a `RequestError`, so
+  both calls reported failure on success.
 
 ### Security
 
@@ -375,6 +385,21 @@ are not reconstructed here — their history is in the git log.
   is refused there while the gate is on. Refusals are typed
   (`SOFactorError`, `SORoleRequiredError`, `SORoleUnresolvedError`) and map to
   the same class on every transport.
+- **`VerifyFactor` is dispatched to the enrollment's own factor.** The
+  caller's factor name used to choose the factor that verified a challenge,
+  and the enrollment was consulted only when the name was empty. With two
+  factors registered, a caller could answer a strong factor's challenge
+  through a weaker one: reproduced on gRPC, Unix, QUIC, MCP and embedded with
+  a junk response. The service now loads the enrollment, dispatches to its
+  factor, and refuses a non-empty caller name that differs with the typed
+  `*authfactors.FactorMismatchError` (`AuthFactorMismatchError` in `sdk/go`):
+  400 on REST, `INVALID_ARGUMENT` on gRPC and Unix, `StatusInvalidArgument` on
+  QUIC, `CodeInvalidArgument` on MCP. The challenge is consumed either way. A
+  challenge whose enrollment was revoked after it was issued is now refused
+  too (`*authfactors.EnrollmentRevokedError`). Factor names are compared
+  through the registry's own normalisation (case-insensitive), which the
+  registry now also applies when a factor is registered, so a factor whose
+  `Name()` is not lower case can be enrolled at all.
 
 ### Known limits
 

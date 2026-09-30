@@ -941,14 +941,16 @@ func TestUnixRT_VerifyFactor(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithAuthFactorService(svc))
 	defer cleanup()
 
-	// The Unix transport currently wraps a nil gRPC error as a RequestError
-	// due to a known pre-existing issue in mapGRPCError. We verify the call
-	// reaches the service correctly regardless of how the response is mapped.
-	_ = tr.VerifyFactor(context.Background(), &transport.VerifyFactorRequest{
+	// A successful verification is nil on the client too. This test used to
+	// discard the result because mapGRPCError turned a nil gRPC error into a
+	// RequestError, so every successful Unix VerifyFactor reported failure.
+	if err := tr.VerifyFactor(context.Background(), &transport.VerifyFactorRequest{
 		FactorName:  "piv",
 		ChallengeID: "ch-1",
 		Value:       []byte("signature"),
-	})
+	}); err != nil {
+		t.Fatalf("VerifyFactor: %v", err)
+	}
 	if !called {
 		t.Fatal("expected service VerifyFactor to be invoked")
 	}
@@ -984,10 +986,11 @@ func TestUnixRT_RevokeFactor(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithAuthFactorService(svc))
 	defer cleanup()
 
-	// Same pre-existing mapGRPCError behavior applies for the void-return path.
-	_ = tr.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{
+	if err := tr.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{
 		EnrollmentID: "enroll-1",
-	})
+	}); err != nil {
+		t.Fatalf("RevokeFactor: %v", err)
+	}
 	if !called {
 		t.Fatal("expected service RevokeFactor to be invoked")
 	}
