@@ -152,3 +152,38 @@ func TestBuildAuthMiddleware_WrapAuthorizerNilFailsClosed(t *testing.T) {
 	var missing *MissingServiceError
 	assert.ErrorAs(t, err, &missing)
 }
+
+// namedAuthenticator refuses everything; only its Name matters here.
+type namedAuthenticator struct{ name string }
+
+func (n namedAuthenticator) Authenticate(context.Context) (*auth.Identity, error) {
+	return nil, auth.ErrUnauthenticated
+}
+
+func (n namedAuthenticator) Name() string { return n.name }
+
+// TestBuildAuthMiddleware_ExtraAuthenticatorJoinsTheMethodVocabulary: an
+// authenticator an embedder plugs in (ExtraAuthenticators, which the SDK
+// node's WithAuthenticators feeds) names a method a permitted-method policy
+// may be written with — on the middleware whose chain holds it, and on no
+// other built in the same process.
+func TestBuildAuthMiddleware_ExtraAuthenticatorJoinsTheMethodVocabulary(t *testing.T) {
+	const name = "wiring-oauth"
+	withExtra, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:             true,
+		RoleService:         adminRoleService(),
+		UserService:         &fakeUserService{},
+		ExtraAuthenticators: []auth.Authenticator{namedAuthenticator{name: "Wiring-OAuth"}},
+	})
+	require.NoError(t, err)
+	without, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:     true,
+		RoleService: adminRoleService(),
+		UserService: &fakeUserService{},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, withExtra.IsAuthMethod(name), "the chain's authenticator is not in its vocabulary")
+	assert.True(t, withExtra.IsAuthMethod(auth.MethodMTLS), "the built-in mTLS authenticator is in the chain too")
+	assert.False(t, without.IsAuthMethod(name), "another middleware in the process gained the method")
+}

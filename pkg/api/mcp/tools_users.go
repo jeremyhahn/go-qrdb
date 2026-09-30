@@ -296,7 +296,7 @@ func toolUserCreate() mcp.Tool {
 		// array-argument convention this transport already uses (see
 		// parseStringArray in tools_ceremony.go); see parseOpaqueStringList.
 		mcp.WithString("auth_methods",
-			mcp.Description(`JSON array of permitted authentication methods, e.g. ["webauthn","piv"]. Empty states no restriction.`),
+			mcp.Description(`JSON array of permitted authentication methods, e.g. ["webauthn","piv"]: the built-in "mtls", "piv", "webauthn", or the name of an authenticator this deployment runs. Empty states no restriction.`),
 		),
 		mcp.WithString("lifecycle",
 			mcp.Description("Account state to create in: pending, active or disabled. Empty defaults to active, or pending when 'pending' is set."),

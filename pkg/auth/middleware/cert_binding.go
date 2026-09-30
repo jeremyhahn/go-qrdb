@@ -29,8 +29,8 @@ import (
 // is the thing being stated: a second certificate-presenting authenticator
 // added to the chain must be added HERE to be gated, and a reader asking "what
 // does this check apply to" gets an answer rather than a chain of conditions.
-// The values are the NORMALIZED method names (user.NormalizeAuthMethods), the
-// same form a user's permitted-method policy is stored in.
+// The values are CANONICAL method names (auth.CanonicalAuthMethod), the same
+// form a user's permitted-method policy is compared in.
 var certBoundMethods = map[string]struct{}{
 	auth.MethodMTLS: {},
 }
@@ -49,18 +49,14 @@ var certBoundMethods = map[string]struct{}{
 // knows what credential the subject presented, exactly as for the
 // permitted-method policy.
 //
-// The name is normalized with the SAME function the store applies to a
-// permitted-method policy, so the two vocabularies cannot drift into
-// disagreeing about what "mtls" is spelled like.
+// The name is canonicalized with the SAME function the permitted-method check
+// compares with, so the two cannot drift into disagreeing about what "mtls" is
+// spelled like.
 func isCertBoundMethod(method authMethod) bool {
 	if !method.known {
 		return false
 	}
-	normalized, err := user.NormalizeAuthMethods([]string{method.name})
-	if err != nil || len(normalized) == 0 {
-		return false
-	}
-	_, ok := certBoundMethods[normalized[0]]
+	_, ok := certBoundMethods[auth.CanonicalAuthMethod(method.name)]
 	return ok
 }
 

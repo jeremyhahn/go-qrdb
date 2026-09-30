@@ -130,7 +130,14 @@ A non-empty `authMethods` policy is enforced at the authentication gate on
 every transport: an account that authenticated by a method outside it is
 refused with **403** / `PERMISSION_DENIED` (`AuthMethodNotPermittedError`). The
 tokens are `mtls`, `piv` and `webauthn`, exported as `sdk.MethodMTLS`,
-`sdk.MethodPIV` and `sdk.MethodWebAuthn`.
+`sdk.MethodPIV` and `sdk.MethodWebAuthn` (`sdk.BuiltinAuthMethods()` lists
+them). A node's vocabulary also holds the name of every authenticator in ITS
+chain, so a node that plugs in, say, an `oauth` authenticator can write
+`["mtls","oauth"]` — and a second node in the same process that does not,
+cannot. A create or update naming a token outside that live set is
+refused with **400** / `INVALID_ARGUMENT` (`UnknownAuthMethodError`, a
+validation error). A policy stored before that rule reads back and keeps
+working unchanged, and an update may keep an entry it already holds.
 
 A composing host that runs its own login ceremony enforces the same policy
 with `sdk.CheckAuthMethod(user, method)`, which returns nil or
@@ -365,7 +372,9 @@ they are refused on an account already marked `deleting`.
 `authMethods` is a **policy** statement of what the account may present
 (`webauthn`, `piv`, …), distinct from `factors`, which records what it has
 actually enrolled. Trimmed, de-duplicated and **lowercased** — these are
-protocol names from a closed vocabulary. Empty means no restriction.
+protocol names from the method vocabulary (the built-in `mtls`, `piv`,
+`webauthn`, plus the name of every authenticator in the configured chain).
+Empty means no restriction.
 
 It is **enforced**, not merely stored: an authentication that succeeds by a
 method the policy does not list is refused with **403** (gRPC

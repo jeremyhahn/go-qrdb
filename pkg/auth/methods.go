@@ -14,6 +14,11 @@
 
 package auth
 
+import (
+	"slices"
+	"strings"
+)
+
 // The permitted-authentication-method vocabulary.
 //
 // A user's permitted-method policy (user.User.AuthMethods) is a list of these
@@ -43,3 +48,41 @@ const (
 	// MethodWebAuthn is the token for a WebAuthn (FIDO2 authenticator) login.
 	MethodWebAuthn = "webauthn"
 )
+
+// builtinAuthMethods are the method tokens qrdb defines. A node's full
+// vocabulary is this set plus the Name() of every authenticator in ITS chain;
+// the auth middleware owns that union (AuthMiddleware.IsAuthMethod) and hands
+// it to the node's user store. There is deliberately no process-wide
+// registry: two nodes in one process have two chains, and a method one of
+// them can authenticate must not become writable on the other.
+var builtinAuthMethods = map[string]struct{}{
+	MethodMTLS:     {},
+	MethodPIV:      {},
+	MethodWebAuthn: {},
+}
+
+// CanonicalAuthMethod is the form in which method names are stored and
+// compared: trimmed and lowercased. It does NOT validate against any
+// vocabulary — it is also the comparison the authentication gate applies to a
+// stored policy, and an entry written before the vocabulary was enforced must
+// still match the method it names.
+func CanonicalAuthMethod(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// IsBuiltinAuthMethod reports whether name is one of qrdb's own method tokens.
+// It compares exactly; canonicalize the name first.
+func IsBuiltinAuthMethod(name string) bool {
+	_, ok := builtinAuthMethods[name]
+	return ok
+}
+
+// BuiltinAuthMethods returns qrdb's own method tokens, sorted.
+func BuiltinAuthMethods() []string {
+	out := make([]string, 0, len(builtinAuthMethods))
+	for m := range builtinAuthMethods {
+		out = append(out, m)
+	}
+	slices.Sort(out)
+	return out
+}

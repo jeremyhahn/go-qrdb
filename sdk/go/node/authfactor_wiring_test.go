@@ -25,8 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -83,22 +81,6 @@ var _ authfactors.Factor = (*nodeTestFactor)(nil)
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-// newMemoryNodeCfg returns a *qrdbconfig.Config for an in-memory standalone
-// node with all protocols disabled so no ports are bound. It mirrors the
-// pattern used by newMemoryNodeWithUser in login_wiring_test.go.
-func newMemoryNodeCfg(t *testing.T) *qrdbconfig.Config {
-	t.Helper()
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
-	cfg.Protocols.REST = false
-	cfg.Protocols.GRPC = false
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
-	cfg.Protocols.MCP = false
-	return cfg
-}
 
 // newMemoryNodeWithServerOpts creates a standalone in-memory node with the
 // given server.ServerOption slice and no NodeOptions. All protocol servers

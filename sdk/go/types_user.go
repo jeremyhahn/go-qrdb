@@ -76,7 +76,12 @@ type (
 // set: trimmed, LOWERCASED, de-duplicated, first-seen order preserved. Case is
 // folded because these are protocol names from a closed vocabulary, and a list
 // holding both "WebAuthn" and "webauthn" is a policy that will eventually deny
-// what it meant to allow.
+// what it meant to allow. Every entry must be in the vocabulary (AuthMethods:
+// mtls, piv, webauthn, plus the name of every authenticator in a configured
+// chain); anything else fails closed with *UserUnknownAuthMethodError. It is
+// what CreateUser applies to a policy being written; UpdateUser additionally
+// lets an edit keep an entry the replaced policy already held. A stored policy
+// is never re-validated on read.
 var NormalizeAuthMethods = user.NormalizeAuthMethods
 
 const (
@@ -106,3 +111,8 @@ type UserFactorLookupError = user.FactorLookupError
 
 // UserValidationError is returned when a user request fails validation.
 type UserValidationError = user.ValidationError
+
+// UserUnknownAuthMethodError is returned when a permitted-method policy being
+// written names a method outside the vocabulary. It unwraps to a
+// *UserValidationError, so transports answer it as a bad argument.
+type UserUnknownAuthMethodError = user.UnknownAuthMethodError

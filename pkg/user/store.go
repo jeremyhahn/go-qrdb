@@ -21,12 +21,15 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -133,6 +136,11 @@ type kvUserStore struct {
 	// slog.Default(); see WithLogger.
 	logger *slog.Logger
 
+	// knownMethod is the permitted-method vocabulary a policy is validated
+	// against when written (WithAuthMethodVocabulary). nil means the built-in
+	// tokens only.
+	knownMethod func(method string) bool
+
 	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
 	// retry loop. Zero means "use the production default"; see that
 	// function's doc and WithReconcilePolling for why a test overrides them.
@@ -226,7 +234,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	if lerr != nil {
 		return nil, lerr
 	}
-	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
+	authMethods, aerr := normalizeAuthMethods(req.AuthMethods, nil, s.knownMethod)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -1131,11 +1139,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// construction (it is itself a write that can fail, and reports
 	// IndexCompensationError when it does). Trading a guaranteed no-op for a
 	// probable undo is a bad trade when the check costs nothing.
-	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
-	if aerr != nil {
-		return nil, aerr
-	}
-
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
@@ -1144,6 +1147,13 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// below are replaced rather than edited in place, so a shallow copy stays
 	// the committed view.
 	prior := *existing
+
+	// Still before any write. The stored policy is the keep-set: an entry it
+	// already holds may stay even if the vocabulary no longer knows it.
+	authMethods, aerr := normalizeAuthMethods(req.AuthMethods, existing.AuthMethods, s.knownMethod)
+	if aerr != nil {
+		return nil, aerr
+	}
 
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
@@ -2640,15 +2650,53 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// NormalizeAuthMethods canonicalises a permitted-method set: trimmed,
-// lowercased, de-duplicated, first-seen order preserved.
+// NormalizeAuthMethods canonicalises a permitted-method set for WRITING:
+// trimmed, lowercased, de-duplicated, first-seen order preserved, and every
+// entry one of qrdb's built-in method tokens (auth.BuiltinAuthMethods). An
+// entry outside them fails closed with *UnknownAuthMethodError.
 //
-// Case IS folded because these are protocol names from a small closed
-// vocabulary ("webauthn", "piv") rather than minted identifiers — and a policy
-// list in which "WebAuthn" and "webauthn" are two different permissions is a
-// list that will eventually deny a method it meant to allow.
+// A user store validates against its NODE's vocabulary instead — the built-in
+// tokens plus the names of the authenticators in that node's chain, supplied
+// with WithAuthMethodVocabulary — so a policy may name a plugged-in method
+// only on a node that can authenticate with it.
+//
+// Case IS folded because these are protocol names rather than minted
+// identifiers — and a policy list in which "WebAuthn" and "webauthn" are two
+// different permissions is a list that will eventually deny a method it meant
+// to allow. An unknown token is refused for the same reason: "webauth"
+// matches no authenticator, so a policy holding it silently refuses the method
+// its author meant to allow.
+//
+// It validates a policy being written, never one already stored: a record
+// written before the vocabulary was enforced reads back unchanged, and an
+// update that does not replace the policy carries it along untouched.
 func NormalizeAuthMethods(methods []string) ([]string, error) {
-	return dedupeTokens(methods, "authMethods", true)
+	return normalizeAuthMethods(methods, nil, nil)
+}
+
+// normalizeAuthMethods is NormalizeAuthMethods against a store's own
+// vocabulary (known; nil means the built-in tokens) and with a keep-set: an
+// entry outside the vocabulary is still accepted when the policy being
+// replaced already held it. An admin editing a legacy policy may keep an entry
+// the node no longer knows — dropping it silently would change what the
+// account may do — but may not add a new one.
+func normalizeAuthMethods(methods, keep []string, known func(string) bool) ([]string, error) {
+	if known == nil {
+		known = auth.IsBuiltinAuthMethod
+	}
+	out, err := dedupeTokens(methods, "authMethods", true)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range out {
+		if known(m) || slices.ContainsFunc(keep, func(k string) bool {
+			return auth.CanonicalAuthMethod(k) == m
+		}) {
+			continue
+		}
+		return nil, &UnknownAuthMethodError{Method: m, Index: i}
+	}
+	return out, nil
 }
 
 // dedupeTokens trims, optionally lowercases, and de-duplicates an opaque token

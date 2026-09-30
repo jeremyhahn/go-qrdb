@@ -1524,7 +1524,14 @@ func runStart(f *startFlags) (err error) {
 			profile.WarnUnencryptedAtRest(slog.Default())
 			capabilities.Seal(profile)
 
+			// This node's permitted-method vocabulary: every user store below
+			// validates written policies against it, and it is bound to the
+			// node's own auth middleware once bootstrapAuthEnforcement builds
+			// it. Until then, and with auth disabled, it is the built-in tokens.
+			authMethods := &middleware.AuthMethodVocabulary{}
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				AuthMethodVocabulary:      authMethods.IsAuthMethod,
 				Host:                      svcHost,
 				Profile:                   &profile,
 				WatchHub:                  watchHub,
@@ -1662,6 +1669,10 @@ func runStart(f *startFlags) (err error) {
 				}
 				userOpts = opts
 			}
+			// Every user store validates written permitted-method policies
+			// against THIS node's auth-chain vocabulary (built-ins until the
+			// middleware is bound below, and with auth disabled).
+			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
 			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -1696,6 +1707,7 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				defer func() { _ = authResult.auditLogger.Close() }()
+				authMethods.Bind(authResult.authMW)
 			} else {
 				slog.Warn("authentication disabled: all endpoints accessible without credentials")
 			}

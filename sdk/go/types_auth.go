@@ -138,13 +138,30 @@ const MethodPIV = auth.MethodPIV
 // authenticator is presented through the WebAuthn ceremony.
 const MethodWebAuthn = auth.MethodWebAuthn
 
+// IsBuiltinAuthMethod reports whether a canonical name is one of qrdb's own
+// method tokens (MethodMTLS, MethodPIV, MethodWebAuthn). A node's full
+// vocabulary also holds the Name() of every authenticator in its chain; a
+// login method a host wants policies to name must therefore be an
+// authenticator in that chain (node WithAuthenticators).
+var IsBuiltinAuthMethod = auth.IsBuiltinAuthMethod
+
+// BuiltinAuthMethods returns qrdb's own method tokens, sorted.
+var BuiltinAuthMethods = auth.BuiltinAuthMethods
+
+// CanonicalAuthMethod is the form method names are stored and compared in —
+// trimmed and lowercased, NOT validated — so a stored policy entry predating
+// the vocabulary still matches the method it names.
+var CanonicalAuthMethod = auth.CanonicalAuthMethod
+
 // CheckAuthMethod enforces a user's permitted-authentication-method policy
 // (User.AuthMethods) against the method that authenticated the request. It is
 // the same function the qrdb authentication middleware runs, exported so a
 // layer that runs its own login ceremony applies the identical rule: an empty
-// policy (or a nil user) states no restriction, the method is normalized
-// exactly as the store normalized the policy, and anything else — including a
-// blank method name — fails closed with *AuthMethodNotPermittedError.
+// policy (or a nil user) states no restriction; otherwise the method and each
+// stored entry are compared in CanonicalAuthMethod form (trimmed, lowercased,
+// NOT checked against the vocabulary, so a legacy entry still matches), and a
+// method matching no entry — including a blank one — fails closed with
+// *AuthMethodNotPermittedError.
 var CheckAuthMethod = authmw.CheckAuthMethod
 
 // AuthMethodNotPermittedError is returned by CheckAuthMethod, and by the

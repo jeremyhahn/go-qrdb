@@ -161,6 +161,33 @@ func (e *ValidationError) Error() string {
 	return "user: validation failed: " + e.Field + ": " + e.Reason
 }
 
+// UnknownAuthMethodError is returned when a permitted-method policy being
+// written names a method outside the store's vocabulary: the built-in tokens
+// plus, where the store was given one (WithAuthMethodVocabulary), the names of
+// the authenticators in its node's chain. Method
+// is the normalized token and Index its position in the normalized policy.
+//
+// It is a validation failure and unwraps to a *ValidationError, so every
+// transport already answers it as a bad argument (400 / InvalidArgument).
+type UnknownAuthMethodError struct {
+	Method string
+	Index  int
+}
+
+// Error names the refused token.
+func (e *UnknownAuthMethodError) Error() string {
+	return "user: unknown authentication method " + strconv.Quote(e.Method) +
+		": not a built-in method or an authenticator in this node's chain"
+}
+
+// Unwrap returns the equivalent *ValidationError.
+func (e *UnknownAuthMethodError) Unwrap() error {
+	return &ValidationError{
+		Field:  "authMethods",
+		Reason: "entry " + strconv.Itoa(e.Index) + " names unknown method " + strconv.Quote(e.Method),
+	}
+}
+
 // CertBindingConflictError is returned when a caller attempts to bind a
 // certificate thumbprint that is already bound to a different user. A
 // thumbprint resolves to exactly one identity, so silently overwriting the

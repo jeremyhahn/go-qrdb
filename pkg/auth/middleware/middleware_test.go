@@ -1946,6 +1946,24 @@ func TestCheckAuthMethod_IsTheMiddlewareRule(t *testing.T) {
 	}
 }
 
+// A policy stored before the vocabulary was enforced may hold a token qrdb no
+// longer accepts on write. The gate must not lock that account out: the entry
+// still matches the method it names (a composing host's ceremony reporting
+// it), a known entry beside it still admits, and anything else is refused as
+// before.
+func TestCheckAuthMethod_LegacyStoredPolicyIsNotALockout(t *testing.T) {
+	u := &user.User{Username: "carol", TenantID: "t1", AuthMethods: []string{"legacy-otp", auth.MethodMTLS}}
+	for _, admitted := range []string{"legacy-otp", "Legacy-OTP", auth.MethodMTLS} {
+		if err := CheckAuthMethod(u, admitted); err != nil {
+			t.Errorf("CheckAuthMethod(%q) against a legacy policy: %v", admitted, err)
+		}
+	}
+	var refused *AuthMethodNotPermittedError
+	if err := CheckAuthMethod(u, auth.MethodPIV); !errors.As(err, &refused) {
+		t.Errorf("piv against a policy without it: err = %v, want a refusal", err)
+	}
+}
+
 func TestAuthMethodNotPermittedError_Message(t *testing.T) {
 	e := &AuthMethodNotPermittedError{
 		Username: "erin", TenantID: "t1", Method: "mtls", Permitted: []string{"webauthn", "piv"},

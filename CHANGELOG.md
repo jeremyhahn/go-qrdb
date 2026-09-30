@@ -234,6 +234,25 @@ are not reconstructed here — their history is in the git log.
   testing one marker missed a refusal carrying another; the server's own KV
   adapter, for one, refused with the database sentinel, which neither the
   kvstore nor the dao marker matched.
+- **Breaking: a permitted-method policy names methods this node can
+  authenticate with, or it is refused.** The vocabulary is the built-in `mtls`,
+  `piv` and `webauthn` plus the `Name()` of every authenticator in the node's
+  own chain, including embedder-supplied ones (`ExtraAuthenticators`, the SDK
+  node's `WithAuthenticators`). It is per node, never process-wide: the auth
+  middleware exposes it (`AuthMiddleware.IsAuthMethod`), and the node's user
+  stores receive it through the new `user.WithAuthMethodVocabulary` option
+  (`lifecycle.Infra.AuthMethodVocabulary`), late-bound through
+  `middleware.AuthMethodVocabulary`. `CreateUser` and `UpdateUser` refuse any
+  other token with the typed
+  `user.UnknownAuthMethodError` (`sdk.UserUnknownAuthMethodError`), a
+  validation error answered 400 / `INVALID_ARGUMENT` on every transport. A
+  misspelled token used to be stored and then match nothing, silently refusing
+  the method it named. Stored policies are not re-validated: they read back
+  unchanged, an update may keep an entry the policy already held (but not add
+  a new unknown one), and the authentication gate compares with the new
+  `auth.CanonicalAuthMethod` (no vocabulary check), so no existing account is
+  locked out. `auth.IsBuiltinAuthMethod`, `auth.BuiltinAuthMethods` and
+  `auth.CanonicalAuthMethod` are re-exported by the SDK.
 
 ### Fixed
 

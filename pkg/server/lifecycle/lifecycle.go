@@ -223,6 +223,13 @@ type Infra struct {
 	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
 	// storage.Storage it wraps); BuildServices only reads from it.
 	BackupSink service.BackupSink
+
+	// AuthMethodVocabulary, when non-nil, is the permitted-method vocabulary of
+	// THIS node's auth chain (usually middleware.AuthMethodVocabulary's
+	// IsAuthMethod, bound once the node's middleware is built). Every user
+	// store BuildServices creates validates written policies against it
+	// (user.WithAuthMethodVocabulary). Nil means the built-in tokens only.
+	AuthMethodVocabulary func(method string) bool
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -436,6 +443,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
 	}
+	// Every user store below validates written permitted-method policies
+	// against THIS node's auth-chain vocabulary.
+	userOpts = append(userOpts, user.WithAuthMethodVocabulary(infra.AuthMethodVocabulary))
 	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}

@@ -649,6 +649,12 @@ type Node struct {
 	// constructor to wireClientAndServer.
 	peerAttestation *middleware.PeerAttestationGate
 
+	// authMethods is THIS node's permitted-method vocabulary, handed to every
+	// user store BuildServices creates and bound to the node's own auth
+	// middleware once wireClientAndServer builds it. Per node, never
+	// process-wide: two nodes in one process have two authenticator chains.
+	authMethods middleware.AuthMethodVocabulary
+
 	// authorizer is the composed RBAC[+ABAC] auth.Authorizer built by
 	// decorateABAC in buildEmbeddedOpts (nil when svcNode.Role is nil, i.e.
 	// no Role service). wireClientAndServer forwards this SAME instance to
@@ -953,6 +959,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
@@ -1289,6 +1297,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// DatabaseManager is shared so the shard allocator is not reset
 		// mid-flight and lifecycle does not open a second manager on the same
 		// data directory.
@@ -1807,6 +1817,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
@@ -1989,6 +2001,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 	})
 	if err != nil {
 		_ = host.Close()
@@ -2427,6 +2441,10 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
 	}
+	// This node's user stores now validate policies against THIS chain's
+	// methods (built-ins plus WithAuthenticators' names). A nil middleware
+	// (auth disabled) leaves the built-in tokens.
+	n.authMethods.Bind(authMW)
 
 	if authMW != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithAuthMiddleware(authMW))

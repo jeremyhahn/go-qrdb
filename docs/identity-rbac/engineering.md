@@ -545,13 +545,40 @@ wrong fails a test rather than passing a typed-in column.
   re-exported by the SDK. A method is a way in, not an enrolled factor, so
   there is no `"fido2"` method: a FIDO2 authenticator is presented through the
   WebAuthn ceremony. PIV and mTLS are separate tokens so a policy can permit one
-  without the other. `NormalizeAuthMethods` still accepts any non-blank token;
-  refusing names outside this vocabulary is a separate decision not taken here.
+  without the other.
+- **The vocabulary is the node's own auth chain, enforced on write.** It is
+  the built-in `mtls`, `piv` and `webauthn` plus the `Name()` of every
+  authenticator in THAT node's chain — including those an embedder plugs in
+  through `wiring.AuthMiddlewareConfig.ExtraAuthenticators` or the SDK node's
+  `WithAuthenticators` (the pluggable-auth-chain ruling). The middleware owns
+  it (`AuthMiddleware.IsAuthMethod` / `AuthMethods`, fixed at `New`), and the
+  node's user stores receive it through `user.WithAuthMethodVocabulary`,
+  wired by `lifecycle.BuildServices` (`Infra.AuthMethodVocabulary`), the SDK
+  node and `qrdbd` from the node's own middleware. Because the store is built
+  before the middleware that enriches from it, the wiring goes through a
+  late-bound `middleware.AuthMethodVocabulary`, bound once the middleware
+  exists; unbound, or with auth disabled, it is the built-in tokens. There is
+  no process-wide registry: two nodes in one process have two chains, and
+  `TestAuthMethodVocabulary_IsPerNode` pins that `oauth` is writable only on
+  the node whose chain has it. A login method a host wants policies to name
+  must be an authenticator in the chain. The store refuses a token outside its
+  vocabulary with `*UnknownAuthMethodError`, which unwraps to a
+  `*ValidationError` (400 / `INVALID_ARGUMENT` on every transport);
+  `CreateUser` and `UpdateUser` are the only write paths and both apply it —
+  to a policy being WRITTEN only. The package-level `NormalizeAuthMethods`
+  has no node and validates against the built-ins.
+- **Legacy entries cannot lock an account out.** A stored policy is never
+  re-validated: it reads back unchanged, an update that does not replace it
+  carries it along, and the gate compares entries with
+  `auth.CanonicalAuthMethod` (trim and lowercase, no vocabulary check). An
+  admin replacing a legacy policy may KEEP an entry the old policy held even
+  if the vocabulary no longer knows it, but may not ADD a new unknown one; once
+  dropped, it cannot be re-added.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
-- **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and
-  de-duplicated by `NormalizeAuthMethods`, and a blank entry is refused rather
-  than dropped. On an update, `nil` means "leave alone" and an empty non-nil
+- **`AuthMethods` are vocabulary tokens and case-FOLDED.** They are trimmed and
+  de-duplicated by `NormalizeAuthMethods`, a blank entry is refused rather than
+  dropped, and an entry outside the vocabulary is refused (above). On an update, `nil` means "leave alone" and an empty non-nil
   slice means "clear".
 - **There is no group-membership field.** The former `GroupIDs` (and the SDK's
   `NormalizeGroupIDs`) is removed: no qrdb authorization path read it.

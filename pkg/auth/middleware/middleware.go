@@ -23,6 +23,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -41,10 +42,15 @@ import (
 // an audit logger.
 type AuthMiddleware struct {
 	authenticators []auth.Authenticator
-	authorizer     auth.Authorizer
-	users          user.UserServicer
-	usersFallback  user.UserServicer
-	audit          audit.Logger
+
+	// methods is this middleware's permitted-method vocabulary: the built-in
+	// tokens plus the canonical Name() of every authenticator in its chain,
+	// fixed at New. See IsAuthMethod.
+	methods       map[string]struct{}
+	authorizer    auth.Authorizer
+	users         user.UserServicer
+	usersFallback user.UserServicer
+	audit         audit.Logger
 
 	// roles resolves a RoleTarget to the tenant the role belongs to (see
 	// ResolveTarget). Optional: without it a RoleTarget is the caller's own
@@ -120,7 +126,55 @@ func New(authorizer auth.Authorizer, opts ...Option) *AuthMiddleware {
 	for _, opt := range opts {
 		opt(m)
 	}
+	// Every authenticator in the chain names a method a permitted-method
+	// policy may be written with ON THIS NODE. The set is this instance's, not
+	// the process's: see IsAuthMethod.
+	m.methods = make(map[string]struct{}, len(m.authenticators)+3)
+	for _, b := range auth.BuiltinAuthMethods() {
+		m.methods[b] = struct{}{}
+	}
+	for _, a := range m.authenticators {
+		if a == nil {
+			continue
+		}
+		if name := auth.CanonicalAuthMethod(a.Name()); name != "" {
+			m.methods[name] = struct{}{}
+		}
+	}
 	return m
+}
+
+// IsAuthMethod reports whether name — canonicalized first — is in this
+// middleware's permitted-method vocabulary: a built-in token, or the Name() of
+// an authenticator in its chain (including those an embedder plugs in through
+// wiring's ExtraAuthenticators or the SDK node's WithAuthenticators).
+//
+// It is the vocabulary the node's user store validates a policy against
+// (user.WithAuthMethodVocabulary). It is scoped to this instance on purpose: a
+// process running two nodes has two chains, and a method one node can
+// authenticate must not become writable on the other. A nil middleware (auth
+// disabled) answers for the built-in tokens only.
+func (m *AuthMiddleware) IsAuthMethod(name string) bool {
+	c := auth.CanonicalAuthMethod(name)
+	if m == nil {
+		return auth.IsBuiltinAuthMethod(c)
+	}
+	_, ok := m.methods[c]
+	return ok
+}
+
+// AuthMethods returns this middleware's permitted-method vocabulary, sorted.
+// A nil middleware returns the built-in tokens.
+func (m *AuthMiddleware) AuthMethods() []string {
+	if m == nil {
+		return auth.BuiltinAuthMethods()
+	}
+	out := make([]string, 0, len(m.methods))
+	for name := range m.methods {
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // WithAuthenticator appends an authenticator to the chain. Authenticators
@@ -869,11 +923,12 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 // name: it cannot match any stored policy entry, and this is an
 // authentication gate.
 //
-// Comparison uses the SAME normalization the store applied when the policy was
-// written (user.NormalizeAuthMethods), so a policy stored as "webauthn"
-// matches an authenticator named "WebAuthn". Normalizing only one side is how
-// a policy silently stops matching the thing it was written to allow. Spell
-// the method with auth.MethodMTLS, auth.MethodPIV or auth.MethodWebAuthn.
+// Both sides are compared in canonical form (auth.CanonicalAuthMethod), so a
+// policy stored as "webauthn" matches an authenticator named "WebAuthn".
+// Normalizing only one side is how a policy silently stops matching the thing
+// it was written to allow. The vocabulary is enforced when a policy is
+// WRITTEN, not here, so a stored entry predating it still matches. Spell the
+// method with auth.MethodMTLS, auth.MethodPIV or auth.MethodWebAuthn.
 func CheckAuthMethod(u *user.User, method string) error {
 	if u == nil || len(u.AuthMethods) == 0 {
 		return nil
@@ -886,17 +941,19 @@ func CheckAuthMethod(u *user.User, method string) error {
 			Permitted: u.AuthMethods,
 		}
 	}
-	normalized, err := user.NormalizeAuthMethods([]string{method})
-	if err != nil || len(normalized) == 0 {
-		// A method whose name does not survive normalization — blank,
-		// whitespace — matches nothing. A misconfigured authenticator must not
-		// become a way past the policy.
+	name := auth.CanonicalAuthMethod(method)
+	if name == "" {
+		// A blank method name matches nothing. A misconfigured authenticator
+		// must not become a way past the policy.
 		return refuse(method)
 	}
 	for _, permitted := range u.AuthMethods {
-		if permitted == normalized[0] {
+		// The stored entry is compared in canonical form too, and is NOT
+		// checked against the vocabulary: a policy written before the
+		// vocabulary was enforced must keep admitting the method it names.
+		if auth.CanonicalAuthMethod(permitted) == name {
 			return nil
 		}
 	}
-	return refuse(normalized[0])
+	return refuse(name)
 }

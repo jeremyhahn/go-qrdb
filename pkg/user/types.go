@@ -84,7 +84,8 @@ type User struct {
 	// since withdrawn must not become a way in.
 	//
 	// Empty means qrdb states no restriction — the layer performing the
-	// ceremony decides. Values are opaque, lowercased and de-duplicated.
+	// ceremony decides. Values are lowercased, de-duplicated tokens of the
+	// vocabulary (auth.AuthMethods), enforced when the policy is written.
 	AuthMethods []string `json:"authMethods,omitempty"`
 
 	// LastAuth records the last successful authentication (UTC). Nil for an

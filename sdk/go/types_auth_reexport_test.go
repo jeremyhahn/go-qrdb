@@ -16,10 +16,12 @@ package sdk_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
@@ -82,5 +84,41 @@ func TestSDK_CheckAuthMethod_EnforcesThePolicy(t *testing.T) {
 
 	if err := sdk.CheckAuthMethod(&sdk.User{Username: "erin"}, sdk.MethodMTLS); err != nil {
 		t.Errorf("an empty policy states no restriction, got %v", err)
+	}
+}
+
+// TestSDK_AuthMethodVocabulary_FailsClosedOnWrite: the vocabulary crosses the
+// boundary, a policy naming anything outside it is refused with the typed
+// error (a validation error by unwrapping), and the comparison form does not
+// validate, so a legacy stored entry cannot lock its account out.
+func TestSDK_AuthMethodVocabulary_FailsClosedOnWrite(t *testing.T) {
+	var _ *user.UnknownAuthMethodError = (*sdk.UserUnknownAuthMethodError)(nil)
+
+	builtins := sdk.BuiltinAuthMethods()
+	if want := []string{sdk.MethodMTLS, sdk.MethodPIV, sdk.MethodWebAuthn}; !slices.Equal(builtins, want) {
+		t.Errorf("BuiltinAuthMethods() = %v, want %v", builtins, want)
+	}
+	for _, m := range builtins {
+		if !sdk.IsBuiltinAuthMethod(m) {
+			t.Errorf("IsBuiltinAuthMethod(%q) = false", m)
+		}
+	}
+
+	_, err := sdk.NormalizeAuthMethods([]string{sdk.MethodPIV, "totp"})
+	var unknown *sdk.UserUnknownAuthMethodError
+	if !errors.As(err, &unknown) || unknown.Method != "totp" {
+		t.Fatalf("err = %v, want *UserUnknownAuthMethodError for totp", err)
+	}
+	var ve *sdk.UserValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("the refusal is not a *UserValidationError: %v", err)
+	}
+
+	if got := sdk.CanonicalAuthMethod(" Legacy-OTP "); got != "legacy-otp" {
+		t.Errorf("CanonicalAuthMethod = %q", got)
+	}
+	legacy := &sdk.User{Username: "carol", AuthMethods: []string{"legacy-otp"}}
+	if err := sdk.CheckAuthMethod(legacy, "legacy-otp"); err != nil {
+		t.Errorf("a legacy stored policy locked its own method out: %v", err)
 	}
 }
