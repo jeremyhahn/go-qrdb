@@ -1,12 +1,11 @@
 # Time Series — API
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are pending owner review and not implemented. OD-n refers to that document's
-> open decisions.
+> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. Every capability

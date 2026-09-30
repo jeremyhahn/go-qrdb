@@ -1,11 +1,11 @@
 # Vector Database — API
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target" notes describe the vector half of the multi-model database program
-> ([architecture.md](architecture.md)); they are pending owner review and not
-> implemented. OD-n refers to the open decisions in
+> ([architecture.md](architecture.md)); they are approved by the owner on 2026-09-30 and not
+> implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same

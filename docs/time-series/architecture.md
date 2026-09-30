@@ -1,12 +1,11 @@
 # Time Series — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are pending owner review and not implemented. OD-n refers to that document's
-> open decisions.
+> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_ts`
 > (`WITH_QRDB_TS=1`). `qrdb admin capabilities` reports `timeSeries` when it is
@@ -88,7 +87,8 @@ policy: a metric can keep a year at hourly resolution instead of keeping nothing
 
 **Measured: retention is stored, not enforced.** `TSSetRetention` persists the
 policy and `TSGetRetention` returns it; no code expires or downsamples a point.
-Enforcement is OD-16.
+Enforcing it is part of this program (OD-16, ruled A); see "Retention
+enforcement" below.
 
 ## Current state (measured)
 
@@ -146,6 +146,8 @@ It is therefore a command, not a background delete:
   when the policy has a resolution, points older than the cutoff are replaced by
   one downsampled point per `resolution_ns` bucket computed with the policy's
   aggregation. Replicas never consult their own clocks.
+- The command is behind the cluster feature gate: the driver proposes it only
+  once every member of the group supports it.
 - The command is guarded by the drop fence and bounded per entry; a metric with
   more expired points than one entry's bound is swept over several commands.
 

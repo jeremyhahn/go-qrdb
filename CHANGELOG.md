@@ -360,14 +360,16 @@ are not reconstructed here — their history is in the git log.
   and `errclass.RuleCount` move out of a test-only `export_test.go` into the
   package proper, so gosec's `-tests` loader can typecheck the transport
   parity test that reads them.
-- **Documentation: proposed multi-model database design.** `docs/databases/`,
-  `docs/vectors/` and `docs/time-series/` now carry the proposed design in which
+- **Documentation: approved multi-model database design.** `docs/databases/`,
+  `docs/vectors/` and `docs/time-series/` now carry the approved design in which
   every database serves every engine (KV, MVCC and transactions, SQL,
   collections, secondary indexes, vector, time series, leases and watches) on the
   storage backend it chose, for every tenant isolation mode, through one
   per-database storage binding. They also cover removing the database `engine`
   field and the node-wide backend overrides, migrating existing data, a phased
-  implementation plan, and the open decisions awaiting the owner. The same change
+  implementation plan, and the owner's rulings on its sixteen design decisions
+  (every recommendation accepted on 2026-09-30; the drop fence and every new Raft
+  command ship behind a cluster feature gate). The same change
   corrects claims those folders made about shipped behaviour: a database's
   `backend` does not decide where most databases' data lives; `objstore` is
   refused when a database store is opened; vector data lives in one node-local

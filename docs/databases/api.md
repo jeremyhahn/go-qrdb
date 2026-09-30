@@ -1,11 +1,11 @@
 # Databases — API
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target" sections describe the multi-model database program in
-> [architecture.md](architecture.md); they are pending owner review and not
-> implemented. OD-n refers to that document's open decisions.
+> [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
+> implemented. OD-n refers to that document's ruled decisions.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -108,8 +108,8 @@ On gRPC the field numbered 2 in `DatabaseCreateRequest` and
 `DatabaseInfoResponse` becomes `reserved 2; reserved "engine";`, and
 `DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field. A
 request carrying `engine` on REST, QUIC or MCP is refused as an unknown field
-(OD-13 A). The `connection` block and the update-connection capability are
-removed on every transport if OD-9 is ruled A.
+(OD-13, ruled A). The `connection` block and the update-connection capability are
+removed on every transport (OD-9, ruled A).
 
 `PATCH /v1/databases/{name}/scale` — `{"target_replicas": 5}`. The database name
 travels in the **path**, not the body (`json:"-"` on the request struct).
@@ -146,9 +146,11 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |
 | Target: barrier on `backend: memory` | 400 | `FAILED_PRECONDITION` — `database.BarrierRequiresPersistentBackendError` |
 | Target: `data_dir` outside a volume/raft tenant's root | 400 | `INVALID_ARGUMENT` — `database.DataDirOutsideTenantRootError` |
-| Target: backend conflicts with the tenant's isolation (OD-7 B) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
+| Target: backend conflicts with the tenant's isolation (OD-7, ruled B) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
 | Target: a database's binding cannot be opened | 503 | `UNAVAILABLE` — `database.BindingUnavailableError` |
-| Target: create carrying `engine` (OD-13 A) | 400 | `INVALID_ARGUMENT` |
+| Target: a local-binding database's owning node is unreachable (OD-2, ruled A) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
+| Target: the cluster feature gate for a command is not yet open on every member | 503 | `FAILED_PRECONDITION` — typed feature-gate refusal |
+| Target: create carrying `engine` (OD-13, ruled A) | 400 | `INVALID_ARGUMENT` |
 
 ## Pagination
 

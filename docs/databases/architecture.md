@@ -1,6 +1,6 @@
 # Databases — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > This document has two layers, and each section says which layer it is in.
@@ -10,11 +10,10 @@
 >   claim is corrected here (see "Corrections to earlier revisions").
 > - **Target design** sections are the requirements contract for the
 >   multi-model database program: every database supports every engine on the
->   storage backend it chose, for every tenant isolation mode. They are pending
->   owner review. Nothing in them is implemented yet. The open questions the
->   owner has not ruled on are listed in "Open decisions for the owner" at the
->   end, each with options and a recommendation; implementation lanes do not
->   start on a question listed there.
+>   storage backend it chose, for every tenant isolation mode. They were
+>   approved by the owner on 2026-09-30. Nothing in them is implemented yet.
+>   Every design question the rulings did not settle is listed, with its
+>   options and the ruling, in "Decisions ruled by the owner" at the end.
 
 ## Problem
 
@@ -45,6 +44,14 @@ These are owner rulings. They are not reopened here.
    tenant scoped: they live in the database's storage binding, under the
    tenant's encryptor and data root.
 5. Custodian and secret-material rulings are unaffected by this design.
+6. **The database drop fence ships behind a cluster feature gate**, and so does
+   every new Raft command this program adds (the vector commands and the
+   time-series retention command). A node proposes a gated command only once the
+   gate reports that every member of the group applies it; until then the
+   capability that needs it is refused with a typed error rather than proposed
+   into a group that would reject it.
+7. **Every open decision is ruled.** On 2026-09-30 the owner accepted every
+   recommendation in "Decisions ruled by the owner" below (OD-1 to OD-16).
 
 ## Current state (measured)
 
@@ -226,15 +233,15 @@ Rules that hold in every cell:
 - **An explicit `data_dir` must lie under the tenant's data root** for volume
   and raft tenants, as today.
 - **A per-database barrier layers on the binding**, it does not replace the
-  tenant's (see open decision OD-6). Every database now has a store of its
+  tenant's (OD-6, ruled A). Every database now has a store of its
   own, so the old refusal of a barrier on a shared store no longer has a shared
   store to refuse; what remains is the refusal on `memory`, below.
 - **A sealed barrier — the tenant's or the database's — fails every engine of
   the database closed**, vector and time series included.
 
-Where the table depends on an open decision it says so in that decision:
-the group granularity of `backend: raft` (OD-1) is what makes the right-hand
-column per-database for every isolation mode.
+The group granularity of `backend: raft` — one group per database for every
+isolation mode (OD-1, ruled A) — is what makes the right-hand column
+per-database for every isolation mode.
 
 ### Combinations that are refused
 
@@ -253,9 +260,13 @@ every database's barrier layers on its own binding, which is its data path.
 | a per-database barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | nothing is at rest to encrypt; the barrier would be decorative |
 | etcd protocol on a non-raft backend | `database.EtcdRequiresRaftBackendError` | etcd's revision counter needs a replicated log |
 | `data_dir` outside the tenant's data root (volume, raft tenants) | `database.DataDirOutsideTenantRootError` | the tenant's contract is that its data lives under its root |
-| `file` or `objstore` for a volume or raft tenant | `database.BackendIsolationConflictError` — **only if OD-7 is ruled B** | those backends expose key names outside the tenant's encryption |
-| a non-replicated backend in a multi-node cluster | `database.LocalBackendInClusterError` — **only if OD-2 is ruled B** | see OD-2 |
+| `file` or `objstore` for a volume or raft tenant | `database.BackendIsolationConflictError` (OD-7, ruled B) | those backends expose key names outside the tenant's encryption |
 | any backend while the tenant's or the database's barrier is sealed | `service.BarrierSealedError` at request time | fail closed |
+
+A non-replicated backend in a multi-node cluster is **not** refused (OD-2, ruled
+A): the catalog records its owning node and every other node forwards its
+requests there. When the owner cannot be reached the request fails with
+`database.BindingOwnerUnavailableError`, which names the owner.
 
 ### What stays node-level
 
@@ -286,7 +297,9 @@ database, a drop is:
    so a write proposed before the fence and applied after it is refused on every
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
-   ones, because both apply through the same engine.
+   ones, because both apply through the same engine. The fence is behind the
+   cluster feature gate (ruling 6): a drop in a group whose members do not all
+   support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
    close and remove the local store's directory or object prefix, and remove
    the vector index checkpoints under the data root.
@@ -487,13 +500,13 @@ store instead of walking it (see "Drop under a binding").
 - **No per-database engine selection.** Every compiled-in engine is available
   in every database (target design; ruling 1).
 
-## Open decisions for the owner
+## Decisions ruled by the owner
 
-Each item is a question the rulings above do not answer. The recommendation is
-this design's; the owner decides. An implementation lane that depends on an
-item does not start until it is ruled.
+Each item was a question the rulings above did not answer. **All sixteen were
+ruled on 2026-09-30: the owner accepted every recommendation.** The options are
+kept so the reasoning behind each ruling stays on record.
 
-**OD-1 — Raft group granularity for `backend: raft`.**
+**OD-1 — RULED A — Raft group granularity for `backend: raft`.**
 - A: one Raft group per database, for every tenant isolation mode. The tenant's
   isolation decides the host, data root and key; the database always gets its
   own group.
@@ -501,7 +514,7 @@ item does not start until it is ruled.
   group under the `<tenant>/<db>/` prefix, a volume tenant's share its tenant
   group, raft tenants get one per database.
 - C: a per-database option `raft.group: dedicated | shared`.
-- **Recommendation: A.** It is the only option under which replicas, scale,
+- **RULED: A — the recommendation, accepted.** It is the only option under which replicas, scale,
   etcd, the drop fence, a per-database barrier and the tenant encryptor mean the
   same thing for every raft database. B keeps the prefix machinery on the data
   plane and cannot put a barrier tenant's data under the tenant's key without
@@ -509,7 +522,7 @@ item does not start until it is ruled.
   cost of A is one group per raft database, which is what multi-group Raft is
   for.
 
-**OD-2 — Non-replicated backends in a multi-node raft-mode cluster.** A memory,
+**OD-2 — RULED A — Non-replicated backends in a multi-node raft-mode cluster.** A memory,
 file, pebble or objstore database exists on one node.
 - A: the replicated catalog records the owning node; every other node forwards
   the database's requests to it, as writes are forwarded to a leader today. If
@@ -518,46 +531,46 @@ file, pebble or objstore database exists on one node.
 - B: refused in a multi-node cluster with `database.LocalBackendInClusterError`.
 - C: allowed, reachable only on the owning node; elsewhere a typed error names
   the owner.
-- **Recommendation: A**, with C's typed error as what a request gets when
+- **RULED: A — the recommendation, accepted**, with C's typed error as what a request gets when
   forwarding cannot reach the owner.
 
-**OD-3 — The default backend when a create leaves it empty.**
+**OD-3 — RULED A — The default backend when a create leaves it empty.**
 - A: run-mode dependent — `raft` in raft mode, `pebble` in standalone mode —
   overridable by `database_defaults.backend`.
 - B: `pebble` always, today's literal default. In a cluster that would make
   every default database node-local and unreplicated, where today its data is in
   the replicated system shard.
 - C: no default; `backend` is required.
-- **Recommendation: A.**
+- **RULED: A — the recommendation, accepted.**
 
-**OD-4 — Catalog authority.** Today a database's `meta.json` is node-local; only
+**OD-4 — RULED A — Catalog authority.** Today a database's `meta.json` is node-local; only
 dedicated-raft databases also have a replicated placement record.
 - A: the replicated catalog (the placement table, extended to every backend) is
   authoritative for every database; `meta.json` becomes a node-local cache
   rebuilt from it.
 - B: keep `meta.json` authoritative for non-raft backends and placement for raft.
-- **Recommendation: A.** OD-2 A requires every node to resolve every database,
+- **RULED: A — the recommendation, accepted.** OD-2 A requires every node to resolve every database,
   and B cannot give it that.
 
-**OD-5 — Implicit default databases of non-system tenants.** Every tenant can
+**OD-5 — RULED A — Implicit default databases of non-system tenants.** Every tenant can
 address the default database (`system`) and the SQL default database without
 creating them; today both are prefixes in the shared system shard.
 - A: provision both as real databases at tenant creation, with the node defaults.
 - B: keep them on the control-plane store under the `<tenant>/<db>/` prefix, as
   the one remaining shared binding.
 - C: remove them; a non-system tenant's request without a database is refused.
-- **Recommendation: A.** B keeps a second resolution path alive for two names;
+- **RULED: A — the recommendation, accepted.** B keeps a second resolution path alive for two names;
   C breaks every client that relies on the default today.
 
-**OD-6 — Encryption when a database has its own barrier.**
+**OD-6 — RULED A — Encryption when a database has its own barrier.**
 - A: nested — the store is encrypted at rest under the tenant's key (or the
   node's, for prefix tenants), and values are additionally encrypted under the
   database's barrier. Sealing either one fails the database closed.
 - B: the database's barrier replaces the tenant's for that database's store.
-- **Recommendation: A.** B would let a database owner take a tenant's data out
+- **RULED: A — the recommendation, accepted.** B would let a database owner take a tenant's data out
   from under the tenant's custody.
 
-**OD-7 — Key-name confidentiality on `file` and `objstore`.** Values are
+**OD-7 — RULED B — Key-name confidentiality on `file` and `objstore`.** Values are
 encrypted on every backend. Pebble encrypts whole files, keys included. The file
 backend's keys are file names and objstore's are object names, so key names are
 visible to anyone who can list the directory or bucket. A remote object-store
@@ -569,29 +582,29 @@ provider also places data outside the tenant's data root.
 - C: encrypt key names deterministically. This destroys key ordering, so range
   scans — and therefore MVCC, SQL and time series — stop working on those
   backends. Not viable under ruling 1.
-- **Recommendation: B.**
+- **RULED: B — the recommendation, accepted.**
 
-**OD-8 — State machine of a database's Raft group.**
+**OD-8 — RULED A — State machine of a database's Raft group.**
 - A: one canonical database state machine — the MVCC engine over
   `storage.Storage` — for every database group, with its state storage chosen
   per database (`raft.state_storage: pebble | file | memory`, defaulted from
   the node). The node's `sm_type` applies to the control-plane group only.
 - B: a per-database `sm_type`, which requires every state-machine family to
   implement every engine, vector and time series included.
-- **Recommendation: A.** The in-flight work giving every state-machine type an
+- **RULED: A — the recommendation, accepted.** The in-flight work giving every state-machine type an
   MVCC store remains useful for the control-plane group and is not a
   prerequisite here.
 
-**OD-9 — Remote-mode databases.** Measured: accepted, validated, persisted, and
+**OD-9 — RULED A — Remote-mode databases.** Measured: accepted, validated, persisted, and
 never constructed; the data goes to a local store.
 - A: remove remote mode, the `connection` block and the update-connection verb
   on all six transports.
 - B: implement a full multi-model proxy over the SDK client, every engine.
 - C: keep a KV-only proxy and refuse other engines — contradicts ruling 1.
-- **Recommendation: A.** A database that proxies to another node is a client
+- **RULED: A — the recommendation, accepted.** A database that proxies to another node is a client
   configuration, which the SDK already provides.
 
-**OD-10 — Relocating existing shared-shard data.** Databases whose data is in
+**OD-10 — RULED A — Relocating existing shared-shard data.** Databases whose data is in
 the shared system shard (or a volume tenant's shared shard) today move to their
 own bindings.
 - A: automatic, online, per database, run by the control-plane leader on first
@@ -604,9 +617,9 @@ own bindings.
   keep resolving to the shared shard until it is run.
 - C: refuse; the new version does not open pre-binding data, and operators
   export with the previous version and import into the new one.
-- **Recommendation: A.**
+- **RULED: A — the recommendation, accepted.**
 
-**OD-11 — Migrating the node-local vector stores.** In a multi-node cluster
+**OD-11 — RULED C — Migrating the node-local vector stores.** In a multi-node cluster
 each node's vector store holds only the writes that node served, so the stores
 disagree.
 - A: import every node's store; last writer wins by vector version and update
@@ -615,11 +628,11 @@ disagree.
 - C: an operator import command, run per node, with
   `--on-conflict fail | newest | skip` defaulting to `fail`, reporting every
   conflict.
-- **Recommendation: C.** A single-node deployment, the common case, has no
+- **RULED: C — the recommendation, accepted.** A single-node deployment, the common case, has no
   conflicts and imports cleanly; a cluster's operator sees every disagreement
   instead of having one resolved silently.
 
-**OD-12 — SQL virtual tables for the engines.** Today only a database created
+**OD-12 — RULED B — SQL virtual tables for the engines.** Today only a database created
 with engine `timeseries` or `vector` exposes `datapoints`/`metrics` or
 `namespaces`/`vectors` as SQL tables.
 - A: every database exposes every compiled-in engine table under those names,
@@ -629,33 +642,33 @@ with engine `timeseries` or `vector` exposes `datapoints`/`metrics` or
   `qrdb_vector_vectors` — so user tables named `metrics` or `vectors` keep
   working.
 - C: stop exposing engine tables through SQL.
-- **Recommendation: B.**
+- **RULED: B — the recommendation, accepted.**
 
-**OD-13 — How callers learn `engine` is gone.** The CLI flag fails as an unknown
+**OD-13 — RULED A — How callers learn `engine` is gone.** The CLI flag fails as an unknown
 flag and the protobuf field number is reserved either way.
 - A: strict decoding on database-create requests (REST, QUIC, MCP) and on the
   `databases:` configuration section, so `engine` is refused as an unknown field
   — a generic rule, not an engine-specific shim.
 - B: ignore it silently, the JSON and YAML default.
-- **Recommendation: A.** A script creating an `engine: timeseries` database
+- **RULED: A — the recommendation, accepted.** A script creating an `engine: timeseries` database
   should learn that the field no longer means anything.
 
-**OD-14 — The vector `shard_id` request field.** The binding decides the shard.
+**OD-14 — RULED A — The vector `shard_id` request field.** The binding decides the shard.
 - A: remove it from all twenty vector requests on all six transports.
 - B: keep it and refuse any non-zero value with a typed error.
-- **Recommendation: A** — a breaking change, carried by a MINOR bump.
+- **RULED: A — the recommendation, accepted** — a breaking change, carried by a MINOR bump.
 
-**OD-15 — Choosing a backend from SQL `CREATE DATABASE`.**
+**OD-15 — RULED A — Choosing a backend from SQL `CREATE DATABASE`.**
 - A: node defaults only; non-default backends are created through the API or CLI.
 - B: an executable-comment extension on MySQL
   (`CREATE DATABASE x /*!qrdb backend=raft replicas=3 */`) and a `WITH` option
   on PostgreSQL.
-- **Recommendation: A** for this program.
+- **RULED: A — the recommendation, accepted** for this program.
 
-**OD-16 — Time-series retention enforcement.** Measured: retention policies are
+**OD-16 — RULED A — Time-series retention enforcement.** Measured: retention policies are
 stored and returned, and nothing ever expires or downsamples a point.
 - A: include it in this program — a leader-driven retention operation, proposed
   through the binding and applied deterministically in the apply batch.
 - B: a separate program; this program only corrects the documentation.
-- **Recommendation: A**, as its own lane after the time-series phase. The
+- **RULED: A — the recommendation, accepted**, as its own lane after the time-series phase. The
   documentation is corrected now either way.

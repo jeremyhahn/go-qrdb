@@ -1,11 +1,11 @@
 # Databases — CLI
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target" sections describe the multi-model database program in
-> [architecture.md](architecture.md); they are pending owner review and not
-> implemented. OD-n refers to that document's open decisions.
+> [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
+> implemented. OD-n refers to that document's ruled decisions.
 
 Command group: `qrdb database` (alias `qrdb db`) — create, inspect, list, drop
 and reconfigure databases. All verbs accept the root persistent flags documented
@@ -176,8 +176,7 @@ qrdb database update-etcd --name k8s --enabled --listen-addr :2379
 ### `qrdb database update-connection <name>`
 
 For a database backed by a remote node. Measured: the connection is recorded and
-never used — no remote proxy is constructed. Removed in the target design if
-OD-9 is ruled A.
+never used — no remote proxy is constructed. Removed in the target design, with remote mode (OD-9, ruled A).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|

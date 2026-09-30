@@ -1,10 +1,10 @@
 # Databases — User Guide
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Coming change" sections describe the multi-model database design in
-> [architecture.md](architecture.md). It is pending review and not implemented.
+> [architecture.md](architecture.md). It is approved and not yet implemented.
 
 A database is a container inside your tenant with its own storage,
 replication, wire protocols and — if you want one — its own encryption key.
@@ -62,9 +62,9 @@ database is opened. The design below fixes all three.
 | `objstore` | an object store (local directory, S3, GCS, Azure, MinIO…) | large, cold data where object-store durability is what you want |
 | `memory` | nothing survives a restart | tests and caches |
 
-If you leave `--backend` out, the server's default is used; the proposal is
-replicated `raft` on a cluster and `pebble` on a standalone node, and your
-operator can set a different one. `qrdb database info <name>` shows where a
+If you leave `--backend` out, the server's default is used: replicated `raft`
+on a cluster and `pebble` on a standalone node, unless your operator sets a
+different one. `qrdb database info <name>` shows where a
 database actually lives.
 
 ## Common tasks

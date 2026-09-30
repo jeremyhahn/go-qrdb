@@ -1,12 +1,11 @@
 # Vector Database — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > "Target design" sections are the vector half of the multi-model database
 > program in [../databases/architecture.md](../databases/architecture.md). They
-> are pending owner review and not implemented. OD-n refers to that document's
-> open decisions.
+> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_vector`
 > (`WITH_QRDB_VECTOR=1`). GPU acceleration adds the `gpu` tag.

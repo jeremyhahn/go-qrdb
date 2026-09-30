@@ -1,13 +1,13 @@
 # Databases — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > Sections headed **Target** are the requirements contract for the multi-model
 > database program described in [architecture.md](architecture.md). They are
-> pending owner review and are not implemented. Every other section describes
-> the shipped code. Open decisions are referenced as OD-n and listed at the end
-> of architecture.md.
+> approved by the owner on 2026-09-30 and are not implemented. Every other section describes
+> the shipped code. The owner ruled every decision OD-1 to OD-16 on 2026-09-30;
+> they are listed at the end of architecture.md.
 
 ## Exported surface
 
@@ -38,7 +38,7 @@ type DatabaseClient interface {
 }
 ```
 
-`UpdateDatabaseConnection` is removed if OD-9 is ruled A.
+`UpdateDatabaseConnection` is removed (OD-9, ruled A).
 
 ### Types (target)
 
@@ -59,7 +59,6 @@ type DatabaseInfo struct {
 	Replicas   int                       `json:"replicas,omitempty"`
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection *DatabaseConnectionConfig `json:"connection,omitempty"` // removed if OD-9 = A
 	Binding    *DatabaseBinding          `json:"binding,omitempty"`    // new, read-only
 }
 
@@ -82,8 +81,9 @@ type DatabaseRaftConfig struct {
 }
 ```
 
-`ProtocolConfig`, `EtcdProtocolConfig`, `DatabaseBarrierConfig`,
-`DatabaseConnectionConfig` and `ScaleDatabaseRequest` are unchanged. `Name` is
+`ProtocolConfig`, `EtcdProtocolConfig`, `DatabaseBarrierConfig` and
+`ScaleDatabaseRequest` are unchanged. `DatabaseConnectionConfig`, the
+`Connection` field and remote mode are removed (OD-9, ruled A). `Name` is
 `json:"-"` on the update and scale requests: it travels in the path, not the
 body.
 
@@ -295,6 +295,11 @@ in `pkg/server/lifecycle` are deleted, not kept beside the new path.
   metric and tag indexes, secondary index entries, vector records and vector
   metadata indexes are all batch writes, committed atomically with the entry
   that produced them, on every backend.
+- **New Raft commands are cluster-feature-gated.** The drop fence, the vector
+  commands and the retention command are proposed only when the cluster feature
+  gate reports every member of the group supports them; otherwise the
+  capability is refused with a typed error. A mixed-version group never
+  receives a command some member would reject.
 - **Every write carries the drop fence.** A write is a guarded command whose
   guard is "this database's fence key is absent", evaluated at apply time on
   every replica. This holds for every engine and for local bindings as well as
@@ -368,11 +373,12 @@ explicit one is: the check is on the resolved record, not on the request.
 | Target: barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | **yes** |
 | Target: etcd on a non-raft backend | `database.EtcdRequiresRaftBackendError` | **yes** |
 | Target: `data_dir` outside a volume/raft tenant's root | `database.DataDirOutsideTenantRootError` | **yes** |
-| Target: `file`/`objstore` for a volume/raft tenant (OD-7 B) | `database.BackendIsolationConflictError` | **yes** |
-| Target: non-replicated backend in a multi-node cluster (OD-2 B) | `database.LocalBackendInClusterError` | **yes** |
+| Target: `file`/`objstore` for a volume/raft tenant (OD-7, ruled B) | `database.BackendIsolationConflictError` | **yes** |
+| Target: the owning node of a local-binding database is unreachable (OD-2, ruled A) | `database.BindingOwnerUnavailableError` naming the owner; 503 / `UNAVAILABLE` | **yes** |
 | Target: a binding cannot be materialized (store will not open, shard will not start) | `database.BindingUnavailableError` wrapping the cause; 503 / `UNAVAILABLE` | **yes** |
 | Target: a write lands after the drop fence | the guard refusal, surfaced to the writer as the drop-fence contract defines it | **yes** |
-| Target: a create request carrying `engine` (OD-13 A) | unknown-field invalid-argument | **yes** |
+| Target: a gated command (drop fence, vector, retention) in a group whose members do not all support it | typed feature-gate refusal; nothing is proposed | **yes** |
+| Target: a create request carrying `engine` (OD-13, ruled A) | unknown-field invalid-argument | **yes** |
 
 Every new error is a struct type in `pkg/database/errors.go` with the fields
 that identify the database and the conflicting setting, mapped once in each
@@ -471,8 +477,10 @@ becomes a node-local cache rebuilt from it at boot.
 
 ## Target: migrating existing data
 
-Pre-binding data lives in three places. What happens to each depends on OD-10
-and OD-11; the mechanics below hold under the recommended rulings.
+Pre-binding data lives in three places. OD-10 (ruled A: automatic, online,
+fenced relocation) and OD-11 (ruled C: an operator import command with a
+conflict policy) decide what happens to each; the mechanics below implement
+those rulings.
 
 | Where it lives today | What it holds | Target |
 |---|---|---|
@@ -519,7 +527,7 @@ records whose ID already exists in the target with different content.
 
 Each lane has one seam it owns, touches one feature folder set, and lands with
 its acceptance tests. Lanes in the same phase are independent. No lane starts
-on a question that is still an open decision it depends on.
+before the decisions it depends on are ruled; as of 2026-09-30 all are.
 
 ### Phase 1 — foundation (parallel)
 
@@ -558,7 +566,7 @@ the SQL driver DSN, `pkg/sql/provider` engine tables (OD-12, OD-13).
   it; the database parity suite passes with no `engine` in any fixture; the
   proto field is reserved.
 
-### Phase 2 — bindings (after 1A; 2A and 2C parallel, 2B after the OD-2/OD-4 rulings)
+### Phase 2 — bindings (after 1A; 2A, 2B and 2C in parallel)
 
 **Lane 2A — binding resolver.** Seam: `database.ResolveBinding` and the server's
 per-binding bundle cache. Owns `pkg/database` (binding, defaults, new errors),
@@ -577,7 +585,7 @@ node-local vector store and `NewLocalStorage`'s node-wide use are deleted).
   barrier: sealing the barrier fails its data closed — the case that is open
   today.
 
-**Lane 2B — catalog authority and placement for every backend** (OD-2, OD-4).
+**Lane 2B — catalog authority and placement for every backend** (OD-2 and OD-4, both ruled A).
 Seam: the placement table. Owns `pkg/placement`, the reconciler, request
 forwarding.
 - Acceptance: a database created on one node resolves to the same binding on
@@ -585,7 +593,8 @@ forwarding.
   by the owner; with the owner down it fails with the typed unavailable error.
 
 **Lane 2C — drop under a binding.** Seam: `Manager.Drop` and the fence key.
-Owns the drop path; depends on the guarded-write wrapper landing first.
+Owns the drop path; depends on the guarded-write wrapper, which merges
+behind a cluster feature gate, landing first.
 - Acceptance: a writer racing a drop on every engine, vector and time series
   included, is refused and nothing it wrote survives; after the drop the store
   directory, object prefix, Raft group on every replica and vector index
@@ -608,7 +617,7 @@ Owns the drop path; depends on the guarded-write wrapper landing first.
   `CREATE DATABASE` produces the default backend; changing `--sm` changes no
   database's backend.
 
-### Phase 4 — migration (after 1B, 2A, 2B and the OD-10/OD-11 rulings)
+### Phase 4 — migration (after 1B, 2A and 2B)
 
 **Lane 4A — relocation** of shared-shard data, as specified above.
 - Acceptance: a fixture written by the previous version — KV, SQL tables with
@@ -622,7 +631,7 @@ Owns the drop path; depends on the guarded-write wrapper landing first.
   and metadata preserved; each conflict policy behaves as documented; an
   unattributable namespace is reported and skipped.
 
-**Lane 4C — time-series retention enforcement** (only if OD-16 is ruled A).
+**Lane 4C — time-series retention enforcement** (OD-16, ruled A).
 Specified in [../time-series/engineering.md](../time-series/engineering.md).
 
 ### Documentation each lane updates in the same change
@@ -640,7 +649,7 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 |---|---|---|
 | Database create | `engine` removed; `backend` optional (defaults, OD-3); `raft.state_storage` added (OD-8) | yes |
 | Database info / list | `engine` removed; read-only `binding` block added | yes |
-| Update connection | removed (OD-9 A) | yes |
+| Update connection | removed, with remote mode (OD-9, ruled A) | yes |
 | Update raft | `state_storage` is creation-time; refused on update | no |
 | Vector, all twenty capabilities | `shard_id` removed (OD-14 A) | yes |
 | Vector, every capability | now served for every database on every backend, including volume and raft tenants, where it was absent | no |
@@ -648,7 +657,7 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 | MVCC, transactions, leases, watches, locks | now served for every database on every node mode | no |
 | Capabilities report | MVCC, transaction, lease, watch, lock no longer raft-mode gated | no |
 | SQL `CREATE DATABASE` | backend from defaults | no |
-| SQL engine tables | per OD-12 | yes under B |
+| SQL engine tables | every database exposes `qrdb_ts_datapoints`, `qrdb_ts_metrics`, `qrdb_vector_namespaces`, `qrdb_vector_vectors` (OD-12, ruled B) | yes |
 | Configuration | `databases[].engine` removed; `database_defaults` added; `databases[0].backend` no longer node-wide | yes |
 | SQL driver DSN | `engine=` parameter removed | yes |
 | Admin | `qrdb admin migrate vectors` added (OD-11 C) | no |

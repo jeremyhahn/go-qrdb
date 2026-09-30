@@ -1,12 +1,11 @@
 # Vector Database — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the target design** ·
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
 > Scope: go-qrdb · Last verified: 2026-09-28
 >
 > Sections headed **Target** are the vector half of the multi-model database
 > program — see [architecture.md](architecture.md) and
-> [../databases/engineering.md](../databases/engineering.md). They are pending
-> owner review and not implemented. OD-n refers to the open decisions in
+> [../databases/engineering.md](../databases/engineering.md). They are approved by the owner on 2026-09-30 and not implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
 
 > **Build-tag gated: `qrdb_vector`** (`WITH_QRDB_VECTOR=1`). GPU paths add
@@ -469,7 +468,10 @@ in the implementing change and are wire format from then on.
 | `VectorIndexReconfigure` | new index parameters and training generation; each replica rebuilds its index locally |
 
 Each is wrapped by the guarded-write wrapper carrying the database's drop fence,
-exactly like a KV write. Reads — get, list, the four searches, namespace info,
+exactly like a KV write. The vector commands are new Raft commands, so they sit
+behind the cluster feature gate: until every member of a database's group
+supports them, vector writes on that database are refused with the typed
+feature-gate error instead of being proposed. Reads — get, list, the four searches, namespace info,
 index stats — are engine lookups through the host with the request's
 consistency level.
 
