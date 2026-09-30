@@ -466,6 +466,33 @@ are not reconstructed here — their history is in the git log.
   release ignores the owner on an index command and would apply an
   owner-checked drop unconditionally. Rolling upgrades are safe while no
   collection is created or dropped.
+- **A module can no longer silently take over a REST route.** Built-in routes
+  used to yield to a module that claimed the same method and pattern — and so
+  did a second module claiming the first one's route. Every REST route now has
+  exactly one owner: a second claim fails server construction with
+  `rest.RouteCollisionError` naming both claimants. The guard lives in qrdb,
+  where the live router is, so a host mounting a module needs no copy of the
+  built-in route table. **Breaking** for a module that relied on overriding a
+  built-in: move its routes under its own prefix. A host that re-registers
+  qrdb's built-in routes from its own modules — one known downstream host
+  re-registers 22 of them — now fails construction with
+  `RouteCollisionError` on upgrade and must drop those registrations.
+- **Route identity follows chi.** `middleware.RESTRouteKey` erases path-parameter
+  names and keeps regexp constraints, so `/a/{id}` and `/a/{deviceID}` are one
+  route to the registry as they are to chi.
+- **Direct router registrations are recorded.** A module route registered on
+  `HTTPRegistrar`'s embedded router that collides with a permission-recorded
+  route fails construction with `rest.DirectRouteCollisionError`, and
+  registering after `RegisterHTTP` returns panics with
+  `apimodule.RegistrationClosedError`. **Breaking**: a module may no longer
+  call `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the
+  registrar's router — each serves requests no registration describes — and
+  gets `apimodule.UnsupportedRouterMethodError`; serve a subtree as
+  `Handle(method, "/prefix/*", perm, h)`. An unmatched request under a module's
+  route prefix is refused with 404 instead of reaching the router's fallback.
+  New: `apimodule.RouteClaim`, `apimodule.UnsupportedRouterMethodError`,
+  `HTTPRegistrar.DirectRoutes`, `HTTPRegistrar.Freeze`,
+  `RESTRouteRegistry.RegisterModulePrefix`/`UnderModulePrefix`.
 
 ### Removed
 
