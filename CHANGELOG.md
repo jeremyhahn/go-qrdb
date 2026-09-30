@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.22.0-alpha] - 2026-09-30
+
+Merge train 2: transactions and guarded batches on every state machine type, O(1) TRUNCATE, one error-classification table, node lifecycle and go-quicraft 0.14 member identities, tenancy reconcile and atomic tenant create, certificate/auth posture (SPIFFE SAN, mTLS binding policy, single-owner REST routes, attested-caller gate), and collection lifecycle states.
+
 ### Added
 
 - **Pre-bound listeners for the embedded server** (#374).
