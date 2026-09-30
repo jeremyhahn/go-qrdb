@@ -621,17 +621,23 @@ jobs:
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
     runs-on: ubuntu-latest
-    # The TypeScript SDK and the desktop frontend had no CI at all: the SDK's
-    # DatabaseInfo read `shard_id`/`data_dir` while REST sent `shardId`/
-    # `dataDir`, so both were always undefined, and nothing went red. The
-    # SDK's `npm test` typechecks its tests before running them -- its wire
-    # contract test pins the SDK's types to a REST response the Go handler
-    # test (TestDatabaseInfoWire_*) holds to the real handler output, and that
-    # pinning exists only in the typecheck. The frontend consumes the built
-    # SDK, so svelte-check catches an SDK change that breaks a view.
+    # The TypeScript SDK and the desktop frontend had no CI at all, and they
+    # rotted unseen: the SDK's DatabaseInfo read `shard_id`/`data_dir` while
+    # REST sent `shardId`/`dataDir`; the SDK and UI went on calling share-holder
+    # routes the server had removed; svelte-check reported errors nobody saw;
+    # and a Playwright mock fell out of step with the Go bindings it stands in
+    # for. `make test-typescript` runs the SDK's typecheck, its `npm test` (which
+    # typechecks the tests -- the wire contract test pins the SDK's types to a
+    # REST response the Go handler test TestDatabaseInfoWire_* holds to the
+    # real handler output -- then runs vitest), the SDK build, svelte-check
+    # over the frontend against the built SDK, and the MOCKED Playwright tier
+    # (no backend).
+    #
+    # The real-backend and DOM Playwright tiers need a live qrdbd and the
+    # headless qrdb CLI; they run through `make test-e2e`, not here.
     #
     # No Go, so no `needs`: it runs beside lint and build.
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -641,7 +647,8 @@ jobs:
 
       # `make test-typescript` is the whole job, so a developer runs exactly
       # what CI runs: the SDK's npm ci, tsc, npm test and build, then
-      # svelte-check on the frontend against the built SDK.
+      # svelte-check on the frontend against the built SDK, then the mocked
+      # Playwright tier.
       - name: TypeScript SDK and desktop frontend
         run: make test-typescript
 

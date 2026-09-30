@@ -118,7 +118,13 @@ const (
 	// release-lockstep 1 = 22) and at 192338e8 (ci 13, nightly 7,
 	// release-lockstep 1 = 21), so the drop is accounted for in full and hides
 	// no second regression.
-	minActionRefs = 21
+	//
+	// Raised to 26 on 2026-09-30 by the ci.yml `frontend` job, which adds a
+	// checkout and a setup-node. Counted after it: ci 16, nightly 9,
+	// release-lockstep 1 = 26. The floor had lagged the tree (trivy's return
+	// to ci.yml, #479, added refs without raising it), so this sets it to the
+	// measured count rather than to 21 + 2.
+	minActionRefs = 26
 )
 
 // isWorkflowFile reports whether name is a file Actions loads.

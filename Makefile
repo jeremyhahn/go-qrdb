@@ -578,12 +578,17 @@ build-frontend: build-sdk install-frontend
 # TypeScript SDK's clean install, typecheck, tests (`npm test` typechecks the
 # tests first -- the wire contract's key tables are held to the SDK's types
 # only by the typecheck) and build, then svelte-check on the desktop frontend
-# against the SDK just built. `npm ci`, not `npm install`: the lockfiles are
-# what is tested.
+# against the SDK just built, then the MOCKED Playwright tier
+# (playwright.config.ts: the UI against page.route() and Wails-binding mocks,
+# no backend). The real-backend and DOM tiers need a live qrdbd and run
+# through test-e2e. `npm ci`, not `npm install`: the lockfiles are what is
+# tested. CI=true selects Playwright's CI settings (forbidOnly, retries).
 .PHONY: test-typescript
-test-typescript: ## TypeScript SDK typecheck, tests and build; desktop frontend svelte-check
+test-typescript: ## TypeScript SDK typecheck, tests and build; desktop frontend svelte-check and mocked Playwright
 	cd sdk/typescript && npm ci && npx tsc --noEmit -p . && npm test && npm run build
 	cd cmd/qrdb/frontend && npm ci && npm run check
+	cd cmd/qrdb/frontend && npx playwright install --with-deps chromium
+	cd cmd/qrdb/frontend && CI=true npx playwright test --workers=2
 
 .PHONY: dev-gui
 dev-gui:
@@ -900,6 +905,14 @@ test-testutil-qrdbdharness: ## Run unit tests for the shared qrdbd test harness
 # The real-backend + DOM tiers spawn a live daemon, so they build qrdbd and
 # point QRDBD_BIN at the freshly built binary.
 QRDBD_E2E_BIN := $(CURDIR)/bin/$(SERVER_BINARY)
+# The real-backend tier's holders claim and submit with the qrdb CLI, the way
+# a holder does: a headless build of ./cmd/qrdb (no desktop tags), as the Go
+# integration harness builds it.
+QRDB_E2E_CLI := $(CURDIR)/bin/qrdb-cli
+
+.PHONY: build-cli-headless
+build-cli-headless:
+	$(GOBUILD) -tags "qrdb_ts qrdb_vector" -o $(QRDB_E2E_CLI) ./cmd/qrdb
 
 # Public target: build E2E container and run ALL Playwright tiers inside it.
 .PHONY: test-e2e
@@ -913,12 +926,12 @@ test-e2e:
 # Internal target: executed inside the devcontainer. Not intended for host use.
 # Builds qrdbd (for the real-backend + DOM tiers) and runs all three tiers.
 .PHONY: _test-e2e
-_test-e2e: build-server build-sdk install-frontend
+_test-e2e: build-server build-cli-headless build-sdk install-frontend
 	cd cmd/qrdb/frontend && npx playwright install chromium
 	@echo "==> [e2e] mocked tier"
 	cd cmd/qrdb/frontend && npx playwright test
 	@echo "==> [e2e] real-backend tier"
-	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.real.config.ts
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) QRDB_BIN=$(QRDB_E2E_CLI) npx playwright test --config=playwright.real.config.ts
 	@echo "==> [e2e] DOM tier"
 	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.dom.config.ts
 
@@ -930,9 +943,9 @@ test-e2e-real:
 	docker compose -f $(COMPOSE_FILE) run --rm e2e make _test-e2e-real
 
 .PHONY: _test-e2e-real
-_test-e2e-real: build-server build-sdk install-frontend
+_test-e2e-real: build-server build-cli-headless build-sdk install-frontend
 	cd cmd/qrdb/frontend && npx playwright install chromium
-	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) npx playwright test --config=playwright.real.config.ts
+	cd cmd/qrdb/frontend && QRDBD_BIN=$(QRDBD_E2E_BIN) QRDB_BIN=$(QRDB_E2E_CLI) npx playwright test --config=playwright.real.config.ts
 
 # Selective public target: DOM tier only.
 .PHONY: test-e2e-dom
