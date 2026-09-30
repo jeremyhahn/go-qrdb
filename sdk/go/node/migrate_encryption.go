@@ -498,6 +498,9 @@ func (n *Node) teardownDataPlane() {
 		n.stg = nil
 		n.pebbleDB = nil
 	}
+	// The standalone rebuild reopens the catalog (openStandaloneDatabaseManager)
+	// against the rebuilt barrier.
+	n.closeDatabaseManager()
 }
 
 // canonicalRootKeyPath returns the system barrier's root-key path.

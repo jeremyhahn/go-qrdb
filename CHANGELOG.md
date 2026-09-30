@@ -49,8 +49,9 @@ are not reconstructed here — their history is in the git log.
   relied on reaching either statement without those grants, or a tenant that
   relied on dropping a database it does not own, is refused.
 - **RAG needs the node's database registry.** It is bound by the server at
-  start; a node without one -- including the embeddable `sdk/go/node` node --
-  refuses RAG with `service.CapabilityUnsupportedError`.
+  start; a server composed without one refuses RAG with
+  `service.CapabilityUnsupportedError`. `qrdbd`, `sdk/go/node` and the
+  `node://` driver all compose one.
   `service.NewScopedRAGStore` takes a `*service.RAGBinding`.
 - **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
   `KVServicer`. RAG documents ingested before this release sit at the store
@@ -67,6 +68,20 @@ are not reconstructed here — their history is in the git log.
   `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
   transport that cannot scope refuses instead of returning the unscoped
   client. Scoping to `""` or `system` returns the receiver.
+
+### Fixed
+
+- **A standalone `sdk/go/node` node serves its named databases.** Its server
+  was composed with neither the database catalog nor a database service
+  registry, so no database other than the node's own resolved: a
+  database-scoped client was refused outright, and databases created at
+  runtime were not reopened at the next boot. The node now opens its catalog
+  itself (reopening every database a previous run created) and composes the
+  server with it and with a registry whose default entry is the node's own
+  service graph (`lifecycle.SystemDatabase`), as `qrdbd` does; the clustered
+  node's server gains the same wiring. A scoped embedded client serves exactly
+  the families its unscoped transport serves, so on a standalone node MVCC,
+  leases and watches stay refused.
 
 ### Security
 
@@ -204,11 +219,6 @@ are not reconstructed here — their history is in the git log.
 - **Database names are still one node-wide namespace.** Another tenant's
   database is answered as missing everywhere except creation: a create naming
   a database another tenant holds fails with `database.AlreadyExistsError`.
-- **An `sdk/go/node` node scopes clients and serves RAG only with a database
-  service registry.** A node composed without `server.WithDatabaseServiceRegistry`
-  refuses every call of a database-scoped embedded client, and its RAG service
-  refuses every call, rather than serve the default store; `qrdbd` and the
-  `node://` driver supply one.
 
 ## [0.23.0-alpha] - 2026-09-30
 

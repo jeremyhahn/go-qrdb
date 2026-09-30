@@ -910,6 +910,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
+	dbManager, err := n.openStandaloneDatabaseManager(pending.dataDir)
+	if err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		n.stg = nil
+		return err
+	}
+
 	var encryptor *atrest.Encryptor
 	if barrier != nil {
 		encryptor = atrest.New(barrier)
@@ -929,6 +937,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Host:              localHost,
 		WatchHub:          watchHub,
 		DataDir:           pending.dataDir,
+		DatabaseManager:   dbManager,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
 		Profile:           &profile,
 		Logger:            n.logger,
@@ -955,6 +964,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		_ = localHost.Close()
 		_ = n.stg.Close()
 		n.stg = nil
+		n.closeDatabaseManager()
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -987,6 +997,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			_ = localHost.Close()
 			_ = n.stg.Close()
 			n.stg = nil
+			n.closeDatabaseManager()
 			return &TenantInfraError{Err: tiErr}
 		}
 		n.tenantHosts = ti.Hosts
@@ -1009,9 +1020,36 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			_ = n.tenantHosts.CloseAll()
 			n.tenantHosts = nil
 		}
+		n.closeDatabaseManager()
 		return err
 	}
 	return nil
+}
+
+// openStandaloneDatabaseManager opens the standalone node's database catalog
+// under dataDir, reopening every database a previous run created, and records
+// it on the node, which owns its lifetime. It is the standalone counterpart of
+// the clustered boot's manager: the manager is handed to BuildServices and to
+// the server, so a named database resolves through the server's registry, is
+// confined to its owning tenant, and is refused while sealed. It used to be
+// built inside BuildServices, which never reopened a previous run's databases
+// and which the server never saw.
+func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
+	dbManager := database.NewManager(n.logger, dataDir, database.WithAllocator(shard.NewAllocator()))
+	if err := dbManager.OpenAll(); err != nil {
+		_ = dbManager.Close()
+		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
+	}
+	n.dbManager = dbManager
+	return dbManager, nil
+}
+
+// closeDatabaseManager closes the node's database catalog, if open.
+func (n *Node) closeDatabaseManager() {
+	if n.dbManager != nil {
+		_ = n.dbManager.Close()
+		n.dbManager = nil
+	}
 }
 
 // clusteredCreateFunc selects the Raft state-machine factory for a clustered
@@ -1743,6 +1781,13 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
+	dbManager, err := n.openStandaloneDatabaseManager(dataDir)
+	if err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		return nil, err
+	}
+
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
 	profileCfg := *cfg
@@ -1751,13 +1796,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
-		Host:        localHost,
-		WatchHub:    watchHub,
-		DataDir:     dataDir,
-		ReplicaID:   cfg.Raft.ReplicaID,
-		Profile:     &profile,
-		Logger:      log,
-		SealEnabled: cfg.Seal.Enabled,
+		Host:            localHost,
+		WatchHub:        watchHub,
+		DataDir:         dataDir,
+		DatabaseManager: dbManager,
+		ReplicaID:       cfg.Raft.ReplicaID,
+		Profile:         &profile,
+		Logger:          log,
+		SealEnabled:     cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
@@ -1771,6 +1817,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	if err != nil {
 		_ = localHost.Close()
 		_ = n.stg.Close()
+		n.closeDatabaseManager()
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -1780,6 +1827,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
 		_ = n.stg.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 
@@ -2401,7 +2449,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, callerOpts, standalone)
+	allOpts := buildServerOpts(svcNode, n.dbManager, callerOpts, standalone)
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
@@ -2757,8 +2805,23 @@ func principalRoles(u *user.User) []string {
 // buildServerOpts constructs the server.ServerOption slice that wires the
 // lifecycle.Node's services into server.New. Caller opts are appended last
 // so they can override any default wiring.
-func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+//
+// The database catalog and a database service registry are wired as the
+// daemon wires them: the registry's default entry is the node's own service
+// graph (lifecycle.SystemDatabase), and every other database resolves from
+// the catalog as a namespace over it.
+// Without them no named database resolved on the node's server, so a
+// database-scoped client was refused outright and RAG, which is bound to the
+// registry, refused every call.
+func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+	var shardID uint64
+	if !standalone {
+		shardID = shard.ShardKV
+	}
+	dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+	dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
 	opts := []server.ServerOption{
+		server.WithDatabaseServiceRegistry(dbRegistry),
 		server.WithBatch(svcNode.Batch),
 		server.WithIndex(svcNode.Index),
 		server.WithTimeSeries(svcNode.TimeSeries),
@@ -2838,6 +2901,9 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, 
 	}
 	if svcNode.Backup != nil {
 		opts = append(opts, server.WithBackupService(svcNode.Backup))
+	}
+	if dbManager != nil {
+		opts = append(opts, server.WithDatabaseManager(dbManager))
 	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)

@@ -140,8 +140,8 @@ path, not the body.
   `transport.DatabaseScopeUnsupportedError`. The embedded transport scopes
   through the node's per-(tenant, database) service registry
   (`embedded.WithServiceRegistry`, wired by `sdk/go/node` to the running
-  server's registry, which exists only when the composer supplies
-  `server.WithDatabaseServiceRegistry`), resolving each data-plane call for the
+  server's registry, which the node composes over its own database catalog as
+  `qrdbd` does), resolving each data-plane call for the
   context's tenant as the network transports' server does per request; without
   a registry every scoped call is refused. Time-series retention and metric
   listing, whose service methods take no context, are resolved by the

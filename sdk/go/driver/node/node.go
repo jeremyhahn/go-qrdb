@@ -251,7 +251,7 @@ func (c *Connector) startLocked(ctx context.Context) (qrdbdriver.Connector, erro
 	if svcs == nil || srv == nil {
 		return nil, &SealedError{Database: c.cfg.Database}
 	}
-	dbReg.Register(c.cfg.Database, databaseServices(c.cfg.Database, svcs))
+	dbReg.Register(c.cfg.Database, svcs.DatabaseServices(c.cfg.Database, 0))
 
 	// The registry is the point of this scheme; a nil one is fatal, never a
 	// quiet downgrade to the KV-only surface embedded:// already provides.

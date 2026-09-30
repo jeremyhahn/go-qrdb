@@ -101,9 +101,10 @@ live.
     apply;
   - **vectors are per database**: the same document in two databases has two
     vectors, and neither overwrites the other.
-  The registry is bound by the server at start. A node with no database
-  registry (the embeddable `sdk/go/node` node has none) refuses RAG rather
-  than serve records outside any database's seal and isolation.
+  The registry is bound by the server at start. A server composed with no
+  database registry refuses RAG rather than serve records outside any
+  database's seal and isolation; `qrdbd`, `sdk/go/node` and the `node://`
+  driver all compose one.
   *(Corrected: chunk text used to be keyed `rag:{namespace}:{document}:{chunk}`
   with no tenant at all, and vectors were scoped by tenant only.)*
 - **Ingest sends document text to the configured embedding provider**, which may

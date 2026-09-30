@@ -2253,21 +2253,8 @@ func runStart(f *startFlags) (err error) {
 			// Currently all databases share the system shard services. As per-database
 			// shard allocation (Phase 1.2) is enabled, each database will get its
 			// own service set backed by a dedicated shard.
-			dbRegistry := server.NewDatabaseServiceRegistry("system")
-			dbRegistry.Register("system", &server.DatabaseServices{
-				Name:        "system",
-				ShardID:     shard.ShardKV,
-				KV:          kvSvc,
-				MVCC:        mvccSvc,
-				Batch:       batchSvc,
-				Transaction: txSvc,
-				Lease:       leaseSvc,
-				TimeSeries:  tsSvc,
-				Index:       indexSvc,
-				Watch:       watchSvc,
-				Collection:  collectionSvc,
-				Vector:      vectorSvc,
-			})
+			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
