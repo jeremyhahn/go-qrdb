@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	filestore "github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	memstore "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -140,6 +141,23 @@ type StorageConfig struct {
 	// "memory". Objstore is a snapshot/backup tier and is never a hot apply
 	// path.
 	Kind string
+
+	// Encryptor is the node's at-rest encryptor. When it is enabled — the
+	// seal barrier is on — every byte a replica's storage persists must be
+	// encrypted, and a storage that would persist plaintext is refused at
+	// resolution (SMStorageUnencryptedError) rather than opened. nil means
+	// the barrier is off.
+	Encryptor *atrest.Encryptor
+}
+
+// persistsPlaintext reports whether a replica's storage under this config
+// would write unencrypted bytes to disk while the seal barrier is on.
+// "memory" persists nothing.
+func (c StorageConfig) persistsPlaintext() bool {
+	if !c.Encryptor.Enabled() {
+		return false
+	}
+	return c.Kind != "memory"
 }
 
 // storageKinds are the raft.sm_storage values a storage-generic state
@@ -272,6 +290,9 @@ func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageC
 		}
 		return e.factory(), nil
 	}
+	if sc.persistsPlaintext() {
+		return nil, &SMStorageUnencryptedError{SMType: name, Kind: sc.Kind}
+	}
 	return e.generic(newStorageFactory(sc)), nil
 }
 
@@ -356,6 +377,25 @@ type SMStorageNotApplicableError struct {
 func (e *SMStorageNotApplicableError) Error() string {
 	return "statemachine: sm_storage " + strconv.Quote(e.Kind) + " does not apply to sm_type " +
 		strconv.Quote(e.SMType) + ", which carries its own storage; use a storage-generic sm_type (disk or fast)"
+}
+
+// SMStorageUnencryptedError is returned when the seal barrier is enabled and
+// the storage a storage-generic state machine would compose cannot be
+// encrypted at rest: the replica's data would sit on disk in plaintext beside
+// a barrier the operator enabled to prevent exactly that.
+type SMStorageUnencryptedError struct {
+	SMType string
+	Kind   string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *SMStorageUnencryptedError) Error() string {
+	kind := e.Kind
+	if kind == "" {
+		kind = "pebble"
+	}
+	return "statemachine: sm_type " + strconv.Quote(e.SMType) + " over sm_storage " + strconv.Quote(kind) +
+		" would store plaintext while the seal barrier is enabled; use sm_storage memory or a state machine that encrypts at rest (pebble, mvcc)"
 }
 
 // UnknownSMTypeError is returned when a state machine type name cannot

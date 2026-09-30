@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sealtest holds helpers for tests that exercise seal.Credentials.
+// Package sealtest holds helpers for tests that exercise seal.Credentials and
+// the storage barrier.
 //
 // A credential's secret is protected memory (a *enclave.SealedEnclave), and
 // production code never materializes it as a []byte: the strategy that needs
@@ -24,6 +25,9 @@
 package sealtest
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -78,4 +82,32 @@ func Snapshot(creds seal.Credentials) []byte {
 		panic("sealtest: read credential secret: " + err.Error())
 	}
 	return b
+}
+
+// UnsealedBarrier returns an initialized, unsealed *seal.StorageBarrier over an
+// in-memory backend with a software strategy: a working key-encryption key
+// for a test that needs at-rest encryption actually engaged, as
+// atrest.New(barrier).Enabled() reports it.
+func UnsealedBarrier(tb testing.TB) *seal.StorageBarrier {
+	tb.Helper()
+	const passphrase = "sealtest-unsealed-barrier"
+	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	if err != nil {
+		tb.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "sealtest-root-key", DeploymentID: 1}, strategy)
+	if err != nil {
+		tb.Fatalf("NewStorageBarrier: %v", err)
+	}
+	creds := seal.MustCredentials([]byte(passphrase))
+	if err := barrier.Initialize(context.Background(), creds); err != nil {
+		tb.Fatalf("barrier.Initialize: %v", err)
+	}
+	if barrier.IsSealed() {
+		if err := barrier.Unseal(context.Background(), creds); err != nil {
+			tb.Fatalf("barrier.Unseal: %v", err)
+		}
+	}
+	return barrier
 }

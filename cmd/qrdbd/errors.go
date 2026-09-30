@@ -754,3 +754,26 @@ func (e *SecureMemoryWipeError) Error() string {
 
 // Unwrap returns the corruption error WipeAll detected, if any.
 func (e *SecureMemoryWipeError) Unwrap() error { return e.Err }
+
+// SealedSMStoragePlaintextError is returned at start when the seal barrier is
+// enabled and --sm names a storage-generic state machine (disk, fast) over an
+// --sm-storage that would hold its data in plaintext. The SDK refuses the same
+// combination (sdk/go/node.clusteredCreateFunc).
+type SealedSMStoragePlaintextError struct {
+	SMType  string
+	Storage string
+	Err     error
+}
+
+// Error returns a human-readable description with the remedy.
+func (e *SealedSMStoragePlaintextError) Error() string {
+	storage := e.Storage
+	if storage == "" {
+		storage = "pebble"
+	}
+	return "cli: --sm " + strconv.Quote(e.SMType) + " over --sm-storage " + strconv.Quote(storage) +
+		" would store data in plaintext while the seal barrier is enabled; use --sm-storage memory, or --sm pebble or mvcc"
+}
+
+// Unwrap returns the registry's refusal.
+func (e *SealedSMStoragePlaintextError) Unwrap() error { return e.Err }

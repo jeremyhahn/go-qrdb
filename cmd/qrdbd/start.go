@@ -1273,27 +1273,14 @@ func runStart(f *startFlags) (err error) {
 				f.walBarrier = f.walSystemBarrier
 			}
 
-			// Build a subsystem-aware state machine factory for "mvcc" and
-			// "pebble" SM types. Other types fall back to the registry default.
-			// When the seal subsystem is enabled, store.WithEncryptor wraps every
-			// Pebble file the SM creates (sstables, WAL, manifest, snapshots) with
-			// the barrier-driven encfs via the shared Encryptor above.
-			pebbleOpts := []store.Option{store.WithEncryptor(enc)}
-			switch f.smType {
-			case "mvcc":
-				f.createFn = store.NewMVCCCreateFuncWith(pebbleOpts,
-					store.WithLessor(lr),
-					store.WithWatchHub(watchHub),
-					store.WithTimeSeriesEnabled(),
-				)
-			case "pebble":
-				f.createFn = store.NewPebbleCreateFuncWith(pebbleOpts,
-					func(s *store.PebbleStateMachine) {
-						s.SetLessor(lr)
-						s.SetWatchHub(watchHub)
-						s.SetTimeSeriesEnabled(true)
-					},
-				)
+			// Build the state machine factory with this node's subsystems and
+			// its at-rest encryptor; see buildSMCreateFunc.
+			if f.mode != capabilities.ModeStandalone {
+				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub)
+				if err != nil {
+					return err
+				}
+				f.createFn = createFn
 			}
 
 			// The ceremony CA signs Security Officer client-certificate CSRs so
@@ -2860,6 +2847,38 @@ func shutdownNode(node io.Closer) error {
 	return nil
 }
 
+// buildSMCreateFunc builds the raft state machine factory for --sm with the
+// node's subsystems and at-rest encryptor. "mvcc" and "pebble" are composed
+// here with the lessor, watch hub and time-series storage, and with
+// store.WithEncryptor, which wraps every Pebble file the state machine creates
+// (sstables, WAL, manifest, snapshots) in the barrier-driven encfs. Every other
+// type resolves from the registry over the data dir and --sm-storage, carrying
+// the same encryptor, so a storage-generic state machine that would persist
+// plaintext while the seal barrier is enabled is refused here, at start
+// (SealedSMStoragePlaintextError), rather than opened.
+func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
+	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
+	switch f.smType {
+	case "mvcc":
+		return store.NewMVCCCreateFuncWith(pebbleOpts,
+			store.WithLessor(lr),
+			store.WithWatchHub(hub),
+			store.WithTimeSeriesEnabled(),
+		), nil
+	case "pebble":
+		return store.NewPebbleCreateFuncWith(pebbleOpts,
+			func(s *store.PebbleStateMachine) {
+				s.SetLessor(lr)
+				s.SetWatchHub(hub)
+				s.SetTimeSeriesEnabled(true)
+			},
+		), nil
+	default:
+		return resolveCreateFunc(f.smType, f.smBackend,
+			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage, Encryptor: enc})
+	}
+}
+
 // resolveCreateFunc looks up the state machine factory by type and optional
 // backend in the centralized statemachine.Registry, building a
 // storage-generic state machine over sc (the data dir and --sm-storage), and
@@ -2881,6 +2900,10 @@ func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig) 
 	var notApplicable *statemachine.SMStorageNotApplicableError
 	if errors.As(err, &notApplicable) {
 		return nil, &SMStorageTypeMismatchError{Storage: sc.Kind, SMType: smType}
+	}
+	var unencrypted *statemachine.SMStorageUnencryptedError
+	if errors.As(err, &unencrypted) {
+		return nil, &SealedSMStoragePlaintextError{SMType: smType, Storage: sc.Kind, Err: err}
 	}
 	name := smType
 	if smBackend != "" {

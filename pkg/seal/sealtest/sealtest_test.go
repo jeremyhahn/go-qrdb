@@ -73,3 +73,9 @@ func TestSnapshot_DestroyedCredentialPanics(t *testing.T) {
 	}()
 	_ = Snapshot(creds)
 }
+
+func TestUnsealedBarrier_IsUnsealed(t *testing.T) {
+	if UnsealedBarrier(t).IsSealed() {
+		t.Fatal("UnsealedBarrier returned a sealed barrier")
+	}
+}
