@@ -397,7 +397,14 @@ func (s *CeremonyService) CeremonyCompleteClaimShare(
 // CeremonySignCSR signs a CSR during the ceremony by delegating to the
 // underlying CeremonyService's SignCSRInit method and mapping the result
 // to the service-layer CeremonySignCSRResult type.
+//
+// Every call is throttled under signCSRPolicy before the SO PIN is checked,
+// on every transport, because this service is where they all meet. A call
+// over budget returns *SignCSRThrottledError.
 func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*CeremonySignCSRResult, error) {
+	if ok, retryAfter := signCSRLimiter().Allow(signCSRThrottleKey(s.ceremony), signCSRPolicy); !ok {
+		return nil, &SignCSRThrottledError{RetryAfter: retryAfter}
+	}
 	result, err := s.ceremony.SignCSRInit(ctx, username, soPin, []byte(csrPEM), role)
 	if err != nil {
 		return nil, err

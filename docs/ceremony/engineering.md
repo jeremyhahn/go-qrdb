@@ -80,6 +80,14 @@ qrdb ships only `NoopThresholdInitializer`
 - **Verification ignores the authenticator kind.** `BeginClaimCert` and
   `CompleteClaimCert` operate on the officer's CSR public key. The kind is
   routing metadata for higher layers.
+- **sign-csr is an online SO PIN oracle, so it is throttled and compared in
+  constant time.** On the boot-time sealed-window listener it is reachable
+  without authentication, and the SO PIN is its only authorization.
+  `service.CeremonyService.CeremonySignCSR` takes a permit from a per-ceremony
+  token bucket (burst 10, then one every 5 s, keyed by the core's
+  `InstanceID`) before the PIN is looked at. That service is where all six
+  transports meet, so they share the budget. `SignCSRInit` compares the PIN
+  with `subtle.ConstantTimeCompare` over SHA-256 digests.
 - **`AuthenticatorType` empty means `software`**; anything outside the set
   yields `ErrInvalidAuthenticatorType`.
 - **Ceremony and firstboot are both idempotent** and safe to re-run on cluster
@@ -102,6 +110,8 @@ the first successful PIN backend write**.
 | `AuthenticatorType` outside the set | `ErrInvalidAuthenticatorType` | **yes** |
 | Ceremony abandoned (restart mid-enrolment) | shares lost; must re-run | **yes** |
 | No `CeremonyCA` wired | initialization fails | **yes** |
+| Wrong SO PIN on sign-csr | `ErrSOPINMismatch`. The comparison is constant-time over SHA-256 digests, so it leaks neither where the PIN differs nor its length | **yes** |
+| More than 10 sign-csr calls back to back on one ceremony | `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The SO PIN is not checked, so a throttled call cannot confirm a guess. One call is admitted every 5 s after that | **yes** |
 
 ## Permission model
 

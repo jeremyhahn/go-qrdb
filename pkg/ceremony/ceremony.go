@@ -17,12 +17,15 @@ package ceremony
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -59,6 +62,10 @@ type CredentialServicer interface {
 // sharing for officer enrollment, and coordinates certificate issuance
 // and claim operations.
 type CeremonyService struct {
+	// instanceID identifies this service among those in the process; see
+	// InstanceID.
+	instanceID uint64
+
 	mu          sync.RWMutex
 	config      *CeremonyConfig
 	barrier     *seal.StorageBarrier
@@ -118,6 +125,7 @@ func NewCeremonyService(
 	}
 
 	return &CeremonyService{
+		instanceID:        instanceSeq.Add(1),
 		config:            config,
 		barrier:           barrier,
 		credService:       credService,
@@ -129,6 +137,16 @@ func NewCeremonyService(
 		thresholdRegistry: NewThresholdRegistry(),
 	}, nil
 }
+
+// instanceSeq numbers CeremonyService instances for InstanceID.
+var instanceSeq atomic.Uint64
+
+// InstanceID identifies this CeremonyService among those in the process. It
+// is assigned at construction, never changes, and is never reused by another
+// instance, so a caller can key per-ceremony state -- such as the SO PIN
+// attempt budget the service layer keeps -- on it without the address reuse
+// that keying on the pointer would allow.
+func (s *CeremonyService) InstanceID() uint64 { return s.instanceID }
 
 // CA returns the CeremonyCA used by this service. It is safe to call before
 // Initialize; the return value is nil until a CA has been set either via
@@ -472,7 +490,7 @@ func (s *CeremonyService) SignCSRInit(
 	if soPin == "" {
 		return nil, ErrInvalidSOPIN
 	}
-	if soPin != s.config.SOPin {
+	if !soPINMatches(soPin, s.config.SOPin) {
 		return nil, ErrSOPINMismatch
 	}
 	if len(csrPEM) == 0 {
@@ -828,4 +846,15 @@ func (s *CeremonyService) Cleanup() {
 		secure.Wipe(challenge.Nonce)
 		delete(s.challenges, username)
 	}
+}
+
+// soPINMatches reports whether presented is the configured SO PIN, in time
+// independent of where, and whether, the two differ. Both are hashed first, so
+// the comparison runs over equal-length digests and leaks neither the PIN's
+// length nor the length of the matching prefix: ceremony-sign-csr is reachable
+// without authentication, and a byte-wise == there is a timing oracle.
+func soPINMatches(presented, configured string) bool {
+	p := sha256.Sum256([]byte(presented))
+	c := sha256.Sum256([]byte(configured))
+	return subtle.ConstantTimeCompare(p[:], c[:]) == 1
 }

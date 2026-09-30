@@ -23,6 +23,7 @@ are not reconstructed here — their history is in the git log.
 - `forward.ClusterPeer` and `forward.MaxBodyBytes`, the cluster-node check
   and the body bound a receiver applies to a forwarded on-behalf request
   before reading its body.
+- `ceremony.CeremonyService.InstanceID` and `service.SignCSRThrottledError`.
 
 ### Changed — BREAKING
 
@@ -295,6 +296,17 @@ are not reconstructed here — their history is in the git log.
   now authenticated and default-denied like any other unmapped method. A
   composer that wants it anonymous declares it through
   `GRPCPublicMethodLister`.
+- **ceremony-sign-csr compares the SO PIN in constant time and is throttled
+  (medium).** The endpoint is reachable without authentication on the
+  boot-time sealed-window listener, and the SO PIN is its only authorization.
+  It compared the PIN with `!=` and answered every guess immediately, which
+  made it a timing side channel and an unthrottled online PIN oracle. The
+  comparison is now `subtle.ConstantTimeCompare` over SHA-256 digests. Every
+  call takes a permit from a per-ceremony budget (10 back to back, then one
+  every 5 s) before the PIN is checked. Over budget the call fails with
+  `service.SignCSRThrottledError`, which unwraps to `pin.ErrPINLocked` and is
+  answered `429` / `RESOURCE_EXHAUSTED` on every transport. The REST 429
+  carries `Retry-After` with the wait in seconds, rounded up.
 
 ### Known limits
 
