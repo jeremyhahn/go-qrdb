@@ -693,13 +693,62 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 
 // initializeSingleAdmin transitions directly to the operational state
 // when M-of-N is not configured.
-func (s *CeremonyService) initializeSingleAdmin(_ context.Context, result *InitResult) error {
+func (s *CeremonyService) initializeSingleAdmin(ctx context.Context, result *InitResult) error {
 	result.ShareCount = 0
 	result.State = StateOperational
-	s.state = StateOperational
+	s.becomeOperationalLocked(ctx)
 
 	s.logger.Info("single admin mode, ceremony operational")
 	return nil
+}
+
+// becomeOperationalLocked moves the ceremony to StateOperational and records
+// that on the barrier (seal.StorageBarrier.MarkCeremonyOperational), where the
+// boot-time sealed-window listener reads it after a restart, when this
+// in-memory state is gone. Must be called with s.mu held for writing.
+//
+// A failure to record it is logged, not returned: the transition has already
+// happened -- on the claim path the last share has been released -- and
+// EnrollmentOpen closes the anonymous enrollment exemption on an initialized
+// barrier regardless, so only a ceremony that is operational on a barrier
+// that is still uninitialized depends on the record alone.
+func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
+	s.state = StateOperational
+	if err := s.barrier.MarkCeremonyOperational(ctx); err != nil {
+		s.logger.Error("failed to record the operational ceremony on the barrier; "+
+			"officer enrollment stays closed while the barrier is initialized",
+			slog.String("error", err.Error()))
+	}
+}
+
+// EnrollmentOpen reports whether officer enrollment is still open to an
+// unauthenticated caller -- the sealedwindow.PreOperationalOnly exemption the
+// boot-time sealed-window listener grants officer and recovery-officer
+// registration. RegisterOfficer CA-signs any CSR it is given and assigns a
+// share index, so the exemption is justified only while the enrollment
+// ceremony it serves can still use a new officer.
+//
+// It is closed as soon as any of these holds, each read so that it survives a
+// restart while sealed, when this service's in-memory state starts over:
+//   - this ceremony is operational in memory;
+//   - the barrier records an operational ceremony (MarkCeremonyOperational);
+//   - the barrier is initialized: the shares a newly enrolled officer would
+//     hold are distributed at initialization, and every later enrollment
+//     (rekey, recovery) runs on the authenticated listener.
+//
+// It fails closed: an unreadable record is treated as closed.
+func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
+	s.mu.RLock()
+	operational := s.state == StateOperational
+	s.mu.RUnlock()
+	if operational {
+		return false
+	}
+	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {
+		return false
+	}
+	initialized, err := s.barrier.Initialized(ctx)
+	return err == nil && !initialized
 }
 
 // allClaimsComplete checks whether all officers have claimed both

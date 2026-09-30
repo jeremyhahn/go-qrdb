@@ -51,26 +51,49 @@ var SealedWindowAllowlist = sealedwindow.MCPAllowlist()
 func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-			_, allowlisted := SealedWindowAllowlist[req.Params.Name]
-			msg, refused := sealedWindowRefusals[sealedwindow.Decide(s.sealedWindowSealed(), allowlisted, s.sealedWindowListener)]
+			name := req.Params.Name
+			_, allowlisted := SealedWindowAllowlist[name]
+			decision := sealedwindow.Request{
+				Sealed:      s.sealedWindowSealed(),
+				Allowlisted: allowlisted,
+				Listener:    s.sealedWindowListener != nil,
+			}
+			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Listener && decision.Sealed && decision.Allowlisted {
+				decision.PreOperationalOnly = true
+				decision.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen()
+			}
+			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(decision)]
 			if !refused {
 				return next(ctx, req)
 			}
-			// CodeUnavailable, matching REST's 503, gRPC's codes.Unavailable
-			// and QUIC's StatusUnavailable for the same gate. A sealed barrier
-			// is a node that will serve this tool later, and a client that can
-			// read that from the code retries instead of reporting a failure
-			// its operator then has to diagnose from prose (go-qrdb#438).
-			return toolErrorResult(req.Params.Name, wire.CodeUnavailable, msg), nil
+			// CodeUnavailable for a sealed or closed window, matching REST's
+			// 503, gRPC's codes.Unavailable and QUIC's StatusUnavailable for
+			// the same gate. A sealed barrier is a node that will serve this
+			// tool later, and a client that can read that from the code
+			// retries instead of reporting a failure its operator then has to
+			// diagnose from prose (go-qrdb#438). A closed enrollment is
+			// CodePermissionDenied: retrying will not help.
+			return toolErrorResult(name, refusal.code, refusal.msg), nil
 		}
 	}
 }
 
-// sealedWindowRefusals maps each refusing sealedwindow.Decision to its
-// tool-error message. sealedwindow.Serve is absent: it admits.
-var sealedWindowRefusals = map[sealedwindow.Decision]string{
-	sealedwindow.RefuseSealed: "barrier sealed",
-	sealedwindow.RefuseClosed: sealedwindow.ClosedMessage,
+// sealedWindowPreOperationalOnly holds the MCP tools of the
+// PreOperationalOnly verbs (officer and recovery-officer registration).
+var sealedWindowPreOperationalOnly = sealedwindow.MCPPreOperationalOnly()
+
+// sealedWindowRefusal is how the MCP gate answers one refusing Decision.
+type sealedWindowRefusal struct {
+	code wire.Code
+	msg  string
+}
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to its tool
+// error. sealedwindow.Serve is absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
+	sealedwindow.RefuseSealed:           {code: wire.CodeUnavailable, msg: "barrier sealed"},
+	sealedwindow.RefuseClosed:           {code: wire.CodeUnavailable, msg: sealedwindow.ClosedMessage},
+	sealedwindow.RefuseEnrollmentClosed: {code: wire.CodePermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
 }
 
 // sealedWindowSealed samples the probe. A nil probe reads as unsealed,

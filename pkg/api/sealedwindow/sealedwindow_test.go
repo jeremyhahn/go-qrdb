@@ -77,7 +77,7 @@ func TestRESTAllowlistContents(t *testing.T) {
 		"POST /v1/barrier/officers",
 		"/v1/barrier/officers/claim-status",
 		"/v1/barrier/officers/",
-		"/v1/barrier/recovery/officers",
+		"POST /v1/barrier/recovery/officers",
 		"/v1/barrier/recovery/officers/",
 		"/v1/ceremony/initialize",
 		"/v1/ceremony/status",
@@ -358,24 +358,80 @@ func TestRESTEntryMatches(t *testing.T) {
 // authentication; a regular listener passes everything once unsealed to
 // its own authentication.
 func TestDecide(t *testing.T) {
+	type R = sealedwindow.Request
 	cases := []struct {
-		sealed, allowlisted, listener bool
-		want                          sealedwindow.Decision
+		req  R
+		want sealedwindow.Decision
 	}{
-		{sealed: true, allowlisted: true, listener: false, want: sealedwindow.Serve},
-		{sealed: true, allowlisted: false, listener: false, want: sealedwindow.RefuseSealed},
-		{sealed: false, allowlisted: true, listener: false, want: sealedwindow.Serve},
-		{sealed: false, allowlisted: false, listener: false, want: sealedwindow.Serve},
-		{sealed: true, allowlisted: true, listener: true, want: sealedwindow.Serve},
-		{sealed: true, allowlisted: false, listener: true, want: sealedwindow.RefuseSealed},
-		{sealed: false, allowlisted: true, listener: true, want: sealedwindow.RefuseClosed},
-		{sealed: false, allowlisted: false, listener: true, want: sealedwindow.RefuseClosed},
+		// Regular listener: allowlist while sealed, everything once unsealed.
+		{R{Sealed: true, Allowlisted: true}, sealedwindow.Serve},
+		{R{Sealed: true}, sealedwindow.RefuseSealed},
+		{R{Allowlisted: true}, sealedwindow.Serve},
+		{R{}, sealedwindow.Serve},
+		// The regular listener leaves officer registration to its own
+		// authentication, whatever the enrollment state.
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true}, sealedwindow.Serve},
+		// Boot-time listener.
+		{R{Sealed: true, Allowlisted: true, Listener: true}, sealedwindow.Serve},
+		{R{Sealed: true, Listener: true}, sealedwindow.RefuseSealed},
+		{R{Allowlisted: true, Listener: true}, sealedwindow.RefuseClosed},
+		{R{Listener: true}, sealedwindow.RefuseClosed},
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.Serve},
+		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true}, sealedwindow.RefuseEnrollmentClosed},
+		{R{Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.RefuseClosed},
 	}
 	for _, c := range cases {
-		if got := sealedwindow.Decide(c.sealed, c.allowlisted, c.listener); got != c.want {
-			t.Errorf("Decide(sealed=%v, allowlisted=%v, listener=%v) = %v, want %v",
-				c.sealed, c.allowlisted, c.listener, got, c.want)
+		if got := sealedwindow.Decide(c.req); got != c.want {
+			t.Errorf("Decide(%+v) = %v, want %v", c.req, got, c.want)
 		}
+	}
+}
+
+// TestPreOperationalOnlyDerivations: every transport's derivation names
+// exactly the officer and recovery-officer registration verbs.
+func TestPreOperationalOnlyDerivations(t *testing.T) {
+	rest := sealedwindow.RESTPreOperationalOnly()
+	if len(rest) != 2 || rest[0] != "POST /v1/barrier/officers" || rest[1] != "POST /v1/barrier/recovery/officers" {
+		t.Errorf("RESTPreOperationalOnly = %v", rest)
+	}
+	grpc := sealedwindow.GRPCFullMethodPreOperationalOnly("qrdb.v1.QRDBService")
+	for _, m := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"} {
+		if _, ok := grpc[m]; !ok {
+			t.Errorf("GRPCFullMethodPreOperationalOnly missing %s", m)
+		}
+	}
+	quic := sealedwindow.QUICPreOperationalOnly()
+	mcp := sealedwindow.MCPPreOperationalOnly()
+	for set, names := range map[string][]string{
+		"quic": {"barrier.OfficerRegister", "barrier.RecoveryOfficerRegister"},
+		"mcp":  {"qrdb_barrier_officer_register", "qrdb_barrier_recovery_officer_register"},
+	} {
+		got := map[string]map[string]struct{}{"quic": quic, "mcp": mcp}[set]
+		if len(got) != len(names) {
+			t.Errorf("%s derivation has %d entries, want %d", set, len(got), len(names))
+		}
+		for _, n := range names {
+			if _, ok := got[n]; !ok {
+				t.Errorf("%s derivation missing %s", set, n)
+			}
+		}
+	}
+	if len(grpc) != 2 {
+		t.Errorf("GRPCFullMethodPreOperationalOnly has %d entries, want 2", len(grpc))
+	}
+}
+
+// TestOrFailClosed: a missing listener probe reads as unsealed with
+// enrollment closed, so a gate built from it refuses everything.
+func TestOrFailClosed(t *testing.T) {
+	p := sealedwindow.OrFailClosed(nil)
+	if p.IsSealed() || p.EnrollmentOpen() {
+		t.Fatal("OrFailClosed(nil) must report unsealed and enrollment closed")
+	}
+	type probe struct{ sealedwindow.ListenerProbe }
+	given := probe{p}
+	if sealedwindow.OrFailClosed(given) != given {
+		t.Fatal("OrFailClosed must return a non-nil probe unchanged")
 	}
 }
 

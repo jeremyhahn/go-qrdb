@@ -17,6 +17,7 @@ package quic
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
@@ -63,9 +64,22 @@ func TestSealedWindowRefusal(t *testing.T) {
 		if _, refused := srv.sealedWindowRefusal("barrier.Unseal"); refused {
 			t.Error("sealed: barrier.Unseal refused")
 		}
-		if msg, refused := srv.sealedWindowRefusal("kv.Put"); !refused || msg != "barrier sealed" {
-			t.Errorf("sealed: kv.Put = (%q, %v), want (barrier sealed, true)", msg, refused)
+		if r, refused := srv.sealedWindowRefusal("kv.Put"); !refused || r.msg != "barrier sealed" || r.status != wire.StatusUnavailable {
+			t.Errorf("sealed: kv.Put = (%+v, %v), want (Unavailable barrier sealed, true)", r, refused)
 		}
+	}
+
+	// Officer registration: the listener refuses it once enrollment has
+	// closed; the regular gate leaves it to authentication.
+	if r, refused := listener.sealedWindowRefusal("barrier.OfficerRegister"); !refused || r.status != wire.StatusPermissionDenied || r.msg != sealedwindow.EnrollmentClosedMessage {
+		t.Errorf("listener, enrollment closed: barrier.OfficerRegister = (%+v, %v), want PermissionDenied", r, refused)
+	}
+	if _, refused := regular.sealedWindowRefusal("barrier.OfficerRegister"); refused {
+		t.Error("regular gate: barrier.OfficerRegister refused")
+	}
+	probe.enrollment = true
+	if _, refused := listener.sealedWindowRefusal("barrier.RecoveryOfficerRegister"); refused {
+		t.Error("listener, enrollment open: barrier.RecoveryOfficerRegister refused")
 	}
 
 	probe.sealed = false
@@ -73,9 +87,9 @@ func TestSealedWindowRefusal(t *testing.T) {
 		t.Error("regular gate, unsealed: kv.Put refused")
 	}
 	for _, method := range []string{"barrier.Unseal", "kv.Put"} {
-		msg, refused := listener.sealedWindowRefusal(method)
-		if !refused || msg != sealedwindow.ClosedMessage {
-			t.Errorf("listener gate, unsealed: %s = (%q, %v), want (%q, true)", method, msg, refused, sealedwindow.ClosedMessage)
+		r, refused := listener.sealedWindowRefusal(method)
+		if !refused || r.msg != sealedwindow.ClosedMessage {
+			t.Errorf("listener gate, unsealed: %s = (%+v, %v), want (%q, true)", method, r, refused, sealedwindow.ClosedMessage)
 		}
 	}
 }
@@ -91,7 +105,9 @@ func TestSealedWindowAllowed_NonAllowlistedMethods(t *testing.T) {
 }
 
 // fakeSealedProbe is a deterministic sealedWindowProbe test double.
-type fakeSealedProbe struct{ sealed bool }
+type fakeSealedProbe struct{ sealed, enrollment bool }
+
+func (f *fakeSealedProbe) EnrollmentOpen() bool { return f.enrollment }
 
 func (f *fakeSealedProbe) IsSealed() bool { return f.sealed }
 

@@ -25,10 +25,11 @@ import (
 
 // fakeProbe is a deterministic sdk.SealedWindowProbe.
 type fakeProbe struct {
-	sealed bool
+	sealed, enrollment bool
 }
 
-func (p *fakeProbe) IsSealed() bool { return p.sealed }
+func (p *fakeProbe) IsSealed() bool       { return p.sealed }
+func (p *fakeProbe) EnrollmentOpen() bool { return p.enrollment }
 
 // Compile-time checks that the sealed-window re-exports satisfy the
 // upstream contracts.

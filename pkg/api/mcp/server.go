@@ -27,6 +27,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -110,9 +111,9 @@ type Server struct {
 	// envelope on every transport.
 	sealedWindowProbe sealedWindowProbe
 
-	// sealedWindowListener selects the boot-time sealed-window listener's
-	// gate, which refuses every request once the barrier is unsealed.
-	sealedWindowListener bool
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// bearerChallenge, when non-empty, is the exact WWW-Authenticate header
 	// value returned with 401 Unauthorized when a request to the MCP
@@ -428,7 +429,7 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = false
+		s.sealedWindowListener = nil
 	}
 }
 
@@ -439,10 +440,11 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 // runs without authentication, so it must not serve anything against an
 // unsealed barrier, even in the moment before it is stopped. It replaces
 // WithSealedWindowProbe; the last of the two applied wins.
-func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = true
+		s.sealedWindowListener = probe
 	}
 }
 
@@ -724,7 +726,7 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		mcpHandler = s.authenticateHandler(mcpHandler)
 	}
-	if s.sealedWindowListener {
+	if s.sealedWindowListener != nil {
 		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)
 	}
 

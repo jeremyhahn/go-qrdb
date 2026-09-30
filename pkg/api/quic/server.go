@@ -31,6 +31,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -88,9 +89,9 @@ type Server struct {
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
 	sealedWindowProbe sealedWindowProbe
-	// sealedWindowListener selects the boot-time sealed-window listener's
-	// gate, which refuses every method once the barrier is unsealed.
-	sealedWindowListener bool
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
@@ -311,7 +312,7 @@ type sealedWindowProbe interface {
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = false
+		s.sealedWindowListener = nil
 	}
 }
 
@@ -322,10 +323,11 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 // anything against an unsealed barrier, even in the moment before it is
 // stopped. It replaces WithSealedWindowProbe; the last of the two applied
 // wins.
-func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = true
+		s.sealedWindowListener = probe
 	}
 }
 
@@ -812,9 +814,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// admin.Status) over the native QUIC transport. On the boot-time
 	// sealed-window listener every method is rejected once the barrier is
 	// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
-	if msg, refused := s.sealedWindowRefusal(method); refused {
-		_ = s.writeResponse(stream, requestID, wire.StatusUnavailable, []byte(msg))
-		s.logRequest(method, requestID, wire.StatusUnavailable, start)
+	if refusal, refused := s.sealedWindowRefusal(method); refused {
+		_ = s.writeResponse(stream, requestID, refusal.status, []byte(refusal.msg))
+		s.logRequest(method, requestID, refusal.status, start)
 		return
 	}
 

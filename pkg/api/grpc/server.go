@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -109,9 +110,9 @@ type Server struct {
 	// codes.Unavailable. When nil the interceptors are not installed.
 	sealedWindowProbe sealedWindowProbe
 
-	// sealedWindowListener selects the boot-time sealed-window listener's
-	// interceptors, which refuse every method once the barrier is unsealed.
-	sealedWindowListener bool
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's interceptors. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// modules holds capability modules whose gRPC services are attached
 	// to the *grpc.Server at construction. Set via WithServiceModules by
@@ -369,7 +370,7 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = false
+		s.sealedWindowListener = nil
 	}
 }
 
@@ -379,10 +380,11 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 // while the barrier is sealed, and codes.Unavailable for every method once
 // it is unsealed, sampled per call. It replaces WithSealedWindowProbe; the
 // last of the two applied wins.
-func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = true
+		s.sealedWindowListener = probe
 	}
 }
 

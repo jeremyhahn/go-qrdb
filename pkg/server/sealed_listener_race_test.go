@@ -233,10 +233,4 @@ func TestSealedWindowOptions_LastWins(t *testing.T) {
 	if o.sealedWindowListener {
 		t.Fatal("WithSealedWindowProbe applied last must select the regular gate")
 	}
-	if got := sealedWindowGate(true, "gate", "closed"); got != "closed" {
-		t.Errorf("sealedWindowGate(true) = %q, want closed", got)
-	}
-	if got := sealedWindowGate(false, "gate", "closed"); got != "gate" {
-		t.Errorf("sealedWindowGate(false) = %q, want gate", got)
-	}
 }

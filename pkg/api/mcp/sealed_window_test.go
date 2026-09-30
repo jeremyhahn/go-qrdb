@@ -26,7 +26,9 @@ import (
 )
 
 // fakeMCPSealedProbe is a deterministic sealedWindowProbe test double.
-type fakeMCPSealedProbe struct{ sealed bool }
+type fakeMCPSealedProbe struct{ sealed, enrollment bool }
+
+func (f *fakeMCPSealedProbe) EnrollmentOpen() bool { return f.enrollment }
 
 func (f *fakeMCPSealedProbe) IsSealed() bool { return f.sealed }
 
@@ -191,11 +193,41 @@ func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
 func TestWithSealedWindowListener_MCP_Configures(t *testing.T) {
 	probe := &fakeMCPSealedProbe{}
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(probe))
-	if srv.sealedWindowProbe == nil || !srv.sealedWindowListener {
+	if srv.sealedWindowProbe == nil || srv.sealedWindowListener == nil {
 		t.Fatal("WithSealedWindowListener did not install the listener gate")
 	}
 	WithSealedWindowProbe(probe)(srv)
-	if srv.sealedWindowListener {
+	if srv.sealedWindowListener != nil {
 		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
+	}
+}
+
+// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: the MCP
+// listener gate refuses the registration tools with PERMISSION_DENIED once
+// enrollment has closed, and admits them while open.
+func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T) {
+	probe := &fakeMCPSealedProbe{sealed: true}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(probe))
+	mw := srv.sealedWindowMiddleware()
+	called := false
+	next := func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		called = true
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	for _, tool := range []string{"qrdb_barrier_officer_register", "qrdb_barrier_recovery_officer_register"} {
+		called = false
+		result, err := mw(next)(context.Background(), buildCallToolRequest(t, tool, map[string]any{}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		payload, ok := wire.DecodeErrorPayload(result.StructuredContent)
+		if called || !ok || payload.Code != wire.CodePermissionDenied {
+			t.Errorf("%s, enrollment closed: called=%v payload=%+v, want PERMISSION_DENIED", tool, called, payload)
+		}
+	}
+	probe.enrollment = true
+	called = false
+	if _, err := mw(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{})); err != nil || !called {
+		t.Errorf("enrollment open: called=%v err=%v", called, err)
 	}
 }

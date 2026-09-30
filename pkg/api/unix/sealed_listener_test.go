@@ -38,7 +38,7 @@ func TestWithSealedWindowListener_RefusesOnceUnsealed(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
 		WithSealedWindowListener(probe),
 		WithTLS(tlsCfg))
-	if !srv.sealedWindowListener {
+	if srv.sealedWindowListener == nil {
 		t.Fatal("WithSealedWindowListener did not select the listener gate")
 	}
 	if err := srv.Start(); err != nil {
@@ -56,7 +56,7 @@ func TestWithSealedWindowListener_RefusesOnceUnsealed(t *testing.T) {
 	}
 
 	WithSealedWindowProbe(probe)(srv)
-	if srv.sealedWindowListener {
+	if srv.sealedWindowListener != nil {
 		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
 	}
 }

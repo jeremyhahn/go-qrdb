@@ -209,7 +209,7 @@ var Table = map[Verb]Names{
 	// recovery-officer-register shares officer-register's PreOperationalOnly
 	// rationale: it enrolls a recovery officer via the same
 	// CSR-sign-and-assign-share flow with no service-layer auth.
-	VerbRecoveryOfficerRegister:    {REST: []string{"/v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", PreOperationalOnly: true},
+	VerbRecoveryOfficerRegister:    {REST: []string{"POST /v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", PreOperationalOnly: true},
 	VerbRecoveryShareClaimBegin:    {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
 	VerbRecoveryShareClaimComplete: {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
 
@@ -349,6 +349,96 @@ func RESTEntryMatches(entry, method, path string) bool {
 	return path == entry
 }
 
+// RESTPreOperationalOnly derives the REST entries of the PreOperationalOnly
+// verbs from Table, in the RESTAllowlist entry format.
+func RESTPreOperationalOnly() []string {
+	var out []string
+	for _, v := range Verbs {
+		if Table[v].PreOperationalOnly {
+			out = append(out, Table[v].REST...)
+		}
+	}
+	return out
+}
+
+// GRPCFullMethodPreOperationalOnly derives the fully-qualified gRPC methods
+// of the PreOperationalOnly verbs on serviceName.
+func GRPCFullMethodPreOperationalOnly(serviceName string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.PreOperationalOnly && n.GRPC != "" {
+			out["/"+serviceName+"/"+n.GRPC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// QUICPreOperationalOnly derives the native QUIC methods of the
+// PreOperationalOnly verbs.
+func QUICPreOperationalOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.PreOperationalOnly && n.QUIC != "" {
+			out[n.QUIC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// MCPPreOperationalOnly derives the MCP tools of the PreOperationalOnly
+// verbs.
+func MCPPreOperationalOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.PreOperationalOnly && n.MCP != "" {
+			out[n.MCP] = struct{}{}
+		}
+	}
+	return out
+}
+
+// ListenerProbe is what the boot-time sealed-window listener's gate reads for
+// every request: whether the barrier is sealed, and whether officer
+// enrollment is still open to an unauthenticated caller (see
+// ceremony.CeremonyService.EnrollmentOpen). An implementation answers
+// EnrollmentOpen false whenever it cannot tell.
+type ListenerProbe interface {
+	IsSealed() bool
+	EnrollmentOpen() bool
+}
+
+// OrFailClosed returns p, or when p is nil a ListenerProbe that reports the
+// barrier unsealed and enrollment closed, so a listener gate built without a
+// probe refuses every request.
+func OrFailClosed(p ListenerProbe) ListenerProbe {
+	if p == nil {
+		return failClosed{}
+	}
+	return p
+}
+
+// failClosed is the probe OrFailClosed substitutes for a missing one.
+type failClosed struct{}
+
+func (failClosed) IsSealed() bool       { return false }
+func (failClosed) EnrollmentOpen() bool { return false }
+
+// Request is what a sealed-window gate knows about one request.
+type Request struct {
+	// Sealed is the barrier state sampled for this request.
+	Sealed bool
+	// Allowlisted reports whether the request names a Table verb on its
+	// transport.
+	Allowlisted bool
+	// PreOperationalOnly reports whether that verb is PreOperationalOnly.
+	PreOperationalOnly bool
+	// Listener marks the boot-time sealed-window listener's gate.
+	Listener bool
+	// EnrollmentOpen is ListenerProbe.EnrollmentOpen, sampled for this
+	// request. Only a PreOperationalOnly request on the listener reads it.
+	EnrollmentOpen bool
+}
+
 // Decision is a sealed-window gate's verdict on one request.
 type Decision int
 
@@ -361,6 +451,9 @@ const (
 	// RefuseClosed refuses a request on the boot-time sealed-window listener
 	// once the barrier is unsealed.
 	RefuseClosed
+	// RefuseEnrollmentClosed refuses a PreOperationalOnly request on the
+	// boot-time sealed-window listener once officer enrollment has closed.
+	RefuseEnrollmentClosed
 )
 
 // ClosedMessage is the refusal text of the boot-time sealed-window listener
@@ -368,28 +461,38 @@ const (
 // client retries there.
 const ClosedMessage = "sealed-window listener closed: barrier unsealed"
 
+// EnrollmentClosedMessage is the refusal text of an anonymous officer
+// registration once the enrollment ceremony is over. Officers are registered
+// after that through an authenticated listener.
+const EnrollmentClosedMessage = "officer enrollment is closed to unauthenticated callers: register officers through an authenticated listener"
+
 // Decide is the one sealed-window admission rule every transport applies.
 //
-// sealed is the barrier state sampled for THIS request. allowlisted reports
-// whether the request names a Table verb on its transport.
+// A gate on a regular listener serves every request once the barrier is
+// unsealed, and the listener's own authentication decides. While the barrier
+// is sealed it serves the allowlist, still behind that authentication.
 //
-// A gate on a regular listener (listener false) serves every request once
-// the barrier is unsealed, and the listener's own authentication decides.
-//
-// The boot-time sealed-window listener (listener true) has no
-// authentication middleware, because while the barrier is sealed there is no
-// identity plane to authenticate against, so its allowlist is anonymous. It
-// must stop serving the moment the barrier unseals, not when it is next
-// polled and stopped: otherwise every route registered on it runs
-// anonymously against an unsealed barrier. It therefore refuses every
-// request once unsealed, allowlisted or not.
-func Decide(sealed, allowlisted, listener bool) Decision {
+// The boot-time sealed-window listener has no authentication middleware,
+// because while the barrier is sealed there is no identity plane to
+// authenticate against, so its allowlist is anonymous. It must stop serving
+// the moment the barrier unseals, not when it is next polled and stopped:
+// otherwise every route registered on it runs anonymously against an
+// unsealed barrier. It therefore refuses every request once unsealed,
+// allowlisted or not. While sealed it also refuses a PreOperationalOnly verb
+// (officer registration) once enrollment has closed, because that exemption
+// is justified only while the enrollment ceremony can still use a new
+// officer.
+func Decide(r Request) Decision {
 	switch {
-	case !sealed && listener:
+	case !r.Sealed && r.Listener:
 		return RefuseClosed
-	case !sealed, allowlisted:
+	case !r.Sealed:
 		return Serve
-	default:
+	case !r.Allowlisted:
 		return RefuseSealed
+	case r.Listener && r.PreOperationalOnly && !r.EnrollmentOpen:
+		return RefuseEnrollmentClosed
+	default:
+		return Serve
 	}
 }

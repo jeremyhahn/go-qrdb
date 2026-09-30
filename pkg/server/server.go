@@ -38,6 +38,7 @@ import (
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	quicapi "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	unixapi "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -441,14 +442,33 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 	}
 }
 
-// sealedWindowGate selects a transport's sealed-window option: the
-// boot-time listener's gate when listener is set, the regular gate
-// otherwise.
-func sealedWindowGate[F any](listener bool, gate, closed F) F {
-	if listener {
-		return closed
+// sealedWindowListenerProbe is the boot-time sealed-window listener's probe:
+// the barrier's sealed state, and whether officer enrollment is still open to
+// an unauthenticated caller, read from the ceremony core the listener serves
+// (ceremony.CeremonyService.EnrollmentOpen). With no ceremony core there is
+// no enrollment to keep open, so it reports closed.
+type sealedWindowListenerProbe struct {
+	SealedWindowProbe
+	ceremony *ceremony.CeremonyService
+}
+
+// EnrollmentOpen implements sealedwindow.ListenerProbe.
+func (p sealedWindowListenerProbe) EnrollmentOpen() bool {
+	return p.ceremony != nil && p.ceremony.EnrollmentOpen(context.Background())
+}
+
+var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
+
+// listenerProbe returns the boot-time sealed-window listener's probe over
+// this server's barrier probe and ceremony service.
+func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
+	p := sealedWindowListenerProbe{SealedWindowProbe: s.opts.sealedWindowProbe}
+	if s.opts.ceremonySvc != nil {
+		if core, ok := service.CeremonyServiceCore(s.opts.ceremonySvc); ok {
+			p.ceremony = core
+		}
 	}
-	return gate
+	return p
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
@@ -1340,7 +1360,11 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		restOpts = append(restOpts, sealedWindowGate(s.opts.sealedWindowListener, rest.WithSealedWindowProbe, rest.WithSealedWindowListener)(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			restOpts = append(restOpts, rest.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
@@ -1573,7 +1597,11 @@ func (s *Server) startGRPC() error {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		grpcOpts = append(grpcOpts, sealedWindowGate(s.opts.sealedWindowListener, grpcapi.WithSealedWindowProbe, grpcapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
@@ -1695,7 +1723,11 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		quicOpts = append(quicOpts, sealedWindowGate(s.opts.sealedWindowListener, quicapi.WithSealedWindowProbe, quicapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			quicOpts = append(quicOpts, quicapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.collectionSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCollectionService(s.opts.collectionSvc))
@@ -1814,7 +1846,11 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		unixOpts = append(unixOpts, sealedWindowGate(s.opts.sealedWindowListener, unixapi.WithSealedWindowProbe, unixapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			unixOpts = append(unixOpts, unixapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
@@ -1943,7 +1979,11 @@ func (s *Server) startMCP() error {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		mcpOpts = append(mcpOpts, sealedWindowGate(s.opts.sealedWindowListener, mcpapi.WithSealedWindowProbe, mcpapi.WithSealedWindowListener)(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))

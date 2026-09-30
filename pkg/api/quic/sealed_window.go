@@ -14,7 +14,10 @@
 
 package quic
 
-import "github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+)
 
 // SealedWindowAllowlist is the set of native QUIC method names that
 // remain operative while the barrier is sealed. Methods not in this
@@ -33,21 +36,40 @@ func sealedWindowAllowed(method string) bool {
 	return ok
 }
 
-// sealedWindowRefusals maps each refusing sealedwindow.Decision to the
-// message of its wire.StatusUnavailable response. sealedwindow.Serve is
-// absent: it admits.
-var sealedWindowRefusals = map[sealedwindow.Decision]string{
-	sealedwindow.RefuseSealed: "barrier sealed",
-	sealedwindow.RefuseClosed: sealedwindow.ClosedMessage,
+// sealedWindowPreOperationalOnly holds the native QUIC methods of the
+// PreOperationalOnly verbs (officer and recovery-officer registration).
+var sealedWindowPreOperationalOnly = sealedwindow.QUICPreOperationalOnly()
+
+// sealedWindowRefusal is how the QUIC gate answers one refusing Decision.
+type sealedWindowRefusal struct {
+	status uint16
+	msg    string
+}
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to its
+// response. sealedwindow.Serve is absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
+	sealedwindow.RefuseSealed:           {status: wire.StatusUnavailable, msg: "barrier sealed"},
+	sealedwindow.RefuseClosed:           {status: wire.StatusUnavailable, msg: sealedwindow.ClosedMessage},
+	sealedwindow.RefuseEnrollmentClosed: {status: wire.StatusPermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
 }
 
 // sealedWindowRefusal applies the sealed-window gate to method. It reports
-// the refusal message and true when the gate refuses the request, and ""
-// and false when it admits it or no gate is installed.
-func (s *Server) sealedWindowRefusal(method string) (string, bool) {
+// the refusal and true when the gate refuses the request, and false when it
+// admits it or no gate is installed.
+func (s *Server) sealedWindowRefusal(method string) (sealedWindowRefusal, bool) {
 	if s.sealedWindowProbe == nil {
-		return "", false
+		return sealedWindowRefusal{}, false
 	}
-	msg, refused := sealedWindowRefusals[sealedwindow.Decide(s.sealedWindowProbe.IsSealed(), sealedWindowAllowed(method), s.sealedWindowListener)]
-	return msg, refused
+	req := sealedwindow.Request{
+		Sealed:      s.sealedWindowProbe.IsSealed(),
+		Allowlisted: sealedWindowAllowed(method),
+		Listener:    s.sealedWindowListener != nil,
+	}
+	if _, preOp := sealedWindowPreOperationalOnly[method]; preOp && req.Listener && req.Sealed && req.Allowlisted {
+		req.PreOperationalOnly = true
+		req.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen()
+	}
+	refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
+	return refusal, refused
 }

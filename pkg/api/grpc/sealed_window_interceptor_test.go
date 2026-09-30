@@ -26,11 +26,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
-type fakeSealProbe struct{ sealed atomic.Bool }
+type fakeSealProbe struct{ sealed, enrollment atomic.Bool }
 
-func (f *fakeSealProbe) IsSealed() bool { return f.sealed.Load() }
-func (f *fakeSealProbe) seal()          { f.sealed.Store(true) }
-func (f *fakeSealProbe) unseal()        { f.sealed.Store(false) }
+func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }
+func (f *fakeSealProbe) EnrollmentOpen() bool { return f.enrollment.Load() }
+func (f *fakeSealProbe) seal()                { f.sealed.Store(true) }
+func (f *fakeSealProbe) unseal()              { f.sealed.Store(false) }
 
 func newProbe(sealed bool) *fakeSealProbe {
 	p := &fakeSealProbe{}
@@ -302,11 +303,37 @@ func TestWithSealedWindowListener_SelectsListenerGate(t *testing.T) {
 	s := &Server{}
 	probe := newProbe(false)
 	WithSealedWindowListener(probe)(s)
-	if s.sealedWindowProbe == nil || !s.sealedWindowListener {
+	if s.sealedWindowProbe == nil || s.sealedWindowListener == nil {
 		t.Fatal("WithSealedWindowListener did not install the listener gate")
 	}
 	WithSealedWindowProbe(probe)(s)
-	if s.sealedWindowListener {
+	if s.sealedWindowListener != nil {
 		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
+	}
+}
+
+// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: the
+// listener's interceptor refuses officer registration with PermissionDenied
+// once enrollment has closed, and admits it while open.
+func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T) {
+	probe := newProbe(true)
+	unary := SealedWindowListenerUnaryInterceptor(probe, nil)
+	for _, method := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"} {
+		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+		st, _ := status.FromError(err)
+		if st.Code() != codes.PermissionDenied || st.Message() != sealedwindow.EnrollmentClosedMessage {
+			t.Errorf("%s, enrollment closed: %v, want PermissionDenied", method, err)
+		}
+	}
+	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerClaimStatus"}, dummyHandler); err != nil {
+		t.Errorf("claim-status with enrollment closed: %v", err)
+	}
+	if _, err := SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerRegister"}, dummyHandler); err != nil {
+		t.Errorf("regular gate: %v (authentication decides)", err)
+	}
+	probe.enrollment.Store(true)
+	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerRegister"}, dummyHandler); err != nil {
+		t.Errorf("enrollment open: %v", err)
 	}
 }

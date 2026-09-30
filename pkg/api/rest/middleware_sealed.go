@@ -46,6 +46,30 @@ const sealedResponseBody = `{"error":"barrier sealed","code":"SEALED"}`
 // listener returns for every request once the barrier is unsealed.
 const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code":"SEALED_WINDOW_CLOSED"}`
 
+// enrollmentClosedResponseBody is the JSON envelope the boot-time
+// sealed-window listener returns for an anonymous officer registration once
+// enrollment has closed.
+const enrollmentClosedResponseBody = `{"error":"` + sealedwindow.EnrollmentClosedMessage + `","code":"ENROLLMENT_CLOSED"}`
+
+// sealedWindowPreOperationalOnly holds the REST entries of the
+// PreOperationalOnly verbs (officer and recovery-officer registration).
+var sealedWindowPreOperationalOnly = sealedwindow.RESTPreOperationalOnly()
+
+// sealedWindowRefusal is how the REST gate answers one refusing Decision.
+type sealedWindowRefusal struct {
+	status     int
+	body       string
+	retryAfter bool
+}
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to its
+// response. sealedwindow.Serve is absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
+	sealedwindow.RefuseSealed:           {status: http.StatusServiceUnavailable, body: sealedResponseBody, retryAfter: true},
+	sealedwindow.RefuseClosed:           {status: http.StatusServiceUnavailable, body: closedResponseBody, retryAfter: true},
+	sealedwindow.RefuseEnrollmentClosed: {status: http.StatusForbidden, body: enrollmentClosedResponseBody},
+}
+
 // SealedWindowMiddleware returns an http middleware that 503s every
 // request not on the allowlist while the supplied barrier is
 // sealed. Once the barrier is unsealed the middleware becomes a
@@ -59,7 +83,7 @@ const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code"
 // The middleware sets a Retry-After: 5 header on rejected responses
 // so well-behaved clients back off during the unseal window.
 func SealedWindowMiddleware(barrier sealedWindowProbe, allowlist []string) func(http.Handler) http.Handler {
-	return sealedWindowGate(barrier, allowlist, false)
+	return sealedWindowGate(barrier, allowlist, nil)
 }
 
 // SealedWindowListenerMiddleware returns the gate of the boot-time
@@ -67,38 +91,51 @@ func SealedWindowMiddleware(barrier sealedWindowProbe, allowlist []string) func(
 // allowlist, exactly as SealedWindowMiddleware does. Once the barrier is
 // unsealed it refuses EVERY request with 503: that listener runs without
 // authentication, so it must not serve anything against an unsealed
-// barrier, even in the moment before it is stopped. The barrier state is
-// sampled on every request; a nil barrier refuses every request.
-func SealedWindowListenerMiddleware(barrier sealedWindowProbe, allowlist []string) func(http.Handler) http.Handler {
-	return sealedWindowGate(barrier, allowlist, true)
+// barrier, even in the moment before it is stopped. While sealed it also
+// refuses officer and recovery-officer registration with 403
+// ENROLLMENT_CLOSED once probe.EnrollmentOpen reports enrollment closed. The
+// probe is sampled on every request; a nil probe refuses every request.
+func SealedWindowListenerMiddleware(probe sealedwindow.ListenerProbe, allowlist []string) func(http.Handler) http.Handler {
+	probe = sealedwindow.OrFailClosed(probe)
+	return sealedWindowGate(probe, allowlist, probe)
 }
 
-// sealedWindowGate applies sealedwindow.Decide to every request.
-func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener bool) func(http.Handler) http.Handler {
+// sealedWindowGate applies sealedwindow.Decide to every request. listener is
+// nil for a regular listener's gate and the probe of the boot-time
+// sealed-window listener otherwise.
+func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener sealedwindow.ListenerProbe) func(http.Handler) http.Handler {
 	if allowlist == nil {
 		allowlist = SealedWindowAllowlist
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			sealed := barrier != nil && barrier.IsSealed()
-			switch sealedwindow.Decide(sealed, requestInAllowlist(r, allowlist), listener) {
-			case sealedwindow.Serve:
-				next.ServeHTTP(w, r)
-			case sealedwindow.RefuseClosed:
-				writeSealedWindowRefusal(w, closedResponseBody)
-			default:
-				writeSealedWindowRefusal(w, sealedResponseBody)
+			req := sealedwindow.Request{
+				Sealed:      barrier != nil && barrier.IsSealed(),
+				Allowlisted: requestInAllowlist(r, allowlist),
+				Listener:    listener != nil,
 			}
+			if req.Listener && req.Sealed && req.Allowlisted && requestInAllowlist(r, sealedWindowPreOperationalOnly) {
+				req.PreOperationalOnly = true
+				req.EnrollmentOpen = listener.EnrollmentOpen()
+			}
+			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
+			if !refused {
+				next.ServeHTTP(w, r)
+				return
+			}
+			writeSealedWindowRefusal(w, refusal)
 		})
 	}
 }
 
-// writeSealedWindowRefusal writes a sealed-window 503 with body.
-func writeSealedWindowRefusal(w http.ResponseWriter, body string) {
+// writeSealedWindowRefusal writes a sealed-window refusal.
+func writeSealedWindowRefusal(w http.ResponseWriter, refusal sealedWindowRefusal) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Retry-After", "5")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(body))
+	if refusal.retryAfter {
+		w.Header().Set("Retry-After", "5")
+	}
+	w.WriteHeader(refusal.status)
+	_, _ = w.Write([]byte(refusal.body))
 }
 
 // requestInAllowlist reports whether r matches an entry in the allowlist.

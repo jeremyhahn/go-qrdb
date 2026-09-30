@@ -19,7 +19,12 @@ are not reconstructed here — their history is in the git log.
   `WithSealedWindowListener` option on the REST, gRPC, Unix, QUIC and MCP
   servers, and `sealedwindow.Decide` / `RESTEntryMatches`: the gate of a
   boot-time sealed-window listener, which refuses every request once the
-  barrier is unsealed.
+  barrier is unsealed and anonymous officer registration once enrollment has
+  closed (`sealedwindow.ListenerProbe`, re-exported as
+  `sdk.SealedWindowListenerProbe`).
+- `ceremony.CeremonyService.EnrollmentOpen`,
+  `seal.StorageBarrier.MarkCeremonyOperational` / `CeremonyOperational` /
+  `Initialized`.
 - `forward.ClusterPeer` and `forward.MaxBodyBytes`, the cluster-node check
   and the body bound a receiver applies to a forwarded on-behalf request
   before reading its body.
@@ -312,6 +317,18 @@ are not reconstructed here — their history is in the git log.
   handshake completed. 0-RTT data is replayable, so an on-path attacker could
   resend a captured request, including a state-changing one, and have it
   processed again. A resumed client now completes a full handshake first.
+- **Anonymous officer enrollment closes once the ceremony is over, including
+  after a restart while sealed (high).** Officer and recovery-officer
+  registration CA-sign any CSR they are given, and they are anonymous on the
+  boot-time sealed-window listener. They were flagged `PreOperationalOnly`,
+  but nothing enforced that. Ceremony state lives in memory, so a daemon
+  restarted while sealed started a fresh, pre-operational ceremony and gave an
+  anonymous caller a certificate signed by the cluster CA. The listener now
+  refuses both verbs once enrollment has closed. It closes when the ceremony
+  is operational, when the barrier records an operational ceremony (a marker
+  written to the barrier's plaintext store, readable while sealed), or when
+  the barrier is initialized. It fails closed. The refusal is `403`
+  `ENROLLMENT_CLOSED` / `PERMISSION_DENIED`.
 
 ### Known limits
 

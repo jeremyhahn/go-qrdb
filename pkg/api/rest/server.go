@@ -37,6 +37,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -235,9 +236,11 @@ type Server struct {
 	// middleware is not installed and the server behaves as before.
 	sealedWindowProbe sealedWindowProbe
 
-	// sealedWindowListener selects the boot-time sealed-window listener's
-	// gate, which refuses every request once the barrier is unsealed.
-	sealedWindowListener bool
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate: every request refused once the
+	// barrier is unsealed, and officer registration refused once enrollment
+	// has closed. Nil for a regular listener's gate.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
@@ -659,19 +662,21 @@ func WithServiceRegistry(reg ServiceRegistry) ServerOption {
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = false
+		s.sealedWindowListener = nil
 	}
 }
 
 // WithSealedWindowListener installs the gate of the boot-time sealed-window
 // listener (SealedWindowListenerMiddleware) backed by probe: the allowlist
-// while the barrier is sealed, and a 503 for every request once it is
-// unsealed, sampled per request. It replaces WithSealedWindowProbe; the last
-// of the two applied wins.
-func WithSealedWindowListener(probe sealedWindowProbe) ServerOption {
+// while the barrier is sealed, less officer registration once enrollment has
+// closed, and a 503 for every request once it is unsealed, sampled per
+// request. A nil probe refuses everything. It replaces WithSealedWindowProbe;
+// the last of the two applied wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
 		s.sealedWindowProbe = probe
-		s.sealedWindowListener = true
+		s.sealedWindowListener = probe
 	}
 }
 

@@ -202,7 +202,7 @@ func (s *CeremonyService) CompleteClaimShare(
 	}
 
 	if s.allClaimsComplete() {
-		s.state = StateOperational
+		s.becomeOperationalLocked(ctx)
 		s.logger.Info("all claims complete, ceremony operational")
 	}
 

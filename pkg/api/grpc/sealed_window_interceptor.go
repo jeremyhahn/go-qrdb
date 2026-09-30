@@ -62,7 +62,7 @@ var SealedWindowAllowlist = sealedwindow.GRPCFullMethodAllowlist(pb.QRDBService_
 // used. Entries are fully-qualified gRPC method paths
 // ("/qrdb.v1.QRDBService/Health") matched in full against info.FullMethod.
 func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
-	return sealedWindowUnary(barrier, allowlist, false)
+	return sealedWindowUnary(barrier, allowlist, nil)
 }
 
 // SealedWindowListenerUnaryInterceptor returns the unary gate of the
@@ -70,10 +70,13 @@ func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string)
 // only the allowlist, exactly as SealedWindowUnaryInterceptor does. Once
 // the barrier is unsealed it refuses EVERY method with codes.Unavailable:
 // that listener runs without authentication, so it must not serve anything
-// against an unsealed barrier, even in the moment before it is stopped. The
-// barrier state is sampled on every call; a nil barrier refuses every call.
-func SealedWindowListenerUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
-	return sealedWindowUnary(barrier, allowlist, true)
+// against an unsealed barrier, even in the moment before it is stopped.
+// While sealed it also refuses officer and recovery-officer registration with
+// codes.PermissionDenied once probe.EnrollmentOpen reports enrollment closed.
+// The probe is sampled on every call; a nil probe refuses every call.
+func SealedWindowListenerUnaryInterceptor(probe sealedwindow.ListenerProbe, allowlist []string) grpc.UnaryServerInterceptor {
+	probe = sealedwindow.OrFailClosed(probe)
+	return sealedWindowUnary(probe, allowlist, probe)
 }
 
 // SealedWindowStreamInterceptor returns the streaming-RPC sibling of
@@ -82,17 +85,20 @@ func SealedWindowListenerUnaryInterceptor(barrier sealedWindowProbe, allowlist [
 // with codes.Unavailable before the handler is invoked, so partial
 // streams cannot leak past the seal boundary.
 func SealedWindowStreamInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.StreamServerInterceptor {
-	return sealedWindowStream(barrier, allowlist, false)
+	return sealedWindowStream(barrier, allowlist, nil)
 }
 
 // SealedWindowListenerStreamInterceptor returns the streaming-RPC sibling
 // of SealedWindowListenerUnaryInterceptor.
-func SealedWindowListenerStreamInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.StreamServerInterceptor {
-	return sealedWindowStream(barrier, allowlist, true)
+func SealedWindowListenerStreamInterceptor(probe sealedwindow.ListenerProbe, allowlist []string) grpc.StreamServerInterceptor {
+	probe = sealedwindow.OrFailClosed(probe)
+	return sealedWindowStream(probe, allowlist, probe)
 }
 
-// sealedWindowUnary applies sealedwindow.Decide to every unary call.
-func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener bool) grpc.UnaryServerInterceptor {
+// sealedWindowUnary applies sealedwindow.Decide to every unary call. listener
+// is nil for a regular listener's gate and the boot-time sealed-window
+// listener's probe otherwise.
+func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener sealedwindow.ListenerProbe) grpc.UnaryServerInterceptor {
 	allowSet := sealedWindowAllowSet(allowlist)
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
@@ -103,7 +109,7 @@ func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener b
 }
 
 // sealedWindowStream applies sealedwindow.Decide to every stream.
-func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener bool) grpc.StreamServerInterceptor {
+func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener sealedwindow.ListenerProbe) grpc.StreamServerInterceptor {
 	allowSet := sealedWindowAllowSet(allowlist)
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
@@ -129,15 +135,28 @@ func sealedWindowAllowSet(allowlist []string) map[string]struct{} {
 // sealedWindowRefusals maps each refusing sealedwindow.Decision to its
 // status. sealedwindow.Serve is absent: it admits.
 var sealedWindowRefusals = map[sealedwindow.Decision]error{
-	sealedwindow.RefuseSealed: status.Error(codes.Unavailable, "barrier sealed"),
-	sealedwindow.RefuseClosed: status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
+	sealedwindow.RefuseSealed:           status.Error(codes.Unavailable, "barrier sealed"),
+	sealedwindow.RefuseClosed:           status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
+	sealedwindow.RefuseEnrollmentClosed: status.Error(codes.PermissionDenied, sealedwindow.EnrollmentClosedMessage),
 }
+
+// sealedWindowPreOperationalOnly holds the QRDBService methods of the
+// PreOperationalOnly verbs (officer and recovery-officer registration).
+var sealedWindowPreOperationalOnly = sealedwindow.GRPCFullMethodPreOperationalOnly(pb.QRDBService_ServiceDesc.ServiceName)
 
 // sealedWindowAdmit returns nil when the gate admits fullMethod, and the
 // refusal status otherwise.
-func sealedWindowAdmit(barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener bool) error {
-	sealed := barrier != nil && barrier.IsSealed()
-	return sealedWindowRefusals[sealedwindow.Decide(sealed, methodAllowed(fullMethod, allowSet), listener)]
+func sealedWindowAdmit(barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener sealedwindow.ListenerProbe) error {
+	req := sealedwindow.Request{
+		Sealed:      barrier != nil && barrier.IsSealed(),
+		Allowlisted: methodAllowed(fullMethod, allowSet),
+		Listener:    listener != nil,
+	}
+	if req.Listener && req.Sealed && req.Allowlisted && methodAllowed(fullMethod, sealedWindowPreOperationalOnly) {
+		req.PreOperationalOnly = true
+		req.EnrollmentOpen = listener.EnrollmentOpen()
+	}
+	return sealedWindowRefusals[sealedwindow.Decide(req)]
 }
 
 // methodAllowed checks whether the fully-qualified info.FullMethod

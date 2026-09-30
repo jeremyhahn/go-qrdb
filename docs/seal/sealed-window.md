@@ -56,7 +56,8 @@ The full per-transport names are in `sealedwindow.Table`.
 
 REST entries are paths, or method-qualified `METHOD /path` entries where
 one path serves several verbs. `officer-register` is `POST
-/v1/barrier/officers`, because `GET` on the same path is the officer list.
+/v1/barrier/officers`, because `GET` on the same path is the officer list, and
+`recovery-officer-register` is `POST /v1/barrier/recovery/officers`.
 A path ending in `/` matches by prefix, and anything else matches exactly
 (`sealedwindow.RESTEntryMatches`). REST additionally allowlists one
 transport-specific prefix with no transport-neutral verb
@@ -72,6 +73,34 @@ allowlisted because first-boot Shamir initialization is reachable
 only through the sealed-window listener: officers must be registered
 (and able to claim their shares) before and immediately after
 `InitializeShamir` runs, while the barrier is still sealed.
+
+### Officer enrollment closes (`PreOperationalOnly`)
+
+`officer-register` and `recovery-officer-register` are the two
+`PreOperationalOnly` verbs. Registration CA-signs any CSR it is given and
+assigns a share index, so it is anonymous on the boot-time listener only while
+the enrollment ceremony can still use a new officer. The listener asks
+`ceremony.CeremonyService.EnrollmentOpen` on every request, and enrollment
+closes as soon as any of these is true:
+
+- the ceremony is operational in this process;
+- the barrier records an operational ceremony. The ceremony writes that record
+  (`seal.StorageBarrier.MarkCeremonyOperational`) to the barrier's plaintext
+  store when it reaches operational. The store is readable while sealed, so
+  the record survives a restart while sealed, when the ceremony's in-memory
+  state starts over;
+- the barrier is initialized (`seal.StorageBarrier.Initialized`). Shares are
+  distributed at initialization, and every later enrollment (rekey, recovery
+  officers) runs on the authenticated listener. This also covers a node whose
+  ceremony completed before the record existed.
+
+It fails closed: an unreadable record, or a listener with no ceremony
+service, counts as closed. Once enrollment is closed the listener answers
+registration with `403` and `{"code":"ENROLLMENT_CLOSED"}` on REST,
+`PERMISSION_DENIED` on gRPC and Unix, `StatusPermissionDenied` on QUIC and
+`PERMISSION_DENIED` on MCP. There is no `Retry-After`, because waiting does
+not reopen enrollment. A regular listener never applies this rule: its
+authentication and the route's `seal:officer_register` permission decide.
 
 ### Deliberate exclusions
 

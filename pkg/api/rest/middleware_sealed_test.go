@@ -24,12 +24,13 @@ import (
 )
 
 type fakeSealProbe struct {
-	sealed atomic.Bool
+	sealed, enrollment atomic.Bool
 }
 
-func (f *fakeSealProbe) IsSealed() bool { return f.sealed.Load() }
-func (f *fakeSealProbe) seal()          { f.sealed.Store(true) }
-func (f *fakeSealProbe) unseal()        { f.sealed.Store(false) }
+func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }
+func (f *fakeSealProbe) EnrollmentOpen() bool { return f.enrollment.Load() }
+func (f *fakeSealProbe) seal()                { f.sealed.Store(true) }
+func (f *fakeSealProbe) unseal()              { f.sealed.Store(false) }
 
 func newFakeSealed(sealed bool) *fakeSealProbe {
 	p := &fakeSealProbe{}
@@ -207,11 +208,11 @@ func TestServer_WithSealedWindowListener_InstallsListenerGate(t *testing.T) {
 	probe := newFakeSealed(false)
 	s := &Server{}
 	WithSealedWindowListener(probe)(s)
-	if s.sealedWindowProbe == nil || !s.sealedWindowListener {
+	if s.sealedWindowProbe == nil || s.sealedWindowListener == nil {
 		t.Fatal("WithSealedWindowListener did not install the listener gate")
 	}
 	WithSealedWindowProbe(probe)(s)
-	if s.sealedWindowListener {
+	if s.sealedWindowListener != nil {
 		t.Fatal("WithSealedWindowProbe applied last must install the regular gate")
 	}
 }
@@ -279,6 +280,42 @@ func TestRequestInAllowlist_PrefixExactAndMethod(t *testing.T) {
 	for _, c := range cases {
 		if got := requestInAllowlist(httptest.NewRequest(c.method, c.path, nil), allow); got != c.want {
 			t.Errorf("%s %s got=%v want=%v", c.method, c.path, got, c.want)
+		}
+	}
+}
+
+// TestSealedWindowListener_OfficerRegistrationFollowsEnrollment: on the
+// boot-time listener, anonymous officer and recovery-officer registration is
+// served while enrollment is open and refused 403 ENROLLMENT_CLOSED once it
+// has closed; the claim-status view and the regular gate are unaffected.
+func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T) {
+	probe := newFakeSealed(true)
+	listener := SealedWindowListenerMiddleware(probe, nil)(okHandler)
+	regular := SealedWindowMiddleware(probe, nil)(okHandler)
+	send := func(h http.Handler, method, path string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(method, path, nil))
+		return rr
+	}
+	for _, path := range []string{"/v1/barrier/officers", "/v1/barrier/recovery/officers"} {
+		rr := send(listener, http.MethodPost, path)
+		if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), `"code":"ENROLLMENT_CLOSED"`) {
+			t.Errorf("POST %s, enrollment closed: status %d body %q, want 403 ENROLLMENT_CLOSED", path, rr.Code, rr.Body.String())
+		}
+		if rr.Header().Get("Retry-After") != "" {
+			t.Errorf("POST %s, enrollment closed: Retry-After set; waiting will not reopen enrollment", path)
+		}
+		if rr := send(regular, http.MethodPost, path); rr.Code != http.StatusOK {
+			t.Errorf("regular gate, POST %s: status %d, want 200 (authentication decides)", path, rr.Code)
+		}
+	}
+	if rr := send(listener, http.MethodGet, "/v1/barrier/officers/claim-status"); rr.Code != http.StatusOK {
+		t.Errorf("claim-status with enrollment closed: status %d, want 200", rr.Code)
+	}
+	probe.enrollment.Store(true)
+	for _, path := range []string{"/v1/barrier/officers", "/v1/barrier/recovery/officers"} {
+		if rr := send(listener, http.MethodPost, path); rr.Code != http.StatusOK {
+			t.Errorf("POST %s, enrollment open: status %d, want 200", path, rr.Code)
 		}
 	}
 }
