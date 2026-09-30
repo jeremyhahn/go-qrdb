@@ -265,7 +265,7 @@ func applyNativeBatch(ks keyspace, payload []byte) ([]Mutation, error) {
 // compare.
 func transactionResult(out txnOutcome, revision uint64) sm.Result {
 	if out.refused {
-		return sm.Result{Data: protocol.EncodeAppError(RevisionCompareUnsupportedMessage)}
+		return CapabilityResult(RevisionCompareUnsupportedMessage)
 	}
 	flag := byte(0)
 	if out.succeeded {

@@ -83,7 +83,7 @@ func ResolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 				slog.String("error", handlerErr.Error()),
 				slog.Uint64("entry_index", entryIndex))
 		}
-		return sm.Result{Data: protocol.EncodeAppError(handlerErr.Error())}, false, nil
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, handlerErr.Error())}, false, nil
 	}
 	capErr, ok := protocol.AsCapabilityError(handlerErr)
 	if !ok {

@@ -103,9 +103,7 @@ func assertLeasedWriteRefusedSafely(t *testing.T, c cell, cl clients) {
 	_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
 		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("leased"), Value: []byte("v"), LeaseID: 42}},
 	})
-	// /tx over REST is the go-qrdb#126 named exclusion: its refusal is
-	// excused from carrying the typed error; every other transport is not.
-	assertCapabilityRefusal(t, "ExecuteTransaction(leased write)", err, c.transport == restTransport)
+	assertCapabilityRefusal(t, "ExecuteTransaction(leased write)", err)
 
 	if got, gerr := cl.kv.Get(ctx, "leased"); gerr == nil {
 		t.Errorf("%s: a refused leased write stored leased=%q", c.name(), got)

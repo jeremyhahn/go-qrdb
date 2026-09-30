@@ -329,9 +329,10 @@ func TestInvalidKeysAreRefusedNotFatal(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Update returned a Go error, which halts Apply on every replica: %v", err)
 				}
-				msg, capability, ok := protocol.DecodeAppErrorKind(res.Data)
-				if !ok || capability {
-					t.Fatalf("result = %v; want an application refusal (not a capability refusal)", res)
+				msg, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+				if !ok || kind != protocol.AppErrorInvalid {
+					t.Fatalf("result = %v (kind %d); want a refusal on the request's merits "+
+						"(protocol.AppErrorInvalid), not a capability refusal", res, kind)
 				}
 				if !strings.Contains(msg, "invalid key") {
 					t.Errorf("refusal %q does not say the key was invalid", msg)

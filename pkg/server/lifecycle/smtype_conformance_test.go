@@ -446,7 +446,7 @@ func TestGuardedPlaneConformsOnEverySMType(t *testing.T) {
 			_, err := p.tx.Execute(ctx,
 				[]service.Compare{{Key: []byte("fresh"), Target: service.CompareCreateRevision, Result: service.CompareEqual}},
 				[]service.Op{{Type: service.OpPut, Key: []byte("fresh"), Value: []byte("first")}}, nil)
-			var refused *service.SMNotConfiguredError
+			var refused *service.CapabilityUnsupportedError
 			switch {
 			case c.revisions && err != nil:
 				t.Errorf("create_revision compare on an MVCC state machine: %v", err)
