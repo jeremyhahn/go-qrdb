@@ -435,7 +435,9 @@ handle, so a global index would forbid that while buying nothing.
 - **`AuthMethods` is a policy qrdb enforces for the authenticators it owns.**
   An empty policy states no restriction. Where the method is not observable to
   qrdb — a forwarded assertion, a capability module's own session token — the
-  layer that ran the ceremony enforces it.
+  layer that ran the ceremony enforces it, through the same exported
+  `CheckAuthMethod` the middleware runs and with the method spelled by a qrdb
+  constant (`MethodMTLS`, `MethodPIV`, `MethodWebAuthn`).
 - **Group membership is not a qrdb field.** qrdb authorization resolves
   user → role bindings → roles → permissions, and nothing in it reads a group.
   A layer that needs group membership stores it itself; the former `GroupIDs`

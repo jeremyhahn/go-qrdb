@@ -519,6 +519,20 @@ wrong fails a test rather than passing a typed-in column.
   every forwarding handler's bound within it). Previously any certificate
   chaining to the cluster CA could make the node buffer an unbounded body
   before the signature was checked.
+- **The rule is one exported function, `CheckAuthMethod(u, method)`**
+  (`pkg/auth/middleware`, re-exported as `sdk.CheckAuthMethod` with
+  `sdk.AuthMethodNotPermittedError`). The middleware calls it for every method
+  its authenticator chain observes; a layer that runs its own ceremony (a PIV or
+  WebAuthn login handler) calls the same function rather than restating the
+  rule. `TestCheckAuthMethod_IsTheMiddlewareRule` pins that the two agree on
+  every observed method.
+- **The method tokens are qrdb constants.** `auth.MethodMTLS` (`"mtls"`),
+  `auth.MethodPIV` (`"piv"`) and `auth.MethodWebAuthn` (`"webauthn"`), each
+  re-exported by the SDK. A method is a way in, not an enrolled factor, so
+  there is no `"fido2"` method: a FIDO2 authenticator is presented through the
+  WebAuthn ceremony. PIV and mTLS are separate tokens so a policy can permit one
+  without the other. `NormalizeAuthMethods` still accepts any non-blank token;
+  refusing names outside this vocabulary is a separate decision not taken here.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
 - **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and

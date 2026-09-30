@@ -835,30 +835,47 @@ func knownMethod(name string) authMethod { return authMethod{name: name, known: 
 // plane. It is not "no method"; it is "not ours to know".
 func unknownMethod() authMethod { return authMethod{} }
 
-// checkAuthMethod enforces a user's permitted-authentication-method policy
-// against the method that actually authenticated this request.
+// checkAuthMethod applies CheckAuthMethod to the method the authenticator
+// chain observed. It adds exactly one case to CheckAuthMethod's rule: an
+// UNOBSERVABLE method is permitted. Only the authenticator chain qrdb owns can
+// name the method; a forwarded on-behalf assertion and a capability module's
+// session token cannot, and refusing them on a policy qrdb could not evaluate
+// would deny a request on no evidence. The layer that ran that ceremony is the
+// one that must enforce the policy there — through CheckAuthMethod.
+func checkAuthMethod(u *user.User, method authMethod) error {
+	if !method.known {
+		return nil
+	}
+	return CheckAuthMethod(u, method.name)
+}
+
+// CheckAuthMethod enforces u's permitted-authentication-method policy
+// (user.User.AuthMethods) against method, the method that actually
+// authenticated the request. It returns nil when the method is permitted and
+// an *AuthMethodNotPermittedError when it is not.
 //
-// It permits the request in two cases, both statements rather than oversights:
+// It is THE rule, exported so a layer that runs its own login ceremony — a
+// capability's PIV or WebAuthn handler, an authenticator that resolves the
+// account itself — applies the same policy the middleware does instead of
+// restating it. The middleware calls it for every method its own
+// authenticator chain observes.
 //
-//   - The policy is EMPTY. User.AuthMethods empty means qrdb states no
-//     restriction, so every account written before the field existed keeps
-//     working. Enforcing an empty list as "nothing is allowed" would lock out
-//     the entire fleet the moment this shipped.
-//   - The method is UNOBSERVABLE. Only the authenticator chain qrdb owns can
-//     name the method; a forwarded on-behalf assertion and a capability
-//     module's session token cannot, and refusing them on a policy qrdb could
-//     not evaluate would deny a request on no evidence.
+// It permits the request when u is nil or its policy is EMPTY. User.AuthMethods
+// empty means qrdb states no restriction, so every account written before the
+// field existed keeps working. Enforcing an empty list as "nothing is allowed"
+// would lock out the entire fleet the moment this shipped.
 //
-// Everything else FAILS CLOSED, including an observed method with a blank or
-// unnormalizable name: it cannot match any stored policy entry, and this is an
+// Everything else FAILS CLOSED, including a blank or unnormalizable method
+// name: it cannot match any stored policy entry, and this is an
 // authentication gate.
 //
 // Comparison uses the SAME normalization the store applied when the policy was
-// written, so a policy stored as "webauthn" matches an authenticator named
-// "WebAuthn". Normalizing only one side is how a policy silently stops matching
-// the thing it was written to allow.
-func checkAuthMethod(u *user.User, method authMethod) error {
-	if u == nil || len(u.AuthMethods) == 0 || !method.known {
+// written (user.NormalizeAuthMethods), so a policy stored as "webauthn"
+// matches an authenticator named "WebAuthn". Normalizing only one side is how
+// a policy silently stops matching the thing it was written to allow. Spell
+// the method with auth.MethodMTLS, auth.MethodPIV or auth.MethodWebAuthn.
+func CheckAuthMethod(u *user.User, method string) error {
+	if u == nil || len(u.AuthMethods) == 0 {
 		return nil
 	}
 	refuse := func(name string) error {
@@ -869,12 +886,12 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 			Permitted: u.AuthMethods,
 		}
 	}
-	normalized, err := user.NormalizeAuthMethods([]string{method.name})
+	normalized, err := user.NormalizeAuthMethods([]string{method})
 	if err != nil || len(normalized) == 0 {
-		// An observed method whose name does not survive normalization — blank,
+		// A method whose name does not survive normalization — blank,
 		// whitespace — matches nothing. A misconfigured authenticator must not
 		// become a way past the policy.
-		return refuse(method.name)
+		return refuse(method)
 	}
 	for _, permitted := range u.AuthMethods {
 		if permitted == normalized[0] {

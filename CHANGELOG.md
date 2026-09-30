@@ -65,6 +65,13 @@ are not reconstructed here — their history is in the git log.
 - `embedded.WithAuthMiddleware`; `sdk/go/node` hands the embedded transport the same
   `AuthMiddleware` its network transports enforce with. The SDK re-exports
   `RoleNotAssignableError`, `RoleServiceRequiredError` and `UserFactorLookupError`.
+- **The permitted-authentication-method rule is exported.**
+  `CheckAuthMethod(user, method)` in `pkg/auth/middleware` is the function the
+  authentication gate runs, re-exported as `sdk.CheckAuthMethod` together with
+  `sdk.AuthMethodNotPermittedError`, so a composing host that runs its own login
+  ceremony enforces `User.AuthMethods` without restating the rule. The method
+  tokens gain `auth.MethodPIV` (`"piv"`) and `auth.MethodWebAuthn`
+  (`"webauthn"`) beside `MethodMTLS`, each re-exported by the SDK.
 
 ### Changed — BREAKING
 

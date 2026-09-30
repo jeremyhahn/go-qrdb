@@ -124,6 +124,19 @@ the fact an operator investigating a failed enrolment needs; QUIC and MCP
 answer with their `AlreadyExists` equivalents. Enrolling a thumbprint the
 **same** account already holds is not a conflict.
 
+### Permitted authentication methods
+
+A non-empty `authMethods` policy is enforced at the authentication gate on
+every transport: an account that authenticated by a method outside it is
+refused with **403** / `PERMISSION_DENIED` (`AuthMethodNotPermittedError`). The
+tokens are `mtls`, `piv` and `webauthn`, exported as `sdk.MethodMTLS`,
+`sdk.MethodPIV` and `sdk.MethodWebAuthn`.
+
+A composing host that runs its own login ceremony enforces the same policy
+with `sdk.CheckAuthMethod(user, method)`, which returns nil or
+`*sdk.AuthMethodNotPermittedError`. It is the function the gate itself runs, so
+the host cannot be more or less permissive than the transports.
+
 ### Withdrawing a binding
 
 `DELETE /users/{id}/cert-bindings/{thumbprint}` withdraws one binding. It

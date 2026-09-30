@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 )
 
@@ -112,6 +113,33 @@ var ErrInvalidClientCertificate = auth.ErrInvalidCertificate
 // ErrInvalidClientCertificate and wraps the SPIFFE cause.
 // (Aliases pkg/auth.CertificateTenantError.)
 type ClientCertificateTenantError = auth.CertificateTenantError
+
+// MethodPIV is the permitted-method token for a PIV smart-card login. A layer
+// that runs the PIV ceremony enforces the account's policy with
+// CheckAuthMethod(u, MethodPIV). It is distinct from MethodMTLS, so a policy
+// can permit one without the other.
+const MethodPIV = auth.MethodPIV
+
+// MethodWebAuthn is the permitted-method token for a WebAuthn (FIDO2
+// authenticator) login. There is no separate FIDO2 token: a FIDO2
+// authenticator is presented through the WebAuthn ceremony.
+const MethodWebAuthn = auth.MethodWebAuthn
+
+// CheckAuthMethod enforces a user's permitted-authentication-method policy
+// (User.AuthMethods) against the method that authenticated the request. It is
+// the same function the qrdb authentication middleware runs, exported so a
+// layer that runs its own login ceremony applies the identical rule: an empty
+// policy (or a nil user) states no restriction, the method is normalized
+// exactly as the store normalized the policy, and anything else — including a
+// blank method name — fails closed with *AuthMethodNotPermittedError.
+var CheckAuthMethod = authmw.CheckAuthMethod
+
+// AuthMethodNotPermittedError is returned by CheckAuthMethod, and by the
+// authentication middleware on every transport, when an account authenticated
+// successfully by a method its own policy does not permit. It names the
+// refused method and the permitted set. Transports render it as 403 /
+// PermissionDenied: the credential is valid, the way in is not.
+type AuthMethodNotPermittedError = authmw.AuthMethodNotPermittedError
 
 // ---------------------------------------------------------------------------
 // Auth context helpers

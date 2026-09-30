@@ -1883,6 +1883,69 @@ func TestAuthenticate_BlankAuthenticatorNameCannotBypassThePolicy(t *testing.T) 
 	}
 }
 
+// CheckAuthMethod is the exported form of the rule, run by a layer that
+// performs its own login ceremony. It must admit and refuse exactly what the
+// middleware does for an OBSERVED method, and it names the refused method in
+// the same normalized spelling the policy is stored in.
+func TestCheckAuthMethod_AppliesThePolicy(t *testing.T) {
+	u := &user.User{Username: "erin", TenantID: "t1", AuthMethods: []string{auth.MethodPIV, auth.MethodWebAuthn}}
+
+	cases := []struct {
+		name       string
+		u          *user.User
+		method     string
+		wantRefuse bool
+		wantMethod string
+	}{
+		{name: "nil user states no restriction", u: nil, method: auth.MethodMTLS},
+		{name: "empty policy states no restriction", u: &user.User{Username: "erin"}, method: auth.MethodMTLS},
+		{name: "permitted method", u: u, method: auth.MethodPIV},
+		{name: "permitted after normalization", u: u, method: "  WebAuthn "},
+		{name: "method outside the policy", u: u, method: auth.MethodMTLS, wantRefuse: true, wantMethod: auth.MethodMTLS},
+		{name: "refusal names the normalized method", u: u, method: "MTLS", wantRefuse: true, wantMethod: auth.MethodMTLS},
+		{name: "blank method fails closed", u: u, method: "  ", wantRefuse: true, wantMethod: "  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckAuthMethod(tc.u, tc.method)
+			if !tc.wantRefuse {
+				if err != nil {
+					t.Fatalf("CheckAuthMethod(%q) refused: %v", tc.method, err)
+				}
+				return
+			}
+			var refused *AuthMethodNotPermittedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("expected *AuthMethodNotPermittedError, got %T: %v", err, err)
+			}
+			if refused.Method != tc.wantMethod {
+				t.Errorf("Method = %q, want %q", refused.Method, tc.wantMethod)
+			}
+			if refused.Username != "erin" || refused.TenantID != "t1" {
+				t.Errorf("refusal names %s/%s, want erin/t1", refused.TenantID, refused.Username)
+			}
+			if len(refused.Permitted) != 2 {
+				t.Errorf("Permitted = %v, want the stored policy", refused.Permitted)
+			}
+		})
+	}
+}
+
+// The middleware and the exported function are one rule. For every observed
+// method, the middleware's decision must be CheckAuthMethod's decision — a
+// ceremony layer calling the exported form cannot be more or less permissive
+// than the transports.
+func TestCheckAuthMethod_IsTheMiddlewareRule(t *testing.T) {
+	u := &user.User{Username: "erin", TenantID: "t1", AuthMethods: []string{auth.MethodWebAuthn}}
+	for _, name := range []string{auth.MethodMTLS, auth.MethodPIV, auth.MethodWebAuthn, "WEBAUTHN", "", " "} {
+		exported := CheckAuthMethod(u, name)
+		internal := checkAuthMethod(u, knownMethod(name))
+		if (exported == nil) != (internal == nil) {
+			t.Errorf("method %q: exported=%v, middleware=%v", name, exported, internal)
+		}
+	}
+}
+
 func TestAuthMethodNotPermittedError_Message(t *testing.T) {
 	e := &AuthMethodNotPermittedError{
 		Username: "erin", TenantID: "t1", Method: "mtls", Permitted: []string{"webauthn", "piv"},
