@@ -502,7 +502,12 @@ on a handle or re-checked against when a handle was resolved. A handle
 already in hand when activation happens is not special and needs no
 separate re-check: its next write is guarded exactly like one from a handle
 resolved after activation, because the decision was never attached to the
-handle to begin with — only to the write.
+handle to begin with — only to the write. Before activation, this cuts the
+other way too: a handle already in hand — a SQL transaction mid-flight, or
+the cached composite collection service a database's catalog record is
+reused across — gets no write-time check at all, the same as any other
+handle resolved before activation; there is nothing on it to upgrade when
+activation later happens, only its next write.
 
 The fence (`Database.Dropping`) is its own field, deliberately independent
 of `Database.Status`. Status keeps answering the question it always has —

@@ -281,12 +281,18 @@ the same list.
   dynamic-membership join, a scale-up, a rebalance move, and the placement
   scheduler's candidate list for a new group. A node that is not yet a member
   is judged by its own lease-backed record, feature advertisement or member
-  registration. A replica admitted here can still be caught up later by a
-  cluster-wide activation triggered by OTHER groups finishing their own
-  upgrade; by then this group's own membership can only have gained support,
-  never lost it, because the system shard admits a replica under the
-  identical rule -- so refusing an unsupporting node admission now is what
-  keeps that later activation safe for every group it reaches.
+  registration. The clearest case for why this is decide, not Enabled, is the
+  SYSTEM shard before activation: decide(systemShard, f, true) -- every
+  current member advertising f, witnesses included -- is the EXACT condition
+  activation waits for. Admitting a non-advertising node onto the system
+  shard right then would immediately make that condition false again,
+  blocking activation on a node this check could have refused instead. The
+  same decide call protects every other shard identically, activated or not:
+  a dedicated group's current members already agreeing on a feature is
+  exactly what Enabled now deliberately ignores (a later membership change
+  could still undo it), and admission on the join path is where that undoing
+  is refused, rather than discovered later when an unsupporting replica
+  cannot apply an entry already in the group's log.
 - **Activation.** Once every system-shard member -- every node, witnesses
   included, since activation enables the feature everywhere -- advertises a
   feature, it is **activated**: recorded permanently under

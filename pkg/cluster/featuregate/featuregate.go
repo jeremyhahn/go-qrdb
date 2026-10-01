@@ -347,18 +347,20 @@ func (g *Gate) Supports(raftAddr string, feature Feature) bool {
 // could not be told apart from one before it. Refusing the add is what makes
 // both impossible.
 //
-// The per-group check is decide, not Enabled: Enabled answers only whether
-// this group may be SENT the opcode today (Activated, cluster-wide, and
-// nothing less -- see its doc comment), but a replica admitted here can
-// still be caught up by a cluster-wide activation that happens later,
-// triggered by OTHER groups becoming fully upgraded. By the time that
-// happens this group's own membership may have moved on from the one
-// checked here, but it can only ever have gained support, never lost it --
-// the system shard admits a replica under the identical rule, so a node
-// that reaches cluster-wide activation already satisfies CheckActivated at
-// its next restart -- so refusing an unsupporting node admission here, on
-// the membership known right now, is what keeps that later activation safe
-// for every group it reaches.
+// The per-group check is decide, not Enabled, and the clearest case for why
+// is the SYSTEM shard before activation: decide(systemShard, f, true) --
+// every current member advertising f, witnesses included -- is the EXACT
+// condition activate() waits for. Admitting a replica that does not
+// advertise f onto the system shard right then would immediately make that
+// condition false again, blocking activation on a node this check could
+// have refused. Decide is what keeps "every current member advertises"
+// true going forward rather than something activation can win and then
+// immediately lose. The same decide call protects every OTHER shard the
+// identical way, whether or not it is activated yet: a dedicated group's
+// own current members already agreeing on a feature is what Enabled now
+// deliberately ignores (see its doc comment) specifically because a FUTURE
+// membership change could undo it, and admission on the join path is where
+// that undoing is refused, not discovered later at apply time.
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {

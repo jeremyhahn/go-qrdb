@@ -367,7 +367,7 @@ func TestGate_SingleNodeActivatesImmediately(t *testing.T) {
 // cluster-wide activation flag. AdmitReplica's per-group decide check is the
 // one that reads membership, and it reads it fresh on every call, so a
 // membership change reaches it immediately, with no refresh delay needed.
-func TestGate_RefreshPicksUpAMembershipChange(t *testing.T) {
+func TestGate_AdmitReplicaReadsMembershipFresh(t *testing.T) {
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertise(t, 2, "n2:7000", SupportedNames()...)
 	m := threeNodes()

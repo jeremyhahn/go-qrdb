@@ -44,10 +44,27 @@ func gateOver(t *testing.T, members groups) *featuregate.Gate {
 	return g
 }
 
+// guardedWritesActivatedKV is an ActivationKV listing guarded-writes as
+// already activated -- the state Gate.CheckActivated reads to mark a
+// feature enabled without needing Start or any membership at all.
+type guardedWritesActivatedKV struct{}
+
+func (guardedWritesActivatedKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, nil
+}
+
+func (guardedWritesActivatedKV) ListAll(context.Context, string) ([]string, error) {
+	return []string{featuregate.ActivationPrefix + string(featuregate.GuardedWrites)}, nil
+}
+
 // With a gate, the adapter answers from it: Enabled is Activated and nothing
-// else (go-qrdb#482), so neither group is enabled here -- gate.Start is
-// never called in this test, so nothing is ever activated cluster-wide,
-// regardless of what either group's current members support.
+// else (go-qrdb#482). Before anything is activated, neither group is
+// enabled, regardless of what either group's current members support --
+// gate.Start is never called in this test, so nothing is. Once the cluster
+// records guarded-writes as activated, CheckActivated adopts that record
+// (the same read Start itself does at startup) and both groups become
+// enabled, because activation is cluster-wide, not per-group: a constant
+// False FeatureEnabled would never show this.
 func TestHostAdapter_FeatureEnabledAsksTheGate(t *testing.T) {
 	gate := gateOver(t, groups{
 		1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1", 2: "n2"}},
@@ -57,6 +74,10 @@ func TestHostAdapter_FeatureEnabledAsksTheGate(t *testing.T) {
 	WithFeatureGate(gate)(a)
 	assert.False(t, a.FeatureEnabled(1, featuregate.GuardedWrites), "node 2 advertises nothing")
 	assert.False(t, a.FeatureEnabled(7, featuregate.GuardedWrites), "nothing is activated cluster-wide yet")
+
+	require.NoError(t, gate.CheckActivated(context.Background(), guardedWritesActivatedKV{}))
+	assert.True(t, a.FeatureEnabled(1, featuregate.GuardedWrites), "guarded-writes is now activated cluster-wide")
+	assert.True(t, a.FeatureEnabled(7, featuregate.GuardedWrites), "activation enables every group, not just one")
 }
 
 // With no gate and no host -- a test adapter -- every replica is this
