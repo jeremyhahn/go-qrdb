@@ -61,6 +61,10 @@ func TestRouteCheck_PayloadTargetIsTheValueTheHandlerUses(t *testing.T) {
 		{name: "case-variant tenant on create", method: "user.Create", payload: `{"username":"mallory","withoutEmailLoginKey":true,"tenantID":"acme","TENANTID":"globex"}`, allow: false},
 		{name: "duplicate tenant on create, last wins", method: "user.Create", payload: `{"username":"carol","withoutEmailLoginKey":true,"tenantID":"globex","tenantID":"acme"}`, allow: true},
 		{name: "case-variant user on assign", method: "role.Assign", payload: `{"userID":200,"USERID":300,"roleID":"` + globexAdmin + `"}`, allow: false},
+		{name: "list in the bound tenant", method: "user.List", payload: `{"tenantID":"acme"}`, allow: true},
+		{name: "list in another tenant", method: "user.List", payload: `{"tenantID":"globex"}`, allow: false},
+		{name: "assign to a user in the bound tenant", method: "role.Assign", payload: `{"userID":200,"roleID":"` + globexAdmin + `"}`, allow: true},
+		{name: "assign to a user in another tenant", method: "role.Assign", payload: `{"userID":300,"roleID":"` + globexAdmin + `"}`, allow: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
