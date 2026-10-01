@@ -413,3 +413,41 @@ func TestCAKeyParseError(t *testing.T) {
 	assert.Equal(t, "ceremony: CA key parse failed: boom", err.Error())
 	assert.ErrorIs(t, err, inner)
 }
+
+// TestLocalCA_SignCSR_DropsRequestedURISANs pins that a URI SAN the CSR asks
+// for never reaches the certificate: a tenant-scoped SPIFFE ID the requester
+// chose would otherwise be a tenant claim this CA vouches for (go-qrdb#519).
+// Only the URIs the caller assigns are signed.
+func TestLocalCA_SignCSR_DropsRequestedURISANs(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	requested, err := url.Parse("spiffe://db.example.com/tenant/other/user/alice")
+	require.NoError(t, err)
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "alice", OrganizationalUnit: []string{"acme"}},
+		URIs:    []*url.URL{requested},
+	}, key)
+	require.NoError(t, err)
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+
+	assigned, err := url.Parse("spiffe://db.example.com/tenant/acme/holder/alice")
+	require.NoError(t, err)
+	cert, err := newTestLocalCA(t).SignCSR(context.Background(), csrPEM, &SignCSROptions{
+		Subject:      pkix.Name{CommonName: "alice", OrganizationalUnit: []string{"acme"}},
+		URIs:         []*url.URL{assigned},
+		ValidityDays: 30,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	})
+	require.NoError(t, err)
+	require.Len(t, cert.URIs, 1)
+	assert.Equal(t, assigned.String(), cert.URIs[0].String(), "the CSR's URI SAN is dropped")
+
+	// With no URIs assigned, the certificate carries none.
+	cert, err = newTestLocalCA(t).SignCSR(context.Background(), csrPEM, &SignCSROptions{
+		Subject:      pkix.Name{CommonName: "alice"},
+		ValidityDays: 30,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, cert.URIs)
+}
