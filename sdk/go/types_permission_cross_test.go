@@ -71,6 +71,11 @@ var sdkCrossScopePermissions = []sdk.Permission{
 	sdk.PermissionCredentialsListVersions,
 	sdk.PermissionCredentialsStore,
 	sdk.PermissionCredentialsRetrieve,
+	sdk.PermissionSealSeal,
+	sdk.PermissionSealRekey,
+	sdk.PermissionSealRotateRootKey,
+	sdk.PermissionSealGenerateRecovery,
+	sdk.PermissionSealInitializeShamir,
 }
 
 // TestSDK_CrossScopePermissions_AreTheCanonicalOnes pins the re-exports to
@@ -106,6 +111,11 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 		sdk.PermissionCredentialsListVersions:    permission.CredentialsListVersions,
 		sdk.PermissionCredentialsStore:           permission.CredentialsStore,
 		sdk.PermissionCredentialsRetrieve:        permission.CredentialsRetrieve,
+		sdk.PermissionSealSeal:                   permission.SealSeal,
+		sdk.PermissionSealRekey:                  permission.SealRekey,
+		sdk.PermissionSealRotateRootKey:          permission.SealRotateRootKey,
+		sdk.PermissionSealGenerateRecovery:       permission.SealGenerateRecovery,
+		sdk.PermissionSealInitializeShamir:       permission.SealInitializeShamir,
 	}
 	if len(pairs) != len(sdkCrossScopePermissions) {
 		t.Fatalf("%d distinct re-exports, want %d: two SDK names share a value", len(pairs), len(sdkCrossScopePermissions))

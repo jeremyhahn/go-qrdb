@@ -253,8 +253,11 @@ are not reconstructed here — their history is in the git log.
 - **Every cross-scope permission and the RBAC denial type cross the SDK
   boundary.** `sdk/go/types_permission_cross.go` names each `ScopeCross`
   permission (`sdk.PermissionAuditReadCross`, the tenants, volume-pool,
-  registration-config and credentials families, `sdk.PermissionMVCCCompact`),
-  and a test fails when the registry holds one the SDK does not name.
+  registration-config and credentials families, `sdk.PermissionMVCCCompact`,
+  and the node-barrier SO permissions `sdk.PermissionSealSeal`,
+  `sdk.PermissionSealRekey`, `sdk.PermissionSealRotateRootKey`,
+  `sdk.PermissionSealGenerateRecovery` and `sdk.PermissionSealInitializeShamir`,
+  which are now system-tenant only), and a test fails when the registry holds one the SDK does not name.
   `sdk.PermissionDeniedError` aliases `rbac.PermissionDeniedError`, so a
   consumer tells a denial apart from an authorizer that failed to decide.
 - **`SaveIfAbsent`'s refusal is typed and crosses the SDK boundary.**

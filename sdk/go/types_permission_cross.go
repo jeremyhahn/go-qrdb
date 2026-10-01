@@ -150,3 +150,29 @@ const (
 	// credential's current version.
 	PermissionCredentialsRetrieve = permission.CredentialsRetrieve
 )
+
+// The node-barrier SO permissions are cross-scope because the node barrier is
+// a singleton that protects every tenant's data, so an officer of one tenant
+// must never seal it, rekey it, rotate its root key or set up its recovery
+// and custody. A tenant's own barrier is governed by the tenant_barrier
+// permissions, which are not cross-scope.
+const (
+	// PermissionSealSeal ("seal:seal") seals the node barrier.
+	PermissionSealSeal = permission.SealSeal
+
+	// PermissionSealRekey ("seal:rekey") rekeys the node barrier's unseal
+	// shares.
+	PermissionSealRekey = permission.SealRekey
+
+	// PermissionSealRotateRootKey ("seal:rotate_root_key") rotates the node
+	// barrier's root key.
+	PermissionSealRotateRootKey = permission.SealRotateRootKey
+
+	// PermissionSealGenerateRecovery ("seal:generate_recovery") generates
+	// recovery keys for the node barrier.
+	PermissionSealGenerateRecovery = permission.SealGenerateRecovery
+
+	// PermissionSealInitializeShamir ("seal:initialize_shamir") initializes
+	// Shamir custody of the node barrier.
+	PermissionSealInitializeShamir = permission.SealInitializeShamir
+)
