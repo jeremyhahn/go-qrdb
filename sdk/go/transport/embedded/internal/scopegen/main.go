@@ -155,6 +155,7 @@ func run(out, check string) error {
 		}
 	}
 	if out != "" {
+		// #nosec G306 -- a checked-in Go source file, world-readable like every other file in the tree.
 		return os.WriteFile(out, src, 0o644) //nolint:gosec // a source file, world-readable like every other
 	}
 	if check == "" {
