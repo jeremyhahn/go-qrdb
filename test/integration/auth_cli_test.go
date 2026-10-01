@@ -107,8 +107,12 @@ func testAuthLoginAndFactorLifecycleOverProtocol(t *testing.T, node *multiProtoN
 
 	// --- fixture: a user to enroll factors against. It is created WITH a role
 	// so the login-enrichment assertion below can verify the resolved role set
-	// round-trips (not just the username).
-	const fixtureRole = "auditor"
+	// round-trips (not just the username). `--roles` takes role IDS, and a
+	// built-in role's id is a derived UUID, not its name: the name "auditor"
+	// was stored unchecked until role references were validated, after which
+	// it was (correctly) refused as a reference to no role. Look the id up the
+	// way an operator does.
+	fixtureRole := builtInRoleID(t, node, proto, "auditor")
 	out, err := runCLIProto(t, node, proto, "--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username, "--roles", fixtureRole)
 	if err != nil {
@@ -260,4 +264,25 @@ func authFactorListContainsID(factors []authFactorRecordCLIJSON, id string) bool
 		}
 	}
 	return false
+}
+
+// builtInRoleID returns the id of the caller tenant's built-in role named
+// name, read through `roles list` on proto.
+func builtInRoleID(t *testing.T, node *multiProtoNode, proto multiProtocol, name string) string {
+	t.Helper()
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "list")
+	if err != nil {
+		t.Fatalf("[%s] roles list: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed roleListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode roles list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	for _, r := range listed.Roles {
+		if r.Name == name && r.System {
+			return r.ID
+		}
+	}
+	t.Fatalf("[%s] no built-in role named %q in %+v", proto.name, name, listed.Roles)
+	return ""
 }
