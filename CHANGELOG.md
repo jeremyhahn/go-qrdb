@@ -185,20 +185,18 @@ are not reconstructed here — their history is in the git log.
   transport ever enforced it, and the docs now describe the accepted
   behaviour.
 
-### Removed
-
-- `provider.WriteSet.HasBufferedWrites`. Its one caller was `RowCount`, which
-  needed it to stop reporting a committed-only count as exact inside a
-  transaction; `RowCount` is never exact now.
-
-### Fixed
-
 - **A serialization failure or lock-wait timeout raised during an index
   lookup kept its error code.** `RelationalTable.LookupPartitions` wrapped
   every error in `IndexLookupError`, which hid go-mysql-server's
   `ErrLockDeadlock` (MySQL 1213, "retry") and MySQL's own 1205 / 3572 from
   the client. It was masked until now because planning's exact row count
   usually raised the same stale-definition error first.
+
+### Removed
+
+- `provider.WriteSet.HasBufferedWrites`. Its one caller was `RowCount`, which
+  needed it to stop reporting a committed-only count as exact inside a
+  transaction; `RowCount` is never exact now.
 
 ## [0.25.2-alpha] - 2026-10-01
 
