@@ -115,5 +115,13 @@ debugger that is already attached refuses to run unless the opt-out is set.
 - **`process is already traced by pid N`** — something attached to `qrdbd`
   before it hardened itself (a debugger, `strace`, a profiler). Detach it, or
   set the opt-out for a debugging session.
+- **`process inspection hardening tracer check failed: ...`** — on Linux,
+  `start` could not read `TracerPid` from `/proc/self/status`. This is
+  typical of a sandbox or minimal container with no `/proc` mounted. Without
+  that line `qrdbd` cannot show that nothing is already attached to it, so it
+  refuses to start (`ProcessHardeningError`, mechanism `tracer check`) rather
+  than assume it is untraced. Mount procfs in the container (`/proc` is
+  present by default in Docker, Kubernetes and systemd services), or set the
+  opt-out for a debugging session.
 - **`QRDB_SECURE_ALLOW_PROCESS_INSPECTION is refused in FIPS 140-3 mode`** — a
   FIPS build does not run inspectable. Unset the variable.
