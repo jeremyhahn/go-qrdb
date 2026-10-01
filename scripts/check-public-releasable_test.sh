@@ -41,8 +41,8 @@
 #      an opaque 192.168.1.x test address, /home/user, a word that merely
 #      starts with a fleet name -- must pass. A gate that fires on those earns
 #      an allowlist on its first day.
-#   3. FAIL-CLOSED: git failing, a file git grep did not read, and a listing
-#      that is not this repository's each exit 1. Failures are induced by a git
+#   3. FAIL-CLOSED: git failing, a file git grep did not read, a header od
+#      could not read, and a listing that is not this repository's each exit 1. Failures are induced by a git
 #      shim on PATH, never by permissions, so the result does not depend on the
 #      uid (CI runs as root).
 #
@@ -208,6 +208,67 @@ d=$(fixture binary)
 printf 'head\000tail %s\n' "$owner_home" > "$d/pkg/blob.bin"
 "$real_git" -C "$d" add pkg/blob.bin
 expect_reject "a binary-classified file is read, not skipped" "$d" "pkg/blob.bin:1:"
+
+# --- executables, by leading bytes ------------------------------------------------
+
+# plant_bytes <dir> <path> <printf format>: writes the bytes and stages them.
+# Octal escapes only, so every byte is the same under every printf.
+plant_bytes() {
+	mkdir -p "$(dirname -- "$1/$2")"
+	# shellcheck disable=SC2059 # the format IS the fixture
+	printf "$3" > "$1/$2"
+	"$real_git" -C "$1" add -- "$2"
+}
+# 58 zero bytes take an `MZ` stub to e_lfanew at 0x3c.
+mz_pad=$(i=0; while [ "$i" -lt 58 ]; do printf '\\000'; i=$((i + 1)); done)
+pe="MZ${mz_pad}\\100\\000\\000\\000PE\\000\\000\\114\\001"
+elf='\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\076\000'
+macho_be32='\376\355\372\316\000\000\000\007'
+macho_le64='\317\372\355\376\007\000\000\001'
+macho_fat='\312\376\272\276\000\000\000\002\001\000\000\007'
+macho_fat64='\312\376\272\277\000\000\000\001\001\000\000\007'
+
+i=0
+for spec in "elf|${elf}" "macho-be32|${macho_be32}" "macho-le64|${macho_le64}" "macho-fat|${macho_fat}" "macho-fat64|${macho_fat64}" "pe|${pe}"; do
+	i=$((i + 1))
+	kind=${spec%%|*}
+	d=$(fixture "exec$i")
+	plant_bytes "$d" "cmd/tool/${kind}" "${spec#*|}"
+	expect_reject "a tracked ${kind} executable is rejected on its own" "$d" "    cmd/tool/${kind}"
+	if ! grep -q 'VIOLATION: executable' "$work/out"; then
+		bad "the ${kind} rejection names the executable class" "$(tr '\n' ' ' < "$work/out")"
+	fi
+done
+
+# Binaries that are not executables, and must pass: a PNG; a Java class file,
+# which shares the fat Mach-O magic but carries a version (52) where the
+# architecture count would be; a text that merely starts `MZ`; and an `MZ` stub
+# whose e_lfanew points past the end of the file.
+d=$(fixture notexec)
+plant_bytes "$d" assets/logo.png '\211PNG\015\012\032\012\000\000\000\015IHDR\000\000\000\001'
+plant_bytes "$d" testdata/A.class '\312\376\272\276\000\000\000\064\000\017\012\000'
+plant "$d" docs/mz.txt 'MZ is a monogram, and this line is long enough to reach offset 0x3c and past it.'
+plant_bytes "$d" testdata/stub.bin "MZ${mz_pad}\\377\\377\\000\\000"
+expect_pass "non-executable binaries pass, including the magic-byte near misses" "$d"
+
+# The exemption list: an exact path listed in EXECUTABLE_EXEMPT passes; an
+# executable at any other path still fails.
+d=$(fixture exempt)
+sed 's|^EXECUTABLE_EXEMPT=.$|EXECUTABLE_EXEMPT='"'"'\
+# fixture: a vendored test binary\
+testdata/vendored.elf|' "$d/scripts/check-public-releasable.sh" > "$d/scripts/x" && mv "$d/scripts/x" "$d/scripts/check-public-releasable.sh"
+"$real_git" -C "$d" add scripts/check-public-releasable.sh
+plant_bytes "$d" testdata/vendored.elf "$elf"
+expect_pass "an executable at an exempted path passes" "$d"
+plant_bytes "$d" testdata/vendored.elf.bak "$elf"
+expect_reject "an exemption is the exact path, not a prefix" "$d" "    testdata/vendored.elf.bak"
+
+# An od that cannot read a header is an unknown, never a pass.
+mkdir -p "$work/odfailbin"
+printf '#!/bin/sh\necho "od: read error" >&2\nexit 1\n' > "$work/odfailbin/od"
+chmod +x "$work/odfailbin/od"
+d=$(fixture odfail)
+expect_reject "a header that cannot be read is a failure" "$d" "whether" "$work/odfailbin"
 
 d=$(fixture symlink)
 ln -s "$owner_home" "$d/pkg/link"

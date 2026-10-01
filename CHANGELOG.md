@@ -23,6 +23,14 @@ are not reconstructed here — their history is in the git log.
   The gate's test-function count is build-constraint aware (a file tagged
   `!integration` cannot inflate it), and it asserts the workflow's `on:` names
   `push` and `pull_request` and that the job carries no `if:`.
+- **`make check-public-releasable` refuses a tracked compiled executable,
+  whatever its content.** A 60 MB `cmd/qrdb/qrdb` built in place once reached
+  a commit and was caught only because its debug info happened to name a home
+  directory. The gate now classifies a tracked file by its leading bytes --
+  ELF, Mach-O (thin or fat) or PE -- and fails it regardless of what it
+  contains; an unreadable header fails closed. An executable tracked on
+  purpose is listed by exact path, with its reason, in `EXECUTABLE_EXEMPT` at
+  the top of `scripts/check-public-releasable.sh`; the list is empty today.
 
 ### Fixed
 

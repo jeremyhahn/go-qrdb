@@ -82,6 +82,16 @@ for the one step that reads it.
 |---|---|---|
 | `PUBLIC_RELEASE_PATTERNS` | Actions secret | the pattern file's content |
 
+The same gate refuses any tracked file that is a compiled executable, whatever
+its content. It recognises them by their leading bytes: ELF, Mach-O (thin or
+fat) and PE. A binary built in place, such as `go build` run inside a `cmd/`
+directory, carries whatever the build machine wrote into it. Untrack it with
+`git rm --cached <path>` and ignore its path. An executable that must be
+tracked on purpose is listed by exact path, with the reason, in
+`EXECUTABLE_EXEMPT` at the top of `scripts/check-public-releasable.sh`. The
+list is empty. Other binaries, such as images and test fixtures, are scanned
+like any other file.
+
 ## Cutting a release
 
 1. **Prepare it as a change.** In one commit, set `VERSION` to the new version

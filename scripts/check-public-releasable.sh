@@ -60,6 +60,27 @@
 #                       case an ignore rule cannot see. A documented template
 #                       such as .env.example is not one.
 #
+# And one class matched on the tracked file's leading BYTES, generic for the
+# same reason:
+#
+#   executable    a compiled executable or object: ELF (\x7fELF); Mach-O, thin
+#                 (feedface, feedfacf, both byte orders) or fat (cafebabe,
+#                 cafebabf with an architecture count of 1-19 -- the bound is
+#                 what tells a fat header from a Java class file, whose same
+#                 four bytes are followed by a version of 45 or more); and PE,
+#                 an `MZ` stub whose e_lfanew (offset 0x3c) points, inside the
+#                 file, at `PE\0\0`. A cmd/qrdb/qrdb built in place once rode a
+#                 `git add -A` into a commit and was caught only because its
+#                 debug info happened to name a home directory. A build output
+#                 publishes whatever the build machine wrote into it, so it
+#                 fails here on its own, whatever its content. Other binaries
+#                 -- images, fixtures, a bare `MZ` -- are not executables and
+#                 are scanned for content like any other file.
+#
+#                 An executable tracked ON PURPOSE goes in EXECUTABLE_EXEMPT
+#                 below: exact paths, one per line, each with a comment saying
+#                 why. The list is empty, and an entry is reviewed like code.
+#
 # THE FLEET'S VALUES ARE NOT IN THIS REPOSITORY (owner ruling 2026-10-01). A
 # rule set that names the fleet's networks, hosts and paths discloses exactly
 # what the rule exists to keep private, so the content patterns are loaded at
@@ -207,6 +228,14 @@ done
 INTERNAL_ARTEFACT='^\.serena/|^\.claude/|(^|/)\.env(\..+)?$'
 ENV_TEMPLATE='(^|/)\.env\.example$'
 
+# Tracked executables that are tracked deliberately: exact repository-relative
+# paths, one per line, each preceded by a `#` line giving the reason. A path
+# here is exempt from the executable class only; its content is still scanned.
+# There are none: nothing this repository builds or tests needs a committed
+# binary.
+EXECUTABLE_EXEMPT='
+'
+
 # A waiver: the marker, a colon, and at least one non-blank character.
 WAIVER='public-release-ok:[[:space:]]*[^[:space:]]'
 
@@ -250,15 +279,77 @@ fi
 # match; a path missing from the working tree is a pending deletion.
 #
 # The loop runs under xargs -0 so every path arrives verbatim, whatever it
-# contains. Its output is one tag per path plus the link values.
+# contains. Its output is one tag per path plus the link values. A regular file
+# also has its leading bytes read for the executable class: its path goes to
+# $EXEC_OUT when they are an executable's, and a header od cannot read is a
+# "U" tag -- an unknown, which fails below.
+execs="$pattern_dir/execs"
+: > "$execs"
 # shellcheck disable=SC2016 # the inner script expands its own variables
-counts=$(xargs -0 sh -c '
+counts=$(EXEC_OUT="$execs" xargs -0 sh -c '
+	# hexat <file> <offset> <count>: <count> bytes at <offset> as lower-case
+	# hex with no separators; fewer when the file is shorter.
+	# od runs alone, so its own exit status decides, and its space-separated
+	# bytes are joined by word splitting rather than another process: this
+	# runs once for every tracked file.
+	hexat() {
+		hex=$(od -An -v -tx1 -j "$2" -N "$3" -- "$1") || return 1
+		# shellcheck disable=SC2086 # splitting into bytes is the point
+		set -- $hex
+		hex=""
+		for b do hex="$hex$b"; done
+	}
+	# le32at <file> <offset>: the little-endian 32-bit value there, in $le32.
+	le32at() {
+		le=$(od -An -v -tx1 -j "$2" -N 4 -- "$1") || return 1
+		# shellcheck disable=SC2086 # the four bytes, least significant first
+		set -- $le
+		[ "$#" -eq 4 ] || return 1
+		le32=$((0x$4$3$2$1))
+	}
 	for f do
 		if [ -L "$f" ]; then
 			printf "L\n"
 			printf "%s:0:%s\n" "$f" "$(readlink -- "$f")" >> "$0"
 		elif [ -f "$f" ] && [ -s "$f" ]; then
 			printf "R\n"
+			if ! hexat "$f" 0 8; then
+				printf "U %s\n" "$f"
+				continue
+			fi
+			head=$hex
+			exe=no
+			case "$head" in
+			7f454c46*) exe=yes ;;
+			feedface* | feedfacf* | cefaedfe* | cffaedfe*) exe=yes ;;
+			cafebabe* | cafebabf*)
+				# Fat Mach-O: a big-endian architecture count follows. A
+				# Java class file has its version there, 45 or more.
+				if [ "${#head}" -eq 16 ]; then
+					nfat=$((0x${head#????????}))
+					if [ "$nfat" -ge 1 ] && [ "$nfat" -le 19 ]; then
+						exe=yes
+					fi
+				fi
+				;;
+			4d5a*)
+				# PE: e_lfanew, little-endian at 0x3c, must point inside
+				# the file at the PE signature.
+				size=$(wc -c < "$f") || { printf "U %s\n" "$f"; continue; }
+				size=$((size))
+				if [ "$size" -ge 64 ]; then
+					le32at "$f" 60 || { printf "U %s\n" "$f"; continue; }
+					off=$le32
+					if [ "$off" -ge 64 ] && [ $((off + 4)) -le "$size" ]; then
+						hexat "$f" "$off" 4 || { printf "U %s\n" "$f"; continue; }
+						[ "$hex" = "50450000" ] && exe=yes
+					fi
+				fi
+				;;
+			esac
+			if [ "$exe" = yes ]; then
+				printf "%s\n" "$f" >> "$EXEC_OUT"
+			fi
 		elif [ -f "$f" ]; then
 			printf "E\n"
 		elif [ ! -e "$f" ]; then
@@ -278,6 +369,12 @@ missing=$(printf '%s\n' "$counts" | grep -c '^M$' || true)
 if printf '%s\n' "$counts" | grep -q '^X '; then
 	echo "FAIL: tracked path(s) that are neither a file nor a symlink:" >&2
 	printf '%s\n' "$counts" | sed -n 's/^X /  /p' >&2
+	exit 1
+fi
+if printf '%s\n' "$counts" | grep -q '^U '; then
+	echo "FAIL: could not read the leading bytes of tracked file(s), so whether" >&2
+	echo "they are executables is unknown:" >&2
+	printf '%s\n' "$counts" | sed -n 's/^U /  /p' >&2
 	exit 1
 fi
 
@@ -363,6 +460,24 @@ if [ -s "$hits" ]; then
 	wc -l < "$hits" >> "$found"
 fi
 
+# EXECUTABLES, by leading bytes, less the exact paths EXECUTABLE_EXEMPT names.
+exempt="$pattern_dir/exempt"
+printf '%s\n' "$EXECUTABLE_EXEMPT" | grep -v -e '^#' -e '^[[:space:]]*$' > "$exempt" || true
+if [ -s "$exempt" ]; then
+	grep -v -x -F -f "$exempt" "$execs" > "$hits" || true
+else
+	cp "$execs" "$hits"
+fi
+if [ -s "$hits" ]; then
+	echo ""
+	echo "VIOLATION: executable"
+	echo "  A compiled executable publishes whatever its build wrote into it. Untrack it"
+	echo "  with 'git rm --cached <path>' and ignore its path in .gitignore; if it must be"
+	echo "  tracked, add the exact path to EXECUTABLE_EXEMPT with the reason."
+	sed 's/^/    /' "$hits"
+	wc -l < "$hits" >> "$found"
+fi
+
 total=0
 while read -r n; do
 	total=$((total + n))
@@ -370,10 +485,11 @@ done < "$found"
 
 if [ "$total" -ne 0 ]; then
 	echo ""
-	echo "FAIL: ${total} line(s) name the private fleet in tracked files." >&2
-	echo "Every tracked file publishes. Scrub the value, or waive the line with" >&2
-	echo "'public-release-ok: <reason>' when naming it is the line's meaning." >&2
+	echo "FAIL: ${total} line(s) above are not publicly releasable." >&2
+	echo "Every tracked file publishes. Scrub a fleet value, or waive the line with" >&2
+	echo "'public-release-ok: <reason>' when naming it is the line's meaning; untrack" >&2
+	echo "an artefact or executable as its VIOLATION says." >&2
 	exit 1
 fi
 
-echo "ok  read ${read_count} of ${regular} tracked files and ${symlinks} symlink value(s); publicly releasable"
+echo "ok  read ${read_count} of ${regular} tracked files and ${symlinks} symlink value(s), none an executable; publicly releasable"
