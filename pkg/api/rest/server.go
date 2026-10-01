@@ -976,9 +976,10 @@ func (s *Server) Start() error {
 	if h3Conn != nil {
 		s.http3Conn = h3Conn
 		s.http3Server = &http3.Server{
-			Addr:      h3Conn.LocalAddr().String(),
-			TLSConfig: s.tlsConfig,
-			Handler:   s.server.Handler,
+			Addr:       h3Conn.LocalAddr().String(),
+			TLSConfig:  s.tlsConfig,
+			Handler:    s.server.Handler,
+			QUICConfig: http3QUICConfig(),
 		}
 		if len(observers) > 0 {
 			// http3.Server accepts QUIC connections itself, so there is no
@@ -998,6 +999,24 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// http3QUICConfig is the QUIC configuration of the HTTP/3 listener. Without
+// one quic-go's http3.Server accepts 0-RTT, and 0-RTT early data is
+// replayable: an on-path attacker can resend a captured flight and the server
+// processes it again, and this listener serves the same handlers as HTTP/2,
+// state-changing ones included. Allow0RTT stays false, so a resumed client
+// completes a full handshake first. The idle, keep-alive and bidirectional
+// stream limits match the native QUIC listener (pkg/api/quic); unidirectional
+// streams keep quic-go's default, which HTTP/3's control and QPACK streams
+// need.
+func http3QUICConfig() *quicgo.Config {
+	return &quicgo.Config{
+		MaxIdleTimeout:     30 * time.Second,
+		KeepAlivePeriod:    10 * time.Second,
+		MaxIncomingStreams: 1000,
+		Allow0RTT:          false,
+	}
 }
 
 // closePrebound closes the sockets handed over by WithListener and

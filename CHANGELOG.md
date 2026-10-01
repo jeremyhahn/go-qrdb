@@ -679,11 +679,15 @@ are not reconstructed here — their history is in the git log.
   `service.SignCSRThrottledError`, which unwraps to `pin.ErrPINLocked` and is
   answered `429` / `RESOURCE_EXHAUSTED` on every transport. The REST 429
   carries `Retry-After` with the wait in seconds, rounded up.
-- **The native QUIC listener no longer accepts 0-RTT (medium).** It set
-  `Allow0RTT`, so a resumed client's early data was accepted before the
+- **Neither the native QUIC listener nor REST's HTTP/3 listener accepts 0-RTT
+  any more (medium).** The native listener set `Allow0RTT`. The HTTP/3
+  listener had no QUIC configuration, and quic-go's `http3.Server` allows 0-RTT
+  by default. On both, a resumed client's early data was accepted before the
   handshake completed. 0-RTT data is replayable, so an on-path attacker could
   resend a captured request, including a state-changing one, and have it
-  processed again. A resumed client now completes a full handshake first.
+  processed again. A resumed client now completes a full handshake first. The
+  HTTP/3 listener also takes the native listener's idle, keep-alive and
+  stream limits.
 - **Anonymous officer enrollment closes once the ceremony is over, including
   after a restart while sealed (high).** Officer and recovery-officer
   registration CA-sign any CSR they are given, and they are anonymous on the
