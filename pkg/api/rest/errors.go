@@ -536,3 +536,15 @@ type TrailingDataError struct{}
 func (e *TrailingDataError) Error() string {
 	return "rest: request body carries data after the first JSON value"
 }
+
+// CABootstrapConflictError refuses a server configured with two sources for
+// /v1/ca/bootstrap: qrdb's cluster CA (WithCABootstrap) and a host-supplied
+// bundle (WithCABootstrapProvider). The route has one owner and serves one
+// bundle; which trust a joining client should receive is the operator's
+// decision, so the server refuses to start rather than pick one.
+type CABootstrapConflictError struct{}
+
+// Error describes the conflict and its remedy.
+func (e *CABootstrapConflictError) Error() string {
+	return "rest: /v1/ca/bootstrap is configured twice (the cluster CA and a host-supplied bundle); configure exactly one"
+}

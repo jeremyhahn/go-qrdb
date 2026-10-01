@@ -199,12 +199,17 @@ type Server struct {
 	http3Server *http3.Server
 	// http3Conn is the UDP socket the HTTP/3 server serves. It is opened
 	// by Start so the bind is checked synchronously, and closed by Stop.
-	http3Conn       net.PacketConn
-	host            Host
-	caBootstrapCert []byte // PEM-encoded CA certificate(s) for the bootstrap endpoint; never a key
-	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
-	webUI           http.Handler      // optional embedded web UI file server
-	auditLogger     audit.AuditLogger // optional compliance-grade audit logger
+	http3Conn net.PacketConn
+	host      Host
+	// caBootstrap supplies the CERTIFICATES /v1/ca/bootstrap serves, or nil
+	// when nothing is configured and the path is left unclaimed.
+	// caBootstrapSources counts the sources configured: two is a refusal at
+	// Start (CABootstrapConflictError), never a silent pick.
+	caBootstrap        func(context.Context) ([]byte, error)
+	caBootstrapSources int
+	onEtcdUpdated      func(dbName string, cfg *database.EtcdConfig) error
+	webUI              http.Handler      // optional embedded web UI file server
+	auditLogger        audit.AuditLogger // optional compliance-grade audit logger
 
 	// custodianSvc handles custodian registration, listing, and revocation.
 	custodianSvc custodianServicer
@@ -610,17 +615,50 @@ func WithCORS(cfg CORSConfig) ServerOption {
 	return func(s *Server) { s.corsConfig = &cfg }
 }
 
-// WithCABootstrap enables the /v1/ca/bootstrap endpoint that serves the
-// cluster CA certificate to joining nodes. The endpoint is public (no
-// authentication required) so that nodes without TLS credentials can
-// bootstrap their trust store -- which is exactly why it serves certificates
-// and nothing else. certPEM is reduced to its CERTIFICATE blocks here, so a
-// caller that concatenates the CA key onto it cannot publish the key; input
-// with no certificate leaves the route unregistered.
+// WithCABootstrap serves certPEM on /v1/ca/bootstrap: the cluster CA
+// certificate joining nodes fetch to bootstrap their trust store. The endpoint
+// is public (no authentication) -- exactly why it serves certificates and
+// nothing else: certPEM is reduced to its CERTIFICATE blocks here, so a caller
+// that concatenates the CA key onto it cannot publish the key. Input with no
+// certificate configures nothing. It and WithCABootstrapProvider are the two
+// sources of the one route; configuring both is refused at Start.
 func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(s *Server) {
-		s.caBootstrapCert = clustertls.CertificatesOnly(certPEM)
+		certs := clustertls.CertificatesOnly(certPEM)
+		if len(certs) == 0 {
+			return
+		}
+		s.addCABootstrap(func(context.Context) ([]byte, error) { return certs, nil })
 	}
+}
+
+// WithCABootstrapProvider serves the bundle provider returns on
+// /v1/ca/bootstrap, read per request: the host's first-contact trust bundle
+// when the host, not qrdb's cluster CA, owns that trust (go-xkms's xkmsd). The
+// host supplies data and qrdb owns the route, as for /health, so the route has
+// one owner and a host never registers its own. The bundle is reduced to its
+// CERTIFICATE blocks before it is served, whatever the provider returns. A nil
+// provider configures nothing; configuring it beside WithCABootstrap is
+// refused at Start.
+func WithCABootstrapProvider(provider func(context.Context) ([]byte, error)) ServerOption {
+	return func(s *Server) {
+		if provider == nil {
+			return
+		}
+		s.addCABootstrap(func(ctx context.Context) ([]byte, error) {
+			bundle, err := provider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return clustertls.CertificatesOnly(bundle), nil
+		})
+	}
+}
+
+// addCABootstrap records one source of the /v1/ca/bootstrap bundle.
+func (s *Server) addCABootstrap(source func(context.Context) ([]byte, error)) {
+	s.caBootstrap = source
+	s.caBootstrapSources++
 }
 
 // WithKVService attaches a KVServicer for key-value operations. This is an
@@ -924,6 +962,10 @@ func (s *Server) Start() error {
 	if s.tlsErr != nil {
 		s.closePrebound()
 		return s.tlsErr
+	}
+	if s.caBootstrapSources > 1 {
+		s.closePrebound()
+		return &CABootstrapConflictError{}
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
 	// orchestrator always supplies a config (operator-provided or
@@ -1825,7 +1867,13 @@ func (s *Server) registerRoutes() {
 
 	// CA bootstrap endpoint (public, no auth required: joining nodes fetch
 	// the trust anchor before they hold credentials).
-	s.publicIf(len(s.caBootstrapCert) > 0, http.MethodGet, "/v1/ca/bootstrap", s.handleCABootstrap)
+	// Claimed ONLY when exactly one source supplies the bundle. Claimed
+	// unconditionally, the path was reserved on a node that served nothing
+	// there, and a host that serves its own first-contact bundle (xkmsd)
+	// collided with the reservation at boot. Two sources are refused at Start.
+	if s.caBootstrapSources == 1 {
+		s.public(http.MethodGet, "/v1/ca/bootstrap", s.handleCABootstrap)
+	}
 
 	// Cluster peer key-transport endpoints. Both routes are pre-exempt from
 	// the auth middleware (exact-path allowlist in middleware/rest.go) and on
@@ -1953,13 +2001,25 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 // public (exempted from authentication in the middleware) because joining
 // nodes do not yet have TLS credentials.
 func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
-	if len(s.caBootstrapCert) == 0 {
+	if s.caBootstrap == nil {
+		// Unreachable through the router (the route is registered only with
+		// a source), but a direct call must not dereference nil.
 		http.Error(w, "CA bootstrap not configured", http.StatusServiceUnavailable)
+		return
+	}
+	bundle, err := s.caBootstrap(r.Context())
+	if err != nil {
+		slog.Warn("rest: CA bootstrap bundle unavailable", slog.Any("error", err))
+		http.Error(w, "CA bootstrap bundle unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if len(bundle) == 0 {
+		http.Error(w, "CA bootstrap bundle unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(s.caBootstrapCert)
+	_, _ = w.Write(bundle)
 }
 
 // peerAdminRegistry is a thread-safe registry that maps Raft addresses to

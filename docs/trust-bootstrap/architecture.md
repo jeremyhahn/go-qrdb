@@ -62,9 +62,10 @@ at every call site; the ladder is evaluated at connect time.
 | The CA bootstrap endpoint the client fetches from | `pkg/api/rest` (`GET /v1/ca/bootstrap`) | go-qrdb |
 
 The one piece of this feature that is fully implemented **here** is the server
-side of `direct`: `GET /v1/ca/bootstrap` is a public route, registered only when
-a bootstrap certificate is configured, that serves the CA bootstrap
-certificate.
+side of `direct`: `GET /v1/ca/bootstrap` is a public route that serves the CA
+bootstrap bundle. It is registered only when exactly one source is
+configured: qrdb's cluster CA, or a bundle the embedding host supplies through
+`WithBootstrapCABundle`. Configuring both is a startup error.
 
 ## Trust boundaries
 

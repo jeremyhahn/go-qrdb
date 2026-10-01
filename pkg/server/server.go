@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -177,6 +178,7 @@ type serverOptions struct {
 	certProv           cert.CertProvider
 	authMW             *authmw.AuthMiddleware
 	caBootstrapCert    []byte
+	caBootstrapBundle  func(context.Context) ([]byte, error)
 	batchSvc           service.BatchServicer
 	txSvc              service.TransactionServicer
 	mvccSvc            service.MVCCKVServicer
@@ -503,6 +505,19 @@ func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
 func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(o *serverOptions) {
 		o.caBootstrapCert = certPEM
+	}
+}
+
+// WithBootstrapCABundle makes the host the source of the bundle served on
+// /v1/ca/bootstrap, read per request through bundle: first-contact trust for a
+// host that owns it (go-xkms's xkmsd) rather than qrdb's cluster CA. qrdb owns
+// the route and the host supplies only the data, as for /health, so a host
+// never registers the path itself. Only CERTIFICATE blocks are served. When
+// neither this nor WithCABootstrap is configured the path is not registered at
+// all; configuring both is refused by Start with *rest.CABootstrapConflictError.
+func WithBootstrapCABundle(bundle func(ctx context.Context) ([]byte, error)) ServerOption {
+	return func(o *serverOptions) {
+		o.caBootstrapBundle = bundle
 	}
 }
 
@@ -1150,6 +1165,12 @@ func (s *Server) start() error {
 	if err := s.checkPreboundSockets(); err != nil {
 		return err
 	}
+	// Refused before any transport binds: /v1/ca/bootstrap has one owner and
+	// serves one bundle, so a cluster CA and a host bundle together is a
+	// configuration error, not a choice for qrdb to make.
+	if s.opts.caBootstrapBundle != nil && len(clustertls.CertificatesOnly(s.opts.caBootstrapCert)) > 0 {
+		return &rest.CABootstrapConflictError{}
+	}
 	if err := s.ensureAuthFactorService(); err != nil {
 		return err
 	}
@@ -1500,6 +1521,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.rebalanceSvc != nil {
 		restOpts = append(restOpts, rest.WithRebalanceService(s.opts.rebalanceSvc))
+	}
+	if s.opts.caBootstrapBundle != nil {
+		restOpts = append(restOpts, rest.WithCABootstrapProvider(s.opts.caBootstrapBundle))
 	}
 	if len(s.opts.caBootstrapCert) > 0 {
 		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert))

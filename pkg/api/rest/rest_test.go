@@ -2422,8 +2422,12 @@ func TestWithCABootstrap_SetsFields(t *testing.T) {
 	opt := WithCABootstrap(certPEM)
 	opt(srv)
 
-	if string(srv.caBootstrapCert) != string(certPEM) {
-		t.Fatalf("caBootstrapCert = %q, want %q", srv.caBootstrapCert, certPEM)
+	if srv.caBootstrapSources != 1 || srv.caBootstrap == nil {
+		t.Fatalf("sources = %d, want one", srv.caBootstrapSources)
+	}
+	got, err := srv.caBootstrap(context.Background())
+	if err != nil || string(got) != string(certPEM) {
+		t.Fatalf("bundle = %q, %v; want %q", got, err, certPEM)
 	}
 }
 
@@ -2432,8 +2436,8 @@ func TestWithCABootstrap_SetsFields(t *testing.T) {
 func TestWithCABootstrap_NonPEMInputLeavesNothingToServe(t *testing.T) {
 	srv := &Server{}
 	WithCABootstrap([]byte("cert-data"))(srv)
-	if srv.caBootstrapCert != nil {
-		t.Fatalf("caBootstrapCert = %q, want nil", srv.caBootstrapCert)
+	if srv.caBootstrapSources != 0 || srv.caBootstrap != nil {
+		t.Fatalf("a non-PEM input configured the bootstrap route (sources = %d)", srv.caBootstrapSources)
 	}
 }
 

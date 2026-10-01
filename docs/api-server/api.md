@@ -71,7 +71,7 @@ servers that do not serve them.
 |---|---|
 | `GET /health` | registered when admin is enabled |
 | `GET /v1/config/initialized` | always |
-| `GET /v1/ca/bootstrap` | only when a bootstrap certificate is configured |
+| `GET /v1/ca/bootstrap` | only when exactly one bundle source is configured: the cluster CA (`WithCABootstrap`) or a host bundle (`WithBootstrapCABundle`); both is a startup error |
 | `GET /v1/cluster/nodekey` | only when a cluster key receiver is wired |
 | `POST /v1/cluster/keydelivery` | only when a cluster key receiver is wired |
 

@@ -38,7 +38,7 @@ backend that implements it.
 
 | Route | Auth | Registration condition |
 |---|---|---|
-| `GET /v1/ca/bootstrap` | **public** | only when `len(s.caBootstrapCert) > 0` |
+| `GET /v1/ca/bootstrap` | **public** | only when exactly one source is configured (`caBootstrapSources == 1`) |
 
 This serves the CA bootstrap certificate to a client that has no credentials
 yet. It is the server half of the `direct` mode, and it is real.
@@ -54,7 +54,18 @@ yet. It is the server half of the `direct` mode, and it is real.
 - **The command shape is the contract.** Its five modes and their names match
   `xkmsctl`, `quicbaasctl` and `platformctl`; changing them here breaks that
   parity even though nothing here executes.
-- **`/v1/ca/bootstrap` does not exist unless configured.** An unconfigured
+- **One route, one owner, two possible sources.** The bundle comes from
+  qrdb's cluster CA (`server.WithCABootstrap`, which qrdbd sets) or from the
+  embedding host (`server.WithBootstrapCABundle` / `sdk.WithBootstrapCABundle`,
+  a `func(ctx) ([]byte, error)` read per request). go-xkms's xkmsd owns
+  first-contact trust and uses the latter. The host supplies data, not a
+  route, as for `/health`. Either way only CERTIFICATE blocks are served.
+  Configuring both refuses startup with `*rest.CABootstrapConflictError`
+  (`sdk.CABootstrapConflictError`); qrdb never picks one.
+- **`/v1/ca/bootstrap` does not exist unless configured.** Unconfigured, the
+  path is not even claimed. Until v0.25.1-alpha it was claimed
+  unconditionally, so a host serving its own bundle there panicked at boot
+  with a route collision. An unconfigured
   deployment returns 404 rather than an empty or self-signed bundle.
 
 ## Error semantics

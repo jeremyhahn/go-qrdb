@@ -233,7 +233,7 @@ request.
 |---|---|
 | `GET /health` | **public** (registered when admin is on) |
 | `GET /v1/config/initialized` | **public** |
-| `GET /v1/ca/bootstrap` | **public**, only when a bootstrap certificate is configured |
+| `GET /v1/ca/bootstrap` | **public**, only when exactly one bundle source is configured (cluster CA or host bundle); unconfigured it is not even claimed, so a host never collides with it |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |
 | `GET /metrics` | **authenticated**, no specific permission, only when a gatherer is configured |
 | gRPC / Unix `/grpc.health.v1.Health/*` | **public**: liveness only |

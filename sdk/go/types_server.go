@@ -155,6 +155,18 @@ var RESTRouteKey = authmw.RESTRouteKey
 // TLS with their own certificate material pass it here.
 var WithServerTLS = qrdbserver.WithTLS
 
+// WithBootstrapCABundle makes the host the source of the bundle qrdb serves
+// on GET /v1/ca/bootstrap, read per request: a host that owns first-contact
+// trust (go-xkms's xkmsd) supplies the data, and qrdb owns the one route, as
+// for /health. Only CERTIFICATE blocks are served. With neither this nor
+// qrdb's cluster CA configured the path is not registered at all; both
+// together are refused at Start with *CABootstrapConflictError.
+var WithBootstrapCABundle = qrdbserver.WithBootstrapCABundle
+
+// CABootstrapConflictError refuses a server given both qrdb's cluster CA and
+// a host bundle for /v1/ca/bootstrap.
+type CABootstrapConflictError = restapi.CABootstrapConflictError
+
 // WithRESTListener hands the embedded server a TCP listener the caller already
 // bound, which it serves REST on instead of binding server.admin_port. Bind
 // ":0" and read the port back to get a kernel-assigned port with no window in
