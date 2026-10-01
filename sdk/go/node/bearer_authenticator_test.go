@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -60,15 +61,19 @@ const (
 )
 
 // hostTokenAuthenticator is an embedder's bearer validator in the shape
-// go-quicbaas registers: it reads the carrier every transport fills and
-// declares its method unobservable.
+// go-quicbaas and go-xkms register, written against the SDK alone: it reads
+// the credential carrier every transport fills (sdk.HTTPAuthorizationFromContext),
+// declines with sdk.ErrUnauthenticated, and declares its method unobservable
+// through sdk.UnobservableMethodAuthenticator. No pkg/auth import is needed.
 type hostTokenAuthenticator struct{}
 
-func (hostTokenAuthenticator) Authenticate(ctx context.Context) (*auth.Identity, error) {
-	if auth.HTTPAuthorizationFromContext(ctx) != hostBearerToken {
-		return nil, auth.ErrUnauthenticated
+var _ sdk.UnobservableMethodAuthenticator = hostTokenAuthenticator{}
+
+func (hostTokenAuthenticator) Authenticate(ctx context.Context) (*sdk.Identity, error) {
+	if sdk.HTTPAuthorizationFromContext(ctx) != hostBearerToken {
+		return nil, sdk.ErrUnauthenticated
 	}
-	return &auth.Identity{Subject: hostBearerSubject, TenantID: tenant.SystemTenantID}, nil
+	return &sdk.Identity{Subject: hostBearerSubject, TenantID: sdk.SystemTenantID}, nil
 }
 
 func (hostTokenAuthenticator) Name() string { return "host-bearer" }
@@ -88,7 +93,7 @@ type bearerTransport struct {
 }
 
 // TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport: an
-// authenticator registered with WithAuthenticators reads the caller's
+// SDK-only authenticator registered with WithAuthenticators reads the caller's
 // Authorization value on REST, gRPC, Unix and MCP alike, so a bearer-only
 // caller (no client certificate) is admitted on each, and a missing or wrong
 // token is refused as unauthenticated on each. The account's method policy

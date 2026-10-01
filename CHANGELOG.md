@@ -82,7 +82,10 @@ Adds the per-tenant DEK keyring on every transport, bearer authenticators on gRP
   carry the caller's `authorization` metadata into the same context carrier
   REST and MCP fill from the `Authorization` header
   (`auth.HTTPAuthorizationFromContext`), so an authenticator registered with
-  `node.WithAuthenticators` sees the credential on every one of them. An
+  `node.WithAuthenticators` sees the credential on every one of them. The
+  carrier and the decline sentinel are re-exported as
+  `sdk.HTTPAuthorizationFromContext` and `sdk.ErrUnauthenticated`, so such an
+  authenticator is written against the SDK alone. An
   authenticator whose tokens are minted by the host after its own login
   ceremony implements the new `auth.UnobservableMethodAuthenticator`
   (`sdk.UnobservableMethodAuthenticator`). When it reports true, the chain

@@ -198,6 +198,21 @@ var WithTLSState = auth.WithTLSState
 // closed.
 var TLSStateFromContext = auth.TLSStateFromContext
 
+// HTTPAuthorizationFromContext returns the caller's raw Authorization value
+// (for example "Bearer eyJ..."), or "" when the request carried none. It is
+// the one credential carrier every network transport fills: REST and MCP from
+// the Authorization header, gRPC and Unix from the "authorization" metadata.
+// An authenticator registered with node.WithAuthenticators reads the bearer
+// here and works on all four unchanged. Native QUIC frames carry no
+// credential.
+var HTTPAuthorizationFromContext = auth.HTTPAuthorizationFromContext
+
+// ErrUnauthenticated is what an Authenticator returns when the request
+// carries no credential it accepts. The chain then tries the next
+// authenticator, and when none succeeds every transport answers its
+// unauthenticated status (401, Unauthenticated).
+var ErrUnauthenticated = auth.ErrUnauthenticated
+
 // IdentityFromContext retrieves the Identity from context.
 // Returns nil if no identity is stored.
 var IdentityFromContext = auth.IdentityFromContext
