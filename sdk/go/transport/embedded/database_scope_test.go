@@ -153,7 +153,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "dbSvc", "barrierSvc", "pinBackend",
 		"dekSvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
 		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "lockSvc", "custodianGroupSvc", "shareSvc",
-		"authFactorSvc", "auditLogger", "encMigrator", "registry", "rbacAuthz", "userAuthFactorSvc",
+		"authFactorSvc", "auditLogger", "encMigrator", "registry", "rbacAuthz", "authMW", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
 		"nowFunc"} {
 		copied[n] = true
