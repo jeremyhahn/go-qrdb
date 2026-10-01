@@ -332,8 +332,8 @@ var databaseRules = []rule{
 	as(&database.DiscoveryClusterSizeError{Size: 0}, InvalidArgument),
 	as(&database.EtcdListenAddrRequiredError{}, InvalidArgument),
 	as(&database.InvalidStorageCodecError{Codec: "x"}, InvalidArgument),
-	// A per-database barrier mode this node cannot build (Shamir, until
-	// per-database share holders ship): the request's choice, not a fault.
+	// A per-database barrier mode this node cannot build: the request's
+	// choice, not a fault.
 	as(&database.UnsupportedBarrierStrategyError{Mode: "shamir"}, InvalidArgument),
 	as(&compaction.InvalidPolicyError{}, InvalidArgument),
 	// A compaction policy on a store that keeps no MVCC history, or on a
@@ -385,6 +385,9 @@ var databaseRules = []rule{
 	// answer: nothing was created, and a retry can succeed.
 	as(&shard.ClaimContentionError{Attempts: 1}, Unavailable),
 	as(&database.ShardIDClaimError{Err: context.DeadlineExceeded}, Unavailable),
+	// Turning an existing database's barrier on or off needs a data
+	// migration that is not performed.
+	as(&database.BarrierMigrationNotSupportedError{}, FailedPrecondition),
 }
 
 // placementRules are the quota, placement and raft-topology conditions.

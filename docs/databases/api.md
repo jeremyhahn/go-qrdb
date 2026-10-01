@@ -86,8 +86,8 @@ Shipped:
   "mode": "distributed", "replicas": 3,
   "protocol": { "mysql": false, "postgresql": true,
                 "etcd": { "enabled": false, "listenAddr": ":2379" } },
-  "barrier": { "enabled": true, "mode": "shamir",
-               "sharesRequired": 3, "sharesTotal": 5 },
+  "barrier": { "enabled": true, "mode": "passphrase",
+               "secret": "correct horse battery" },
   "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
 ```
 
@@ -308,6 +308,8 @@ refusal as a server fault.)*
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
 | Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; this refusal is Unprocessable)* |
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 422 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
+| Barrier strategy other than `passphrase` (`UnsupportedBarrierStrategyError`) | 400 | `INVALID_ARGUMENT` |
+| Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
 | etcd enabled on a non-`kv` database | 400 | `INVALID_ARGUMENT` — `database.EtcdEngineUnsupportedError` *(corrected: documented as non-`kv` / non-`raft`, `FAILED_PRECONDITION`)* |

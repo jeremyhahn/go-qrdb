@@ -192,4 +192,40 @@ test.describe("Database management (real backend)", () => {
     await request.delete(`${daemon.adminUrl}/v1/databases/${dbA}`);
     await request.delete(`${daemon.adminUrl}/v1/databases/${dbB}`);
   });
+
+  test("a create with a passphrase barrier, as the wizard sends it, encrypts the database", async ({ request, daemon }) => {
+    // The request the database wizard sends for a passphrase barrier: a
+    // dedicated store (data directory) and barrier.enabled with the secret.
+    const name = dbName("barrier");
+    const resp = await request.post(`${daemon.adminUrl}/v1/databases`, {
+      data: {
+        name,
+        engine: "kv",
+        backend: "pebble",
+        dataDir: `${daemon.dataDir}/databases-e2e/${name}`,
+        barrier: { enabled: true, mode: "passphrase", secret: "correct horse battery" },
+      },
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(resp.status(), await resp.text()).toBe(201);
+    const created = await resp.json() as DatabaseInfoResponse & { barrier?: { enabled: boolean; mode?: string; secret?: string } };
+    expect(created.barrier).toMatchObject({ enabled: true, mode: "passphrase" });
+    expect(created.barrier?.secret).toBeUndefined();
+
+    const got = await request.get(`${daemon.adminUrl}/v1/databases/${name}`);
+    const info = await got.json() as { barrier?: { enabled: boolean } };
+    expect(info.barrier?.enabled).toBe(true);
+
+    await request.delete(`${daemon.adminUrl}/v1/databases/${name}`);
+  });
+
+  test("a barrier on the shared default store is refused", async ({ request, daemon }) => {
+    const name = dbName("barrier-shared");
+    const resp = await request.post(`${daemon.adminUrl}/v1/databases`, {
+      data: { name, engine: "kv", backend: "pebble", barrier: { enabled: true, mode: "passphrase", secret: "x" } },
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(resp.status()).toBeGreaterThanOrEqual(400);
+    expect(resp.status()).toBeLessThan(500);
+  });
 });
