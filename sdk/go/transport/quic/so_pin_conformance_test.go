@@ -68,6 +68,7 @@ func TestSOPINConformance(t *testing.T) {
 func TestSOPINConformance_ConflictingPINsAreRefused(t *testing.T) {
 	f := sotest.NewFixture(t)
 	f.PINs = authtest.BarrierPINBackend(t, sotest.PIN)
+	f.Barrier.PINs = f.PINs
 	tr := startSOConformance(t, f)
 	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()

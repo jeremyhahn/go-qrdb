@@ -58,6 +58,22 @@ func Provision(backend PINBackend, soPIN, userPIN string) error {
 	return backend.SetUserPIN(soPIN, userPIN)
 }
 
+// RequireProvisionedSOPIN gates an operation that is meaningful only once the
+// node has an SO PIN -- a rekey, a holder revocation -- behind it. Unlike
+// RequireSOPIN it does not admit the call when no SO PIN has been
+// provisioned: it refuses with ErrPINNotSet, since there is nothing to check
+// the presented PIN against. With no backend it fails closed with
+// ErrBackendNotConfigured.
+func RequireProvisionedSOPIN(backend PINBackend, soPIN string) error {
+	if backend == nil {
+		return ErrBackendNotConfigured
+	}
+	if !backend.SOPINSet() {
+		return ErrPINNotSet
+	}
+	return backend.VerifySOPIN(soPIN)
+}
+
 // RequireSOPIN gates an administrative operation behind SO PIN
 // authorization. With no backend it fails closed. With a backend on which no
 // SO PIN has been provisioned it admits the call: the node has no PIN to

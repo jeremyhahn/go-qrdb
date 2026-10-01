@@ -41,6 +41,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -298,13 +300,24 @@ type holderE2E struct {
 	n         *node.Node
 	holders   map[string]*e2eHolder
 	adminTLS  *tls.Config
+	// pins is the barrier PIN backend the composer injects, with the SO PIN
+	// e2eSOPIN provisioned: rekey and revocation present it.
+	pins pin.PINBackend
 }
+
+// e2eSOPIN is the barrier SO PIN the share-holder scenario provisions.
+const e2eSOPIN = "so-pin-1234"
 
 // newHolderE2E prepares the CA, server TLS, factor registry, holders and the
 // node configuration for tk.
 func newHolderE2E(t *testing.T, tk transportKind) *holderE2E {
 	t.Helper()
 	e := &holderE2E{t: t, tk: tk, holders: map[string]*e2eHolder{}}
+	pins := pintest.NewBackend(t)
+	if err := pins.SetSOPIN("", e2eSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	e.pins = pins
 
 	var caPEM []byte
 	e.ca, caPEM = ceremonytest.NewCA(t, "Share Holder Conformance CA")
@@ -351,6 +364,7 @@ func (e *holderE2E) serverOpts() []server.ServerOption {
 		server.WithTLS(e.serverTLS),
 		server.WithCeremonyCA(e.ca),
 		server.WithFactorRegistry(e.factors),
+		server.WithPINBackend(e.pins),
 	}
 }
 
@@ -680,7 +694,7 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 
 			// --- Revoking a holder is a quorum-gated rekey. ------------------------
 			admin := e.adminClient()
-			round, err := admin.BarrierOfficerRevoke(boundedCtx(t), &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin"})
+			round, err := admin.BarrierOfficerRevoke(boundedCtx(t), &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin", SOPin: e2eSOPIN})
 			if err != nil {
 				t.Fatalf("revoke: %v", err)
 			}
@@ -708,7 +722,7 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 
 			// --- A rekey to the any-enrolled policy. ------------------------------
 			if _, err := admin.BarrierRekeyStart(boundedCtx(t), &transport.RekeyStartRequest{
-				Domain: transport.DomainUnseal, Threshold: e2eThreshold, Policy: transport.PolicyAnyEnrolled,
+				Domain: transport.DomainUnseal, Threshold: e2eThreshold, Policy: transport.PolicyAnyEnrolled, SOPin: e2eSOPIN,
 			}); err != nil {
 				t.Fatalf("rekey start: %v", err)
 			}

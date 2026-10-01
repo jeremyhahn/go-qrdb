@@ -16,11 +16,13 @@ package authtest_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -69,13 +71,40 @@ func TestSOVerifier_VerifiesTheCommittedPIN(t *testing.T) {
 }
 
 func TestBarrier_CountsRekeys(t *testing.T) {
-	b := &authtest.Barrier{}
-	info, err := b.BarrierRekeyStart(context.Background(), seal.DomainUnseal, 2, seal.FactorPolicyDesignated)
+	b := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, "barrier-pin")}
+	info, err := b.BarrierRekeyStart(context.Background(), seal.DomainUnseal, 2, seal.FactorPolicyDesignated, "barrier-pin")
 	if err != nil || info.NewThreshold != 2 || info.Op != seal.OpRekey {
 		t.Fatalf("BarrierRekeyStart = %+v, %v", info, err)
 	}
 	if b.Rekeys() != 1 {
 		t.Fatalf("Rekeys = %d, want 1", b.Rekeys())
+	}
+}
+
+// TestBarrier_ChecksTheSOPINAsTheServiceDoes: the double refuses a rekey or
+// revocation as the real barrier service does -- no backend, no SO PIN
+// provisioned, or the wrong PIN -- and counts only what it admits.
+func TestBarrier_ChecksTheSOPINAsTheServiceDoes(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		pins pin.PINBackend
+		pin  string
+		want error
+	}{
+		"no backend":      {nil, "barrier-pin", pin.ErrBackendNotConfigured},
+		"not provisioned": {authtest.EmptyBarrierPINBackend(t), "barrier-pin", pin.ErrPINNotSet},
+		"wrong PIN":       {authtest.BarrierPINBackend(t, "barrier-pin"), "nope-nope", pin.ErrPINInvalid},
+	} {
+		b := &authtest.Barrier{PINs: tc.pins}
+		if _, err := b.BarrierRekeyStart(ctx, seal.DomainUnseal, 2, "", tc.pin); !errors.Is(err, tc.want) {
+			t.Errorf("%s: rekey = %v, want %v", name, err, tc.want)
+		}
+		if _, err := b.BarrierOfficerRevoke(ctx, seal.DomainUnseal, "bob", 2, tc.pin); !errors.Is(err, tc.want) {
+			t.Errorf("%s: revoke = %v, want %v", name, err, tc.want)
+		}
+		if b.Rekeys()+b.Revocations() != 0 {
+			t.Errorf("%s: a refused call was counted", name)
+		}
 	}
 }
 

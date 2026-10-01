@@ -48,6 +48,8 @@ type quicHolderSvc struct {
 	err    error
 	domain seal.QuorumDomain
 	peer   string
+	// soPINs records the SO PIN each rekey or revocation handed the service.
+	soPINs []string
 }
 
 func (h *quicHolderSvc) BarrierOfficerRegister(_ context.Context, d seal.QuorumDomain, r *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
@@ -97,14 +99,16 @@ func (h *quicHolderSvc) BarrierQuorumSubmit(_ context.Context, r *service.Quorum
 	return &service.QuorumOutcomeInfo{Domain: r.Domain, Op: r.Op, Required: 3, Submitted: 1}, nil
 }
 
-func (h *quicHolderSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+func (h *quicHolderSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.err != nil {
 		return nil, h.err
 	}
 	return &service.QuorumRoundInfo{Domain: d, NewThreshold: th, Policy: p}, nil
 }
 
-func (h *quicHolderSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, _ int) (*service.QuorumRoundInfo, error) {
+func (h *quicHolderSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, _ int, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -223,12 +227,17 @@ func TestQUICHolders_SystemRefusals(t *testing.T) {
 		}
 	}
 
-	noPIN := NewServer(nil, nil, "localhost:0", WithBarrierService(&quicHolderSvc{}))
-	frames := systemHolderFrames(t, noPIN)
+	// The SO PIN gating rekey and revocation is the barrier service's to
+	// verify; the handler hands it the request's so_pin.
+	recording := &quicHolderSvc{}
+	frames := systemHolderFrames(t, NewServer(nil, nil, "localhost:0", WithBarrierService(recording)))
 	for _, name := range []string{"rekey-start", "officer-revoke"} {
-		if _, err := frames[name](ctx); err == nil {
-			t.Errorf("%s ran with no PIN backend", name)
+		if _, err := frames[name](ctx); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
+	}
+	if len(recording.soPINs) != 2 {
+		t.Errorf("SO PINs handed to the service = %q", recording.soPINs)
 	}
 
 	garbage := []byte{0xff, 0xfe}

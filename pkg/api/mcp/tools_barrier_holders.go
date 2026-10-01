@@ -27,7 +27,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -129,7 +128,7 @@ func withArgs(name, description string, groups ...[]mcp.ToolOption) mcp.Tool {
 }
 
 // barrierHolderTools returns the system-barrier share-holder tools.
-func barrierHolderTools(svc service.BarrierServicer, pinBackend pin.PINBackend) []serverTool {
+func barrierHolderTools(svc service.BarrierServicer) []serverTool {
 	return []serverTool{
 		{Tool: withArgs("qrdb_barrier_officer_register", "Enrol a share holder (Security Officer or key custodian) of the unseal key.", holderRegisterArgs()),
 			Perm: permission.SealOfficerRegister, Handler: handleHolderRegister(svc, seal.DomainUnseal, "qrdb_barrier_officer_register")},
@@ -157,12 +156,12 @@ func barrierHolderTools(svc service.BarrierServicer, pinBackend pin.PINBackend) 
 			argDomain,
 			mcp.WithNumber("threshold", mcp.Required(), mcp.Description("Threshold of the new share set.")),
 			argPolicy, argSOPin,
-		}), Perm: permission.SealRekey, Handler: handleRekeyStart(svc, pinBackend)},
+		}), Perm: permission.SealRekey, Handler: handleRekeyStart(svc)},
 		{Tool: withArgs("qrdb_barrier_officer_revoke", "Revoke a holder through a quorum-gated rekey that drops it atomically.", []mcp.ToolOption{
 			argDomain, argUsername,
 			mcp.WithNumber("threshold", mcp.Description("Threshold of the remaining share set; the current threshold when zero.")),
 			argSOPin,
-		}), Perm: permission.SealOfficerRevoke, Handler: handleOfficerRevoke(svc, pinBackend)},
+		}), Perm: permission.SealOfficerRevoke, Handler: handleOfficerRevoke(svc)},
 	}
 }
 
@@ -265,18 +264,16 @@ func handleQuorumSubmit(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	}
 }
 
-// handleRekeyStart opens a rekey round under SO PIN authorization.
-func handleRekeyStart(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
+// handleRekeyStart opens a rekey round under SO PIN authorization, which the
+// barrier service verifies.
+func handleRekeyStart(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		const tool = "qrdb_barrier_rekey_start"
 		var in transport.RekeyStartRequest
 		if err := decodeHolderArgs(tool, req, &in); err != nil {
 			return nil, err
 		}
-		if err := pin.RequireSOPIN(pinBackend, in.SOPin); err != nil {
-			return nil, &ToolError{Tool: tool, Err: err}
-		}
-		round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(in.Domain), in.Threshold, seal.FactorPolicy(in.Policy))
+		round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(in.Domain), in.Threshold, seal.FactorPolicy(in.Policy), in.SOPin)
 		if err != nil {
 			return nil, &ToolError{Tool: tool, Err: err}
 		}
@@ -284,18 +281,16 @@ func handleRekeyStart(svc service.BarrierServicer, pinBackend pin.PINBackend) mc
 	}
 }
 
-// handleOfficerRevoke revokes a holder under SO PIN authorization.
-func handleOfficerRevoke(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
+// handleOfficerRevoke revokes a holder under SO PIN authorization, which the
+// barrier service verifies.
+func handleOfficerRevoke(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		const tool = "qrdb_barrier_officer_revoke"
 		var in transport.OfficerRevokeRequest
 		if err := decodeHolderArgs(tool, req, &in); err != nil {
 			return nil, err
 		}
-		if err := pin.RequireSOPIN(pinBackend, in.SOPin); err != nil {
-			return nil, &ToolError{Tool: tool, Err: err}
-		}
-		round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(in.Domain), in.Username, in.Threshold)
+		round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(in.Domain), in.Username, in.Threshold, in.SOPin)
 		if err != nil {
 			return nil, &ToolError{Tool: tool, Err: err}
 		}

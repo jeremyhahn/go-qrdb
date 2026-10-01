@@ -195,6 +195,15 @@ are not reconstructed here — their history is in the git log.
   routes then answered another tenant's database differently from a missing
   one. Such a holder is now confined to the system tenant's databases;
   another tenant's database answers `NotFound`.
+- **Rekey and holder-revocation SO PIN guesses were unlimited, and an
+  unprovisioned SO PIN admitted any PIN.** Each transport checked the rekey
+  start and revocation SO PIN itself, outside the ceremony's lockout, and
+  `pin.RequireSOPIN` admitted the call when no SO PIN had been provisioned.
+  The barrier service now verifies it (`BarrierRekeyStart` and
+  `BarrierOfficerRevoke` take the PIN) through
+  `ceremony.CeremonyService.AuthorizeSOPIN`. That shares the SO PIN lockout
+  `CeremonySignCSR` counts against, and refuses with `pin.ErrPINNotSet` while
+  no SO PIN is provisioned (`pin.RequireProvisionedSOPIN`).
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading
@@ -385,6 +394,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **`service.BarrierServicer.BarrierRekeyStart` and `BarrierOfficerRevoke`
+  take the SO PIN.** The service verifies it; transports no longer do. A
+  node with no SO PIN provisioned refuses both.
 - **`seal.CeremonyDistributor.Distribute` takes the domain key as a
   `*secure.Buffer`.** It used to take a plain `[]byte`. The distributor
   borrows the buffer (`WithBytes`) only to split it, and neither retains nor

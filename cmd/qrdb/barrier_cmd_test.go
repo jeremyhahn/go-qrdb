@@ -171,14 +171,14 @@ func (m *mockBarrierService) BarrierQuorumSubmit(ctx context.Context, req *servi
 	return nil, errBarrierMockUnset
 }
 
-func (m *mockBarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+func (m *mockBarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, _ string) (*service.QuorumRoundInfo, error) {
 	if m.rekeyStartFn != nil {
 		return m.rekeyStartFn(ctx, domain, threshold, policy)
 	}
 	return nil, errBarrierMockUnset
 }
 
-func (m *mockBarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error) {
+func (m *mockBarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int, _ string) (*service.QuorumRoundInfo, error) {
 	if m.officerRevokeFn != nil {
 		return m.officerRevokeFn(ctx, domain, username, threshold)
 	}

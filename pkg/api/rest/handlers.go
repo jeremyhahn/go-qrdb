@@ -1146,8 +1146,10 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 
 // setRetryAfter sets the standard Retry-After header (RFC 9110 §10.2.3,
 // delay-seconds) when err says how long the caller must wait: a throttled
-// ceremony-sign-csr (service.SignCSRThrottledError) or a throttled
-// quorum-challenge request (ceremony.QuorumBeginRateLimitedError). The delay
+// ceremony-sign-csr (service.SignCSRThrottledError), a throttled
+// quorum-challenge request (ceremony.QuorumBeginRateLimitedError), or an SO
+// PIN check locked out after repeated failures (ceremony.SOPINLockedError,
+// from a rekey or revocation). The delay
 // is rounded up, and never below one second, so a caller that honours it is
 // never early. It must run before the status is written: net/http drops
 // headers set after WriteHeader.
@@ -1155,11 +1157,14 @@ func setRetryAfter(w http.ResponseWriter, err error) {
 	var wait time.Duration
 	var signCSR *service.SignCSRThrottledError
 	var quorumBegin *ceremony.QuorumBeginRateLimitedError
+	var soPINLocked *ceremony.SOPINLockedError
 	switch {
 	case errors.As(err, &signCSR):
 		wait = signCSR.RetryAfter
 	case errors.As(err, &quorumBegin):
 		wait = quorumBegin.RetryAfter
+	case errors.As(err, &soPINLocked):
+		wait = soPINLocked.RetryAfter
 	default:
 		return
 	}

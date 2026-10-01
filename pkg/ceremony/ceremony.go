@@ -423,6 +423,20 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	return &SignCSRInitResult{CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})}, nil
 }
 
+// AuthorizeSOPIN verifies soPIN as the SO PIN that gates a governance
+// operation on the barrier -- a rekey, a holder revocation. It refuses when
+// no SO PIN has been provisioned (pin.ErrPINNotSet) or no PIN backend is
+// wired (pin.ErrBackendNotConfigured), and it shares the lockout every SO PIN
+// check of this ceremony counts against: once the free failures are spent,
+// any SO PIN check, the right PIN included, is refused with
+// *SOPINLockedError until the backoff passes.
+func (s *CeremonyService) AuthorizeSOPIN(soPIN string) error {
+	s.mu.Lock()
+	pins := s.pins
+	s.mu.Unlock()
+	return s.soPIN.check(func() error { return pin.RequireProvisionedSOPIN(pins, soPIN) })
+}
+
 // RegisterOfficer enrols a share holder — Security Officer or key custodian —
 // for domain's key. The CA issues the holder a certificate; no share exists
 // until the next distribution of the domain (initialization, recovery-key

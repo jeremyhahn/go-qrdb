@@ -53,6 +53,8 @@ type mockBarrierService struct {
 	quorumSubmitFn       func(ctx context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error)
 	rekeyStartFn         func(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error)
 	officerRevokeFn      func(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error)
+	// soPINs records the SO PIN each rekey or revocation handed the service.
+	soPINs []string
 }
 
 // Compile-time interface check.
@@ -165,14 +167,16 @@ func (m *mockBarrierService) BarrierQuorumSubmit(ctx context.Context, req *servi
 	return nil, errMockUnset
 }
 
-func (m *mockBarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+func (m *mockBarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	m.soPINs = append(m.soPINs, soPIN)
 	if m.rekeyStartFn != nil {
 		return m.rekeyStartFn(ctx, domain, threshold, policy)
 	}
 	return nil, errMockUnset
 }
 
-func (m *mockBarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error) {
+func (m *mockBarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*service.QuorumRoundInfo, error) {
+	m.soPINs = append(m.soPINs, soPIN)
 	if m.officerRevokeFn != nil {
 		return m.officerRevokeFn(ctx, domain, username, threshold)
 	}

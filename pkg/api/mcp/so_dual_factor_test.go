@@ -68,7 +68,7 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	if gated {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
-	barrier := &authtest.Barrier{}
+	barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
 	pin := &atomic.Pointer[string]{}
 	client := startBarrierMCP(t, mw, gate, barrier, pin)
 	return &soFixture{client: client, caller: caller, barrier: barrier, pin: pin}
@@ -220,7 +220,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, soTestTenant)
 	gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
-	barrier := &authtest.Barrier{}
+	barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithBarrierService(barrier), WithSOGate(gate),
 		WithPINBackend(authtest.BarrierPINBackend(t, soTestPIN)))

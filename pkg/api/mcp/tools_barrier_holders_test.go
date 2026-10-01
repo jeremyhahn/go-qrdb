@@ -37,7 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -53,6 +53,8 @@ type holderSvc struct {
 	peer    string
 	submit  *service.QuorumSubmitRequest
 	regUser string
+	// soPINs records the SO PIN each rekey or revocation handed the service.
+	soPINs []string
 }
 
 func (h *holderSvc) BarrierOfficerRegister(_ context.Context, d seal.QuorumDomain, r *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
@@ -103,14 +105,16 @@ func (h *holderSvc) BarrierQuorumSubmit(_ context.Context, r *service.QuorumSubm
 	return &service.QuorumOutcomeInfo{Domain: r.Domain, Op: r.Op, Required: 3, Submitted: 1}, nil
 }
 
-func (h *holderSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+func (h *holderSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.err != nil {
 		return nil, h.err
 	}
 	return &service.QuorumRoundInfo{Domain: d, Op: seal.OpRekey, NewThreshold: th, Policy: p}, nil
 }
 
-func (h *holderSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, _ int) (*service.QuorumRoundInfo, error) {
+func (h *holderSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, _ int, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -153,8 +157,7 @@ func holderTool(t *testing.T, tools []serverTool, name string) mcpserver.ToolHan
 func TestHolderTools_SystemLifecycle(t *testing.T) {
 	ctx, thumb := peerContext(t)
 	svc := &holderSvc{}
-	backend := pintest.NewBackend(t)
-	tools := barrierHolderTools(svc, backend)
+	tools := barrierHolderTools(svc)
 	call := func(name string, args map[string]any) string {
 		t.Helper()
 		res, err := holderTool(t, tools, name)(ctx, buildCallToolRequest(t, name, args))
@@ -217,7 +220,7 @@ func TestHolderTools_SystemLifecycle(t *testing.T) {
 func TestHolderTools_SystemRefusals(t *testing.T) {
 	ctx, _ := peerContext(t)
 	svc := &holderSvc{err: ceremony.ErrShareAlreadyClaimed}
-	tools := barrierHolderTools(svc, pintest.NewBackend(t))
+	tools := barrierHolderTools(svc)
 	for _, tc := range []struct {
 		name string
 		args map[string]any
@@ -261,19 +264,23 @@ func TestHolderTools_SystemRefusals(t *testing.T) {
 		}
 	}
 
-	// The SO PIN gates rekey and revocation, and fails closed without a backend.
-	backend := pintest.NewBackend(t)
-	if err := backend.SetSOPIN("", "so-pin-1"); err != nil {
-		t.Fatal(err)
-	}
-	gated := barrierHolderTools(&holderSvc{}, backend)
-	unconfigured := barrierHolderTools(&holderSvc{}, nil)
+	// The SO PIN gating rekey and revocation is the barrier service's to
+	// verify (behind its lockout): the tool hands it the request's so_pin,
+	// and the service's PIN refusal is the tool's.
+	pinSvc := &holderSvc{}
+	pinned := barrierHolderTools(pinSvc)
 	for _, name := range []string{"qrdb_barrier_rekey_start", "qrdb_barrier_officer_revoke"} {
-		if _, err := holderTool(t, gated, name)(ctx, buildCallToolRequest(t, name, map[string]any{"so_pin": "wrong"})); err == nil {
-			t.Errorf("%s accepted a wrong SO PIN", name)
+		if _, err := holderTool(t, pinned, name)(ctx, buildCallToolRequest(t, name, map[string]any{"so_pin": "so-pin-1", "username": "u"})); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
-		if _, err := holderTool(t, unconfigured, name)(ctx, buildCallToolRequest(t, name, nil)); err == nil {
-			t.Errorf("%s ran with no PIN backend", name)
+	}
+	if len(pinSvc.soPINs) != 2 || pinSvc.soPINs[0] != "so-pin-1" || pinSvc.soPINs[1] != "so-pin-1" {
+		t.Errorf("SO PINs handed to the service = %q", pinSvc.soPINs)
+	}
+	refusing := barrierHolderTools(&holderSvc{err: pin.ErrPINInvalid})
+	for _, name := range []string{"qrdb_barrier_rekey_start", "qrdb_barrier_officer_revoke"} {
+		if _, err := holderTool(t, refusing, name)(ctx, buildCallToolRequest(t, name, map[string]any{"so_pin": "wrong", "username": "u"})); !errors.Is(err, pin.ErrPINInvalid) {
+			t.Errorf("%s with a wrong SO PIN = %v, want the service's refusal", name, err)
 		}
 	}
 }

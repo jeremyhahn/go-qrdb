@@ -60,7 +60,7 @@ func newSOFixture(t *testing.T, start SOStartFunc, gated bool) *soFixture {
 	if gated {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
-	barrier := &authtest.Barrier{}
+	barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soPIN)}
 	conn := start(t, mw, gate, authtest.BarrierPINBackend(t, soPIN), barrier)
 	return &soFixture{caller: caller, barrier: barrier, client: pb.NewQRDBServiceClient(conn)}
 }
@@ -130,7 +130,7 @@ func SODualFactor(t *testing.T, start SOStartFunc) {
 		// the gate refuses, it is not skipped (go-qrdb#569 N5).
 		roles := authtest.BuiltInRoles(t, soTenant)
 		gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
-		barrier := &authtest.Barrier{}
+		barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soPIN)}
 		client := pb.NewQRDBServiceClient(start(t, nil, gate, authtest.BarrierPINBackend(t, soPIN), barrier))
 		ctx := metadata.AppendToOutgoingContext(callCtx(t), authmw.SOPINMetadataKey, soPIN)
 		_, err := client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, SoPin: soPIN})

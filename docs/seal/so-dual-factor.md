@@ -82,7 +82,7 @@ handler.
 
 A QUIC frame has no header section, so on QUIC the PIN rides in the `so_pin`
 field of the request message of every SO-gated operation
-(`barrier.ShamirInitialize`, `barrier.Rekey`, `barrier.RecoveryGenerate`,
+(`barrier.ShamirInitialize`, `barrier.RekeyStart`, `barrier.RecoveryGenerate`,
 `barrier.RecoveryDelete`, `ceremony.Initialize`, `ceremony.SignCSR`).
 `BarrierRecoveryDelete` takes a `BarrierRecoveryDeleteRequest` for this reason
 (it took `google.protobuf.Empty`; an empty request encodes identically). A
@@ -101,7 +101,7 @@ if err != nil {
 	return err
 }
 defer release()
-_, err = client.Barrier().BarrierRekey(ctx, &sdk.BarrierRekeyRequest{Threshold: 2, Total: 3})
+_, err = client.Barrier().BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2})
 ```
 
 **The SDK sends the PIN only over TLS, and only to the configured host.**
@@ -136,8 +136,15 @@ an invalid PIN.
 
 Some operations also carry the PIN in their request's own `so_pin` field,
 which the server reads as well: `BarrierSeal`, `BarrierInitializeShamir`,
-`BarrierRekey`, `BarrierGenerateRecoveryKeys`, `CeremonyInitialize` and
-`CeremonySignCSR`. On QUIC that field is the only carrier. **Every network
+`BarrierRekeyStart`, `BarrierOfficerRevoke`, `BarrierGenerateRecoveryKeys`,
+`CeremonyInitialize` and `CeremonySignCSR`. On QUIC that field is the only
+carrier. For rekey start and holder revocation, the barrier **service**
+verifies that field. It does so behind the ceremony's SO PIN lockout, which
+`CeremonySignCSR` counts against too, so every transport makes the same check
+and a guess costs the same everywhere. It refuses while no SO PIN has been
+provisioned (`pin.ErrPINNotSet`, `412` / `FAILED_PRECONDITION`). A
+locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with `Retry-After` on
+REST. **Every network
 transport fills it from the bound PIN** when the request carries none, so a
 caller never sets `SOPin` by hand on any transport. A request whose own
 `SOPin` differs from the bound PIN is refused with `sdk.SOPINConflictError`

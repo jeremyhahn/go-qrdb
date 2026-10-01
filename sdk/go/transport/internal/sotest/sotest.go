@@ -129,7 +129,13 @@ type Client interface {
 
 // Run is the conformance suite. start starts the transport's server from f
 // and returns a client connected to it.
-func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
+func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
+	// The barrier service verifies the rekey and revocation SO PIN against
+	// the same backend the server is given, as a node wires them.
+	start := func(t *testing.T, f *Fixture) Client {
+		f.Barrier.PINs = f.PINs
+		return startServer(t, f)
+	}
 	t.Run("SO rekeys with the PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		f.PINs = authtest.BarrierPINBackend(t, PIN)

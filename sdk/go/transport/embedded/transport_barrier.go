@@ -523,10 +523,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 	if err != nil {
 		return nil, err
 	}
-	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
-		return nil, err
-	}
-	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy))
+	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), req.SOPin)
 	if err != nil {
 		return nil, err
 	}
@@ -540,10 +537,7 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 	if err != nil {
 		return nil, err
 	}
-	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
-		return nil, err
-	}
-	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold)
+	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold, req.SOPin)
 	if err != nil {
 		return nil, err
 	}

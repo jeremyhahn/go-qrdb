@@ -88,6 +88,11 @@ func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthentic
 // test that reaches one has left the path it meant to drive.
 type Barrier struct {
 	service.BarrierServicer
+	// PINs is the barrier PIN backend the rekey and revocation SO PIN is
+	// checked against, as the real barrier service checks it: refused with
+	// no backend, refused while no SO PIN is provisioned, refused when wrong.
+	// The fixtures set it to the backend the server under test is given.
+	PINs             pin.PINBackend
 	rekeys           atomic.Int64
 	revocations      atomic.Int64
 	deletes          atomic.Int64
@@ -289,8 +294,12 @@ func (m *memPINStore) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
-// BarrierRekeyStart records the rekey round.
-func (b *Barrier) BarrierRekeyStart(_ context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+// BarrierRekeyStart checks the SO PIN against PINs and records the rekey
+// round.
+func (b *Barrier) BarrierRekeyStart(_ context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	if err := pin.RequireProvisionedSOPIN(b.PINs, soPIN); err != nil {
+		return nil, err
+	}
 	b.rekeys.Add(1)
 	return &service.QuorumRoundInfo{Domain: domain, Op: seal.OpRekey, Required: threshold, NewThreshold: threshold, Policy: policy}, nil
 }
@@ -298,8 +307,12 @@ func (b *Barrier) BarrierRekeyStart(_ context.Context, domain seal.QuorumDomain,
 // Rekeys reports how many rekey rounds reached the service.
 func (b *Barrier) Rekeys() int64 { return b.rekeys.Load() }
 
-// BarrierOfficerRevoke records the revocation round.
-func (b *Barrier) BarrierOfficerRevoke(_ context.Context, domain seal.QuorumDomain, username string, threshold int) (*service.QuorumRoundInfo, error) {
+// BarrierOfficerRevoke checks the SO PIN against PINs and records the
+// revocation round.
+func (b *Barrier) BarrierOfficerRevoke(_ context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*service.QuorumRoundInfo, error) {
+	if err := pin.RequireProvisionedSOPIN(b.PINs, soPIN); err != nil {
+		return nil, err
+	}
 	b.revocations.Add(1)
 	return &service.QuorumRoundInfo{Domain: domain, Op: seal.OpRekey, Required: threshold, NewThreshold: threshold, Remove: []string{username}}, nil
 }

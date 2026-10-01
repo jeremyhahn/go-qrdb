@@ -24,7 +24,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -257,11 +256,7 @@ func (s *Server) handleBarrierRekeyStart(w http.ResponseWriter, r *http.Request)
 	if !decodeHolderJSON(w, r, &req) {
 		return
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.SOPin); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-	round, err := s.barrierSvc.BarrierRekeyStart(r.Context(), seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy))
+	round, err := s.barrierSvc.BarrierRekeyStart(r.Context(), seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), req.SOPin)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -280,11 +275,7 @@ func (s *Server) handleBarrierOfficerRevoke(w http.ResponseWriter, r *http.Reque
 	if !decodeHolderJSON(w, r, &req) {
 		return
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.SOPin); err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-	round, err := s.barrierSvc.BarrierOfficerRevoke(r.Context(), seal.QuorumDomain(req.Domain), req.Username, req.Threshold)
+	round, err := s.barrierSvc.BarrierOfficerRevoke(r.Context(), seal.QuorumDomain(req.Domain), req.Username, req.Threshold, req.SOPin)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

@@ -66,7 +66,7 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMig
 		// that state.
 		{Tool: toolBarrierEnableEncryption(), Perm: permission.SealEnableEncryption, Handler: handleBarrierEnableEncryption(encMigrator)},
 	}
-	return append(tools, barrierHolderTools(svc, pinBackend)...)
+	return append(tools, barrierHolderTools(svc)...)
 }
 
 // barrierEnableEncryptionMigrationAcceptWindow bounds how long the tool

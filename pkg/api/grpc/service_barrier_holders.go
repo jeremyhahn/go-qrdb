@@ -22,7 +22,6 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -175,10 +174,7 @@ func (s *qrdbServiceServer) BarrierRekeyStart(ctx context.Context, req *pb.Barri
 	if s.barrierSvc == nil {
 		return nil, barrierUnavailable()
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, mapServiceError(err)
-	}
-	round, err := s.barrierSvc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.GetDomain()), int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()))
+	round, err := s.barrierSvc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.GetDomain()), int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()), req.GetSoPin())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -191,10 +187,7 @@ func (s *qrdbServiceServer) BarrierOfficerRevoke(ctx context.Context, req *pb.Ba
 	if s.barrierSvc == nil {
 		return nil, barrierUnavailable()
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, mapServiceError(err)
-	}
-	round, err := s.barrierSvc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.GetDomain()), req.GetUsername(), int(req.GetThreshold()))
+	round, err := s.barrierSvc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.GetDomain()), req.GetUsername(), int(req.GetThreshold()), req.GetSoPin())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

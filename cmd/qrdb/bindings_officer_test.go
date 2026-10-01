@@ -95,7 +95,7 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 	}
 	envelopes := map[*cliHolder][]byte{alice: claimed.Envelope, carol: serviceClaim(t, stack.svc, carol, carol.cert)}
 
-	round, err := b.StartRekey(&HolderRekeyParams{Threshold: 2})
+	round, err := b.StartRekey(&HolderRekeyParams{Threshold: 2, SOPin: cliSOPIN})
 	if err != nil || round.Op != transport.OpRekey {
 		t.Fatalf("StartRekey = %+v, %v", round, err)
 	}
@@ -122,7 +122,7 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 		}
 	}
 
-	round, err = b.RevokeHolder(&HolderRekeyParams{Username: "bob", Threshold: 2})
+	round, err = b.RevokeHolder(&HolderRekeyParams{Username: "bob", Threshold: 2, SOPin: cliSOPIN})
 	if err != nil || len(round.Remove) != 1 || round.Remove[0] != "bob" {
 		t.Fatalf("RevokeHolder = %+v, %v", round, err)
 	}

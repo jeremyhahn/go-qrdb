@@ -119,6 +119,13 @@ the last initial holder claims.
     answer never consume anything, so anonymous load cannot starve a
     legitimate officer.
   - The comparison is the PIN backend's constant-time hash comparison.
+  - The same `soPINAttempts` gates the barrier's SO-PIN-gated governance
+    operations, rekey start and holder revocation
+    (`CeremonyService.AuthorizeSOPIN`, called by the barrier service on every
+    transport). One counter covers all of them, so guesses spread across
+    operations are no cheaper. These operations also refuse while no SO PIN
+    has been provisioned (`pin.ErrPINNotSet`, through
+    `pin.RequireProvisionedSOPIN`), rather than admitting any PIN.
 - **The SO PIN needs at least 40 bits of entropy.** With the backoff at its
   cap an attacker gets about 96 guesses a day. Use, for example, 8 random
   characters from a 62-character alphabet (about 47 bits) or a 12-digit
@@ -148,6 +155,8 @@ the last initial holder claims.
 | Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |
 | sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `ceremony.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not checked, so a locked-out call cannot confirm a guess | **yes** |
 | Anonymous holder registration after enrolment closed | `ErrEnrollmentClosed` | **yes** |
+| Rekey start or holder revocation with the wrong SO PIN, or while the check is locked out | `pin.ErrPINInvalid`; `ceremony.SOPINLockedError` (`429` / `RESOURCE_EXHAUSTED`, REST `Retry-After`) | **yes** |
+| Rekey start or holder revocation before an SO PIN is provisioned | `pin.ErrPINNotSet` (`412` / `FAILED_PRECONDITION`) | **yes** |
 
 ## Permission model
 

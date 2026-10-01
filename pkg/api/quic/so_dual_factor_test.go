@@ -62,7 +62,7 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	if gated {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
-	barrier := &authtest.Barrier{}
+	barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
 	serverCfg.ClientAuth = tls.RequireAnyClientCert
 	clientCfg.Certificates = serverCfg.Certificates
@@ -211,7 +211,7 @@ func TestSOPINFromPayload(t *testing.T) {
 func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, soTestTenant)
 	gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
-	barrier := &authtest.Barrier{}
+	barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
 	serverCfg.ClientAuth = tls.RequireAnyClientCert
 	clientCfg.Certificates = serverCfg.Certificates

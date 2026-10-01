@@ -91,12 +91,15 @@ type BarrierServicer interface {
 	BarrierQuorumSubmit(ctx context.Context, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error)
 
 	// BarrierRekeyStart opens a rekey round for domain; a quorum of the
-	// current holders then submits through BarrierQuorumSubmit.
-	BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error)
+	// current holders then submits through BarrierQuorumSubmit. soPIN is the
+	// barrier SO PIN, verified by the service behind the SO PIN lockout and
+	// refused while no SO PIN is provisioned.
+	BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*QuorumRoundInfo, error)
 
 	// BarrierOfficerRevoke revokes a holder of domain by opening a rekey
-	// round that excludes them; the remaining holders complete it.
-	BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*QuorumRoundInfo, error)
+	// round that excludes them; the remaining holders complete it. soPIN is
+	// verified as for BarrierRekeyStart.
+	BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*QuorumRoundInfo, error)
 }
 
 // BarrierStatusInfo describes the current state of the storage barrier.
@@ -504,14 +507,27 @@ func QuorumOutcomeFrom(out *seal.QuorumOutcome) *QuorumOutcomeInfo {
 }
 
 // BarrierRekeyStart opens a rekey round for domain.
-func (s *BarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error) {
+//
+// soPIN is verified here, behind the ceremony's SO PIN lockout, so every
+// transport gets the same check (ceremony.CeremonyService.AuthorizeSOPIN).
+func (s *BarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*QuorumRoundInfo, error) {
+	if s.ceremony == nil {
+		return nil, ErrCeremonyNotConfigured
+	}
+	if err := s.ceremony.AuthorizeSOPIN(soPIN); err != nil {
+		return nil, err
+	}
 	return s.barrier.StartRekey(ctx, domain, seal.RekeyParams{Threshold: threshold, Policy: policy})
 }
 
-// BarrierOfficerRevoke revokes a holder of domain through a quorum-gated rekey.
-func (s *BarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int) (*QuorumRoundInfo, error) {
+// BarrierOfficerRevoke revokes a holder of domain through a quorum-gated
+// rekey. soPIN is verified as for BarrierRekeyStart.
+func (s *BarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*QuorumRoundInfo, error) {
 	if s.ceremony == nil {
 		return nil, ErrCeremonyNotConfigured
+	}
+	if err := s.ceremony.AuthorizeSOPIN(soPIN); err != nil {
+		return nil, err
 	}
 	return s.ceremony.RevokeOfficer(ctx, domain, username, threshold)
 }

@@ -38,7 +38,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -57,6 +57,9 @@ type holderBarrierSvc struct {
 	quorumSubmit  func(*service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error)
 	rekeyStart    func(seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error)
 	revoke        func(seal.QuorumDomain, string, int) (*service.QuorumRoundInfo, error)
+	// soPINs records the SO PIN each rekey or revocation handed the service,
+	// which verifies it.
+	soPINs []string
 }
 
 var errHolderUnset = errors.New("holderBarrierSvc: not configured by this test")
@@ -103,14 +106,16 @@ func (h *holderBarrierSvc) BarrierQuorumSubmit(_ context.Context, r *service.Quo
 	return h.quorumSubmit(r)
 }
 
-func (h *holderBarrierSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+func (h *holderBarrierSvc) BarrierRekeyStart(_ context.Context, d seal.QuorumDomain, th int, p seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.rekeyStart == nil {
 		return nil, errHolderUnset
 	}
 	return h.rekeyStart(d, th, p)
 }
 
-func (h *holderBarrierSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, th int) (*service.QuorumRoundInfo, error) {
+func (h *holderBarrierSvc) BarrierOfficerRevoke(_ context.Context, d seal.QuorumDomain, u string, th int, soPIN string) (*service.QuorumRoundInfo, error) {
+	h.soPINs = append(h.soPINs, soPIN)
 	if h.revoke == nil {
 		return nil, errHolderUnset
 	}
@@ -295,7 +300,11 @@ func TestGRPCHolders_QuorumTakesThePeerFromTheConnection(t *testing.T) {
 	requireCode(t, err, codes.AlreadyExists)
 }
 
-func TestGRPCHolders_RekeyAndRevokeAreSOPINGated(t *testing.T) {
+// TestGRPCHolders_RekeyAndRevokeCarryTheSOPIN: rekey start and revocation are
+// SO-PIN-gated, and the barrier service verifies the PIN behind its lockout,
+// so every transport gets the same check. The handler hands the request's
+// so_pin to the service, and renders the service's PIN refusals by class.
+func TestGRPCHolders_RekeyAndRevokeCarryTheSOPIN(t *testing.T) {
 	round := &service.QuorumRoundInfo{Domain: seal.DomainUnseal, Op: seal.OpRekey, Required: 3, NewThreshold: 2, Remove: []string{"erin"}}
 	svc := &holderBarrierSvc{
 		rekeyStart: func(d seal.QuorumDomain, th int, p seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
@@ -312,40 +321,34 @@ func TestGRPCHolders_RekeyAndRevokeAreSOPINGated(t *testing.T) {
 		},
 	}
 	rekey := &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, Policy: "any-enrolled", SoPin: "so-pin-1"}
-	revoke := &pb.BarrierOfficerRevokeRequest{Domain: "unseal", Username: "erin", Threshold: 2, SoPin: "so-pin-1"}
+	revoke := &pb.BarrierOfficerRevokeRequest{Domain: "unseal", Username: "erin", Threshold: 2, SoPin: "so-pin-2"}
 
-	// Without a PIN backend both fail closed.
 	s := &qrdbServiceServer{barrierSvc: svc}
-	_, err := s.BarrierRekeyStart(context.Background(), rekey)
-	requireCode(t, err, codes.FailedPrecondition)
-	_, err = s.BarrierOfficerRevoke(context.Background(), revoke)
-	requireCode(t, err, codes.FailedPrecondition)
-
-	backend := pintest.NewBackend(t)
-	if err := backend.SetSOPIN("", "so-pin-1"); err != nil {
-		t.Fatal(err)
-	}
-	s.pinBackend = backend
 	if r, err := s.BarrierRekeyStart(context.Background(), rekey); err != nil || r.GetNewThreshold() != 2 {
 		t.Fatalf("rekey = %+v, %v", r, err)
 	}
 	if r, err := s.BarrierOfficerRevoke(context.Background(), revoke); err != nil || len(r.GetRemove()) != 1 {
 		t.Fatalf("revoke = %+v, %v", r, err)
 	}
-	wrong := &pb.BarrierRekeyStartRequest{SoPin: "wrong"}
-	if _, err := s.BarrierRekeyStart(context.Background(), wrong); err == nil {
-		t.Fatal("a wrong SO PIN opened a rekey")
+	if len(svc.soPINs) != 2 || svc.soPINs[0] != "so-pin-1" || svc.soPINs[1] != "so-pin-2" {
+		t.Fatalf("SO PINs handed to the service = %q", svc.soPINs)
 	}
 
-	svc.rekeyStart = func(seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
-		return nil, seal.ErrQuorumRoundInProgress
+	for refusal, code := range map[error]codes.Code{
+		pin.ErrBackendNotConfigured:               codes.FailedPrecondition,
+		pin.ErrPINNotSet:                          codes.FailedPrecondition,
+		pin.ErrPINInvalid:                         codes.Unauthenticated,
+		&ceremony.SOPINLockedError{RetryAfter: 1}: codes.ResourceExhausted,
+		seal.ErrQuorumRoundInProgress:             codes.AlreadyExists,
+	} {
+		svc.rekeyStart = func(seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error) { return nil, refusal }
+		_, err := s.BarrierRekeyStart(context.Background(), rekey)
+		requireCode(t, err, code)
 	}
-	_, err = s.BarrierRekeyStart(context.Background(), rekey)
-	requireCode(t, err, codes.AlreadyExists)
 	svc.revoke = func(seal.QuorumDomain, string, int) (*service.QuorumRoundInfo, error) {
 		return nil, &seal.RevocationBreaksQuorumError{Threshold: 3, Remaining: 2}
 	}
-	_, err = s.BarrierOfficerRevoke(context.Background(), revoke)
+	_, err := s.BarrierOfficerRevoke(context.Background(), revoke)
 	requireCode(t, err, codes.FailedPrecondition)
 }
 

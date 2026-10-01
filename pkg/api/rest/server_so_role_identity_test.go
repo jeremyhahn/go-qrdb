@@ -101,7 +101,7 @@ func newSORESTFixture(t *testing.T) *soRESTFixture {
 		WithAuditLogger(sink),
 		WithSOAuthenticator(verifier),
 		WithSODualFactor(),
-		WithBarrierService(&authtest.Barrier{}),
+		WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 		WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
 	)
 	return &soRESTFixture{srv: srv, roles: roles, users: users}
@@ -195,7 +195,7 @@ func TestSODualFactor_AuthorizedNonSOCallerRefusedByTheGate(t *testing.T) {
 		opts := []ServerOption{
 			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles),
-			WithBarrierService(&authtest.Barrier{}),
+			WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
 		}
 		if gated {
@@ -227,7 +227,7 @@ func TestSODualFactor_TenantSORefusedOnTheNodeBarrier(t *testing.T) {
 		opts := []ServerOption{
 			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
 			WithRoleService(roles),
-			WithBarrierService(&authtest.Barrier{}),
+			WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
 		}
 		if gated {
@@ -260,7 +260,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 		srv := NewServer(nil, nil, "127.0.0.1:0",
 			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
-			WithRoleService(roles), WithBarrierService(&authtest.Barrier{}),
+			WithRoleService(roles), WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 			WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)))
 		req := httptest.NewRequest(http.MethodPost, "/v1/barrier/seal", strings.NewReader(`{"so_pin":"`+soRESTPIN+`"}`))
 		req.TLS = &tls.ConnectionState{}
@@ -277,7 +277,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 // transports (go-qrdb#569 N5).
 func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, soRESTTenant)
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithRoleService(roles), WithBarrierService(&authtest.Barrier{}),
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithRoleService(roles), WithBarrierService(&authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soRESTPIN)}),
 		WithPINBackend(authtest.BarrierPINBackend(t, soRESTPIN)),
 		WithSOAuthenticator(authtest.SOVerifier(t, soRESTPIN, soRESTTenant)), WithSODualFactor())
 	req := httptest.NewRequest(http.MethodPost, soRESTRoute, strings.NewReader(soRESTBody))

@@ -21,7 +21,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -176,52 +178,22 @@ func soPINGatedRoutes(called *bool) []struct {
 	}
 }
 
-// TestBarrierHandlers_SOPINGated_BadPIN verifies that rekey start and holder
-// revocation answer 401 on a wrong SO PIN without reaching the service.
-func TestBarrierHandlers_SOPINGated_BadPIN(t *testing.T) {
+// TestBarrierHandlers_SOPINGated_CarriesThePIN verifies that rekey start and
+// holder revocation hand the request's so_pin to the barrier service, which
+// verifies it behind the SO PIN lockout, and return the opened round.
+func TestBarrierHandlers_SOPINGated_CarriesThePIN(t *testing.T) {
 	var called bool
 	for _, tc := range soPINGatedRoutes(&called) {
 		t.Run(tc.name, func(t *testing.T) {
 			called = false
-			backend := newStubPINBackend()
-			if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-				t.Fatalf("SetSOPIN: %v", err)
-			}
-			srv := newBarrierPINTestServer(t, tc.svc, backend)
-			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(fmt.Sprintf(tc.body, "wrong-pin")))
-			rec := httptest.NewRecorder()
-			srv.dispatch(rec, req)
-
-			assertStatus(t, rec, http.StatusUnauthorized)
-			if called {
-				t.Fatal("the service was reached despite SO PIN verification failure")
-			}
-			if backend.verifyCalls == 0 {
-				t.Fatal("VerifySOPIN was not invoked")
-			}
-		})
-	}
-}
-
-// TestBarrierHandlers_SOPINGated_GoodPIN verifies that a matching SO PIN
-// reaches the service and returns the opened round.
-func TestBarrierHandlers_SOPINGated_GoodPIN(t *testing.T) {
-	var called bool
-	for _, tc := range soPINGatedRoutes(&called) {
-		t.Run(tc.name, func(t *testing.T) {
-			called = false
-			backend := newStubPINBackend()
-			if err := backend.SetSOPIN("", "correct-pin"); err != nil {
-				t.Fatalf("SetSOPIN: %v", err)
-			}
-			srv := newBarrierPINTestServer(t, tc.svc, backend)
+			srv := newBarrierPINTestServer(t, tc.svc, nil)
 			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(fmt.Sprintf(tc.body, "correct-pin")))
 			rec := httptest.NewRecorder()
 			srv.dispatch(rec, req)
 
 			assertStatus(t, rec, http.StatusOK)
-			if !called {
-				t.Fatal("the service was not reached after SO PIN verification")
+			if !called || len(tc.svc.soPINs) != 1 || tc.svc.soPINs[0] != "correct-pin" {
+				t.Fatalf("the service was handed SO PINs %q (reached %v)", tc.svc.soPINs, called)
 			}
 			var round transport.QuorumRound
 			decodeJSON(t, rec, &round)
@@ -232,23 +204,28 @@ func TestBarrierHandlers_SOPINGated_GoodPIN(t *testing.T) {
 	}
 }
 
-// TestBarrierHandlers_SOPINGated_NoPINBackend proves the gate fails closed:
-// with no PIN backend configured neither operation reaches the service. The
-// earlier behaviour admitted rekey with no PIN check at all.
-func TestBarrierHandlers_SOPINGated_NoPINBackend(t *testing.T) {
-	var called bool
-	for _, tc := range soPINGatedRoutes(&called) {
-		t.Run(tc.name, func(t *testing.T) {
-			called = false
-			srv := newBarrierPINTestServer(t, tc.svc, nil)
-			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(fmt.Sprintf(tc.body, "")))
-			rec := httptest.NewRecorder()
-			srv.dispatch(rec, req)
-
-			assertStatus(t, rec, http.StatusPreconditionFailed)
-			if called {
-				t.Fatal("the service was reached with no PIN backend configured")
-			}
-		})
+// TestBarrierHandlers_SOPINGated_ServiceRefusals verifies the barrier
+// service's SO PIN refusals render by class: a wrong PIN 401, no PIN backend
+// or no SO PIN provisioned 412, and a locked-out check 429 with Retry-After.
+func TestBarrierHandlers_SOPINGated_ServiceRefusals(t *testing.T) {
+	for refusal, want := range map[error]int{
+		pin.ErrPINInvalid:           http.StatusUnauthorized,
+		pin.ErrBackendNotConfigured: http.StatusPreconditionFailed,
+		pin.ErrPINNotSet:            http.StatusPreconditionFailed,
+		&ceremony.SOPINLockedError{RetryAfter: 1500 * time.Millisecond}: http.StatusTooManyRequests,
+	} {
+		svc := &mockBarrierService{
+			rekeyStartFn: func(context.Context, seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error) {
+				return nil, refusal
+			},
+		}
+		srv := newBarrierPINTestServer(t, svc, nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/barrier/rekey/start", strings.NewReader(`{"domain":"unseal","threshold":2,"so_pin":"x"}`))
+		rec := httptest.NewRecorder()
+		srv.dispatch(rec, req)
+		assertStatus(t, rec, want)
+		if want == http.StatusTooManyRequests && rec.Header().Get("Retry-After") != "2" {
+			t.Errorf("Retry-After = %q, want 2", rec.Header().Get("Retry-After"))
+		}
 	}
 }

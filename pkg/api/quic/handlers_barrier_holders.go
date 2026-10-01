@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -218,10 +217,7 @@ func (s *Server) handleBarrierRekeyStart(ctx context.Context, payload []byte) ([
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, err
-	}
-	round, err := s.barrierSvc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.GetDomain()), int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()))
+	round, err := s.barrierSvc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.GetDomain()), int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()), req.GetSoPin())
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +233,7 @@ func (s *Server) handleBarrierOfficerRevoke(ctx context.Context, payload []byte)
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, err
-	}
-	round, err := s.barrierSvc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.GetDomain()), req.GetUsername(), int(req.GetThreshold()))
+	round, err := s.barrierSvc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.GetDomain()), req.GetUsername(), int(req.GetThreshold()), req.GetSoPin())
 	if err != nil {
 		return nil, err
 	}

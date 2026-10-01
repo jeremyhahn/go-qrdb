@@ -87,9 +87,17 @@ func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 	core.SetCA(ca)
 	core.SetTrustDomain("qrdb.test")
 	core.SetFactorRegistry(factors)
-	core.SetPINBackend(pintest.NewBackend(t))
+	pins := pintest.NewBackend(t)
+	if err := pins.SetSOPIN("", cliSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	core.SetPINBackend(pins)
 	return &cliHolderStack{svc: service.NewBarrierServiceWithCeremony(barrier, core)}
 }
+
+// cliSOPIN is the barrier SO PIN the CLI holder stack provisions; rekey and
+// revocation of the system barrier present it.
+const cliSOPIN = "so-pin-1234"
 
 // cliHolder is one holder's files: its certificate key, CSR, the certificate
 // it is issued, an optional separate X25519 envelope key and an optional
@@ -314,7 +322,7 @@ func TestHolderCLI_Lifecycle(t *testing.T) {
 	}
 
 	// A rekey needs a fresh quorum; the new split must be claimed again.
-	if out := mustCLI(t, context.Background(), root, "barrier", "rekey", "--threshold", "2"); !strings.Contains(out, "Round:") {
+	if out := mustCLI(t, context.Background(), root, "barrier", "rekey", "--threshold", "2", "--so-pin", cliSOPIN); !strings.Contains(out, "Round:") {
 		t.Fatalf("rekey start = %q", out)
 	}
 	mustCLI(t, context.Background(), root, append([]string{"barrier", "quorum", "submit"}, alice.submitArgs(transport.OpRekey)...)...)
@@ -324,7 +332,7 @@ func TestHolderCLI_Lifecycle(t *testing.T) {
 	claimAll()
 
 	// Revoking erin is a quorum-gated rekey of the remaining holders.
-	if out := mustCLI(t, context.Background(), root, "barrier", "officer", "revoke", "--username", "erin", "--threshold", "2"); !strings.Contains(out, "Removing:   erin") {
+	if out := mustCLI(t, context.Background(), root, "barrier", "officer", "revoke", "--username", "erin", "--threshold", "2", "--so-pin", cliSOPIN); !strings.Contains(out, "Removing:   erin") {
 		t.Fatalf("revoke = %q", out)
 	}
 	mustCLI(t, context.Background(), root, append([]string{"barrier", "quorum", "submit"}, alice.submitArgs(transport.OpRekey)...)...)

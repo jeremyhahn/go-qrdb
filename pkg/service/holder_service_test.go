@@ -101,6 +101,9 @@ func (e *holderSvcEnv) wire(barrier *seal.StorageBarrier) {
 	e.cer = NewCeremonyService(core)
 }
 
+// svcSOPIN is the barrier SO PIN the holder tests provision.
+const svcSOPIN = "so-pin-1234"
+
 // adminCtx is a context authenticated as the enrolling admin.
 func adminCtx() context.Context {
 	return auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin"})
@@ -165,6 +168,7 @@ func TestBarrierService_HolderCustodyEndToEnd(t *testing.T) {
 	info, err := e.svc.BarrierInitializeShamir(ctx, 2, 3, seal.FactorPolicyDesignated)
 	require.NoError(t, err)
 	assert.Equal(t, 3, info.ShareCount)
+	require.NoError(t, e.pins.SetSOPIN("", svcSOPIN))
 	status, err := e.svc.BarrierStatus(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 2, status.ShamirThreshold)
@@ -196,7 +200,7 @@ func TestBarrierService_HolderCustodyEndToEnd(t *testing.T) {
 	assert.False(t, e.barrier.IsSealed())
 
 	// Revoke carol: a rekey of the remaining two.
-	round, err := e.svc.BarrierOfficerRevoke(ctx, seal.DomainUnseal, "carol", 0)
+	round, err := e.svc.BarrierOfficerRevoke(ctx, seal.DomainUnseal, "carol", 0, svcSOPIN)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"carol"}, round.Remove)
 	_, err = e.submit(seal.DomainUnseal, seal.OpRekey, a)
@@ -208,7 +212,7 @@ func TestBarrierService_HolderCustodyEndToEnd(t *testing.T) {
 	assert.Equal(t, 2, out.Rekey.TotalShares)
 
 	// An explicit rekey round opens under the service too.
-	round, err = e.svc.BarrierRekeyStart(ctx, seal.DomainUnseal, 2, seal.FactorPolicyAnyEnrolled)
+	round, err = e.svc.BarrierRekeyStart(ctx, seal.DomainUnseal, 2, seal.FactorPolicyAnyEnrolled, svcSOPIN)
 	require.NoError(t, err)
 	assert.Equal(t, seal.OpRekey, round.Op)
 }
@@ -281,7 +285,8 @@ func TestBarrierService_HolderOpsNeedACeremony(t *testing.T) {
 			return err
 		},
 		"quorum begin": func() error { _, err := svc.BarrierQuorumBegin(ctx, &QuorumBeginRequest{}); return err },
-		"revoke":       func() error { _, err := svc.BarrierOfficerRevoke(ctx, seal.DomainUnseal, "a", 0); return err },
+		"revoke":       func() error { _, err := svc.BarrierOfficerRevoke(ctx, seal.DomainUnseal, "a", 0, svcSOPIN); return err },
+		"rekey start":  func() error { _, err := svc.BarrierRekeyStart(ctx, seal.DomainUnseal, 2, "", svcSOPIN); return err },
 	}
 	for name, call := range calls {
 		assert.ErrorIs(t, call(), ErrCeremonyNotConfigured, name)

@@ -207,9 +207,9 @@ one classification table every transport renders (`pkg/api/errclass`):
 | AlreadyExists | 409 | `ALREADY_EXISTS` | holder already submitted to this round; duplicate username or key; a round already in progress |
 | FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA or trust domain; a rolled-back initialization awaiting a restart (`ErrRestartRequired`); a holder registered while the initialized barrier is sealed (`ErrRegistrationWhileSealed`); a holder cached while sealed that conflicts with a persisted one (`HolderRecordConflictError`) |
 | Gone | 410 | `FAILED_PRECONDITION` | the envelope outlived its claim window and was destroyed (`ceremony.ErrShareExpired`); only a rekey deals a new one |
-| PreconditionFailed | 412 | `FAILED_PRECONDITION` | no PIN backend is configured (`pin.ErrBackendNotConfigured`) |
+| PreconditionFailed | 412 | `FAILED_PRECONDITION` | no PIN backend is configured (`pin.ErrBackendNotConfigured`); rekey start or revocation before an SO PIN is provisioned (`pin.ErrPINNotSet`) |
 | Unprocessable | 422 | `FAILED_PRECONDITION` | a Shamir barrier unsealed or sealed by one caller instead of its quorum; no ceremony service configured; too few officers |
-| ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges; quorum challenges requested faster than the caller's throttle allows (`QuorumBeginRateLimitedError`, with `Retry-After` on REST) |
+| ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | the SO PIN check locked out after repeated failures (`ceremony.SOPINLockedError`, `Retry-After` on REST); too many pending quorum challenges; quorum challenges requested faster than the caller's throttle allows (`QuorumBeginRateLimitedError`, with `Retry-After` on REST) |
 | Aborted | 409 | `ABORTED` | the roster was replaced while the submission or rekey was prepared (`StaleRosterError`); retry |
 | Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
 | Internal | 500 | `INTERNAL` | an initialization whose distribution failed could not be rolled back (`ShamirInitRollbackError`) |
