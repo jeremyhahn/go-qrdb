@@ -25,6 +25,14 @@ and refuses in standalone with `requires mode: raft`.
 | Shard state | `GET /admin/shards/{id}/state` | `GetShardState` | `admin.GetShardState` | `qrdb_shard_state` | `GetShardState` | `admin:shard_state` |
 | Topology | `GET /admin/topology` | `GetTopology` | `admin.GetTopology` | `qrdb_topology` | `GetTopology` | `admin:topology` |
 
+**Drain, snapshot, add/remove member, start/stop shard, shard state and
+topology are system-tenant only** (cross-scope), as is every `rebalance:*`
+route: they act on, or describe, shards every tenant shares, and name no
+tenant. A tenant's Admin or SO -- whose built-in roles carry several of these
+grants -- is refused with `403` / `PermissionDenied` on every transport.
+Health, status, peers and capabilities stay self-scoped; `admin:peers` backs
+the etcd listener's tenant-facing `Cluster.MemberList`.
+
 **`GET /health` is one of only two unauthenticated routes in the server** (the
 other is `GET /v1/config/initialized`), so a load balancer can probe a node it
 has no credentials for.

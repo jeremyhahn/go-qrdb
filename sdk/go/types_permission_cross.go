@@ -220,4 +220,49 @@ const (
 	// PermissionSealInitializeShamir ("seal:initialize_shamir") initializes
 	// Shamir custody of the node barrier.
 	PermissionSealInitializeShamir = permission.SealInitializeShamir
+
+	// PermissionBarrierUnsealShare ("barrier:unseal-share") submits one
+	// Shamir share toward the node barrier's unseal quorum.
+	PermissionBarrierUnsealShare = permission.BarrierUnsealShare
+)
+
+// The cluster-admin permissions are cross-scope because the cluster's Raft
+// membership and shards are shared by every tenant: a tenant's Admin must
+// never remove a replica from the system shard, drain the node, move shards,
+// or read the topology of every tenant's raft group. PermissionAdminAddMember and
+// PermissionAdminRemoveMember (types_permission.go) are cross-scope too.
+const (
+	// PermissionAdminDrain ("admin:drain") drains the node for maintenance.
+	PermissionAdminDrain = permission.AdminDrain
+
+	// PermissionAdminSnapshot ("admin:snapshot") requests a shard snapshot.
+	PermissionAdminSnapshot = permission.AdminSnapshot
+
+	// PermissionAdminStartShard ("admin:start_shard") starts a shard.
+	PermissionAdminStartShard = permission.AdminStartShard
+
+	// PermissionAdminStopShard ("admin:stop_shard") stops a shard.
+	PermissionAdminStopShard = permission.AdminStopShard
+
+	// PermissionAdminShardState ("admin:shard_state") reads a shard's state.
+	PermissionAdminShardState = permission.AdminShardState
+
+	// PermissionAdminTopology ("admin:topology") reads the node's topology.
+	PermissionAdminTopology = permission.AdminTopology
+
+	// PermissionRebalanceExecute ("rebalance:execute") moves shards between
+	// nodes.
+	PermissionRebalanceExecute = permission.RebalanceExecute
+
+	// PermissionRebalancePlan ("rebalance:plan") computes a rebalance plan
+	// over every shard.
+	PermissionRebalancePlan = permission.RebalancePlan
+
+	// PermissionRebalanceReport ("rebalance:report") reports the cluster's
+	// shard imbalance.
+	PermissionRebalanceReport = permission.RebalanceReport
+
+	// PermissionRebalanceStats ("rebalance:stats") reads a shard's rebalance
+	// statistics.
+	PermissionRebalanceStats = permission.RebalanceStats
 )

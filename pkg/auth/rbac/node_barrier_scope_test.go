@@ -28,11 +28,12 @@ import (
 )
 
 // TestNodeBarrier_TenantRoleHoldersAreDenied drives the REAL authorizer over
-// the REAL built-in roles. For every node-barrier permission a built-in role
-// carries, the role's holder in the system tenant is admitted and the same
-// role's holder in a tenant is denied: the node barrier is a platform
-// singleton, and none of these operations names a tenant the authorizer could
-// compare. Every transport authorizes through this decision.
+// the REAL built-in roles. For every node-barrier and cluster-admin permission
+// a built-in role carries, the role's holder in the system tenant is admitted
+// and the same role's holder in a tenant is denied: the node barrier and the
+// cluster are platform singletons, and none of these operations names a
+// tenant the authorizer could compare. Every transport authorizes through
+// this decision.
 func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 	const other = "acme"
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, other)
@@ -44,9 +45,15 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 		permission.SealOfficerRegister, permission.SealOfficerList,
 		permission.CeremonyInitialize, permission.CeremonyEnrollCustodian,
 		permission.CeremonyRevokeCustodian, permission.CeremonySignCSR,
+		permission.BarrierUnsealShare,
+		// The cluster: Raft membership and shards, shared by every tenant.
+		permission.AdminAddMember, permission.AdminRemoveMember,
+		permission.AdminDrain, permission.AdminSnapshot,
+		permission.AdminStartShard, permission.AdminStopShard,
+		permission.AdminShardState, permission.AdminTopology,
 	}
 	exercised := 0
-	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator} {
+	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator, role.RoleNameCustodian} {
 		held, err := roles.ResolvePermissions(tenant.WithTenantID(context.Background(), tenant.SystemTenantID),
 			[]string{role.SystemRoleID(tenant.SystemTenantID, name)})
 		if err != nil {
@@ -85,5 +92,39 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 	// recover_with_keys. A floor guards against an empty loop.
 	if exercised < len(nodePerms) {
 		t.Fatalf("exercised %d (role, permission) pairs, want at least %d", exercised, len(nodePerms))
+	}
+}
+
+// TestClusterAdmin_TenantGrantedPermissionsAreDenied covers the cluster
+// permissions no built-in role below Owner carries. A tenant's SO holds
+// roles:create and roles:assign, so it can grant them to itself through a
+// custom role of its own tenant; the scope rule, not the missing built-in
+// grant, is what must refuse it. The same grant in the system tenant is
+// admitted.
+func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
+	const other = "acme"
+	perms := []permission.Permission{
+		permission.AdminStartShard, permission.AdminStopShard,
+		permission.AdminShardState, permission.AdminTopology,
+		permission.RebalanceExecute, permission.RebalancePlan,
+		permission.RebalanceReport, permission.RebalanceStats,
+	}
+	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, other)
+	authz := rbac.New(roles)
+	for _, tid := range []string{tenant.SystemTenantID, other} {
+		id := authtest.Grant(t, roles, authtest.SOIdentity(tid, "officer@"+tid), perms...)
+		for _, p := range perms {
+			err := authz.Authorize(tenant.WithTenantID(context.Background(), tid), id, permission.Resource(p), permission.Action(p))
+			if tid == tenant.SystemTenantID {
+				if err != nil {
+					t.Errorf("system-tenant holder refused %s: %v", p, err)
+				}
+				continue
+			}
+			var denied *rbac.PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Errorf("tenant holder of %s: got %v, want *rbac.PermissionDeniedError", p, err)
+			}
+		}
 	}
 }

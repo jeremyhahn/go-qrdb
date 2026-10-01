@@ -30,7 +30,10 @@ import (
 // RBACClient, the same RBAC authorizer the network transports enforce with.
 // Over the REAL built-in roles, only the system tenant may register or list
 // the node barrier's Security Officers; a tenant's SO, and a tenant Admin its
-// own tenant granted the officer permissions, are denied.
+// own tenant granted the officer permissions, are denied. It pins the
+// authorization decision an embedder asks for, not a gate: the embedded
+// transport's own barrier methods run in-process for a trusted embedder and
+// authorize nothing themselves.
 func TestNodeOfficerScope(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
 	tr := newRBACTransport(t, roles)

@@ -73,18 +73,18 @@ func selfScopedPermissions() []Permission {
 		ACMEOrdersRead,
 
 		// admin
-		AdminAddMember,
+		//
+		// AdminAddMember, AdminRemoveMember, AdminDrain, AdminSnapshot,
+		// AdminStartShard, AdminStopShard, AdminShardState and AdminTopology
+		// are ScopeCross (cluster_admin_scope.go): they change or expose the
+		// node's Raft membership and shards, which no tenant owns.
+		// AdminPeers stays here because the etcd listener's Cluster.MemberList
+		// is a tenant-facing read authorized against the database's owning
+		// tenant.
 		AdminCapabilities,
-		AdminDrain,
 		AdminHealth,
 		AdminPeers,
-		AdminRemoveMember,
-		AdminShardState,
-		AdminSnapshot,
-		AdminStartShard,
 		AdminStatus,
-		AdminStopShard,
-		AdminTopology,
 
 		// audit
 		AuditQuery,
@@ -111,7 +111,9 @@ func selfScopedPermissions() []Permission {
 		BackupVerify,
 
 		// barrier
-		BarrierUnsealShare,
+		//
+		// BarrierUnsealShare is ScopeCross (node_barrier_scope.go): it feeds
+		// the node barrier's unseal accumulator.
 
 		// batch
 		BatchExecute,
@@ -255,10 +257,9 @@ func selfScopedPermissions() []Permission {
 		RAGQuery,
 
 		// rebalance
-		RebalanceExecute,
-		RebalancePlan,
-		RebalanceReport,
-		RebalanceStats,
+		//
+		// rebalance:* is ScopeCross (cluster_admin_scope.go): it moves and
+		// describes the cluster's shards.
 
 		// roles
 		RolesAssign,

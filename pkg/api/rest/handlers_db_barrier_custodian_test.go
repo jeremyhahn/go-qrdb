@@ -327,48 +327,6 @@ func TestDispatch_DatabaseBarrierStatus_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Stub custodian service
-// ---------------------------------------------------------------------------
-
-type stubCustodianSvc struct {
-	registerFn func(ctx context.Context, req custodian.RegisterRequest) (*custodian.RegisterResponse, error)
-	getFn      func(ctx context.Context, id string) (*custodian.Custodian, error)
-	listFn     func(ctx context.Context, tenantID string) ([]*custodian.Custodian, error)
-	revokeFn   func(ctx context.Context, id string) error
-}
-
-var _ custodianServicer = (*stubCustodianSvc)(nil)
-
-func newStubCustodianSvc() *stubCustodianSvc {
-	return &stubCustodianSvc{
-		registerFn: func(_ context.Context, req custodian.RegisterRequest) (*custodian.RegisterResponse, error) {
-			return &custodian.RegisterResponse{
-				Custodian:      &custodian.Custodian{ID: "cust-1", Username: req.Username},
-				SealedEnvelope: nil,
-			}, nil
-		},
-		getFn: func(_ context.Context, _ string) (*custodian.Custodian, error) {
-			return &custodian.Custodian{ID: "c1"}, nil
-		},
-		listFn:   func(_ context.Context, _ string) ([]*custodian.Custodian, error) { return nil, nil },
-		revokeFn: func(_ context.Context, _ string) error { return nil },
-	}
-}
-
-func (s *stubCustodianSvc) RegisterCustodian(ctx context.Context, req custodian.RegisterRequest) (*custodian.RegisterResponse, error) {
-	return s.registerFn(ctx, req)
-}
-func (s *stubCustodianSvc) GetCustodian(ctx context.Context, id string) (*custodian.Custodian, error) {
-	return s.getFn(ctx, id)
-}
-func (s *stubCustodianSvc) ListCustodians(ctx context.Context, tenantID string) ([]*custodian.Custodian, error) {
-	return s.listFn(ctx, tenantID)
-}
-func (s *stubCustodianSvc) RevokeCustodian(ctx context.Context, id string) error {
-	return s.revokeFn(ctx, id)
-}
-
-// ---------------------------------------------------------------------------
 // handleEnrollCustodian
 // ---------------------------------------------------------------------------
 

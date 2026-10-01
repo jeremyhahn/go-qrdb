@@ -79,7 +79,8 @@ func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthentic
 
 // Barrier is a service.BarrierServicer that implements BarrierSeal,
 // BarrierRekey, BarrierDeleteRecoveryKeys, BarrierGenerateRecoveryKeys,
-// BarrierInitializeShamir and the four node Security Officer registry methods
+// BarrierInitializeShamir, BarrierInitialize, BarrierUnseal,
+// BarrierUnsealWithShare and the four node Security Officer registry methods
 // (BarrierOfficerRegister, BarrierRecoveryOfficerRegister, BarrierOfficerList,
 // BarrierOfficerClaimStatus), and counts the calls that reached it, so a test
 // can tell a refused request from one the service performed. Every other
@@ -96,9 +97,33 @@ type Barrier struct {
 	recoveryRegs     atomic.Int64
 	officerReads     atomic.Int64
 	officerUsernames sync.Map
+	transitions      atomic.Int64
 }
 
 var _ service.BarrierServicer = (*Barrier)(nil)
+
+// BarrierInitialize records the initialization.
+func (b *Barrier) BarrierInitialize(context.Context, []byte) error {
+	b.transitions.Add(1)
+	return nil
+}
+
+// BarrierUnseal records the unseal.
+func (b *Barrier) BarrierUnseal(context.Context, []byte) error {
+	b.transitions.Add(1)
+	return nil
+}
+
+// BarrierUnsealWithShare records the submitted share and reports it as the
+// first of a quorum of three.
+func (b *Barrier) BarrierUnsealWithShare(context.Context, string) (*service.UnsealShareProgress, error) {
+	b.transitions.Add(1)
+	return &service.UnsealShareProgress{Required: 3, Submitted: 1}, nil
+}
+
+// Transitions reports how many initialize, unseal and unseal-share calls
+// reached the service.
+func (b *Barrier) Transitions() int64 { return b.transitions.Load() }
 
 // BarrierOfficerRegister records the registration and answers the way the
 // real service does: a certificate and the next share index.

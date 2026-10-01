@@ -131,11 +131,12 @@ var PermissionAction = permission.Action
 // ---------------------------------------------------------------------------
 
 // PermissionAdminAddMember ("admin:add_member") authorizes adding a replica to
-// a shard's Raft group.
+// a shard's Raft group. Cross-scope: system-tenant identities only.
 const PermissionAdminAddMember = permission.AdminAddMember
 
 // PermissionAdminRemoveMember ("admin:remove_member") authorizes removing a
-// replica from a shard's Raft group.
+// replica from a shard's Raft group. Cross-scope: system-tenant identities
+// only.
 const PermissionAdminRemoveMember = permission.AdminRemoveMember
 
 // PermissionAdminStatus ("admin:status") authorizes reading cluster status

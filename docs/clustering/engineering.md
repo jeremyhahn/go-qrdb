@@ -477,18 +477,30 @@ type ImbalanceReport struct {
 
 ## Permission model
 
-| Permission | Gates |
-|---|---|
-| `admin:health` | node health |
-| `admin:status` | detailed node status |
-| `admin:peers` | shard peer membership |
-| `admin:capabilities` | effective capability profile |
-| `admin:drain` | drain mode |
-| `admin:snapshot` | requesting a shard snapshot |
-| `admin:add_member` / `admin:remove_member` | Raft reconfiguration — gated apart from reading peers |
-| `admin:start_shard` / `admin:shard_state` | shard lifecycle and state |
-| `rebalance:stats` / `rebalance:plan` / `rebalance:report` | read-only |
-| `rebalance:execute` | **physically moves shards** — separate grant |
+| Permission | Gates | Scope |
+|---|---|---|
+| `admin:health` | node health | self |
+| `admin:status` | detailed node status | self |
+| `admin:peers` | shard peer membership | self |
+| `admin:capabilities` | effective capability profile | self |
+| `admin:drain` | drain mode | cross |
+| `admin:snapshot` | requesting a shard snapshot | cross |
+| `admin:add_member` / `admin:remove_member` | Raft reconfiguration — gated apart from reading peers | cross |
+| `admin:start_shard` / `admin:stop_shard` / `admin:shard_state` | shard lifecycle and state | cross |
+| `admin:topology` | every shard's replicas and addresses | cross |
+| `rebalance:stats` / `rebalance:plan` / `rebalance:report` | read-only | cross |
+| `rebalance:execute` | **physically moves shards** — separate grant | cross |
+
+**Cross** is `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): only a
+`system`-tenant identity may exercise it. These routes address shards by id
+and name no tenant, and the admin service does no tenant check, so as
+`ScopeSelf` they admitted any tenant's Admin or SO -- both built-in roles grant
+add_member, remove_member, drain and snapshot in every tenant -- who could
+remove replicas from the system shard and break quorum for every tenant.
+`TestClusterAdminScope` proves the refusal on REST, gRPC, Unix, QUIC, MCP and
+the embedded `RBACClient`. `admin:peers` stays self-scoped because the etcd
+listener's `Cluster.MemberList` is a tenant-facing call authorized against the
+database's owning tenant.
 
 ## Error semantics
 

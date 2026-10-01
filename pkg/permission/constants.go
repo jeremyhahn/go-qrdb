@@ -428,7 +428,7 @@ const (
 // Every seal:* permission except seal:status changes the NODE barrier, a
 // platform singleton no tenant owns, or decides who holds a share of its key,
 // and is ScopeCross (node_barrier_scope.go): only a system-tenant identity
-// exercises it. seal:status and barrier:unseal-share are ScopeSelf.
+// exercises it, as is barrier:unseal-share. seal:status is ScopeSelf.
 const (
 	// SealBootstrap grants access to bootstrap the seal subsystem.
 	SealBootstrap Permission = "seal:bootstrap"
@@ -454,8 +454,11 @@ const (
 	SealRecoverWithKeys Permission = "seal:recover_with_keys"
 	// SealInitializeShamir grants access to initialize Shamir secret sharing (SO only).
 	SealInitializeShamir Permission = "seal:initialize_shamir"
-	// BarrierUnsealShare grants access to submit a single Shamir share toward unseal quorum.
-	// This is the sole permission granted to the Custodian role.
+	// BarrierUnsealShare grants access to submit a single Shamir share toward
+	// the node barrier's unseal quorum. Every tenant's Custodian role carries
+	// it; it is ScopeCross (node_barrier_scope.go), so only a system-tenant
+	// custodian exercises it. A tenant's own barrier takes unseal shares on
+	// identity-gated routes bound to the tenant they name.
 	BarrierUnsealShare Permission = "barrier:unseal-share"
 
 	// SealOfficerRegister grants the ability to register a Security Officer

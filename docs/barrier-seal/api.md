@@ -27,18 +27,32 @@ Officer, share-claim and recovery-officer endpoints belong to
 ### Who may call these
 
 The node barrier belongs to the platform, not to a tenant. Every permission in
-the table except `seal:status` and `barrier:unseal-share` is **cross-scope**:
-only an identity of the `system` tenant may exercise it, on every transport.
-The built-in SO, Admin and Operator roles of any other tenant carry the same
-grants and are refused with `403` / `PermissionDenied`. Apart from
-enable-encryption's optional `tenant_id`, none of these operations names a
-tenant, so there is nothing a tenant could own here; a tenant's own barrier
-has its own endpoints and `tenant_barrier:*` permissions (below).
-Enable-encryption is cross-scope for both of its targets: migrating a tenant's
-dedicated barrier named by `tenant_id` is a platform-operator act too. `seal:status` reads state and names no share holder; `barrier:unseal-share`
-is admitted only from a caller already holding a valid share. On the boot-time
-sealed-window listener no RBAC runs at all, so first-boot initialize and unseal
-are unaffected.
+the table except `seal:status` is **cross-scope**: only an identity of the
+`system` tenant may exercise it, on every transport. The built-in SO, Admin,
+Operator and Custodian roles of any other tenant carry the same grants and are
+refused with `403` / `PermissionDenied`. Apart from enable-encryption's
+optional `tenant_id`, none of these operations names a tenant, so there is
+nothing a tenant could own here; a tenant's own barrier has its own endpoints
+and `tenant_barrier:*` permissions (below). `seal:status` reads state and
+names no share holder.
+
+**Enable-encryption is a platform-operator act for both of its targets.**
+Migrating the node barrier, or a tenant's dedicated barrier named by
+`tenant_id`, is done by the `system` tenant. There is no tenant-side route: a
+tenant cannot migrate even its own barrier, and the declared
+`tenant_barrier:enable_encryption` permission is checked by no handler.
+
+**`barrier:unseal-share` is cross-scope too.** The node barrier's unseal
+accumulator takes whatever share it is given, and every tenant's built-in
+Custodian role carries the permission, so admitting a tenant's Custodian let
+it submit a wrong share into an in-progress node unseal and poison the
+accumulation. The node barrier's custodians are enrolled by the `system`
+tenant's Security Officer (`ceremony:enroll_custodian`, also cross-scope); a
+tenant custodian's shares belong to its tenant's barrier, whose unseal-share
+route is identity-gated and bound to the tenant it names.
+
+On the boot-time sealed-window listener no RBAC runs at all, so first-boot
+initialize, unseal and unseal-share are unaffected.
 
 Enable-encryption is registered **unconditionally** on REST, gRPC, Unix, QUIC,
 and MCP, independent of whether a barrier service exists on the node (a

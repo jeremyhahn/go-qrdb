@@ -369,13 +369,50 @@ The built-in roles still carry these grants in every tenant, and they are inert
 outside `system`: the SO, Admin or Operator of the `system` tenant exercises
 them, and a tenant's own SO, Admin or Operator is refused on every transport.
 
+`barrier:unseal-share` -- the Custodian role's node-barrier grant -- is
+cross-scope as well. The node barrier's unseal accumulator takes whatever share
+it is given, so a tenant's Custodian, which carries the grant through its own
+tenant's built-in role, could submit a wrong share into an in-progress node
+unseal and poison it. The node barrier's custodians are the `system` tenant's,
+enrolled by its Security Officer.
+
 A tenant governs its own barrier through `tenant_barrier:*`, which is
-`ScopeTenantOnly` and bound to the tenant the request names. `seal:status`,
-`ceremony:status`, `barrier:unseal-share` and the share-claim verbs stay
-`ScopeSelf`: status names no share holder, and the others are admitted only
-for a caller already holding a valid share or enrollment. First-boot officer
-registration on the boot-time sealed-window listener is anonymous and runs no
-RBAC at all, so it is unaffected.
+`ScopeTenantOnly` and bound to the tenant the request names; its custodians
+submit shares on that barrier's identity-gated routes. `seal:status`,
+`ceremony:status` and the share-claim verbs stay `ScopeSelf`: status names no
+share holder, and the claim verbs are bound to an enrollment the caller must
+possess. Migrating any barrier to an encrypting strategy
+(`seal:enable_encryption`) is a platform-operator act with no tenant-side
+route. First-boot officer registration on the boot-time sealed-window listener
+is anonymous and runs no RBAC at all, so it is unaffected.
+
+### Cluster-membership permissions are platform-operator only
+
+`admin:add_member`, `admin:remove_member`, `admin:drain` and `admin:snapshot`
+-- and `admin:start_shard`, `admin:stop_shard`, `admin:shard_state` and
+`admin:topology` -- are **cross-scope** (`ScopeCross`, declared in
+`pkg/permission/cluster_admin_scope.go`). They act on the cluster's Raft
+membership and shards, addressed by shard id: the system shard every
+prefix-isolated tenant's data lives on, and every raft-isolated tenant's own
+group. No route names a tenant, and the admin service does no tenant check of
+its own, so under `ScopeSelf` the built-in Admin and SO roles -- which grant
+add_member, remove_member, drain and snapshot in every tenant -- let any
+tenant's Admin remove replicas from the system shard and break quorum for
+every tenant, or drain the node. Now only the `system` tenant's Admin or SO
+exercises them; a tenant's is refused on every transport. `rebalance:*` is
+cross-scope for the same reason: `rebalance:execute` physically moves shards
+between nodes, and the plan, report and stats reads describe every shard. No
+built-in role below Owner carries `rebalance:*` or the shard-lifecycle and
+topology permissions, but a tenant's SO holds `roles:create` and
+`roles:assign` and could grant them to itself.
+
+The topology reads go with them because they enumerate every tenant's raft
+group and node address, and no built-in tenant role carries them; the web
+console already treats a refused topology probe as a standalone server.
+`admin:peers`, `admin:status`, `admin:health` and `admin:capabilities` stay
+`ScopeSelf`: the etcd listener's `Cluster.MemberList` is a tenant-facing call
+backed by `admin:peers` and authorized against the database's owning tenant,
+and status, health and capabilities are what a tenant's tools poll.
 
 ## Bootstrap and Role Lifecycle
 

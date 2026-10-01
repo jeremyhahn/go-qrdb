@@ -87,6 +87,19 @@ var sdkCrossScopePermissions = []sdk.Permission{
 	sdk.PermissionCeremonyEnrollCustodian,
 	sdk.PermissionCeremonyRevokeCustodian,
 	sdk.PermissionCeremonySignCSR,
+	sdk.PermissionBarrierUnsealShare,
+	sdk.PermissionAdminAddMember,
+	sdk.PermissionAdminRemoveMember,
+	sdk.PermissionAdminDrain,
+	sdk.PermissionAdminSnapshot,
+	sdk.PermissionAdminStartShard,
+	sdk.PermissionAdminStopShard,
+	sdk.PermissionAdminShardState,
+	sdk.PermissionAdminTopology,
+	sdk.PermissionRebalanceExecute,
+	sdk.PermissionRebalancePlan,
+	sdk.PermissionRebalanceReport,
+	sdk.PermissionRebalanceStats,
 }
 
 // TestSDK_CrossScopePermissions_AreTheCanonicalOnes pins the re-exports to
@@ -138,6 +151,19 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 		sdk.PermissionCeremonyEnrollCustodian:    permission.CeremonyEnrollCustodian,
 		sdk.PermissionCeremonyRevokeCustodian:    permission.CeremonyRevokeCustodian,
 		sdk.PermissionCeremonySignCSR:            permission.CeremonySignCSR,
+		sdk.PermissionBarrierUnsealShare:         permission.BarrierUnsealShare,
+		sdk.PermissionAdminAddMember:             permission.AdminAddMember,
+		sdk.PermissionAdminRemoveMember:          permission.AdminRemoveMember,
+		sdk.PermissionAdminDrain:                 permission.AdminDrain,
+		sdk.PermissionAdminSnapshot:              permission.AdminSnapshot,
+		sdk.PermissionAdminStartShard:            permission.AdminStartShard,
+		sdk.PermissionAdminStopShard:             permission.AdminStopShard,
+		sdk.PermissionAdminShardState:            permission.AdminShardState,
+		sdk.PermissionAdminTopology:              permission.AdminTopology,
+		sdk.PermissionRebalanceExecute:           permission.RebalanceExecute,
+		sdk.PermissionRebalancePlan:              permission.RebalancePlan,
+		sdk.PermissionRebalanceReport:            permission.RebalanceReport,
+		sdk.PermissionRebalanceStats:             permission.RebalanceStats,
 	}
 	if len(pairs) != len(sdkCrossScopePermissions) {
 		t.Fatalf("%d distinct re-exports, want %d: two SDK names share a value", len(pairs), len(sdkCrossScopePermissions))

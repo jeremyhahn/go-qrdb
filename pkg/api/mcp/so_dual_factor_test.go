@@ -42,6 +42,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -78,9 +79,16 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 // client that presents the PIN pin holds, if any, in the SO PIN header.
 func startBarrierMCP(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier *authtest.Barrier, pin *atomic.Pointer[string]) *mcpclient.Client {
 	t.Helper()
+	return startMCP(t, nil, pin, WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+}
+
+// startMCP starts an MCP server over admin (which may be nil) with opts, and
+// returns an initialized client that presents the PIN pin holds, if any, in
+// the SO PIN header.
+func startMCP(t *testing.T, admin service.AdminServicer, pin *atomic.Pointer[string], opts ...ServerOption) *mcpclient.Client {
+	t.Helper()
 	tlsCfg := testTLSConfig(t)
-	srv := NewServer(nil, nil, "127.0.0.1:0",
-		WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+	srv := NewServer(nil, admin, "127.0.0.1:0", append([]ServerOption{WithTLS(tlsCfg)}, opts...)...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

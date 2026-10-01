@@ -110,11 +110,17 @@ control, not an oversight.
 
 Every tenant gets these roles, but the node's own barrier is not any tenant's.
 Initializing, unsealing, sealing, rekeying or recovering the node barrier,
-registering or listing its Security Officers, and running its key ceremony are
-done by the Security Officer, Admin or Operator **of the `system` tenant**. The
-same role in your tenant carries those grants but is refused them; your tenant's
-own barrier and officers are managed through `tenant_barrier:*` instead. See
+registering or listing its Security Officers, submitting node unseal shares,
+and running its key ceremony are done by the Security Officer, Admin, Operator
+or Custodian **of the `system` tenant**. The same role in your tenant carries
+those grants but is refused them; your tenant's own barrier and officers are
+managed through `tenant_barrier:*` instead. See
 [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only).
+
+The cluster is the platform's too: adding or removing replicas, draining the
+node, requesting snapshots, starting or stopping shards, reading the topology
+and rebalancing are done by the `system` tenant. See
+[../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only).
 
 You cannot edit them: their permissions are fixed, and so is their membership.
 What you *can* do is bring them back into line with the software you are

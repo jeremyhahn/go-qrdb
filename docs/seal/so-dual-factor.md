@@ -49,7 +49,7 @@ permissions.
 The rest of the node barrier's permissions are `ScopeCross` for the same
 reason, whether or not the gate covers them: `seal:bootstrap`, `seal:unseal`,
 `seal:recover_with_keys`, `seal:enable_encryption`, `seal:submit_seal_vote`,
-the officer registry (`seal:officer_register`, `seal:officer_list`) and the
+`barrier:unseal-share`, the officer registry (`seal:officer_register`, `seal:officer_list`) and the
 node key ceremony (`ceremony:initialize`, `ceremony:enroll_custodian`,
 `ceremony:revoke_custodian`, `ceremony:sign_csr`). See
 [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only).

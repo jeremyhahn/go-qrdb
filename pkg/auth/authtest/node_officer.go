@@ -58,21 +58,40 @@ func NodeOfficerCallers(t testing.TB, roles role.RoleServicer) []NodeOfficerCall
 	}
 }
 
+// CustodianIdentity returns an identity holding the built-in Custodian role of
+// its own tenant, by the identifier BuiltInRoles persists it under, and
+// nothing else.
+func CustodianIdentity(tenantID, subject string) *auth.Identity {
+	return &auth.Identity{
+		Subject:  subject,
+		TenantID: tenantID,
+		Roles:    []string{role.SystemRoleID(tenantID, role.RoleNameCustodian)},
+	}
+}
+
 // GrantedAdminIdentity returns an identity holding the built-in Admin role of
 // tenantID and a custom role of tenantID, created in roles, that grants perms:
 // a tenant Admin whose own tenant granted it more than the built-in role does.
 func GrantedAdminIdentity(t testing.TB, roles role.RoleServicer, tenantID, subject string, perms ...permission.Permission) *auth.Identity {
 	t.Helper()
-	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	return Grant(t, roles, AdminIdentity(tenantID, subject), perms...)
+}
+
+// Grant creates, in roles, a custom role of id's tenant granting perms, and
+// returns id holding it as well as its existing roles: an identity its own
+// tenant granted more than its built-in role does.
+func Grant(t testing.TB, roles role.RoleServicer, id *auth.Identity, perms ...permission.Permission) *auth.Identity {
+	t.Helper()
+	ctx := tenant.WithTenantID(context.Background(), id.TenantID)
 	r, err := roles.CreateRole(ctx, &role.CreateRoleRequest{
-		Name:        subject + "-grants",
-		TenantID:    tenantID,
+		Name:        id.Subject + "-grants",
+		TenantID:    id.TenantID,
 		Permissions: perms,
 	})
 	if err != nil {
-		t.Fatalf("authtest: create the %q grant role in %q: %v", subject, tenantID, err)
+		t.Fatalf("authtest: create the %q grant role in %q: %v", id.Subject, id.TenantID, err)
 	}
-	id := AdminIdentity(tenantID, subject)
-	id.Roles = append(id.Roles, r.ID)
-	return id
+	granted := *id
+	granted.Roles = append(append([]string(nil), id.Roles...), r.ID)
+	return &granted
 }

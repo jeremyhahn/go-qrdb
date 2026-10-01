@@ -272,17 +272,18 @@ func TestAuthorize_RoleResolveFallbackOnTransientError(t *testing.T) {
 	fallback := newMockRoleService(map[string][]permission.Permission{
 		"admin": {"admin:drain"},
 	})
-	identity := &auth.Identity{Subject: "admin", TenantID: "tenant-1", Roles: []string{"admin"}}
+	// admin:drain is platform scope, so the drainer is the system tenant's.
+	identity := &auth.Identity{Subject: "admin", TenantID: tenant.SystemTenantID, Roles: []string{"admin"}}
 
 	// With a fallback, authorization succeeds despite the primary failure —
 	// this is what keeps an authorized Drain admissible on a draining node.
 	if err := New(primary, WithRoleServiceFallback(fallback)).
-		Authorize(ctxFor("tenant-1"), identity, "admin", "drain"); err != nil {
+		Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain"); err != nil {
 		t.Fatalf("expected fallback to authorize, got %v", err)
 	}
 
 	// Without a fallback, the primary failure surfaces as ResolveError.
-	err := New(primary).Authorize(ctxFor("tenant-1"), identity, "admin", "drain")
+	err := New(primary).Authorize(ctxFor(tenant.SystemTenantID), identity, "admin", "drain")
 	if err == nil {
 		t.Fatal("expected ResolveError when primary fails and no fallback is set")
 	}
@@ -1114,7 +1115,9 @@ func TestAuthorize_SO_DenyListByDeterministicID(t *testing.T) {
 }
 
 func TestAuthorize_Custodian_UnsealShareAllowed(t *testing.T) {
-	// Custodian has exactly one permission: barrier:unseal-share.
+	// Custodian has exactly one permission: barrier:unseal-share. It feeds
+	// the node barrier's accumulator, so it is platform scope: the system
+	// tenant's custodian is admitted and a tenant's is not.
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"custodian-role": {permission.BarrierUnsealShare},
 	})
@@ -1122,13 +1125,18 @@ func TestAuthorize_Custodian_UnsealShareAllowed(t *testing.T) {
 
 	identity := &auth.Identity{
 		Subject:  "custodian-1",
-		TenantID: "tenant-1",
+		TenantID: tenant.SystemTenantID,
 		Roles:    []string{"custodian-role"},
 	}
 
-	err := authz.Authorize(ctxFor("tenant-1"), identity, "barrier", "unseal-share")
+	err := authz.Authorize(ctxFor(tenant.SystemTenantID), identity, "barrier", "unseal-share")
 	if err != nil {
 		t.Fatalf("custodian should be allowed barrier:unseal-share, got: %v", err)
+	}
+
+	tenantCustodian := &auth.Identity{Subject: "custodian-2", TenantID: "tenant-1", Roles: []string{"custodian-role"}}
+	if err := authz.Authorize(ctxFor("tenant-1"), tenantCustodian, "barrier", "unseal-share"); err == nil {
+		t.Fatal("a tenant's custodian was admitted to the node barrier's unseal accumulator")
 	}
 }
 

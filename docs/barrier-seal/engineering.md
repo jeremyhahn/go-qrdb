@@ -313,7 +313,7 @@ migration is a different error, `MigrationReopenError`, and is not reported as
 | `seal:generate_recovery` / `seal:recover_with_keys` | recovery key lifecycle | cross |
 | `seal:officer_register` / `seal:officer_list` | Security Officer enrolment (unseal and recovery domains) and listing | cross |
 | `seal:submit_seal_vote` | Shamir seal voting | cross |
-| `barrier:unseal-share` | submitting an unseal share | self |
+| `barrier:unseal-share` | submitting an unseal share to the node accumulator | cross |
 
 **Cross** is `ScopeCross` (`pkg/permission/node_barrier_scope.go`): only a
 `system`-tenant identity may exercise it. These routes name no tenant, and
@@ -325,7 +325,12 @@ sends a share to every registered officer, M planted officers could
 reconstruct the node unseal key. The six-transport proof is
 `TestNodeOfficerScope` (REST, gRPC, Unix, QUIC, MCP, and the embedded
 `RBACClient`); the per-permission proof over the real built-in roles is
-`TestNodeBarrier_TenantRoleHoldersAreDenied` in `pkg/auth/rbac`. The boot-time
+`TestNodeBarrier_TenantRoleHoldersAreDenied` in `pkg/auth/rbac`, and
+`TestNodeBarrierRoutes_TenantHolderRefused` in `pkg/api/rest` pins each
+lifecycle route to its permission. `barrier:unseal-share` is cross-scope
+because the node accumulator takes any share it is given and every tenant's
+Custodian role carries the grant: a tenant custodian could poison an
+in-progress node unseal. The boot-time
 sealed-window listener runs no RBAC, so anonymous pre-operational officer
 registration is unaffected
 (`TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization`).

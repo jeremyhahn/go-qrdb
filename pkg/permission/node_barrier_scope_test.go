@@ -23,6 +23,7 @@ import "testing"
 // barrier's unseal and recovery domains.
 func TestNodeBarrierPermissions_AreCrossScope(t *testing.T) {
 	for _, p := range []Permission{
+		BarrierUnsealShare,
 		SealBootstrap, SealEnableEncryption, SealGenerateRecovery,
 		SealInitializeShamir, SealRecoverWithKeys, SealRekey,
 		SealRotateRootKey, SealSeal, SealSubmitSealVote, SealUnseal,
@@ -37,12 +38,14 @@ func TestNodeBarrierPermissions_AreCrossScope(t *testing.T) {
 }
 
 // TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf pins the node
-// verbs deliberately left ScopeSelf: seal:status names no share holder, an
-// unseal share is admitted only from a caller already holding a valid share,
-// and the claim verbs are bound to an enrollment the caller must possess.
+// verbs deliberately left ScopeSelf: seal:status and ceremony:status name no
+// share holder, and the claim verbs are bound to an enrollment the caller
+// must possess. barrier:unseal-share is NOT among them: the accumulator takes
+// whatever share it is given, so admitting every tenant's Custodian let one
+// poison an in-progress node unseal. It is ScopeCross.
 func TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf(t *testing.T) {
 	for _, p := range []Permission{
-		SealStatus, BarrierUnsealShare, CeremonyStatus,
+		SealStatus, CeremonyStatus,
 		CeremonyClaimCert, CeremonyClaimShareBegin, CeremonyClaimShareComplete,
 	} {
 		if got, err := LookupScope(p); err != nil || got != ScopeSelf {
@@ -60,8 +63,9 @@ func TestNodeBarrierPermissions_DeclaredOnce(t *testing.T) {
 		self[p] = struct{}{}
 	}
 	node := append(nodeBarrierSOPermissions(), nodeBarrierShareHolderPermissions()...)
-	if len(node) < 16 {
-		t.Fatalf("node-barrier lists hold %d permissions, want at least 16", len(node))
+	node = append(node, clusterAdminPermissions()...)
+	if len(node) < 29 {
+		t.Fatalf("node-barrier and cluster-admin lists hold %d permissions, want at least 29", len(node))
 	}
 	for _, p := range node {
 		if _, dup := self[p]; dup {

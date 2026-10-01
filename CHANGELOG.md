@@ -13,6 +13,32 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **BREAKING: a tenant's Admin or SO can no longer change cluster
+  membership.** `admin:add_member`, `admin:remove_member`, `admin:drain` and
+  `admin:snapshot` were ScopeSelf, and the built-in Admin and SO roles grant
+  them in every tenant. Their routes (`POST /membership/add`,
+  `/membership/remove`, `/drain`, `/snapshot`, and the same methods and tools
+  on gRPC, Unix, QUIC and MCP) address shards by id and name no tenant, and
+  the admin service does no tenant check, so any tenant's Admin could remove
+  replicas from the system shard and break quorum for every tenant, or drain
+  the node. They are now `ScopeCross`, with `admin:start_shard`,
+  `admin:stop_shard`, `admin:shard_state`, `admin:topology` (which enumerates
+  every tenant's raft group and node address) and every `rebalance:*`
+  permission (`rebalance:execute` moves shards between nodes); no built-in role
+  below Owner carries those, but a tenant's SO could grant them to itself
+  through a custom role. `admin:peers`, `admin:status`, `admin:health` and
+  `admin:capabilities` stay ScopeSelf: the etcd listener's tenant-facing
+  `Cluster.MemberList` is authorized with `admin:peers` against the
+  database's owning tenant. A tenant tool that drove these operations must run
+  as the `system` tenant.
+- **BREAKING: a tenant's Custodian can no longer submit shares to the node
+  barrier.** `barrier:unseal-share` was ScopeSelf and every tenant's built-in
+  Custodian role grants it, so a tenant custodian could submit a wrong share
+  into an in-progress node unseal and poison the accumulation. The node
+  barrier's custodians are the `system` tenant's, enrolled by its Security
+  Officer; a tenant custodian's shares go to its own barrier's identity-gated
+  routes. It is now `ScopeCross`. Anonymous unseal-share on the boot-time
+  sealed-window listener runs no RBAC and is unchanged.
 - **BREAKING: a tenant can no longer enrol or list the node barrier's
   Security Officers.** `seal:officer_register` (`POST /v1/barrier/officers`
   and `POST /v1/barrier/recovery/officers`) and `seal:officer_list`
@@ -36,21 +62,27 @@ are not reconstructed here — their history is in the git log.
   root-token generation), `seal:unseal`, `seal:recover_with_keys`,
   `seal:submit_seal_vote`, `seal:enable_encryption` -- whose body-supplied
   `tenant_id` let a tenant-local holder migrate the node barrier or another
-  tenant's -- and the node key ceremony's `ceremony:initialize`,
+  tenant's; migrating any barrier is a platform-operator act with no
+  tenant-side route -- and the node key ceremony's `ceremony:initialize`,
   `ceremony:enroll_custodian` (custodians and external officers, who receive
   node shares), `ceremony:revoke_custodian` and `ceremony:sign_csr` (which
   signs with the cluster CA). All are now `ScopeCross`. The built-in SO, Admin
   and Operator roles of a non-system tenant keep the grants and are refused
   them; the same roles in the `system` tenant are unaffected. `seal:status`,
-  `ceremony:status`, `barrier:unseal-share` and the share-claim verbs stay
-  ScopeSelf.
+  `ceremony:status` and the share-claim verbs stay ScopeSelf.
 - The Go SDK re-exports every new cross-scope permission
   (`sdk.PermissionSealOfficerRegister`, `sdk.PermissionSealOfficerList`,
   `sdk.PermissionSealBootstrap`, `sdk.PermissionSealUnseal`,
   `sdk.PermissionSealRecoverWithKeys`, `sdk.PermissionSealEnableEncryption`,
   `sdk.PermissionSealSubmitSealVote`, `sdk.PermissionCeremonyInitialize`,
   `sdk.PermissionCeremonyEnrollCustodian`,
-  `sdk.PermissionCeremonyRevokeCustodian`, `sdk.PermissionCeremonySignCSR`).
+  `sdk.PermissionCeremonyRevokeCustodian`, `sdk.PermissionCeremonySignCSR`,
+  `sdk.PermissionBarrierUnsealShare`, `sdk.PermissionAdminDrain`,
+  `sdk.PermissionAdminSnapshot`, `sdk.PermissionAdminStartShard`,
+  `sdk.PermissionAdminStopShard`, `sdk.PermissionAdminShardState`,
+  `sdk.PermissionAdminTopology` and `sdk.PermissionRebalance{Execute,Plan,Report,Stats}`;
+  `sdk.PermissionAdminAddMember` and `sdk.PermissionAdminRemoveMember` already
+  existed and are now cross-scope).
 
 ## [0.25.1-alpha] - 2026-10-01
 

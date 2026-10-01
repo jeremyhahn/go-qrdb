@@ -65,7 +65,10 @@ them, on every transport, and a tenant's SO or Admin is refused with `403` /
 and recovery operations above that change the node barrier (`seal:rekey`,
 `seal:bootstrap`, `seal:submit_seal_vote`, `seal:generate_recovery`,
 `seal:recover_with_keys`, `seal:initialize_shamir`) are cross-scope for the
-same reason; `seal:status` and `barrier:unseal-share` are not.
+same reason, and so is `barrier:unseal-share`: the node accumulator takes any
+share it is given, and every tenant's built-in Custodian role carries the
+grant, so a tenant custodian could poison an in-progress node unseal. Node
+custodians are the `system` tenant's. `seal:status` is not cross-scope.
 
 **This changed.** These permissions were self-scoped, and because none of
 these routes names a tenant, the self-scope check compared the caller's tenant

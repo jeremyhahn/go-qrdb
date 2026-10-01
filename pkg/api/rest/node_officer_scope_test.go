@@ -21,11 +21,73 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// TestNodeBarrierRoutes_TenantHolderRefused pins the route-to-permission
+// wiring of the node barrier's lifecycle routes. For each route, a tenant's
+// identity is given the route's permission -- its built-in SO or Custodian
+// role, plus a custom role of its own tenant granting the permission, so the
+// grant is never what is missing -- and is refused with 403 before the
+// service is reached. The same identity in the system tenant is not refused,
+// so the 403 is the scope rule on the permission this route maps to, not a
+// missing grant or an unregistered route.
+func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
+	type holder func(tenantID string) *auth.Identity
+	so := func(tenantID string) *auth.Identity { return authtest.SOIdentity(tenantID, "officer") }
+	custodian := func(tenantID string) *auth.Identity { return authtest.CustodianIdentity(tenantID, "custodian") }
+	routes := []struct {
+		path string
+		perm permission.Permission
+		who  holder
+	}{
+		{"/v1/barrier/initialize", permission.SealBootstrap, so},
+		{"/v1/barrier/unseal", permission.SealUnseal, so},
+		{"/v1/barrier/enable-encryption", permission.SealEnableEncryption, so},
+		{"/v1/ceremony/sign-csr", permission.CeremonySignCSR, so},
+		{"/v1/ceremony/enroll-custodian", permission.CeremonyEnrollCustodian, so},
+		// A tenant's Custodian holds barrier:unseal-share through its own
+		// built-in role; it must not feed the node barrier's accumulator.
+		{"/v1/barrier/shamir/unseal-share", permission.BarrierUnsealShare, custodian},
+		{"/v1/barrier/unseal-share", permission.BarrierUnsealShare, custodian},
+	}
+	for _, rt := range routes {
+		for _, tid := range []string{authtest.NodeOfficerTenant, tenant.SystemTenantID} {
+			t.Run(rt.path+"/"+tid, func(t *testing.T) {
+				roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.NodeOfficerTenant)
+				id := authtest.Grant(t, roles, rt.who(tid), rt.perm)
+				barrier := &authtest.Barrier{}
+				ceremony := &authtest.Ceremony{}
+				srv := NewServer(nil, nil, "127.0.0.1:0",
+					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))),
+					WithBarrierService(barrier), WithCeremonyService(ceremony),
+					WithCustodianService(newStubCustodianSvc()))
+				req := httptest.NewRequest(http.MethodPost, rt.path, strings.NewReader(`{}`))
+				req.TLS = &tls.ConnectionState{}
+				rec := httptest.NewRecorder()
+				srv.server.Handler.ServeHTTP(rec, req)
+
+				if tid == tenant.SystemTenantID {
+					if rec.Code == http.StatusForbidden || rec.Code == http.StatusNotFound {
+						t.Fatalf("system-tenant holder of %s: status=%d body=%q; the route must exist and admit it", rt.perm, rec.Code, rec.Body.String())
+					}
+					return
+				}
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("tenant holder of %s: status=%d body=%q, want 403", rt.perm, rec.Code, rec.Body.String())
+				}
+				if barrier.Transitions() != 0 || len(ceremony.SOPINs()) != 0 {
+					t.Fatalf("a refused %s reached the service", rt.path)
+				}
+			})
+		}
+	}
+}
 
 // TestNodeOfficerScope: the node barrier is a platform singleton, so only the
 // system tenant may register its unseal or recovery officers or list them.

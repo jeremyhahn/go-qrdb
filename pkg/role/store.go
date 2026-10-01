@@ -1206,6 +1206,8 @@ func deterministicUUID(tenantID, name string) string {
 // (FIPS 140-3 AS10.06).
 func custodianPermissions() []permission.Permission {
 	return []permission.Permission{
+		// Node barrier unseal share (ScopeCross: only the system tenant's
+		// Custodian may submit to the node barrier's accumulator).
 		permission.BarrierUnsealShare,
 		// Tenant SO operations (ScopeTenantOnly: a tenant custodian may claim
 		// their share and submit seal votes for their OWN tenant's barrier).

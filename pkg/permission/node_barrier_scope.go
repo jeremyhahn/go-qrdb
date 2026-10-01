@@ -18,8 +18,8 @@ package permission
 // change its state: initializing it and minting its root token
 // (seal:bootstrap), unsealing and recovering it, rekeying it, rotating its
 // root key, generating (and deleting) its recovery keys, initializing its
-// Shamir sealing, migrating it to an encrypting strategy, sealing it, and
-// voting to seal it. Sealing and unsealing are operational verbs Admin and
+// Shamir sealing, migrating it to an encrypting strategy, sealing it, voting
+// to seal it, and submitting an unseal share toward its quorum. Sealing and unsealing are operational verbs Admin and
 // Operator hold, not SO-exclusive ones, but sealing stops every tenant's data
 // plane at once and unsealing opens it.
 //
@@ -35,9 +35,20 @@ package permission
 // seal:enable_encryption names its target in the request body -- the node
 // barrier, or a tenant's barrier by id -- and the route binds no tenant, so
 // under ScopeSelf a tenant-local holder could migrate the node barrier or
-// another tenant's. It is ScopeCross with the rest: migrating a barrier is a
-// platform-operator act. A tenant acting on its own barrier holds
-// tenant_barrier:enable_encryption.
+// another tenant's. It is ScopeCross with the rest. Migrating any barrier,
+// the node's or a tenant's, is a platform-operator act, and there is no
+// tenant-side route for it: a tenant cannot migrate even its own barrier.
+// tenant_barrier:enable_encryption is declared, but no handler checks it.
+//
+// barrier:unseal-share submits one Shamir share to the node barrier's unseal
+// accumulator. Every tenant's built-in Custodian role grants it, but a tenant
+// custodian's shares belong to its tenant's barrier, whose unseal-share
+// routes are identity-gated and bound to the tenant they name. The node
+// barrier's custodians are enrolled only through ceremony:enroll_custodian,
+// which is ScopeCross, by the system tenant's Security Officer. Admitting a
+// tenant's Custodian here let it submit shares into an in-progress node
+// unseal, so one wrong share poisoned the accumulation every node custodian
+// was contributing to.
 //
 // They are ScopeCross: only an identity of the system tenant may exercise
 // them, on every transport, with the SO dual-factor gate on or off -- the
@@ -45,6 +56,7 @@ package permission
 // platform-wide state.
 func nodeBarrierSOPermissions() []Permission {
 	return []Permission{
+		BarrierUnsealShare,
 		SealBootstrap,
 		SealEnableEncryption,
 		SealGenerateRecovery,
