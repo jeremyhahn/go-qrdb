@@ -274,6 +274,22 @@ func memberIdentitiesFlag(t *testing.T, certPaths []string) string {
 	return strings.Join(parts, ",")
 }
 
+// newMemberIdentity mints a node certificate for a replica that is about to
+// be added and returns its Raft member identity -- the value an operator
+// prints from the node's certificate and passes to the add.
+func (ca *testCA) newMemberIdentity(t *testing.T) string {
+	t.Helper()
+	kp := ca.issue(t, t.TempDir(),
+		qrdbdharness.WithSubject("test-node", ""),
+		qrdbdharness.WithServerAuth(),
+	)
+	identity, err := cluster.MemberIdentityFromPEM(kp.CertPEM)
+	if err != nil {
+		t.Fatalf("member identity of the new replica: %v", err)
+	}
+	return identity
+}
+
 // clusterNodeTLS issues n node certificates up front — a node needs every
 // peer's identity before it starts — and returns each node's TLS flags plus the
 // --member-identities value naming all of them.
@@ -578,7 +594,10 @@ func httpPeers(t *testing.T, ca *testCA, port int) map[string]interface{} {
 // admin port and returns the HTTP status code and raw response body. Unlike
 // httpPut/httpGet, it does not assert on the outcome -- callers exercising
 // leader-forwarding behavior need to inspect the status code themselves.
-func httpMembershipAdd(t *testing.T, ca *testCA, port int, shardID, replicaID uint64, address string) (int, string) {
+//
+// identity is the new replica's Raft member identity (see newMemberIdentity):
+// a replica no committed membership knows is refused without one (#556).
+func httpMembershipAdd(t *testing.T, ca *testCA, port int, shardID, replicaID uint64, address, identity string) (int, string) {
 	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/membership/add", port)
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
@@ -586,6 +605,7 @@ func httpMembershipAdd(t *testing.T, ca *testCA, port int, shardID, replicaID ui
 		"shard_id":   shardID,
 		"replica_id": replicaID,
 		"address":    address,
+		"identity":   identity,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

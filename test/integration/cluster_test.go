@@ -310,7 +310,7 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 	// Issue the add against the FOLLOWER. A 500 here means the
 	// leader-forward fix regressed; a 200 means the follower forwarded the
 	// request and the leader committed the membership change.
-	code, body := httpMembershipAdd(t, ca, followerPort, shardID, newReplicaID, "127.0.0.1:1")
+	code, body := httpMembershipAdd(t, ca, followerPort, shardID, newReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
 	if code != http.StatusOK {
 		t.Fatalf("POST /membership/add to follower (port %d): status %d, body %s, want 200 (forwarded to leader)",
 			followerPort, code, body)
@@ -426,7 +426,7 @@ func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
 	// TestCluster_MembershipAdd_ForwardsToLeader's job) -- it only exists so
 	// there is a real, currently-committed replica to remove without
 	// touching any of the 3 real cluster members' quorum eligibility.
-	addCode, addBody := httpMembershipAdd(t, ca, leaderPort, shardID, extraReplicaID, "127.0.0.1:1")
+	addCode, addBody := httpMembershipAdd(t, ca, leaderPort, shardID, extraReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
 	if addCode != http.StatusOK {
 		t.Fatalf("setup: POST /membership/add to leader (port %d): status %d, body %s, want 200",
 			leaderPort, addCode, addBody)
