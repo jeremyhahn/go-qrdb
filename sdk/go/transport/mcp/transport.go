@@ -190,7 +190,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 				Err:     tlsErr,
 			}
 		}
-		base := http.DefaultTransport.(*http.Transport).Clone()
+		base := http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck,forcetypeassert // net/http always installs a *http.Transport as DefaultTransport
 		if tlsCfg != nil {
 			base.TLSClientConfig = tlsCfg
 		}

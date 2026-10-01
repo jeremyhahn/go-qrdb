@@ -16,10 +16,10 @@ package quic
 
 import (
 	"context"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"

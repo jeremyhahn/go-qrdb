@@ -149,7 +149,10 @@ func TestSOPINRoundTripper_RefusesPlaintextAndForeignHops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			base := &captureRT{}
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, tc.url, nil)
-			_, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req)
+			resp, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
 			if base.req != nil {
 				t.Fatal("the refused request was sent")
 			}

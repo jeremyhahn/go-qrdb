@@ -16,9 +16,9 @@ package unix
 
 import (
 	"context"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
