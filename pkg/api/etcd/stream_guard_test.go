@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -128,5 +129,46 @@ func TestStreamAuthorize_GuardedSendAndGuardFailure(t *testing.T) {
 	err = s.streamAuthorize(nil, stream, info, func(any, grpc.ServerStream) error { ran = true; return nil })
 	if status.Code(err) != codes.NotFound || ran {
 		t.Fatalf("unguardable stream: %v (handler ran %v), want NotFound before the handler", err, ran)
+	}
+}
+
+// chattyStream is a client with one message waiting: RecvMsg delivers it and
+// then reports the end of the stream.
+type chattyStream struct {
+	fakeStream
+	pending bool
+}
+
+func (s *chattyStream) RecvMsg(m any) error {
+	if !s.pending {
+		return context.Canceled
+	}
+	s.pending = false
+	*m.(*string) = "request"
+	return nil
+}
+
+// While the database serves, a stream receives its client's messages
+// unchanged -- guarded or not -- and the receive's own error ends it.
+func TestStreamAuthorize_ReceivesWhileTheDatabaseServes(t *testing.T) {
+	authorizers := map[string]RequestAuthorizer{
+		"guarded":   &guardingAuthorizer{unserved: make(chan struct{})},
+		"unguarded": &recordingAuthorizer{},
+	}
+	for name, authz := range authorizers {
+		t.Run(name, func(t *testing.T) {
+			s := NewServer("db", ":0", WithRequestAuthorizer(authz))
+			stream := &chattyStream{fakeStream: fakeStream{ctx: context.Background()}, pending: true}
+			var got string
+			err := s.streamAuthorize(nil, stream, &grpc.StreamServerInfo{FullMethod: "/etcdserverpb.Watch/Watch"}, func(_ any, ss grpc.ServerStream) error {
+				if err := ss.RecvMsg(&got); err != nil {
+					return err
+				}
+				return ss.RecvMsg(&got)
+			})
+			if got != "request" || !errors.Is(err, context.Canceled) {
+				t.Fatalf("received %q, ended with %v; want the client's message, then its end", got, err)
+			}
+		})
 	}
 }
