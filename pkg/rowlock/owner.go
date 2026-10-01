@@ -158,7 +158,11 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 	}
 	if cycle || unsearched {
 		_ = o.Release(ctx)
-		requests(mode, outcomeDeadlock).Inc()
+		outcome := outcomeDeadlock
+		if unsearched {
+			outcome = outcomeUnsearched
+		}
+		requests(mode, outcome).Inc()
 		return &DeadlockError{Key: waiting[0], Mode: mode, Unsearched: unsearched}
 	}
 

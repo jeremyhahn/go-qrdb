@@ -97,6 +97,18 @@ further statement in that transaction fails until you `ROLLBACK` — then run th
 whole transaction again. To avoid deadlocks, lock rows in a consistent order
 (for example, by primary key).
 
+**Error 1213 "deadlock" when nothing could have deadlocked.** Before a request
+waits, QRDB searches every lock held or awaited in the database for a cycle,
+reading at most 10,000 lock records. When more than 10,000 are held at once —
+one transaction locking a large table is enough — the search is not attempted
+and the request that would have waited is made the victim instead, as InnoDB
+does with a graph too large to search. From that point **every request that has
+to wait fails with 1213**, until enough locks are released. The error text says
+the lock table was too large to search, and the metric
+`qrdb_sql_row_lock_requests_total{outcome="unsearched"}` counts these victims
+apart from real deadlocks. Keep locking reads narrow (index the predicate) and
+transactions short.
+
 **Error 1213 without a deadlock.** The commit-time check still runs in both
 modes. Something wrote the row without taking a lock — a session in optimistic
 mode, a non-SQL writer, or a lock holder whose lease expired during a long

@@ -329,7 +329,7 @@ The driver DSN parameter `concurrency=optimistic|pessimistic` sets
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `qrdb_sql_row_lock_requests_total` | counter | `mode`, `outcome` | lock requests by outcome: `granted`, `waited`, `timeout`, `nowait`, `deadlock`, `lost`, `canceled` |
+| `qrdb_sql_row_lock_requests_total` | counter | `mode`, `outcome` | lock requests by outcome: `granted`, `waited`, `timeout`, `nowait`, `deadlock` (a cycle was found), `unsearched` (victim because the lock table exceeded `MaxDetectionRecords`), `lost`, `canceled` |
 | `qrdb_sql_row_lock_wait_seconds` | histogram | `mode` | time a request spent waiting, for requests that waited |
 | `qrdb_sql_row_lock_waiters` | gauge | — | requests currently waiting on this node |
 

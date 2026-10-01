@@ -30,6 +30,13 @@ const (
 	outcomeDeadlock = "deadlock"
 	outcomeLost     = "lost"
 	outcomeCanceled = "canceled"
+
+	// outcomeUnsearched is a requester made the deadlock victim because the
+	// lock table held more than MaxDetectionRecords records, so the
+	// wait-for graph was not searched. It is kept apart from deadlock: a
+	// rising count means the lock table outgrew the search bound, not that
+	// the application deadlocks.
+	outcomeUnsearched = "unsearched"
 )
 
 // requestsTotal counts lock requests by mode and outcome.
