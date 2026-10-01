@@ -346,6 +346,29 @@ listed to SQL clients or through ordinary key enumeration.
 | records per enqueue proposal | 1,000 | keeps an enqueue under the proposal ceiling |
 | lock-wait timeout | 1 s – 1073741824 s, default 50 s | MySQL's own range |
 
+### Cost of a locking statement
+
+A statement that locks N rows it does not already hold costs, uncontended:
+
+| Step | Cost | Batched? |
+|---|---|---|
+| enqueue | ⌈N / 1,000⌉ Raft proposals | yes, per proposal batch |
+| grant evaluation | N linearizable range reads, one per row's queue | no |
+| current reads | N linearizable point reads (`GetRevision`) | no |
+| deadlock detection | one linearizable range read of the lock table, only when a request has to wait | — |
+| release | one lease revoke per transaction, whatever N is | — |
+
+The queue and current reads are per key, not per batch. The read surfaces
+offer no multi-key read that is cheaper than its parts: `MVCCKVServicer` reads
+one key or one contiguous range, and `BatchServicer.Execute` performs each
+`OpGet`/`OpRange` as its own linearizable read. A single range over the lock
+keyspace covering a batch's queues would also read every other row's queue
+that sorts between them — unbounded under contention. The reads are
+read-index reads, not proposals, so they cost a leader round trip each and no
+log entry; a full-table `FOR UPDATE` of N rows is therefore about 2N read round
+trips and N/1,000 proposals. Index the locking predicate so N is the rows you
+mean.
+
 ## Test surface
 
 - `pkg/rowlock`: grant rule and FIFO (table-driven over queues), shared
