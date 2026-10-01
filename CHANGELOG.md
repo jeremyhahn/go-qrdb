@@ -140,6 +140,19 @@ are not reconstructed here — their history is in the git log.
 - `SimpleStateMachine` reports a command it cannot decode as a refusal in the result instead
   of the success value, so such a write is no longer acknowledged unwritten.
 
+- **A watch opened at a start revision above current is accepted and stays
+  open.** It opens as a live watch that withholds every change below the
+  requested revision and delivers from that revision on, matching etcd. It
+  was previously cancelled in-band with a compacted error when compaction
+  raced past its start revision before the replay goroutine checked, even
+  though it never needed a historical scan. The hub now reads the replay
+  boundary in the same critical section that registers the watcher, and
+  applies the compaction check only to a replay it actually attempted. The
+  watch docs listed a 400 / `INVALID_ARGUMENT` refusal for this case; no
+  transport ever enforced it, and the docs now describe the accepted
+  behaviour.
+
+
 ## [0.25.2-alpha] - 2026-10-01
 
 Security patch. It closes a family of privilege escalations in which a tenant-scoped identity could act on node-wide or cluster-wide resources. The cause was a permission check that compared the caller's tenant with itself on routes that name no tenant.

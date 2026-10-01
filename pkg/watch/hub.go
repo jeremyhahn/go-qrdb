@@ -60,6 +60,12 @@ type Hub struct {
 	// via SetHistory at construction (nil on a non-MVCC hub, which then serves
 	// live-only watches). Stored atomically so a late attach never races a Watch.
 	history atomic.Pointer[HistoryReplayer]
+
+	// afterBoundaryCapture is a test-only synchronization seam, nil in
+	// production. A test sets it on its own Hub before opening a watch; the
+	// replay goroutine reads it after spawn, so the go statement orders the
+	// write before the read. See its use in startReplay for what it fires on.
+	afterBoundaryCapture func()
 }
 
 // SetHistory attaches (or clears, with nil) the replayer that serves
@@ -132,6 +138,7 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 	sh.mu.Lock()
 	keyStr := key
 	sh.exactWatches[keyStr] = append(sh.exactWatches[keyStr], w)
+	boundary := h.captureReplayBoundary(replay)
 	sh.mu.Unlock()
 
 	h.watchCount.Add(1)
@@ -141,7 +148,7 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 
 	// Registration is complete: replay historical changes and hand off to live.
 	if replay {
-		h.startReplay(w, wo)
+		h.startReplay(w, wo, boundary)
 	}
 
 	return w, nil
@@ -173,6 +180,7 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 	sh := h.getShard([]byte(prefix))
 	sh.mu.Lock()
 	sh.prefixWatches = append(sh.prefixWatches, w)
+	boundary := h.captureReplayBoundary(replay)
 	sh.mu.Unlock()
 
 	h.watchCount.Add(1)
@@ -180,7 +188,7 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 	go h.cleanupOnCancel(w)
 
 	if replay {
-		h.startReplay(w, wo)
+		h.startReplay(w, wo, boundary)
 	}
 
 	return w, nil
@@ -204,15 +212,57 @@ func (h *Hub) prepareReplay(startRev int64) (bool, error) {
 	return true, nil
 }
 
+// captureReplayBoundary reads the replay boundary -- the upper bound for a
+// historical scan, and the revision below which a live event needs no replay
+// to be delivered safely -- and MUST be called by Watch/WatchPrefix while
+// still holding the shard write lock that just made the watcher visible to
+// notify(), in the same critical section as the registration write. Returns 0
+// when replay is false (a live-only watch, which never uses the value) or
+// when the history replayer has raced to nil since prepareReplay observed it
+// (startReplay's own re-check handles that case; a stale 0 here is harmless
+// because it is never read on that path).
+//
+// Reading hr.CurrentRevision() at any LATER point -- after this shard's lock
+// has been released -- lets an arbitrary amount of wall-clock time separate
+// "the watcher started receiving live events" from "the boundary used to
+// decide whether a historical replay is even needed". A write to this
+// watcher's own key racing ahead in that window is staged correctly (the
+// watcher is already registered and unsynced), but a boundary read AFTER it
+// would also count it, flipping a start revision that needed no replay at
+// all into one the code believes needs a historical scan -- exposing an
+// already-fully-satisfied watch to that scan's own compaction-race check,
+// and cancelling it for a compaction race that invalidated nothing it
+// actually needed (go-qrdb#514).
+//
+// Capturing it here cannot observe such a write: that write's own notify()
+// call for THIS key needs this same shard lock, so it cannot have completed
+// -- and therefore cannot yet be staged -- before this read returns. Every
+// live event this watcher can ever see is therefore either already reflected
+// in the returned boundary or is still strictly ahead of it, with nothing in
+// between the two ever having reached (or bypassed) this watcher unseen.
+func (h *Hub) captureReplayBoundary(replay bool) int64 {
+	if !replay {
+		return 0
+	}
+	hr := h.historyReplayer()
+	if hr == nil {
+		return 0
+	}
+	return hr.CurrentRevision()
+}
+
 // startReplay streams the historical change range to a freshly registered,
-// unsynced watcher, then hands off to live delivery. The boundary (the scan's
-// upper bound, the Created cursor origin, and — once replay completes — the
-// Progress watermark) is captured AFTER registration. Delivery dedup is driven
-// by the watcher's deliver floor — the last revision the replay ACTUALLY
-// delivered — not the boundary, so a revision the in-memory counter had
-// already advanced to but that was not yet durable at scan time is delivered
-// by the staged-live path rather than dropped.
-func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
+// unsynced watcher, then hands off to live delivery. boundary is the replay
+// upper bound, the Created cursor origin, and (once replay completes) the
+// Progress watermark; the caller captured it atomically with registration
+// (captureReplayBoundary), so it is immune to the race that reading
+// hr.CurrentRevision() again here, after the fact, would reintroduce
+// (go-qrdb#514). Delivery dedup is driven by the watcher's deliver floor --
+// the last revision the replay ACTUALLY delivered -- not boundary, so a
+// revision the in-memory counter had already advanced to but that was not
+// yet durable at scan time is delivered by the staged-live path rather than
+// dropped.
+func (h *Hub) startReplay(w *watcher, wo WatchOptions, boundary int64) {
 	hr := h.historyReplayer()
 	if hr == nil {
 		// Raced a SetHistory(nil); nothing to replay from. Fail closed rather
@@ -225,16 +275,31 @@ func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
 		}()
 		return
 	}
-	boundary := hr.CurrentRevision()
 
 	go func() {
 		defer w.markReplayDone()
 
+		// afterBoundaryCapture, when set, exists solely so a test can pin an
+		// interleaving between "boundary is already fixed, atomically, as of
+		// registration" and whatever the replay decision below does with it --
+		// go-qrdb#514. boundary itself cannot change past this point (it is a
+		// local copy of the caller's already-captured value), so this hook can
+		// only ever observe or delay the DECISION, never the value it decides
+		// from. Nil in production; costs one nil check per replay.
+		if hook := h.afterBoundaryCapture; hook != nil {
+			hook()
+		}
+
 		// Created response first: its Revision is the client's cursor origin.
 		w.deliver(WatchResponse{WatchID: int64(w.id), Created: true, Revision: boundary})
 
+		// attemptedReplay is also what gates the fail-closed check below: a
+		// start revision beyond the boundary needs no historical scan, so
+		// there is nothing for a LATER compaction to have invalidated (see
+		// that check's comment).
+		attemptedReplay := w.ctx.Err() == nil && wo.StartRevision <= boundary
 		var replayErr error
-		if w.ctx.Err() == nil && wo.StartRevision <= boundary {
+		if attemptedReplay {
 			replayErr = hr.Replay(wo.StartRevision, boundary, w.matches, w.prevKV, func(ev *Event) bool {
 				if w.ctx.Err() != nil {
 					return false
@@ -258,12 +323,23 @@ func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
 			})
 		}
 
-		// Fail closed rather than hand off a silently incomplete stream when the
-		// history could not be replayed intact: either compaction advanced past
-		// our start revision WHILE replaying, or the scan hit a value that had
-		// been compacted out from under it (Replay returns an error). finishReplay
-		// first so no live event is left stranded in staging.
-		if replayErr != nil || hr.CompactedRevision() >= wo.StartRevision {
+		// Fail closed rather than hand off a silently incomplete stream when a
+		// replay we actually attempted could not be completed intact: either
+		// compaction advanced past our start revision WHILE replaying, or the
+		// scan hit a value that had been compacted out from under it (Replay
+		// returns an error). finishReplay first so no live event is left
+		// stranded in staging.
+		//
+		// Gated on attemptedReplay: a start revision beyond the boundary
+		// captured above needed no replay, so compaction advancing past it
+		// LATER invalidates nothing there was ever a scan of. Without this
+		// guard, a watch registered at a future revision could be spuriously
+		// cancelled by unrelated writes and compaction racing past that
+		// revision between registration and this check, even though the
+		// watcher was registered before every relevant event and is already
+		// correctly withholding them via the deliver floor until one arrives
+		// at or after wo.StartRevision (go-qrdb#514).
+		if attemptedReplay && (replayErr != nil || hr.CompactedRevision() >= wo.StartRevision) {
 			w.setErr(ErrCompacted)
 			w.finishReplay()
 			w.cancel()

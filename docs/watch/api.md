@@ -1,6 +1,6 @@
 # Watch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-22
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its method matches the gRPC column.
@@ -87,17 +87,20 @@ consumer should not compare it against a literal.
 | Stream opened | 200 | `OK` | events follow |
 | Missing permission | 403 | `PERMISSION_DENIED` | refused at open |
 | Barrier sealed | 503 | `UNAVAILABLE` | refused at open |
-| Start revision above current | 400 | `INVALID_ARGUMENT` | refused at open |
+| Start revision above current | 200 | `OK` | accepted at open; a live watch that delivers once a change reaches that revision, matching etcd's semantics for a future start revision |
 | Start revision compacted away | 416 | `OUT_OF_RANGE` | refused at open; the SDK error classifies to `WatchCompactedError` |
 | Store cannot replay (`raft.sm_type` is not `mvcc`) | 501 | `UNIMPLEMENTED` | refused at open; the SDK error classifies to `WatchStartRevisionUnsupportedError` |
 | Compaction outruns an in-progress replay | — | — | in-band: `canceled: true`, reason classifies to `WatchCompactedError` |
 | Server shutting down | — | — | in-band: `canceled: true` with reason |
 
 A start revision the store cannot serve is validated **before** the stream
-opens, so it is answered with a status rather than in-band: the two revision
-rows above are refusals, not cancellations. QUIC and MCP are the exception by
-construction — both return their channel before the server has answered, so
-their refusal arrives as the stream's first and only terminal response.
+opens, so it is answered with a status rather than in-band: the compacted-away
+and cannot-replay rows above are refusals, not cancellations. A start revision
+above current is not in this set — it names a revision the store has not
+reached yet, not one it cannot serve, so it is accepted rather than refused.
+QUIC and MCP are the exception by construction — both return their channel
+before the server has answered, so their refusal arrives as the stream's first
+and only terminal response.
 
 Failures **after** the stream opens are reported in-band rather than as a status
 code, because by then the status line is already sent. That is why every

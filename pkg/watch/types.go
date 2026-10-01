@@ -120,6 +120,12 @@ type WatchResponse struct {
 // and rejects a start revision with ErrCompacted semantics via the hub.
 type HistoryReplayer interface {
 	// CurrentRevision returns the store's latest committed revision.
+	//
+	// The hub calls it with a shard write lock held (Watch and WatchPrefix
+	// read the replay boundary in the same critical section that registers
+	// the watcher), so an implementation must not block and must not call
+	// back into the hub: either would stall or deadlock every notify() on
+	// that shard.
 	CurrentRevision() int64
 
 	// CompactedRevision returns the highest revision that has been compacted

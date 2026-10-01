@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,10 +42,45 @@ type fakeHistory struct {
 	changes   []fakeChange
 	gate      chan struct{}
 	firstN    int
+
+	// currentGate, when non-nil, blocks the FIRST call to CurrentRevision
+	// until it is closed. CurrentRevision is called synchronously inside
+	// Hub.captureReplayBoundary, under the shard write lock in
+	// Watch/WatchPrefix -- before Watch/WatchPrefix returns and before the
+	// replay goroutine is even spawned -- so gating it lets a test pause
+	// Watch mid-open, mutate history state (e.g. advance compacted) with no
+	// other goroutine yet running, and then release it with a deterministic
+	// happens-before edge (the channel close) rather than a sleep.
+	currentGate chan struct{}
+
+	// compactedRead, when non-nil, receives the value AFTER the first call
+	// to CompactedRevision returns it. Hub.Watch calls CompactedRevision
+	// once itself, synchronously, in prepareReplay -- before CurrentRevision
+	// is ever reached -- so a test that wants to mutate `compacted` between
+	// that call and a LATER one (e.g. the one startReplay's goroutine makes
+	// in its fail-check) must wait for this signal first. Waiting on it
+	// establishes a happens-before edge for the mutation via the channel
+	// send/receive, rather than racing it.
+	compactedRead     chan int64
+	compactedReadOnce sync.Once
 }
 
-func (f *fakeHistory) CurrentRevision() int64   { return f.current }
-func (f *fakeHistory) CompactedRevision() int64 { return f.compacted }
+func (f *fakeHistory) CurrentRevision() int64 {
+	if f.currentGate != nil {
+		<-f.currentGate
+	}
+	return f.current
+}
+
+func (f *fakeHistory) CompactedRevision() int64 {
+	v := f.compacted
+	f.compactedReadOnce.Do(func() {
+		if f.compactedRead != nil {
+			f.compactedRead <- v
+		}
+	})
+	return v
+}
 
 func (f *fakeHistory) Replay(startRev, endRev int64, keyMatch func([]byte) bool, _ bool, fn func(*Event) bool) error {
 	emitted := 0
@@ -311,6 +347,264 @@ drain:
 	}
 	if len(got) != 1 || got[0].Revision != 100 {
 		t.Fatalf("deliver floor leaked events below start revision: got %+v, want only revision 100", got)
+	}
+}
+
+func TestWatch_StartRevision_AboveCurrent_AcceptsAndDeliversFromThatRevision(t *testing.T) {
+	// #514: docs/watch used to claim a start revision above the current
+	// revision is refused at open with an invalid-argument error. Nothing on
+	// this path validates a start revision against CurrentRevision() (only
+	// against the compaction floor, in prepareReplay), and the owner ruling
+	// settled the contradiction as: accept it. A watch from a future revision
+	// is a live watch that has not missed anything — it opens like any other
+	// watch, replays nothing (there is nothing yet to replay), and starts
+	// delivering once a live event reaches the requested revision, exactly as
+	// etcd's Watch does for a start revision beyond the current one.
+	h := NewHub()
+	h.SetHistory(&fakeHistory{current: 3})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := h.Watch(ctx, "k", WithStartRevision(10))
+	if err != nil {
+		t.Fatalf("Watch with a start revision above current = %v, want nil (accepted)", err)
+	}
+
+	// An event below the requested start revision must not be delivered...
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v9"), ModRevision: 9}, nil)
+	// ...but the event AT the requested start revision must be.
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v10"), ModRevision: 10}, nil)
+
+	got := collectN(t, w, 2) // Created (boundary=3) + the event at revision 10
+	if !got[0].Created || got[0].Revision != 3 {
+		t.Fatalf("first response = %+v, want Created with revision 3 (the boundary at open)", got[0])
+	}
+	if len(got[1].Events) != 1 || got[1].Revision != 10 {
+		t.Fatalf("second response = %+v, want the event at revision 10", got[1])
+	}
+
+	select {
+	case extra := <-w.Events():
+		t.Fatalf("unexpected extra delivery (revision 9 should have been dropped): %+v", extra)
+	case <-time.After(200 * time.Millisecond):
+		// good: nothing below the requested start revision leaked through.
+	}
+}
+
+func TestWatch_StartRevision_AboveCurrent_CompactionRaceDoesNotCancel(t *testing.T) {
+	// Review finding on the fix above: the guarantee does not hold under a
+	// compaction race. Scenario -- register a watch at revision 10 while
+	// current is 3; unrelated writes advance and compaction passes 10
+	// BEFORE startReplay's goroutine reaches its fail-check. That check
+	// read hr.CompactedRevision() unconditionally, so it set ErrCompacted
+	// and cancelled the watcher even though no replay was ever attempted
+	// (wo.StartRevision(10) > boundary(3) skips Replay entirely) and the
+	// watcher was registered before every relevant event. The fail-check
+	// exists to catch compaction invalidating an ATTEMPTED replay; a
+	// compaction racing past a start revision that needed no replay
+	// invalidates nothing.
+	//
+	// currentGate pins the race deterministically: CurrentRevision (the
+	// boundary capture) runs synchronously inside Hub.Watch, before Watch
+	// returns and before the replay goroutine is spawned, so blocking it
+	// lets this test advance compacted with no other goroutine yet running,
+	// then release the block with a channel-close happens-before edge
+	// instead of a sleep. compactedRead pins the OTHER read: prepareReplay
+	// calls CompactedRevision itself, before CurrentRevision is ever
+	// reached, and that read must observe 0 (so registration succeeds) and
+	// complete before this test's mutation -- waiting for the signal, rather
+	// than sleeping, is what makes that ordering a happens-before edge
+	// instead of a race the detector would (correctly) flag.
+	currentGate := make(chan struct{})
+	compactedRead := make(chan int64, 1)
+	fh := &fakeHistory{current: 3, currentGate: currentGate, compactedRead: compactedRead}
+	h := NewHub()
+	h.SetHistory(fh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type openResult struct {
+		w   Watcher
+		err error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		w, err := h.Watch(ctx, "k", WithStartRevision(10))
+		opened <- openResult{w, err}
+	}()
+
+	// Wait for prepareReplay's own CompactedRevision call to complete (it
+	// must see the original 0, or a future start revision would be refused
+	// as already compacted before registration even happens). Only once that
+	// has happened is it safe to advance compaction.
+	select {
+	case v := <-compactedRead:
+		if v != 0 {
+			t.Fatalf("prepareReplay observed compacted=%d, want 0", v)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("prepareReplay never read CompactedRevision")
+	}
+
+	// Watch has now registered the watcher and is blocked inside
+	// CurrentRevision (the boundary capture). While it is blocked, advance
+	// compaction past the requested start revision -- unrelated writes and
+	// compaction racing ahead of startReplay's goroutine, exactly as in the
+	// field report.
+	fh.compacted = 15
+	close(currentGate)
+
+	var res openResult
+	select {
+	case res = <-opened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return after the boundary gate was released")
+	}
+	if res.err != nil {
+		t.Fatalf("Watch with a start revision above current = %v, want nil (accepted)", res.err)
+	}
+	w := res.w
+
+	// The event at the requested start revision must still be delivered:
+	// registration happened before compaction raced ahead, and no replay was
+	// ever attempted for compaction to have invalidated.
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v10"), ModRevision: 10}, nil)
+
+	got := collectN(t, w, 2) // Created (boundary=3) + the event at revision 10
+	if !got[0].Created || got[0].Revision != 3 {
+		t.Fatalf("first response = %+v, want Created with revision 3", got[0])
+	}
+	if len(got[1].Events) != 1 || got[1].Revision != 10 {
+		t.Fatalf("second response = %+v, want the event at revision 10", got[1])
+	}
+	if err := w.Err(); err != nil {
+		t.Fatalf("watcher.Err() = %v, want nil -- a compaction race past a future start "+
+			"revision that needed no replay must not fail the watch", err)
+	}
+}
+
+func TestWatch_StartRevision_AboveCurrent_LiveEventsSurviveCompactionAfterRegistration(t *testing.T) {
+	// Second-round review finding: the guarantee must hold across the full
+	// sequence -- pause right after registration, advance current past
+	// startRevision while EMITTING MATCHING EVENTS INTO STAGING (some below
+	// startRevision, some at or above it), compact past startRevision, then
+	// resume -- not just for the narrower single-field mutation the first
+	// regression test above pins.
+	//
+	// afterBoundaryCapture fires once boundary is already fixed (a local
+	// copy of what captureReplayBoundary read atomically with registration),
+	// so it is the correct seam for "right after registration": everything
+	// this test does next can change wo.StartRevision's relationship to
+	// hr.CurrentRevision()/CompactedRevision() going forward, but cannot
+	// retroactively change the value startReplay's goroutine already holds.
+	// h.NotifyPut is used for the events (not a direct field write) so they
+	// travel the real staging path a caller's writes would use.
+	release := make(chan struct{})
+	proceed := make(chan struct{})
+
+	h := NewHub()
+	h.afterBoundaryCapture = func() {
+		close(proceed)
+		<-release
+	}
+	fh := &fakeHistory{current: 3}
+	h.SetHistory(fh)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	opened := make(chan struct {
+		w   Watcher
+		err error
+	}, 1)
+	go func() {
+		w, err := h.Watch(ctx, "k", WithStartRevision(10))
+		opened <- struct {
+			w   Watcher
+			err error
+		}{w, err}
+	}()
+
+	select {
+	case <-proceed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("startReplay's goroutine never reached afterBoundaryCapture")
+	}
+
+	// (b) advance current past startRevision, emitting matching events into
+	// staging -- some below startRevision, some at or above it.
+	fh.current = 15
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v8"), ModRevision: 8}, nil)
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v9"), ModRevision: 9}, nil)
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v10"), ModRevision: 10}, nil)
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v12"), ModRevision: 12}, nil)
+
+	// (c) compact past startRevision.
+	fh.compacted = 15
+
+	// (d) resume.
+	close(release)
+
+	var res struct {
+		w   Watcher
+		err error
+	}
+	select {
+	case res = <-opened:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return after resuming")
+	}
+	if res.err != nil {
+		t.Fatalf("Watch with a start revision above current = %v, want nil (accepted)", res.err)
+	}
+	w := res.w
+
+	// Events >= startRevision delivered exactly once and in order; events
+	// below it dropped; no ErrCompacted.
+	got := collectN(t, w, 3) // Created + rev10 + rev12
+	if !got[0].Created {
+		t.Fatalf("first response = %+v, want Created", got[0])
+	}
+	wantRevs := []int64{10, 12}
+	for i, want := range wantRevs {
+		r := got[i+1]
+		if len(r.Events) != 1 || r.Revision != want {
+			t.Fatalf("response[%d] = %+v, want exactly one event at revision %d", i+1, r, want)
+		}
+	}
+	select {
+	case extra := <-w.Events():
+		t.Fatalf("unexpected extra delivery (revisions below startRevision, or a duplicate): %+v", extra)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := w.Err(); err != nil {
+		t.Fatalf("watcher.Err() = %v, want nil -- registration and its captured boundary "+
+			"preceded every relevant event and the compaction race", err)
+	}
+}
+
+func TestWatch_StartRevision_AtCurrent_StillOpens(t *testing.T) {
+	// The negative alongside the above: a start revision exactly AT the
+	// current revision is neither a future revision nor a compacted one, and
+	// must open exactly like any other in-range start revision.
+	h := NewHub()
+	h.SetHistory(&fakeHistory{current: 3})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w, err := h.Watch(ctx, "k", WithStartRevision(3))
+	if err != nil {
+		t.Fatalf("Watch with a start revision at current = %v, want nil", err)
+	}
+
+	h.NotifyPut([]byte("k"), &kv.KeyValue{Key: []byte("k"), Value: []byte("v3"), ModRevision: 3}, nil)
+
+	got := collectN(t, w, 2) // Created + the event at revision 3
+	if !got[0].Created || got[0].Revision != 3 {
+		t.Fatalf("first response = %+v, want Created with revision 3", got[0])
+	}
+	if len(got[1].Events) != 1 || got[1].Revision != 3 {
+		t.Fatalf("second response = %+v, want the event at revision 3", got[1])
 	}
 }
 
