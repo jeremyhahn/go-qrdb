@@ -17,9 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dekwire"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
@@ -31,9 +28,10 @@ import (
 // the tenant scoping. The Unix transport serves the same handlers.
 // ---------------------------------------------------------------------------
 
-// dekUnconfigured is the status for a server built without a DEK service.
+// dekUnconfigured is the status for a server built without a DEK service,
+// rendered through the classifier like every other service error.
 func dekUnconfigured() error {
-	return status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "dek"}).Error())
+	return mapServiceError(&ServiceNotConfiguredError{Service: "dek"})
 }
 
 // TenantDEKStatus returns the caller's keyring versions.
