@@ -111,8 +111,11 @@ func (m *bindingDatabaseService) DatabaseBarrierStatus(_ context.Context, _ stri
 	return &seal.BarrierStatus{Sealed: false}, nil
 }
 
-func (m *bindingDatabaseService) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+// CreateForTenant creates as Create does: the binding runs with no tenant in
+// its context, and DatabaseService.CreateForTenant takes the system tenant's
+// create path for such a caller.
+func (m *bindingDatabaseService) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	return m.createFn(cfg)
 }
 
 func (m *bindingDatabaseService) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
