@@ -99,7 +99,7 @@ func enrolAndClaim(t *testing.T, bm *DatabaseBarrierManager, dbName string, hold
 		if err != nil {
 			t.Fatal(err)
 		}
-		sig, err := mtls.SignNonce(h.key, ch.Nonce)
+		sig, err := ceremony.SignShareClaim(h.key, ceremony.DatabaseClaimLabel(dbName), h.name, ch.Nonce)
 		if err != nil {
 			t.Fatal(err)
 		}

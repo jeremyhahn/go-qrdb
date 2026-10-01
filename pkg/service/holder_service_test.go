@@ -124,7 +124,11 @@ func (e *holderSvcEnv) claim(domain seal.QuorumDomain, h *svcHolder) {
 	require.NoError(e.t, err)
 	nonce, err := hex.DecodeString(ch.NonceHex)
 	require.NoError(e.t, err)
-	sig, err := mtls.SignNonce(h.key, nonce)
+	label := ceremony.SystemClaimLabel
+	if domain == seal.DomainRecovery {
+		label = ceremony.RecoveryClaimLabel
+	}
+	sig, err := ceremony.SignShareClaim(h.key, label, h.name, nonce)
 	require.NoError(e.t, err)
 	res, err := e.svc.BarrierShareClaimComplete(ctx, domain, h.name, ch.NonceHex, sig, h.thumb)
 	require.NoError(e.t, err)

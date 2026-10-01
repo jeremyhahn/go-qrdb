@@ -88,7 +88,9 @@ Shares are **never persisted, anywhere**:
 2. Each share is HPKE-sealed to its holder's recipient key and held as a
    `secure.Secret` with a timer (24h by default). Storing a new envelope for a
    holder destroys the old one first.
-3. The holder claims it — `claim/begin`, sign the nonce, `claim/complete` —
+3. The holder claims it — `claim/begin`, sign the share-claim message over the
+   nonce ([../shamir-custody/api.md](../shamir-custody/api.md#schemas)),
+   `claim/complete` —
    and the held copy is destroyed.
 4. An unclaimed envelope is destroyed at its deadline; only a rekey replaces
    it.

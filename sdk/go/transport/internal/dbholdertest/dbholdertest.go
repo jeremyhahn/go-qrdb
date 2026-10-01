@@ -157,7 +157,7 @@ func claimShare(t *testing.T, c transport.DatabaseClient, fx *servicetest.Shamir
 	done, err := c.DatabaseBarrierShareClaimComplete(ctx, &transport.DatabaseShareClaimCompleteRequest{
 		Database: Database,
 		ShareClaimCompleteRequest: transport.ShareClaimCompleteRequest{
-			Username: h.Name, NonceHex: begin.NonceHex, Signature: h.SignHex(t, begin.NonceHex),
+			Username: h.Name, NonceHex: begin.NonceHex, Signature: h.SignClaimHex(t, Database, begin.NonceHex),
 		},
 	})
 	if err != nil {

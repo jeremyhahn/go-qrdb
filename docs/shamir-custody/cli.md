@@ -102,7 +102,9 @@ certificate (the root `--cert-file`/`--key-file` flags).
 ### `qrdb barrier officer claim-begin` / `claim-complete`
 
 The same claim, split for keys that sign outside the CLI (a smart card, an
-HSM). `claim-begin --username` prints the nonce; sign the raw nonce bytes;
+HSM). `claim-begin --username` prints the nonce and `SignMessageHex`
+(`sign_message_hex` in JSON). That is the exact share-claim message to sign
+([api.md](api.md#schemas)): sign those bytes, not the bare nonce.
 `claim-complete --username --nonce-hex --sig-file --out` delivers the envelope.
 
 ## Quorum rounds

@@ -147,8 +147,12 @@ holders, the unclaimed envelopes and the pending challenges.
   24h). Never persisted.
 - Claimed once: `claim/begin` issues a 32-byte nonce (5-minute TTL) to a caller
   whose connection presents the enrolled certificate; `claim/complete` checks
-  the thumbprint again, verifies the signature over the raw nonce bytes with
-  the certificate key, returns the envelope and destroys the held copy.
+  the thumbprint again, verifies the certificate key's signature over the
+  share-claim message, returns the envelope and destroys the held copy. The
+  message (`ceremony.ShareClaimMessage`) is `qrdb/share-claim/v1`, the scope's
+  claim label (`BarrierScope.ClaimLabel`), the username and the nonce,
+  NUL-separated. The `mtls` quorum factor signs the bare nonce, so the two
+  signatures are domain-separated and neither verifies as the other.
 - Opened offline by the holder; opening needs no server.
 
 ## Quorum rounds

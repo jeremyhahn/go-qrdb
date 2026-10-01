@@ -533,7 +533,7 @@ func (e *holderE2E) claim(h *e2eHolder) error {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	sig, err := mtls.SignNonce(h.key, nonce)
+	sig, err := sdk.SignShareClaim(h.key, sdk.SystemClaimLabel, h.name, nonce)
 	if err != nil {
 		e.t.Fatal(err)
 	}

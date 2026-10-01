@@ -243,7 +243,19 @@ func claimViaSplitHandshake(t *testing.T, root func() *cobra.Command, h *cliHold
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := signHexNonce(signer, begin.NonceHex)
+	// The external signer signs exactly the message claim-begin printed.
+	var printed claimBeginOutput
+	if err := json.Unmarshal([]byte(out), &printed); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := hex.DecodeString(printed.SignMessageHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ceremony.ShareClaimMessage(ceremony.ScopeSystem.ClaimLabel(), h.name, mustHexNonce(t, begin.NonceHex)); !bytes.Equal(msg, want) {
+		t.Fatalf("claim-begin printed message %x, want %x", msg, want)
+	}
+	sig, err := mtls.SignNonce(signer, msg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,8 +388,11 @@ func TestHolderCLI_Refusals(t *testing.T) {
 	if _, err := openEnvelope([]byte("not an envelope"), nil, nil); err == nil {
 		t.Fatal("a malformed envelope opened")
 	}
-	if _, err := signHexNonce(nil, "zz"); err == nil {
+	if _, err := signClaim(nil, systemHolders{domain: transport.DomainUnseal}, "alice", "zz"); err == nil {
 		t.Fatal("a non-hex nonce was signed")
+	}
+	if _, err := claimMessageHex(systemHolders{domain: transport.DomainUnseal}, "alice", "zz"); err == nil {
+		t.Fatal("a non-hex nonce produced a claim message")
 	}
 	if (&HolderFileError{Path: "p", Err: errors.New("x")}).Error() == "" {
 		t.Fatal("HolderFileError must describe itself")
@@ -519,7 +534,7 @@ func serviceClaim(t *testing.T, svc service.BarrierServicer, h *cliHolder, cert 
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := signHexNonce(signer, begin.NonceHex)
+	sig, err := signClaim(signer, systemHolders{domain: transport.DomainUnseal}, h.name, begin.NonceHex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,4 +543,14 @@ func serviceClaim(t *testing.T, svc service.BarrierServicer, h *cliHolder, cert 
 		t.Fatal(err)
 	}
 	return res.Envelope
+}
+
+// mustHexNonce decodes a hex claim nonce.
+func mustHexNonce(t *testing.T, nonceHex string) []byte {
+	t.Helper()
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nonce
 }

@@ -139,7 +139,7 @@ func TestDatabaseHolderTools_Lifecycle(t *testing.T) {
 		if err := d.call(tlsCtx, "qrdb_database_barrier_share_claim_complete", transport.DatabaseShareClaimCompleteRequest{
 			Database: "vault",
 			ShareClaimCompleteRequest: transport.ShareClaimCompleteRequest{
-				Username: h.Name, NonceHex: begin.NonceHex, Signature: h.SignHex(t, begin.NonceHex),
+				Username: h.Name, NonceHex: begin.NonceHex, Signature: h.SignClaimHex(t, "vault", begin.NonceHex),
 			},
 		}, &done); err != nil {
 			t.Fatalf("claim complete %s: %v", h.Name, err)

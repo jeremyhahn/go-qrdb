@@ -82,7 +82,8 @@ qrdb --cert-file alice.crt --key-file alice.key \
 The envelope is sealed to your key — only you can open it — and the node keeps
 no copy. Keep the file safe; it is useless without your private key, and your
 key is useless without it. If your key lives on a smart card, use
-`claim-begin`, sign the nonce with the card, and finish with `claim-complete`.
+`claim-begin`, sign the message it prints (`SignMessageHex`) with the card,
+and finish with `claim-complete`.
 
 Claim within 24 hours; an unclaimed envelope is wiped, and only a rekey
 replaces it.

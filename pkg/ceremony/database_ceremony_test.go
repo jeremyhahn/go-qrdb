@@ -59,7 +59,7 @@ func TestDatabaseCeremony_HolderLifecycle(t *testing.T) {
 	for _, h := range []*testHolder{a, b} {
 		ch, err := svc.BeginClaimShare(ctx, h.username, h.thumb)
 		require.NoError(t, err)
-		sig, err := mtls.SignNonce(h.certKey, ch.Nonce)
+		sig, err := SignShareClaim(h.certKey, DatabaseClaimLabel("orders"), h.username, ch.Nonce)
 		require.NoError(t, err)
 		res, err := svc.CompleteClaimShare(ctx, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
 		require.NoError(t, err)

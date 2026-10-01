@@ -290,7 +290,11 @@ func (e *holderEnv) claim(domain seal.QuorumDomain, h *testHolder) {
 	ctx := context.Background()
 	ch, err := e.svc.BeginClaimShare(ctx, domain, h.username, h.thumb)
 	require.NoError(e.t, err, h.username)
-	sig, err := mtls.SignNonce(h.certKey, ch.Nonce)
+	label := ScopeSystem.ClaimLabel()
+	if domain == seal.DomainRecovery {
+		label = ScopeRecovery.ClaimLabel()
+	}
+	sig, err := SignShareClaim(h.certKey, label, h.username, ch.Nonce)
 	require.NoError(e.t, err)
 	res, err := e.svc.CompleteClaimShare(ctx, domain, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
 	require.NoError(e.t, err, h.username)

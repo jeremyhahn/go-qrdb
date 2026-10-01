@@ -22,7 +22,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -34,6 +33,7 @@ type holderAuthority interface {
 	beginClaim(ctx context.Context, username, thumb string) (*ChallengeResponse, error)
 	completeClaim(ctx context.Context, username, nonceHex string, sig []byte, thumb string) (*ShareClaimResult, error)
 	beginQuorum(ctx context.Context, op seal.QuorumOp, username string) (*QuorumChallenge, error)
+	claimLabel() string
 }
 
 // systemAuthority is the system ceremony's unseal domain.
@@ -58,6 +58,8 @@ func (a systemAuthority) completeClaim(ctx context.Context, username, nonceHex s
 func (a systemAuthority) beginQuorum(ctx context.Context, op seal.QuorumOp, username string) (*QuorumChallenge, error) {
 	return a.svc.BeginQuorum(ctx, seal.DomainUnseal, op, username, "")
 }
+
+func (a systemAuthority) claimLabel() string { return ScopeSystem.ClaimLabel() }
 
 // scopedAuthority is a tenant or database holder authority over its barrier.
 type scopedAuthority struct {
@@ -84,6 +86,8 @@ func (a scopedAuthority) completeClaim(ctx context.Context, username, nonceHex s
 func (a scopedAuthority) beginQuorum(ctx context.Context, op seal.QuorumOp, username string) (*QuorumChallenge, error) {
 	return a.svc.BeginQuorum(ctx, a.barrier, op, username, "")
 }
+
+func (a scopedAuthority) claimLabel() string { return a.svc.holder.scope.ClaimLabel() }
 
 // sealedRegisterScopes builds each scope's authority over barrier, installed
 // as its distributor and verifier and storing its records behind it, as the
@@ -147,7 +151,7 @@ func TestRegister_SealedInitializedBarrierRefusesEnrolment(t *testing.T) {
 			for _, h := range []*testHolder{alice, bob} {
 				ch, err := auth.beginClaim(ctx, h.username, h.thumb)
 				require.NoError(t, err)
-				sig, err := mtls.SignNonce(h.certKey, ch.Nonce)
+				sig, err := SignShareClaim(h.certKey, auth.claimLabel(), h.username, ch.Nonce)
 				require.NoError(t, err)
 				res, err := auth.completeClaim(ctx, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
 				require.NoError(t, err)

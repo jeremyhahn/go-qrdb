@@ -98,7 +98,7 @@ func (d *ShamirDatabase) Claim(t testing.TB, h *Holder) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := d.Holders.DatabaseBarrierShareClaimComplete(ctx, d.Name, h.Name, challenge.NonceHex, h.SignHex(t, challenge.NonceHex), h.Thumbprint())
+	result, err := d.Holders.DatabaseBarrierShareClaimComplete(ctx, d.Name, h.Name, challenge.NonceHex, h.SignClaimHex(t, d.Name, challenge.NonceHex), h.Thumbprint())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func (h *Holder) Thumbprint() string {
 	return mtls.Thumbprint(h.Cert.Raw)
 }
 
-// Sign signs nonce with h's key, as the mtls factor and a claim require.
+// Sign signs nonce with h's key, as the mtls factor requires.
 func (h *Holder) Sign(t testing.TB, nonce []byte) []byte {
 	t.Helper()
 	sig, err := mtls.SignNonce(h.Key, nonce)
@@ -154,14 +154,19 @@ func (h *Holder) Sign(t testing.TB, nonce []byte) []byte {
 	return sig
 }
 
-// SignHex signs the hex-encoded nonce a claim-begin returned.
-func (h *Holder) SignHex(t testing.TB, nonceHex string) []byte {
+// SignClaimHex signs h's claim of an envelope of database's barrier over the
+// hex-encoded nonce a claim-begin returned (ceremony.SignShareClaim).
+func (h *Holder) SignClaimHex(t testing.TB, database, nonceHex string) []byte {
 	t.Helper()
 	nonce, err := hex.DecodeString(nonceHex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h.Sign(t, nonce)
+	sig, err := ceremony.SignShareClaim(h.Key, ceremony.DatabaseClaimLabel(database), h.Name, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sig
 }
 
 // Share opens h's envelope with its key. The caller owns the share.

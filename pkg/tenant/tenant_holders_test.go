@@ -148,7 +148,7 @@ func TestTenantBarrierHolders_Lifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("claim begin %s: %v", h.name, err)
 		}
-		sig, err := mtls.SignNonce(h.key, ch.Nonce)
+		sig, err := ceremony.SignShareClaim(h.key, ceremony.TenantClaimLabel(tenantID), h.name, ch.Nonce)
 		if err != nil {
 			t.Fatal(err)
 		}

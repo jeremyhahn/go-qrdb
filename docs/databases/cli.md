@@ -274,7 +274,8 @@ qrdb database barrier-officer revoke --database vault --username bob --threshold
 `register` prints the CA-issued certificate (`--output json` for
 `cert_pem`). `claim` needs the connection to present the holder's certificate;
 in process (the embedded profile) the claim is bound to the enrolled
-certificate by the holder's signature over the server's nonce instead.
+certificate by the holder's signature over the share-claim message for the
+server's nonce instead.
 `qrdb database unseal` with `--secret` and `qrdb database seal` are refused for
 a Shamir database barrier; its holders unseal and seal it with
 `barrier-quorum submit --op unseal|seal`.

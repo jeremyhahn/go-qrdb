@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -42,7 +41,7 @@ func TestClaim_InProcessBindsToTheEnrolledCertificate(t *testing.T) {
 	// Another holder's key does not release alice's envelope.
 	ch, err := e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", "")
 	require.NoError(t, err, "an in-process claim needs no TLS certificate")
-	wrongSig, err := mtls.SignNonce(b.certKey, ch.Nonce)
+	wrongSig, err := SignShareClaim(b.certKey, ScopeSystem.ClaimLabel(), "alice", ch.Nonce)
 	require.NoError(t, err)
 	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", hex.EncodeToString(ch.Nonce), wrongSig, "")
 	assert.ErrorIs(t, err, ErrChallengeVerificationFailed)
@@ -50,7 +49,7 @@ func TestClaim_InProcessBindsToTheEnrolledCertificate(t *testing.T) {
 	// The holder's own key does, once.
 	ch, err = e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", "")
 	require.NoError(t, err)
-	sig, err := mtls.SignNonce(a.certKey, ch.Nonce)
+	sig, err := SignShareClaim(a.certKey, ScopeSystem.ClaimLabel(), "alice", ch.Nonce)
 	require.NoError(t, err)
 	res, err := e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", hex.EncodeToString(ch.Nonce), sig, "")
 	require.NoError(t, err)
@@ -94,7 +93,7 @@ func TestClaim_NetworkCallerWithoutCertificateIsRefused(t *testing.T) {
 	// without one: the marker binds, it does not bypass.
 	ch, err := e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
 	require.NoError(t, err)
-	sig, err := mtls.SignNonce(b.certKey, ch.Nonce)
+	sig, err := SignShareClaim(b.certKey, ScopeSystem.ClaimLabel(), "alice", ch.Nonce)
 	require.NoError(t, err)
 	_, err = e.svc.CompleteClaimShare(WithInProcessClaim(ctx), seal.DomainUnseal, "alice", hex.EncodeToString(ch.Nonce), sig, "")
 	assert.ErrorIs(t, err, ErrChallengeVerificationFailed)

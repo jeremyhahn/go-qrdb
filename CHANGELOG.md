@@ -180,6 +180,14 @@ are not reconstructed here — their history is in the git log.
   - the domain key is generated into protected memory, and
     `seal.CeremonyDistributor.Distribute` takes it as a `*secure.Buffer` it
     borrows rather than a plain `[]byte`.
+- **A share claim and an mtls factor answer were the same signature.** Both
+  were the holder's certificate key over a bare server nonce, so a signature
+  obtained for one verified as the other. A claim now signs the
+  domain-separated share-claim message: `qrdb/share-claim/v1`, the barrier's
+  claim label, the holder and the nonce. `ceremony.SignShareClaim` and
+  `sdk.SignShareClaim` produce it, and the CLI's `claim-begin` prints the
+  exact message for an external signer. A claim signed over the bare nonce is
+  refused.
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading

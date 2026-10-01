@@ -125,7 +125,7 @@ func TestQUICDatabaseHolders_Lifecycle(t *testing.T) {
 		var done pb.BarrierShareClaimCompleteResponse
 		if err := dbHolderCall(t, tlsCtx, s.handleDatabaseBarrierShareClaimComplete, &pb.DatabaseBarrierShareClaimCompleteRequest{
 			Database: "vault",
-			Claim:    &pb.BarrierShareClaimCompleteRequest{Username: h.Name, NonceHex: begin.GetNonceHex(), Signature: h.SignHex(t, begin.GetNonceHex())},
+			Claim:    &pb.BarrierShareClaimCompleteRequest{Username: h.Name, NonceHex: begin.GetNonceHex(), Signature: h.SignClaimHex(t, "vault", begin.GetNonceHex())},
 		}, &done); err != nil {
 			t.Fatalf("claim complete %s: %v", h.Name, err)
 		}

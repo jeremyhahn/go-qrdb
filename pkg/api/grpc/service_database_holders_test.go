@@ -106,7 +106,7 @@ func TestGRPCDatabaseHolders_Lifecycle(t *testing.T) {
 		}
 		done, err := s.DatabaseBarrierShareClaimComplete(peerCtx, &pb.DatabaseBarrierShareClaimCompleteRequest{
 			Database: "vault",
-			Claim:    &pb.BarrierShareClaimCompleteRequest{Username: h.Name, NonceHex: begin.GetNonceHex(), Signature: h.SignHex(t, begin.GetNonceHex())},
+			Claim:    &pb.BarrierShareClaimCompleteRequest{Username: h.Name, NonceHex: begin.GetNonceHex(), Signature: h.SignClaimHex(t, "vault", begin.GetNonceHex())},
 		})
 		if err != nil {
 			t.Fatalf("claim complete %s: %v", h.Name, err)

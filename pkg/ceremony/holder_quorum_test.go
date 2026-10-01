@@ -68,7 +68,7 @@ func TestClaim_EnvelopeOnceAndOpensToAShare(t *testing.T) {
 
 	ch, err := e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
 	require.NoError(t, err)
-	wrongSig, err := mtls.SignNonce(b.certKey, ch.Nonce)
+	wrongSig, err := SignShareClaim(b.certKey, ScopeSystem.ClaimLabel(), "alice", ch.Nonce)
 	require.NoError(t, err)
 	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", hex.EncodeToString(ch.Nonce), wrongSig, a.thumb)
 	assert.ErrorIs(t, err, ErrChallengeVerificationFailed)
@@ -101,7 +101,7 @@ func TestClaim_WrongNonceRefused(t *testing.T) {
 
 	ch, err := e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
 	require.NoError(t, err)
-	sig, err := mtls.SignNonce(a.certKey, ch.Nonce)
+	sig, err := SignShareClaim(a.certKey, ScopeSystem.ClaimLabel(), "alice", ch.Nonce)
 	require.NoError(t, err)
 	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", "00ff", sig, a.thumb)
 	assert.ErrorIs(t, err, ErrChallengeVerificationFailed)

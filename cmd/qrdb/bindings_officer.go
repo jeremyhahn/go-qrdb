@@ -163,7 +163,7 @@ func (b *OfficerBinding) ClaimEnvelope(req *HolderClaimParams) (*transport.Share
 		if err != nil {
 			return nil, err
 		}
-		sig, err := signHexNonce(signer, begin.NonceHex)
+		sig, err := signClaim(signer, target, req.Username, begin.NonceHex)
 		if err != nil {
 			return nil, err
 		}

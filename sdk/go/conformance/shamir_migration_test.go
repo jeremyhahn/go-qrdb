@@ -19,9 +19,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -79,7 +79,7 @@ func TestShareHolders_SystemMigrationToShamirKeepsTheEnvelopes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sig, err := mtls.SignNonce(h.key, nonce)
+		sig, err := sdk.SignShareClaim(h.key, sdk.SystemClaimLabel, h.name, nonce)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -190,7 +190,7 @@ func TestDatabaseHolders_REST(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sig, err := mtls.SignNonce(h.key, nonce)
+		sig, err := ceremony.SignShareClaim(h.key, ceremony.DatabaseClaimLabel("vault"), h.name, nonce)
 		if err != nil {
 			t.Fatal(err)
 		}

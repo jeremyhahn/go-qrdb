@@ -127,8 +127,31 @@ Holder status (list): `username`, `role`, `cert_thumbprint`, `share_index`,
 
 Claim begin response: `{"nonce_hex": "...", "expires_at": "..."}` — a
 5-minute nonce. Claim complete request: `{"nonce_hex": "...", "signature":
-"<base64 raw signature over the nonce bytes>"}`. Claim complete response:
+"<base64 signature over the share-claim message>"}`. Claim complete response:
 `{"share_index": 3, "envelope": "<base64>"}` — exactly once.
+
+The **share-claim message** is the following, NUL-separated:
+
+```
+qrdb/share-claim/v1 \0 <claim label> \0 <username> \0 <nonce bytes>
+```
+
+The claim label names the barrier:
+
+| Barrier | Claim label |
+|---|---|
+| System, unseal domain | `system` |
+| System, recovery domain | `recovery` |
+| Tenant barrier | `tenant:<tenant id>` |
+| Database barrier | `database:<database name>` |
+
+The signature format is that of the `mtls` factor: ECDSA (ASN.1 DER) or RSA
+PKCS#1 v1.5 over SHA-256 of the message, or Ed25519 over the message. The
+`mtls` quorum factor signs the bare challenge nonce, so a claim signature and
+a factor answer never verify as each other. Go callers use
+`SignShareClaim` (`sdk.SignShareClaim`), with `ShareClaimMessage` and the
+label helpers (`SystemClaimLabel`, `RecoveryClaimLabel`, `TenantClaimLabel`,
+`DatabaseClaimLabel`).
 
 Quorum challenge request and response:
 

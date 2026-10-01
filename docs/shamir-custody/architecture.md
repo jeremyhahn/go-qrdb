@@ -117,8 +117,9 @@ node operator — ever sees the share.
 On the in-process (embedded) transport there is no connection to carry a
 certificate. A claim there is bound to the holder's enrolled certificate and
 released only for a signature over the fresh claim nonce made with that
-certificate's key — the same proof of possession the `mtls` quorum factor
-verifies (`mtls.VerifyNonceSignature`). A certificate that is presented is
+certificate's key. The signed message is the domain-separated share-claim
+message, not the bare nonce the `mtls` quorum factor signs, so a factor
+answer can never be replayed as a claim, nor a claim as a factor answer. A certificate that is presented is
 still checked. The network transports keep requiring the certificate on the
 connection.
 

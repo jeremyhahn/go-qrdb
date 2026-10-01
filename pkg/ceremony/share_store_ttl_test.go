@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -211,7 +210,7 @@ func TestClaimShare_ExpiredShareIsReportedAtBegin(t *testing.T) {
 	_, err = e.svc.BeginClaimShare(ctx, seal.DomainUnseal, "alice", a.thumb)
 	assert.ErrorIs(t, err, ErrShareExpired)
 
-	sig, err := mtls.SignNonce(a.certKey, cr.Nonce)
+	sig, err := SignShareClaim(a.certKey, ScopeSystem.ClaimLabel(), "alice", cr.Nonce)
 	require.NoError(t, err)
 	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", hex.EncodeToString(cr.Nonce), sig, a.thumb)
 	assert.ErrorIs(t, err, ErrShareExpired, "a nonce issued before expiry must not reach a wiped envelope")

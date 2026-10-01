@@ -51,6 +51,9 @@ type holderTarget interface {
 	quorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error)
 	rekey(ctx context.Context, threshold int, policy, soPin string) (*transport.QuorumRound, error)
 	revoke(ctx context.Context, username string, threshold int, soPin string) (*transport.QuorumRound, error)
+	// claimLabel is the scope label the holder's claim signature binds
+	// (ceremony.ShareClaimMessage).
+	claimLabel() string
 }
 
 // systemHolders is the system barrier, in one quorum domain.
@@ -104,6 +107,13 @@ func (s systemHolders) rekey(ctx context.Context, threshold int, policy, soPin s
 
 func (s systemHolders) revoke(ctx context.Context, username string, threshold int, soPin string) (*transport.QuorumRound, error) {
 	return s.cl.Barrier().BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: s.domain, Username: username, Threshold: threshold, SOPin: soPin})
+}
+
+func (s systemHolders) claimLabel() string {
+	if s.domain == transport.DomainRecovery {
+		return ceremony.ScopeRecovery.ClaimLabel()
+	}
+	return ceremony.ScopeSystem.ClaimLabel()
 }
 
 // tenantHolders is a tenant barrier. It has one quorum domain, and its rekey
@@ -161,6 +171,8 @@ func (s tenantHolders) rekey(ctx context.Context, threshold int, policy, _ strin
 	return s.cl.Tenants().TenantBarrierRekeyStart(ctx, &transport.TenantRekeyStartRequest{TenantID: s.tenantID, Threshold: threshold, Policy: policy})
 }
 
+func (s tenantHolders) claimLabel() string { return ceremony.ScopeTenant(s.tenantID).ClaimLabel() }
+
 func (s tenantHolders) revoke(ctx context.Context, username string, threshold int, _ string) (*transport.QuorumRound, error) {
 	return s.cl.Tenants().TenantBarrierOfficerRevoke(ctx, &transport.TenantOfficerRevokeRequest{TenantID: s.tenantID, Username: username, Threshold: threshold})
 }
@@ -207,6 +219,8 @@ func (s databaseHolders) quorumSubmit(ctx context.Context, req *transport.Quorum
 func (s databaseHolders) rekey(ctx context.Context, threshold int, policy, _ string) (*transport.QuorumRound, error) {
 	return s.cl.Database().DatabaseBarrierRekeyStart(ctx, &transport.DatabaseRekeyStartRequest{Database: s.database, Threshold: threshold, Policy: policy})
 }
+
+func (s databaseHolders) claimLabel() string { return ceremony.DatabaseClaimLabel(s.database) }
 
 func (s databaseHolders) revoke(ctx context.Context, username string, threshold int, _ string) (*transport.QuorumRound, error) {
 	return s.cl.Database().DatabaseBarrierOfficerRevoke(ctx, &transport.DatabaseOfficerRevokeRequest{Database: s.database, Username: username, Threshold: threshold})
@@ -298,13 +312,14 @@ func readSigner(path string) (crypto.Signer, error) {
 	return mtls.ParseSignerPEM(raw)
 }
 
-// signHexNonce signs a hex nonce with the holder's certificate key.
-func signHexNonce(signer crypto.Signer, nonceHex string) ([]byte, error) {
+// signClaim signs username's claim in target's scope over the hex claim
+// nonce with the holder's certificate key (ceremony.SignShareClaim).
+func signClaim(signer crypto.Signer, target holderTarget, username, nonceHex string) ([]byte, error) {
 	nonce, err := hex.DecodeString(nonceHex)
 	if err != nil {
 		return nil, &InvalidArgError{Arg: "nonce", Reason: "not hex"}
 	}
-	return mtls.SignNonce(signer, nonce)
+	return ceremony.SignShareClaim(signer, target.claimLabel(), username, nonce)
 }
 
 // openEnvelope opens a claimed envelope: with the separately enrolled HPKE
@@ -537,7 +552,7 @@ certificate. The node keeps no copy of the envelope.`,
 			if err != nil {
 				return err
 			}
-			sig, err := signHexNonce(signer, begin.NonceHex)
+			sig, err := signClaim(signer, target, username, begin.NonceHex)
 			if err != nil {
 				return err
 			}
@@ -576,9 +591,15 @@ func newHolderClaimBeginCmd(kind holderKind) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderHolder(resp, func() {
-				_, _ = fmt.Fprintf(outputWriter, "NonceHex:   %s\n", resp.NonceHex)
-				_, _ = fmt.Fprintf(outputWriter, "ExpiresAt:  %s\n", resp.ExpiresAt.Format("2006-01-02T15:04:05Z"))
+			msg, err := claimMessageHex(target, username, resp.NonceHex)
+			if err != nil {
+				return err
+			}
+			out := &claimBeginOutput{ShareClaimBeginResponse: resp, SignMessageHex: msg}
+			return renderHolder(out, func() {
+				_, _ = fmt.Fprintf(outputWriter, "NonceHex:        %s\n", resp.NonceHex)
+				_, _ = fmt.Fprintf(outputWriter, "SignMessageHex:  %s\n", msg)
+				_, _ = fmt.Fprintf(outputWriter, "ExpiresAt:       %s\n", resp.ExpiresAt.Format("2006-01-02T15:04:05Z"))
 			})
 		},
 	}
@@ -586,6 +607,24 @@ func newHolderClaimBeginCmd(kind holderKind) *cobra.Command {
 	cmd.Flags().StringVar(&username, "username", "", "Holder username")
 	_ = cmd.MarkFlagRequired("username")
 	return cmd
+}
+
+// claimBeginOutput is what claim-begin prints: the nonce, and the exact
+// message the holder's key must sign (ceremony.ShareClaimMessage), so a key
+// that signs outside this CLI signs the right bytes.
+type claimBeginOutput struct {
+	*transport.ShareClaimBeginResponse
+	SignMessageHex string `json:"sign_message_hex"`
+}
+
+// claimMessageHex is the hex of the claim message username signs over the
+// hex nonce in target's scope.
+func claimMessageHex(target holderTarget, username, nonceHex string) (string, error) {
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil {
+		return "", &InvalidArgError{Arg: "nonce", Reason: "not hex"}
+	}
+	return hex.EncodeToString(ceremony.ShareClaimMessage(target.claimLabel(), username, nonce)), nil
 }
 
 // newHolderClaimCompleteCmd returns `claim-complete`.

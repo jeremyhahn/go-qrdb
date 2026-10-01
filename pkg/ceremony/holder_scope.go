@@ -690,7 +690,7 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 		return nil, ErrCertThumbprintMismatch
 	}
 	pub, err := parsePublicKeyPEM(rec.PubKeyPEM)
-	if err != nil || !mtls.VerifyNonceSignature(pub, c.Nonce, signature) {
+	if err != nil || !verifyShareClaim(pub, h.scope.ClaimLabel(), username, c.Nonce, signature) {
 		return nil, ErrChallengeVerificationFailed
 	}
 	// The envelope is the share already sealed (HPKE) to this holder's own

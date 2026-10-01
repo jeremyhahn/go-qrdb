@@ -330,6 +330,32 @@ type QuorumChallenge = ceremony.QuorumChallenge
 // it with its private key; the node keeps no copy.
 // ---------------------------------------------------------------------------
 
+// A holder claims its envelope by signing a share-claim message with its
+// certificate key: ShareClaimContext, the barrier's claim label, the holder
+// and the claim nonce. The message is distinct from the bare nonce the mtls
+// quorum factor signs, so neither signature verifies as the other.
+
+// ShareClaimContext is the share-claim message's domain-separation prefix.
+const ShareClaimContext = ceremony.ShareClaimContext
+
+// Claim labels of the system barrier's two domains.
+const (
+	SystemClaimLabel   = ceremony.SystemClaimLabel
+	RecoveryClaimLabel = ceremony.RecoveryClaimLabel
+)
+
+// TenantClaimLabel returns the claim label of a tenant's barrier.
+var TenantClaimLabel = ceremony.TenantClaimLabel
+
+// DatabaseClaimLabel returns the claim label of a database's barrier.
+var DatabaseClaimLabel = ceremony.DatabaseClaimLabel
+
+// ShareClaimMessage returns the message a holder signs to claim an envelope.
+var ShareClaimMessage = ceremony.ShareClaimMessage
+
+// SignShareClaim signs a share claim with the holder's certificate key.
+var SignShareClaim = ceremony.SignShareClaim
+
 // ShareEnvelope is a holder's sealed share.
 type ShareEnvelope = ceremony.ShareEnvelope
 
