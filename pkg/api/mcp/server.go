@@ -742,7 +742,7 @@ func (s *Server) Start() error {
 	//     authenticates proceeds with its identity bound into the request
 	//     context, where authHTTPContext reuses it;
 	//   - the request-body bound, on every request.
-	var mcpHandler http.Handler = boundedBodyHandler(maxRequestBodyBytes, streamHandler)
+	mcpHandler := boundedBodyHandler(maxRequestBodyBytes, streamHandler)
 	if s.authMW != nil {
 		mcpHandler = s.authenticateHandler(mcpHandler)
 	}

@@ -108,9 +108,11 @@ func TestSOPINRoundTripper(t *testing.T) {
 	rt := SOPINRoundTripper(base)
 
 	req, _ := http.NewRequest(http.MethodPost, "https://db.example.com/v1/barrier/rekey", nil)
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	_ = resp.Body.Close()
 	if base.req.Header.Get(SOPINHeader) != "" {
 		t.Fatal("a request without a bound PIN carries the header")
 	}
@@ -118,9 +120,11 @@ func TestSOPINRoundTripper(t *testing.T) {
 	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
 	defer release()
 	req = req.WithContext(ctx)
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err = rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	_ = resp.Body.Close()
 	if got := base.req.Header.Get(SOPINHeader); got != "1234" {
 		t.Fatalf("header = %q, want the bound PIN", got)
 	}

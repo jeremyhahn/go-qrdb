@@ -74,7 +74,8 @@ func lockState(ctx *sqle.Context) (*QRDBSession, *WriteSet) {
 	if !ok {
 		return nil, nil
 	}
-	return sess, sess.writeSet()
+	ws := sess.writeSet()
+	return sess, ws
 }
 
 // pessimistic reports whether the transaction runs in pessimistic mode.

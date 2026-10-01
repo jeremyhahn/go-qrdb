@@ -62,7 +62,7 @@ type Target struct {
 
 // SelfTarget is the caller's own tenant — the target of every request that
 // names no other.
-func SelfTarget() Target { return Target{} }
+func SelfTarget() Target { return Target{kind: targetSelf} }
 
 // TenantTarget names tenantID directly. An empty tenantID means the caller's
 // own tenant, matching how every IAM request treats an omitted tenant.
