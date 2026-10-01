@@ -294,6 +294,14 @@ are not reconstructed here — their history is in the git log.
   its epoch to 0. A later reset can then bring the epoch back to a value
   that a block reserved before the first reset still carries, and that block
   would be accepted as current.
+- **An embedded create is tenant-scoped and provisioning-checked.** The
+  embedded transport's `CreateDatabase` called the system-scoped `Create`; it
+  now creates through `CreateForTenant` for the context's tenant (owned by it,
+  inside its quota; a context with no tenant creates for the system tenant).
+  On an `sdk/go/node` node with request authentication, a raft-backed or
+  volume-isolated create through it needs an identity in the context holding
+  `databases:create_raft` / `databases:create_volume`, as on every other
+  transport.
 
 ### Changed
 

@@ -327,7 +327,8 @@ in `pkg/server/lifecycle` are deleted, not kept beside the new path.
 
 The two provisioning permissions are enforced where both the request's
 backend and the tenant's isolation tier are known: the database service every
-network transport (REST, gRPC, Unix, QUIC, MCP) and both SQL wire listeners
+network transport (REST, gRPC, Unix, QUIC, MCP), both SQL wire listeners and
+the embedded transport of an `sdk/go/node` node with request authentication
 create through (`service.NewProvisioningAuthorizedDatabaseService`, composed by
 the server whenever authentication is on). The transports' entry check can
 check only the route's `databases:create`. The re-check runs against the

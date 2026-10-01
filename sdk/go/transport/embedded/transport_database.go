@@ -54,22 +54,20 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		SQL:        fromTransportSQLConfig(req.SQL),
 	}
 
-	var info *database.DatabaseInfo
-	var err error
+	// The tenant-scoped create, as on every network transport: the database
+	// is owned by the context's tenant and metered against its quota, and a
+	// database service composed with the provisioning check enforces
+	// databases:create_raft and databases:create_volume here too. A context
+	// carrying no tenant creates for the system tenant.
+	var creds seal.Credentials
 	if req.Barrier != nil {
-		creds, credErr := seal.CredentialsFor([]byte(req.Barrier.Secret))
-		if credErr != nil {
-			return nil, credErr
+		var err error
+		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+			return nil, err
 		}
 		defer creds.Secret.Destroy()
-		if cc, ok := t.dbSvc.(service.DatabaseCredentialCreator); ok {
-			info, err = cc.CreateWithCredentials(ctx, cfg, creds)
-		} else {
-			info, err = t.dbSvc.Create(cfg)
-		}
-	} else {
-		info, err = t.dbSvc.Create(cfg)
 	}
+	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, t.dbSvc, cfg, creds)
 	if err != nil {
 		return nil, err
 	}

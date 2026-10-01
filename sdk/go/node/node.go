@@ -2450,6 +2450,17 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		embeddedOpts = append(embeddedOpts, embedded.WithAuthMiddleware(authMW))
 	}
 
+	// The embedded transport creates through the same provisioning check the
+	// server composes over its database service: databases:create_raft and
+	// databases:create_volume are checked against the identity the call
+	// carries, so "every create path" includes the in-process one. Without
+	// request authentication there is no identity to check, exactly as on
+	// the network transports.
+	if authMW != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithDatabaseService(
+			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant)))
+	}
+
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
 		return &ClientCreateError{Err: err}
