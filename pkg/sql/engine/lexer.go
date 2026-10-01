@@ -226,6 +226,15 @@ func findOutsideRegions(query string, re *regexp.Regexp) []int {
 	return nil
 }
 
+// MatchesOutsideLiterals reports whether re matches query anywhere outside a
+// string literal, comment or dollar-quoted string (see scanRegions). It is
+// the literal-aware form of re.MatchString for callers outside this package
+// that must not be fooled by text quoted inside the statement -- a "$1"
+// inside 'costs $1' is not a bind parameter.
+func MatchesOutsideLiterals(query string, re *regexp.Regexp) bool {
+	return findOutsideRegions(query, re) != nil
+}
+
 // applyEscapeStrings rewrites every PostgreSQL E'...' (or e'...') escape
 // string literal into a plain '...' literal by dropping the leading E.
 // The literal's content, including any doubled-apostrophe escapes, is

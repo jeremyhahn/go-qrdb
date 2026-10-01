@@ -158,9 +158,11 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// returned, which matches what a client sees from PostgreSQL itself
 	// (earlier results are superseded on the wire). The extended protocol
 	// forbids the form entirely when parameters are involved, and so does
-	// this path: the split only fires for parameterless text.
+	// this path: the split only fires for parameterless text. A placeholder
+	// spelling inside a string literal or comment ('costs $1') is not a
+	// parameter, so it does not stop the split.
 	if statements := engine.SplitTopLevelStatements(trimmed); len(statements) > 1 &&
-		len(wire.ParseParameters(trimmed)) == 0 {
+		!engine.MatchesOutsideLiterals(trimmed, wire.QueryParameters) {
 		for _, statement := range statements[:len(statements)-1] {
 			if _, err := h.HandleParse(ctx, statement); err != nil {
 				return nil, err
@@ -184,7 +186,7 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 		// session decoration: it changes how this session's statements
 		// run, so it reaches the engine instead of being swallowed.
 		if err != nil {
-			return nil, psqlerr.WithCode(err, codes.InvalidParameterValue)
+			return nil, sessionSetWireError(err)
 		}
 		trimmed = routed
 	} else if h.isNoopStatement(upper) {

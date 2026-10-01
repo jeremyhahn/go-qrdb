@@ -184,7 +184,7 @@ func TestRouteSessionSet(t *testing.T) {
 		{"SET lock_timeout = 250", "SET innodb_lock_wait_timeout = 1", true},
 		{"SET lock_timeout TO DEFAULT", "SET innodb_lock_wait_timeout = DEFAULT", true},
 		{"SET search_path TO public", "", false},
-		{"SET LOCAL lock_timeout = '1s'", "", false},
+		{"SET LOCAL search_path TO public", "", false},
 		{"SELECT 1", "", false},
 	}
 	for _, c := range cases {
@@ -194,7 +194,13 @@ func TestRouteSessionSet(t *testing.T) {
 		assert.Equal(t, c.routed, routed, c.in)
 	}
 
-	_, ok, err := routeSessionSet("SET lock_timeout = 'soon'")
+	_, ok, err := routeSessionSet("SET LOCAL lock_timeout = '1s'")
+	assert.True(t, ok)
+	var local *LocalSettingUnsupportedError
+	require.ErrorAs(t, err, &local)
+	assert.Equal(t, "lock_timeout", local.Name)
+
+	_, ok, err = routeSessionSet("SET lock_timeout = 'soon'")
 	assert.True(t, ok)
 	var invalid *InvalidSettingError
 	require.ErrorAs(t, err, &invalid)

@@ -71,7 +71,7 @@ An absent `sql` object, or an empty `concurrency`, means `optimistic`.
 |---|---|---|
 | `qrdb_concurrency` | `database` (default), `optimistic`, `pessimistic` | session |
 | `innodb_lock_wait_timeout` | 1–1073741824 seconds, default 50 | session (`SET GLOBAL` is refused) |
-| `lock_timeout` (PostgreSQL wire) | PostgreSQL duration; translated to `innodb_lock_wait_timeout` | session |
+| `lock_timeout` (PostgreSQL wire) | PostgreSQL duration; translated to `innodb_lock_wait_timeout` | session (`SET LOCAL` is refused with 0A000) |
 
 ### Error codes
 

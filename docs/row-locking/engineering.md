@@ -295,10 +295,21 @@ SET lock_timeout = '5s';                -- PostgreSQL wire
   therefore 50 seconds, not unlimited.
 - The PostgreSQL wire passes `SET [SESSION] qrdb_* {=|TO} value` through to the
   engine instead of treating it as a no-op, which is also what makes
-  `SET qrdb_isolation` work there. A bare identifier value is quoted. `SET
-  LOCAL` stays a no-op: a transaction-scoped setting has no counterpart, and
-  approximating it as a session setting would let it outlive its transaction.
-  An unparseable `lock_timeout` is refused with SQLSTATE 22023.
+  `SET qrdb_isolation` work there. A bare identifier value is quoted. An
+  unparseable `lock_timeout` is refused with SQLSTATE 22023.
+- `SET LOCAL lock_timeout` and `SET LOCAL qrdb_*` are refused with SQLSTATE
+  0A000: these settings are session-scoped only, approximating a
+  transaction-scoped one as a session setting would let it outlive its
+  transaction, and accepting it as a no-op would leave the client believing a
+  timeout is in force that is not. `SET LOCAL` of any other setting stays the
+  no-op it always was.
+- A simple-query message holding several statements is split at top-level
+  semicolons (outside quotes, comments and dollar-quoting) before any `SET` is
+  read, so every `SET` is applied with its own value. A placeholder spelling
+  inside a literal (`'costs $1'`) does not stop the split. A text that does
+  carry bind parameters is not split, and a routed `SET` at its head is
+  refused with SQLSTATE 42601 instead of being read with the rest of the text
+  as its value.
 
 The driver DSN parameter `concurrency=optimistic|pessimistic` sets
 `qrdb_concurrency` on every connection it opens.
