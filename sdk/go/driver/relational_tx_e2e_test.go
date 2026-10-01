@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -256,6 +257,13 @@ func (s *memStore) Range(_ context.Context, start, end []byte, opts ...service.R
 		})
 	}
 	return kvs, count, s.rev, nil
+}
+
+// RangeWithConsistency is Range: memStore is one in-memory replica, so a
+// local (stale) read and a linearizable one observe the same state. It backs
+// the SQL planner's row-count estimate.
+func (s *memStore) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return s.Range(ctx, start, end, opts...)
 }
 
 func (s *memStore) evalCompareLocked(c service.Compare) bool {

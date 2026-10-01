@@ -98,6 +98,12 @@ PostgreSQL's view lists, for a FOREIGN KEY, the columns of the constraint it
 *references*, which cannot be named from an `sql.ForeignKeyConstraint` alone,
 and a plausible-looking wrong answer would be worse than a true partial one.
 
+`information_schema.tables` reports `TABLE_ROWS` and `DATA_LENGTH` for a
+relational table from the planner's cached row-count estimate, not from a
+count of the table: listing a database's tables costs the same whatever the
+tables hold. The estimate is at most about ten seconds old; `COUNT(*)` is
+always exact. See [engineering.md](engineering.md#planner-statistics).
+
 
 ## Build Tags
 

@@ -76,7 +76,7 @@ func (d *Database) createTable(ctx *sqle.Context, name string, schema sqle.Prima
 	}
 
 	tenantID := d.sessionTenantID(ctx)
-	tableSvc, err := d.registry.TableService(tenantID, d.name)
+	tableSvc, err := d.registryFor(ctx).TableService(tenantID, d.name)
 	if err != nil {
 		return err
 	}
@@ -129,7 +129,7 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 	}
 
 	tenantID := d.sessionTenantID(ctx)
-	tableSvc, err := d.registry.TableService(tenantID, d.name)
+	tableSvc, err := d.registryFor(ctx).TableService(tenantID, d.name)
 	if err != nil {
 		return err
 	}
@@ -150,6 +150,9 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 	if service.IsTableResolutionStale(err) {
 		return sqle.ErrLockDeadlock.Wrap(err, err.Error())
 	}
+	if err == nil && def != nil && d.estimates != nil {
+		d.estimates.forget(rowEstimateKey{scope: estimateScope(tenantID, d.name), tableID: def.TableID, generation: def.Generation})
+	}
 	return err
 }
 
@@ -166,7 +169,7 @@ func (d *Database) RenameTable(ctx *sqle.Context, oldName, newName string) error
 	}
 
 	tenantID := d.sessionTenantID(ctx)
-	tableSvc, err := d.registry.TableService(tenantID, d.name)
+	tableSvc, err := d.registryFor(ctx).TableService(tenantID, d.name)
 	if err != nil {
 		return err
 	}
@@ -191,7 +194,7 @@ func (d *Database) GetCollation(ctx *sqle.Context) sqle.CollationID {
 	if d.registry == nil {
 		return sqle.Collation_Default
 	}
-	kvSvc, err := d.registry.KVService(d.sessionTenantID(ctx), d.name)
+	kvSvc, err := d.registryFor(ctx).KVService(d.sessionTenantID(ctx), d.name)
 	if err != nil {
 		return sqle.Collation_Default
 	}
@@ -215,7 +218,7 @@ func (d *Database) SetCollation(ctx *sqle.Context, collation sqle.CollationID) e
 	if err := flushPendingWriteSet(ctx); err != nil {
 		return err
 	}
-	kvSvc, err := d.registry.KVService(d.sessionTenantID(ctx), d.name)
+	kvSvc, err := d.registryFor(ctx).KVService(d.sessionTenantID(ctx), d.name)
 	if err != nil {
 		return err
 	}

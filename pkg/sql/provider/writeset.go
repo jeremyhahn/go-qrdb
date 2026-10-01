@@ -327,14 +327,6 @@ func (ws *WriteSet) ReadOnly() bool { return ws.readOnly }
 // commit with, fixed when the transaction started.
 func (ws *WriteSet) Isolation() IsolationLevel { return ws.level }
 
-// HasBufferedWrites reports whether the transaction has buffered any
-// mutation not yet visible in committed storage. Callers that would
-// otherwise answer a question from committed state alone -- notably
-// RelationalTable.RowCount, whose result go-mysql-server substitutes
-// directly for a COUNT(*) -- use this to recognise that such an answer
-// would omit the transaction's own writes.
-func (ws *WriteSet) HasBufferedWrites() bool { return len(ws.entries) > 0 }
-
 // bind resolves the (tenant, database)-scoped TransactionServicer and
 // MVCCKVServicer this write-set will read and commit through, and pins the
 // snapshot revision every read inside the transaction is served from. It is

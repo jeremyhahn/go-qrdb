@@ -50,12 +50,13 @@ import (
 // scan (see relational_writer.go's Truncate), so it needs no BatchServicer.
 func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, bool, error) {
 	tenantID := d.sessionTenantID(ctx)
+	registry := d.registryFor(ctx)
 
-	tableSvc, err := d.registry.TableService(tenantID, d.name)
+	tableSvc, err := registry.TableService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
-	kvSvc, err := d.registry.KVService(tenantID, d.name)
+	kvSvc, err := registry.KVService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -63,14 +64,16 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 	// rewrite's own write-back (runRewrite, relational_rewrite.go) commits
 	// through a compare-and-swap fenced on the table's generation, not a
 	// plain KV Put -- see go-qrdb#547.
-	txnSvc, err := d.registry.TransactionService(tenantID, d.name)
+	txnSvc, err := registry.TransactionService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
 
 	// Bound to the tenant: completing an interrupted rewrite may publish a
 	// ReclaimJob for the index incarnations it retires.
-	def, err := d.getTableResumingRewrite(tenant.WithTenantID(ctx, tenantID), tableSvc, kvSvc, txnSvc, name)
+	def, err := tableDef(ctx, tenantID, d.name, name, func() (*service.TableDef, error) {
+		return d.getTableResumingRewrite(tenant.WithTenantID(ctx, tenantID), tableSvc, kvSvc, txnSvc, name)
+	})
 	if err != nil {
 		var notFound *service.TableNotFoundError
 		if errors.As(err, &notFound) {
@@ -85,11 +88,11 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		return nil, false, err
 	}
 
-	mvccSvc, err := d.registry.MVCCService(tenantID, d.name)
+	mvccSvc, err := registry.MVCCService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
-	seqSvc, err := d.registry.SequenceService(tenantID, d.name)
+	seqSvc, err := registry.SequenceService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -99,11 +102,14 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		WithTransactionService(txnSvc),
 		WithSequenceService(seqSvc),
 		WithRowLocks(func() (*rowlock.Table, error) {
-			return d.rowLockTable(tenantID, txnSvc, mvccSvc)
+			return d.rowLockTable(registry, tenantID, txnSvc, mvccSvc)
 		}, d.concurrency(tenantID)),
 	}
 	if d.postgres {
 		opts = append(opts, WithPostgreSQLDialect())
+	}
+	if d.estimates != nil {
+		opts = append(opts, withRowEstimates(d.estimates, estimateScope(tenantID, d.name)))
 	}
 
 	tbl, err := NewRelationalTable(def, kvSvc, mvccSvc, opts...)
@@ -119,12 +125,12 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 // as the rows are. A registry that cannot resolve a lease or watch service
 // leaves the table without one; the error is reported only to a statement
 // that needs a lock.
-func (d *Database) rowLockTable(tenantID string, txnSvc service.TransactionServicer, mvccSvc service.MVCCKVServicer) (*rowlock.Table, error) {
-	leaseSvc, err := d.registry.LeaseService(tenantID, d.name)
+func (d *Database) rowLockTable(registry service.Registry, tenantID string, txnSvc service.TransactionServicer, mvccSvc service.MVCCKVServicer) (*rowlock.Table, error) {
+	leaseSvc, err := registry.LeaseService(tenantID, d.name)
 	if err != nil {
 		return nil, err
 	}
-	watchSvc, err := d.registry.WatchService(tenantID, d.name)
+	watchSvc, err := registry.WatchService(tenantID, d.name)
 	if err != nil {
 		return nil, err
 	}

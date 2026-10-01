@@ -300,7 +300,7 @@ A placement the resolver does not recognize has no owner. The job's store is the
 
 A statement reads the generation and index incarnations it resolved for as long as it runs. The sweeper must not delete those keys while such a reader is live, or the reader sees a short or empty result instead of an error. The guarantee has two halves that meet at one constant, `service.TableGenerationPinTTL` (10s):
 
-- **Readers re-prove old pins.** `RelationalTable.confirmGenerationPin` runs after every read (`txGet`, `txScan`) and after the exact count `RowCount` reports, before the result is used. A pin younger than `TableGenerationPinTTL` costs nothing. An older one re-proves the whole resolution with one `GetTable` (`reproveResolution`): the same TableID, the same generation, and every index incarnation the statement may read still catalogued. Unchanged, the pin is renewed from the instant before that read; changed, the statement fails with the typed, retryable `*service.TableGenerationStaleError` — or `*service.TableDefinitionStaleError` when an index was dropped or the table was dropped or replaced — both reported as MySQL 1213 / SQLSTATE 40001. A renamed index keeps its incarnation and keeps reading. While the catalog is mid-rewrite, when `GetTable` reports the rewrite instead of a definition, the committed definition is read through the rewrite journal (`RewriteJournal`) and proven the same way — TableID, generation and every index incarnation. A missed point read is reported as a miss only after the same check, and any other read error on an indexed lookup is returned rather than treated as "no such row". A definition with no recorded read time is treated as already expired. `Truncate` renews its own handle's pin on the generation it committed.
+- **Readers re-prove old pins.** `RelationalTable.confirmGenerationPin` runs after every read (`txGet`, `txScan`), before the result is used. (`RowCount` is a planner estimate, not a read a result is built from; see [Planner statistics](#planner-statistics).) A pin younger than `TableGenerationPinTTL` costs nothing. An older one re-proves the whole resolution with one `GetTable` (`reproveResolution`): the same TableID, the same generation, and every index incarnation the statement may read still catalogued. Unchanged, the pin is renewed from the instant before that read; changed, the statement fails with the typed, retryable `*service.TableGenerationStaleError` — or `*service.TableDefinitionStaleError` when an index was dropped or the table was dropped or replaced — both reported as MySQL 1213 / SQLSTATE 40001. A renamed index keeps its incarnation and keeps reading. While the catalog is mid-rewrite, when `GetTable` reports the rewrite instead of a definition, the committed definition is read through the rewrite journal (`RewriteJournal`) and proven the same way — TableID, generation and every index incarnation. A missed point read is reported as a miss only after the same check, and any other read error on an indexed lookup is returned rather than treated as "no such row". A definition with no recorded read time is treated as already expired. `Truncate` renews its own handle's pin on the generation it committed.
 - **The sweeper waits longer than any pin.** It deletes a job's keys only `service.ReclaimQuiescence` (`TableGenerationPinTTL` + 5s) after IT FIRST OBSERVED the committed job record. It cannot observe the job before the orphaning transaction commits, and every reader of the orphaned keys pinned them before that commit, so every result read under such a pin was complete before deletion began. Observation is in-memory and per sweeper — a new owner (leader change, restart) starts its own wait, which is only more conservative — and compares only each node's own monotonic elapsed time, never wall clocks across nodes.
 
 Every composer that serves relational DDL starts the sweep loop on every node: the daemon (`cmd/qrdbd`'s `startReclaimSweeper`, standalone included — a standalone daemon owns every shared-store job itself) and the SDK node (`startReclaimSweep`, `startReclaimSweepStandalone`). The server installs the resolver when it is built with a `DatabaseServiceRegistry`; a server without one serves no relational DDL and publishes no jobs. `TableService` refuses `TRUNCATE`/`DROP INDEX`/`DROP TABLE` outright (`ReclaimIndexUnconfiguredError`) when constructed without `WithReclaimIndex`, rather than publish a job nothing could find.
@@ -373,11 +373,99 @@ Secondary indexes — including **multi-column (composite)** and `UNIQUE` ones �
 
 The KV, entity, and collection tables implement `sql.IndexAddressableTable` and `sql.IndexedTable`, so `WHERE` clauses on indexed fields are served by an index lookup or range scan instead of a full scan. Predicate-to-range translation lives in `pkg/sql/provider/range_translator.go`; both tables report `PreciseMatch() == true`, so go-mysql-server does not re-filter the returned rows.
 
-### Optimizer statistics
+### Planner statistics
 
-`RelationalTable` implements `sql.StatisticsTable`: `RowCount` is an **exact** keys-only MVCC range count over the table's data prefix (`MVCCKVServicer.Range` with `WithCountOnly`), and `DataLength` estimates on-disk size as that count multiplied by the encoded size of an all-zero-value row. There is no maintained histogram or per-index cardinality.
+`RelationalTable` implements `sql.StatisticsTable`. go-mysql-server asks for a
+table's row count several times while it plans **every** statement — index
+costing (`uniformDistStatisticsForIndex`), table-scan statistics
+(`uniformDistStatsticForTableScan`), `Catalog.RowCount`, and once more through
+`DataLength` — and `information_schema.tables` asks again for every table it
+lists. When `RowCount` was an exact keys-only count of the table, a
+primary-key point `SELECT`, `UPDATE` or `DELETE` cost time proportional to the
+table's size: about 1.7 µs per row, 110 ms at 64,000 rows.
 
-The KV, entity, and collection tables do **not** implement `sql.StatisticsTable`, so the optimizer has no row-count estimate for them and falls back to its default heuristics. `information_schema.statistics` is served by go-mysql-server from the indexes each table reports; the `CARDINALITY` column is not populated from real statistics for any table kind.
+`RowCount` now returns an **estimate** and reports it as **not exact**:
+
+| Property | Value |
+|---|---|
+| Unit | one generation of one table in one (tenant, database) store — `rowEstimateKey{scope, tableID, generation}` |
+| Where it lives | one `rowEstimates` cache per `Provider`, shared by every table it serves (`pkg/sql/provider/row_estimate.go`) |
+| How it is counted | a keys-only, count-only range over the generation's data prefix, read **locally** — `MVCCKVServicer.RangeWithConsistency` at `consistency.Eventual` (a stale read of this node's state machine, no Raft round trip) |
+| First request | counts synchronously; a failed count fails the statement, as before, and caches nothing |
+| Freshness | served from the cache for `rowEstimateTTL` (10 s); the first request after that starts **one** background recount (detached from the statement, bounded by 30 s) and is served the previous value meanwhile. A failed recount keeps the previous value and is retried a TTL later |
+| `TRUNCATE` (through this provider) | the old generation's estimate is dropped and the new generation's is stored as 0 — no count needed |
+| `DROP TABLE` / `DROP DATABASE` (through this provider) | the table's, or the database's, estimates are dropped |
+| Bound | 4,096 entries; past it, entries unrequested for 60 s are evicted first. A `TRUNCATE` or `DROP` issued on another node leaves this node's old entry to that eviction |
+| `DataLength` | the same estimate times the encoded size of an all-zero-value row |
+
+**Why a cached estimate rather than a maintained counter.** A counter kept
+current by writes would put one more key into every row write's
+compare-and-swap: every concurrent `INSERT` into a table would conflict on, or
+serialise behind, that one key, turning planner statistics into the table's
+hottest write. It would also have to be kept by every path that changes rows —
+autocommit DML, the buffered transaction commit, `TRUNCATE`'s generation
+change, the reclaim sweeper, non-SQL writers — and a node-local delta would
+not see another node's writes at all. The cache costs the write path nothing;
+its price is a staleness bounded by the TTL and one background count per table
+generation, per node, per TTL — off every statement's path except the first
+lookup of a generation on a node. The planner needs an order of magnitude, and
+a value at most ten seconds old is one.
+
+**Why not exact.** go-mysql-server's `replaceCountStar` rule answers
+`SELECT COUNT(*)` from `RowCount` when, and only when, it is reported exact.
+Reporting the estimate as inexact keeps `COUNT(*)` on the ordinary scan path,
+which counts the latest committed rows — and, inside a transaction, the
+write-set overlay with the transaction's own uncommitted rows. `COUNT(*)` is
+therefore always exact; it costs a scan of the table, as it does in InnoDB.
+`information_schema.tables.TABLE_ROWS` and `DATA_LENGTH` are the estimate —
+MySQL documents them as approximate for InnoDB too.
+
+There is no maintained histogram or per-index cardinality. The KV, entity, and
+collection tables do **not** implement `sql.StatisticsTable`, so the optimizer
+has no row-count estimate for them and falls back to its default heuristics.
+`information_schema.statistics` is served by go-mysql-server from the indexes
+each table reports; the `CARDINALITY` column is not populated from real
+statistics for any table kind.
+
+### Statement-scoped resolution
+
+go-mysql-server resolves a table by name several times while it plans and runs
+one statement — the view check, the table itself, foreign-key handling — and
+`information_schema` resolves every table in the database. Each resolution
+asked the service registry for the table's servicers (catalog, KV, MVCC,
+transaction, sequence), and the registry resolves the session's tenant with a
+linearizable read for each; the definition itself costs three more reads.
+
+Within one statement those answers are fixed: the plan is built once, and every
+write the statement makes is fenced on the definition and generation it
+resolved. So the provider memoizes, for the duration of one statement:
+
+- each servicer the registry resolves for the session's (tenant, database);
+- each table definition (`GetTable`, including "no such table");
+- each view definition (`GetView`, including "no such view");
+- the foreign keys naming a parent table (`ReferencingForeignKeys`).
+
+| Rule | Why |
+|---|---|
+| The scope is opened by `QRDBSession.CommandBegin` and closed by `CommandEnd` | go-mysql-server's MySQL handler calls both around every command. A surface that does not (the in-process driver, the PostgreSQL wire, the ad-hoc query service) resolves on every lookup, exactly as before |
+| Only `SELECT`, `WITH`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `SHOW`, `DESCRIBE`/`DESC`, `EXPLAIN`, `TABLE` and `VALUES` statements are memoized — by their first keyword, after whitespace, comments and parentheses | none of them can change a definition. `CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`, `CALL` and `EXECUTE` re-resolve on every lookup, so a DDL statement sees its own changes; a statement opening with an executable comment (`/*! ... */`) is not memoized either |
+| The scope serves only the statement text it was first used with | a statement the engine runs on the same session while the command is open is not served another statement's answers |
+| A failed resolution is never memoized | the next lookup reports its own outcome |
+| Nothing outlives the command | DDL committed by any session is seen by this session's next statement — the invalidation is the statement boundary, so there is no revision to compare and nothing to go stale |
+
+The tenant is still resolved once per servicer kind a statement uses — at most
+five reads per statement, where before it was five for every table
+resolution.
+
+### Known limits
+
+- **A long read holds back Apply.** go-quicraft's state machine serves every
+  read (`Lookup`, for `StaleRead` and `SyncRead` alike) under a read lock that
+  its `Apply` must wait for, so a background recount of a large table delays
+  the apply of concurrent proposals on that shard for as long as it runs. The
+  estimate cache keeps such counts off every statement's path and to one per
+  table generation, per node, per TTL; it cannot remove the wait itself. That
+  lock belongs to go-quicraft.
 
 
 ## Transaction Control

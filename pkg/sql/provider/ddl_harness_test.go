@@ -25,6 +25,7 @@ import (
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -68,6 +69,11 @@ type memStore struct {
 	// matches lose its compare-and-swap without applying anything -- the
 	// way a test forces one specific catalog transaction to fail.
 	rejectTxn func(ops []service.Op) bool
+
+	// onCountOnly, when non-nil, is called on every count-only Range,
+	// whatever its consistency -- the read a table's rows are counted
+	// with -- so a test can count them.
+	onCountOnly func()
 }
 
 func newMemStore() *memStore {
@@ -203,8 +209,8 @@ func (s *memStore) ScanStale(ctx context.Context, prefix string) (map[string][]b
 }
 
 // ---------------------------------------------------------------------------
-// MVCCKVServicer (partial: GetRevision + Range, all TableService/
-// SequenceService and RelationalTable.RowCount need)
+// MVCCKVServicer (partial: GetRevision, Range and RangeWithConsistency --
+// all TableService/SequenceService and RelationalTable.RowCount need)
 // ---------------------------------------------------------------------------
 
 func (s *memStore) GetRevision(_ context.Context, key string) (*service.KeyValue, error) {
@@ -255,6 +261,9 @@ func (s *memStore) Range(_ context.Context, start, end []byte, opts ...service.R
 	defer s.mu.Unlock()
 
 	ro := service.ApplyRangeOptions(opts)
+	if ro.CountOnly && s.onCountOnly != nil {
+		s.onCountOnly()
+	}
 
 	startS := string(start)
 	var endS string
@@ -292,6 +301,13 @@ func (s *memStore) Range(_ context.Context, start, end []byte, opts ...service.R
 		})
 	}
 	return kvs, count, s.rev, nil
+}
+
+// RangeWithConsistency is Range: memStore is one in-memory replica, so a
+// local (stale) read and a linearizable one observe the same state, exactly
+// as on a single-node store.
+func (s *memStore) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return s.Range(ctx, start, end, opts...)
 }
 
 // ---------------------------------------------------------------------------

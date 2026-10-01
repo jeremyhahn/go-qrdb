@@ -44,6 +44,10 @@ import (
 type fakeMVCCService struct {
 	service.KVServicer
 	rangeFn func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error)
+
+	// rangeConsistencyFn backs RangeWithConsistency, the read RowCount and
+	// DataLength estimate a table's size with.
+	rangeConsistencyFn func(ctx context.Context, start, end []byte, ro consistency.ReadOptions, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error)
 }
 
 var _ service.MVCCKVServicer = (*fakeMVCCService)(nil)
@@ -72,7 +76,10 @@ func (m *fakeMVCCService) Range(ctx context.Context, start, end []byte, opts ...
 	}
 	return nil, 0, 0, nil
 }
-func (m *fakeMVCCService) RangeWithConsistency(context.Context, []byte, []byte, consistency.ReadOptions, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+func (m *fakeMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, ro consistency.ReadOptions, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	if m.rangeConsistencyFn != nil {
+		return m.rangeConsistencyFn(ctx, start, end, ro, opts...)
+	}
 	return nil, 0, 0, nil
 }
 func (m *fakeMVCCService) Compact(context.Context, int64) error           { return nil }
@@ -515,15 +522,21 @@ func TestRelationalTable_PrimaryKeySchema(t *testing.T) {
 // RowCount / DataLength
 // ---------------------------------------------------------------------------
 
-func TestRelationalTable_RowCount_Success(t *testing.T) {
+func TestRelationalTable_RowCount_EstimateIsInexactAndLocal(t *testing.T) {
 	def := testUsersDef()
 	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
+	var linearizable int
 	mvcc := &fakeMVCCService{
-		rangeFn: func(_ context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+		rangeFn: func(context.Context, []byte, []byte, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+			linearizable++
+			return nil, 0, 0, nil
+		},
+		rangeConsistencyFn: func(_ context.Context, start, end []byte, ro consistency.ReadOptions, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 			assert.Equal(t, []byte(prefix), start)
 			assert.Equal(t, prefixEnd([]byte(prefix)), end)
-			ro := service.ApplyRangeOptions(opts)
-			assert.True(t, ro.CountOnly)
+			assert.Equal(t, consistency.Eventual, ro.Consistency, "an estimate is a local read")
+			assert.True(t, ro.AllowStale)
+			assert.True(t, service.ApplyRangeOptions(opts).CountOnly)
 			return nil, 5, 42, nil
 		},
 	}
@@ -532,8 +545,49 @@ func TestRelationalTable_RowCount_Success(t *testing.T) {
 
 	count, exact, err := tbl.RowCount(newTestContext())
 	require.NoError(t, err)
-	assert.True(t, exact)
+	assert.False(t, exact, "an estimate must never be reported exact: go-mysql-server would substitute it for COUNT(*)")
 	assert.Equal(t, uint64(5), count)
+	assert.Zero(t, linearizable, "RowCount must not issue a linearizable Range")
+}
+
+func TestRelationalTable_RowCount_CountedOncePerGeneration(t *testing.T) {
+	def := testUsersDef()
+	var reads int
+	mvcc := &fakeMVCCService{
+		rangeConsistencyFn: func(context.Context, []byte, []byte, consistency.ReadOptions, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+			reads++
+			return nil, 9, 0, nil
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, mvcc)
+	require.NoError(t, err)
+
+	ctx := newTestContext()
+	for range 4 {
+		n, _, err := tbl.RowCount(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(9), n)
+	}
+	got, err := tbl.DataLength(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(9*tbl.averageRowSize()), got)
+	assert.Equal(t, 1, reads, "planning asks for the count several times; the table is counted once")
+}
+
+func TestRelationalTable_RowCount_NegativeCountIsZero(t *testing.T) {
+	def := testUsersDef()
+	mvcc := &fakeMVCCService{
+		rangeConsistencyFn: func(context.Context, []byte, []byte, consistency.ReadOptions, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+			return nil, -3, 0, nil
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, mvcc)
+	require.NoError(t, err)
+
+	n, exact, err := tbl.RowCount(newTestContext())
+	require.NoError(t, err)
+	assert.False(t, exact)
+	assert.Zero(t, n)
 }
 
 func TestRelationalTable_RowCount_NilMVCC(t *testing.T) {
@@ -549,7 +603,7 @@ func TestRelationalTable_RowCount_Error(t *testing.T) {
 	def := testUsersDef()
 	rangeErr := errors.New("range failed")
 	mvcc := &fakeMVCCService{
-		rangeFn: func(context.Context, []byte, []byte, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+		rangeConsistencyFn: func(context.Context, []byte, []byte, consistency.ReadOptions, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 			return nil, 0, 0, rangeErr
 		},
 	}
@@ -563,7 +617,7 @@ func TestRelationalTable_RowCount_Error(t *testing.T) {
 func TestRelationalTable_DataLength(t *testing.T) {
 	def := testUsersDef()
 	mvcc := &fakeMVCCService{
-		rangeFn: func(context.Context, []byte, []byte, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+		rangeConsistencyFn: func(context.Context, []byte, []byte, consistency.ReadOptions, ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 			return nil, 10, 0, nil
 		},
 	}

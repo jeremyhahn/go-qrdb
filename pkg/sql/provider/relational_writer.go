@@ -662,8 +662,14 @@ func (t *RelationalTable) Truncate(ctx *sqle.Context) (int, error) {
 		return 0, err
 	}
 
+	// The old generation's keyspace is now reclaimable and the new one is
+	// empty, so the old estimate goes and the new one is known without a
+	// count.
+	old := t.gen().generation
 	t.setGeneration(newDef.Generation, newDef.GenerationReadAt)
 	t.autoInc.discard()
+	t.estimates.forget(rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: old})
+	t.estimates.store(rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: newDef.Generation}, 0)
 
 	return 0, nil
 }

@@ -94,6 +94,12 @@ type Provider struct {
 	// service registry resolves it. Empty shares nothing.
 	sharedDefaultDB string
 	sqlConfigOf     SQLConfigResolver // nil means every database runs the default (optimistic)
+
+	// estimates is the planner row-count estimate cache every relational
+	// table this provider serves answers RowCount and DataLength from (see
+	// row_estimate.go). One per provider, so it lives as long as the engine
+	// the provider fronts.
+	estimates *rowEstimates
 }
 
 // WithSharedDefaultDatabase marks name, the configured default SQL
@@ -224,8 +230,9 @@ func WithRegistry(reg service.Registry) func(*Provider) {
 // constructor that does not support CREATE/DROP DATABASE.
 func NewProvider(dbName string, kvSvc service.KVServicer) *Provider {
 	return &Provider{
-		dbName: dbName,
-		kvSvc:  kvSvc,
+		dbName:    dbName,
+		kvSvc:     kvSvc,
+		estimates: newRowEstimates(),
 	}
 }
 
@@ -239,6 +246,7 @@ func NewManagerProvider(manager *database.Manager, kvSvc service.KVServicer, opt
 		manager:     manager,
 		kvSvc:       kvSvc,
 		sqlConfigOf: managerSQLConfig(manager),
+		estimates:   newRowEstimates(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -267,9 +275,10 @@ func managerSQLConfig(manager *database.Manager) SQLConfigResolver {
 // scoping.
 func NewProviderWithEngine(name string, kvSvc service.KVServicer, engine database.EngineType, opts ...func(*Provider)) *Provider {
 	p := &Provider{
-		dbName: name,
-		kvSvc:  kvSvc,
-		engine: engine,
+		dbName:    name,
+		kvSvc:     kvSvc,
+		engine:    engine,
+		estimates: newRowEstimates(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -309,6 +318,7 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 		registry:      p.registry,
 		sqlConfigOf:   p.sqlConfigOf,
 		postgres:      p.servesPGCatalog(),
+		estimates:     p.estimates,
 	}
 	if p.readOnly {
 		return newReadOnlyDatabase(db)
@@ -601,6 +611,9 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if err != nil {
 		return &DropDatabaseError{Name: name, Err: err}
 	}
+	if p.estimates != nil {
+		p.estimates.forgetScope(estimateScope(tenantID, name))
+	}
 	return nil
 }
 
@@ -628,6 +641,10 @@ type Database struct {
 	// from this database follow PostgreSQL's TRUNCATE semantics rather
 	// than MySQL's (see RelationalTable.Truncate / WithPostgreSQLDialect).
 	postgres bool
+
+	// estimates is the provider's row-count estimate cache; nil for a
+	// Database built without a provider, whose tables then keep their own.
+	estimates *rowEstimates
 }
 
 // Name returns the database name.
@@ -811,7 +828,7 @@ func (d *Database) collectionService(ctx *sqle.Context) (service.CollectionServi
 	if d.registry == nil {
 		return d.collectionSvc, nil
 	}
-	return d.registry.CollectionService(d.sessionTenantID(ctx), d.name)
+	return d.registryFor(ctx).CollectionService(d.sessionTenantID(ctx), d.name)
 }
 
 // kvService returns the KV servicer the kv and entity tables of this session
@@ -834,7 +851,7 @@ func (d *Database) kvService(ctx *sqle.Context) (service.KVServicer, string, err
 	if d.registry == nil {
 		return d.kvSvc, d.namespacePrefix(ctx), nil
 	}
-	kv, err := d.registry.KVService(d.sessionTenantID(ctx), d.name)
+	kv, err := d.registryFor(ctx).KVService(d.sessionTenantID(ctx), d.name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -896,7 +913,7 @@ func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
 	// Append relational table names from the catalog, scoped to the
 	// session's tenant exactly as GetTableInsensitive scopes lookups.
 	if d.registry != nil {
-		if tableSvc, err := d.registry.TableService(d.sessionTenantID(ctx), d.name); err == nil {
+		if tableSvc, err := d.registryFor(ctx).TableService(d.sessionTenantID(ctx), d.name); err == nil {
 			if names, lerr := tableSvc.ListTables(ctx, d.name); lerr == nil {
 				tables = append(tables, names...)
 			}

@@ -83,6 +83,28 @@ are not reconstructed here — their history is in the git log.
 - Database metadata records an `incarnation` (see Fixed). Metadata without one reopens with
   an empty incarnation and keeps working.
 
+- **SQL primary-key point statements no longer cost time proportional to the
+  table.** go-mysql-server asks a relational table for its row count several
+  times while it plans every statement, and `RowCount` answered with an exact,
+  linearizable count of the whole table: about 1.7 µs per row, so a
+  `SELECT`, `UPDATE` or `DELETE` by primary key took about 110 ms at 64,000
+  rows. It now answers from a per-table-generation estimate, counted with a
+  local read and refreshed in the background every ten seconds, and reports
+  it as inexact. Over the MySQL wire, at 64,000 rows, the median point
+  `SELECT` went from 127 ms to 1.6 ms and `UPDATE` from 152 ms to 3.4 ms; see
+  `test/performance/SQL_PK_LATENCY.md`. `information_schema.tables`'
+  `TABLE_ROWS` and `DATA_LENGTH` report the same estimate, so they may be up
+  to about ten seconds stale. `SELECT COUNT(*)` is unaffected and always
+  exact: it is no longer answered from the row count, and counts the rows
+  instead.
+- **A SQL statement resolves each table, view and servicer once.** Table
+  lookups within one statement — and every table `information_schema` lists —
+  each re-resolved the session's tenant with a linearizable read for each of
+  five servicers and re-read the table definition. Statements that cannot
+  change a definition (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`,
+  `SHOW`, `DESCRIBE`, `EXPLAIN`) now memoize them for the statement, on
+  surfaces that deliver statement boundaries (the MySQL wire). DDL is seen by
+  the next statement, as before.
 - **Pessimistic autocommit statements share their connection's lock lease.**
   Every locking transaction granted a lease before its first lock and revoked
   it after its last, two Raft proposals on every pessimistic autocommit
@@ -163,6 +185,20 @@ are not reconstructed here — their history is in the git log.
   transport ever enforced it, and the docs now describe the accepted
   behaviour.
 
+### Removed
+
+- `provider.WriteSet.HasBufferedWrites`. Its one caller was `RowCount`, which
+  needed it to stop reporting a committed-only count as exact inside a
+  transaction; `RowCount` is never exact now.
+
+### Fixed
+
+- **A serialization failure or lock-wait timeout raised during an index
+  lookup kept its error code.** `RelationalTable.LookupPartitions` wrapped
+  every error in `IndexLookupError`, which hid go-mysql-server's
+  `ErrLockDeadlock` (MySQL 1213, "retry") and MySQL's own 1205 / 3572 from
+  the client. It was masked until now because planning's exact row count
+  usually raised the same stale-definition error first.
 
 ## [0.25.2-alpha] - 2026-10-01
 

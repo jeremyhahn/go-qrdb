@@ -260,7 +260,12 @@ func (t *RelationalTable) GetDeclaredForeignKeys(ctx *sqle.Context) ([]sqle.Fore
 	if t.tableSvc == nil {
 		return nil, &TableServiceUnavailableError{Table: t.def.Name}
 	}
-	def, err := t.tableSvc.GetTable(ctx, t.def.Database, t.def.Name)
+	// Inside a statement that cannot change a definition (a DML statement
+	// checking its constraints) the statement's own resolution is the
+	// current record; a DDL statement is never memoized, so it re-reads.
+	def, err := tableDef(ctx, sessionTenantIDOf(ctx), t.def.Database, t.def.Name, func() (*service.TableDef, error) {
+		return t.tableSvc.GetTable(ctx, t.def.Database, t.def.Name)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +299,9 @@ func (t *RelationalTable) GetReferencedForeignKeys(ctx *sqle.Context) ([]sqle.Fo
 // referencingForeignKeyConstraints renders, in go-mysql-server's shape,
 // every constraint in database that names parent as its parent table.
 func referencingForeignKeyConstraints(ctx *sqle.Context, tableSvc service.TableServicer, database, parent string) ([]sqle.ForeignKeyConstraint, error) {
-	refs, err := tableSvc.ReferencingForeignKeys(ctx, database, parent)
+	refs, err := referencingForeignKeys(ctx, sessionTenantIDOf(ctx), database, parent, func() ([]service.TableForeignKey, error) {
+		return tableSvc.ReferencingForeignKeys(ctx, database, parent)
+	})
 	if err != nil {
 		return nil, err
 	}

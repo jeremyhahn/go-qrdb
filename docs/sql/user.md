@@ -239,6 +239,12 @@ one statement's compares plus operations. A transaction may buffer at most
 8 MiB and 100,000 distinct keys, and exceeding either fails the *buffering
 statement*, naming it, rather than surprising you at `COMMIT`.
 
+**`information_schema.tables` shows a `TABLE_ROWS` that is out of date.** It
+is an estimate, refreshed in the background about every ten seconds, so the
+planner never has to count a table to plan a statement — MySQL documents the
+same column as approximate. `SELECT COUNT(*)` is always exact, including the
+rows your own open transaction has written.
+
 **`SET TRANSACTION ISOLATION LEVEL` seems to do nothing.** It is accepted and
 recorded, not interpreted. Those levels describe a lock-based engine; QRDB's
 transactions are optimistic unless you select pessimistic mode. Use

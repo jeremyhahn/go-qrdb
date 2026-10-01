@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -23,8 +24,11 @@ import (
 	"time"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/dolthub/vitess/go/sqltypes"
+	goerrors "gopkg.in/src-d/go-errors.v1"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -62,6 +66,15 @@ type RelationalTable struct {
 
 	kvSvc   service.KVServicer
 	mvccSvc service.MVCCKVServicer // nil disables RowCount/DataLength
+
+	// estimates is the row-count estimate cache RowCount and DataLength
+	// answer from, and estimateScope the (tenant, database) store scope this
+	// table's estimates are kept under there. A table resolved through a
+	// Database shares its provider's cache (see withRowEstimates); one built
+	// without it gets a cache of its own, so a statement still counts it at
+	// most once.
+	estimates     *rowEstimates
+	estimateScope string
 
 	// tableSvc is nil unless supplied via WithTableService. It is required
 	// for every DDL capability implemented in relational_table_ddl.go
@@ -197,6 +210,16 @@ func WithSequenceService(svc service.SequenceServicer) RelationalTableOption {
 	}
 }
 
+// withRowEstimates shares the provider's row-count estimate cache with the
+// table, keeping its estimates under scope -- "<tenant>/<database>", the
+// store the table's rows live in.
+func withRowEstimates(estimates *rowEstimates, scope string) RelationalTableOption {
+	return func(t *RelationalTable) {
+		t.estimates = estimates
+		t.estimateScope = scope
+	}
+}
+
 // WithPostgreSQLDialect returns a RelationalTableOption marking the table as
 // served over the PostgreSQL wire protocol rather than MySQL's, which
 // changes exactly one thing: Truncate does not reset the table's
@@ -245,6 +268,7 @@ func NewRelationalTable(def *service.TableDef, kvSvc service.KVServicer, mvccSvc
 		autoInc:    &sequenceBlock{},
 		rowIDs:     &sequenceBlock{},
 		now:        time.Now,
+		estimates:  newRowEstimates(),
 	}
 	t.setGeneration(def.Generation, def.GenerationReadAt)
 
@@ -429,61 +453,64 @@ func (t *RelationalTable) PrimaryKeySchema(_ *sqle.Context) sqle.PrimaryKeySchem
 // StatisticsTable
 // ---------------------------------------------------------------------------
 
-// RowCount returns the table's row count as an exact, keys-only MVCC range
-// count over the table's data prefix.
+// RowCount returns the planner's estimate of the table's row count, and
+// reports it as NOT exact.
 //
-// Inside an interactive transaction that has buffered writes, the count is
-// reported as NOT exact. The range runs against committed storage, so it
-// cannot see the session's own uncommitted rows, and go-mysql-server's
-// replaceCountStar rule only substitutes this value for a COUNT(*) when the
+// go-mysql-server calls this several times while it plans every statement
+// (index costing, table-scan statistics, DataLength) and once per table for
+// information_schema.tables, so it must not cost time proportional to the
+// table: the value comes from the provider's per-generation estimate cache
+// (see row_estimate.go), counted with a local read rather than a
+// linearizable one and refreshed in the background.
+//
+// Reporting it as inexact is what keeps COUNT(*) correct. go-mysql-server's
+// replaceCountStar rule substitutes this value for a COUNT(*) only when the
 // exact flag is set (sql/analyzer/replace_count_star.go: `err == nil &&
-// exact`). Clearing the flag therefore routes COUNT(*) through the ordinary
-// scan path, which reads the write-set overlay and so counts the
-// transaction's own rows -- read-your-own-writes, which is the whole point
-// of buffering them. Returning a committed-only count as though it were
-// exact is what made a transaction report COUNT(*) = 0 while enumerating
-// two rows it had just inserted.
+// exact`); with it clear, COUNT(*) is answered by the ordinary scan path,
+// which reads the latest committed rows -- and, inside a transaction, the
+// write-set overlay with the transaction's own uncommitted rows.
 func (t *RelationalTable) RowCount(ctx *sqle.Context) (uint64, bool, error) {
-	if t.mvccSvc == nil {
-		return 0, false, &RelationalMVCCUnavailableError{Table: t.def.Name}
-	}
-
-	ws, err := t.activeWriteSet(ctx)
-	if err != nil {
-		return 0, false, err
-	}
-	if ws != nil && ws.HasBufferedWrites() {
-		return 0, false, nil
-	}
-
-	prefix := []byte(t.gen().dataPrefix)
-	_, count, _, err := t.mvccSvc.Range(ctx, prefix, prefixEnd(prefix), service.WithCountOnly())
-	if err != nil {
-		return 0, false, err
-	}
-	// An exact count is a read like any other: it is reported only once the
-	// generation it counted is proven not to be one being reclaimed.
-	if err := t.confirmGenerationPin(ctx); err != nil {
-		return 0, false, err
-	}
-	if count < 0 {
-		count = 0
-	}
-	return uint64(count), true, nil
+	n, err := t.rowEstimate(ctx)
+	return n, false, err
 }
 
-// DataLength estimates the table's on-disk size as its row count multiplied
-// by the encoded size of a synthetic row built from every column's zero
-// value -- a reasonable proxy in the absence of a maintained running total,
-// since QRDB's row encoding (catalog.RowCodec) is otherwise fixed-width per
-// column except for variable-length string/binary/JSON columns, which zero
-// to their minimum (empty) encoding here.
+// DataLength estimates the table's on-disk size as its estimated row count
+// (see RowCount) multiplied by the encoded size of a synthetic row built from
+// every column's zero value -- a reasonable proxy in the absence of a
+// maintained running total, since QRDB's row encoding (catalog.RowCodec) is
+// otherwise fixed-width per column except for variable-length
+// string/binary/JSON columns, which zero to their minimum (empty) encoding
+// here.
 func (t *RelationalTable) DataLength(ctx *sqle.Context) (uint64, error) {
-	count, _, err := t.RowCount(ctx)
+	count, err := t.rowEstimate(ctx)
 	if err != nil {
 		return 0, err
 	}
 	return count * uint64(t.averageRowSize()), nil
+}
+
+// statsReadOptions is the consistency a row-count estimate is read at: a
+// local read of this node's state machine, with no Raft round trip. An
+// estimate a follower counts a few entries behind the leader is still an
+// estimate.
+var statsReadOptions = consistency.ReadOptions{Consistency: consistency.Eventual, AllowStale: true}
+
+// rowEstimate returns the estimated row count of the handle's current
+// generation from the estimate cache, counting it on a miss.
+func (t *RelationalTable) rowEstimate(ctx *sqle.Context) (uint64, error) {
+	if t.mvccSvc == nil {
+		return 0, &RelationalMVCCUnavailableError{Table: t.def.Name}
+	}
+	g := t.gen()
+	key := rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: g.generation}
+	return t.estimates.estimate(providerContext(ctx), key, func(rctx context.Context) (uint64, error) {
+		prefix := []byte(g.dataPrefix)
+		_, count, _, err := t.mvccSvc.RangeWithConsistency(rctx, prefix, prefixEnd(prefix), statsReadOptions, service.WithCountOnly())
+		if err != nil {
+			return 0, err
+		}
+		return uint64(max(count, 0)), nil
+	})
 }
 
 // averageRowSize returns the encoded size of a synthetic all-zero-value row,
@@ -577,7 +604,7 @@ func (t *RelationalTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexL
 
 	ordinals, keys, exact, err := t.lookupKeys(ctx, qIdx, ranges)
 	if err != nil {
-		return nil, &IndexLookupError{IndexName: qIdx.id, Err: err}
+		return nil, lookupFailure(qIdx.id, err)
 	}
 	if exact {
 		return sqle.PartitionsToPartitionIter(&indexedPartition{keys: keys}), nil
@@ -594,9 +621,25 @@ func (t *RelationalTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexL
 
 	rows, err := t.filteredScanRows(ctx, ordinals, ranges)
 	if err != nil {
-		return nil, &IndexLookupError{IndexName: qIdx.id, Err: err}
+		return nil, lookupFailure(qIdx.id, err)
 	}
 	return sqle.PartitionsToPartitionIter(&filteredPartition{rows: rows}), nil
+}
+
+// lookupFailure reports a failed index lookup on index. An error that
+// already carries the classification a client acts on -- a go-mysql-server
+// error kind such as sql.ErrLockDeadlock (MySQL 1213, "retry"), or a MySQL
+// error with its own number (1205, 3572) -- is returned as it is: both are
+// recognised by type assertion on the outermost error, so wrapping one in
+// *IndexLookupError would turn a retryable serialization failure or a
+// lock-wait timeout into an unclassified failure. Anything else is wrapped.
+func lookupFailure(index string, err error) error {
+	var kind *goerrors.Error
+	var wire *mysql.SQLError
+	if errors.As(err, &kind) || errors.As(err, &wire) {
+		return err
+	}
+	return &IndexLookupError{IndexName: index, Err: err}
 }
 
 // lookupKeys resolves qIdx back to the table's primary key or to one of its

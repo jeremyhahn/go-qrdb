@@ -47,7 +47,7 @@ func (d *Database) viewService(ctx *sqle.Context) (service.ViewServicer, error) 
 	if d.registry == nil {
 		return nil, sqle.ErrViewsNotSupported.New(d.name)
 	}
-	tableSvc, err := d.registry.TableService(d.sessionTenantID(ctx), d.name)
+	tableSvc, err := d.registryFor(ctx).TableService(d.sessionTenantID(ctx), d.name)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,9 @@ func (d *Database) GetViewDefinition(ctx *sqle.Context, viewName string) (sqle.V
 	if err != nil {
 		return sqle.ViewDefinition{}, false, nil
 	}
-	def, err := viewSvc.GetView(ctx, d.name, viewName)
+	def, err := viewDef(ctx, d.sessionTenantID(ctx), d.name, viewName, func() (*service.ViewDef, error) {
+		return viewSvc.GetView(ctx, d.name, viewName)
+	})
 	if err != nil {
 		var notFound *service.ViewNotFoundError
 		if errors.As(err, &notFound) {
@@ -171,7 +173,7 @@ func (d *Database) userSequencer(ctx *sqle.Context) (service.UserSequencer, erro
 	if d.registry == nil {
 		return nil, &SequencesUnavailableError{Database: d.name}
 	}
-	tableSvc, err := d.registry.TableService(d.sessionTenantID(ctx), d.name)
+	tableSvc, err := d.registryFor(ctx).TableService(d.sessionTenantID(ctx), d.name)
 	if err != nil {
 		return nil, err
 	}

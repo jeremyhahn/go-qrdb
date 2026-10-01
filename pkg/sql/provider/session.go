@@ -73,6 +73,10 @@ type QRDBSession struct {
 	// statementIndexOrigin -- see SetStatementIndexOrigin.
 	statementIndexOrigin atomic.Bool
 
+	// stmt is the resolution scope of the command in flight, opened by
+	// CommandBegin and closed by CommandEnd (see statementScope).
+	stmt atomic.Pointer[statementScope]
+
 	// locks is the connection's row-lock lease, shared by the lock owners
 	// of its successive transactions -- every autocommit statement is one
 	// -- so a locking statement does not grant and revoke a lease of its
@@ -392,17 +396,22 @@ var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
 
 // CommandBegin implements sql.LifecycleAwareSession. No statement is in
 // flight at a command boundary, so any statement savepoint still open is a
-// leftover and is dropped (see WriteSet.resetStatements).
+// leftover and is dropped (see WriteSet.resetStatements), and the command
+// gets a fresh resolution scope (see statementScope).
 func (s *QRDBSession) CommandBegin() error {
 	if ws := s.ws.Load(); ws != nil {
 		ws.resetStatements()
 	}
+	s.stmt.Store(&statementScope{})
 	return nil
 }
 
-// CommandEnd implements sql.LifecycleAwareSession; a command's row locks
-// belong to its transaction, not to the command.
-func (s *QRDBSession) CommandEnd() {}
+// CommandEnd implements sql.LifecycleAwareSession. It closes the command's
+// resolution scope; a command's row locks belong to its transaction, not to
+// the command.
+func (s *QRDBSession) CommandEnd() {
+	s.stmt.Store(nil)
+}
 
 // SessionEnd implements sql.LifecycleAwareSession: the connection is gone,
 // so its open transaction is abandoned, every row lock it holds is released

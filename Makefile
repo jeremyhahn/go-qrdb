@@ -684,6 +684,21 @@ bench-engine:
 bench-database:
 	$(GO) test $(TAG_FLAG) -run '^$$' -bench='BenchmarkStandaloneBackend' -benchmem $(PKG_DATABASE)
 
+# Primary-key point-statement latency over the MySQL wire against table size,
+# in both SQL concurrency modes, on a single-node qrdbd (results and method:
+# test/performance/SQL_PK_LATENCY.md). A point statement touches one row, so
+# its latency must not grow with the table. Pass extra flags, e.g.
+# SQLPK_ARGS="-ops 500 -sizes 0,1000,16000,64000".
+SQLPK_TAGS := codec_json raft qrdb_sql qrdb_mysql qrdb_pgsql
+SQLPK_BIN  := $(CURDIR)/bin/sqlpk
+SQLPK_ARGS ?=
+
+.PHONY: bench-sql-pk
+bench-sql-pk:
+	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdbd ./cmd/qrdbd
+	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdb ./cmd/qrdb
+	$(GO) run -tags benchmark ./test/performance/sqlpk -qrdbd $(SQLPK_BIN)/qrdbd -qrdb $(SQLPK_BIN)/qrdb $(SQLPK_ARGS)
+
 .PHONY: test-timeseries
 test-timeseries:
 	$(GOTEST) $(TAG_FLAG) $(PKG_TIMESERIES)
