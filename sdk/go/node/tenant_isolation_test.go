@@ -51,18 +51,6 @@ func awaitReadIndexReady(ctx context.Context, t *testing.T, kv service.KVService
 	}
 }
 
-// volumeEntitlements returns the entitlement set that permits creating
-// IsolationVolume tenants with system-managed auto-unseal barriers. These are
-// used only in tests; production operators configure entitlements via the
-// operator config.
-func volumeEntitlements() *quota.Entitlements {
-	return &quota.Entitlements{
-		AllowedIsolationModes:     []string{quota.IsolationModeVolume},
-		AllowVolumeStorage:        true,
-		AllowSystemManagedBarrier: true,
-	}
-}
-
 // raftEntitlements returns the entitlement set that permits creating
 // IsolationRaft tenants with dedicated raft databases and system-managed
 // auto-unseal barriers. These are used only in tests; production operators
