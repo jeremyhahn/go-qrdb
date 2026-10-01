@@ -346,7 +346,9 @@ are not reconstructed here — their history is in the git log.
   per byte, and the bytes read past the newline are sought back, so the rest of
   the stream is still there for its next reader. A pipe or terminal cannot give
   bytes back, so it is still read one byte per call rather than over-read. A
-  seek-back the stream refuses fails the read with `*ProviderError`.
+  seek-back the stream refuses fails the read with `*ProviderError`. On
+  either path, 100 consecutive empty reads (`(0, nil)`) fail the read with
+  `io.ErrNoProgress` instead of spinning forever.
 - **The module forge's address is no longer a Makefile default.** Set
   `GITEA_HOST` in the gitignored `.devcontainer/.env` (documented in the new
   `.devcontainer/.env.example`) or in the environment. A `.env` that has a

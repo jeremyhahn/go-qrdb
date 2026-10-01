@@ -395,7 +395,9 @@ Anything else — a pipe, a terminal or another character device, even one that
 accepts a seek — is read one byte per call, because it cannot give bytes back
 and any larger read may take bytes past the newline.
 Lines longer than `MaxStdinPassphraseLen` (1024 bytes) are refused, not
-truncated, on either path.
+truncated, on either path. A stream that answers 100 reads in a row with no
+bytes and no error is broken, and the read fails with `io.ErrNoProgress`, as
+`bufio` does, rather than spinning.
 
 ## Secure-memory rules, and what enforces them
 

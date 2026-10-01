@@ -260,9 +260,16 @@ func seekableStream(r io.Reader) (io.ReadSeeker, int64, bool) {
 // exactly one byte past the newline, and a stream that reports anywhere else
 // has left its next reader at a position nobody verified.
 func readLineSeekable(s io.ReadSeeker, start int64, line []byte) (int, bool, error) {
-	filled := 0
+	filled, empty := 0, 0
 	for filled < len(line) {
 		got, rerr := s.Read(line[filled:])
+		if got == 0 && rerr == nil {
+			if empty++; empty >= maxConsecutiveEmptyReads {
+				return 0, false, &ProviderError{Source: "stdin", Err: io.ErrNoProgress}
+			}
+			continue
+		}
+		empty = 0
 		if i := bytes.IndexByte(line[filled:filled+got], '\n'); i >= 0 {
 			nl := filled + i
 			if over := filled + got - (nl + 1); over > 0 {
@@ -287,18 +294,36 @@ func readLineSeekable(s io.ReadSeeker, start int64, line []byte) (int, bool, err
 	return filled, false, nil
 }
 
+// maxConsecutiveEmptyReads bounds how many reads in a row may return (0, nil)
+// before a stream is treated as broken. io.Reader discourages that answer, and
+// a stream that keeps giving it would otherwise hold the read loop forever.
+// The figure is bufio's, which gives up the same way, with io.ErrNoProgress.
+const maxConsecutiveEmptyReads = 100
+
 // readLineBytewise reads r one byte at a time into line until a newline, the
 // stream ends, or line is full. It returns the index of the newline (or the
 // byte count when there is none) and whether a newline was seen.
+//
+// It calls Read directly rather than io.ReadFull, because io.ReadFull retries
+// a (0, nil) answer without limit; a stream that keeps giving it ends here in
+// io.ErrNoProgress, as it does on the bulk path.
 func readLineBytewise(r io.Reader, line []byte) (int, bool, error) {
-	n := 0
+	n, empty := 0, 0
 	for n < len(line) {
-		if _, rerr := io.ReadFull(r, line[n:n+1]); rerr != nil {
-			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
+		got, rerr := r.Read(line[n : n+1])
+		if got == 0 {
+			if rerr == nil {
+				if empty++; empty >= maxConsecutiveEmptyReads {
+					return 0, false, &ProviderError{Source: "stdin", Err: io.ErrNoProgress}
+				}
+				continue
+			}
+			if errors.Is(rerr, io.EOF) {
 				return n, false, nil
 			}
 			return 0, false, &ProviderError{Source: "stdin", Err: rerr}
 		}
+		empty = 0
 		if line[n] == '\n' {
 			return n, true, nil
 		}
