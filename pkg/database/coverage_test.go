@@ -249,7 +249,7 @@ func TestDatabaseBarrierManager_GetBarrier_ReturnsEncryptor(t *testing.T) {
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	creds := seal.MustCredentials([]byte("test-password"))
 
-	if err := mgr.EnsureBarrier(ctx, "enc-getbarrier", cfg, storage, creds); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "enc-getbarrier", "", cfg, storage, creds); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestDatabaseBarrierManager_RegisterBarrier_Success(t *testing.T) {
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 
-	err := mgr.RegisterBarrier("reg-barrier-db", cfg, storage)
+	err := mgr.RegisterBarrier("reg-barrier-db", "", cfg, storage)
 	if err != nil {
 		t.Fatalf("RegisterBarrier: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestDatabaseBarrierManager_RegisterBarrier_DisabledNoop(t *testing.T) {
 
 	cfg := &DatabaseBarrierConfig{Enabled: false}
 
-	err := mgr.RegisterBarrier("disabled-db", cfg, storage)
+	err := mgr.RegisterBarrier("disabled-db", "", cfg, storage)
 	if err != nil {
 		t.Fatalf("RegisterBarrier with disabled config returned unexpected error: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestDatabaseBarrierManager_RegisterBarrier_NilConfig(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 	storage := seal.NewMemoryBackend()
 
-	err := mgr.RegisterBarrier("nil-cfg-db", nil, storage)
+	err := mgr.RegisterBarrier("nil-cfg-db", "", nil, storage)
 	if err != nil {
 		t.Fatalf("RegisterBarrier with nil config returned unexpected error: %v", err)
 	}

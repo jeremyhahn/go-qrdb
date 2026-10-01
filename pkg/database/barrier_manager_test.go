@@ -113,7 +113,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_Success(t *testing.T) {
 		Mode:    "passphrase",
 	}
 
-	err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds())
+	err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds())
 	if err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_DisabledNoop(t *testing.T) {
 		Enabled: false,
 	}
 
-	err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds())
+	err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds())
 	if err != nil {
 		t.Fatalf("EnsureBarrier with disabled config should succeed: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_NilConfig(t *testing.T) {
 	ctx := context.Background()
 	storage := seal.NewMemoryBackend()
 
-	err := mgr.EnsureBarrier(ctx, "testdb", nil, storage, testCreds())
+	err := mgr.EnsureBarrier(ctx, "testdb", "", nil, storage, testCreds())
 	if err != nil {
 		t.Fatalf("EnsureBarrier with nil config should succeed: %v", err)
 	}
@@ -176,13 +176,13 @@ func TestDatabaseBarrierManager_EnsureBarrier_DuplicateError(t *testing.T) {
 		Mode:    "passphrase",
 	}
 
-	err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds())
+	err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds())
 	if err != nil {
 		t.Fatalf("first EnsureBarrier: %v", err)
 	}
 
 	// Second call with same name should fail.
-	err = mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds())
+	err = mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds())
 	if err == nil {
 		t.Fatal("expected error on duplicate EnsureBarrier")
 	}
@@ -203,7 +203,7 @@ func TestDatabaseBarrierManager_SealDatabase_Success(t *testing.T) {
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_Success(t *testing.T) {
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 	if err := mgr.SealDatabase("testdb"); err != nil {
@@ -339,7 +339,7 @@ func TestDatabaseBarrierManager_BarrierStatus_Success(t *testing.T) {
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
@@ -372,7 +372,7 @@ func TestDatabaseBarrierManager_RemoveBarrier_Success(t *testing.T) {
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestDatabaseBarrierManager_FullLifecycle(t *testing.T) {
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 
 	// Create barrier.
-	if err := mgr.EnsureBarrier(ctx, "lifecycle-db", cfg, storage, creds); err != nil {
+	if err := mgr.EnsureBarrier(ctx, "lifecycle-db", "", cfg, storage, creds); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 

@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -35,6 +37,14 @@ import (
 type DatabaseBarrierManager struct {
 	logger   *slog.Logger
 	registry *seal.BarrierRegistry
+
+	// holderMu guards holderDeps, which SetHolderDeps may set after
+	// construction.
+	holderMu   sync.Mutex
+	holderDeps *ceremony.HolderDeps
+	// holders is the holder authority of every Shamir database barrier,
+	// keyed by database name.
+	holders *ceremony.ScopedCeremonyRegistry
 }
 
 // NewDatabaseBarrierManager creates a DatabaseBarrierManager whose barriers
@@ -47,6 +57,7 @@ func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier)
 	return &DatabaseBarrierManager{
 		logger:   logger,
 		registry: registry,
+		holders:  ceremony.NewScopedCeremonyRegistry(),
 	}, nil
 }
 
@@ -57,15 +68,26 @@ func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier)
 //
 // If cfg is nil or cfg.Enabled is false, the method returns nil without
 // creating a barrier.
+//
+// A shamir barrier is registered but not initialized: it takes no
+// credentials, and its share holders are enrolled and its custody
+// initialized afterwards (InitializeShamir). tenantID is the database's
+// tenant, in whose holder namespace its holders' certificates are issued.
 func (m *DatabaseBarrierManager) EnsureBarrier(
 	ctx context.Context,
-	dbName string,
+	dbName, tenantID string,
 	cfg *DatabaseBarrierConfig,
 	storage seal.StorageBackend,
 	creds seal.Credentials,
 ) error {
 	if cfg == nil || !cfg.Enabled {
 		return nil
+	}
+	if isShamir(cfg) {
+		if creds.Secret != nil {
+			return &ShamirSecretNotAllowedError{Name: dbName}
+		}
+		return m.registerShamir(ctx, dbName, tenantID, cfg, storage)
 	}
 	if cfg.Mode != "" && cfg.Mode != BarrierModePassphrase {
 		return &UnsupportedBarrierStrategyError{Mode: cfg.Mode}
@@ -109,12 +131,17 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 //
 // Returns nil if cfg is nil or not enabled.
 func (m *DatabaseBarrierManager) RegisterBarrier(
-	dbName string,
+	dbName, tenantID string,
 	cfg *DatabaseBarrierConfig,
 	storage seal.StorageBackend,
 ) error {
 	if cfg == nil || !cfg.Enabled {
 		return nil
+	}
+	if isShamir(cfg) {
+		// A shamir barrier reopens under its holders' authority, sealed;
+		// a quorum of them unseals it.
+		return m.registerShamir(context.Background(), dbName, tenantID, cfg, storage)
 	}
 
 	barrierCfg := seal.BarrierConfig{
@@ -157,6 +184,11 @@ func (m *DatabaseBarrierManager) GetBarrier(dbName string) BarrierEncryptor {
 // blocking all further encrypted storage operations until the barrier
 // is unsealed.
 func (m *DatabaseBarrierManager) SealDatabase(dbName string) error {
+	// A Shamir barrier is sealed by a quorum of its holders, never by one
+	// caller, as the system barrier is.
+	if _, ok := m.holders.Get(dbName); ok {
+		return &BarrierSealError{Name: dbName, Err: seal.ErrShamirBarrierRequiresQuorum}
+	}
 	if err := m.registry.SealTenant(dbName); err != nil {
 		return &BarrierSealError{Name: dbName, Err: err}
 	}
@@ -189,6 +221,9 @@ func (m *DatabaseBarrierManager) BarrierStatus(dbName string) (*seal.BarrierStat
 // RemoveBarrier seals and removes the encryption barrier for the named
 // database. The barrier is closed and unregistered from the registry.
 func (m *DatabaseBarrierManager) RemoveBarrier(dbName string) error {
+	// A Shamir barrier's holder authority goes with it: every envelope still
+	// held for its holders and every pending challenge is destroyed.
+	m.holders.Delete(dbName)
 	if err := m.registry.RemoveTenant(dbName); err != nil {
 		return err
 	}

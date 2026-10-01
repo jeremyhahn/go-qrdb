@@ -383,10 +383,10 @@ func TestDatabaseBarrierManager_EnsureBarrier_UnsupportedMode(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 	storage := seal.NewMemoryBackend()
 
-	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "shamir"}
-	err := mgr.EnsureBarrier(context.Background(), "shamir-mode-db", cfg, storage, testCreds())
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "hardware"}
+	err := mgr.EnsureBarrier(context.Background(), "hardware-mode-db", "", cfg, storage, testCreds())
 	if err == nil {
-		t.Fatal("EnsureBarrier() with Mode=shamir = nil, want *UnsupportedBarrierStrategyError")
+		t.Fatal("EnsureBarrier() with Mode=hardware = nil, want *UnsupportedBarrierStrategyError")
 	}
 	var modeErr *UnsupportedBarrierStrategyError
 	if !errors.As(err, &modeErr) {
@@ -399,7 +399,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_EmptyModeDefaultsToPassphrase(t *t
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true} // Mode left empty
-	if err := mgr.EnsureBarrier(context.Background(), "empty-mode-db", cfg, storage, testCreds()); err != nil {
+	if err := mgr.EnsureBarrier(context.Background(), "empty-mode-db", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier() with empty Mode returned unexpected error: %v", err)
 	}
 }
@@ -620,18 +620,18 @@ func TestManager_CreateWithCredentials_EnsureBarrierFails_CleansUp(t *testing.T)
 	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
-	cfg := validDedicatedMemoryConfig(t, "shamir-fail-db")
-	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "shamir"}
+	cfg := validDedicatedMemoryConfig(t, "hardware-fail-db")
+	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "hardware"}
 
 	_, err := mgr.CreateWithCredentials(context.Background(), cfg, testCreds())
 	if err == nil {
-		t.Fatal("CreateWithCredentials() with Mode=shamir = nil, want *UnsupportedBarrierStrategyError")
+		t.Fatal("CreateWithCredentials() with Mode=hardware = nil, want *UnsupportedBarrierStrategyError")
 	}
 	var modeErr *UnsupportedBarrierStrategyError
 	if !errors.As(err, &modeErr) {
 		t.Fatalf("error type = %T, want *UnsupportedBarrierStrategyError", err)
 	}
-	if _, getErr := mgr.Get("shamir-fail-db"); getErr == nil {
+	if _, getErr := mgr.Get("hardware-fail-db"); getErr == nil {
 		t.Error("Get() succeeded after a failed EnsureBarrier, want NotFoundError")
 	}
 }

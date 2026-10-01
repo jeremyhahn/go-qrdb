@@ -170,7 +170,7 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 			return true
 		}
 		storageAdapter := NewBackendStorageAdapter(barrierMetaBackend)
-		if err := bm.RegisterBarrier(name, cfg.Barrier, storageAdapter); err != nil {
+		if err := bm.RegisterBarrier(name, cfg.TenantID, cfg.Barrier, storageAdapter); err != nil {
 			_ = barrierMetaBackend.Close()
 			m.logger.Warn("failed to register database barrier",
 				slog.String("database", name),
@@ -369,7 +369,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		}
 		undo.backends = append(undo.backends, barrierMetaBackend)
 		storageAdapter := NewBackendStorageAdapter(barrierMetaBackend)
-		if err := m.barrierMgr.EnsureBarrier(ctx, cfg.Name, cfg.Barrier, storageAdapter, creds); err != nil {
+		if err := m.barrierMgr.EnsureBarrier(ctx, cfg.Name, cfg.TenantID, cfg.Barrier, storageAdapter, creds); err != nil {
 			undo.run()
 			return nil, err
 		}
@@ -522,7 +522,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 			return nil, err
 		}
 		storageAdapter := NewBackendStorageAdapter(barrierMetaBackend)
-		if err := m.barrierMgr.RegisterBarrier(name, meta.Barrier, storageAdapter); err != nil {
+		if err := m.barrierMgr.RegisterBarrier(name, meta.TenantID, meta.Barrier, storageAdapter); err != nil {
 			_ = backend.Close()
 			_ = barrierMetaBackend.Close()
 			return nil, err
@@ -1010,11 +1010,20 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 		if err := barrierDataPathError(cfg); err != nil {
 			return err
 		}
-		if barrier.Mode != "" && barrier.Mode != BarrierModePassphrase {
+		if barrier.Mode != "" && barrier.Mode != BarrierModePassphrase && barrier.Mode != BarrierModeShamir {
 			return &UnsupportedBarrierStrategyError{Mode: barrier.Mode}
 		}
 		if !activeNow {
 			return &BarrierMigrationNotSupportedError{Name: name, Direction: "enable"}
+		}
+		// Switching an active barrier's strategy, or a Shamir barrier's
+		// M-of-N, re-keys it; that is a quorum rekey, never a configuration
+		// write. Only bookkeeping that leaves both unchanged is performed.
+		if barrierMode(barrier) != barrierMode(cfg.Barrier) {
+			return &BarrierMigrationNotSupportedError{Name: name, Direction: "change the strategy of"}
+		}
+		if isShamir(barrier) && (barrier.SharesRequired != cfg.Barrier.SharesRequired || barrier.SharesTotal != cfg.Barrier.SharesTotal) {
+			return &BarrierMigrationNotSupportedError{Name: name, Direction: "change the M-of-N of"}
 		}
 	} else if activeNow {
 		return &BarrierMigrationNotSupportedError{Name: name, Direction: "disable"}
@@ -1022,6 +1031,33 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 
 	db.updateBarrier(barrier)
 
+	return m.rewriteMeta(name, db)
+}
+
+// barrierMode is cfg's strategy, with the empty mode meaning passphrase.
+func barrierMode(cfg *DatabaseBarrierConfig) string {
+	if cfg == nil || cfg.Mode == "" {
+		return BarrierModePassphrase
+	}
+	return cfg.Mode
+}
+
+// RecordShamirScheme records the M-of-N a completed rekey left dbName's Shamir
+// barrier at, so the database reopens with the scheme its holders hold.
+func (m *Manager) RecordShamirScheme(name string, threshold, total int) error {
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	cfg := db.Config()
+	if !isShamir(cfg.Barrier) {
+		return &NotShamirBarrierError{Name: name}
+	}
+	next := *cfg.Barrier
+	next.SharesRequired = threshold
+	next.SharesTotal = total
+	db.updateBarrier(&next)
 	return m.rewriteMeta(name, db)
 }
 
