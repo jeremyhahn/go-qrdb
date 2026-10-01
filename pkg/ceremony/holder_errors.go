@@ -78,6 +78,20 @@ func (e *QuorumRateLimitedError) Error() string {
 	return "ceremony: too many quorum requests; retry after " + e.RetryAfter.String()
 }
 
+// StagedDistributionMissingError is returned by Committed when no envelopes
+// are staged for the distribution the barrier reports durable: another
+// distribution replaced them before this one committed. The envelopes in
+// force do not open the durable blob, so nothing is swapped in or recorded.
+type StagedDistributionMissingError struct {
+	// Distribution is the committed roster's distribution identifier.
+	Distribution string
+}
+
+// Error returns a human-readable description.
+func (e *StagedDistributionMissingError) Error() string {
+	return "ceremony: no envelopes are staged for distribution " + e.Distribution + "; another distribution replaced them before it committed"
+}
+
 // HolderRecordConflictError is returned when a holder record enrolled while
 // the barrier was sealed names a holder storage already holds with a
 // different identity. The persisted record is authoritative and is never

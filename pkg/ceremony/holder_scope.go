@@ -602,11 +602,21 @@ func (h *holderScope) discardStaged() {
 
 // committed swaps in the envelopes staged for roster, now that the blob they
 // belong to is durable, then records the durable roster's share indexes and
-// drops removed holders. The swap comes first and cannot fail, so the
-// envelopes in force always belong to the blob in force; a failure recording
-// the rest leaves the removed holders excluded by prepareRoster all the same.
+// drops removed holders. The swap comes first, so the envelopes in force
+// always belong to the blob in force; a failure recording the rest leaves the
+// removed holders excluded by prepareRoster all the same.
+//
+// When nothing is staged for roster's distribution -- another distribution
+// replaced the staged set before this one committed -- no envelope in hand
+// opens the durable blob. That is refused with *StagedDistributionMissingError
+// and nothing is changed: recording the roster would advertise a share set no
+// holder can claim. The barrier serialises its redistributions per domain, so
+// this does not happen through it; the refusal makes any other caller's
+// interleaving loud instead of silent.
 func (h *holderScope) committed(ctx context.Context, roster *seal.HolderRoster, removed []string) error {
-	h.promoteStaged(roster.Distribution)
+	if !h.promoteStaged(roster.Distribution) {
+		return &StagedDistributionMissingError{Distribution: roster.Distribution}
+	}
 	if err := h.sync(ctx); err != nil {
 		return err
 	}

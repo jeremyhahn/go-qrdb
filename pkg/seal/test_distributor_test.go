@@ -34,6 +34,10 @@ import (
 // (pkg/ceremony) does with its own typed error.
 var errTestTooFewHolders = errors.New("test distributor: too few holders for the threshold")
 
+// errTestNothingStaged is the capture distributor's refusal of a commit with
+// no shares staged for its distribution.
+var errTestNothingStaged = errors.New("test distributor: no shares staged for the committed distribution")
+
 // captureDistributor is a faithful in-memory CeremonyDistributor. It keeps a
 // holder set per domain, prepares rosters the way pkg/ceremony does (every
 // active holder, minus the excluded ones, share indexes 1..N in a stable
@@ -147,14 +151,19 @@ func (c *captureDistributor) Distribute(_ context.Context, secret *secure.Buffer
 }
 
 // Committed implements CeremonyDistributor.
+//
+// As pkg/ceremony does, it refuses with errTestNothingStaged, changing
+// nothing, when no shares are staged for roster's distribution.
 func (c *captureDistributor) Committed(_ context.Context, roster *HolderRoster, removed []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if s := c.staged[roster.Domain]; s != nil && s.distribution == roster.Distribution {
-		c.shares[roster.Domain] = s.shares
-		c.digests[roster.Domain] = s.digest
-		delete(c.staged, roster.Domain)
+	s := c.staged[roster.Domain]
+	if s == nil || s.distribution != roster.Distribution {
+		return errTestNothingStaged
 	}
+	c.shares[roster.Domain] = s.shares
+	c.digests[roster.Domain] = s.digest
+	delete(c.staged, roster.Domain)
 	gone := map[string]bool{}
 	for _, r := range removed {
 		gone[r] = true

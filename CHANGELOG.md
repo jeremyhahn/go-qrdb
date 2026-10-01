@@ -220,6 +220,11 @@ are not reconstructed here — their history is in the git log.
   deleted the revoked holder's record only after persisting the blob, so a
   failed delete brought the holder back into the next distribution. Now:
   - envelopes are staged and swapped in only once the blob is durable;
+  - redistributions of one domain are serialised on the barrier, so a second
+    one can no longer discard the first's staged envelopes, and `Committed`
+    refuses with `ceremony.StagedDistributionMissingError` (changing nothing)
+    when no envelopes are staged for the distribution it is told is durable,
+    instead of recording a share set no holder could claim;
   - a holder who took part in an earlier distribution but is absent from the
     roster in force is never dealt a share again;
   - the domain key is generated into protected memory, and

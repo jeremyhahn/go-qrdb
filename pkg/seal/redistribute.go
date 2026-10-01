@@ -68,10 +68,20 @@ func (b *StorageBarrier) redistribute(ctx context.Context, domain QuorumDomain, 
 // under THIS barrier's path and AAD. The encryption migration mints its
 // sibling this way so the blob it adopts is already bound to the canonical
 // root key path.
+//
+// Redistributions of one domain are serialised (lockRedistribution): the
+// distributor stages one share set per domain, so a second distribution
+// interleaved with the first would replace the first's staged shares, and the
+// first would then persist a blob no share in force opens.
 func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarrier, domain QuorumDomain, rootKey *secure.Buffer, threshold int, policy FactorPolicy, remove []string, expectTotal int) (*ShamirInitParams, error) {
 	if b.distributor == nil {
 		return nil, ErrCeremonyDistributorNotConfigured
 	}
+	release, err := b.lockRedistribution(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if !policy.Valid() {
 		return nil, &InvalidRosterError{Reason: "unknown factor policy " + string(policy)}
 	}
@@ -136,6 +146,27 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 			"total": itoa(roster.Total), "policy": string(roster.Policy), "removed": itoa(len(remove))})
 
 	return &ShamirInitParams{Threshold: roster.Threshold, TotalShares: roster.Total, ShareCount: count}, nil
+}
+
+// lockRedistribution waits for domain's redistribution slot and returns the
+// function that releases it. The slot is a one-place channel, created on
+// first use, so the zero StorageBarrier serialises correctly. A context that
+// ends while waiting returns its error and holds nothing.
+func (b *StorageBarrier) lockRedistribution(ctx context.Context, domain QuorumDomain) (func(), error) {
+	v, _ := b.redistributions.LoadOrStore(domain, make(chan struct{}, 1))
+	slot, _ := v.(chan struct{})
+	release := func() { <-slot }
+	select {
+	case slot <- struct{}{}:
+		return release, nil
+	default:
+	}
+	select {
+	case slot <- struct{}{}:
+		return release, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // recordShamirParams writes threshold/total into the persisted

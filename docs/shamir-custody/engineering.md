@@ -124,7 +124,15 @@ authenticates submissions against.
 4. The blob is persisted. `Committed` then swaps the staged envelopes in,
    destroying the previous set. Only after that does it record share indexes
    and delete removed holders' records. The domain key buffer is destroyed
-   when the distribution returns.
+   when the distribution returns. When nothing is staged for the committed
+   roster's distribution, `Committed` refuses with
+   `ceremony.StagedDistributionMissingError` and changes nothing.
+
+Redistributions of one domain are serialised on the barrier (a one-place slot
+per domain; a caller whose context ends while waiting gets the context's
+error). The distributor stages one set per domain, so a second distribution
+interleaved with the first would discard the first's staged envelopes, and
+the first would then persist a blob no envelope in force opens.
 
 A failure before the blob is persisted leaves the previous blob in force,
 with the previous share set and every unclaimed envelope of it; the

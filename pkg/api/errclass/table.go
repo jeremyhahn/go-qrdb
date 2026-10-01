@@ -809,6 +809,7 @@ var holderRules = []rule{
 	// A holder cached while sealed names a persisted holder with another
 	// identity; the persisted record stands and an operator must resolve it.
 	as(&ceremony.HolderRecordConflictError{}, FailedPrecondition),
+	as(&ceremony.StagedDistributionMissingError{}, Aborted),
 	is(ceremony.ErrNoOfficers, InvalidArgument),
 	is(ceremony.ErrInvalidThreshold, InvalidArgument),
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),

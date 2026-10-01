@@ -568,4 +568,7 @@ type quorumState struct {
 	quorumMu       sync.Mutex
 	rounds         map[quorumRoundKey]*quorumRound
 	holderVerifier HolderVerifier
+	// redistributions holds one redistribution slot per domain
+	// (QuorumDomain -> chan struct{}); see lockRedistribution.
+	redistributions sync.Map
 }

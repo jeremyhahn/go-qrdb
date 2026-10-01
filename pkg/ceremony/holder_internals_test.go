@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"bytes"
 	"context"
 	"encoding/pem"
 	"testing"
@@ -73,6 +74,15 @@ func TestHolderScope_CommittedRecordsIndexesAndDropsRemoved(t *testing.T) {
 	roster, err := e.svc.PrepareRoster(ctx, seal.DomainUnseal, 2, "", []string{"carol"})
 	require.NoError(t, err)
 	roster.Distribution = "d-2"
+	stage := func(r *seal.HolderRoster) {
+		t.Helper()
+		key, err := secure.NewBufferFromBytes(bytes.Repeat([]byte{7}, 32))
+		require.NoError(t, err)
+		defer key.Destroy()
+		_, err = e.svc.Distribute(ctx, key, r, []byte("digest-"+r.Distribution))
+		require.NoError(t, err)
+	}
+	stage(roster)
 	require.NoError(t, e.svc.Committed(ctx, roster, []string{"carol"}))
 	list, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
 	require.NoError(t, err)
@@ -80,8 +90,19 @@ func TestHolderScope_CommittedRecordsIndexesAndDropsRemoved(t *testing.T) {
 	for _, s := range list {
 		assert.Zero(t, s.ClaimedAt, "a new distribution resets the claim")
 	}
-	roster.Holders[0].Username = "ghost"
-	assert.Error(t, e.svc.Committed(ctx, roster, nil))
+
+	// A committed roster naming a holder the registry does not hold fails
+	// to record, after the staged set it belongs to is swapped in.
+	next, err := e.svc.PrepareRoster(ctx, seal.DomainUnseal, 2, "", nil)
+	require.NoError(t, err)
+	next.Distribution = "d-3"
+	stage(next)
+	next.Holders[0].Username = "ghost"
+	assert.ErrorIs(t, e.svc.Committed(ctx, next, nil), ErrUserNotFound)
+
+	// Nothing is staged for a distribution that was never distributed.
+	var missing *StagedDistributionMissingError
+	assert.ErrorAs(t, e.svc.Committed(ctx, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d-4"}, nil), &missing)
 }
 
 // TestHolderScope_CleanupWipesPendingClaimsAndChallenges covers cleanup and

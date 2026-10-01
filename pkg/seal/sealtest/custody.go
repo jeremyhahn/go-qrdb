@@ -52,6 +52,10 @@ var ErrTooFewHolders = errors.New("sealtest: too few holders for the threshold")
 // challenge it issued.
 var ErrProof = errors.New("sealtest: proof does not answer an issued challenge")
 
+// ErrNothingStaged is returned by Distributor.Committed when no shares are
+// staged for the committed roster's distribution.
+var ErrNothingStaged = errors.New("sealtest: no shares staged for the committed distribution")
+
 // Distributor is an in-memory seal.CeremonyDistributor that captures each
 // holder's share value so a test can submit it.
 type Distributor struct {
@@ -156,15 +160,19 @@ func (d *Distributor) Distribute(_ context.Context, secret *secure.Buffer, roste
 	return len(values), nil
 }
 
-// Committed implements seal.CeremonyDistributor: removed holders stop being
-// holders of the domain.
+// Committed implements seal.CeremonyDistributor: the shares staged for
+// roster go live and removed holders stop being holders of the domain. As
+// pkg/ceremony does, it refuses with ErrNothingStaged, changing nothing, when
+// no shares are staged for roster's distribution.
 func (d *Distributor) Committed(_ context.Context, roster *seal.HolderRoster, removed []string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if s, ok := d.staged[roster.Domain]; ok && s.distribution == roster.Distribution {
-		d.shares[roster.Domain] = s.shares
-		delete(d.staged, roster.Domain)
+	s, ok := d.staged[roster.Domain]
+	if !ok || s.distribution != roster.Distribution {
+		return ErrNothingStaged
 	}
+	d.shares[roster.Domain] = s.shares
+	delete(d.staged, roster.Domain)
 	gone := make(map[string]bool, len(removed))
 	for _, r := range removed {
 		gone[r] = true
