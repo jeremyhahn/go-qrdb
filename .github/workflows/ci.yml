@@ -349,8 +349,23 @@ jobs:
       # path under the owner's home or tracked agent state is scrubbed at the
       # source, before tagging. Same checkout caveat as the step above: a PR
       # run covers the branch head, and the push to main covers the merge.
+      #
+      # The fleet's values are NOT in this repository (owner ruling
+      # 2026-10-01): the rules come from the PUBLIC_RELEASE_PATTERNS secret,
+      # written to a runner temp file for this step only. An unset secret
+      # leaves an empty file, and the gate refuses an empty rule set rather
+      # than pass it. Not on github.com, which holds neither the secret nor
+      # anything to scrub that the internal run has not already refused.
       - name: The tracked tree is publicly releasable
-        run: make check-public-releasable
+        if: github.server_url != 'https://github.com'
+        env:
+          PUBLIC_RELEASE_PATTERNS: ${{ secrets.PUBLIC_RELEASE_PATTERNS }}
+        run: |
+          set -eu
+          umask 077
+          printf '%s\n' "${PUBLIC_RELEASE_PATTERNS:-}" > "$RUNNER_TEMP/public-release-patterns"
+          PUBLIC_RELEASE_PATTERNS_FILE="$RUNNER_TEMP/public-release-patterns" make check-public-releasable
+          rm -f "$RUNNER_TEMP/public-release-patterns"
 
       - name: Test the public-releasability guard
         run: make test-public-releasable

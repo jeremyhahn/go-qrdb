@@ -57,6 +57,31 @@ repository, and register its SSH signing public key on the account. Then add:
 If any of them is missing, the workflow stops at its first check and names the
 missing item.
 
+### 3. The public-releasability rules
+
+`make check-public-releasable` keeps the private development fleet's values
+out of every tracked file. Those values are the rules themselves, so they are
+not in this repository either: the gate reads them at run time from an
+untracked pattern file and fails, naming where it looked, when there is none.
+It looks in this order:
+
+1. the file named by `PUBLIC_RELEASE_PATTERNS_FILE`;
+2. `../handbook/software/conventions/public-release-patterns`, in the handbook
+   checkout beside this repository;
+3. `$XDG_CONFIG_HOME/go-qrdb/public-release-patterns` (`~/.config/...` when
+   `XDG_CONFIG_HOME` is unset).
+
+The file is line-oriented. Blank lines and `#` lines are ignored; every other
+line is `<class>[/i] <ERE>`, where the class is `lab-address`, `lab-host` or
+`owner-path`, `/i` matches case-insensitively, and the ERE is POSIX extended.
+Every class needs at least one rule. For CI, store the file's content as the
+Actions secret `PUBLIC_RELEASE_PATTERNS`; the Lint job writes it to a temp file
+for the one step that reads it.
+
+| Name | Kind | Value |
+|---|---|---|
+| `PUBLIC_RELEASE_PATTERNS` | Actions secret | the pattern file's content |
+
 ## Cutting a release
 
 1. **Prepare it as a change.** In one commit, set `VERSION` to the new version

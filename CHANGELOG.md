@@ -138,7 +138,11 @@ are not reconstructed here — their history is in the git log.
   including binary files and symlink values, and it fails closed if git fails
   or a file goes unread. A line whose meaning *is* the value can carry an
   inline `public-release-ok: <reason>` waiver. `make test-public-releasable`
-  covers the gate's rejecting paths.
+  covers the gate's rejecting paths. The fleet's values are not in the
+  tracked tree: the gate loads them at run time from an untracked pattern
+  file (`PUBLIC_RELEASE_PATTERNS_FILE`, the handbook checkout beside the
+  repository, or `$XDG_CONFIG_HOME/go-qrdb/public-release-patterns`) and
+  fails closed without one. CI reads the `PUBLIC_RELEASE_PATTERNS` secret.
 - **A Release workflow is the only path that creates release tags.**
   `.github/workflows/release.yml` is `workflow_dispatch` only. It reads
   `VERSION` from `main`, which is authoritative, and runs

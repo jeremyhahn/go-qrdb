@@ -20,12 +20,19 @@
 # accepting branch. Every rejecting branch is proven here, against throwaway
 # git repositories under mktemp -- nothing outside them is touched.
 #
-# THE FLEET VALUES ARE ASSEMBLED AT RUN TIME from fragments, so this file never
-# contains one and the gate scans it like any other tracked file. A sample
-# written out literally here would need a waiver, and a waiver in the gate's
-# own test file is the first entry of an allowlist.
+# NO REAL FLEET VALUE APPEARS HERE. The gate loads its rules from an untracked
+# pattern file (owner ruling 2026-10-01), so these cases run it against a
+# FIXTURE pattern file describing an invented fleet: the 10.123.45.0/24
+# network, machines named labhost-NN and zeta-node, and an owner called
+# fixtureowner. Every sample below is one of those invented values.
+# XDG_CONFIG_HOME is pointed at an empty directory for every run, so a pattern
+# file on the machine running these tests can never decide a result.
 #
-# THREE PROPERTIES, each with a way of failing silently:
+# FOUR PROPERTIES, each with a way of failing silently:
+#
+#   0. THE RULE SOURCE: no pattern file, an unknown class, an empty or
+#      non-compiling rule, and a class with no rules each fail closed; each of
+#      the three sources is found in its documented order.
 #
 #   1. DETECTION: every class and every host pattern is planted on its own and
 #      must be reported with its path, and several plants in one tree must all
@@ -55,35 +62,24 @@ fail=0
 ok() { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL $1: $2"; }
 
-# Fleet values, from fragments.
-net="192.168."
-lab_office="${net}101.7"
-lab_mgmt="${net}50.21"
-lab_retired="${net}200.9"
-host_station="vstation""-04"
-host_hyper="dellemc""-02"
-host_gpu_shout="GOD""LIKE"
-host_gpu_fqdn="god""like.internal"
-host_svc="ome""ga-claude"
-host_mini="mini""-03"
-host_mon="mo""n0"
-host_mon_port="${host_mon}:10050"
-host_svc_fqdn="ome""ga.internal"
-host_svc_at="ssh dev@ome""ga"
-host_router="core""rtr-01"
-host_switch="rack1""swt-01"
-host_fw="fw""-02"
-lab_vlan="${net}102.4"
-lab_vlan_hi="${net}114.9"
-lab_svc="172.16.""200.7"
-lab_p2p="10.254.""0.2"
-lab_loop="10.255.""0.9"
-owner_home="/home/""jhahn/sources/x"
-owner_mac="/Users/""jhahn/x"
-owner_mount="/mnt/""vsta""tion-01/x"
-owner_raid="/mnt/""raid1/backups"
-owner_disk="/mnt/""disk2/x"
-owner_forge="/opt/""gitea/data"
+# The invented fleet. Each rule is written so it cannot match its own text.
+patterns="$work/patterns"
+cat > "$patterns" <<'PATTERNS'
+# A fixture fleet for check-public-releasable_test.sh. Nothing here is real.
+lab-address	(^|[^0-9.])10\.123\.45\.[0-9]{1,3}([^0-9]|$)
+lab-host/i	(^|[^a-z0-9-])labhost-[0-9]{2}([^a-z0-9-]|$)
+lab-host	(^|[^a-z0-9-])zeta-nod[e]([^a-z0-9-]|$)
+owner-path	/home/fixtureowne[r]([^A-Za-z0-9._-]|$)|/mnt/labstor[e]
+PATTERNS
+empty_xdg="$work/xdg-empty"
+mkdir -p "$empty_xdg"
+
+lab_addr="10.123.45.7"
+host_numbered="labhost-04"
+host_shout="LABHOST-11"
+host_exact="zeta-node"
+owner_home="/home/fixtureowner/sources/x"
+owner_mount="/mnt/labstore/backups"
 
 # fixture <name>: a fresh repository holding the subject and one clean file,
 # staged. Nothing is committed -- the gate reads the index, so staging is what
@@ -98,13 +94,21 @@ fixture() {
 	printf '%s\n' "$d"
 }
 
-# run <dir> [PATH prefix]: runs the subject, capturing output and status.
+# run <dir> [PATH prefix]: runs the subject against the fixture pattern file
+# (or $PATTERNS_OVERRIDE, which may name no file at all), with the XDG source
+# pointed at an empty directory.
 run() {
 	rc=0
+	pf="${PATTERNS_OVERRIDE-$patterns}"
 	if [ -n "${2:-}" ]; then
-		PATH="$2:$PATH" sh "$1/scripts/check-public-releasable.sh" "$1" > "$work/out" 2>&1 || rc=$?
+		PATH="$2:$PATH" XDG_CONFIG_HOME="${XDG_OVERRIDE:-$empty_xdg}" PUBLIC_RELEASE_PATTERNS_FILE="$pf" \
+			sh "$1/scripts/check-public-releasable.sh" "$1" > "$work/out" 2>&1 || rc=$?
+	elif [ -z "$pf" ]; then
+		env -u PUBLIC_RELEASE_PATTERNS_FILE XDG_CONFIG_HOME="${XDG_OVERRIDE:-$empty_xdg}" \
+			sh "$1/scripts/check-public-releasable.sh" "$1" > "$work/out" 2>&1 || rc=$?
 	else
-		sh "$1/scripts/check-public-releasable.sh" "$1" > "$work/out" 2>&1 || rc=$?
+		XDG_CONFIG_HOME="${XDG_OVERRIDE:-$empty_xdg}" PUBLIC_RELEASE_PATTERNS_FILE="$pf" \
+			sh "$1/scripts/check-public-releasable.sh" "$1" > "$work/out" 2>&1 || rc=$?
 	fi
 	return 0
 }
@@ -145,34 +149,30 @@ fi
 
 d=$(fixture nearmiss)
 plant "$d" pkg/near.go '// 192.168.1.10 and 192.168.5.5 are opaque test addresses; so is 10.0.0.1.'
-plant "$d" pkg/near.go '// RFC 5737: 192.0.2.1, 198.51.100.7, 203.0.113.9. Not a quad: 10.192.168.50.1'
-plant "$d" pkg/near.go '// placeholders: /home/user/.config, /home/alice/x, /Users/dev/x'
-plant "$d" pkg/near.go "// longer words: ${host_svc%-claude}conf, ${host_mini}0, ${host_gpu_fqdn%%.internal}ness, ${host_mon}x"
-plant "$d" pkg/near.go "// ambiguous names outside a host context: the ${host_svc%-claude} constant, Ome""ga: done, bring ${host_mon} up"
-plant "$d" pkg/near.go '// neighbouring ranges: 10.254.0.30, 10.254.0.4, 172.16.201.1, 192.168.106.3, 10.2.55.0'
-plant "$d" pkg/near.go "// a longer user name: /home/""jhahnx/y"
+plant "$d" pkg/near.go '// RFC 5737: 192.0.2.1, 198.51.100.7, 203.0.113.9.'
+plant "$d" pkg/near.go '// neighbours of the fixture network: 110.123.45.7, 10.123.46.7, 10.123.45'
+plant "$d" pkg/near.go '// placeholders: /home/user/.config, /home/alice/x, /Users/dev/x, /home/fixtureownerx/y'
+plant "$d" pkg/near.go '// longer names: labhost-004, mylabhost-04, zeta-nodes, ZETA-NODE (that rule is case-sensitive)'
 plant "$d" pkg/near.go '// tracker references are allowed in code: go-qrdb#123, #45'
 plant "$d" .devcontainer/.env.example 'GITEA_HOST=forge.example.com:3000'
-expect_pass "near-misses in use in this repository pass" "$d"
+expect_pass "near-misses pass" "$d"
 
 d=$(fixture untracked)
-printf '%s\n' "$lab_office" > "$d/pkg/notes.txt"
+printf '%s\n' "$lab_addr" > "$d/pkg/notes.txt"
 expect_pass "an untracked file does not publish and is not scanned" "$d"
 
 d=$(fixture waived)
-plant "$d" pkg/bench.md "measured on ${host_gpu_shout} <!-- public-release-ok: benchmark provenance -->"
+plant "$d" pkg/bench.md "measured on ${host_numbered} <!-- public-release-ok: benchmark provenance -->"
 expect_pass "a waiver with a reason accepts its line" "$d"
 
 # --- detection, one plant per case --------------------------------------------
 
-for sample in "$lab_office" "$lab_mgmt" "$lab_retired" "$lab_vlan" "$lab_vlan_hi" "$lab_svc" "$lab_p2p" "$lab_loop"; do
-	d=$(fixture "addr$(printf '%s' "$sample" | tr -c '0-9' '_')")
-	plant "$d" pkg/x.go "// dial ${sample}:9090"
-	expect_reject "lab-address ${sample%.*}.x is rejected" "$d" "pkg/x.go:1:"
-done
+d=$(fixture addr)
+plant "$d" pkg/x.go "// dial ${lab_addr}:9090"
+expect_reject "a lab-address rule rejects its value" "$d" "pkg/x.go:1:"
 
 i=0
-for sample in "$host_station" "$host_hyper" "$host_gpu_shout" "$host_gpu_fqdn" "$host_svc" "$host_mini" "$host_mon_port" "$host_svc_fqdn" "$host_svc_at" "$host_router" "$host_switch" "$host_fw"; do
+for sample in "$host_numbered" "$host_shout" "$host_exact"; do
 	i=$((i + 1))
 	d=$(fixture "host$i")
 	plant "$d" Makefile "#   ${sample} (runner) docker 29"
@@ -180,19 +180,28 @@ for sample in "$host_station" "$host_hyper" "$host_gpu_shout" "$host_gpu_fqdn" "
 done
 
 i=0
-for sample in "$owner_home" "$owner_mac" "$owner_mount" "$owner_raid" "$owner_disk" "$owner_forge"; do
+for sample in "$owner_home" "$owner_mount"; do
 	i=$((i + 1))
 	d=$(fixture "path$i")
 	plant "$d" scripts/fixture_test.sh "coverage \"${sample}\""
 	expect_reject "owner-path sample $i is rejected" "$d" "VIOLATION: owner-path"
 done
 
+d=$(fixture onehit)
+plant "$d" pkg/x.go "// ${host_shout} and ${host_numbered} on one line"
+run "$d"
+if [ "$rc" -ne 0 ] && grep -q 'FAIL: 1 line' "$work/out"; then
+	ok "a line two rules match is one violation"
+else
+	bad "a line two rules match is one violation" "exit $rc: $(tr '\n' ' ' < "$work/out")"
+fi
+
 d=$(fixture emptywaiver)
-plant "$d" pkg/x.go "// ${lab_office} // public-release-ok:"
+plant "$d" pkg/x.go "// ${lab_addr} // public-release-ok:"
 expect_reject "a waiver with no reason is not a waiver" "$d" "VIOLATION: lab-address"
 
 d=$(fixture unstaged)
-printf '// %s\n' "$lab_office" >> "$d/pkg/a.go"
+printf '// %s\n' "$lab_addr" >> "$d/pkg/a.go"
 expect_reject "an edited, unstaged tracked file is scanned as it stands" "$d" "pkg/a.go:4:"
 
 d=$(fixture binary)
@@ -212,8 +221,8 @@ for p in .serena/project.yml .claude/skills/x/SKILL.md deploy/.env .env.producti
 done
 
 d=$(fixture multi)
-plant "$d" docs/a.md "at ${lab_office}"
-plant "$d" cmd/b.go "// ${host_station}"
+plant "$d" docs/a.md "at ${lab_addr}"
+plant "$d" cmd/b.go "// ${host_exact}"
 plant "$d" test/c.sh "cd ${owner_home}"
 run "$d"
 if [ "$rc" -ne 0 ] && grep -q 'docs/a.md:1:' "$work/out" && grep -q 'cmd/b.go:1:' "$work/out" && grep -q 'test/c.sh:1:' "$work/out" && grep -q 'FAIL: 3 line' "$work/out"; then
@@ -221,6 +230,63 @@ if [ "$rc" -ne 0 ] && grep -q 'docs/a.md:1:' "$work/out" && grep -q 'cmd/b.go:1:
 else
 	bad "every violation in the tree is reported in one run" "exit $rc: $(tr '\n' ' ' < "$work/out")"
 fi
+
+# --- the rule source ------------------------------------------------------------
+
+d=$(fixture nosource)
+PATTERNS_OVERRIDE=''
+expect_reject "no pattern file anywhere is a failure, naming all three sources" "$d" "no fleet pattern file"
+PATTERNS_OVERRIDE='/nonexistent/patterns'
+expect_reject "an env var naming a missing file is a failure" "$d" "no fleet pattern file"
+unset PATTERNS_OVERRIDE
+
+xdg="$work/xdg"
+mkdir -p "$xdg/go-qrdb"
+cp "$patterns" "$xdg/go-qrdb/public-release-patterns"
+d=$(fixture fromxdg)
+plant "$d" pkg/x.go "// ${lab_addr}"
+PATTERNS_OVERRIDE='' XDG_OVERRIDE="$xdg"
+expect_reject "the XDG source is used when nothing else is set" "$d" "VIOLATION: lab-address"
+unset PATTERNS_OVERRIDE XDG_OVERRIDE
+
+# The handbook checkout beside the repository wins over XDG. The fixture repo
+# sits under $work/hb, so its sibling handbook is $work/hb/handbook.
+mkdir -p "$work/hb/handbook/software/conventions"
+cp "$patterns" "$work/hb/handbook/software/conventions/public-release-patterns"
+d="$work/hb/repo"
+mkdir -p "$d/scripts" "$d/pkg"
+"$real_git" -C "$d" init -q .
+cp "$subject" "$d/scripts/check-public-releasable.sh"
+"$real_git" -C "$d" add scripts/check-public-releasable.sh
+plant "$d" pkg/x.go "// ${host_exact}"
+PATTERNS_OVERRIDE=''
+run "$d"
+if [ "$rc" -ne 0 ] && grep -q 'from the handbook checkout' "$work/out" && grep -q 'VIOLATION: lab-host' "$work/out"; then
+	ok "the handbook checkout beside the repository is used"
+else
+	bad "the handbook checkout beside the repository is used" "exit $rc: $(tr '\n' ' ' < "$work/out")"
+fi
+unset PATTERNS_OVERRIDE
+
+bad_patterns() { # bad_patterns <name> <file body> <expected text>
+	printf '%s\n' "$2" > "$work/bad-patterns"
+	d=$(fixture "src$(printf '%s' "$1" | tr -c '[:lower:]' '_')")
+	PATTERNS_OVERRIDE="$work/bad-patterns"
+	expect_reject "$1" "$d" "$3"
+	unset PATTERNS_OVERRIDE
+}
+all_classes='lab-address	x1
+lab-host	x2
+owner-path	x3'
+bad_patterns "an unknown class is refused" "$all_classes
+lab-hots	x4" "unknown class 'lab-hots'"
+bad_patterns "a rule with no pattern is refused" "$all_classes
+owner-path" "has no pattern"
+bad_patterns "a pattern that does not compile is refused" "$all_classes
+lab-address	(unclosed" "does not compile"
+bad_patterns "a class with no rules is refused" "lab-address	x1
+lab-host	x2" "declares no owner-path rule"
+bad_patterns "an empty pattern file is refused" "# only a comment" "declares no lab-address rule"
 
 # --- fail-closed ----------------------------------------------------------------
 
@@ -251,7 +317,7 @@ bin=$(shim lsfailbin 'case "$*" in *ls-files*) echo "fatal: index file corrupt" 
 expect_reject "git ls-files failing is a failure" "$d" "git ls-files failed" "$bin"
 
 d=$(fixture grepfail)
-plant "$d" pkg/x.go "// ${lab_office}"
+plant "$d" pkg/x.go "// ${lab_addr}"
 bin=$(shim grepfailbin 'case "$*" in *" -n -E "*) echo "fatal: grep broke" >&2; exit 128;; esac')
 expect_reject "git grep failing mid-scan is a failure, not a clean result" "$d" "git grep exited 128" "$bin"
 

@@ -1747,6 +1747,12 @@ test-publication-bound:
 # check-publication-bound's sibling, deliberately narrower in WHAT it matches
 # and wider in WHERE it looks -- the header of scripts/check-public-releasable.sh
 # says why each is so. ~2s over the whole index.
+#
+# The fleet's values are loaded at run time from an UNTRACKED pattern file:
+# $PUBLIC_RELEASE_PATTERNS_FILE, else ../handbook/software/conventions/
+# public-release-patterns, else $XDG_CONFIG_HOME/go-qrdb/public-release-patterns.
+# None of them is a failure, never a pass. CI writes the PUBLIC_RELEASE_PATTERNS
+# secret to a temp file. docs/release/user.md has the setup.
 .PHONY: check-public-releasable
 check-public-releasable:
 	@./scripts/check-public-releasable.sh
