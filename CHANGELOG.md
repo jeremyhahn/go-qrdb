@@ -11,6 +11,12 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.25.2-alpha] - 2026-10-01
+
+Security patch. It closes a family of privilege escalations in which a tenant-scoped identity could act on node-wide or cluster-wide resources. The cause was a permission check that compared the caller's tenant with itself on routes that name no tenant.
+
+Node seal and ceremony operations, cluster membership, shard control, rebalance, node unseal shares and backup/restore are now system-tenant only, on every transport. See the BREAKING entries below.
+
 ### Security
 
 - **BREAKING: a tenant's Admin or SO can no longer change cluster
