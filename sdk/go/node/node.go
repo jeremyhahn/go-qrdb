@@ -140,8 +140,15 @@ import (
 // extension seam for credential schemes qrdb deliberately does not
 // implement itself — go-quicbaas passes its OAuth 2.1 bearer-token
 // validator here when embedding qrdb, per the MCP authorization
-// specification; the raw Authorization header reaches the authenticator
-// via auth.HTTPAuthorizationFromContext on the HTTP transports (REST, MCP).
+// specification. The caller's Authorization value reaches the authenticator
+// via auth.HTTPAuthorizationFromContext on REST and MCP (the Authorization
+// header) and on gRPC and Unix (the "authorization" metadata). QUIC's request
+// frame carries no credential, so a bearer cannot authenticate there.
+//
+// A bearer minted by the host's own login endpoints carries no login method
+// the chain can check against the account's permitted methods; such an
+// authenticator implements auth.UnobservableMethodAuthenticator and the host
+// enforces the policy when it issues the token.
 func WithAuthenticators(authenticators ...auth.Authenticator) NodeOption {
 	return func(o *nodeOptions) {
 		o.extraAuthenticators = append(o.extraAuthenticators, authenticators...)

@@ -116,6 +116,33 @@ type Authenticator interface {
 	Name() string
 }
 
+// UnobservableMethodAuthenticator is an Authenticator whose credential carries
+// no login method the authenticator chain can observe: a bearer token issued
+// by the embedding host after its own login ceremony (WebAuthn, PIV, password,
+// ...). The token says who the caller is, not how they logged in, so the chain
+// cannot compare it against the account's permitted-method policy
+// (user.User.AuthMethods). The issuer can, and must: the host's login
+// endpoints enforce the policy when they mint the token, through
+// middleware.CheckAuthMethod.
+//
+// The chain treats an authenticator that reports MethodUnobservable true
+// exactly as it treats a capability module's session token: the identity is
+// finalized with an unobservable method, so the permitted-method check is
+// skipped and certificate-binding enforcement does not apply. Every other
+// step -- account resolution, the disabled check, role enrichment, tenant
+// binding, authorization -- runs unchanged.
+//
+// It is opt-in and reported per authenticator. An authenticator that does not
+// implement it, or reports false, is observed under its Name() as before; the
+// built-in authenticators never implement it.
+type UnobservableMethodAuthenticator interface {
+	Authenticator
+
+	// MethodUnobservable reports whether the identities this authenticator
+	// returns carry no login method the chain can check.
+	MethodUnobservable() bool
+}
+
 // Authorizer checks whether an identity is allowed to perform an action.
 type Authorizer interface {
 	// Authorize checks if the identity in context may perform the action

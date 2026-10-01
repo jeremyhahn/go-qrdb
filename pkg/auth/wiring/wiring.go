@@ -268,8 +268,10 @@ type AuthMiddlewareConfig struct {
 	// bearer-token validator here when embedding qrdb, per the MCP
 	// authorization specification. Each authenticator resolves whatever
 	// carrier it needs from the request context
-	// (auth.HTTPAuthorizationFromContext for the raw Authorization header
-	// on the HTTP transports, gRPC metadata on gRPC).
+	// (auth.HTTPAuthorizationFromContext for the caller's Authorization
+	// value, which REST and MCP fill from the header and gRPC and Unix from
+	// the "authorization" metadata). One whose tokens carry no observable
+	// login method implements auth.UnobservableMethodAuthenticator.
 	ExtraAuthenticators []auth.Authenticator
 
 	// WrapAuthorizer, when non-nil, decorates the fully built

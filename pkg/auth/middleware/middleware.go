@@ -304,12 +304,7 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 			continue
 		}
 		identity = id
-		// KNOWN, whatever the name turns out to be — including blank. This
-		// path observed the method, so it must never be mistaken for one of
-		// the paths that could not: an authenticator whose Name() returns ""
-		// would otherwise take the unknown-method bypass and walk straight
-		// past a non-empty policy (Codex, PR #198).
-		method = knownMethod(authn.Name())
+		method = chainMethod(authn)
 		break
 	}
 
@@ -479,8 +474,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			//     this on safe rather than a fleet-wide lockout.
 			//   - It can only be enforced where the method is KNOWN — the
 			//     authenticator chain qrdb owns. A forwarded on-behalf
-			//     assertion and a capability module's session token carry no
-			//     method qrdb can observe, so they pass unknownMethod() and
+			//     assertion, a capability module's session token and an
+			//     embedder's bearer authenticator that declares itself
+			//     unobservable carry no method qrdb can observe, so they pass
+			//     unknownMethod() and
 			//     qrdb does not pretend to check them. The layer that ran that
 			//     ceremony is the one that must enforce the policy there.
 			//
@@ -874,8 +871,10 @@ func (m *AuthMiddleware) AuthorizeTenant(ctx context.Context, targetTenantID str
 // empty name let an authenticator that names itself "" be treated as
 // unobservable and skip the policy check entirely, which is precisely the
 // bypass the policy exists to prevent (Codex, PR #198). A flag cannot be
-// produced by accident: only unknownMethod() sets it, and only the two paths
-// that genuinely cannot see a method call it.
+// produced by accident: only unknownMethod() sets it, and only the paths that
+// genuinely cannot see a method call it — including an authenticator that
+// says so through the typed auth.UnobservableMethodAuthenticator, never
+// through its name.
 type authMethod struct {
 	name  string
 	known bool
@@ -885,9 +884,32 @@ type authMethod struct {
 func knownMethod(name string) authMethod { return authMethod{name: name, known: true} }
 
 // unknownMethod records that the caller could not observe a method at all — a
-// forwarded on-behalf assertion, or a capability module's own session-token
-// plane. It is not "no method"; it is "not ours to know".
+// forwarded on-behalf assertion, a capability module's own session-token
+// plane, or an embedder's authenticator that declares its tokens carry none
+// (auth.UnobservableMethodAuthenticator). It is not "no method"; it is "not
+// ours to know".
 func unknownMethod() authMethod { return authMethod{} }
+
+// chainMethod is the method an authenticator in the chain reports for the
+// identity it just returned.
+//
+// KNOWN under its Name(), whatever the name turns out to be — including
+// blank. The chain observed the method, so it must never be mistaken for one
+// of the paths that could not: an authenticator whose Name() returns "" would
+// otherwise take the unknown-method bypass and walk straight past a non-empty
+// policy (Codex, PR #198).
+//
+// The one exception is explicit and typed: an authenticator implementing
+// auth.UnobservableMethodAuthenticator and reporting true. Its tokens are
+// minted by a host login ceremony that enforced the policy at issue, so
+// checking them here would compare the policy against a method the token
+// does not carry.
+func chainMethod(authn auth.Authenticator) authMethod {
+	if u, ok := authn.(auth.UnobservableMethodAuthenticator); ok && u.MethodUnobservable() {
+		return unknownMethod()
+	}
+	return knownMethod(authn.Name())
+}
 
 // checkAuthMethod applies CheckAuthMethod to the method the authenticator
 // chain observed. It adds exactly one case to CheckAuthMethod's rule: an

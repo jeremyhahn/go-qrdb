@@ -27,7 +27,9 @@ type httpAuthorizationKey struct{}
 // qrdb itself ships NO token-validating authenticator: this carrier plus
 // the Authenticator interface is the extension seam; the implementation is
 // the embedder's (see pkg/auth/wiring.AuthMiddlewareConfig.
-// ExtraAuthenticators). An empty value is not stored.
+// ExtraAuthenticators). REST and MCP fill it from the Authorization header,
+// gRPC and Unix from the "authorization" metadata. An empty value is not
+// stored.
 func WithHTTPAuthorization(ctx context.Context, headerValue string) context.Context {
 	if headerValue == "" {
 		return ctx

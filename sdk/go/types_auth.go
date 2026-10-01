@@ -31,6 +31,13 @@ type Identity = auth.Identity
 // Authenticator validates incoming requests and extracts identity.
 type Authenticator = auth.Authenticator
 
+// UnobservableMethodAuthenticator is an Authenticator whose tokens carry no
+// login method the chain can check against a user's permitted methods — a
+// bearer the host mints after its own login ceremony, which enforces the
+// policy at issue (CheckAuthMethod). Register it with node.WithAuthenticators;
+// reporting MethodUnobservable true skips only the permitted-method check.
+type UnobservableMethodAuthenticator = auth.UnobservableMethodAuthenticator
+
 // Authorizer checks whether an identity is allowed to perform an action on a
 // resource.
 type Authorizer = auth.Authorizer

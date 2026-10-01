@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -49,8 +50,11 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		}
 
 		// Inject TLS state from gRPC peer info so the mTLS
-		// authenticator can extract peer certificate identity.
+		// authenticator can extract peer certificate identity, and the
+		// caller's authorization metadata so an embedder's bearer
+		// authenticator sees it exactly as it does on REST and MCP.
 		ctx = injectTLSState(ctx)
+		ctx = injectAuthorization(ctx)
 
 		// Authenticate the caller.
 		ctx, identity, authnErr := m.authenticate(ctx)
@@ -234,8 +238,11 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 		ctx := ss.Context()
 
 		// Inject TLS state from gRPC peer info so the mTLS
-		// authenticator can extract peer certificate identity.
+		// authenticator can extract peer certificate identity, and the
+		// caller's authorization metadata so an embedder's bearer
+		// authenticator sees it exactly as it does on REST and MCP.
 		ctx = injectTLSState(ctx)
+		ctx = injectAuthorization(ctx)
 
 		// Authenticate the caller.
 		ctx, identity, authnErr := m.authenticate(ctx)
@@ -289,6 +296,24 @@ func injectTLSState(ctx context.Context) context.Context {
 		return ctx
 	}
 	return auth.WithTLSState(ctx, &tlsInfo.State)
+}
+
+// injectAuthorization carries the caller's "authorization" metadata into ctx
+// through auth.WithHTTPAuthorization, the carrier the REST and MCP transports
+// fill from the Authorization header. An embedder's credential authenticator
+// (node.WithAuthenticators) reads auth.HTTPAuthorizationFromContext and so
+// works unchanged on gRPC and Unix. gRPC lower-cases metadata keys, so the
+// header a client sets as "Authorization" arrives here as "authorization".
+//
+// The FIRST value is carried, as net/http's Header.Get does for REST, so the
+// two transports hand an authenticator the same value for the same request.
+// Absent metadata stores nothing.
+func injectAuthorization(ctx context.Context) context.Context {
+	values := metadata.ValueFromIncomingContext(ctx, "authorization")
+	if len(values) == 0 {
+		return ctx
+	}
+	return auth.WithHTTPAuthorization(ctx, values[0])
 }
 
 // mapGRPCAuthError converts authentication/authorization errors to gRPC
