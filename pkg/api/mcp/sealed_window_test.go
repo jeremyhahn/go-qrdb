@@ -32,7 +32,7 @@ type fakeMCPSealedProbe struct {
 	sealedwindow.Admission
 }
 
-func (f *fakeMCPSealedProbe) EnrollmentOpen() bool { return f.enrollment }
+func (f *fakeMCPSealedProbe) EnrollmentOpen(context.Context) bool { return f.enrollment }
 
 func (f *fakeMCPSealedProbe) IsSealed() bool { return f.sealed }
 

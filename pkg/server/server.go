@@ -457,9 +457,11 @@ type sealedWindowListenerProbe struct {
 	ceremony *ceremony.CeremonyService
 }
 
-// EnrollmentOpen implements sealedwindow.ListenerProbe.
-func (p sealedWindowListenerProbe) EnrollmentOpen() bool {
-	return p.ceremony != nil && p.ceremony.EnrollmentOpen(context.Background())
+// EnrollmentOpen implements sealedwindow.ListenerProbe under the request's
+// context; ceremony.CeremonyService.EnrollmentOpen bounds the read further
+// and fails closed.
+func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
+	return p.ceremony != nil && p.ceremony.EnrollmentOpen(ctx)
 }
 
 var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}

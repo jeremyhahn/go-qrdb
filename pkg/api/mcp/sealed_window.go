@@ -66,7 +66,7 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			}
 			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Listener && decision.Sealed && decision.Allowlisted {
 				decision.PreOperationalOnly = true
-				decision.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen()
+				decision.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen(ctx)
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(decision)]
 			if !refused {

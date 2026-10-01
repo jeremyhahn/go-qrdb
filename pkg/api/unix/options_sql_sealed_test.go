@@ -38,7 +38,7 @@ type fakeSealedProbe struct {
 	sealedwindow.Admission
 }
 
-func (f *fakeSealedProbe) EnrollmentOpen() bool { return f.enrollment }
+func (f *fakeSealedProbe) EnrollmentOpen(context.Context) bool { return f.enrollment }
 
 func (f *fakeSealedProbe) IsSealed() bool { return f.sealed }
 

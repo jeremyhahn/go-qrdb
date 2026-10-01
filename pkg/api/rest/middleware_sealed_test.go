@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,10 +31,10 @@ type fakeSealProbe struct {
 	sealedwindow.Admission
 }
 
-func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }
-func (f *fakeSealProbe) EnrollmentOpen() bool { return f.enrollment.Load() }
-func (f *fakeSealProbe) seal()                { f.sealed.Store(true) }
-func (f *fakeSealProbe) unseal()              { f.sealed.Store(false) }
+func (f *fakeSealProbe) IsSealed() bool                      { return f.sealed.Load() }
+func (f *fakeSealProbe) EnrollmentOpen(context.Context) bool { return f.enrollment.Load() }
+func (f *fakeSealProbe) seal()                               { f.sealed.Store(true) }
+func (f *fakeSealProbe) unseal()                             { f.sealed.Store(false) }
 
 func newFakeSealed(sealed bool) *fakeSealProbe {
 	p := &fakeSealProbe{}

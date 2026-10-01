@@ -105,7 +105,7 @@ func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener s
 			// Held until the call completes; see sealedwindow.Admission.
 			defer listener.Admit(methodAllowed(info.FullMethod, sealedWindowTransition))()
 		}
-		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
+		if err := sealedWindowAdmit(ctx, barrier, info.FullMethod, allowSet, listener); err != nil {
 			return nil, err
 		}
 		if listener != nil {
@@ -123,7 +123,13 @@ func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener 
 			// Held until the stream completes; see sealedwindow.Admission.
 			defer listener.Admit(methodAllowed(info.FullMethod, sealedWindowTransition))()
 		}
-		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
+		// The stream's context is read only on the listener, the one gate
+		// that consults it.
+		ctx := context.Background()
+		if listener != nil {
+			ctx = ss.Context()
+		}
+		if err := sealedWindowAdmit(ctx, barrier, info.FullMethod, allowSet, listener); err != nil {
 			return err
 		}
 		if listener != nil {
@@ -174,7 +180,7 @@ var sealedWindowPreOperationalOnly = sealedwindow.GRPCFullMethodPreOperationalOn
 
 // sealedWindowAdmit returns nil when the gate admits fullMethod, and the
 // refusal status otherwise.
-func sealedWindowAdmit(barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener sealedwindow.ListenerProbe) error {
+func sealedWindowAdmit(ctx context.Context, barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener sealedwindow.ListenerProbe) error {
 	req := sealedwindow.Request{
 		Sealed:      barrier != nil && barrier.IsSealed(),
 		Allowlisted: methodAllowed(fullMethod, allowSet),
@@ -182,7 +188,7 @@ func sealedWindowAdmit(barrier sealedWindowProbe, fullMethod string, allowSet ma
 	}
 	if req.Listener && req.Sealed && req.Allowlisted && methodAllowed(fullMethod, sealedWindowPreOperationalOnly) {
 		req.PreOperationalOnly = true
-		req.EnrollmentOpen = listener.EnrollmentOpen()
+		req.EnrollmentOpen = listener.EnrollmentOpen(ctx)
 	}
 	return sealedWindowRefusals[sealedwindow.Decide(req)]
 }

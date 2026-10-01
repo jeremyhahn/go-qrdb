@@ -70,6 +70,12 @@ type enrollmentFixture struct {
 // state a restarted daemon is in, since ceremony state is in memory.
 func startEnrollmentListener(t *testing.T, prepare func(ctx context.Context, b *seal.StorageBarrier)) *enrollmentFixture {
 	t.Helper()
+	return startEnrollmentListenerOn(t, seal.NewMemoryBackend(), prepare)
+}
+
+// startEnrollmentListenerOn is startEnrollmentListener over base.
+func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare func(ctx context.Context, b *seal.StorageBarrier)) *enrollmentFixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 
@@ -78,7 +84,7 @@ func startEnrollmentListener(t *testing.T, prepare func(ctx context.Context, b *
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
-	barrier, err := seal.NewStorageBarrier(logger, seal.NewMemoryBackend(),
+	barrier, err := seal.NewStorageBarrier(logger, base,
 		seal.BarrierConfig{RootKeyPath: "root-key", PreferenceOrder: []seal.StrategyID{seal.StrategyPassphrase}}, sw)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
@@ -266,5 +272,47 @@ func TestSealedWindow_AnonymousClaimStatusIsRedacted(t *testing.T) {
 		if v, _ := statuses[0][field].(string); v != "" {
 			t.Errorf("anonymous claim-status disclosed %s = %q", field, v)
 		}
+	}
+}
+
+// stallingMarkerBackend blocks every read of the ceremony-operational marker
+// until the reader's context ends: a seal store that has stopped answering.
+type stallingMarkerBackend struct {
+	seal.StorageBackend
+}
+
+func (b *stallingMarkerBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if strings.HasSuffix(key, ".ceremony-operational") {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return b.StorageBackend.Get(ctx, key)
+}
+
+// TestSealedWindow_EnrollmentProbeIsBounded: the listener asks the barrier
+// whether enrollment is open on every registration. That read must be bounded
+// -- by the request and a short deadline -- and fail closed when it runs out.
+// It used to run under context.Background(), so a seal store that stopped
+// answering held the request, and the listener's admission, forever.
+func TestSealedWindow_EnrollmentProbeIsBounded(t *testing.T) {
+	f := startEnrollmentListenerOn(t, &stallingMarkerBackend{StorageBackend: seal.NewMemoryBackend()},
+		func(context.Context, *seal.StorageBarrier) {})
+
+	type result struct {
+		code int
+		out  string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, out := f.registerAnonymously(t, "alice")
+		done <- result{code, out}
+	}()
+	select {
+	case r := <-done:
+		if r.code != http.StatusForbidden || !strings.Contains(r.out, `"ENROLLMENT_CLOSED"`) {
+			t.Fatalf("registration with an unreadable marker: status %d, body %s; want 403 ENROLLMENT_CLOSED (fail closed)", r.code, r.out)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("the enrollment probe never returned: it is not bounded")
 	}
 }

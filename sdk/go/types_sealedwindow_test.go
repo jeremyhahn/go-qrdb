@@ -15,6 +15,7 @@
 package sdk_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,8 +31,8 @@ type fakeProbe struct {
 	sealedwindow.Admission
 }
 
-func (p *fakeProbe) IsSealed() bool       { return p.sealed }
-func (p *fakeProbe) EnrollmentOpen() bool { return p.enrollment }
+func (p *fakeProbe) IsSealed() bool                      { return p.sealed }
+func (p *fakeProbe) EnrollmentOpen(context.Context) bool { return p.enrollment }
 
 // Compile-time checks that the sealed-window re-exports satisfy the
 // upstream contracts.

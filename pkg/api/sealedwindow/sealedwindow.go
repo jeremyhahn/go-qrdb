@@ -488,7 +488,9 @@ func (a *Admission) Admit(transition bool) (release func()) {
 // EnrollmentOpen false whenever it cannot tell.
 type ListenerProbe interface {
 	IsSealed() bool
-	EnrollmentOpen() bool
+	// EnrollmentOpen is read under the request's context, and must return
+	// promptly and fail closed when that context ends.
+	EnrollmentOpen(ctx context.Context) bool
 	// Admit holds the listener's Admission for one request; see Admission.
 	Admit(transition bool) (release func())
 }
@@ -506,9 +508,9 @@ func OrFailClosed(p ListenerProbe) ListenerProbe {
 // failClosed is the probe OrFailClosed substitutes for a missing one.
 type failClosed struct{}
 
-func (failClosed) IsSealed() bool       { return false }
-func (failClosed) EnrollmentOpen() bool { return false }
-func (failClosed) Admit(bool) func()    { return func() {} }
+func (failClosed) IsSealed() bool                      { return false }
+func (failClosed) EnrollmentOpen(context.Context) bool { return false }
+func (failClosed) Admit(bool) func()                   { return func() {} }
 
 // anonymousKey is the context key WithAnonymous sets.
 type anonymousKey struct{}

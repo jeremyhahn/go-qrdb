@@ -120,7 +120,10 @@ closes as soon as any of these is true:
   ceremony completed before the record existed.
 
 It fails closed: an unreadable record, or a listener with no ceremony
-service, counts as closed. Once enrollment is closed the listener answers
+service, counts as closed. The reads run under the request's context and a
+2-second deadline (`enrollmentProbeTimeout`), so a seal store that stops
+answering costs a refusal, not a request that holds the listener's
+admission indefinitely. Once enrollment is closed the listener answers
 registration with `403` and `{"code":"ENROLLMENT_CLOSED"}` on REST,
 `PERMISSION_DENIED` on gRPC and Unix, `StatusPermissionDenied` on QUIC and
 `PERMISSION_DENIED` on MCP. There is no `Retry-After`, because waiting does

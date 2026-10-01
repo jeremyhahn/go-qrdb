@@ -744,9 +744,22 @@ func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	return s.enrollmentOpenLocked(ctx)
 }
 
-// enrollmentOpenLocked is EnrollmentOpen with s.mu already held.
+// enrollmentProbeTimeout bounds EnrollmentOpen's reads of the barrier's
+// plaintext store. The answer gates an anonymous request, and the boot-time
+// listener holds its admission while it waits, so a store that stops
+// answering must cost a refusal, not a request that never ends.
+const enrollmentProbeTimeout = 2 * time.Second
+
+// enrollmentOpenLocked is EnrollmentOpen with s.mu already held. Its reads
+// run under ctx and enrollmentProbeTimeout, whichever ends first, and a read
+// that does not finish counts as closed.
 func (s *CeremonyService) enrollmentOpenLocked(ctx context.Context) bool {
 	if s.state == StateOperational {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
 		return false
 	}
 	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {

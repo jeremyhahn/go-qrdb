@@ -79,3 +79,14 @@ func TestEnrollmentOpen_ClosedByMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, svc.EnrollmentOpen(ctx))
 }
+
+// TestEnrollmentOpen_EndedContextFailsClosed: a probe whose context has
+// already ended cannot read the barrier and reports enrollment closed.
+func TestEnrollmentOpen_EndedContextFailsClosed(t *testing.T) {
+	svc, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
+	require.NoError(t, err)
+	require.True(t, svc.EnrollmentOpen(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.False(t, svc.EnrollmentOpen(ctx))
+}

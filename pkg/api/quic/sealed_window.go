@@ -15,6 +15,8 @@
 package quic
 
 import (
+	"context"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
@@ -61,7 +63,7 @@ var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
 // sealedWindowRefusal applies the sealed-window gate to method. It reports
 // the refusal and true when the gate refuses the request, and false when it
 // admits it or no gate is installed.
-func (s *Server) sealedWindowRefusal(method string) (sealedWindowRefusal, bool) {
+func (s *Server) sealedWindowRefusal(ctx context.Context, method string) (sealedWindowRefusal, bool) {
 	if s.sealedWindowProbe == nil {
 		return sealedWindowRefusal{}, false
 	}
@@ -72,7 +74,7 @@ func (s *Server) sealedWindowRefusal(method string) (sealedWindowRefusal, bool) 
 	}
 	if _, preOp := sealedWindowPreOperationalOnly[method]; preOp && req.Listener && req.Sealed && req.Allowlisted {
 		req.PreOperationalOnly = true
-		req.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen()
+		req.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen(ctx)
 	}
 	refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
 	return refusal, refused

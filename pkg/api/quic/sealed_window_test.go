@@ -15,6 +15,7 @@
 package quic
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
@@ -57,37 +58,37 @@ func TestSealedWindowRefusal(t *testing.T) {
 	listener := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowListener(probe))
 	none := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	if _, refused := none.sealedWindowRefusal("kv.Put"); refused {
+	if _, refused := none.sealedWindowRefusal(context.Background(), "kv.Put"); refused {
 		t.Error("no gate installed: kv.Put refused")
 	}
 	for _, srv := range []*Server{regular, listener} {
-		if _, refused := srv.sealedWindowRefusal("barrier.Unseal"); refused {
+		if _, refused := srv.sealedWindowRefusal(context.Background(), "barrier.Unseal"); refused {
 			t.Error("sealed: barrier.Unseal refused")
 		}
-		if r, refused := srv.sealedWindowRefusal("kv.Put"); !refused || r.msg != "barrier sealed" || r.status != wire.StatusUnavailable {
+		if r, refused := srv.sealedWindowRefusal(context.Background(), "kv.Put"); !refused || r.msg != "barrier sealed" || r.status != wire.StatusUnavailable {
 			t.Errorf("sealed: kv.Put = (%+v, %v), want (Unavailable barrier sealed, true)", r, refused)
 		}
 	}
 
 	// Officer registration: the listener refuses it once enrollment has
 	// closed; the regular gate leaves it to authentication.
-	if r, refused := listener.sealedWindowRefusal("barrier.OfficerRegister"); !refused || r.status != wire.StatusPermissionDenied || r.msg != sealedwindow.EnrollmentClosedMessage {
+	if r, refused := listener.sealedWindowRefusal(context.Background(), "barrier.OfficerRegister"); !refused || r.status != wire.StatusPermissionDenied || r.msg != sealedwindow.EnrollmentClosedMessage {
 		t.Errorf("listener, enrollment closed: barrier.OfficerRegister = (%+v, %v), want PermissionDenied", r, refused)
 	}
-	if _, refused := regular.sealedWindowRefusal("barrier.OfficerRegister"); refused {
+	if _, refused := regular.sealedWindowRefusal(context.Background(), "barrier.OfficerRegister"); refused {
 		t.Error("regular gate: barrier.OfficerRegister refused")
 	}
 	probe.enrollment = true
-	if _, refused := listener.sealedWindowRefusal("barrier.RecoveryOfficerRegister"); refused {
+	if _, refused := listener.sealedWindowRefusal(context.Background(), "barrier.RecoveryOfficerRegister"); refused {
 		t.Error("listener, enrollment open: barrier.RecoveryOfficerRegister refused")
 	}
 
 	probe.sealed = false
-	if _, refused := regular.sealedWindowRefusal("kv.Put"); refused {
+	if _, refused := regular.sealedWindowRefusal(context.Background(), "kv.Put"); refused {
 		t.Error("regular gate, unsealed: kv.Put refused")
 	}
 	for _, method := range []string{"barrier.Unseal", "kv.Put"} {
-		r, refused := listener.sealedWindowRefusal(method)
+		r, refused := listener.sealedWindowRefusal(context.Background(), method)
 		if !refused || r.msg != sealedwindow.ClosedMessage {
 			t.Errorf("listener gate, unsealed: %s = (%+v, %v), want (%q, true)", method, r, refused, sealedwindow.ClosedMessage)
 		}
@@ -110,7 +111,7 @@ type fakeSealedProbe struct {
 	sealedwindow.Admission
 }
 
-func (f *fakeSealedProbe) EnrollmentOpen() bool { return f.enrollment }
+func (f *fakeSealedProbe) EnrollmentOpen(context.Context) bool { return f.enrollment }
 
 func (f *fakeSealedProbe) IsSealed() bool { return f.sealed }
 

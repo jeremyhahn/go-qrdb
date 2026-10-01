@@ -124,7 +124,7 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 			}
 			if req.Listener && req.Sealed && req.Allowlisted && requestInAllowlist(r, sealedWindowPreOperationalOnly) {
 				req.PreOperationalOnly = true
-				req.EnrollmentOpen = listener.EnrollmentOpen()
+				req.EnrollmentOpen = listener.EnrollmentOpen(r.Context())
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
 			if !refused {

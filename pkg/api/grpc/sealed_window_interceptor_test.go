@@ -32,10 +32,10 @@ type fakeSealProbe struct {
 	sealedwindow.Admission
 }
 
-func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }
-func (f *fakeSealProbe) EnrollmentOpen() bool { return f.enrollment.Load() }
-func (f *fakeSealProbe) seal()                { f.sealed.Store(true) }
-func (f *fakeSealProbe) unseal()              { f.sealed.Store(false) }
+func (f *fakeSealProbe) IsSealed() bool                      { return f.sealed.Load() }
+func (f *fakeSealProbe) EnrollmentOpen(context.Context) bool { return f.enrollment.Load() }
+func (f *fakeSealProbe) seal()                               { f.sealed.Store(true) }
+func (f *fakeSealProbe) unseal()                             { f.sealed.Store(false) }
 
 func newProbe(sealed bool) *fakeSealProbe {
 	p := &fakeSealProbe{}
@@ -272,7 +272,7 @@ func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
 	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: unseal}, dummyHandler); err != nil {
 		t.Fatalf("allowlisted method while sealed: %v", err)
 	}
-	if err := stream(nil, fakeServerStream{}, &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}, dummyStreamHandler); status.Code(err) != codes.Unavailable {
+	if err := stream(nil, &ctxServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/Watch"}, dummyStreamHandler); status.Code(err) != codes.Unavailable {
 		t.Fatalf("non-allowlisted stream while sealed: %v, want Unavailable", err)
 	}
 
@@ -283,7 +283,7 @@ func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
 		if st.Code() != codes.Unavailable || st.Message() != sealedwindow.ClosedMessage {
 			t.Errorf("%s after unseal: %v, want Unavailable %q", method, err, sealedwindow.ClosedMessage)
 		}
-		err = stream(nil, fakeServerStream{}, &grpc.StreamServerInfo{FullMethod: method}, dummyStreamHandler)
+		err = stream(nil, &ctxServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{FullMethod: method}, dummyStreamHandler)
 		if status.Code(err) != codes.Unavailable {
 			t.Errorf("stream %s after unseal: %v, want Unavailable", method, err)
 		}

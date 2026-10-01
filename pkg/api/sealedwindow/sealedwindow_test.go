@@ -427,7 +427,7 @@ func TestPreOperationalOnlyDerivations(t *testing.T) {
 // enrollment closed, so a gate built from it refuses everything.
 func TestOrFailClosed(t *testing.T) {
 	p := sealedwindow.OrFailClosed(nil)
-	if p.IsSealed() || p.EnrollmentOpen() {
+	if p.IsSealed() || p.EnrollmentOpen(context.Background()) {
 		t.Fatal("OrFailClosed(nil) must report unsealed and enrollment closed")
 	}
 	type probe struct{ sealedwindow.ListenerProbe }
