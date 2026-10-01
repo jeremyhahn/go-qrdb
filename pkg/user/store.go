@@ -1359,26 +1359,24 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		// would leave the account reachable by neither handle if the claim then
 		// failed.
 		newKey := usernameIndexKey(existing.TenantID, req.Username)
-		taken, cerr := s.claimHandle(ctx, newKey, idBytes)
+		holder, cerr := s.claimOrHolder(ctx, newKey, idBytes)
 		if cerr != nil {
 			return nil, &StoreError{Op: "update", Detail: "claim username index", Err: cerr}
 		}
-		if taken {
-			// A key already held by THIS user is not a duplicate. Two updates
-			// racing the same user to the same new handle both find it taken by
-			// their own id; reporting "someone else owns this" is simply false,
-			// and permanent from the caller's point of view. Fall through and
-			// let the conditional commit decide which one wins — registering no
-			// release, because this call did not insert it (the cert path in
-			// this same function already worked this way).
-			ownerID, oerr := s.handleOwner(ctx, newKey)
-			if oerr != nil {
-				return nil, &StoreError{Op: "update", Detail: "read username index owner", Err: oerr}
-			}
-			if ownerID != existing.ID {
-				return nil, &UsernameExistsError{Username: req.Username, TenantID: existing.TenantID}
-			}
-		} else {
+		// A key already held by THIS user is not a duplicate. Two updates
+		// racing the same user to the same new handle both find it taken by
+		// their own id; reporting "someone else owns this" is simply false,
+		// and permanent from the caller's point of view. Fall through and let
+		// the conditional commit decide which one wins — registering no
+		// release, because this call did not insert it (the cert path in this
+		// same function already worked this way).
+		_, other, oerr := heldByOther(holder, existing.ID)
+		switch {
+		case oerr != nil:
+			return nil, &StoreError{Op: "update", Detail: "read username index owner", Err: oerr}
+		case other:
+			return nil, &UsernameExistsError{Username: req.Username, TenantID: existing.TenantID}
+		case holder == nil:
 			claimedKeys = append(claimedKeys, newKey)
 		}
 
@@ -1411,20 +1409,18 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		// a concurrent claim stays enabled with a login key resolving to another
 		// account.
 		newKey := emailIndexKey(existing.TenantID, newEmail)
-		taken, cerr := s.claimHandle(ctx, newKey, idBytes)
+		holder, cerr := s.claimOrHolder(ctx, newKey, idBytes)
 		if cerr != nil {
 			return nil, &StoreError{Op: "update", Detail: "claim email index", Err: cerr}
 		}
-		if taken {
-			// Self-owned is not a duplicate — see the username branch above.
-			ownerID, oerr := s.handleOwner(ctx, newKey)
-			if oerr != nil {
-				return nil, &StoreError{Op: "update", Detail: "read email index owner", Err: oerr}
-			}
-			if ownerID != existing.ID {
-				return nil, &EmailExistsError{Email: newEmail, TenantID: existing.TenantID}
-			}
-		} else {
+		// Self-owned is not a duplicate — see the username branch above.
+		_, other, oerr := heldByOther(holder, existing.ID)
+		switch {
+		case oerr != nil:
+			return nil, &StoreError{Op: "update", Detail: "read email index owner", Err: oerr}
+		case other:
+			return nil, &EmailExistsError{Email: newEmail, TenantID: existing.TenantID}
+		case holder == nil:
 			claimedKeys = append(claimedKeys, newKey)
 		}
 
@@ -1547,16 +1543,16 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 			// which is where release-then-reclaim actually caused harm.
 			// A thumbprint is an authentication credential: claim it, so two
 			// users cannot both take one because each read it as absent.
-			taken, cerr := s.claimHandle(ctx, key, idBytes)
+			holder, cerr := s.claimOrHolder(ctx, key, idBytes)
 			if cerr != nil {
 				return nil, &StoreError{Op: "update", Detail: "claim cert index", Err: cerr}
 			}
-			if taken {
-				boundID, oerr := s.handleOwner(ctx, key)
+			if holder != nil {
+				boundID, other, oerr := heldByOther(holder, existing.ID)
 				if oerr != nil {
 					return nil, &StoreError{Op: "update", Detail: "read cert index owner", Err: oerr}
 				}
-				if boundID != existing.ID {
+				if other {
 					return nil, &CertBindingConflictError{
 						Thumbprint:   b.Thumbprint,
 						BoundUserID:  boundID,
@@ -2476,29 +2472,59 @@ func (s *kvUserStore) releaseClaims(ctx context.Context, keys []string, idBytes 
 	return failures
 }
 
-// handleOwner reports which user id currently holds a handle index key.
+// handleClaimAttempts bounds claimOrHolder. Each extra attempt needs another
+// caller to insert AND release the key inside one claim-then-read window, so a
+// handful is ample; the bound turns sustained churn into a typed error rather
+// than a spin.
+const handleClaimAttempts = 8
+
+// claimOrHolder claims a handle index key for idBytes or reports who holds it.
+// A nil holder means THIS call inserted the key; otherwise holder is the
+// stored owner id, which may be idBytes itself.
 //
-// It exists because the answer was being computed inline at three call sites
-// with both errors discarded (`owner, _ := ...`), which turned a transient read
-// failure or a malformed stored value into a DUPLICATE-HANDLE conflict — telling
-// a caller to pick another name when the truth was that the store could not
-// answer, and letting the cert path report BoundUserID: 0 as though user zero
-// held the thumbprint (Codex, PR #191).
+// A failed claim and the read of its holder are two steps, and the holder can
+// release the key between them. That is a concurrent update moving off the
+// handle -- withdrawing the binding, renaming away -- and it leaves the key
+// FREE, so the claim is simply taken again. Reading the absence as a conflict
+// was wrong both ways: it refused a handle nobody held, and the cert path
+// reported it as bound to user 0 (a lost withdrawal race surfaced as "already
+// bound to user 0" instead of being judged against the winner).
 //
-// A store failure is a store failure. Only a successfully read and decoded owner
-// justifies a conflict error.
-func (s *kvUserStore) handleOwner(ctx context.Context, key string) (uint64, error) {
-	raw, err := s.store.Get(ctx, key)
+// A store failure is a store failure: it is returned, never read as a
+// conflict (Codex, PR #191).
+func (s *kvUserStore) claimOrHolder(ctx context.Context, key string, idBytes []byte) (holder []byte, err error) {
+	for range handleClaimAttempts {
+		taken, cerr := s.claimHandle(ctx, key, idBytes)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if !taken {
+			return nil, nil
+		}
+		raw, gerr := s.store.Get(ctx, key)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if raw != nil {
+			return raw, nil
+		}
+	}
+	return nil, &HandleContendedError{Key: key, Attempts: handleClaimAttempts}
+}
+
+// heldByOther reports whether holder, as returned by claimOrHolder, names a
+// user other than self. A holder that cannot be decoded is an error, not a
+// conflict: only a decoded owner justifies telling a caller the handle is
+// someone else's.
+func heldByOther(holder []byte, self uint64) (uint64, bool, error) {
+	if holder == nil {
+		return 0, false, nil
+	}
+	owner, err := decodeID(holder)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if raw == nil {
-		// The holder released it between the failed claim and this read. Report
-		// a zero owner with no error; the caller treats "not us" as a conflict,
-		// which is the safe reading of a key that is contended right now.
-		return 0, nil
-	}
-	return decodeID(raw)
+	return owner, owner != self, nil
 }
 
 // releaseHandle removes a handle index entry only while it still names this
@@ -2625,19 +2651,19 @@ func intersecting(keys []string, set map[string]bool) []string {
 // record unreachable by its own unique handle, turning our failed update into
 // somebody else's outage.
 //
-// A key that has been re-taken is therefore a compensation FAILURE, not a
-// success: the caller is told the rollback was incomplete (IndexCompensationError)
-// instead of silently trading its problem for another account's.
+// A key that has been re-taken by ANOTHER user is therefore a compensation
+// FAILURE, not a success: the caller is told the rollback was incomplete
+// (IndexCompensationError) instead of silently trading its problem for another
+// account's. A key re-taken by THIS user -- a concurrent update of the same
+// record that kept the handle and re-inserted it after we released it -- is
+// already in the state the restore exists to reach, and reporting it as
+// reclaimed turned a lost withdrawal race into a spurious cleanup failure.
 func (s *kvUserStore) restoreHandle(ctx context.Context, key string, idBytes []byte) error {
-	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
-	if !ok {
-		return ErrStoreNotAtomic
-	}
-	stored, err := atomicStore.PutIfAbsent(ctx, key, idBytes)
+	holder, err := s.claimOrHolder(ctx, key, idBytes)
 	if err != nil {
 		return err
 	}
-	if !stored {
+	if holder != nil && !bytes.Equal(holder, idBytes) {
 		return &HandleReclaimedError{Key: key}
 	}
 	return nil

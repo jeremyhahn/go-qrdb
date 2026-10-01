@@ -79,6 +79,15 @@ type memKVStore struct {
 	// evaluates anything; a non-nil return is returned verbatim with nothing
 	// written, modelling the "outcome unknown" error the capability documents.
 	batchErr func() error
+
+	// afterPutIfAbsent, when set, runs after a PutIfAbsent has decided, with
+	// the store's lock released, and is told whether the value was stored. It
+	// lands an interfering write in the window between a claim that found the
+	// key held and the caller's next look at it -- the window in which a
+	// concurrent update can release the key it found held.
+	//
+	// A plain field for the same reason as beforeCAS.
+	afterPutIfAbsent func(key string, stored bool)
 }
 
 func newMemKVStore() *memKVStore {
@@ -106,13 +115,21 @@ func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
 // while this double only needs the atomic verbs to be atomic with respect to
 // each other, which is what the claim paths use.
 func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	stored := m.putIfAbsent(key, value)
+	if m.afterPutIfAbsent != nil {
+		m.afterPutIfAbsent(key, stored)
+	}
+	return stored, nil
+}
+
+func (m *memKVStore) putIfAbsent(key string, value []byte) bool {
 	m.atomicMu.Lock()
 	defer m.atomicMu.Unlock()
 	if _, ok := m.data.Load(key); ok {
-		return false, nil
+		return false
 	}
 	m.data.Store(key, append([]byte(nil), value...))
-	return true, nil
+	return true
 }
 
 func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {

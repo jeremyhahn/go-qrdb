@@ -320,6 +320,22 @@ func (e *HandleReclaimedError) Error() string {
 	return "user: handle " + e.Key + " was reclaimed before rollback could restore it"
 }
 
+// HandleContendedError reports that a handle index key changed hands on every
+// attempt to claim it: each claim found it held, and each time the holder had
+// released it again before it could be read. The handle is under sustained
+// concurrent churn, so neither "it is yours" nor "someone else holds it" can be
+// stated; the caller should retry later.
+type HandleContendedError struct {
+	Key      string
+	Attempts int
+}
+
+// Error names the key and how many claims were made.
+func (e *HandleContendedError) Error() string {
+	return "user: handle " + e.Key + " changed hands on each of " + strconv.Itoa(e.Attempts) +
+		" claim attempts; retry"
+}
+
 // ConcurrentUpdateError reports that another update committed to the same user
 // record between this call's read and its write, so this call did not apply.
 //

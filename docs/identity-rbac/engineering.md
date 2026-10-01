@@ -172,6 +172,21 @@ the only thing that can change the outcome. Exhausting it reports
 `*ConcurrentUpdateError`: an operator withdrawing a compromised key must never
 read a success that did not happen.
 
+**Index handles are claimed, then their holder is read — and the holder can
+leave in between.** Every handle `updateUserAt` takes (username, email, each
+thumbprint it keeps or adds) goes through `claimOrHolder`: `PutIfAbsent`, and
+on a held key a read of who holds it. A concurrent update of the same handle
+can release it between the two steps; the key is then free, so the claim is
+taken again rather than read as a conflict with "user 0". A key that changes
+hands on every one of `handleClaimAttempts` claims fails with
+`*HandleContendedError`. The rollback's `restoreHandle` uses the same claim, and
+a key it finds re-inserted for the **same** user — the winning update kept the
+handle — is already restored; only a key held by another user is
+`*HandleReclaimedError`. Without both, two concurrent withdrawals of the
+bootstrap admin's last two keys could fail the loser with an
+`*IndexCompensationError` instead of judging it against the winner and refusing
+it as a lockout.
+
 **Withdrawal deliberately does not validate the thumbprint's shape.**
 `IsValidSPKIThumbprint` is a write-side gate added after the field existed, so a
 record written before it can hold a non-canonical string; refusing to withdraw

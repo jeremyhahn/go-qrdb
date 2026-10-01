@@ -129,3 +129,23 @@ func (s *kvUserStore) existingSystemUserID(ctx context.Context) uint64 {
 	}
 	return id
 }
+
+// handleOwner reports which user id currently holds a handle index key, or
+// 0 when nothing holds it. A store failure or an undecodable value is an
+// error, never a zero owner.
+//
+// It is a plain read. A claim path uses claimOrHolder instead, because a key
+// released between a failed claim and this read must be claimed again rather
+// than reported as held by user 0. PromoteSystem reads the system sentinel
+// with it and then writes both the record and the sentinel under their own
+// guards, so a sentinel that changes after this read loses that write.
+func (s *kvUserStore) handleOwner(ctx context.Context, key string) (uint64, error) {
+	raw, err := s.store.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if raw == nil {
+		return 0, nil
+	}
+	return decodeID(raw)
+}

@@ -361,3 +361,90 @@ func TestIDEncodingError_Message(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HandleContendedError
+// ---------------------------------------------------------------------------
+
+func TestHandleContendedError_Message(t *testing.T) {
+	err := &HandleContendedError{Key: "user/idx/k", Attempts: 8}
+	want := "user: handle user/idx/k changed hands on each of 8 claim attempts; retry"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+// TestClaimOrHolder_SustainedChurnIsContended: every claim finds the key held
+// and every read finds it released again. The claim neither spins nor reports
+// a holder it never saw; it gives up with the typed contention error.
+func TestClaimOrHolder_SustainedChurnIsContended(t *testing.T) {
+	kv := newMemKVStore()
+	s := &kvUserStore{store: kv}
+	ctx := context.Background()
+	const key = "handle/churning"
+	if err := kv.Put(ctx, key, encodeID(9)); err != nil {
+		t.Fatal(err)
+	}
+	claims := 0
+	kv.afterPutIfAbsent = func(k string, stored bool) {
+		if k == key && !stored {
+			claims++
+			kv.data.Delete(key) // the holder releases before the read
+		}
+	}
+	kv.afterGet = func(k string) {
+		if k == key {
+			kv.data.Store(key, encodeID(9)) // and re-takes it before the next claim
+		}
+	}
+	holder, err := s.claimOrHolder(ctx, key, encodeID(1))
+	var contended *HandleContendedError
+	if !errors.As(err, &contended) || holder != nil {
+		t.Fatalf("claimOrHolder = %v, %v; want *HandleContendedError", holder, err)
+	}
+	if contended.Attempts != handleClaimAttempts || claims != handleClaimAttempts {
+		t.Fatalf("attempts = %d, claims = %d; want %d each", contended.Attempts, claims, handleClaimAttempts)
+	}
+}
+
+// TestClaimOrHolder_StoreErrorsAreNotConflicts: a store that cannot claim, or
+// cannot read the holder of a key it found held, reports that failure and
+// never a holder -- for the claim and for a rollback's restore alike.
+func TestClaimOrHolder_StoreErrorsAreNotConflicts(t *testing.T) {
+	ctx := context.Background()
+	claimFails := errors.New("claim failed")
+	readFails := errors.New("read failed")
+	for name, kv := range map[string]*errKVStore{
+		"claim": {putErr: claimFails},
+		"read":  {getErr: readFails},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := map[string]error{"claim": claimFails, "read": readFails}[name]
+			s := &kvUserStore{store: kv}
+			if holder, err := s.claimOrHolder(ctx, "k", encodeID(1)); !errors.Is(err, want) || holder != nil {
+				t.Fatalf("claimOrHolder = %v, %v; want %v", holder, err, want)
+			}
+			if err := s.restoreHandle(ctx, "k", encodeID(1)); !errors.Is(err, want) {
+				t.Fatalf("restoreHandle = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+// TestHeldByOther covers the three holder readings: none (claimed), self,
+// another user, and an undecodable value, which is an error rather than a
+// conflict.
+func TestHeldByOther(t *testing.T) {
+	if _, other, err := heldByOther(nil, 1); other || err != nil {
+		t.Fatalf("nil holder: other=%v err=%v", other, err)
+	}
+	if _, other, err := heldByOther(encodeID(1), 1); other || err != nil {
+		t.Fatalf("self holder: other=%v err=%v", other, err)
+	}
+	if owner, other, err := heldByOther(encodeID(2), 1); !other || owner != 2 || err != nil {
+		t.Fatalf("other holder: owner=%d other=%v err=%v", owner, other, err)
+	}
+	if _, other, err := heldByOther([]byte("not-an-id"), 1); other || err == nil {
+		t.Fatalf("undecodable holder: other=%v err=%v; want an error", other, err)
+	}
+}

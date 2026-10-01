@@ -15,6 +15,7 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -357,6 +358,118 @@ func TestBootstrapAdminGuard_LosingWithdrawalIsJudgedAgainstTheWinner(t *testing
 	}
 	wantLockout(t, err, AdminLockoutNoLiveBinding)
 	f.assertAdminCanStillLogIn(t)
+}
+
+// TestBootstrapAdminGuard_KeyReleasedBetweenClaimAndOwnerRead pins, without
+// the scheduler, the interleaving behind the 1-in-60 failure of
+// ConcurrentWithdrawalsKeepOneKey ("cert thumbprint ... is already bound to
+// user 0"). Withdrawal A of adminTp re-claims the retained key `second` and
+// finds it held. Before A looks at who holds it, withdrawal B of `second`
+// commits: it releases `second` and, because A has released adminTp, inserts
+// adminTp under the same id. A must then neither report a conflict with a
+// nonexistent user 0 nor fail its rollback over a key its own user holds; it
+// loses the commit to B, re-reads, and is refused by the guard.
+func TestBootstrapAdminGuard_KeyReleasedBetweenClaimAndOwnerRead(t *testing.T) {
+	f := newAdminFixture(t)
+	ctx := context.Background()
+	second := newThumbprint(t, "admin", 2)
+	if _, err := f.s.AddCertBinding(ctx, f.admin.ID, second, 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	secondKey := certThumbprintIndexKey(f.admin.TenantID, second)
+
+	var winnerErr error
+	fired := false
+	f.kv.afterPutIfAbsent = func(key string, stored bool) {
+		if fired || stored || key != secondKey {
+			return
+		}
+		fired = true
+		f.kv.afterPutIfAbsent = nil
+		_, winnerErr = f.s.RemoveCertBinding(ctx, f.admin.ID, second)
+	}
+	_, err := f.s.RemoveCertBinding(ctx, f.admin.ID, f.adminTp)
+	if !fired || winnerErr != nil {
+		t.Fatalf("the interfering withdrawal did not commit: fired=%v err=%v", fired, winnerErr)
+	}
+	wantLockout(t, err, AdminLockoutNoLiveBinding)
+	f.assertAdminCanStillLogIn(t)
+	if raw, _ := f.kv.Get(ctx, secondKey); raw != nil {
+		t.Fatalf("the withdrawn key %s still resolves after both withdrawals settled", second)
+	}
+}
+
+// TestUpdateUser_RenameOntoAHandleReleasedMidClaim: a rename finds the new
+// username held, and the holder renames away before the caller reads who held
+// it. The handle is free, so the rename must take it -- not report the name as
+// taken by somebody who no longer has it.
+func TestUpdateUser_RenameOntoAHandleReleasedMidClaim(t *testing.T) {
+	kv := newMemKVStore()
+	s := &kvUserStore{store: kv, idgen: newTestIDGen(t)}
+	ctx := context.Background()
+	holder, err := s.CreateUser(ctx, &CreateUserRequest{Username: "carol", TenantID: "system", WithoutEmailLoginKey: true})
+	if err != nil {
+		t.Fatalf("CreateUser(carol): %v", err)
+	}
+	mover, err := s.CreateUser(ctx, &CreateUserRequest{Username: "dave", TenantID: "system", WithoutEmailLoginKey: true})
+	if err != nil {
+		t.Fatalf("CreateUser(dave): %v", err)
+	}
+	carolKey := usernameIndexKey("system", "carol")
+
+	var awayErr error
+	fired := false
+	kv.afterPutIfAbsent = func(key string, stored bool) {
+		if fired || stored || key != carolKey {
+			return
+		}
+		fired = true
+		kv.afterPutIfAbsent = nil
+		_, awayErr = s.UpdateUser(ctx, &UpdateUserRequest{ID: holder.ID, Username: "erin"})
+	}
+	renamed, err := s.UpdateUser(ctx, &UpdateUserRequest{ID: mover.ID, Username: "carol"})
+	if !fired || awayErr != nil {
+		t.Fatalf("the holder did not rename away: fired=%v err=%v", fired, awayErr)
+	}
+	if err != nil {
+		t.Fatalf("renaming onto a handle released mid-claim = %v, want success", err)
+	}
+	if renamed.Username != "carol" {
+		t.Fatalf("username = %q, want carol", renamed.Username)
+	}
+	if got, err := s.GetUserByUsername(ctx, "system", "carol"); err != nil || got.ID != mover.ID {
+		t.Fatalf("carol resolves to %v, %v; want user %d", got, err, mover.ID)
+	}
+}
+
+// TestRestoreHandle_KeyAlreadyHeldBySameUserIsRestored: a rollback whose key
+// was re-inserted for the SAME user -- a concurrent update of that user that
+// kept the handle -- has nothing to restore. Only a key held by another user is
+// the HandleReclaimedError lost race.
+func TestRestoreHandle_KeyAlreadyHeldBySameUserIsRestored(t *testing.T) {
+	kv := newMemKVStore()
+	s := &kvUserStore{store: kv, idgen: newTestIDGen(t)}
+	ctx := context.Background()
+	const key = "handle/under-test"
+
+	if err := kv.Put(ctx, key, encodeID(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.restoreHandle(ctx, key, encodeID(7)); err != nil {
+		t.Fatalf("restoring a key the same user holds = %v, want nil", err)
+	}
+
+	var reclaimed *HandleReclaimedError
+	if err := s.restoreHandle(ctx, key, encodeID(8)); !errors.As(err, &reclaimed) {
+		t.Fatalf("restoring a key another user holds = %v, want *HandleReclaimedError", err)
+	}
+
+	if err := s.restoreHandle(ctx, "handle/absent", encodeID(8)); err != nil {
+		t.Fatalf("restoring an absent key = %v, want nil", err)
+	}
+	if raw, _ := kv.Get(ctx, "handle/absent"); !bytes.Equal(raw, encodeID(8)) {
+		t.Fatalf("absent key restored as %v, want user 8", raw)
+	}
 }
 
 // TestAddCertBinding_RefusesAPastExpiry (go-qrdb#517 B1): an enrolment whose

@@ -44,6 +44,139 @@ are not reconstructed here — their history is in the git log.
   no-op.
 - **`SET GLOBAL innodb_lock_wait_timeout` is refused**; the variable is
   session-scoped (see Added).
+- **A per-database barrier is accepted only where it is on the database's data
+  path, so a non-system tenant can no longer create one.** Until this release a
+  barrier was accepted on a `backend: raft` database and on any database of a
+  volume- or raft-isolated tenant, although none of those is served from the
+  store the barrier wraps — the barrier was decorative. Those requests now fail
+  with `database.BarrierOffDataPathError` (`422` / `FAILED_PRECONDITION`). The
+  one remaining shape is a non-raft database with an explicit `--data-dir`,
+  which only the system tenant can set, so until per-database storage bindings
+  land (they restore per-database barriers for every tenant and backend, with
+  the barrier on the data path) tenants cannot have one. A barrier-enabled
+  record already on disk -- a raft database's, or any database's of a volume-
+  or raft-isolated tenant -- still opens, sealed, fails closed until unsealed,
+  and is named in a startup warning.
+- **`service.BarrierSealedError` names the sealed database in `Database`.** A
+  refusal because a database's own barrier is sealed now carries the database
+  in `Database` and reads `barrier sealed for database: <name> (tenant: <id>)`;
+  `TenantID` alone, and the `barrier sealed for tenant: <id>` text, now mean
+  the tenant's barrier. A client that took every `BarrierSealedError` to be the
+  tenant's must check `Database` first.
+- **etcd listeners need TLS, the node's authentication and a client
+  certificate.** A listener no longer starts without TLS and authentication; a
+  client without a certificate, or from a tenant other than the database's
+  owner, is refused. Only the mapped RPCs are served: `Auth.*`, member
+  changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader` and
+  `Downgrade` are refused with `PERMISSION_DENIED` (previously stubs, no-ops or
+  `Unimplemented`). Keys are stored under the database's
+  `<tenant>/<database>/` namespace rather than at the shard root, so data
+  written through an etcd listener before this release is not visible through
+  it; export it with the previous binary and re-import it. `Compact` on the
+  shared shard is reserved to the system tenant, as on every other transport.
+- **SQL `CREATE DATABASE` / `DROP DATABASE` now require `databases:create` /
+  `databases:delete`**, and a tenant session creates a database its tenant
+  owns (counted against its quota) and can drop only its own. A role that
+  relied on reaching either statement without those grants, or a tenant that
+  relied on dropping a database it does not own, is refused.
+- **RAG needs the node's database registry.** It is bound by the server at
+  start; a server composed without one refuses RAG with
+  `service.CapabilityUnsupportedError`. `qrdbd`, `sdk/go/node` and the
+  `node://` driver all compose one.
+  `service.NewScopedRAGStore` takes a `*service.RAGBinding`.
+- **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
+  `KVServicer`. RAG documents ingested before this release sit at the store
+  root and are no longer read; re-ingest them.
+- **`database.TenantAccessDeniedError` is removed.** Nothing returns it: a
+  tenant addressing another tenant's database now gets
+  `database.NotFoundError` (`404` / `NOT_FOUND`) instead of `403` /
+  `PERMISSION_DENIED`. A SQL session sees only its own tenant's databases in
+  `HasDatabase` and `USE`, as it already did in `SHOW DATABASES`.
+- **`wal` and `nodehost` are no longer valid database names.** Creating one
+  fails with `database.ReservedNameError` (`400` / `INVALID_ARGUMENT`). A
+  database of either name created before this release still opens.
+- **`Client.DatabaseScoped` returns `(*Client, error)`** and
+  `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
+  transport that cannot scope refuses instead of returning the unscoped
+  client. Scoping to `""` or `system` returns the receiver.
+- **Creating a raft-backed or volume-isolated database needs its provisioning
+  permission.** A role holding `databases:create` but not
+  `databases:create_raft` can no longer create a `backend: raft` database or
+  any database of a raft-isolated tenant; one without `databases:create_volume`
+  can no longer create a database of a volume-isolated tenant. The built-in
+  roles that grant database management hold both.
+- **etcd is served only by an `engine: kv` database on a node in mode
+  `raft`.** Enabling etcd on a timeseries or vector database is refused at
+  create and on update with `database.EtcdEngineUnsupportedError` (`400` /
+  `INVALID_ARGUMENT`); it would have served that engine's internal keys. A
+  standalone node's etcd listener refuses to start
+  (`service.CapabilityUnsupportedError`, "requires mode: raft"): MVCC, leases
+  and watches are raft-only on every other transport, and the listener used to
+  serve them anyway. `backend: raft` is not required -- the documentation
+  said it was, and nothing checked it.
+- **The sealed-window allowlist is trimmed to verbs that are justified as
+  anonymous.** Officer list, rekey, recovery-key generate / delete / status,
+  external officer enrollment (`/v1/init/enroll-external-officer`,
+  `CeremonyEnrollExternalOfficer`), and the `/v1/init/` and `/v1/bootstrap/`
+  REST prefixes are no longer reachable while the barrier is sealed, on any
+  transport: they answer `503` / `UNAVAILABLE`. Rekey and the recovery-key
+  verbs already refused while sealed. Use `barrier officer claim-status`
+  during first boot, and `barrier officer list` once the node is unsealed.
+  The REST allowlist can now hold method-qualified entries (`POST
+  /v1/barrier/officers`), so a composer matching entries itself must use
+  `sealedwindow.RESTEntryMatches`.
+- **The boot-time sealed-window listener refuses every request once the
+  barrier is unsealed**, with `503` and `{"code":"SEALED_WINDOW_CLOSED"}` on
+  REST, and `UNAVAILABLE` with `sealed-window listener closed: barrier
+  unsealed` on gRPC, Unix, QUIC and MCP. A client polling it across the unseal
+  retries against the regular listener. It no longer starts the MySQL or
+  PostgreSQL wire protocols, which carry no sealed-window verb.
+- Writing `roleIDs` (`CreateUser`, `UpdateUser`) or `roleBindings` or `attributes`
+  (`UpdateUser`) requires `roles:assign` in the user's tenant, and in the tenant of every
+  binding written, on every transport including embedded; `AssignRole` and `UnassignRole` go
+  through the same gate (`roles:assign` / `roles:unassign` in the user's tenant, and an assigned
+  role is validated like any other). Every referenced role must exist
+  and belong to that tenant itself -- the system tenant's built-in roles are not assignable in
+  other tenants, which seed their own (400 / `INVALID_ARGUMENT`) -- whether or not RBAC is enabled; a node
+  with no role service refuses the write (501 / `UNIMPLEMENTED`).
+- User attributes reach ABAC policies only as `subject.user_attrs.<key>` (match key
+  `user_attrs.<key>`), never as the authenticated `subject.attrs.<key>`, so an attribute
+  cannot forge a certificate- or token-derived value.
+- `User.Factors` is removed. Factors and MFA state are read from the auth-factor store once
+  per response; if that read fails the request fails with 503 / `UNAVAILABLE` instead of
+  reporting no second factor.
+- **`service.SequenceServicer` carries an epoch** (#547).
+  `Allocate` returns `(first, epoch, err)`, and a new `Epoch` method reads a
+  sequence's current epoch. `Reset`, and a MySQL-dialect `TRUNCATE TABLE`'s
+  sequence reset, advance the epoch in the same compare-and-swap that zeroes
+  the counter. Implementations and callers outside this module must follow
+  the new signature. The stored value grows from 8 to 16 bytes, counter
+  first; a counter-only value written by an earlier release is read as that
+  counter at epoch 0, so no sequence restarts on upgrade.
+- **Upgrade note: finish upgrading every node before running
+  `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`** (#547).
+  During a mixed-version window, a node still on an earlier release rewrites
+  a sequence's stored value as 8 bytes whenever it allocates, which resets
+  its epoch to 0. A later reset can then bring the epoch back to a value
+  that a block reserved before the first reset still carries, and that block
+  would be accepted as current.
+- **An embedded create is tenant-scoped and provisioning-checked.** The
+  embedded transport's `CreateDatabase` called the system-scoped `Create`; it
+  now creates through `CreateForTenant` for the context's tenant (owned by it,
+  inside its quota; a context with no tenant creates for the system tenant).
+  On an `sdk/go/node` node with request authentication, a raft-backed or
+  volume-isolated create through it needs an identity in the context holding
+  `databases:create_raft` / `databases:create_volume`, as on every other
+  transport.
+- A `roleBindings` entry on a user outside the system tenant must name that user's own tenant;
+  any other is refused with `user.RoleBindingTenantError` (400 / `INVALID_ARGUMENT`), because
+  such a user is refused every request on another tenant before a binding is consulted and the
+  binding could never grant. A system-tenant user may hold bindings in any tenant. A binding's
+  tenant is stored normalized, so an empty tenant is stored as `system`.
+- MCP user records render `certBindings[].kind` as its string label (`spki_thumbprint`,
+  `full_cert_fingerprint`, `piv_attested`) instead of the numeric ordinal, matching REST, gRPC
+  and QUIC, and omit `certBindings[].notAfter` when the binding has no expiry instead of
+  sending the zero time.
 
 ### Added
 
@@ -233,142 +366,6 @@ are not reconstructed here — their history is in the git log.
   file. The in-process driver takes a `concurrency=` DSN parameter.
 - `sealedwindow.Admission`, `Names.Transition` and the per-transport
   `*Transition` derivations; `ListenerProbe.Admit`.
-
-### Changed — BREAKING
-
-- **A per-database barrier is accepted only where it is on the database's data
-  path, so a non-system tenant can no longer create one.** Until this release a
-  barrier was accepted on a `backend: raft` database and on any database of a
-  volume- or raft-isolated tenant, although none of those is served from the
-  store the barrier wraps — the barrier was decorative. Those requests now fail
-  with `database.BarrierOffDataPathError` (`422` / `FAILED_PRECONDITION`). The
-  one remaining shape is a non-raft database with an explicit `--data-dir`,
-  which only the system tenant can set, so until per-database storage bindings
-  land (they restore per-database barriers for every tenant and backend, with
-  the barrier on the data path) tenants cannot have one. A barrier-enabled
-  record already on disk -- a raft database's, or any database's of a volume-
-  or raft-isolated tenant -- still opens, sealed, fails closed until unsealed,
-  and is named in a startup warning.
-- **`service.BarrierSealedError` names the sealed database in `Database`.** A
-  refusal because a database's own barrier is sealed now carries the database
-  in `Database` and reads `barrier sealed for database: <name> (tenant: <id>)`;
-  `TenantID` alone, and the `barrier sealed for tenant: <id>` text, now mean
-  the tenant's barrier. A client that took every `BarrierSealedError` to be the
-  tenant's must check `Database` first.
-- **etcd listeners need TLS, the node's authentication and a client
-  certificate.** A listener no longer starts without TLS and authentication; a
-  client without a certificate, or from a tenant other than the database's
-  owner, is refused. Only the mapped RPCs are served: `Auth.*`, member
-  changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader` and
-  `Downgrade` are refused with `PERMISSION_DENIED` (previously stubs, no-ops or
-  `Unimplemented`). Keys are stored under the database's
-  `<tenant>/<database>/` namespace rather than at the shard root, so data
-  written through an etcd listener before this release is not visible through
-  it; export it with the previous binary and re-import it. `Compact` on the
-  shared shard is reserved to the system tenant, as on every other transport.
-- **SQL `CREATE DATABASE` / `DROP DATABASE` now require `databases:create` /
-  `databases:delete`**, and a tenant session creates a database its tenant
-  owns (counted against its quota) and can drop only its own. A role that
-  relied on reaching either statement without those grants, or a tenant that
-  relied on dropping a database it does not own, is refused.
-- **RAG needs the node's database registry.** It is bound by the server at
-  start; a server composed without one refuses RAG with
-  `service.CapabilityUnsupportedError`. `qrdbd`, `sdk/go/node` and the
-  `node://` driver all compose one.
-  `service.NewScopedRAGStore` takes a `*service.RAGBinding`.
-- **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
-  `KVServicer`. RAG documents ingested before this release sit at the store
-  root and are no longer read; re-ingest them.
-- **`database.TenantAccessDeniedError` is removed.** Nothing returns it: a
-  tenant addressing another tenant's database now gets
-  `database.NotFoundError` (`404` / `NOT_FOUND`) instead of `403` /
-  `PERMISSION_DENIED`. A SQL session sees only its own tenant's databases in
-  `HasDatabase` and `USE`, as it already did in `SHOW DATABASES`.
-- **`wal` and `nodehost` are no longer valid database names.** Creating one
-  fails with `database.ReservedNameError` (`400` / `INVALID_ARGUMENT`). A
-  database of either name created before this release still opens.
-- **`Client.DatabaseScoped` returns `(*Client, error)`** and
-  `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
-  transport that cannot scope refuses instead of returning the unscoped
-  client. Scoping to `""` or `system` returns the receiver.
-- **Creating a raft-backed or volume-isolated database needs its provisioning
-  permission.** A role holding `databases:create` but not
-  `databases:create_raft` can no longer create a `backend: raft` database or
-  any database of a raft-isolated tenant; one without `databases:create_volume`
-  can no longer create a database of a volume-isolated tenant. The built-in
-  roles that grant database management hold both.
-- **etcd is served only by an `engine: kv` database on a node in mode
-  `raft`.** Enabling etcd on a timeseries or vector database is refused at
-  create and on update with `database.EtcdEngineUnsupportedError` (`400` /
-  `INVALID_ARGUMENT`); it would have served that engine's internal keys. A
-  standalone node's etcd listener refuses to start
-  (`service.CapabilityUnsupportedError`, "requires mode: raft"): MVCC, leases
-  and watches are raft-only on every other transport, and the listener used to
-  serve them anyway. `backend: raft` is not required -- the documentation
-  said it was, and nothing checked it.
-- **The sealed-window allowlist is trimmed to verbs that are justified as
-  anonymous.** Officer list, rekey, recovery-key generate / delete / status,
-  external officer enrollment (`/v1/init/enroll-external-officer`,
-  `CeremonyEnrollExternalOfficer`), and the `/v1/init/` and `/v1/bootstrap/`
-  REST prefixes are no longer reachable while the barrier is sealed, on any
-  transport: they answer `503` / `UNAVAILABLE`. Rekey and the recovery-key
-  verbs already refused while sealed. Use `barrier officer claim-status`
-  during first boot, and `barrier officer list` once the node is unsealed.
-  The REST allowlist can now hold method-qualified entries (`POST
-  /v1/barrier/officers`), so a composer matching entries itself must use
-  `sealedwindow.RESTEntryMatches`.
-- **The boot-time sealed-window listener refuses every request once the
-  barrier is unsealed**, with `503` and `{"code":"SEALED_WINDOW_CLOSED"}` on
-  REST, and `UNAVAILABLE` with `sealed-window listener closed: barrier
-  unsealed` on gRPC, Unix, QUIC and MCP. A client polling it across the unseal
-  retries against the regular listener. It no longer starts the MySQL or
-  PostgreSQL wire protocols, which carry no sealed-window verb.
-- Writing `roleIDs` (`CreateUser`, `UpdateUser`) or `roleBindings` or `attributes`
-  (`UpdateUser`) requires `roles:assign` in the user's tenant, and in the tenant of every
-  binding written, on every transport including embedded; `AssignRole` and `UnassignRole` go
-  through the same gate (`roles:assign` / `roles:unassign` in the user's tenant, and an assigned
-  role is validated like any other). Every referenced role must exist
-  and belong to that tenant itself -- the system tenant's built-in roles are not assignable in
-  other tenants, which seed their own (400 / `INVALID_ARGUMENT`) -- whether or not RBAC is enabled; a node
-  with no role service refuses the write (501 / `UNIMPLEMENTED`).
-- User attributes reach ABAC policies only as `subject.user_attrs.<key>` (match key
-  `user_attrs.<key>`), never as the authenticated `subject.attrs.<key>`, so an attribute
-  cannot forge a certificate- or token-derived value.
-- `User.Factors` is removed. Factors and MFA state are read from the auth-factor store once
-  per response; if that read fails the request fails with 503 / `UNAVAILABLE` instead of
-  reporting no second factor.
-- **`service.SequenceServicer` carries an epoch** (#547).
-  `Allocate` returns `(first, epoch, err)`, and a new `Epoch` method reads a
-  sequence's current epoch. `Reset`, and a MySQL-dialect `TRUNCATE TABLE`'s
-  sequence reset, advance the epoch in the same compare-and-swap that zeroes
-  the counter. Implementations and callers outside this module must follow
-  the new signature. The stored value grows from 8 to 16 bytes, counter
-  first; a counter-only value written by an earlier release is read as that
-  counter at epoch 0, so no sequence restarts on upgrade.
-- **Upgrade note: finish upgrading every node before running
-  `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`** (#547).
-  During a mixed-version window, a node still on an earlier release rewrites
-  a sequence's stored value as 8 bytes whenever it allocates, which resets
-  its epoch to 0. A later reset can then bring the epoch back to a value
-  that a block reserved before the first reset still carries, and that block
-  would be accepted as current.
-- **An embedded create is tenant-scoped and provisioning-checked.** The
-  embedded transport's `CreateDatabase` called the system-scoped `Create`; it
-  now creates through `CreateForTenant` for the context's tenant (owned by it,
-  inside its quota; a context with no tenant creates for the system tenant).
-  On an `sdk/go/node` node with request authentication, a raft-backed or
-  volume-isolated create through it needs an identity in the context holding
-  `databases:create_raft` / `databases:create_volume`, as on every other
-  transport.
-- A `roleBindings` entry on a user outside the system tenant must name that user's own tenant;
-  any other is refused with `user.RoleBindingTenantError` (400 / `INVALID_ARGUMENT`), because
-  such a user is refused every request on another tenant before a binding is consulted and the
-  binding could never grant. A system-tenant user may hold bindings in any tenant. A binding's
-  tenant is stored normalized, so an empty tenant is stored as `system`.
-- MCP user records render `certBindings[].kind` as its string label (`spki_thumbprint`,
-  `full_cert_fingerprint`, `piv_attested`) instead of the numeric ordinal, matching REST, gRPC
-  and QUIC, and omit `certBindings[].notAfter` when the binding has no expiry instead of
-  sending the zero time.
 
 ### Changed
 
@@ -580,6 +577,17 @@ are not reconstructed here — their history is in the git log.
   silently replaced the first. A nil factor is refused with
   `*authfactors.FactorRegisterError`. `FactorRegistry.List` reports normalised
   names.
+- **A user update that raced another update of an index handle failed with a
+  bogus conflict.** Re-claiming a username, email or certificate thumbprint
+  could find the key held and then, before reading who held it, see the
+  holder release it; the update reported the handle as taken (for a
+  thumbprint, "already bound to user 0") instead of taking the now-free key.
+  The claim is now retried, and a key that changes hands on every attempt
+  fails with `user.HandleContendedError`. A rollback that finds its released
+  handle already re-inserted for the same user no longer reports it as
+  `HandleReclaimedError`. Together these turned a lost concurrent withdrawal
+  of the bootstrap admin's keys into an `IndexCompensationError` rather than
+  the expected lockout refusal.
 
 ### Security
 
