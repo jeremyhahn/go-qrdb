@@ -209,7 +209,7 @@ lease  = the owning transaction's lease
 
 | Input | Source |
 |---|---|
-| The statement's lock clauses | the first statement of `ctx.Query()`, parsed with the engine's parser options and walked once; cached by text in a bounded map |
+| The statement's lock clauses | the first statement of `ctx.Query()`, parsed with the parser options of the session's `sql_mode` and walked once; cached in a bounded map keyed by (parser options, text), since one text can parse differently under two `sql_mode`s (`ANSI_QUOTES`). Under `CLIENT_MULTI_STATEMENTS` go-mysql-server runs each statement with the remainder starting at it as `ctx.Query()`, so the first statement is always the current one |
 | The session's concurrency mode | `qrdb_concurrency`; `database` (the default) defers to the database's `sql.concurrency`; absent everywhere means `optimistic` |
 | The session's lock-wait timeout | `innodb_lock_wait_timeout` (seconds) |
 

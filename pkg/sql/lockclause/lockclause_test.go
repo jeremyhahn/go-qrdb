@@ -158,6 +158,23 @@ func TestAnalyze_CacheIsBoundedAndConsistent(t *testing.T) {
 	assert.Equal(t, Exclusive, analyzeText(t, "SELECT * FROM cached FOR UPDATE").Locking("cached"))
 }
 
+// The same text parses differently under different sql_mode parser options:
+// with ANSI_QUOTES a double-quoted name is an identifier, without it a
+// string. A cache keyed by text alone would answer one session with the
+// analysis made for another's sql_mode.
+func TestAnalyze_CacheIsKeyedByParserOptions(t *testing.T) {
+	const q = `SELECT * FROM "quoted_mode_t" FOR UPDATE`
+	plain := Analyze(context.Background(), q, ast.ParserOptions{})
+	ansi := Analyze(context.Background(), q, ast.ParserOptions{AnsiQuotes: true})
+	assert.True(t, plain.Empty(), "without ANSI_QUOTES the text does not parse")
+	assert.Equal(t, Exclusive, ansi.Locking("quoted_mode_t"), "with ANSI_QUOTES it names a table")
+
+	// And in the other order.
+	const q2 = `SELECT * FROM "quoted_mode_u" FOR UPDATE`
+	assert.Equal(t, Exclusive, Analyze(context.Background(), q2, ast.ParserOptions{AnsiQuotes: true}).Locking("quoted_mode_u"))
+	assert.True(t, Analyze(context.Background(), q2, ast.ParserOptions{}).Empty())
+}
+
 func TestTokenize_SkipsLiteralsAndComments(t *testing.T) {
 	toks := tokenize("SELECT 'a\\'b' , \"c\"\"d\" , `e``f` # x\n /* y */ -- z\n g")
 	var words []string

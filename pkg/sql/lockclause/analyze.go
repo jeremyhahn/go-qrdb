@@ -70,10 +70,20 @@ func (in *Intent) Empty() bool {
 	return len(in.locking) == 0 && len(in.targets) == 0
 }
 
-// cacheLimit bounds the analysis cache. A statement text is the cache key,
-// and only texts that can carry a clause or a DML target are cached, so the
-// working set is the application's distinct locking and DML statements.
+// cacheLimit bounds the analysis cache. Only texts that can carry a clause
+// or a DML target are cached, so the working set is the application's
+// distinct locking and DML statements.
 const cacheLimit = 4096
+
+// cacheKey identifies one analysis: the statement text and the parser
+// options it was parsed with. The options come from the session's
+// sql_mode, and the same text can parse differently under two of them
+// (ANSI_QUOTES turns a double-quoted string into an identifier), so the
+// text alone is not a key.
+type cacheKey struct {
+	opts  ast.ParserOptions
+	query string
+}
 
 // cache holds one generation of analyses; when it fills, the next store
 // swaps in an empty generation rather than evicting entry by entry.
@@ -85,14 +95,18 @@ var (
 func init() { cache.Store(new(sync.Map)) }
 
 // Analyze returns the lock intent of the first statement of query, parsed
-// with opts after Normalize. A text that cannot hold a lock clause or a DML
-// statement is answered without parsing. A text that does not parse has no
-// intent: the engine refuses it on its own parse.
+// with opts after Normalize. The first statement is the current one: under
+// CLIENT_MULTI_STATEMENTS the engine runs each statement of a text with the
+// remainder that starts at that statement as its query text. A text that
+// cannot hold a lock clause or a DML statement is answered without parsing.
+// A text that does not parse has no intent: the engine refuses it on its own
+// parse.
 func Analyze(ctx context.Context, query string, opts ast.ParserOptions) *Intent {
 	if !mayLock(query) {
 		return none
 	}
-	if v, ok := cache.Load().Load(query); ok {
+	key := cacheKey{opts: opts, query: query}
+	if v, ok := cache.Load().Load(key); ok {
 		return v.(*Intent) //nolint:errcheck // the cache only ever holds *Intent
 	}
 	in := analyze(ctx, query, opts)
@@ -102,7 +116,7 @@ func Analyze(ctx context.Context, query string, opts ast.ParserOptions) *Intent 
 		cache.Store(m)
 		cacheSize.Store(1)
 	}
-	m.Store(query, in)
+	m.Store(key, in)
 	return in
 }
 

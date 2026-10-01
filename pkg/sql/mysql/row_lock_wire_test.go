@@ -37,7 +37,7 @@ import (
 
 // newRowLockWire starts a MySQL wire server over a real in-memory store
 // (sqltest.NewLockingHarness) and returns a client pool connected to it.
-func newRowLockWire(t *testing.T) *sql.DB {
+func newRowLockWire(t *testing.T, opts ...func(*gomysql.Config)) *sql.DB {
 	t.Helper()
 	h, closeFn, err := sqltest.NewLockingHarness()
 	require.NoError(t, err)
@@ -58,6 +58,9 @@ func newRowLockWire(t *testing.T) *sql.DB {
 	cfg.DBName = "qrdb"
 	cfg.AllowNativePasswords = true
 	cfg.Timeout = 30 * time.Second
+	for _, o := range opts {
+		o(cfg)
+	}
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -182,4 +185,21 @@ func TestMySQLWire_ClosedConnection_ReleasesItsLocks(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// Under CLIENT_MULTI_STATEMENTS one COM_QUERY carries several statements.
+// Lock intent is read from each statement's own text: a FOR UPDATE that is
+// not the first statement still locks, and a FOR UPDATE in one statement
+// does not leak into the next.
+func TestMySQLWire_MultiStatements_LockIntentPerStatement(t *testing.T) {
+	db := newRowLockWire(t, func(c *gomysql.Config) { c.MultiStatements = true })
+	c1, c2 := pinned(t, db), pinned(t, db)
+
+	mustExec(t, c1, "BEGIN; SELECT 1; SELECT * FROM accounts WHERE id = 1 FOR UPDATE; SELECT * FROM accounts WHERE id = 2")
+	requireMySQLError(t, drain(c2, "SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT"), rowlock.SQLCodeLockNowait)
+	require.NoError(t, drain(c2, "SELECT * FROM accounts WHERE id = 2 FOR UPDATE NOWAIT"),
+		"the plain SELECT after the locking one took no lock")
+	mustExec(t, c1, "COMMIT")
+	mustExec(t, c2, "ROLLBACK")
+	require.NoError(t, drain(c2, "SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT"))
 }
