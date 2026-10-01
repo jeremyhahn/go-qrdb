@@ -25,12 +25,15 @@ func TestWithSOPIN_IsTheTransportBinding(t *testing.T) {
 	var _ *SOPINConflictError = (*transport.SOPINConflictError)(nil)
 	var _ *SOPINRequiresTLSError = (*transport.SOPINRequiresTLSError)(nil)
 	var _ *SOPINForeignHostError = (*transport.SOPINForeignHostError)(nil)
-	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
-	if pin, ok := transport.SOPINFromContext(ctx); !ok || string(pin) != "1234" {
-		t.Fatalf("the transports do not see the PIN sdk.WithSOPIN bound: %q, %v", pin, ok)
+	ctx, release, err := WithSOPIN(context.Background(), []byte("1234"))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	if pin, ok, err := transport.SOPINFromContext(ctx); err != nil || !ok || string(pin) != "1234" {
+		t.Fatalf("the transports do not see the PIN sdk.WithSOPIN bound: %q, %v, %v", pin, ok, err)
 	}
 	release()
-	if _, ok := transport.SOPINFromContext(ctx); ok {
+	if _, ok, _ := transport.SOPINFromContext(ctx); ok {
 		t.Fatal("the PIN survived release")
 	}
 }

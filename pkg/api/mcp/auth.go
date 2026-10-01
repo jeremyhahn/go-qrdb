@@ -73,13 +73,7 @@ func withSOFactor(ctx context.Context, r *http.Request) context.Context {
 	if r == nil {
 		return ctx
 	}
-	factor := authmw.SOFactor{Secure: r.TLS != nil, ClientIP: r.RemoteAddr}
-	if factor.Secure {
-		if pin := r.Header.Get(authmw.SOPINHeader); pin != "" {
-			factor.PIN = []byte(pin)
-		}
-	}
-	return authmw.WithSOFactor(ctx, factor)
+	return authmw.WithSOFactor(ctx, authmw.SOFactorFromHTTPRequest(r))
 }
 
 // withHTTPRequestCredentials binds the request's transport-level credential

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ func connectREST(t *testing.T, address string, tlsCfg *tls.Config) *Transport {
 
 func rekeyWithPIN(t *testing.T, tr *Transport) error {
 	t.Helper()
-	ctx, release := transport.WithSOPIN(context.Background(), []byte(soTLSTestPIN))
+	ctx, release := sotest.BindPIN(t, soTLSTestPIN)
 	defer release()
 	_, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3})
 	return err

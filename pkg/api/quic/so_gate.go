@@ -22,7 +22,6 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // soPINField is the request-message field that carries the SO PIN on QUIC.
@@ -82,11 +81,7 @@ func (s *Server) enforceSOGate(ctx context.Context, conn *quicgo.Conn, method st
 	if _, gated := authmw.SOPermissions[perm]; !gated {
 		return nil
 	}
-	factor := authmw.SOFactor{
-		PIN:      soPINFromPayload(method, payload),
-		Secure:   true,
-		ClientIP: conn.RemoteAddr().String(),
-	}
-	defer secure.Wipe(factor.PIN)
+	factor := authmw.NewSOFactor(soPINFromPayload(method, payload), true, conn.RemoteAddr().String())
+	defer factor.Destroy()
 	return s.soGate.Enforce(authmw.WithSOFactor(ctx, factor), perm, method, "call")
 }

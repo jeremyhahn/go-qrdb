@@ -88,9 +88,12 @@ Bind the PIN to the context of the SO call; every network transport sends it
 in its own carrier:
 
 ```go
-ctx, release := sdk.WithSOPIN(ctx, pin)
+ctx, release, err := sdk.WithSOPIN(ctx, pin)
+if err != nil {
+	return err
+}
 defer release()
-_, err := client.Barrier().BarrierRekey(ctx, &sdk.BarrierRekeyRequest{Threshold: 2, Total: 3})
+_, err = client.Barrier().BarrierRekey(ctx, &sdk.BarrierRekeyRequest{Threshold: 2, Total: 3})
 ```
 
 **The SDK sends the PIN only over TLS, and only to the configured host.**
@@ -107,10 +110,21 @@ socket is a local channel, not an encrypted one: **SO operations over the Unix
 socket need TLS**, like every other transport. The server refuses an SO PIN
 read off a non-TLS connection in any case.
 
-`WithSOPIN` copies the PIN; `release` wipes the SDK's copy, after which the
-context presents no PIN. The transports take a fresh copy per request, write
-it and wipe it, and never log it. HTTP header and gRPC metadata values are Go
-strings, which cannot be wiped. On QUIC, where the PIN shares the request's
+`WithSOPIN` seals a copy of the PIN in protected memory (`secure.Secret`) and
+leaves the caller's buffer alone; `release` destroys the SDK's copy, after
+which the context presents no PIN. Its error is a protected-memory failure
+sealing the PIN. The transports open a plaintext copy per request, write it
+and wipe it, and never log it; a PIN that cannot be opened fails the call
+before it is sent. HTTP header and gRPC metadata values are Go strings, which
+cannot be wiped.
+
+The server holds the PIN the same way. Each transport seals the PIN it reads
+into the request's factor (`middleware.NewSOFactor`), the gate opens it only
+for the verifier and wipes that copy when the verifier returns, and the sealed
+PIN is destroyed once the gate has decided, or when the request ends if the
+gate never ran. A PIN the node cannot hold in protected memory is refused as
+`SOPINUnavailableError` (503 / `Unavailable`, retryable) and is not audited as
+an invalid PIN. On QUIC, where the PIN shares the request's
 `so_pin` field, a request whose own `SOPin` differs from the bound PIN is
 refused with `sdk.SOPINConflictError` rather than sending either.
 

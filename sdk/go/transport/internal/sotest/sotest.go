@@ -108,7 +108,7 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierCli
 	t.Run("SO rekeys with the PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		c := start(t, f)
-		ctx, release := transport.WithSOPIN(context.Background(), []byte(PIN))
+		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err != nil {
 			t.Fatalf("BarrierRekey with the SO PIN: %v", err)
@@ -120,7 +120,7 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierCli
 	t.Run("SO deletes recovery keys with the PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		c := start(t, f)
-		ctx, release := transport.WithSOPIN(context.Background(), []byte(PIN))
+		ctx, release := BindPIN(t, PIN)
 		defer release()
 		if err := c.BarrierDeleteRecoveryKeys(ctx); err != nil {
 			t.Fatalf("BarrierDeleteRecoveryKeys with the SO PIN: %v", err)
@@ -142,7 +142,7 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierCli
 	t.Run("a released PIN is no longer sent", func(t *testing.T) {
 		f := NewFixture(t)
 		c := start(t, f)
-		ctx, release := transport.WithSOPIN(context.Background(), []byte(PIN))
+		ctx, release := BindPIN(t, PIN)
 		release()
 		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err == nil {
 			t.Fatal("BarrierRekey after release succeeded")
@@ -151,6 +151,17 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierCli
 			t.Fatal("a refused rekey reached the service")
 		}
 	})
+}
+
+// BindPIN binds pin with transport.WithSOPIN, failing the test if it cannot
+// be sealed.
+func BindPIN(t *testing.T, pin string) (context.Context, func()) {
+	t.Helper()
+	ctx, release, err := transport.WithSOPIN(context.Background(), []byte(pin))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	return ctx, release
 }
 
 // tlsPair returns a self-signed TLS 1.3 server config for localhost that

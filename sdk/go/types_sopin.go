@@ -22,10 +22,14 @@ import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 
 // WithSOPIN returns a context that presents pin as the SO dual-factor PIN on
 // every call made with it, on every network transport, and a release function
-// that wipes the SDK's copy of the PIN. Scope the context to the SO operation
-// and defer release:
+// that destroys the SDK's copy of the PIN, which it holds sealed in protected
+// memory. The error is a protected-memory failure sealing it. Scope the
+// context to the SO operation and defer release:
 //
-//	ctx, release := sdk.WithSOPIN(ctx, pin)
+//	ctx, release, err := sdk.WithSOPIN(ctx, pin)
+//	if err != nil {
+//		return err
+//	}
 //	defer release()
 //	_, err := client.Barrier().BarrierRekey(ctx, req)
 //
@@ -35,9 +39,9 @@ import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 // sent only over TLS and, on REST and MCP, only to the configured host on
 // every hop: otherwise the call is refused with SOPINRequiresTLSError or
 // SOPINForeignHostError before anything is sent. The PIN is
-// copied, never logged, and the copies the transports make are wiped once
-// written; HTTP header and gRPC metadata values are Go strings, which cannot
-// be wiped. (Aliases sdk/go/transport.WithSOPIN.)
+// sealed in protected memory and never logged, and the plaintext copies the
+// transports open are wiped once written; HTTP header and gRPC metadata
+// values are Go strings, which cannot be wiped. (Aliases sdk/go/transport.WithSOPIN.)
 var WithSOPIN = transport.WithSOPIN
 
 // SOPINRequiresTLSError is returned when a call made with a context bound by

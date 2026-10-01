@@ -22,7 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const (
@@ -112,15 +111,8 @@ func SOMiddleware(
 			return
 		}
 
-		// The header is bound only over TLS: a PIN sent in plaintext is never
-		// read, and the gate refuses the request as insecure.
-		factor := SOFactor{Secure: r.TLS != nil, ClientIP: r.RemoteAddr}
-		if factor.Secure {
-			if pin := r.Header.Get(SOPINHeader); pin != "" {
-				factor.PIN = []byte(pin)
-			}
-		}
-		defer secure.Wipe(factor.PIN)
+		factor := SOFactorFromHTTPRequest(r)
+		defer factor.Destroy()
 		ctx := WithSOFactor(r.Context(), factor)
 
 		if err := gate.Enforce(ctx, perm, r.URL.Path, r.Method); err != nil {
@@ -130,4 +122,20 @@ func SOMiddleware(
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// SOFactorFromHTTPRequest builds the SO factor an HTTP request presents, for
+// the REST middleware and the MCP endpoint alike. The SOPINHeader is read
+// only when the request arrived over TLS: a PIN sent in plaintext is never
+// held, and the gate refuses the request as insecure. The caller destroys the
+// factor (SOFactor.Destroy, or WipeSOFactor once it is bound).
+func SOFactorFromHTTPRequest(r *http.Request) SOFactor {
+	isSecure := r.TLS != nil
+	var pin []byte
+	if isSecure {
+		if h := r.Header.Get(SOPINHeader); h != "" {
+			pin = []byte(h)
+		}
+	}
+	return NewSOFactor(pin, isSecure, r.RemoteAddr)
 }

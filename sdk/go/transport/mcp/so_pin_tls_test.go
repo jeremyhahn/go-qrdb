@@ -29,6 +29,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,9 @@ func connectMCP(t *testing.T, address string, tlsCfg *tls.Config) *Transport {
 	return tr
 }
 
-func rekeyWithPIN(tr *Transport) error {
-	ctx, release := transport.WithSOPIN(context.Background(), []byte(soTLSTestPIN))
+func rekeyWithPIN(t *testing.T, tr *Transport) error {
+	t.Helper()
+	ctx, release := sotest.BindPIN(t, soTLSTestPIN)
 	defer release()
 	_, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3})
 	return err
@@ -100,7 +102,7 @@ func TestSOPIN_PlaintextConnectionNeverCarriesThePIN(t *testing.T) {
 	srv := httptest.NewServer(probe.handler())
 	defer srv.Close()
 
-	err := rekeyWithPIN(connectMCP(t, srv.URL+"/mcp", nil))
+	err := rekeyWithPIN(t, connectMCP(t, srv.URL+"/mcp", nil))
 	if probe.sawPIN() {
 		t.Fatal("the SO PIN crossed a plaintext MCP connection")
 	}
@@ -123,7 +125,7 @@ func TestSOPIN_RedirectToAnotherHostNeverCarriesThePIN(t *testing.T) {
 	// One trust store for both: httptest servers share a certificate.
 	pool := x509.NewCertPool()
 	pool.AddCert(origin.Certificate())
-	err := rekeyWithPIN(connectMCP(t, origin.URL+"/mcp", &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}))
+	err := rekeyWithPIN(t, connectMCP(t, origin.URL+"/mcp", &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}))
 	if probe.sawPIN() {
 		t.Fatal("the SO PIN followed a redirect to another host")
 	}
@@ -139,7 +141,7 @@ func TestSOPIN_ConfiguredTLSHostCarriesThePIN(t *testing.T) {
 	defer srv.Close()
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	if err := rekeyWithPIN(connectMCP(t, srv.URL+"/mcp", &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})); err != nil {
+	if err := rekeyWithPIN(t, connectMCP(t, srv.URL+"/mcp", &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})); err != nil {
 		t.Fatalf("rekey over TLS: %v", err)
 	}
 	if !probe.sawPIN() {

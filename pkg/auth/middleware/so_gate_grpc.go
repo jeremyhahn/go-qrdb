@@ -60,19 +60,23 @@ func enforceSOGateGRPC(ctx context.Context, gate *SOGate, fullMethod string) (co
 	if !ok {
 		return ctx, nil
 	}
-	var factor SOFactor
+	var (
+		clientIP string
+		isSecure bool
+		pin      []byte
+	)
 	if p, ok := peer.FromContext(ctx); ok {
 		if p.Addr != nil {
-			factor.ClientIP = p.Addr.String()
+			clientIP = p.Addr.String()
 		}
-		_, factor.Secure = p.AuthInfo.(credentials.TLSInfo)
+		_, isSecure = p.AuthInfo.(credentials.TLSInfo)
 	}
-	if factor.Secure {
+	if isSecure {
 		if vals := metadata.ValueFromIncomingContext(ctx, SOPINMetadataKey); len(vals) > 0 && vals[0] != "" {
-			factor.PIN = []byte(vals[0])
+			pin = []byte(vals[0])
 		}
 	}
-	ctx = WithSOFactor(ctx, factor)
+	ctx = WithSOFactor(ctx, NewSOFactor(pin, isSecure, clientIP))
 	if err := gate.Enforce(ctx, perm, fullMethod, "call"); err != nil {
 		return ctx, GRPCError(err, codes.Unavailable)
 	}

@@ -39,11 +39,13 @@ const SOPINMetadataKey = "x-qrdb-so-pin"
 type soPINKey struct{}
 
 // soPIN holds the SDK's own copy of an SO PIN for the calls made with one
-// context. The copy is wiped by the release function WithSOPIN returns, and
-// it is never logged: it has no String method and its field is unexported.
+// context, sealed in protected memory. The release function WithSOPIN returns
+// destroys it, and it is never logged: it has no String method and its field
+// is unexported. mu orders release against a transport opening the PIN, so a
+// call racing release either reads the whole PIN or sees none bound.
 type soPIN struct {
 	mu  sync.RWMutex
-	pin []byte
+	pin *secure.Secret
 }
 
 // WithSOPIN returns a context that presents pin as the SO dual-factor PIN on
@@ -58,36 +60,59 @@ type soPIN struct {
 //   - the embedded transport runs in process with no SO gate and ignores it.
 //
 // The server reads it only on the operations its SO gate covers, and only
-// over TLS. WithSOPIN copies pin, so the caller may wipe its own buffer at
-// once; release wipes the SDK's copy and must be called when the calls are
-// done (defer it). After release the context presents no PIN. Scope the
-// context to the SO operation: a PIN bound to a long-lived context rides every
-// request made with it.
-func WithSOPIN(ctx context.Context, pin []byte) (context.Context, func()) {
-	held := &soPIN{pin: append([]byte(nil), pin...)}
+// over TLS. WithSOPIN seals a copy of pin into protected memory, so the
+// caller may wipe its own buffer at once; release destroys the SDK's copy and
+// must be called when the calls are done (defer it). After release the
+// context presents no PIN. An empty pin binds nothing. The error is the
+// protected-memory failure that kept the PIN from being sealed, in which case
+// ctx is returned unchanged and release is a no-op. Scope the context to the
+// SO operation: a PIN bound to a long-lived context rides every request made
+// with it.
+func WithSOPIN(ctx context.Context, pin []byte) (context.Context, func(), error) {
+	if len(pin) == 0 {
+		return context.WithValue(ctx, soPINKey{}, &soPIN{}), func() {}, nil
+	}
+	// NewSecret consumes its argument, so it is handed a copy: the caller's
+	// buffer stays the caller's.
+	sealed, err := secure.NewSecret(append([]byte(nil), pin...))
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	held := &soPIN{pin: sealed}
 	release := func() {
 		held.mu.Lock()
-		secure.Wipe(held.pin)
+		held.pin.Destroy()
 		held.pin = nil
 		held.mu.Unlock()
 	}
-	return context.WithValue(ctx, soPINKey{}, held), release
+	return context.WithValue(ctx, soPINKey{}, held), release, nil
 }
 
-// SOPINFromContext returns a copy of the SO PIN bound by WithSOPIN, and
-// whether one is bound and not yet released. Transports call it at the last
-// moment and wipe the copy once it has been written to the wire.
-func SOPINFromContext(ctx context.Context) ([]byte, bool) {
+// SOPINFromContext returns a plaintext copy of the SO PIN bound by WithSOPIN,
+// and whether one is bound and not yet released. Transports call it at the
+// last moment and wipe the copy once it has been written to the wire. The
+// error is a protected-memory failure opening the sealed PIN; a transport
+// refuses the call on it rather than sending the call without its PIN.
+func SOPINFromContext(ctx context.Context) ([]byte, bool, error) {
 	held, ok := ctx.Value(soPINKey{}).(*soPIN)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	held.mu.RLock()
 	defer held.mu.RUnlock()
-	if len(held.pin) == 0 {
-		return nil, false
+	if held.pin == nil {
+		return nil, false, nil
 	}
-	return append([]byte(nil), held.pin...), true
+	buf, err := held.pin.Open()
+	if err != nil {
+		return nil, false, err
+	}
+	defer buf.Destroy()
+	pin, err := secure.CopyOut(buf)
+	if err != nil {
+		return nil, false, err
+	}
+	return pin, true, nil
 }
 
 // SOPINConflictError is returned by the QUIC transport when a request's own
@@ -108,7 +133,10 @@ func (e *SOPINConflictError) Error() string {
 // the request's own SOPin, or the PIN bound by WithSOPIN when the request has
 // none. Both set and different is a *SOPINConflictError.
 func ResolveSOPIN(ctx context.Context, method, requestPIN string) (string, error) {
-	bound, ok := SOPINFromContext(ctx)
+	bound, ok, err := SOPINFromContext(ctx)
+	if err != nil {
+		return "", err
+	}
 	if !ok {
 		return requestPIN, nil
 	}
@@ -150,7 +178,10 @@ func SOPINStreamClientInterceptor(transportName string, secure bool) grpc.Stream
 }
 
 func withSOPINMetadata(ctx context.Context, transportName string, tlsConn bool) (context.Context, error) {
-	pin, ok := SOPINFromContext(ctx)
+	pin, ok, err := SOPINFromContext(ctx)
+	if err != nil {
+		return ctx, err
+	}
 	if !ok {
 		return ctx, nil
 	}
@@ -196,7 +227,10 @@ type soPINRoundTripper struct {
 
 // RoundTrip implements http.RoundTripper.
 func (rt *soPINRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	pin, ok := SOPINFromContext(req.Context())
+	pin, ok, err := SOPINFromContext(req.Context())
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return rt.base.RoundTrip(req)
 	}

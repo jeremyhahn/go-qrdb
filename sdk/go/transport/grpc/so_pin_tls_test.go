@@ -51,7 +51,7 @@ func TestSOPIN_PlaintextConnectionNeverCarriesThePIN(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tr.Close() })
 
-	ctx, release := transport.WithSOPIN(context.Background(), []byte(sotest.PIN))
+	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()
 	_, err = tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3})
 	if probe.SawPIN() {

@@ -212,11 +212,12 @@ are not reconstructed here — their history is in the git log.
   function, so there is one rule. No cross-tenant thumbprint index is added.
   `pinnedTrustDomain == ""` accepts any trust domain and is for tests only;
   composers must pin.
-- `sdk.WithSOPIN(ctx, pin) (ctx, release)`: the Go SDK presents the SO
+- `sdk.WithSOPIN(ctx, pin) (ctx, release, err)`: the Go SDK presents the SO
   dual-factor PIN on every network transport -- the `X-QRDB-SO-PIN` header on
   REST and MCP, `x-qrdb-so-pin` metadata on gRPC and the Unix socket, the
-  request's `so_pin` field on QUIC. The PIN is copied, never logged, and
-  wiped by `release`; per-request copies are wiped once written. A QUIC
+  request's `so_pin` field on QUIC. The PIN is sealed in protected memory,
+  never logged, and destroyed by `release`; per-request plaintext copies are
+  wiped once written. `err` is a protected-memory failure sealing it. A QUIC
   request whose own `SOPin` differs is refused with `sdk.SOPINConflictError`.
 - Every transport's user response carries `roleBindings`, `attributes`, the metadata of the
   account's enrolled auth `factors` (never their credential data), and `mfaEnabled`,
@@ -939,6 +940,17 @@ are not reconstructed here — their history is in the git log.
   already refused in that case. One predicate (`so_dual_factor` set and an SO
   authenticator wired) now governs all five transports. With no one to
   authenticate, the gate refuses every SO-gated operation.
+- **The SO PIN is held in protected memory, on the server and in the Go
+  SDK.** The server's per-request SO factor (`middleware.SOFactor.PIN`) and
+  the SDK's PIN bound by `sdk.WithSOPIN` were plain byte slices, which
+  `make secure-analyzer` refuses. Both are now a `secure.Secret`: sealed when
+  the PIN is read, opened only for the verifier or the wire write, and
+  destroyed when the gate has decided or `release` runs. The server builds
+  the factor with the new `middleware.NewSOFactor` (and
+  `middleware.SOFactorFromHTTPRequest` for REST and MCP). A PIN the node
+  cannot hold in protected memory is refused with the new
+  `middleware.SOPINUnavailableError` (503 / `Unavailable`), not reported as a
+  bad PIN.
 
 ### Known limits
 

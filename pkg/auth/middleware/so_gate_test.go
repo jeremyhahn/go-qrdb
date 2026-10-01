@@ -16,9 +16,11 @@ package middleware
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -31,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // soGateMethod is a gRPC method whose (qrdb.v1.permission) option is
@@ -77,6 +80,7 @@ func TestSOGate_ErrorsClassifyAsEveryTransportMapsThem(t *testing.T) {
 		{&SOFactorError{Reason: SOReasonPINRequired}, AuthFailureUnauthenticated, http.StatusUnauthorized, codes.Unauthenticated},
 		{&SORoleRequiredError{}, AuthFailureUnauthorized, http.StatusForbidden, codes.PermissionDenied},
 		{&SORoleUnresolvedError{Err: errors.New("store down")}, AuthFailureUnavailable, http.StatusServiceUnavailable, codes.Unavailable},
+		{&SOPINUnavailableError{Err: errors.New("sealer wiped")}, AuthFailureUnavailable, http.StatusServiceUnavailable, codes.Unavailable},
 	}
 	for _, tc := range cases {
 		if got := ClassifyAuthError(tc.err); got != tc.class {
@@ -168,47 +172,168 @@ func allZero(b []byte) bool {
 	return true
 }
 
-// TestSOGate_EnforceWipesThePresentedPIN: the server's copy of the PIN is
-// wiped once the gate has decided, whether it admitted the request or
-// refused it.
-func TestSOGate_EnforceWipesThePresentedPIN(t *testing.T) {
-	gate, soRoleID := newTestSOGate(t)
-	for _, pinText := range []string{soGatePIN, "wrong"} {
-		pinBytes := []byte(pinText)
-		ctx := WithSOFactor(officerCtx(soRoleID), SOFactor{PIN: pinBytes, Secure: true})
-		_ = gate.Enforce(ctx, permission.SealRekey, "r", "a")
-		if !allZero(pinBytes) {
-			t.Fatalf("PIN %q survived Enforce", pinText)
-		}
+// sealedPIN seals pin the way NewSOFactor does, for a factor a test builds by
+// hand to reach a state NewSOFactor never produces.
+func sealedPIN(t *testing.T, pin string) *secure.Secret {
+	t.Helper()
+	s, err := secure.NewSecret([]byte(pin))
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
 	}
-	// Refusals that never reach the verifier wipe it too: a caller without
-	// the SO role, and a factor that did not arrive over TLS.
-	for name, ctx := range map[string]func([]byte) context.Context{
-		"not the SO": func(p []byte) context.Context {
-			return WithSOFactor(auth.WithIdentity(context.Background(), &auth.Identity{Subject: "x", TenantID: soGateTenant}), SOFactor{PIN: p, Secure: true})
-		},
-		"not over TLS": func(p []byte) context.Context {
-			return WithSOFactor(officerCtx(soRoleID), SOFactor{PIN: p})
-		},
+	return s
+}
+
+// requireDestroyed fails unless the sealed PIN can no longer be opened.
+func requireDestroyed(t *testing.T, what string, s *secure.Secret) {
+	t.Helper()
+	buf, err := s.Open()
+	if err == nil {
+		buf.Destroy()
+		t.Fatalf("%s: the sealed PIN survived", what)
+	}
+	var nilSecret *secure.NilSecretError
+	if !errors.As(err, &nilSecret) {
+		t.Fatalf("%s: Open = %v, want *secure.NilSecretError", what, err)
+	}
+}
+
+// TestNewSOFactor: the presented PIN is sealed only over TLS, and the
+// caller's plaintext is wiped on every path.
+func TestNewSOFactor(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
+
+	pinBytes := []byte(soGatePIN)
+	f := NewSOFactor(pinBytes, true, "192.0.2.1:1")
+	defer f.Destroy()
+	if !allZero(pinBytes) {
+		t.Fatal("NewSOFactor left the caller's plaintext in place")
+	}
+	if !f.Secure || f.ClientIP != "192.0.2.1:1" || f.sealErr != nil {
+		t.Fatalf("factor = %+v", f)
+	}
+	got, err := openSOPIN(f.PIN)
+	if err != nil || string(got) != soGatePIN {
+		t.Fatalf("openSOPIN = %q, %v; want the presented PIN", got, err)
+	}
+	secure.Wipe(got)
+
+	for name, tc := range map[string]struct {
+		pin      []byte
+		isSecure bool
+	}{
+		"not over TLS": {[]byte(soGatePIN), false},
+		"no PIN":       {nil, true},
+		"empty PIN":    {[]byte{}, true},
 	} {
-		pinBytes := []byte(soGatePIN)
-		if err := gate.Enforce(ctx(pinBytes), permission.SealRekey, "r", "a"); err == nil {
-			t.Fatalf("%s: admitted", name)
+		f := NewSOFactor(tc.pin, tc.isSecure, "")
+		if f.PIN != nil || f.sealErr != nil || f.Secure != tc.isSecure {
+			t.Fatalf("%s: factor = %+v, want no PIN held", name, f)
 		}
-		if !allZero(pinBytes) {
-			t.Fatalf("%s: PIN survived a refusal", name)
+		if !allZero(tc.pin) {
+			t.Fatalf("%s: the plaintext was not wiped", name)
 		}
 	}
 }
 
-// TestWipeSOFactor: a transport that bound a factor and did not reach the
-// gate -- a request whose permission is not SO-gated -- still wipes it.
-func TestWipeSOFactor(t *testing.T) {
-	pinBytes := []byte("1234")
-	ctx := WithSOFactor(context.Background(), SOFactor{PIN: pinBytes, Secure: true})
-	WipeSOFactor(ctx)
-	if !allZero(pinBytes) {
-		t.Fatal("WipeSOFactor left the PIN in place")
+// TestSOGate_EnforceDestroysThePresentedPIN: the server's sealed PIN is
+// destroyed once the gate has decided, whether it admitted the request or
+// refused it.
+func TestSOGate_EnforceDestroysThePresentedPIN(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
+	gate, soRoleID := newTestSOGate(t)
+	for _, pinText := range []string{soGatePIN, "wrong"} {
+		f := NewSOFactor([]byte(pinText), true, "")
+		_ = gate.Enforce(WithSOFactor(officerCtx(soRoleID), f), permission.SealRekey, "r", "a")
+		requireDestroyed(t, "PIN "+pinText, f.PIN)
 	}
-	WipeSOFactor(context.Background()) // no factor bound: no-op
+	// Refusals that never reach the verifier destroy it too: a caller without
+	// the SO role, and a factor that did not arrive over TLS.
+	notSO := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "x", TenantID: soGateTenant})
+	for name, tc := range map[string]struct {
+		ctx      context.Context
+		isSecure bool
+	}{
+		"not the SO":   {notSO, true},
+		"not over TLS": {officerCtx(soRoleID), false},
+	} {
+		f := SOFactor{PIN: sealedPIN(t, soGatePIN), Secure: tc.isSecure}
+		if err := gate.Enforce(WithSOFactor(tc.ctx, f), permission.SealRekey, "r", "a"); err == nil {
+			t.Fatalf("%s: admitted", name)
+		}
+		requireDestroyed(t, name, f.PIN)
+	}
+}
+
+// TestWipeSOFactor: a transport that bound a factor and did not reach the
+// gate -- a request whose permission is not SO-gated -- still destroys it.
+func TestWipeSOFactor(t *testing.T) {
+	f := NewSOFactor([]byte("1234"), true, "")
+	WipeSOFactor(WithSOFactor(context.Background(), f))
+	requireDestroyed(t, "WipeSOFactor", f.PIN)
+	WipeSOFactor(WithSOFactor(context.Background(), f)) // destroyed twice: no-op
+	WipeSOFactor(context.Background())                  // no factor bound: no-op
+}
+
+// TestSOGate_UnholdablePINIsUnavailable: a PIN the node could not seal, or
+// can no longer open, is refused as *SOPINUnavailableError -- 503, retryable
+// -- and never audited as an invalid PIN: the officer's PIN was never judged.
+func TestSOGate_UnholdablePINIsUnavailable(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
+	roles, soRoleID := seededSORoles(t)
+	sink := audit.NewRingBuffer(16)
+	gate := NewSOGate(roles, newSORealFixture(t).verifier, sink, audit.FailClosed, nil)
+
+	destroyed := sealedPIN(t, soGatePIN)
+	destroyed.Destroy()
+	sealFailure := errors.New("sealer wiped")
+	for name, f := range map[string]SOFactor{
+		"seal failed": {Secure: true, sealErr: sealFailure},
+		"open failed": {Secure: true, PIN: destroyed},
+	} {
+		err := gate.Enforce(WithSOFactor(officerCtx(soRoleID), f), permission.SealRekey, "r", "a")
+		var unavailable *SOPINUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("%s: err = %v, want *SOPINUnavailableError", name, err)
+		}
+		if ClassifyAuthError(err) != AuthFailureUnavailable {
+			t.Fatalf("%s: class %v, want unavailable", name, ClassifyAuthError(err))
+		}
+	}
+	if !errors.Is(&SOPINUnavailableError{Err: sealFailure}, sealFailure) {
+		t.Fatal("SOPINUnavailableError does not unwrap to its cause")
+	}
+	if events := sink.Snapshot(); len(events) != 0 {
+		t.Fatalf("an unheld PIN was audited: %+v", events)
+	}
+}
+
+// TestSOFactorFromHTTPRequest: REST and MCP read the SO PIN header only off a
+// TLS request.
+func TestSOFactorFromHTTPRequest(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
+	r := httptest.NewRequest(http.MethodPost, "https://db.example.com/v1/barrier/rekey", nil)
+	r.Header.Set(SOPINHeader, soGatePIN)
+
+	r.TLS = &tls.ConnectionState{}
+	f := SOFactorFromHTTPRequest(r)
+	defer f.Destroy()
+	if !f.Secure || f.ClientIP != r.RemoteAddr {
+		t.Fatalf("TLS factor = %+v", f)
+	}
+	got, err := openSOPIN(f.PIN)
+	if err != nil || string(got) != soGatePIN {
+		t.Fatalf("TLS factor PIN = %q, %v; want the header", got, err)
+	}
+	secure.Wipe(got)
+
+	r.TLS = nil
+	if f := SOFactorFromHTTPRequest(r); f.Secure || f.PIN != nil {
+		t.Fatalf("plaintext factor = %+v, want insecure and no PIN held", f)
+	}
+
+	r.TLS = &tls.ConnectionState{}
+	r.Header.Del(SOPINHeader)
+	if f := SOFactorFromHTTPRequest(r); !f.Secure || f.PIN != nil {
+		t.Fatalf("PIN-less TLS factor = %+v, want secure and no PIN", f)
+	}
 }

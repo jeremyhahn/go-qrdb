@@ -23,48 +23,113 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-func TestWithSOPIN_CopiesAndReleaseWipes(t *testing.T) {
+// mustBind binds pin with WithSOPIN, failing the test if it cannot be sealed.
+func mustBind(t *testing.T, pin string) (context.Context, func()) {
+	t.Helper()
+	ctx, release, err := WithSOPIN(context.Background(), []byte(pin))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	return ctx, release
+}
+
+// mustRead returns the PIN bound in ctx, failing the test on an open error.
+func mustRead(t *testing.T, ctx context.Context) ([]byte, bool) {
+	t.Helper()
+	pin, ok, err := SOPINFromContext(ctx)
+	if err != nil {
+		t.Fatalf("SOPINFromContext: %v", err)
+	}
+	return pin, ok
+}
+
+func TestWithSOPIN_SealsACopyAndReleaseDestroys(t *testing.T) {
+	defer secure.GuardBorrows(t.Fatalf)()
 	caller := []byte("1234")
-	ctx, release := WithSOPIN(context.Background(), caller)
+	ctx, release, err := WithSOPIN(context.Background(), caller)
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	if string(caller) != "1234" {
+		t.Fatalf("WithSOPIN consumed the caller's buffer: %q", caller)
+	}
 	caller[0] = 'X' // the caller wiping or reusing its buffer does not reach the SDK copy
-	got, ok := SOPINFromContext(ctx)
+	got, ok := mustRead(t, ctx)
 	if !ok || string(got) != "1234" {
 		t.Fatalf("SOPINFromContext = %q, %v; want the copy made at bind time", got, ok)
 	}
 	got[0] = 'Y' // a transport wiping its copy does not reach the held PIN
-	if again, _ := SOPINFromContext(ctx); string(again) != "1234" {
+	if again, _ := mustRead(t, ctx); string(again) != "1234" {
 		t.Fatalf("held PIN changed through a returned copy: %q", again)
 	}
 
-	held := ctx.Value(soPINKey{}).(*soPIN)
-	buf := held.pin
+	// The SDK's copy is sealed in protected memory, and release destroys it.
+	sealed := ctx.Value(soPINKey{}).(*soPIN).pin
 	release()
-	for i, b := range buf {
-		if b != 0 {
-			t.Fatalf("byte %d of the released PIN is %d, want 0", i, b)
-		}
+	if buf, err := sealed.Open(); err == nil {
+		buf.Destroy()
+		t.Fatal("the released PIN can still be opened")
 	}
-	if _, ok := SOPINFromContext(ctx); ok {
+	if _, ok := mustRead(t, ctx); ok {
 		t.Fatal("a released PIN is still presented")
 	}
 	release() // idempotent
 }
 
 func TestSOPINFromContext_Unbound(t *testing.T) {
-	if pin, ok := SOPINFromContext(context.Background()); ok || pin != nil {
+	if pin, ok := mustRead(t, context.Background()); ok || pin != nil {
 		t.Fatalf("SOPINFromContext(unbound) = %q, %v", pin, ok)
 	}
-	ctx, release := WithSOPIN(context.Background(), nil)
+	ctx, release, err := WithSOPIN(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("WithSOPIN(nil): %v", err)
+	}
 	defer release()
-	if _, ok := SOPINFromContext(ctx); ok {
+	if _, ok := mustRead(t, ctx); ok {
 		t.Fatal("an empty PIN is presented")
 	}
 }
 
+// TestSOPINFromContext_UnopenablePINRefusesTheCall: a sealed PIN the SDK
+// cannot open is an error every carrier returns, never a call sent without
+// its PIN.
+func TestSOPINFromContext_UnopenablePINRefusesTheCall(t *testing.T) {
+	sealed, err := secure.NewSecret([]byte("1234"))
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	sealed.Destroy()
+	// A held PIN whose secret is gone without release having run: the state a
+	// failed Open reaches, which release itself never leaves behind.
+	ctx := context.WithValue(context.Background(), soPINKey{}, &soPIN{pin: sealed})
+	var nilSecret *secure.NilSecretError
+	if _, _, err := SOPINFromContext(ctx); !errors.As(err, &nilSecret) {
+		t.Fatalf("SOPINFromContext = %v, want *secure.NilSecretError", err)
+	}
+	if _, err := ResolveSOPIN(ctx, "BarrierSeal", ""); !errors.As(err, &nilSecret) {
+		t.Fatalf("ResolveSOPIN = %v, want the open error", err)
+	}
+	called := false
+	invoker := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+		called = true
+		return nil
+	}
+	if err := SOPINUnaryClientInterceptor("grpc", true)(ctx, "/m", nil, nil, nil, invoker); !errors.As(err, &nilSecret) || called {
+		t.Fatalf("interceptor: err=%v called=%v, want refused before sending", err, called)
+	}
+	base := &captureRT{}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://db.example.com:8443/v1/barrier/seal", nil)
+	if _, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req); !errors.As(err, &nilSecret) || base.req != nil {
+		t.Fatalf("round tripper: err=%v sent=%v, want refused before sending", err, base.req != nil)
+	}
+}
+
 func TestResolveSOPIN(t *testing.T) {
-	bound, release := WithSOPIN(context.Background(), []byte("1234"))
+	bound, release := mustBind(t, "1234")
 	defer release()
 	cases := []struct {
 		name    string
@@ -117,7 +182,7 @@ func TestSOPINRoundTripper(t *testing.T) {
 		t.Fatal("a request without a bound PIN carries the header")
 	}
 
-	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
+	ctx, release := mustBind(t, "1234")
 	defer release()
 	req = req.WithContext(ctx)
 	resp, err = rt.RoundTrip(req)
@@ -134,7 +199,7 @@ func TestSOPINRoundTripper(t *testing.T) {
 }
 
 func TestSOPINRoundTripper_RefusesPlaintextAndForeignHops(t *testing.T) {
-	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
+	ctx, release := mustBind(t, "1234")
 	defer release()
 	cases := []struct {
 		name, url string
@@ -181,7 +246,7 @@ func TestConfiguredHost(t *testing.T) {
 }
 
 func TestSOPINClientInterceptors(t *testing.T) {
-	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
+	ctx, release := mustBind(t, "1234")
 	defer release()
 	pinOf := func(ctx context.Context) string {
 		md, _ := metadata.FromOutgoingContext(ctx)
@@ -221,7 +286,7 @@ func TestSOPINClientInterceptors(t *testing.T) {
 }
 
 func TestSOPINClientInterceptors_RefusePlaintext(t *testing.T) {
-	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
+	ctx, release := mustBind(t, "1234")
 	defer release()
 	called := false
 	err := SOPINUnaryClientInterceptor("unix", false)(ctx, "/m", nil, nil, nil,

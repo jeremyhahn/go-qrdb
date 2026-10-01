@@ -67,7 +67,7 @@ func TestSOPINConformance(t *testing.T) {
 func TestSOPINConformance_ConflictingPINsAreRefused(t *testing.T) {
 	f := sotest.NewFixture(t)
 	tr := startSOConformance(t, f)
-	ctx, release := transport.WithSOPIN(context.Background(), []byte(sotest.PIN))
+	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()
 	_, err := tr.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3, SOPin: "other"})
 	var conflict *transport.SOPINConflictError

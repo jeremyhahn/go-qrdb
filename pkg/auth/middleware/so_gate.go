@@ -36,14 +36,44 @@ const SOPINMetadataKey = "x-qrdb-so-pin"
 // request context by the transport that received it (WithSOFactor) and read
 // by SOGate.Enforce. A transport that binds none presents an insecure,
 // PIN-less factor, which the gate refuses: forgetting to bind it fails closed.
+// Build one with NewSOFactor, which seals the PIN into protected memory.
 type SOFactor struct {
-	// PIN is the SO PIN the caller presented, or nil.
-	PIN []byte
+	// PIN is the SO PIN the caller presented, sealed, or nil when none was
+	// presented or the request did not arrive over TLS. Destroy destroys it;
+	// both the gate and the binding transport call that.
+	PIN *secure.Secret
 	// Secure reports whether the request arrived over TLS. The PIN is never
 	// consulted on a request that did not.
 	Secure bool
 	// ClientIP is the caller's address, for the audit record.
 	ClientIP string
+	// sealErr is why a presented PIN could not be sealed. The gate refuses
+	// an SO-gated request carrying one as unavailable rather than as PIN-less:
+	// the officer presented a PIN, and the node could not hold it.
+	sealErr error
+}
+
+// NewSOFactor builds the factor for one request. pin is consumed: it is
+// wiped on every path, and sealed into PIN only when the request arrived over
+// TLS (isSecure) and pin is not empty -- a PIN sent in plaintext is never
+// held. A failure to seal is recorded in the factor, and the gate refuses an
+// SO-gated request carrying it with *SOPINUnavailableError; a request the
+// gate does not cover is unaffected.
+func NewSOFactor(pin []byte, isSecure bool, clientIP string) SOFactor {
+	f := SOFactor{Secure: isSecure, ClientIP: clientIP}
+	if !isSecure || len(pin) == 0 {
+		secure.Wipe(pin)
+		return f
+	}
+	// NewSecret wipes pin on every path, including failure.
+	f.PIN, f.sealErr = secure.NewSecret(pin)
+	return f
+}
+
+// Destroy destroys the factor's sealed PIN. It is idempotent, so the binding
+// transport and the gate may both call it.
+func (f SOFactor) Destroy() {
+	f.PIN.Destroy()
 }
 
 type soFactorKey struct{}
@@ -53,12 +83,12 @@ func WithSOFactor(ctx context.Context, f SOFactor) context.Context {
 	return context.WithValue(ctx, soFactorKey{}, f)
 }
 
-// WipeSOFactor wipes the PIN of the factor bound into ctx by WithSOFactor. A
-// transport defers it where it binds the factor, so the PIN is wiped even on
-// a request the gate never sees -- one whose permission is not SO-gated.
-// Enforce wipes it too; wiping twice is harmless.
+// WipeSOFactor destroys the PIN of the factor bound into ctx by WithSOFactor.
+// A transport defers it where it binds the factor, so the PIN is destroyed
+// even on a request the gate never sees -- one whose permission is not
+// SO-gated. Enforce destroys it too; destroying twice is harmless.
 func WipeSOFactor(ctx context.Context) {
-	secure.Wipe(soFactorFromContext(ctx).PIN)
+	soFactorFromContext(ctx).Destroy()
 }
 
 // soFactorFromContext returns the factor bound by WithSOFactor, or the zero
@@ -115,9 +145,9 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 		return nil
 	}
 	factor := soFactorFromContext(ctx)
-	// The server's copy of the PIN is wiped once the gate has decided,
+	// The server's sealed PIN is destroyed once the gate has decided,
 	// admitted or refused, on every path out of here.
-	defer secure.Wipe(factor.PIN)
+	defer factor.Destroy()
 	if !factor.Secure {
 		return &SOFactorError{Reason: SOReasonInsecureTransport}
 	}
@@ -152,14 +182,24 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 		})
 	}
 
-	if len(factor.PIN) == 0 {
+	if factor.sealErr != nil {
+		return &SOPINUnavailableError{Err: factor.sealErr}
+	}
+	if factor.PIN == nil {
 		if gateErr := emit(audit.OutcomeFailure + ":missing-so-pin"); gateErr != nil {
 			return gateErr
 		}
 		return &SOFactorError{Reason: SOReasonPINRequired}
 	}
 
-	if err := g.verifier.VerifySOPIN(ctx, identity.TenantID, factor.PIN); err != nil {
+	// A PIN the node cannot open is a node-side fault, refused before any
+	// verification outcome is audited: the officer's PIN was never judged.
+	pin, err := openSOPIN(factor.PIN)
+	if err != nil {
+		return err
+	}
+	defer secure.Wipe(pin)
+	if err := g.verifier.VerifySOPIN(ctx, identity.TenantID, pin); err != nil {
 		// The verifier's OWN audit gate (auth.SOAuthenticator fails closed on
 		// its unrecordable outcome, go-qrdb#445) is a node-side fault, not a
 		// bad PIN: it is returned as is, so it maps to 503 / Unavailable and
@@ -182,6 +222,25 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 	// distinct assertions, and an SO operation is the most privileged action
 	// the system offers.
 	return emit(audit.OutcomeSuccess)
+}
+
+// openSOPIN returns a plaintext copy of the sealed PIN for the verifier,
+// whose signature takes []byte; the caller wipes it as soon as the verifier
+// returns. The copy is taken with secure.CopyOut, which holds one borrow
+// across it, so the verifier -- an injected implementation that may itself
+// use protected memory -- never runs inside a borrow. A PIN that cannot be
+// opened is *SOPINUnavailableError.
+func openSOPIN(sealed *secure.Secret) ([]byte, error) {
+	buf, err := sealed.Open()
+	if err != nil {
+		return nil, &SOPINUnavailableError{Err: err}
+	}
+	defer buf.Destroy()
+	pin, err := secure.CopyOut(buf)
+	if err != nil {
+		return nil, &SOPINUnavailableError{Err: err}
+	}
+	return pin, nil
 }
 
 // SOFactorReason is why the SO second factor was refused.
@@ -233,3 +292,20 @@ func (e *SORoleUnresolvedError) Error() string {
 
 // Unwrap returns the role store's failure.
 func (e *SORoleUnresolvedError) Unwrap() error { return e.Err }
+
+// SOPINUnavailableError is the SO gate's refusal when the node could not hold
+// or read the presented PIN in protected memory -- sealing it, or opening it
+// for the verifier, failed. The officer is not at fault, so it classifies as
+// AuthFailureUnavailable: 503 / Unavailable, retryable.
+type SOPINUnavailableError struct {
+	// Err is the protected-memory failure.
+	Err error
+}
+
+// Error returns the refusal message with its cause.
+func (e *SOPINUnavailableError) Error() string {
+	return "SO PIN could not be held in protected memory: " + e.Err.Error()
+}
+
+// Unwrap returns the protected-memory failure.
+func (e *SOPINUnavailableError) Unwrap() error { return e.Err }
