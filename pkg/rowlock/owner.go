@@ -416,10 +416,12 @@ func (o *Owner) Release(ctx context.Context) error {
 // transaction has lost its locks; the request fails with *LockLostError and
 // the owner is released, exactly as a waiter whose record disappeared.
 //
-// The records this request just wrote are deleted explicitly. A write that
-// carries a lease ID no longer in the lessor is stored but attached to
-// nothing (the state machine does not refuse it), so no lease revoke or
-// expiry would ever remove it: left behind, it would block its row forever.
+// The state machine refuses an enqueue naming a lease it no longer holds,
+// with *service.LeaseNotFoundError, and writes nothing. A request split over
+// several proposals can still have written its earlier batches before the
+// lease ended; those records are bound to the lease and go with its revoke,
+// but they are deleted explicitly here too, so the request leaves nothing
+// behind whatever the lease's state.
 // The lease is marked lost, so the session grants a live one for its next
 // transaction.
 func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, key string, mode Mode) error {

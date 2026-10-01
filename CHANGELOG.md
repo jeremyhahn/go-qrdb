@@ -44,11 +44,19 @@ are not reconstructed here — their history is in the git log.
 - **A write naming a lease that no longer exists is refused at apply.** The
   namespaced view checks lease ownership before proposing. A revoke or expiry
   committed between that check and the write let the write through as a key
-  bound to no lease, which never expires. The state machine now refuses it
-  (`service.CommandRejectedError`, `INVALID_ARGUMENT`), and a batch or
-  transaction naming one stages none of its operations. A write naming a lease
+  bound to no lease, which never expires. The state machine now refuses it with
+  the same `service.LeaseNotFoundError` (`NOT_FOUND`) the pre-proposal check
+  returns, and a batch or transaction naming one stages none of its
+  operations. `pkg/rowlock` relies on that type to report a lost lock. A write naming a lease
   on a state machine built without a lessor is refused as unimplemented
   instead of being written lease-less.
+- **`pkg/rowlock`: the deadlock tests no longer race their own requests.** A
+  test waited only for the first request's record to be queued, not for that
+  request to finish its deadlock check. When the second request completed the
+  cycle first, the first request found the cycle too and became the victim,
+  failing about one run in thirty under `-race`. The tests now wait until the
+  earlier requests are blocked in `wait`, which is entered only after the
+  check.
 
 ### Changed — BREAKING
 

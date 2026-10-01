@@ -52,9 +52,6 @@ var refusalRules = []refusalRule{
 	// timeseries.NotCompiledError does.
 	{func(err error) bool { _, ok := protocol.AsCapabilityError(err); return ok }, protocol.AppErrorCapability},
 	{isType[lease.InvalidTTLError], protocol.AppErrorInvalid},
-	// A write naming a lease this state machine does not hold: the caller
-	// named a lease that was never granted or has already been revoked.
-	{isType[lease.NotFoundError], protocol.AppErrorInvalid},
 	{isType[lease.ExistsError], protocol.AppErrorConflict},
 	{isType[lease.LessorClosedError], protocol.AppErrorUnavailable},
 	{isType[timeseries.InvalidMetricError], protocol.AppErrorInvalid},
@@ -101,8 +98,11 @@ func CapabilityResult(msg string) sm.Result {
 // between leaves the write naming a lease that no longer exists. Writing the
 // key anyway would produce a key bound to no lease -- one that never expires,
 // with nothing to tell its owner -- so the write is refused here, in the
-// apply path, where every replica decides it against the same state. This is
-// etcd's behaviour for a put naming an unknown lease.
+// apply path, where every replica decides it against the same state. The
+// refusal carries the lease ID (protocol.EncodeLeaseNotFoundError), and the
+// service layer answers it with service.LeaseNotFoundError: the same error
+// the pre-proposal check returns, and etcd's answer to a put naming an
+// unknown lease.
 //
 // A state machine built without a lessor cannot bind any lease, so a write
 // naming one is a capability refusal rather than a silently lease-less key.
@@ -115,7 +115,7 @@ func LeaseRefusal(lr *lease.Lessor, leaseIDs ...int64) (sm.Result, bool) {
 			return RefusalResult(&ServiceNotConfiguredError{Service: "lease"}), true
 		}
 		if !lr.Has(id) {
-			return RefusalResult(&lease.NotFoundError{ID: id}), true
+			return sm.Result{Data: protocol.EncodeLeaseNotFoundError(id)}, true
 		}
 	}
 	return sm.Result{}, false

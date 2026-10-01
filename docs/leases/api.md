@@ -70,7 +70,7 @@ carries `leases`.
 | Lessor closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |
 | Grant whose lease ID is already held | 409 | `ALREADY_EXISTS` — `service.CommandConflictError` |
 | Any other lessor failure during apply | 500 | `INTERNAL` — `service.ApplyFaultError` |
-| Write attaching to an unknown lease | 400 | `INVALID_ARGUMENT` — the write is refused |
+| Write attaching to an unknown lease | 404 | `NOT_FOUND` — `service.LeaseNotFoundError`; the write is refused and nothing is written, whether the namespaced view caught it before proposal or the state machine caught it at apply *(corrected: this row said 400 / `INVALID_ARGUMENT`, which no path returned)* |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |

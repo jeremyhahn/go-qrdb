@@ -177,7 +177,7 @@ the transport boundary, never by string.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Lease ID not found (expired, revoked, or never existed) | not-found | yes |
-| Attaching a write to an unknown lease | the write is **refused**: by the namespaced view before proposal (`service.LeaseNotFoundError`), and again at apply if the lease was revoked or expired in between (`lease.NotFoundError`, an `AppErrorInvalid` refusal that reaches the caller as `service.CommandRejectedError`). A batch or transaction naming one stages none of its operations | **yes** — a key silently written without its lease would never expire |
+| Attaching a write to an unknown lease | the write is **refused**: by the namespaced view before proposal (`service.LeaseNotFoundError`), and again at apply if the lease was revoked or expired in between. The apply-time refusal carries the lease ID (`protocol.EncodeLeaseNotFoundError`), and the service layer answers it with the same `service.LeaseNotFoundError`, so the caller sees one error type, `NOT_FOUND` on every transport, whichever side caught it. A batch or transaction naming one stages none of its operations | **yes** — a key silently written without its lease would never expire |
 | A write naming a lease on a state machine built without a lessor | refused as unimplemented (`service.CapabilityUnsupportedError`) | yes |
 | `ttl <= 0` on grant | invalid-argument (`service.CommandRejectedError`, encoded by the state machine as an `AppErrorInvalid` refusal) | yes |
 | Grant, revoke or keep-alive on a state machine built without a lessor | unimplemented (`service.CapabilityUnsupportedError`) | yes |

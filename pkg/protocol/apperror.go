@@ -14,7 +14,10 @@
 
 package protocol
 
-import "bytes"
+import (
+	"bytes"
+	"strconv"
+)
 
 // appErrorPrefix marks a state-machine result payload (sm.Result.Data) as an
 // encoded APPLICATION error rather than an ordinary result payload.
@@ -216,6 +219,41 @@ func indexOwnershipMessage(name, owner string) string {
 	return "index " + name + " is owned by " + owner
 }
 
+// leaseNotFoundMarker distinguishes the refusal of a write naming a lease the
+// state machine does not hold. Like ownershipMarker it carries a structured
+// payload -- the lease ID in decimal -- so the service layer can return the
+// same typed not-found error the pre-proposal lease check returns, without
+// reading anything out of prose.
+var leaseNotFoundMarker = []byte("\x00leasenf\x00")
+
+// EncodeLeaseNotFoundError encodes the refusal of a write that names lease
+// leaseID, which the state machine does not hold at apply time.
+func EncodeLeaseNotFoundError(leaseID int64) []byte {
+	id := strconv.FormatInt(leaseID, 10)
+	out := make([]byte, 0, len(appErrorPrefix)+len(leaseNotFoundMarker)+len(id))
+	out = append(out, appErrorPrefix...)
+	out = append(out, leaseNotFoundMarker...)
+	return append(out, id...)
+}
+
+// DecodeLeaseNotFoundError reports whether data is a lease-not-found refusal
+// and, if so, the lease ID it names. A body that is not a decimal integer is
+// not one this code wrote, and is not reported as one.
+func DecodeLeaseNotFoundError(data []byte) (leaseID int64, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return 0, false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, leaseNotFoundMarker) {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(string(body[len(leaseNotFoundMarker):]), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
 // DecodeAppError reports whether data carries an encoded application error and,
 // if so, returns the error message with its kind marker stripped. Ordinary
 // result payloads (including the one-byte transaction success flag) do not
@@ -255,6 +293,13 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// dedicated guard-refused kind.
 	if key, refused := DecodeGuardRefusal(data); refused {
 		return guardRefusalMessage(key), AppErrorGuardRefused, true
+	}
+	// A lease-not-found refusal carries the lease ID (see
+	// EncodeLeaseNotFoundError). The service layer decodes it into its typed
+	// not-found error first; a generic reader gets a message and the invalid
+	// kind -- the request named a lease that does not exist.
+	if id, nf := DecodeLeaseNotFoundError(data); nf {
+		return "lease not found: " + strconv.FormatInt(id, 10), AppErrorInvalid, true
 	}
 	return string(body), AppErrorCorrupt, true
 }

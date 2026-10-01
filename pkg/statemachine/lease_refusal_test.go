@@ -43,14 +43,14 @@ func TestLeaseRefusal_AcceptsNoLeaseAndHeldLeases(t *testing.T) {
 	}
 }
 
-func TestLeaseRefusal_RefusesUnknownLeaseAsInvalid(t *testing.T) {
+func TestLeaseRefusal_RefusesUnknownLeaseAsLeaseNotFound(t *testing.T) {
 	lr, id := heldLease(t)
 	res, refused := LeaseRefusal(lr, id, id+1)
 	if !refused {
 		t.Fatal("a write naming a lease the lessor does not hold was accepted")
 	}
-	if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorInvalid {
-		t.Fatalf("refusal kind = %v (decoded=%v), want AppErrorInvalid", kind, ok)
+	if got, ok := protocol.DecodeLeaseNotFoundError(res.Data); !ok || got != id+1 {
+		t.Fatalf("refusal names lease %d (decoded=%v), want a lease-not-found refusal for %d", got, ok, id+1)
 	}
 }
 

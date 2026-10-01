@@ -62,6 +62,12 @@ func checkResultError(result sm.Result) error {
 	if key, refused := protocol.DecodeGuardRefusal(result.Data); refused {
 		return guardRefusalError(key)
 	}
+	// A write naming a lease the state machine does not hold is answered with
+	// the same typed not-found error the pre-proposal lease check returns, so
+	// a caller sees one error whichever side of the proposal caught it.
+	if id, nf := protocol.DecodeLeaseNotFoundError(result.Data); nf {
+		return &LeaseNotFoundError{LeaseID: id}
+	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		return nil
