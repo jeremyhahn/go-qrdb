@@ -40,7 +40,7 @@ func (t *Transport) LockAcquire(ctx context.Context, req *transport.LockAcquireR
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, &NilServiceError{Service: "LockServicer"}
+		return nil, t.missingService("LockServicer")
 	}
 
 	l, err := t.lockSvc.Lock(ctx, req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
@@ -58,7 +58,7 @@ func (t *Transport) LockTryLock(ctx context.Context, req *transport.LockAcquireR
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, &NilServiceError{Service: "LockServicer"}
+		return nil, t.missingService("LockServicer")
 	}
 
 	l, err := t.lockSvc.TryLock(ctx, req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
@@ -75,7 +75,7 @@ func (t *Transport) LockRelease(ctx context.Context, req *transport.LockReleaseR
 		return &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return &NilServiceError{Service: "LockServicer"}
+		return t.missingService("LockServicer")
 	}
 
 	return t.lockSvc.Unlock(ctx, req.Key, req.FencingToken)
@@ -87,7 +87,7 @@ func (t *Transport) LockExtend(ctx context.Context, req *transport.LockExtendReq
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, &NilServiceError{Service: "LockServicer"}
+		return nil, t.missingService("LockServicer")
 	}
 
 	l, err := t.lockSvc.Extend(ctx, req.Key, req.FencingToken)
@@ -105,7 +105,7 @@ func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.Lock
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, &NilServiceError{Service: "LockServicer"}
+		return nil, t.missingService("LockServicer")
 	}
 
 	l, err := t.lockSvc.Status(ctx, key)
@@ -126,7 +126,7 @@ func (t *Transport) LockList(ctx context.Context, prefix string) (*transport.Loc
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, &NilServiceError{Service: "LockServicer"}
+		return nil, t.missingService("LockServicer")
 	}
 
 	locks, err := t.lockSvc.List(ctx, prefix)

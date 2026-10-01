@@ -45,9 +45,13 @@ import (
 //
 //   - AcquireLease and Watch depend on the lease/MVCC and watch families, which
 //     the ratified run-modes split makes RAFT-ONLY. On a standalone node they
-//     return qrdb's typed "not configured" error rather than serving inertly
-//     (see node.TestStandaloneNode_RaftOnlyFamiliesRefused). A consumer that
-//     needs lease- or watch-based coordination must run qrdb in raft mode;
+//     are refused rather than served inertly. In process, and over gRPC, Unix
+//     and QUIC, the refusal is *transport.CapabilityUnsupportedError naming
+//     the remedy "requires mode: raft"; REST and MCP return an untyped request
+//     error, and a remote Watch is refused on the stream rather than at open
+//     (sdk/go/conformance/standalone_refusal_test.go pins each transport). A
+//     consumer that needs lease- or watch-based coordination must run qrdb in
+//     raft mode, and should check Capabilities rather than match the error;
 //     CAS-based coordination works in either mode.
 
 // EventType identifies the kind of change carried by a coordination Event. It
@@ -494,9 +498,9 @@ func (e *LeaseLostError) Error() string {
 // floor of one second. A caller must Renew on an interval shorter than ttl to
 // retain the key.
 //
-// AcquireLease is a raft-only family: on a standalone node the lease grant
-// returns qrdb's typed "not configured" error (see the mode mapping at the top
-// of this file).
+// AcquireLease is a raft-only family: on a standalone node the lease grant is
+// refused — with *transport.CapabilityUnsupportedError in process and over
+// gRPC, Unix and QUIC (see the mode mapping at the top of this file).
 func (c *Coordinator) AcquireLease(ctx context.Context, key string, ttl time.Duration) (Lease, error) {
 	secs := ttl / time.Second
 	if ttl%time.Second != 0 {

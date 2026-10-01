@@ -16,12 +16,13 @@ package server
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // StandaloneModeHint is the remedy text carried by every raft-only API
 // refusal under mode "standalone".
-const StandaloneModeHint = "requires mode: raft"
+const StandaloneModeHint = capabilities.RaftOnlyHint
 
 // WithStandaloneMode marks the server as running the raft-free standalone
 // composition. The transports' per-(tenant, db) service registry is

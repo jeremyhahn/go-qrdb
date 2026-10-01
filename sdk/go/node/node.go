@@ -2199,11 +2199,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	// MVCC, lease and watch remain raft-only. Unlike CAS these are not
 	// single-process-satisfiable: they are about observing and coordinating
 	// state ACROSS replicas over time.
-	if !standalone {
+	if standalone {
+		// The raft-only families are absent by design here; the transport
+		// refuses them with the same typed error the network transports
+		// give, rather than reporting a wiring defect.
+		opts = append(opts, embedded.WithStandaloneMode())
+	} else {
 		opts = append(opts,
 			embedded.WithMVCCService(svcNode.MVCC),
 			embedded.WithLeaseService(svcNode.Lease),
 			embedded.WithWatchService(svcNode.Watch),
+			embedded.WithLockService(svcNode.Lock),
 		)
 	}
 	if svcNode.DEK != nil {

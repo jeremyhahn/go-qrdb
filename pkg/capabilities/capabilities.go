@@ -34,6 +34,11 @@ const (
 	ModeRaft = "raft"
 )
 
+// RaftOnlyHint is the remedy text carried by every refusal of a raft-only
+// service family (MVCC, watch, lease, lock) under mode "standalone", on every
+// transport including the embedded one.
+const RaftOnlyHint = "requires mode: raft"
+
 // Capabilities describes the effective feature set of the QRDB process:
 // what is compiled in (build tags), structurally possible (run mode), and
 // operator-enabled (config). Consumers must treat every field as

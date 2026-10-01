@@ -429,12 +429,14 @@ caps, err := client.Admin().Capabilities(ctx)
 // caps.Lease, caps.Watch, caps.MVCC are false in standalone; caps.KV is always true
 ```
 
-The refusal's concrete type is the **transport's**, not this surface's, and
-differs by transport: the embedded transport reports its missing-service error,
-the wire transports report a not-configured / unimplemented error whose text
-names the remedy `requires mode: raft`. **Do not match on the concrete type
-across transports** — check capabilities up front instead, and treat any error
-from `AcquireLease` or `Watch` on a standalone node as a design-time
+The refusal's concrete type is the **transport's**, not this surface's. On the
+embedded, gRPC, Unix and QUIC transports `AcquireLease` returns
+`*transport.CapabilityUnsupportedError` whose text names the remedy
+`requires mode: raft`; REST and MCP return an untyped request error (see
+[run-modes/api.md](../run-modes/api.md)). `Watch` refuses at open in process and
+on the stream over the wire. **Do not match on the concrete type across
+transports** — check capabilities up front instead, and treat any error from
+`AcquireLease` or `Watch` on a standalone node as a design-time
 misconfiguration.
 
 ## The `WatchStream` terminal contract

@@ -353,6 +353,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The embedded transport refuses a standalone node's raft-only families with
+  the typed error.** In process, `Coordinator.AcquireLease` and the lease,
+  lock, MVCC and watch clients answered `*embedded.NilServiceError` — the
+  error reserved for a wiring defect — where gRPC, Unix and QUIC answer
+  `*transport.CapabilityUnsupportedError` naming `requires mode: raft`. A new
+  `embedded.WithStandaloneMode` option, set by `node.NewStandaloneNode`, makes
+  the embedded transport answer the same type; `NilServiceError` stays for a
+  service that should have been wired and was not. REST and MCP still return
+  untyped errors for these families (lease and lock routes are not registered
+  on a standalone REST server, and the MCP tools are not registered at all);
+  `docs/run-modes/api.md` records the gap and
+  `sdk/go/conformance/standalone_refusal_test.go` pins every transport's
+  answer.
+
+- **`node.Client().Lock()` works on a raft node.** The lock service was never
+  passed to the in-process transport, so the lock family answered a
+  wiring-defect error in the one mode that serves it.
+
 - **Deleting a dedicated-isolation tenant now reclaims its records in the
   shared store.** Its identity records live under
   `seal.TenantSharedNamespace(tenant)` (`__tiam:<tenant>/`), which
