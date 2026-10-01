@@ -54,7 +54,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	soRESTTenant = "t1"
+	soRESTTenant = tenant.SystemTenantID
 	soRESTPIN    = "correct horse battery staple"
 )
 
@@ -191,7 +191,7 @@ func TestSODualFactor_AuthorizedNonSOCallerRefusedByTheGate(t *testing.T) {
 			WithBarrierService(newExtBarrierSvc()),
 		}
 		if gated {
-			opts = append(opts, WithSOAuthenticator(authtest.SOVerifier(t, soRESTTenant, soRESTPIN)), WithSODualFactor())
+			opts = append(opts, WithSOAuthenticator(authtest.SOVerifier(t, soRESTPIN, soRESTTenant)), WithSODualFactor())
 		}
 		srv := NewServer(nil, nil, "127.0.0.1:0", opts...)
 		req := httptest.NewRequest(http.MethodPost, soRESTRoute, strings.NewReader("{}"))
@@ -205,6 +205,33 @@ func TestSODualFactor_AuthorizedNonSOCallerRefusedByTheGate(t *testing.T) {
 		}
 		if rec.Code != want {
 			t.Fatalf("gated=%v: status=%d body=%q, want %d", gated, rec.Code, rec.Body.String(), want)
+		}
+	}
+}
+
+// TestSODualFactor_TenantSORefusedOnTheNodeBarrier: the node barrier is a
+// platform singleton, so an SO of tenant acme presenting acme's own valid PIN
+// must not rekey it -- with the gate on or off (go-qrdb#569 N2).
+func TestSODualFactor_TenantSORefusedOnTheNodeBarrier(t *testing.T) {
+	for _, gated := range []bool{true, false} {
+		caller := authtest.NewFixedAuthenticator(authtest.SOIdentity("acme", "acme-officer"))
+		roles := authtest.BuiltInRoles(t, "acme")
+		opts := []ServerOption{
+			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+			WithRoleService(roles),
+			WithBarrierService(newExtBarrierSvc()),
+		}
+		if gated {
+			opts = append(opts, WithSOAuthenticator(authtest.SOVerifier(t, soRESTPIN, "acme")), WithSODualFactor())
+		}
+		srv := NewServer(nil, nil, "127.0.0.1:0", opts...)
+		req := httptest.NewRequest(http.MethodPost, soRESTRoute, strings.NewReader("{}"))
+		req.TLS = &tls.ConnectionState{}
+		req.Header.Set(authmw.SOPINHeader, soRESTPIN)
+		rec := httptest.NewRecorder()
+		srv.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("gated=%v: status=%d body=%q, want 403", gated, rec.Code, rec.Body.String())
 		}
 	}
 }

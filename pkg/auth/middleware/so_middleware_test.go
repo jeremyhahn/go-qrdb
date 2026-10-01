@@ -231,7 +231,7 @@ func TestSOMiddleware_SORoute_MissingPIN_Unauthorized(t *testing.T) {
 	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "" /* no PIN */)
-	req = withSOIdentity(req, "t1", soRoleID)
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -264,7 +264,7 @@ func TestSOMiddleware_SORoute_WrongPIN_Unauthorized(t *testing.T) {
 	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "wrong-pin")
-	req = withSOIdentity(req, "t1", soRoleID)
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -304,7 +304,7 @@ func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
 	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
-	req = withSOIdentity(req, "t1", soRoleID)
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -340,7 +340,7 @@ func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
 	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
-	req = withSOIdentity(req, "t1", soRoleID)
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

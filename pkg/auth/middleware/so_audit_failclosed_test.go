@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // discardLogger returns a slog.Logger that discards all output.
@@ -62,7 +63,7 @@ func discardLogger() *slog.Logger {
 }
 
 const (
-	soGateTenant = "t1"
+	soGateTenant = tenant.SystemTenantID
 	soGatePIN    = "correct horse battery staple"
 	// soGateRoute is mapped to permission.SealRekey in testRESTRoutes, which
 	// is in SOPermissions -- so the middleware gates it.

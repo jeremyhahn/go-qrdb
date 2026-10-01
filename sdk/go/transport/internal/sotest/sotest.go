@@ -46,12 +46,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Tenant and PIN the suite runs under.
 const (
-	Tenant = "t1"
+	Tenant = tenant.SystemTenantID
 	PIN    = "correct horse battery staple"
 )
 
@@ -87,7 +88,7 @@ func Officer() *auth.Identity {
 func NewFixture(t *testing.T) *Fixture {
 	t.Helper()
 	roles := authtest.BuiltInRoles(t, Tenant)
-	verifier := authtest.SOVerifier(t, Tenant, PIN)
+	verifier := authtest.SOVerifier(t, PIN, Tenant)
 	caller := authtest.NewFixedAuthenticator(Officer())
 	serverTLS, clientTLS := tlsPair(t)
 	return &Fixture{

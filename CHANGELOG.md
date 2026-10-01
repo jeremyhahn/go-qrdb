@@ -808,6 +808,14 @@ are not reconstructed here — their history is in the git log.
   until they complete. The verbs that can initialize or unseal the barrier
   (`sealedwindow.Names.Transition`) hold it exclusively, so they wait for
   the requests in flight, and every later request is refused.
+- **A tenant's Security Officer can no longer operate the node barrier.**
+  `seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery` and
+  `seal:initialize-shamir` were ScopeSelf. For an operation that names no
+  tenant, ScopeSelf compares the caller's tenant with itself, so the check was
+  vacuous: an SO of tenant A, presenting tenant A's own valid SO PIN, could
+  rekey or regenerate recovery keys for the node barrier that protects every
+  tenant -- on every transport, gate on or off. They are now `ScopeCross`:
+  system-tenant identities only.
 
 ### Known limits
 

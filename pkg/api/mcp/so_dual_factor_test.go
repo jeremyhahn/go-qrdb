@@ -42,11 +42,13 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 const (
-	soTestTenant = "t1"
-	soTestPIN    = "correct horse battery staple"
+	soTestTenant  = tenant.SystemTenantID
+	soOtherTenant = "acme"
+	soTestPIN     = "correct horse battery staple"
 )
 
 type soFixture struct {
@@ -59,11 +61,11 @@ type soFixture struct {
 func newSOFixture(t *testing.T, gated bool) *soFixture {
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(authtest.SOIdentity(soTestTenant, "officer"))
-	roles := authtest.BuiltInRoles(t, soTestTenant)
+	roles := authtest.BuiltInRoles(t, soTestTenant, soOtherTenant)
 	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 	var gate *authmw.SOGate
 	if gated {
-		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestTenant, soTestPIN), audit.NewRingBuffer(64), audit.FailClosed, nil)
+		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
 	barrier := &authtest.Barrier{}
 
@@ -141,6 +143,9 @@ func TestSODualFactor(t *testing.T) {
 		{"officer without PIN is refused", officer, "", wire.CodeUnauthenticated},
 		{"officer with wrong PIN is refused", officer, "wrong", wire.CodeUnauthenticated},
 		{"authorized non-SO caller is refused", token, soTestPIN, wire.CodePermissionDenied},
+		// The node barrier is a platform singleton: a tenant's SO with its own
+		// tenant's valid PIN must not rekey it (go-qrdb#569 N2).
+		{"a tenant's SO is refused on the node barrier", authtest.SOIdentity(soOtherTenant, "acme-officer"), soTestPIN, wire.CodePermissionDenied},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSOFixture(t, true)

@@ -57,16 +57,19 @@ func GrantedNonSOIdentity(tenantID, subject string, perms ...permission.Permissi
 }
 
 // SOVerifier returns the real auth.SOAuthenticator over an in-memory store,
-// with pin committed for tenantID and an in-memory audit sink.
-func SOVerifier(t testing.TB, tenantID, pin string) *auth.SOAuthenticator {
+// with pin committed for every tenant in tenantIDs and an in-memory audit
+// sink.
+func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthenticator {
 	t.Helper()
 	v, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("authtest: SO authenticator: %v", err)
 	}
-	if err := v.SetSOPIN(context.Background(), tenantID, []byte(pin)); err != nil {
-		t.Fatalf("authtest: set SO PIN: %v", err)
+	for _, tenantID := range tenantIDs {
+		if err := v.SetSOPIN(context.Background(), tenantID, []byte(pin)); err != nil {
+			t.Fatalf("authtest: set SO PIN for %q: %v", tenantID, err)
+		}
 	}
 	return v
 }

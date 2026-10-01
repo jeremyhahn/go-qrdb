@@ -29,6 +29,16 @@ so a misconfigured deployment cannot lock out the SO surface behind an
 unverifiable check. When disabled (default) every transport's chain is
 unchanged.
 
+## The node barrier is platform scope
+
+`seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery` and
+`seal:initialize-shamir` act on the **node** barrier, a singleton that
+protects every tenant's data. They are `ScopeCross`: only an identity of the
+system tenant may exercise them, on every transport, with the gate on or off.
+An SO of any other tenant -- holding that tenant's SO role and presenting that
+tenant's own valid PIN -- is refused with `403` / `PERMISSION_DENIED`. A
+tenant's own barrier is governed by the `tenant_barrier:*` permissions.
+
 ## Every network transport
 
 The gate is ONE implementation, `middleware.SOGate`, applied by every

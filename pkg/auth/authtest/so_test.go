@@ -41,9 +41,11 @@ func TestSOIdentity_HoldsThePersistedSORole(t *testing.T) {
 // permission, and it does not hold the SO role -- the two facts the SO gate
 // tests rely on.
 func TestGrantedNonSOIdentity_IsAdmittedWithoutTheSORole(t *testing.T) {
-	roles := authtest.BuiltInRoles(t, "t1")
-	id := authtest.GrantedNonSOIdentity("t1", "token", permission.SealRekey)
-	ctx := tenant.WithTenantID(context.Background(), "t1")
+	// seal:rekey is platform scope (ScopeCross), so the identity is the
+	// system tenant's.
+	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID)
+	id := authtest.GrantedNonSOIdentity(tenant.SystemTenantID, "token", permission.SealRekey)
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
 	if err := rbac.New(roles).Authorize(ctx, id, "seal", "rekey"); err != nil {
 		t.Fatalf("RBAC refused the granted identity: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestGrantedNonSOIdentity_IsAdmittedWithoutTheSORole(t *testing.T) {
 }
 
 func TestSOVerifier_VerifiesTheCommittedPIN(t *testing.T) {
-	v := authtest.SOVerifier(t, "t1", "1234")
+	v := authtest.SOVerifier(t, "1234", "t1")
 	if err := v.VerifySOPIN(context.Background(), "t1", []byte("1234")); err != nil {
 		t.Fatalf("committed PIN refused: %v", err)
 	}

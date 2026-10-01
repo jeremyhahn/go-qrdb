@@ -37,11 +37,13 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 const (
-	soTestTenant = "t1"
-	soTestPIN    = "correct horse battery staple"
+	soTestTenant  = tenant.SystemTenantID
+	soOtherTenant = "acme"
+	soTestPIN     = "correct horse battery staple"
 )
 
 type soFixture struct {
@@ -54,11 +56,11 @@ type soFixture struct {
 func newSOFixture(t *testing.T, gated bool) *soFixture {
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(authtest.SOIdentity(soTestTenant, "officer"))
-	roles := authtest.BuiltInRoles(t, soTestTenant)
+	roles := authtest.BuiltInRoles(t, soTestTenant, soOtherTenant)
 	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 	var gate *authmw.SOGate
 	if gated {
-		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestTenant, soTestPIN), audit.NewRingBuffer(64), audit.FailClosed, nil)
+		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
 	barrier := &authtest.Barrier{}
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
@@ -100,6 +102,9 @@ func TestSODualFactor(t *testing.T) {
 		{"officer without PIN is refused", true, officer, "", wire.StatusUnauthenticated, 0},
 		{"officer with wrong PIN is refused", true, officer, "wrong", wire.StatusUnauthenticated, 0},
 		{"authorized non-SO caller is refused", true, token, soTestPIN, wire.StatusPermissionDenied, 0},
+		// The node barrier is a platform singleton: a tenant's SO with its own
+		// tenant's valid PIN must not rekey it (go-qrdb#569 N2).
+		{"a tenant's SO is refused on the node barrier", true, authtest.SOIdentity(soOtherTenant, "acme-officer"), soTestPIN, wire.StatusPermissionDenied, 0},
 		{"gate off serves the same non-SO caller", false, token, "", wire.StatusOK, 1},
 	}
 	for _, tc := range cases {

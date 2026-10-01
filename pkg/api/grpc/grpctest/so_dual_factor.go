@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // SOStartFunc starts the transport under test with mw as its auth
@@ -38,8 +39,9 @@ import (
 type SOStartFunc func(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn
 
 const (
-	soTenant = "t1"
-	soPIN    = "correct horse battery staple"
+	soTenant      = tenant.SystemTenantID
+	soOtherTenant = "acme"
+	soPIN         = "correct horse battery staple"
 )
 
 type soFixture struct {
@@ -51,11 +53,11 @@ type soFixture struct {
 func newSOFixture(t *testing.T, start SOStartFunc, gated bool) *soFixture {
 	t.Helper()
 	caller := authtest.NewFixedAuthenticator(authtest.SOIdentity(soTenant, "officer"))
-	roles := authtest.BuiltInRoles(t, soTenant)
+	roles := authtest.BuiltInRoles(t, soTenant, soOtherTenant)
 	mw := authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))
 	var gate *authmw.SOGate
 	if gated {
-		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTenant, soPIN), audit.NewRingBuffer(64), audit.FailClosed, nil)
+		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
 	barrier := &authtest.Barrier{}
 	conn := start(t, mw, gate, barrier)
@@ -111,6 +113,15 @@ func SODualFactor(t *testing.T, start SOStartFunc) {
 		wantCode(t, "non-SO rekey", f.rekey(t, id, soPIN), codes.PermissionDenied)
 		if f.barrier.Rekeys() != 0 {
 			t.Fatal("a refused rekey reached the service")
+		}
+	})
+	t.Run("a tenant's SO is refused on the node barrier", func(t *testing.T) {
+		// The node barrier is a platform singleton: an SO of tenant acme,
+		// presenting acme's own valid PIN, must not rekey it (go-qrdb#569 N2).
+		f := newSOFixture(t, start, true)
+		wantCode(t, "tenant SO rekey", f.rekey(t, authtest.SOIdentity(soOtherTenant, "acme-officer"), soPIN), codes.PermissionDenied)
+		if f.barrier.Rekeys() != 0 {
+			t.Fatal("a tenant SO rekeyed the node barrier")
 		}
 	})
 	t.Run("gate off serves the same non-SO caller", func(t *testing.T) {

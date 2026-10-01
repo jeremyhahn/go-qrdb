@@ -265,15 +265,15 @@ func selfScopedPermissions() []Permission {
 		RolesUpdate,
 
 		// seal
+		//
+		// SealGenerateRecovery, SealInitializeShamir, SealRekey and
+		// SealRotateRootKey are ScopeCross (node_barrier_scope.go): they act on
+		// the node barrier, a platform singleton no tenant owns.
 		SealBootstrap,
 		SealEnableEncryption,
-		SealGenerateRecovery,
-		SealInitializeShamir,
 		SealOfficerList,
 		SealOfficerRegister,
 		SealRecoverWithKeys,
-		SealRekey,
-		SealRotateRootKey,
 		SealSeal,
 		SealStatus,
 		SealSubmitSealVote,
