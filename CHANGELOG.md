@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.25.0-alpha] - 2026-10-01
+
+Adds the per-tenant DEK keyring on every transport, bearer authenticators on gRPC and Unix, and a sealed-window surface hosts mount. BREAKING: the unused cluster-DEK and tenant-DEK-manager APIs are removed (see Changed — BREAKING), and `qrdbd`'s `<data-dir>/dek` directory is no longer read and may be deleted.
+
 ### Changed — BREAKING
 
 - **`transport.DEKClient` is the tenant keyring and nothing else.** The
