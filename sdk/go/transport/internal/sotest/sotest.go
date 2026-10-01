@@ -13,9 +13,10 @@
 // limitations under the License.
 
 // Package sotest is the SDK's SO dual-factor conformance suite: an SO rekeys
-// the barrier, deletes its recovery keys and seals it through an SDK
-// transport against the real server for that transport with the SO gate on,
-// presenting the PIN with transport.WithSOPIN. Each network transport's test
+// the barrier, generates and deletes its recovery keys, initializes it with
+// Shamir, seals it and runs the ceremony through an SDK transport against the
+// real server for that transport with the SO gate on, presenting the PIN with
+// transport.WithSOPIN only -- never by setting a request's SOPin by hand. Each network transport's test
 // starts its server from the pieces a Fixture holds and hands the suite a
 // connected client.
 //
@@ -36,6 +37,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"testing"
@@ -74,11 +76,14 @@ type Fixture struct {
 	// Barrier is the barrier service; it counts what reached it.
 	Barrier *authtest.Barrier
 	// PINs is the barrier PIN backend for the server's WithPINBackend, or
-	// nil for none. The seal subtests set it to a real software backend
-	// holding PIN, so a seal is admitted only when its so_pin is PIN; the
-	// other subtests leave it nil, because the request-field PIN it checks
-	// on rekey is not the one WithSOPIN binds on every transport.
+	// nil for none. The request-field subtests set it to a real software
+	// backend, so an operation is admitted only when its own so_pin field
+	// carries PIN; the gate-only subtests leave it nil.
 	PINs pin.PINBackend
+	// Ceremony is the ceremony service; it records the SO PIN each request
+	// handed it. CA is the ceremony CA the server needs configured.
+	Ceremony *authtest.Ceremony
+	CA       *authtest.CeremonyCA
 	// ServerTLS and ClientTLS are a matching self-signed pair for localhost.
 	// The client presents a certificate, as transports that require one
 	// before authentication expect.
@@ -106,14 +111,23 @@ func NewFixture(t *testing.T) *Fixture {
 		MW:        authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)),
 		Gate:      authmw.NewSOGate(roles, verifier, audit.NewRingBuffer(64), audit.FailClosed, nil),
 		Barrier:   &authtest.Barrier{},
+		Ceremony:  &authtest.Ceremony{},
+		CA:        &authtest.CeremonyCA{},
 		ServerTLS: serverTLS,
 		ClientTLS: clientTLS,
 	}
 }
 
+// Client is what the suite drives: the barrier and ceremony surfaces of one
+// SDK transport.
+type Client interface {
+	transport.BarrierClient
+	transport.CeremonyClient
+}
+
 // Run is the conformance suite. start starts the transport's server from f
 // and returns a client connected to it.
-func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierClient) {
+func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 	t.Run("SO rekeys with the PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		c := start(t, f)
@@ -175,6 +189,102 @@ func Run(t *testing.T, start func(t *testing.T, f *Fixture) transport.BarrierCli
 		}
 		if f.Barrier.Seals() != 0 {
 			t.Fatal("a refused seal reached the service")
+		}
+	})
+	t.Run("BarrierRekey fills so_pin from the bound PIN", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		if _, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3}); err != nil {
+			t.Fatalf("BarrierRekey with the SO PIN bound: %v", err)
+		}
+		if got := f.Barrier.Rekeys(); got != 1 {
+			t.Fatalf("rekeys = %d, want 1", got)
+		}
+	})
+	t.Run("BarrierGenerateRecoveryKeys fills so_pin from the bound PIN", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		if _, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, Total: 3}); err != nil {
+			t.Fatalf("BarrierGenerateRecoveryKeys with the SO PIN bound: %v", err)
+		}
+		if got := f.Barrier.RecoveryGenerations(); got != 1 {
+			t.Fatalf("generations = %d, want 1", got)
+		}
+	})
+	t.Run("a conflicting explicit SOPin is refused before sending", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		calls := map[string]func() error{
+			"BarrierRekey": func() error {
+				_, err := c.BarrierRekey(ctx, &transport.BarrierRekeyRequest{Threshold: 2, Total: 3, SOPin: "other"})
+				return err
+			},
+			"BarrierGenerateRecoveryKeys": func() error {
+				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, Total: 3, SOPin: "other"})
+				return err
+			},
+			"BarrierInitializeShamir": func() error {
+				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Secret: []byte("secret"), Threshold: 2, TotalShares: 3, SOPin: "other"})
+				return err
+			},
+			"CeremonyInitialize": func() error {
+				_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: "other"})
+				return err
+			},
+			"CeremonySignCSR": func() error {
+				_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", SOPin: "other", CSRPEM: "csr", Role: "officer"})
+				return err
+			},
+		}
+		for method, call := range calls {
+			var conflict *transport.SOPINConflictError
+			if err := call(); !errors.As(err, &conflict) || conflict.Method != method {
+				t.Fatalf("%s: err = %v, want *transport.SOPINConflictError", method, err)
+			}
+		}
+		if f.Barrier.Rekeys()+f.Barrier.RecoveryGenerations()+f.Barrier.ShamirInits() != 0 || len(f.Ceremony.SOPINs()) != 0 {
+			t.Fatal("a conflicting request reached the service")
+		}
+	})
+	t.Run("BarrierInitializeShamir fills so_pin from the bound PIN", func(t *testing.T) {
+		f := NewFixture(t)
+		// Initialization SETS the barrier SO PIN from the request's so_pin.
+		f.PINs = authtest.EmptyBarrierPINBackend(t)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		if _, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Secret: []byte("secret"), Threshold: 2, TotalShares: 3}); err != nil {
+			t.Fatalf("BarrierInitializeShamir with the SO PIN bound: %v", err)
+		}
+		if got := f.Barrier.ShamirInits(); got != 1 {
+			t.Fatalf("shamir inits = %d, want 1", got)
+		}
+		if err := f.PINs.VerifySOPIN(PIN); err != nil {
+			t.Fatalf("the barrier SO PIN is not the bound PIN: %v", err)
+		}
+	})
+	t.Run("the ceremony fills so_pin from the bound PIN", func(t *testing.T) {
+		f := NewFixture(t)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		if _, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{}); err != nil {
+			t.Fatalf("CeremonyInitialize with the SO PIN bound: %v", err)
+		}
+		if _, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", CSRPEM: "csr", Role: "officer"}); err != nil {
+			t.Fatalf("CeremonySignCSR with the SO PIN bound: %v", err)
+		}
+		if got := f.Ceremony.SOPINs(); len(got) != 2 || got[0] != PIN || got[1] != PIN {
+			t.Fatalf("the ceremony saw %d SO PINs, not the bound PIN twice", len(got))
 		}
 	})
 	t.Run("a released PIN is no longer sent", func(t *testing.T) {

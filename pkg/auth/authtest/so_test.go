@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -111,5 +112,60 @@ func TestBarrierPINBackend_VerifiesTheCommittedPIN(t *testing.T) {
 	}
 	if err := b.VerifySOPIN(""); err == nil {
 		t.Fatal("empty PIN accepted")
+	}
+}
+
+func TestBarrier_CountsRecoveryGenerations(t *testing.T) {
+	b := &authtest.Barrier{}
+	info, err := b.BarrierGenerateRecoveryKeys(context.Background(), 2, 3)
+	if err != nil || info.Threshold != 2 || info.Total != 3 {
+		t.Fatalf("BarrierGenerateRecoveryKeys = %+v, %v", info, err)
+	}
+	if b.RecoveryGenerations() != 1 {
+		t.Fatalf("RecoveryGenerations = %d, want 1", b.RecoveryGenerations())
+	}
+}
+
+func TestBarrier_CountsShamirInits(t *testing.T) {
+	b := &authtest.Barrier{}
+	info, err := b.BarrierInitializeShamir(context.Background(), []byte("secret"), 2, 3)
+	if err != nil || info.Threshold != 2 || info.TotalShares != 3 {
+		t.Fatalf("BarrierInitializeShamir = %+v, %v", info, err)
+	}
+	if b.ShamirInits() != 1 {
+		t.Fatalf("ShamirInits = %d, want 1", b.ShamirInits())
+	}
+}
+
+// TestEmptyBarrierPINBackend_HasNoPINUntilOneIsSet: the empty backend is the
+// real verifier with nothing committed, so a test can watch a request set it.
+func TestEmptyBarrierPINBackend_HasNoPINUntilOneIsSet(t *testing.T) {
+	b := authtest.EmptyBarrierPINBackend(t)
+	if b.SOPINSet() {
+		t.Fatal("an empty backend reports an SO PIN")
+	}
+	if err := b.SetSOPIN("", "barrier-1234"); err != nil {
+		t.Fatalf("SetSOPIN: %v", err)
+	}
+	if err := b.VerifySOPIN("barrier-1234"); err != nil {
+		t.Fatalf("set PIN refused: %v", err)
+	}
+}
+
+func TestCeremony_RecordsTheSOPINs(t *testing.T) {
+	c := &authtest.Ceremony{}
+	if _, err := c.CeremonyInitialize(context.Background(), &authtest.CeremonyCA{}, &service.CeremonyInitializeOptions{SOPin: "a"}); err != nil {
+		t.Fatalf("CeremonyInitialize: %v", err)
+	}
+	if _, err := c.CeremonyInitialize(context.Background(), &authtest.CeremonyCA{}, nil); err != nil {
+		t.Fatalf("CeremonyInitialize(nil opts): %v", err)
+	}
+	res, err := c.CeremonySignCSR(context.Background(), "officer", "b", "csr", "so")
+	if err != nil || len(res.CertPEM) == 0 {
+		t.Fatalf("CeremonySignCSR = %+v, %v", res, err)
+	}
+	got := c.SOPINs()
+	if len(got) != 3 || got[0] != "a" || got[1] != "" || got[2] != "b" {
+		t.Fatalf("SOPINs = %q, want [a  b]", got)
 	}
 }

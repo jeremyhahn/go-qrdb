@@ -35,6 +35,13 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	officers := make([]*pb.CeremonyOfficer, len(req.Officers))
 	for i, o := range req.Officers {
 		officers[i] = &pb.CeremonyOfficer{
@@ -43,7 +50,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		}
 	}
 	resp, err := t.client.CeremonyInitialize(ctx, &pb.CeremonyInitializeRequest{
-		SoPin:                  req.SOPin,
+		SoPin:                  soPIN,
 		UserPin:                req.UserPin,
 		Threshold:              int32(req.Threshold),
 		CredentialSealStrategy: req.CredentialSealStrategy,
@@ -160,9 +167,16 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := t.client.CeremonySignCSR(ctx, &pb.CeremonySignCSRRequest{
 		Username: req.Username,
-		SoPin:    req.SOPin,
+		SoPin:    soPIN,
 		CsrPem:   req.CSRPEM,
 		Role:     req.Role,
 	})

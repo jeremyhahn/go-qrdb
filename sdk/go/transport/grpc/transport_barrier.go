@@ -103,11 +103,18 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierInitializeShamir", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := t.client.BarrierShamirInitialize(ctx, &pb.BarrierShamirInitializeRequest{
 		Secret:      req.Secret,
 		Threshold:   int32(req.Threshold),
 		TotalShares: int32(req.TotalShares),
-		SoPin:       req.SOPin,
+		SoPin:       soPIN,
 		UserPin:     req.UserPin,
 	})
 	if err != nil {
@@ -160,10 +167,17 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := t.client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierRekey", err)
@@ -206,10 +220,17 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierGenerateRecoveryKeys", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := t.client.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierGenerateRecoveryKeys", err)

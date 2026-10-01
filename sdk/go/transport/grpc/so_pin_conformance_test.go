@@ -28,11 +28,11 @@ import (
 // SDK gRPC transport against the real gRPC server with the SO gate on. The
 // PIN travels in the x-qrdb-so-pin metadata entry.
 func TestSOPINConformance(t *testing.T) {
-	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) transport.BarrierClient {
+	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) sotest.Client {
 		t.Helper()
 		srv := grpcserver.NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 			grpcserver.WithTLS(f.ServerTLS), grpcserver.WithAuthMiddleware(f.MW),
-			grpcserver.WithBarrierService(f.Barrier), grpcserver.WithPINBackend(f.PINs), grpcserver.WithSOGate(f.Gate))
+			grpcserver.WithBarrierService(f.Barrier), grpcserver.WithPINBackend(f.PINs), grpcserver.WithCeremonyService(f.Ceremony), grpcserver.WithCeremonyCA(f.CA), grpcserver.WithSOGate(f.Gate))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

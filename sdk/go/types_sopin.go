@@ -31,11 +31,13 @@ import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 //		return err
 //	}
 //	defer release()
-//	_, err := client.Barrier().BarrierRekey(ctx, req)
+//	_, err = client.Barrier().BarrierRekey(ctx, req)
 //
 // REST and MCP send it in the X-QRDB-SO-PIN header, gRPC and the Unix socket
 // in the x-qrdb-so-pin metadata entry, QUIC in the request message's so_pin
-// field. The embedded transport has no SO gate and ignores it. The PIN is
+// field. Every network transport also fills the so_pin field of a request
+// that has one from the bound PIN, so SOPin never needs setting by hand. The
+// embedded transport has no SO gate and ignores it. The PIN is
 // sent only over TLS and, on REST and MCP, only to the configured host on
 // every hop: otherwise the call is refused with SOPINRequiresTLSError or
 // SOPINForeignHostError before anything is sent. The PIN is
@@ -57,7 +59,8 @@ type SOPINRequiresTLSError = transport.SOPINRequiresTLSError
 // (Aliases sdk/go/transport.SOPINForeignHostError.)
 type SOPINForeignHostError = transport.SOPINForeignHostError
 
-// SOPINConflictError is returned by the QUIC transport when a request's own
-// SOPin and the PIN bound by WithSOPIN are both set and differ: QUIC carries
-// one PIN, in one field. (Aliases sdk/go/transport.SOPINConflictError.)
+// SOPINConflictError is returned by every network transport when a request's
+// own SOPin and the PIN bound by WithSOPIN are both set and differ: the
+// request's so_pin field carries one PIN.
+// (Aliases sdk/go/transport.SOPINConflictError.)
 type SOPINConflictError = transport.SOPINConflictError

@@ -36,9 +36,16 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
-		"so_pin":    req.SOPin,
+		"so_pin":    soPIN,
 		"user_pin":  req.UserPin,
 		"threshold": req.Threshold,
 	}
@@ -214,10 +221,17 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 
 	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", map[string]any{
 		"username": req.Username,
-		"so_pin":   req.SOPin,
+		"so_pin":   soPIN,
 		"csr_pem":  req.CSRPEM,
 		"role":     req.Role,
 	})

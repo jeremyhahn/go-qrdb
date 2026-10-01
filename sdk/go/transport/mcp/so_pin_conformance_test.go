@@ -28,11 +28,11 @@ import (
 // SDK MCP transport against the real MCP server with the SO gate on. The PIN
 // travels in the X-QRDB-SO-PIN header of the /mcp request.
 func TestSOPINConformance(t *testing.T) {
-	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) transport.BarrierClient {
+	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) sotest.Client {
 		t.Helper()
 		srv := mcpserver.NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 			mcpserver.WithTLS(f.ServerTLS), mcpserver.WithAuthMiddleware(f.MW),
-			mcpserver.WithBarrierService(f.Barrier), mcpserver.WithPINBackend(f.PINs), mcpserver.WithSOGate(f.Gate))
+			mcpserver.WithBarrierService(f.Barrier), mcpserver.WithPINBackend(f.PINs), mcpserver.WithCeremonyService(f.Ceremony), mcpserver.WithCeremonyCA(f.CA), mcpserver.WithSOGate(f.Gate))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

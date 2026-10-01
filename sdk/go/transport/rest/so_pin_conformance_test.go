@@ -28,11 +28,11 @@ import (
 // SDK REST transport against the real REST server with the SO gate on. The
 // PIN travels in the X-QRDB-SO-PIN header.
 func TestSOPINConformance(t *testing.T) {
-	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) transport.BarrierClient {
+	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) sotest.Client {
 		t.Helper()
 		srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 			restserver.WithTLS(f.ServerTLS), restserver.WithAuthMiddleware(f.MW),
-			restserver.WithRoleService(f.Roles), restserver.WithBarrierService(f.Barrier), restserver.WithPINBackend(f.PINs),
+			restserver.WithRoleService(f.Roles), restserver.WithBarrierService(f.Barrier), restserver.WithPINBackend(f.PINs), restserver.WithCeremonyService(f.Ceremony), restserver.WithCeremonyCA(f.CA),
 			restserver.WithSOAuthenticator(f.Verifier), restserver.WithSODualFactor())
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)

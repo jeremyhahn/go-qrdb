@@ -28,12 +28,12 @@ import (
 // SDK Unix socket transport against the real Unix server with the SO gate on.
 // The PIN travels in the x-qrdb-so-pin metadata entry.
 func TestSOPINConformance(t *testing.T) {
-	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) transport.BarrierClient {
+	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) sotest.Client {
 		t.Helper()
 		socketPath := tempSocketPath(t)
 		srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath,
 			unixserver.WithTLS(f.ServerTLS), unixserver.WithAuthMiddleware(f.MW),
-			unixserver.WithBarrierService(f.Barrier), unixserver.WithPINBackend(f.PINs), unixserver.WithSOGate(f.Gate))
+			unixserver.WithBarrierService(f.Barrier), unixserver.WithPINBackend(f.PINs), unixserver.WithCeremonyService(f.Ceremony), unixserver.WithCeremonyCA(f.CA), unixserver.WithSOGate(f.Gate))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

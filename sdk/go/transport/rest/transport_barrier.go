@@ -106,9 +106,18 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierInitializeShamir", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	body := *req
+	body.SOPin = soPIN
 
 	var shamirResp transport.BarrierInitializeShamirResponse
-	if err := t.postJSONDecode(ctx, "BarrierInitializeShamir", "/v1/barrier/shamir/initialize", req, &shamirResp); err != nil {
+	if err := t.postJSONDecode(ctx, "BarrierInitializeShamir", "/v1/barrier/shamir/initialize", &body, &shamirResp); err != nil {
 		return nil, err
 	}
 
@@ -146,9 +155,18 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	body := *req
+	body.SOPin = soPIN
 
 	var rekeyResp transport.BarrierRekeyResponse
-	if err := t.postJSONDecode(ctx, "BarrierRekey", "/v1/barrier/rekey", req, &rekeyResp); err != nil {
+	if err := t.postJSONDecode(ctx, "BarrierRekey", "/v1/barrier/rekey", &body, &rekeyResp); err != nil {
 		return nil, err
 	}
 
@@ -176,9 +194,18 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierGenerateRecoveryKeys", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	body := *req
+	body.SOPin = soPIN
 
 	var keysResp transport.BarrierRecoveryKeysResponse
-	if err := t.postJSONDecode(ctx, "BarrierGenerateRecoveryKeys", "/v1/barrier/recovery/generate", req, &keysResp); err != nil {
+	if err := t.postJSONDecode(ctx, "BarrierGenerateRecoveryKeys", "/v1/barrier/recovery/generate", &body, &keysResp); err != nil {
 		return nil, err
 	}
 

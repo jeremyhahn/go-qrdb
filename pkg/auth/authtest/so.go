@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -76,17 +77,39 @@ func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthentic
 	return v
 }
 
-// Barrier is a service.BarrierServicer that implements BarrierRekey and
-// BarrierDeleteRecoveryKeys and counts the calls that reached it, so a test
-// can tell a refused request from one the service performed. Every other
-// method is the nil embedded interface: a test that reaches one has left the
-// path it meant to drive.
+// Barrier is a service.BarrierServicer that implements BarrierSeal,
+// BarrierRekey, BarrierDeleteRecoveryKeys, BarrierGenerateRecoveryKeys and
+// BarrierInitializeShamir and counts the calls that reached it, so a test can
+// tell a refused request from one the service performed. Every other method
+// is the nil embedded interface: a test that reaches one has left the path it
+// meant to drive.
 type Barrier struct {
 	service.BarrierServicer
-	rekeys  atomic.Int64
-	deletes atomic.Int64
-	seals   atomic.Int64
+	rekeys      atomic.Int64
+	deletes     atomic.Int64
+	seals       atomic.Int64
+	generations atomic.Int64
+	shamirInits atomic.Int64
 }
+
+// BarrierGenerateRecoveryKeys records the generation.
+func (b *Barrier) BarrierGenerateRecoveryKeys(_ context.Context, threshold, total int) (*service.RecoveryKeysInfo, error) {
+	b.generations.Add(1)
+	return &service.RecoveryKeysInfo{Threshold: threshold, Total: total, ShareCount: total}, nil
+}
+
+// RecoveryGenerations reports how many recovery-key generations reached the
+// service.
+func (b *Barrier) RecoveryGenerations() int64 { return b.generations.Load() }
+
+// BarrierInitializeShamir records the initialization.
+func (b *Barrier) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+	b.shamirInits.Add(1)
+	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: totalShares, ShareCount: totalShares}, nil
+}
+
+// ShamirInits reports how many Shamir initializations reached the service.
+func (b *Barrier) ShamirInits() int64 { return b.shamirInits.Load() }
 
 // BarrierSeal records the seal.
 func (b *Barrier) BarrierSeal(context.Context) error {
@@ -112,16 +135,70 @@ func (b *Barrier) RecoveryDeletes() int64 { return b.deletes.Load() }
 // verifier.
 func BarrierPINBackend(t testing.TB, soPIN string) pin.PINBackend {
 	t.Helper()
+	b := EmptyBarrierPINBackend(t)
+	if err := b.SetSOPIN("", soPIN); err != nil {
+		t.Fatalf("authtest: set barrier SO PIN: %v", err)
+	}
+	return b
+}
+
+// EmptyBarrierPINBackend returns the real software pin.PINBackend over an
+// in-memory store with no barrier SO PIN committed yet, so a test can observe
+// the PIN an initializing request sets.
+func EmptyBarrierPINBackend(t testing.TB) pin.PINBackend {
+	t.Helper()
 	b, err := pin.NewSoftwareBackend(&memPINStore{kv: map[string][]byte{}}, pin.HashConfig{
 		Algorithm: pin.HashArgon2id, Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16,
 	})
 	if err != nil {
 		t.Fatalf("authtest: PIN backend: %v", err)
 	}
-	if err := b.SetSOPIN("", soPIN); err != nil {
-		t.Fatalf("authtest: set barrier SO PIN: %v", err)
-	}
 	return b
+}
+
+// Ceremony is a service.CeremonyServicer that implements CeremonyInitialize
+// and CeremonySignCSR and records the SO PIN each request handed the service,
+// so a test can tell which PIN the request's so_pin field carried. Every
+// other method is the nil embedded interface.
+type Ceremony struct {
+	service.CeremonyServicer
+	mu     sync.Mutex
+	soPINs []string
+}
+
+// CeremonyInitialize records the request's SO PIN.
+func (c *Ceremony) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+	var soPIN string
+	if opts != nil {
+		soPIN = opts.SOPin
+	}
+	c.record(soPIN)
+	return &service.CeremonyInitResult{State: "initialized"}, nil
+}
+
+// CeremonySignCSR records the request's SO PIN.
+func (c *Ceremony) CeremonySignCSR(_ context.Context, _, soPIN, _, _ string) (*service.CeremonySignCSRResult, error) {
+	c.record(soPIN)
+	return &service.CeremonySignCSRResult{CertPEM: []byte("certificate")}, nil
+}
+
+func (c *Ceremony) record(soPIN string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.soPINs = append(c.soPINs, soPIN)
+}
+
+// SOPINs returns the SO PINs that reached the service, in order.
+func (c *Ceremony) SOPINs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.soPINs...)
+}
+
+// CeremonyCA is a ceremony.CeremonyCA a transport accepts as configured. The
+// Ceremony double never calls it; every method is the nil embedded interface.
+type CeremonyCA struct {
+	ceremony.CeremonyCA
 }
 
 // memPINStore is the in-memory pin.Storage BarrierPINBackend runs over.

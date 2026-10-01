@@ -217,8 +217,13 @@ are not reconstructed here — their history is in the git log.
   REST and MCP, `x-qrdb-so-pin` metadata on gRPC and the Unix socket, the
   request's `so_pin` field on QUIC. The PIN is sealed in protected memory,
   never logged, and destroyed by `release`; per-request plaintext copies are
-  wiped once written. `err` is a protected-memory failure sealing it. A QUIC
-  request whose own `SOPin` differs is refused with `sdk.SOPINConflictError`.
+  wiped once written. `err` is a protected-memory failure sealing it. Every
+  network transport also fills the request's own `so_pin` field
+  (`BarrierSeal`, `BarrierInitializeShamir`, `BarrierRekey`,
+  `BarrierGenerateRecoveryKeys`, `CeremonyInitialize`, `CeremonySignCSR`) from
+  the bound PIN when the request carries none, because the server reads that
+  field too; a caller never sets `SOPin` by hand. A request whose own `SOPin`
+  differs is refused with `sdk.SOPINConflictError` on every transport.
 - Every transport's user response carries `roleBindings`, `attributes`, the metadata of the
   account's enrolled auth `factors` (never their credential data), and `mfaEnabled`,
   `mfaMethods` and `mfaEnrolledAt` derived from those factors. `UpdateUser` sets or clears

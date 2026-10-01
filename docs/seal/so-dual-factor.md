@@ -124,9 +124,16 @@ for the verifier and wipes that copy when the verifier returns, and the sealed
 PIN is destroyed once the gate has decided, or when the request ends if the
 gate never ran. A PIN the node cannot hold in protected memory is refused as
 `SOPINUnavailableError` (503 / `Unavailable`, retryable) and is not audited as
-an invalid PIN. On QUIC, where the PIN shares the request's
-`so_pin` field, a request whose own `SOPin` differs from the bound PIN is
-refused with `sdk.SOPINConflictError` rather than sending either.
+an invalid PIN.
+
+Some operations also carry the PIN in their request's own `so_pin` field,
+which the server reads as well: `BarrierSeal`, `BarrierInitializeShamir`,
+`BarrierRekey`, `BarrierGenerateRecoveryKeys`, `CeremonyInitialize` and
+`CeremonySignCSR`. On QUIC that field is the only carrier. **Every network
+transport fills it from the bound PIN** when the request carries none, so a
+caller never sets `SOPin` by hand on any transport. A request whose own
+`SOPin` differs from the bound PIN is refused with `sdk.SOPINConflictError`
+before anything is sent, on every transport.
 
 A PIN is read only from a TLS connection. The three refusal classes are the
 same everywhere: the factor itself (no TLS, no PIN, wrong PIN) is

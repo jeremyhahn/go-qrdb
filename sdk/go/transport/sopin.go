@@ -53,11 +53,17 @@ type soPIN struct {
 //
 //   - REST and MCP send it in the X-QRDB-SO-PIN header;
 //   - gRPC and the Unix socket send it in the x-qrdb-so-pin metadata entry;
-//   - QUIC, whose frames have no headers, sends it in the request message's
-//     so_pin field of the SO-gated operations. A request that already carries
-//     a different SOPin is refused with *SOPINConflictError rather than
-//     sending either;
+//   - QUIC, whose frames have no headers, sends it only in the request
+//     message's so_pin field;
 //   - the embedded transport runs in process with no SO gate and ignores it.
+//
+// Every network transport also fills the so_pin field of the operations whose
+// request has one -- BarrierSeal, BarrierInitializeShamir, BarrierRekey,
+// BarrierGenerateRecoveryKeys, CeremonyInitialize and CeremonySignCSR -- from
+// the bound PIN when the request carries none, because the server reads that
+// field too. A caller therefore never sets SOPin by hand on any transport. A
+// request that already carries a different SOPin is refused with
+// *SOPINConflictError rather than sending either.
 //
 // The server reads it only on the operations its SO gate covers, and only
 // over TLS. WithSOPIN seals a copy of pin into protected memory, so the
@@ -115,10 +121,10 @@ func SOPINFromContext(ctx context.Context) ([]byte, bool, error) {
 	return pin, true, nil
 }
 
-// SOPINConflictError is returned by the QUIC transport when a request's own
-// SOPin field and the PIN bound by WithSOPIN are both set and differ. QUIC
-// carries the SO PIN in that one field, so it cannot send both, and choosing
-// one silently would verify a PIN the caller did not mean.
+// SOPINConflictError is returned by every network transport when a request's
+// own SOPin field and the PIN bound by WithSOPIN are both set and differ. The
+// field carries one PIN, so the transport cannot send both, and choosing one
+// silently would verify a PIN the caller did not mean.
 type SOPINConflictError struct {
 	// Method is the transport method refused.
 	Method string
@@ -129,9 +135,10 @@ func (e *SOPINConflictError) Error() string {
 	return "transport: " + e.Method + ": request SOPin differs from the SO PIN bound by WithSOPIN"
 }
 
-// ResolveSOPIN returns the SO PIN a QUIC request carries in its so_pin field:
-// the request's own SOPin, or the PIN bound by WithSOPIN when the request has
-// none. Both set and different is a *SOPINConflictError.
+// ResolveSOPIN returns the SO PIN a request carries in its so_pin field, on
+// every network transport: the request's own SOPin, or the PIN bound by
+// WithSOPIN when the request has none. Both set and different is a
+// *SOPINConflictError.
 func ResolveSOPIN(ctx context.Context, method, requestPIN string) (string, error) {
 	bound, ok, err := SOPINFromContext(ctx)
 	if err != nil {

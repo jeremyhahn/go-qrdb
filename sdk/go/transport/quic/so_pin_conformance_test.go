@@ -37,7 +37,7 @@ func startSOConformance(t *testing.T, f *sotest.Fixture) *Transport {
 	t.Helper()
 	srv := quicserver.NewServer(nil, soConformanceAdmin{}, "127.0.0.1:0",
 		quicserver.WithTLS(f.ServerTLS), quicserver.WithAuthMiddleware(f.MW),
-		quicserver.WithBarrierService(f.Barrier), quicserver.WithPINBackend(f.PINs), quicserver.WithSOGate(f.Gate))
+		quicserver.WithBarrierService(f.Barrier), quicserver.WithPINBackend(f.PINs), quicserver.WithCeremonyService(f.Ceremony), quicserver.WithCeremonyCA(f.CA), quicserver.WithSOGate(f.Gate))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -57,7 +57,7 @@ func startSOConformance(t *testing.T, f *sotest.Fixture) *Transport {
 // SDK QUIC transport against the real QUIC server with the SO gate on. The
 // PIN travels in the request message's so_pin field.
 func TestSOPINConformance(t *testing.T) {
-	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) transport.BarrierClient {
+	sotest.Run(t, func(t *testing.T, f *sotest.Fixture) sotest.Client {
 		return startSOConformance(t, f)
 	})
 }
