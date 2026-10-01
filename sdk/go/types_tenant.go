@@ -158,13 +158,6 @@ type TenantHasDatabasesError = tenant.TenantHasDatabasesError
 // (Aliases pkg/tenant.TeardownError.)
 type TenantTeardownError = tenant.TeardownError
 
-// TenantDEKShredError is returned by DeleteTenant when the tenant's data
-// encryption key could not be destroyed. The shred is the first irreversible
-// step and runs immediately AFTER the retirement is durable, so this failure
-// always arrives wrapped in TenantTeardownError and the tenant is already
-// retired. (Aliases pkg/tenant.DEKShredError.)
-type TenantDEKShredError = tenant.DEKShredError
-
 // TenantKeyspaceReclaimError is returned by DeleteTenant when the tenant's
 // keyspace could not be reclaimed. It surfaces AFTER the id is retired, so
 // the security half of the deletion has taken effect and re-issuing the
@@ -189,19 +182,12 @@ type TenantDatabaseListError = tenant.DatabaseListError
 // manager satisfies it. (Aliases pkg/tenant.DatabaseLister.)
 type TenantDatabaseLister = tenant.DatabaseLister
 
-// TenantDEKShredder destroys a tenant's data encryption key, which is what
-// makes a dedicated-isolation tenant's data unreadable at the moment of
-// deletion. It must be idempotent, because a re-issued delete re-runs it. The
-// tenant DEK manager satisfies it.
-// (Aliases pkg/tenant.DEKShredder.)
-type TenantDEKShredder = tenant.DEKShredder
-
 // TenantKeyspaceReclaimer deletes the data a tenant owns in the shared store.
 // qrdb's KeyspaceReclaimService satisfies it, and the same instance serves
 // DROP DATABASE. (Aliases pkg/tenant.KeyspaceReclaimer.)
 type TenantKeyspaceReclaimer = tenant.KeyspaceReclaimer
 
-// TenantTeardownWiring is the post-construction wiring surface for the three
+// TenantTeardownWiring is the post-construction wiring surface for the two
 // seams above, implemented by every TenantServicer qrdb ships. A composition
 // resolves it from the tenant service it built. (Aliases
 // pkg/tenant.TeardownWiring.)
@@ -211,10 +197,6 @@ type TenantTeardownWiring = tenant.TeardownWiring
 // it refuses a tenant that still owns databases.
 // (Aliases pkg/tenant.WithDatabaseLister.)
 var WithTenantDatabaseLister = tenant.WithDatabaseLister
-
-// WithTenantDEKShredder injects the tenant DEK manager whose key DeleteTenant
-// destroys. (Aliases pkg/tenant.WithDEKShredder.)
-var WithTenantDEKShredder = tenant.WithDEKShredder
 
 // WithTenantKeyspaceReclaimer injects the reclaimer DeleteTenant runs after
 // the retirement commits. (Aliases pkg/tenant.WithKeyspaceReclaimer.)

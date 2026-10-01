@@ -16,8 +16,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // --------------------------------------------------------------------------
@@ -685,49 +683,6 @@ func TestInitializeShamirDirect_ExistsError(t *testing.T) {
 // tenant_keys.go: wrapAndStore Put error, RotateTenantDEK wrap error
 // --------------------------------------------------------------------------
 
-func TestTenantKeyManager_RotateTenantDEK_WrapError(t *testing.T) {
-	// Use a sealed barrier for wrap to fail during the Encrypt call.
-	b := newTestBarrier() // sealed
-	store := newMemoryKVStore()
-	tkm, err := NewTenantKeyManager(b, store)
-	if err != nil {
-		t.Fatalf("NewTenantKeyManager: %v", err)
-	}
-
-	ctx := context.Background()
-	err = tkm.RotateTenantDEK(ctx, "tenant-1")
-	if err == nil {
-		t.Fatal("expected error when barrier is sealed")
-	}
-	var bsErr *BarrierSealedError
-	if !errors.As(err, &bsErr) {
-		t.Fatalf("expected *BarrierSealedError, got %T: %v", err, err)
-	}
-}
-
-func TestTenantKeyManager_GetTenantDEK_WrapAndStoreError(t *testing.T) {
-	// Create a barrier that is unsealed but uses a KVStore that fails on Put.
-	b := newUnsealedBarrier(t)
-	store := &failingKVStore{
-		inner:  newMemoryKVStore(),
-		putErr: errors.New("storage write error"),
-	}
-	tkm, err := NewTenantKeyManager(b, store)
-	if err != nil {
-		t.Fatalf("NewTenantKeyManager: %v", err)
-	}
-
-	ctx := context.Background()
-	_, err = tkm.GetTenantDEK(ctx, "tenant-1")
-	if err == nil {
-		t.Fatal("expected error when KVStore.Put fails during generateAndStoreDEK")
-	}
-	var dekErr *DEKDerivationError
-	if !errors.As(err, &dekErr) {
-		t.Fatalf("expected *DEKDerivationError, got %T: %v", err, err)
-	}
-}
-
 // --------------------------------------------------------------------------
 // helpers: errorBackend for injecting storage errors
 // --------------------------------------------------------------------------
@@ -773,67 +728,6 @@ func (e *errorBackend) Exists(_ context.Context, _ string) (bool, error) {
 	return false, e.existsErr
 }
 func (e *errorBackend) Close() error { return nil }
-
-// failingKVStore wraps a KVStore and injects errors on specific operations.
-type failingKVStore struct {
-	inner     *memoryKVStore
-	putErr    error
-	getErr    error
-	deleteErr error
-}
-
-func (f *failingKVStore) Put(ctx context.Context, key string, value []byte) error {
-	if f.putErr != nil {
-		return f.putErr
-	}
-	return f.inner.Put(ctx, key, value)
-}
-
-func (f *failingKVStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
-	}
-	return f.inner.Get(ctx, key)
-}
-
-func (f *failingKVStore) Delete(ctx context.Context, key string) error {
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
-	return f.inner.Delete(ctx, key)
-}
-
-func (f *failingKVStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
-	return f.inner.Scan(ctx, prefix, fn)
-}
-
-func (f *failingKVStore) List(ctx context.Context, prefix string) ([]string, error) {
-	return f.inner.List(ctx, prefix)
-}
-
-func (f *failingKVStore) Exists(ctx context.Context, key string) (bool, error) {
-	return f.inner.Exists(ctx, key)
-}
-
-func (f *failingKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
-	return nil
-}
-
-func (f *failingKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
 
 // The temporary recovery strategy's heap copy of the root key is wiped before
 // RecoverWithKeys returns.

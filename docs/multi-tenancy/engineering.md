@@ -229,7 +229,7 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 ## Tenant teardown
 
 `TenantService.DeleteTenant` and `kvTenantService.DeleteTenant` run the same
-six steps in the same order, because keyspace isolation is not a property of
+five steps in the same order, because keyspace isolation is not a property of
 encryption: a node with the seal subsystem off still has prefix tenants, and
 they are exactly the tenants whose data stayed readable after a delete.
 
@@ -240,9 +240,8 @@ refuse a RESERVED id
   -> write the tombstone
   -> delete the metadata record
   ---- past the fence: the tenant no longer resolves for anybody ----
-  -> shred the tenant DEK
   -> destroy the barrier and its durable records   (seal-enabled only)
-  -> reclaim the keyspace
+  -> reclaim the keyspace, the tenant DEK keyring included
 ```
 
 ### Persist the retirement before anything irreversible
@@ -269,11 +268,16 @@ Fencing first was not on that list of two, and it dominates both:
 |---|---|---|---|
 | shred first | no | **yes, and permanent** | metadata for a keyless tenant |
 | delete first, no tombstone | **yes** | no | a key nothing names |
-| **fence first** | no — steps 2 and 3 make the tenant unresolvable before anything is destroyed | no | a retired id whose DEK still exists |
+| **fence first** | no — steps 2 and 3 make the tenant unresolvable before anything is destroyed | no | a retired id whose barrier or keyspace still exists |
 
-The residue fencing accepts is reachable by nobody and is the same kind the
-barrier destroy and the keyspace reclaim already leave behind. It is removed by
-re-issuing the call.
+The residue fencing accepts is reachable by nobody. It is removed by re-issuing
+the call.
+
+There is no DEK-shred step any more. The tenant DEK keyring is a record in the
+tenant's own resolved store, so the fence makes it unreachable (the resolver
+refuses a retired id) and the barrier destroy and keyspace reclaim remove it —
+the reclaim covers the dedicated tenant's `seal.TenantSharedNamespace` range,
+where its identity records and keyring live, as well as `<tenant>/`.
 
 ### Every step past the fence is idempotent
 
@@ -282,7 +286,6 @@ a requirement on the seams, not an accident:
 
 | Step | Absent-resource behaviour |
 |---|---|
-| `DEKShredder.DeleteTenantDEK` | a tenant with no DEK is success; the storage delete treats not-found as success |
 | `BarrierRegistry.DestroyTenant` | returns `ErrTenantNotFound`, which `DeleteTenant` treats as success |
 | `KeyspaceReclaimer.ReclaimTenantKeyspace` | an already-empty keyspace is success |
 
@@ -293,7 +296,7 @@ So re-issuing `DeleteTenant` over a partly finished teardown completes it.
 Every failure past the fence is wrapped in `*tenant.TeardownError`, whose
 message states that the tenant is retired and no longer resolvable and that the
 remedy is to re-issue the call. A failure at or before the fence is **not**
-wrapped in it. `errors.As` still finds `*DEKShredError`, `*BarrierError` and
+wrapped in it. `errors.As` still finds `*BarrierError` and
 `*KeyspaceReclaimError` underneath, so a transport that maps those keeps
 mapping them.
 
@@ -333,16 +336,15 @@ create path, reachable on the delete path once the guard was hoisted there.
 
 ### The three seams
 
-`DeleteTenant` reaches four things this package cannot touch, so three are
-interfaces wired at composition time (the fourth, the barrier registry, is
-already held). All three are optional; a composition that wires none still
+`DeleteTenant` reaches three things this package cannot touch, so two are
+interfaces wired at composition time (the third, the barrier registry, is
+already held). Both are optional; a composition that wires neither still
 retires the id, which is the security half — and which the fence commits
-before any of the three is called.
+before either is called.
 
 | Seam | Satisfied by | Wired at |
 |---|---|---|
 | `tenant.DatabaseLister` | `*database.Manager` (`TenantDatabases`) | `lifecycle.BuildServices` |
-| `tenant.DEKShredder` | `dek.TenantDEKManager` (`DeleteTenantDEK`) | `lifecycle.BuildServices`, from `Infra.TenantDEKManager` |
 | `tenant.KeyspaceReclaimer` | `*service.KeyspaceReclaimService` | `lifecycle.BuildServices` |
 
 They are set through `tenant.TeardownWiring`, resolved from the
@@ -393,13 +395,12 @@ which `DeleteTenant` treats as success so the delete stays re-issuable.
 | Reserved or malformed id | nothing changed — no read, no commit | the id is not deletable; there is no remedy and none is wanted |
 | Database enumeration | nothing changed | fix the catalog, retry |
 | Databases remain | nothing changed | drop them; the error names them |
-| Tombstone write | nothing changed — tenant intact, id not retired, **DEK untouched** | retry |
-| Metadata delete | id retired, record still present, DEK untouched | retry; the delete resumes from the top |
-| DEK shred | id retired, metadata gone, tenant unresolvable; the key may or may not be gone | retry; `DeleteTenantDEK` is idempotent |
-| Barrier destroy | id retired, metadata gone, DEK shredded | retry; `DestroyTenant` is idempotent |
-| Keyspace reclaim | id retired, metadata gone, DEK shredded, bytes remain | retry; the reclamation is idempotent and a tombstoned tenant is still deletable |
+| Tombstone write | nothing changed — tenant intact, id not retired, **keyring untouched** | retry |
+| Metadata delete | id retired, record still present, keyring untouched | retry; the delete resumes from the top |
+| Barrier destroy | id retired, metadata gone, tenant and keyring unresolvable | retry; `DestroyTenant` is idempotent |
+| Keyspace reclaim | id retired, metadata gone, barrier destroyed, bytes remain | retry; the reclamation is idempotent and a tombstoned tenant is still deletable |
 
-The last three arrive wrapped in `*TeardownError`; the first five do not, and
+The last two arrive wrapped in `*TeardownError`; the first five do not, and
 that is the distinction the message carries.
 
 Re-issuing `DeleteTenant` on a tenant whose metadata is already gone but whose
@@ -520,7 +521,6 @@ isolation gap.
 | Creating a tenant under a DELETED id | `*TenantDeletedError`, 409 / `AlreadyExists` | **yes** |
 | Deleting a tenant that still owns databases | `*TenantHasDatabasesError`, 409 / `FailedPrecondition` | **yes** |
 | Tombstone store unreadable during create | `*StoreError{Op: "tombstone-check"}` | **yes** |
-| Tenant DEK shred fails during delete | `*TeardownError` wrapping `*DEKShredError`; the id is already retired | **yes** |
 | Database enumeration fails during delete | `*DatabaseListError`, nothing changed | **yes** |
 | Keyspace reclaim fails during delete | `*TeardownError` wrapping `*KeyspaceReclaimError`; id already retired | **yes** |
 | Resolving a DELETED tenant's keyspace | `*TenantDeletedError`, no fall-through | **yes** |

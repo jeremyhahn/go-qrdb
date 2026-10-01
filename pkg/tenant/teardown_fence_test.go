@@ -21,121 +21,62 @@
 // operator reads, which is why they are separated from tombstone_test.go: that
 // file asks what the tombstone means, this one asks what survives a failure.
 //
-// The DEK shredder here is the REAL dek.TenantDEKManager over a real barrier,
-// not a recorder. A double records that DeleteTenantDEK was called; only the
-// production key hierarchy can answer "does the tenant's ciphertext still
-// decrypt afterwards?", which is the property the defect destroyed.
+// The key hierarchy here is the REAL dek.Keyring over the real
+// StoreResolver, not a recorder. Only the production path can answer "can the
+// tenant's ciphertext still be decrypted afterwards?", which is the property
+// the defect destroyed.
 
 package tenant
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// tenantCrypto is a tenant's DEK plus a ciphertext written under it, which is
-// what a "did the shred run?" assertion has to be made against.
+// tenantCrypto is a tenant's DEK keyring plus a ciphertext written under it,
+// which is what a "can the tenant's data still be read?" assertion has to be
+// made against.
 type tenantCrypto struct {
-	manager    dek.TenantDEKManager
+	keyring    *dek.Keyring
 	ciphertext []byte
 	plaintext  []byte
 }
 
-// newTenantCrypto builds a real tenant DEK manager over a real barrier,
-// issues tenantID a DEK and seals a payload under it.
-func newTenantCrypto(t *testing.T, ctx context.Context, reg *seal.BarrierRegistry, tenantID string) *tenantCrypto {
+// newTenantCrypto builds the production keyring over a StoreResolver for svc
+// and seals a payload for tenantID under it.
+func newTenantCrypto(t *testing.T, ctx context.Context, svc *TenantService, reg *seal.BarrierRegistry, tenantID string) *tenantCrypto {
 	t.Helper()
-
-	// newTestBarrierRegistry leaves the system barrier sealed; the key
-	// hierarchy the DEK manager wraps with starts one level below it.
-	system := reg.SystemBarrier()
-	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("system-pw")}); err != nil &&
-		!errors.Is(err, seal.ErrAlreadyInitialized) {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
-
-	cluster, err := dek.NewClusterDEKManager(system, testLogger())
+	resolver, err := NewStoreResolver(kvstore.NewMemoryKVStore(), reg, svc)
 	if err != nil {
-		t.Fatalf("NewClusterDEKManager: %v", err)
+		t.Fatalf("NewStoreResolver: %v", err)
 	}
-	t.Cleanup(func() { _ = cluster.Close() })
-	if err := cluster.Initialize(ctx, dek.AlgorithmAES256GCM, dek.AESKeySize); err != nil {
-		t.Fatalf("ClusterDEKManager.Initialize: %v", err)
-	}
-
-	mgr, err := dek.NewTenantDEKManager(cluster, seal.NewMemoryBackend(), testLogger(), nil)
+	keyring, err := dek.NewKeyring(resolver)
 	if err != nil {
-		t.Fatalf("NewTenantDEKManager: %v", err)
+		t.Fatalf("NewKeyring: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Close() })
-
-	key, err := mgr.GetOrCreateTenantDEK(ctx, tenantID)
-	if err != nil {
-		t.Fatalf("GetOrCreateTenantDEK: %v", err)
-	}
-
 	plaintext := []byte("the tenant's data")
-	return &tenantCrypto{manager: mgr, plaintext: plaintext, ciphertext: sealWith(t, key, plaintext)}
+	sealed, err := keyring.Encrypt(ctx, tenantID, plaintext, nil)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	return &tenantCrypto{keyring: keyring, plaintext: plaintext, ciphertext: sealed.Ciphertext}
 }
 
-// decrypts reports whether tenantID's DEK is still able to read the payload
-// written under it. A shredded DEK makes this false, permanently.
+// decrypts reports whether tenantID's keyring can still read the payload
+// written under it.
 func (c *tenantCrypto) decrypts(ctx context.Context, t *testing.T, tenantID string) bool {
 	t.Helper()
-	key, err := c.manager.GetTenantDEK(ctx, tenantID)
+	opened, err := c.keyring.Decrypt(ctx, tenantID, c.ciphertext, nil)
 	if err != nil {
 		return false
 	}
-	got, err := openWith(key, c.ciphertext)
-	if err != nil {
-		return false
-	}
-	return string(got) == string(c.plaintext)
-}
-
-// sealWith encrypts plaintext under key with AES-256-GCM, nonce prefixed.
-//
-// The nonce is the AEAD's, not this helper's. NewGCMWithRandomNonce generates
-// it and prefixes it to the ciphertext itself -- the same framing this helper
-// used to hand-roll, and the only one GODEBUG=fips140=only admits, because
-// FIPS 140-3 forbids caller-chosen GCM IVs.
-func sealWith(t *testing.T, key, plaintext []byte) []byte {
-	t.Helper()
-	return gcmFor(t, key).Seal(nil, nil, plaintext, nil)
-}
-
-// openWith is sealWith's inverse. The nonce travels inside the ciphertext, so
-// there is no prefix to split off and no length guard to get wrong.
-func openWith(key, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		return nil, err
-	}
-	return gcm.Open(nil, nil, ciphertext, nil)
-}
-
-func gcmFor(t *testing.T, key []byte) cipher.AEAD {
-	t.Helper()
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatalf("aes.NewCipher: %v", err)
-	}
-	gcm, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		t.Fatalf("cipher.NewGCMWithRandomNonce: %v", err)
-	}
-	return gcm
+	return string(opened.Plaintext) == string(c.plaintext)
 }
 
 // TestDeleteTenant_FailedTombstoneLeavesTheDEKAbleToDecrypt is go-qrdb#483's
@@ -153,8 +94,7 @@ func TestDeleteTenant_FailedTombstoneLeavesTheDEKAbleToDecrypt(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	crypto := newTenantCrypto(t, ctx, reg, "acme")
-	svc.SetDEKShredder(crypto.manager)
+	crypto := newTenantCrypto(t, ctx, svc, reg, "acme")
 
 	if !crypto.decrypts(ctx, t, "acme") {
 		t.Fatal("fixture: the tenant's data must decrypt before the delete")
@@ -168,8 +108,7 @@ func TestDeleteTenant_FailedTombstoneLeavesTheDEKAbleToDecrypt(t *testing.T) {
 	}
 
 	if !crypto.decrypts(ctx, t, "acme") {
-		t.Error("the DEK was shredded by a delete that never made the retirement durable; " +
-			"the tenant's data is now permanently undecryptable")
+		t.Error("a delete that never made the retirement durable left the tenant's keyring unusable")
 	}
 
 	// And the error told the truth: nothing changed.
@@ -180,9 +119,9 @@ func TestDeleteTenant_FailedTombstoneLeavesTheDEKAbleToDecrypt(t *testing.T) {
 }
 
 // TestDeleteTenant_HappyPathStillFullyRetires is the other half of the
-// reordering: fencing first must not weaken a delete that succeeds. The DEK is
-// destroyed, the id is retired, the metadata is gone and the keyspace is
-// reclaimed -- all of it, in one call.
+// reordering: fencing first must not weaken a delete that succeeds. The
+// keyring is unusable, the id is retired, the metadata is gone and the
+// keyspace is reclaimed -- all of it, in one call.
 func TestDeleteTenant_HappyPathStillFullyRetires(t *testing.T) {
 	ctx := context.Background()
 	svc, reg := newTestService(t)
@@ -192,15 +131,14 @@ func TestDeleteTenant_HappyPathStillFullyRetires(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	crypto := newTenantCrypto(t, ctx, reg, "acme")
-	svc.SetDEKShredder(crypto.manager)
+	crypto := newTenantCrypto(t, ctx, svc, reg, "acme")
 
 	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
 
 	if crypto.decrypts(ctx, t, "acme") {
-		t.Error("a successful delete must have destroyed the DEK")
+		t.Error("a successful delete must leave the tenant's keyring unusable")
 	}
 	if _, err := svc.GetTenant(ctx, "acme"); !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("GetTenant after delete = %v, want ErrTenantNotFound", err)
@@ -218,8 +156,8 @@ func TestDeleteTenant_HappyPathStillFullyRetires(t *testing.T) {
 }
 
 // TestDeleteTenant_ResumeAfterAMidTeardownFailureCompletes drives the state
-// the reordering deliberately allows -- a retired id whose DEK is still there
-// -- and asserts it is resumable rather than wedged.
+// the reordering deliberately allows -- a retired id whose keyspace is still
+// there -- and asserts it is resumable rather than wedged.
 //
 // This is the trade fencing first accepts, and the reason it is acceptable is
 // asserted here rather than argued: the residue is reachable by nobody and one
@@ -233,24 +171,23 @@ func TestDeleteTenant_ResumeAfterAMidTeardownFailureCompletes(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	crypto := newTenantCrypto(t, ctx, reg, "acme")
-	svc.SetDEKShredder(crypto.manager)
+	crypto := newTenantCrypto(t, ctx, svc, reg, "acme")
 
 	var te *TeardownError
 	if err := svc.DeleteTenant(ctx, "acme"); !errors.As(err, &te) {
 		t.Fatalf("DeleteTenant = %v, want a TeardownError", err)
 	}
 
-	// The fence held and the shred ran; only the reclamation is outstanding.
+	// The fence held; only the reclamation is outstanding, and the residue
+	// it leaves is reachable by nobody: the keyring no longer resolves.
 	if _, tombstoned, _ := svc.deletedAt(ctx, "acme"); !tombstoned {
 		t.Error("the id must be retired after a failure past the fence")
 	}
 	if crypto.decrypts(ctx, t, "acme") {
-		t.Error("the shred runs before the reclamation, so it must already have happened")
+		t.Error("a retired tenant's keyring must be unusable even before the reclamation finishes")
 	}
 
-	// Re-issuing finishes it. The shred re-runs over a key that is already
-	// gone, which is the idempotence DEKShredder requires.
+	// Re-issuing finishes it.
 	reclaim.err = nil
 	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
 		t.Fatalf("re-issued DeleteTenant: %v", err)
@@ -293,7 +230,7 @@ func TestDeleteTenant_ErrorsSayWhatIsAlreadyIrreversible(t *testing.T) {
 
 	t.Run("past the fence the message names the retirement and the remedy", func(t *testing.T) {
 		svc, _ := newTestService(t)
-		svc.SetDEKShredder(&shredRecorder{err: errStoreFault})
+		svc.SetKeyspaceReclaimer(&recordingReclaimer{err: errStoreFault})
 		if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 			t.Fatalf("CreateTenant: %v", err)
 		}
@@ -303,30 +240,11 @@ func TestDeleteTenant_ErrorsSayWhatIsAlreadyIrreversible(t *testing.T) {
 			t.Fatal("DeleteTenant must fail")
 		}
 		msg := err.Error()
-		for _, want := range []string{"acme", "retired", "no longer resolvable", "re-issue DeleteTenant", "dek shred"} {
+		for _, want := range []string{"acme", "retired", "no longer resolvable", "re-issue DeleteTenant", "keyspace reclaim"} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("message %q does not carry %q; an operator who reads it as "+
 					"\"nothing changed\" leaves a half-torn-down tenant behind", msg, want)
 			}
 		}
 	})
-}
-
-// TestDeleteTenantDEK_IsIdempotent pins the contract the resume path rests on,
-// against the real manager rather than a double. go-qrdb#483 asked whether it
-// holds; it does, because the storage delete treats not-found as success.
-func TestDeleteTenantDEK_IsIdempotent(t *testing.T) {
-	ctx := context.Background()
-	_, reg := newTestService(t)
-	crypto := newTenantCrypto(t, ctx, reg, "acme")
-
-	if err := crypto.manager.DeleteTenantDEK(ctx, "acme"); err != nil {
-		t.Fatalf("first DeleteTenantDEK: %v", err)
-	}
-	if err := crypto.manager.DeleteTenantDEK(ctx, "acme"); err != nil {
-		t.Fatalf("second DeleteTenantDEK must be success, got %v", err)
-	}
-	if err := crypto.manager.DeleteTenantDEK(ctx, "never-existed"); err != nil {
-		t.Fatalf("shredding a tenant that never had a DEK must be success, got %v", err)
-	}
 }

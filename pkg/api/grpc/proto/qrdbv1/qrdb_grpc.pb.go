@@ -208,6 +208,12 @@ const (
 	QRDBService_CredentialGCExpired_FullMethodName               = "/qrdb.v1.QRDBService/CredentialGCExpired"
 	QRDBService_CredentialStore_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialStore"
 	QRDBService_CredentialRetrieve_FullMethodName                = "/qrdb.v1.QRDBService/CredentialRetrieve"
+	QRDBService_TenantDEKStatus_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKStatus"
+	QRDBService_TenantDEKRotate_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRotate"
+	QRDBService_TenantDEKRetire_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRetire"
+	QRDBService_TenantDEKEncrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKEncrypt"
+	QRDBService_TenantDEKDecrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKDecrypt"
+	QRDBService_TenantDEKRewrap_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRewrap"
 	QRDBService_BackupCreate_FullMethodName                      = "/qrdb.v1.QRDBService/BackupCreate"
 	QRDBService_BackupList_FullMethodName                        = "/qrdb.v1.QRDBService/BackupList"
 	QRDBService_BackupGet_FullMethodName                         = "/qrdb.v1.QRDBService/BackupGet"
@@ -638,6 +644,23 @@ type QRDBServiceClient interface {
 	// the manual strategy this blocks until the credential is submitted or the
 	// context is cancelled.
 	CredentialRetrieve(ctx context.Context, in *CredentialRetrieveRequest, opts ...grpc.CallOption) (*CredentialRetrieveResponse, error)
+	// TenantDEKStatus returns the caller's keyring versions (no key material).
+	TenantDEKStatus(ctx context.Context, in *TenantDEKRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error)
+	// TenantDEKRotate adds a key version and makes it current. Earlier
+	// versions keep decrypting until retired.
+	TenantDEKRotate(ctx context.Context, in *TenantDEKRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error)
+	// TenantDEKRetire destroys an old key version. The current version is
+	// refused (FailedPrecondition).
+	TenantDEKRetire(ctx context.Context, in *TenantDEKRetireRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error)
+	// TenantDEKEncrypt seals plaintext under the current key version,
+	// binding aad.
+	TenantDEKEncrypt(ctx context.Context, in *TenantDEKEncryptRequest, opts ...grpc.CallOption) (*TenantDEKEncryptResponse, error)
+	// TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant and
+	// the same aad.
+	TenantDEKDecrypt(ctx context.Context, in *TenantDEKDecryptRequest, opts ...grpc.CallOption) (*TenantDEKDecryptResponse, error)
+	// TenantDEKRewrap re-seals a ciphertext under the current key version
+	// without returning its plaintext.
+	TenantDEKRewrap(ctx context.Context, in *TenantDEKRewrapRequest, opts ...grpc.CallOption) (*TenantDEKRewrapResponse, error)
 	// BackupCreate captures a consistent snapshot of the selected shards (or
 	// all shards) and stores it as a named backup artifact.
 	BackupCreate(ctx context.Context, in *BackupCreateRequest, opts ...grpc.CallOption) (*BackupInfo, error)
@@ -2452,6 +2475,66 @@ func (c *qRDBServiceClient) CredentialRetrieve(ctx context.Context, in *Credenti
 	return out, nil
 }
 
+func (c *qRDBServiceClient) TenantDEKStatus(ctx context.Context, in *TenantDEKRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TenantDEKRotate(ctx context.Context, in *TenantDEKRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKRotate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TenantDEKRetire(ctx context.Context, in *TenantDEKRetireRequest, opts ...grpc.CallOption) (*TenantDEKStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKStatusResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKRetire_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TenantDEKEncrypt(ctx context.Context, in *TenantDEKEncryptRequest, opts ...grpc.CallOption) (*TenantDEKEncryptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKEncryptResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKEncrypt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TenantDEKDecrypt(ctx context.Context, in *TenantDEKDecryptRequest, opts ...grpc.CallOption) (*TenantDEKDecryptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKDecryptResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKDecrypt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) TenantDEKRewrap(ctx context.Context, in *TenantDEKRewrapRequest, opts ...grpc.CallOption) (*TenantDEKRewrapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantDEKRewrapResponse)
+	err := c.cc.Invoke(ctx, QRDBService_TenantDEKRewrap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BackupCreate(ctx context.Context, in *BackupCreateRequest, opts ...grpc.CallOption) (*BackupInfo, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BackupInfo)
@@ -3069,6 +3152,23 @@ type QRDBServiceServer interface {
 	// the manual strategy this blocks until the credential is submitted or the
 	// context is cancelled.
 	CredentialRetrieve(context.Context, *CredentialRetrieveRequest) (*CredentialRetrieveResponse, error)
+	// TenantDEKStatus returns the caller's keyring versions (no key material).
+	TenantDEKStatus(context.Context, *TenantDEKRequest) (*TenantDEKStatusResponse, error)
+	// TenantDEKRotate adds a key version and makes it current. Earlier
+	// versions keep decrypting until retired.
+	TenantDEKRotate(context.Context, *TenantDEKRequest) (*TenantDEKStatusResponse, error)
+	// TenantDEKRetire destroys an old key version. The current version is
+	// refused (FailedPrecondition).
+	TenantDEKRetire(context.Context, *TenantDEKRetireRequest) (*TenantDEKStatusResponse, error)
+	// TenantDEKEncrypt seals plaintext under the current key version,
+	// binding aad.
+	TenantDEKEncrypt(context.Context, *TenantDEKEncryptRequest) (*TenantDEKEncryptResponse, error)
+	// TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant and
+	// the same aad.
+	TenantDEKDecrypt(context.Context, *TenantDEKDecryptRequest) (*TenantDEKDecryptResponse, error)
+	// TenantDEKRewrap re-seals a ciphertext under the current key version
+	// without returning its plaintext.
+	TenantDEKRewrap(context.Context, *TenantDEKRewrapRequest) (*TenantDEKRewrapResponse, error)
 	// BackupCreate captures a consistent snapshot of the selected shards (or
 	// all shards) and stores it as a named backup artifact.
 	BackupCreate(context.Context, *BackupCreateRequest) (*BackupInfo, error)
@@ -3655,6 +3755,24 @@ func (UnimplementedQRDBServiceServer) CredentialStore(context.Context, *Credenti
 }
 func (UnimplementedQRDBServiceServer) CredentialRetrieve(context.Context, *CredentialRetrieveRequest) (*CredentialRetrieveResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialRetrieve not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKStatus(context.Context, *TenantDEKRequest) (*TenantDEKStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKRotate(context.Context, *TenantDEKRequest) (*TenantDEKStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKRotate not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKRetire(context.Context, *TenantDEKRetireRequest) (*TenantDEKStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKRetire not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKEncrypt(context.Context, *TenantDEKEncryptRequest) (*TenantDEKEncryptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKEncrypt not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKDecrypt(context.Context, *TenantDEKDecryptRequest) (*TenantDEKDecryptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKDecrypt not implemented")
+}
+func (UnimplementedQRDBServiceServer) TenantDEKRewrap(context.Context, *TenantDEKRewrapRequest) (*TenantDEKRewrapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantDEKRewrap not implemented")
 }
 func (UnimplementedQRDBServiceServer) BackupCreate(context.Context, *BackupCreateRequest) (*BackupInfo, error) {
 	return nil, status.Error(codes.Unimplemented, "method BackupCreate not implemented")
@@ -6865,6 +6983,114 @@ func _QRDBService_CredentialRetrieve_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_TenantDEKStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKStatus(ctx, req.(*TenantDEKRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TenantDEKRotate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKRotate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKRotate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKRotate(ctx, req.(*TenantDEKRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TenantDEKRetire_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKRetireRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKRetire(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKRetire_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKRetire(ctx, req.(*TenantDEKRetireRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TenantDEKEncrypt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKEncryptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKEncrypt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKEncrypt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKEncrypt(ctx, req.(*TenantDEKEncryptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TenantDEKDecrypt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKDecryptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKDecrypt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKDecrypt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKDecrypt(ctx, req.(*TenantDEKDecryptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_TenantDEKRewrap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantDEKRewrapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).TenantDEKRewrap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_TenantDEKRewrap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).TenantDEKRewrap(ctx, req.(*TenantDEKRewrapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BackupCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BackupCreateRequest)
 	if err := dec(in); err != nil {
@@ -7941,6 +8167,30 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CredentialRetrieve",
 			Handler:    _QRDBService_CredentialRetrieve_Handler,
+		},
+		{
+			MethodName: "TenantDEKStatus",
+			Handler:    _QRDBService_TenantDEKStatus_Handler,
+		},
+		{
+			MethodName: "TenantDEKRotate",
+			Handler:    _QRDBService_TenantDEKRotate_Handler,
+		},
+		{
+			MethodName: "TenantDEKRetire",
+			Handler:    _QRDBService_TenantDEKRetire_Handler,
+		},
+		{
+			MethodName: "TenantDEKEncrypt",
+			Handler:    _QRDBService_TenantDEKEncrypt_Handler,
+		},
+		{
+			MethodName: "TenantDEKDecrypt",
+			Handler:    _QRDBService_TenantDEKDecrypt_Handler,
+		},
+		{
+			MethodName: "TenantDEKRewrap",
+			Handler:    _QRDBService_TenantDEKRewrap_Handler,
 		},
 		{
 			MethodName: "BackupCreate",

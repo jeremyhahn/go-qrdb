@@ -68,6 +68,7 @@ type Server struct {
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
+	dekSvc            service.DEKServicer
 	tenantSvc         tenant.TenantServicer
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
@@ -374,6 +375,14 @@ func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	}
 }
 
+// WithDEKService configures the tenant DEK keyring service. Without it the
+// qrdb_dek_* tools are not registered.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(s *Server) {
+		s.dekSvc = svc
+	}
+}
+
 // WithCeremonyCA configures the ceremony CA used for ceremony initialization.
 func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 	return func(s *Server) {
@@ -582,6 +591,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.ceremonySvc != nil {
 		s.addTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
+	}
+	if s.dekSvc != nil {
+		s.addTools(dekTools(s.dekSvc)...)
 	}
 	if s.credentialSvc != nil {
 		s.addTools(credentialTools(s.credentialSvc)...)

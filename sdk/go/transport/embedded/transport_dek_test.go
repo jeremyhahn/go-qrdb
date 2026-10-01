@@ -1,0 +1,144 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package embedded
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
+
+// dekStores resolves one in-memory store per tenant.
+type dekStores map[string]*kvstore.MemoryKVStore
+
+func (d dekStores) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	s, ok := d[tenantID]
+	if !ok {
+		s = kvstore.NewMemoryKVStore()
+		d[tenantID] = s
+	}
+	return s, nil
+}
+
+// newDEKTransport returns an embedded transport over the production keyring
+// service.
+func newDEKTransport(t *testing.T) *Transport {
+	t.Helper()
+	keyring, err := dek.NewKeyring(dekStores{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := service.NewDEKService(keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newExtTransport(t, WithDEKService(svc))
+}
+
+func TestEmbeddedDEK_LifecycleForTheBoundTenant(t *testing.T) {
+	tr := newDEKTransport(t)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	aad := []byte("acme/db/password/v1")
+
+	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
+	if err != nil || enc.Version != 1 {
+		t.Fatalf("encrypt = %+v, %v", enc, err)
+	}
+	if _, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	// The old ciphertext still decrypts after rotation.
+	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) || dec.Version != 1 {
+		t.Fatalf("decrypt v1 after rotate = %+v, %v", dec, err)
+	}
+	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || rw.ToVersion != 2 {
+		t.Fatalf("rewrap = %+v, %v", rw, err)
+	}
+	st, err := tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1})
+	if err != nil || st.TenantID != "acme" || st.Versions[0].RetiredAt == nil {
+		t.Fatalf("retire = %+v, %v", st, err)
+	}
+	if st, err = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{TenantID: "acme"}); err != nil || st.CurrentVersion != 2 {
+		t.Fatalf("status = %+v, %v", st, err)
+	}
+}
+
+func TestEmbeddedDEK_RefusesAnotherTenant(t *testing.T) {
+	tr := newDEKTransport(t)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{TenantID: "globex", Plaintext: []byte("x")})
+	if !errors.Is(err, dek.ErrCrossTenant) {
+		t.Fatalf("err = %v, want dek.ErrCrossTenant", err)
+	}
+}
+
+func TestEmbeddedDEK_NilServiceNilRequestAndClosed(t *testing.T) {
+	ctx := context.Background()
+	unwired := newExtTransport(t)
+	var nse *NilServiceError
+	if _, err := unwired.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); !errors.As(err, &nse) {
+		t.Errorf("unwired: %v", err)
+	}
+
+	tr := newDEKTransport(t)
+	checks := map[string]error{}
+	_, checks["status"] = tr.TenantDEKStatus(ctx, nil)
+	_, checks["rotate"] = tr.TenantDEKRotate(ctx, nil)
+	_, checks["retire"] = tr.TenantDEKRetire(ctx, nil)
+	_, checks["encrypt"] = tr.TenantDEKEncrypt(ctx, nil)
+	_, checks["decrypt"] = tr.TenantDEKDecrypt(ctx, nil)
+	_, checks["rewrap"] = tr.TenantDEKRewrap(ctx, nil)
+	for op, err := range checks {
+		var nre *transport.NilRequestError
+		if !errors.As(err, &nre) {
+			t.Errorf("%s(nil): %v", op, err)
+		}
+	}
+
+	_ = tr.Close()
+	var ce *transport.ClosedError
+	if _, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{}); !errors.As(err, &ce) {
+		t.Errorf("after close: %v", err)
+	}
+}
+
+func TestEmbeddedDEK_GenericRequestDispatch(t *testing.T) {
+	tr := newDEKTransport(t)
+	ctx := context.Background()
+	var enc *transport.TenantDEKEncryptResponse
+	if err := tr.Request(ctx, "TenantDEKEncrypt", &transport.TenantDEKEncryptRequest{Plaintext: []byte("x")}, &enc); err != nil || enc == nil || enc.Version != 1 {
+		t.Fatalf("Request(TenantDEKEncrypt) = %+v, %v", enc, err)
+	}
+	var st *transport.TenantDEKStatusResponse
+	if err := tr.Request(ctx, "TenantDEKStatus", &transport.TenantDEKRequest{}, &st); err != nil || st.CurrentVersion != 1 {
+		t.Fatalf("Request(TenantDEKStatus) = %+v, %v", st, err)
+	}
+	var inv *InvalidRequestError
+	if err := tr.Request(ctx, "TenantDEKRewrap", 5, nil); !errors.As(err, &inv) {
+		t.Fatalf("bad request type: %v", err)
+	}
+	if err := tr.Request(ctx, "TenantDEKRetire", &transport.TenantDEKRetireRequest{Version: 1}, nil); !errors.Is(err, dek.ErrRetireCurrentVersion) {
+		t.Fatalf("dispatch error passthrough: %v", err)
+	}
+}

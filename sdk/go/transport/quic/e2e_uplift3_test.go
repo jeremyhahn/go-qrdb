@@ -236,48 +236,6 @@ func TestE2E_Collection_ListDocuments_RPCError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DEK NotImplemented paths (66.7% → 100% coverage)
-// The closed path is tested in transport_closed_test.go; these cover the
-// NotImplemented return path.
-// ---------------------------------------------------------------------------
-
-func TestQUIC_DEK_NotImplemented(t *testing.T) {
-	_, tr := startE2EServer(t)
-	var nie *transport.NotImplementedError
-
-	if err := tr.DEKInitialize(context.Background(), &transport.DEKInitializeRequest{}); !errorAs(err, &nie) {
-		t.Errorf("DEKInitialize: %v", err)
-	}
-	if _, err := tr.DEKGetStatus(context.Background()); !errorAs(err, &nie) {
-		t.Errorf("DEKGetStatus: %v", err)
-	}
-	if err := tr.DEKRotate(context.Background()); !errorAs(err, &nie) {
-		t.Errorf("DEKRotate: %v", err)
-	}
-	if _, err := tr.DEKGetCurrent(context.Background()); !errorAs(err, &nie) {
-		t.Errorf("DEKGetCurrent: %v", err)
-	}
-	if err := tr.DEKSyncToNode(context.Background(), &transport.DEKSyncRequest{}); !errorAs(err, &nie) {
-		t.Errorf("DEKSyncToNode: %v", err)
-	}
-	if _, err := tr.TenantDEKGetOrCreate(context.Background(), &transport.TenantDEKRequest{}); !errorAs(err, &nie) {
-		t.Errorf("TenantDEKGetOrCreate: %v", err)
-	}
-	if err := tr.TenantDEKRotate(context.Background(), &transport.TenantDEKRotateRequest{}); !errorAs(err, &nie) {
-		t.Errorf("TenantDEKRotate: %v", err)
-	}
-	if err := tr.TenantDEKDelete(context.Background(), &transport.TenantDEKDeleteRequest{}); !errorAs(err, &nie) {
-		t.Errorf("TenantDEKDelete: %v", err)
-	}
-	if _, err := tr.TenantDEKList(context.Background()); !errorAs(err, &nie) {
-		t.Errorf("TenantDEKList: %v", err)
-	}
-	if _, err := tr.TenantDEKGetStatus(context.Background(), &transport.TenantDEKRequest{}); !errorAs(err, &nie) {
-		t.Errorf("TenantDEKGetStatus: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // buildTLSConfig error paths (73.7%)
 // CA file read error and cert load error paths.
 // ---------------------------------------------------------------------------

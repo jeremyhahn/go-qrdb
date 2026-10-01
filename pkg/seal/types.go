@@ -8,8 +8,6 @@
 
 package seal
 
-import "context"
-
 // SealMode identifies the sealing mode.
 type SealMode int
 
@@ -33,28 +31,4 @@ type EncryptionBarrier interface {
 
 	// IsSealed reports whether the barrier is in sealed state.
 	IsSealed() bool
-}
-
-// TenantKeyManager manages per-tenant data encryption keys (DEKs) using
-// envelope encryption. Each tenant's DEK is wrapped by the system barrier
-// and cached in memory for fast access.
-type TenantKeyManager interface {
-	// GetTenantDEK returns the plaintext DEK for the given tenant. If no
-	// DEK exists, one is generated, wrapped, and persisted.
-	GetTenantDEK(ctx context.Context, tenantID string) ([]byte, error)
-
-	// RotateTenantDEK generates a new DEK for the tenant, replaces the
-	// persisted wrapped DEK, and updates the cache.
-	RotateTenantDEK(ctx context.Context, tenantID string) error
-
-	// DestroyTenantDEK deletes the tenant's wrapped DEK and clears the
-	// cache entry. This implements cryptographic shredding.
-	DestroyTenantDEK(ctx context.Context, tenantID string) error
-
-	// ImportTenantKey imports externally-provided key material as the
-	// tenant's DEK, wrapping and persisting it.
-	ImportTenantKey(ctx context.Context, tenantID string, keyMaterial []byte) error
-
-	// ClearCache removes all cached plaintext DEKs. Called on seal.
-	ClearCache()
 }

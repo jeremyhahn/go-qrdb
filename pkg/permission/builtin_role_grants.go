@@ -119,6 +119,9 @@ func registerAdminGrants() {
 		KeysList, KeysGet,
 		// Wrap/unwrap for key transport
 		KeysWrap, KeysUnwrap,
+		// Tenant DEK keyring lifecycle: rotate, rewrap stored ciphertexts to
+		// the current version, retire old versions, read status.
+		DEKRotate, DEKRewrap, DEKRetire, DEKStatus,
 		// Key material import/export (privileged lifecycle)
 		KeysImport, KeysExport,
 		// Certificate management
@@ -246,6 +249,8 @@ func registerOperatorGrants() {
 		KeysSign, KeysVerify,
 		KeysEncrypt, KeysDecrypt,
 		KeysList, KeysGet,
+		// Tenant DEK keyring use, plus rewrap and status for rotation runs.
+		DEKEncrypt, DEKDecrypt, DEKRewrap, DEKStatus,
 		// Key rotation (not creation/deletion)
 		KeysRotate,
 		// Key derivation (KDF / ECDH key agreement)
@@ -410,6 +415,8 @@ func registerUserGrants() {
 		// Cryptographic operations (read-only key access)
 		KeysSign, KeysVerify,
 		KeysEncrypt, KeysDecrypt,
+		// Tenant DEK keyring use (encrypt and decrypt only).
+		DEKEncrypt, DEKDecrypt,
 		// Key derivation (KDF / ECDH)
 		KeysDerive,
 		// Key metadata (public fields only)

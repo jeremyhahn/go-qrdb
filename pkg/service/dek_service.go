@@ -16,143 +16,119 @@ package service
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// DEKServicer defines the business logic interface for DEK operations.
+// DEKServicer is the business-logic interface for the per-tenant DEK
+// keyring, shared by every transport.
+//
+// Every method takes the tenant the request names, which may be empty. The
+// tenant actually acted on is ALWAYS the caller's own — the tenant bound to
+// ctx by authentication, or the system tenant for an unbound in-process
+// caller. A request naming any other tenant is refused with
+// *dek.CrossTenantError, including from the system tenant: the
+// system-tenant rule that lifts self-scope permissions across tenants does
+// not reach another tenant's keys.
 type DEKServicer interface {
-	// Initialize initializes the cluster DEK with the given algorithm and key size.
-	Initialize(ctx context.Context, algorithm string, keyBytes int) error
+	// Status reports the caller's keyring versions. It never returns keys.
+	Status(ctx context.Context, tenantID string) (*dek.Status, error)
 
-	// GetStatus returns the current cluster DEK status.
-	GetStatus(ctx context.Context) (*dek.ClusterDEKStatus, error)
+	// Rotate adds a key version and makes it current.
+	Rotate(ctx context.Context, tenantID string) (*dek.Status, error)
 
-	// Rotate rotates the cluster DEK to a new version.
-	Rotate(ctx context.Context) error
+	// Retire destroys an old key version. The current version is refused.
+	Retire(ctx context.Context, tenantID string, version uint64) (*dek.Status, error)
 
-	// CurrentDEKVersion returns the version of the live cluster DEK.
-	CurrentDEKVersion(ctx context.Context) (uint64, error)
+	// Encrypt seals plaintext under the current version, binding aad.
+	Encrypt(ctx context.Context, tenantID string, plaintext, aad []byte) (*dek.Sealed, error)
 
-	// SyncToNode synchronizes the DEK to a specific node.
-	SyncToNode(ctx context.Context, nodeID uint64) error
+	// Decrypt opens a ciphertext sealed for the same tenant and aad.
+	Decrypt(ctx context.Context, tenantID string, ciphertext, aad []byte) (*dek.Opened, error)
 
-	// TenantGetOrCreate returns the DEK for a tenant, creating if needed.
-	TenantGetOrCreate(ctx context.Context, tenantID string) ([]byte, error)
-
-	// TenantRotate rotates the DEK for a specific tenant.
-	TenantRotate(ctx context.Context, tenantID string) error
-
-	// TenantDelete deletes a tenant's DEK.
-	TenantDelete(ctx context.Context, tenantID string) error
-
-	// TenantList returns all tenant IDs that have DEKs.
-	TenantList(ctx context.Context) ([]string, error)
-
-	// TenantGetStatus returns the status of a tenant's DEK.
-	TenantGetStatus(ctx context.Context, tenantID string) (*dek.TenantDEKStatus, error)
+	// Rewrap re-seals a ciphertext under the current version without
+	// returning its plaintext.
+	Rewrap(ctx context.Context, tenantID string, ciphertext, aad []byte) (*dek.Rewrapped, error)
 }
 
-// DEKService implements DEKServicer using the pkg/dek managers.
+// DEKService implements DEKServicer over a dek.Keyring.
 type DEKService struct {
-	cluster *dek.ClusterDEKManager
-	tenant  dek.TenantDEKManager
-	logger  *slog.Logger
+	keyring *dek.Keyring
 }
 
 // Compile-time interface check.
 var _ DEKServicer = (*DEKService)(nil)
 
-// NewDEKService creates a new DEK service.
-func NewDEKService(cluster *dek.ClusterDEKManager, tenant dek.TenantDEKManager, logger *slog.Logger) (*DEKService, error) {
-	if cluster == nil {
-		return nil, &dek.NilInputError{Op: "NewDEKService", Field: "cluster"}
+// NewDEKService returns a DEKService over keyring.
+func NewDEKService(keyring *dek.Keyring) (*DEKService, error) {
+	if keyring == nil {
+		return nil, &dek.InvalidInputError{Op: "NewDEKService", Field: "keyring"}
 	}
-	if logger == nil {
-		return nil, &dek.NilInputError{Op: "NewDEKService", Field: "logger"}
-	}
-	return &DEKService{
-		cluster: cluster,
-		tenant:  tenant,
-		logger:  logger,
-	}, nil
+	return &DEKService{keyring: keyring}, nil
 }
 
-// Initialize initializes the cluster DEK with the given algorithm and key size.
-func (s *DEKService) Initialize(ctx context.Context, algorithm string, keyBytes int) error {
-	return s.cluster.Initialize(ctx, algorithm, keyBytes)
-}
-
-// GetStatus returns the current cluster DEK status.
-func (s *DEKService) GetStatus(ctx context.Context) (*dek.ClusterDEKStatus, error) {
-	result, err := s.cluster.GetStatus(ctx)
+// Status implements DEKServicer.
+func (s *DEKService) Status(ctx context.Context, tenantID string) (*dek.Status, error) {
+	t, err := dekTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	status, ok := result.(*dek.ClusterDEKStatus)
-	if !ok {
-		return nil, &dek.CryptoError{Op: "DEKService.GetStatus", Detail: "unexpected status type"}
+	return s.keyring.Status(ctx, t)
+}
+
+// Rotate implements DEKServicer.
+func (s *DEKService) Rotate(ctx context.Context, tenantID string) (*dek.Status, error) {
+	t, err := dekTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	return status, nil
+	return s.keyring.Rotate(ctx, t)
 }
 
-// Rotate rotates the cluster DEK to a new version.
-func (s *DEKService) Rotate(ctx context.Context) error {
-	return s.cluster.Rotate(ctx)
-}
-
-// CurrentDEKVersion returns the version of the live cluster DEK.
-//
-// The DEK bytes themselves do not cross this boundary. They stay in the
-// cluster manager's protected memory, applied only by the manager's own
-// wrapping operations (dek.ClusterDEKManager.WrapKey / UnwrapKey), and no
-// transport exposes them: the version is the whole of the caller-visible state.
-func (s *DEKService) CurrentDEKVersion(_ context.Context) (uint64, error) {
-	return s.cluster.CurrentVersion()
-}
-
-// SyncToNode synchronizes the DEK to a specific node.
-func (s *DEKService) SyncToNode(ctx context.Context, nodeID uint64) error {
-	return s.cluster.SyncToNode(ctx, nodeID)
-}
-
-// TenantGetOrCreate returns the DEK for a tenant, creating if needed.
-func (s *DEKService) TenantGetOrCreate(ctx context.Context, tenantID string) ([]byte, error) {
-	if s.tenant == nil {
-		return nil, &dek.NotInitializedError{Op: "DEKService.TenantGetOrCreate", Resource: "tenant DEK manager"}
+// Retire implements DEKServicer.
+func (s *DEKService) Retire(ctx context.Context, tenantID string, version uint64) (*dek.Status, error) {
+	t, err := dekTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	return s.tenant.GetOrCreateTenantDEK(ctx, tenantID)
+	return s.keyring.Retire(ctx, t, version)
 }
 
-// TenantRotate rotates the DEK for a specific tenant.
-func (s *DEKService) TenantRotate(ctx context.Context, tenantID string) error {
-	if s.tenant == nil {
-		return &dek.NotInitializedError{Op: "DEKService.TenantRotate", Resource: "tenant DEK manager"}
+// Encrypt implements DEKServicer.
+func (s *DEKService) Encrypt(ctx context.Context, tenantID string, plaintext, aad []byte) (*dek.Sealed, error) {
+	t, err := dekTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	return s.tenant.RotateTenantDEK(ctx, tenantID)
+	return s.keyring.Encrypt(ctx, t, plaintext, aad)
 }
 
-// TenantDelete deletes a tenant's DEK.
-func (s *DEKService) TenantDelete(ctx context.Context, tenantID string) error {
-	if s.tenant == nil {
-		return &dek.NotInitializedError{Op: "DEKService.TenantDelete", Resource: "tenant DEK manager"}
+// Decrypt implements DEKServicer.
+func (s *DEKService) Decrypt(ctx context.Context, tenantID string, ciphertext, aad []byte) (*dek.Opened, error) {
+	t, err := dekTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	return s.tenant.DeleteTenantDEK(ctx, tenantID)
+	return s.keyring.Decrypt(ctx, t, ciphertext, aad)
 }
 
-// TenantList returns all tenant IDs that have DEKs.
-func (s *DEKService) TenantList(ctx context.Context) ([]string, error) {
-	if s.tenant == nil {
-		return nil, &dek.NotInitializedError{Op: "DEKService.TenantList", Resource: "tenant DEK manager"}
+// Rewrap implements DEKServicer.
+func (s *DEKService) Rewrap(ctx context.Context, tenantID string, ciphertext, aad []byte) (*dek.Rewrapped, error) {
+	t, err := dekTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	return s.tenant.ListTenantDEKs(ctx)
+	return s.keyring.Rewrap(ctx, t, ciphertext, aad)
 }
 
-// TenantGetStatus returns the status of a tenant's DEK.
-func (s *DEKService) TenantGetStatus(ctx context.Context, tenantID string) (*dek.TenantDEKStatus, error) {
-	if s.tenant == nil {
-		return nil, &dek.NotInitializedError{Op: "DEKService.TenantGetStatus", Resource: "tenant DEK manager"}
+// dekTenant resolves the tenant a keyring request acts on: the caller's own,
+// whatever the request names. Unlike tenant.EffectiveTenant there is no
+// system-tenant exception.
+func dekTenant(ctx context.Context, requested string) (string, error) {
+	caller := tenant.FromContext(ctx)
+	if requested == "" || tenant.Normalize(requested) == caller {
+		return caller, nil
 	}
-	return s.tenant.GetTenantDEKStatus(ctx, tenantID)
+	return "", &dek.CrossTenantError{CallerTenant: caller, RequestedTenant: requested}
 }

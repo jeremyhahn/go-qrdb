@@ -297,6 +297,7 @@ type qrdbServiceServer struct {
 	ceremonySvc   service.CeremonyServicer
 	ceremonyCA    ceremony.CeremonyCA
 	credentialSvc service.CredentialServicer
+	dekSvc        service.DEKServicer
 	tenantSvc     tenant.TenantServicer
 	userSvc       user.UserServicer
 	roleSvc       role.RoleServicer

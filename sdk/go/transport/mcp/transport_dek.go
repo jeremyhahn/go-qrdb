@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -24,189 +25,114 @@ import (
 // Compile-time interface assertion.
 var _ transport.DEKClient = (*Transport)(nil)
 
-// ---------------------------------------------------------------------------
-// DEKClient implementation
-// ---------------------------------------------------------------------------
+// DEKClient implementation over the qrdb_dek_* tools served by
+// pkg/api/mcp/tools_dek.go. Byte arguments are base64-encoded; each tool
+// answers with the same JSON body the REST transport returns.
 
-// DEKInitialize initializes the cluster DEK with the given algorithm and key
-// size by calling the qrdb_dek_initialize MCP tool.
-func (t *Transport) DEKInitialize(ctx context.Context, req *transport.DEKInitializeRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
+// TenantDEKStatus calls qrdb_dek_status.
+func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKStatus", Err: &transport.NilRequestError{}}
 	}
-
-	if _, err := t.callTool(ctx, "qrdb_dek_initialize", map[string]any{
-		"algorithm": req.Algorithm,
-		"key_bytes": req.KeyBytes,
-	}); err != nil {
-		return &transport.RequestError{Method: "DEKInitialize", Err: err}
-	}
-
-	return nil
-}
-
-// DEKGetStatus returns the current cluster DEK status by calling the
-// qrdb_dek_status MCP tool.
-func (t *Transport) DEKGetStatus(ctx context.Context) (*transport.DEKStatusResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_dek_status", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "DEKGetStatus", Err: err}
-	}
-
-	var resp transport.DEKStatusResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "DEKGetStatus", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// DEKRotate rotates the cluster DEK to a new version by calling the
-// qrdb_dek_rotate MCP tool.
-func (t *Transport) DEKRotate(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_dek_rotate", nil); err != nil {
-		return &transport.RequestError{Method: "DEKRotate", Err: err}
-	}
-
-	return nil
-}
-
-// DEKGetCurrent returns the current DEK metadata by calling the
-// qrdb_dek_current MCP tool.
-func (t *Transport) DEKGetCurrent(ctx context.Context) (*transport.DEKCurrentResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_dek_current", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "DEKGetCurrent", Err: err}
-	}
-
-	var resp transport.DEKCurrentResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "DEKGetCurrent", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// DEKSyncToNode synchronizes the DEK to a specific node by calling the
-// qrdb_dek_sync MCP tool.
-func (t *Transport) DEKSyncToNode(ctx context.Context, req *transport.DEKSyncRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_dek_sync", map[string]any{
-		"node_id": req.NodeID,
-	}); err != nil {
-		return &transport.RequestError{Method: "DEKSyncToNode", Err: err}
-	}
-
-	return nil
-}
-
-// TenantDEKGetOrCreate returns the DEK for a tenant, creating if needed,
-// by calling the qrdb_dek_tenant_get_or_create MCP tool.
-func (t *Transport) TenantDEKGetOrCreate(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_dek_tenant_get_or_create", map[string]any{
-		"tenant_id": req.TenantID,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKGetOrCreate", Err: err}
-	}
-
-	var resp transport.TenantDEKResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKGetOrCreate", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// TenantDEKRotate rotates the DEK for a specific tenant by calling the
-// qrdb_dek_tenant_rotate MCP tool.
-func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDEKRotateRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_dek_tenant_rotate", map[string]any{
-		"tenant_id": req.TenantID,
-	}); err != nil {
-		return &transport.RequestError{Method: "TenantDEKRotate", Err: err}
-	}
-
-	return nil
-}
-
-// TenantDEKDelete deletes a tenant's DEK by calling the
-// qrdb_dek_tenant_delete MCP tool.
-func (t *Transport) TenantDEKDelete(ctx context.Context, req *transport.TenantDEKDeleteRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-
-	if _, err := t.callTool(ctx, "qrdb_dek_tenant_delete", map[string]any{
-		"tenant_id": req.TenantID,
-	}); err != nil {
-		return &transport.RequestError{Method: "TenantDEKDelete", Err: err}
-	}
-
-	return nil
-}
-
-// TenantDEKList returns all tenant IDs that have DEKs by calling the
-// qrdb_dek_tenant_list MCP tool.
-func (t *Transport) TenantDEKList(ctx context.Context) (*transport.TenantDEKListResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_dek_tenant_list", nil)
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKList", Err: err}
-	}
-
-	var resp transport.TenantDEKListResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKList", Err: &jsonDecodeError{Err: jsonErr}}
-	}
-
-	return &resp, nil
-}
-
-// TenantDEKGetStatus returns the status of a tenant's DEK by calling the
-// qrdb_dek_tenant_status MCP tool.
-func (t *Transport) TenantDEKGetStatus(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	text, err := t.callTool(ctx, "qrdb_dek_tenant_status", map[string]any{
-		"tenant_id": req.TenantID,
-	})
-	if err != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKGetStatus", Err: err}
-	}
-
 	var resp transport.TenantDEKStatusResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
-		return nil, &transport.RequestError{Method: "TenantDEKGetStatus", Err: &jsonDecodeError{Err: jsonErr}}
+	if err := t.dekTool(ctx, "TenantDEKStatus", "qrdb_dek_status", dekArgs(req.TenantID), &resp); err != nil {
+		return nil, err
 	}
-
 	return &resp, nil
+}
+
+// TenantDEKRotate calls qrdb_dek_rotate.
+func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKRotate", Err: &transport.NilRequestError{}}
+	}
+	var resp transport.TenantDEKStatusResponse
+	if err := t.dekTool(ctx, "TenantDEKRotate", "qrdb_dek_rotate", dekArgs(req.TenantID), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantDEKRetire calls qrdb_dek_retire.
+func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDEKRetireRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKRetire", Err: &transport.NilRequestError{}}
+	}
+	args := dekArgs(req.TenantID)
+	args["version"] = req.Version
+	var resp transport.TenantDEKStatusResponse
+	if err := t.dekTool(ctx, "TenantDEKRetire", "qrdb_dek_retire", args, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantDEKEncrypt calls qrdb_dek_encrypt.
+func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantDEKEncryptRequest) (*transport.TenantDEKEncryptResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKEncrypt", Err: &transport.NilRequestError{}}
+	}
+	var resp transport.TenantDEKEncryptResponse
+	if err := t.dekTool(ctx, "TenantDEKEncrypt", "qrdb_dek_encrypt", dekDataArgs(req.TenantID, "plaintext", req.Plaintext, req.AAD), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantDEKDecrypt calls qrdb_dek_decrypt.
+func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantDEKDecryptRequest) (*transport.TenantDEKDecryptResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKDecrypt", Err: &transport.NilRequestError{}}
+	}
+	var resp transport.TenantDEKDecryptResponse
+	if err := t.dekTool(ctx, "TenantDEKDecrypt", "qrdb_dek_decrypt", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantDEKRewrap calls qrdb_dek_rewrap.
+func (t *Transport) TenantDEKRewrap(ctx context.Context, req *transport.TenantDEKRewrapRequest) (*transport.TenantDEKRewrapResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantDEKRewrap", Err: &transport.NilRequestError{}}
+	}
+	var resp transport.TenantDEKRewrapResponse
+	if err := t.dekTool(ctx, "TenantDEKRewrap", "qrdb_dek_rewrap", dekDataArgs(req.TenantID, "ciphertext", req.Ciphertext, req.AAD), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// dekTool calls a keyring tool and decodes its JSON result into dest.
+func (t *Transport) dekTool(ctx context.Context, method, tool string, args map[string]any, dest any) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	if err := json.Unmarshal([]byte(text), dest); err != nil {
+		return &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: err}}
+	}
+	return nil
+}
+
+// dekArgs returns the tool arguments carrying the optional tenant.
+func dekArgs(tenantID string) map[string]any {
+	args := map[string]any{}
+	if tenantID != "" {
+		args["tenant_id"] = tenantID
+	}
+	return args
+}
+
+// dekDataArgs returns the tool arguments for a data-carrying keyring tool.
+func dekDataArgs(tenantID, field string, data, aad []byte) map[string]any {
+	args := dekArgs(tenantID)
+	args[field] = base64.StdEncoding.EncodeToString(data)
+	if len(aad) > 0 {
+		args["aad"] = base64.StdEncoding.EncodeToString(aad)
+	}
+	return args
 }

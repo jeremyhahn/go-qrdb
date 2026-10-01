@@ -77,37 +77,19 @@ func TestMCPCredentials_AfterClose(t *testing.T) {
 
 func TestMCPDEK_AfterClose(t *testing.T) {
 	tr := newClosedTransport()
-	var ce *transport.ClosedError
-
-	if err := tr.DEKInitialize(context.Background(), &transport.DEKInitializeRequest{}); !errors.As(err, &ce) {
-		t.Errorf("DEKInitialize: %v", err)
-	}
-	if _, err := tr.DEKGetStatus(context.Background()); !errors.As(err, &ce) {
-		t.Errorf("DEKGetStatus: %v", err)
-	}
-	if err := tr.DEKRotate(context.Background()); !errors.As(err, &ce) {
-		t.Errorf("DEKRotate: %v", err)
-	}
-	if _, err := tr.DEKGetCurrent(context.Background()); !errors.As(err, &ce) {
-		t.Errorf("DEKGetCurrent: %v", err)
-	}
-	if err := tr.DEKSyncToNode(context.Background(), &transport.DEKSyncRequest{}); !errors.As(err, &ce) {
-		t.Errorf("DEKSyncToNode: %v", err)
-	}
-	if _, err := tr.TenantDEKGetOrCreate(context.Background(), &transport.TenantDEKRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKGetOrCreate: %v", err)
-	}
-	if err := tr.TenantDEKRotate(context.Background(), &transport.TenantDEKRotateRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKRotate: %v", err)
-	}
-	if err := tr.TenantDEKDelete(context.Background(), &transport.TenantDEKDeleteRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKDelete: %v", err)
-	}
-	if _, err := tr.TenantDEKList(context.Background()); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKList: %v", err)
-	}
-	if _, err := tr.TenantDEKGetStatus(context.Background(), &transport.TenantDEKRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKGetStatus: %v", err)
+	ctx := context.Background()
+	checks := map[string]error{}
+	_, checks["TenantDEKStatus"] = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{})
+	_, checks["TenantDEKRotate"] = tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{})
+	_, checks["TenantDEKRetire"] = tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1})
+	_, checks["TenantDEKEncrypt"] = tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{})
+	_, checks["TenantDEKDecrypt"] = tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{})
+	_, checks["TenantDEKRewrap"] = tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{})
+	for method, err := range checks {
+		var ce *transport.ClosedError
+		if !errors.As(err, &ce) {
+			t.Errorf("%s after close: err = %v, want *transport.ClosedError", method, err)
+		}
 	}
 }
 

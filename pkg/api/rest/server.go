@@ -119,6 +119,7 @@ type Server struct {
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
+	dekSvc            service.DEKServicer
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
@@ -449,6 +450,12 @@ func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 // management operations including storage, submission, and deletion.
 func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithDEKService sets the tenant DEK keyring service. Without it the
+// /v1/dek routes are not served.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(s *Server) { s.dekSvc = svc }
 }
 
 // WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
@@ -1591,6 +1598,15 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions", permission.CredentialsListVersions, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions/{version}", permission.CredentialsRetrieveVersion, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/value", permission.CredentialsRetrieve, s.handleCredentialByPath)
+
+	// Tenant DEK keyring routes. Every route acts on the caller's own tenant.
+	dekOn := s.dekSvc != nil
+	s.routeIf(dekOn, http.MethodGet, "/v1/dek/status", permission.DEKStatus, s.handleDEKStatus)
+	s.routeIf(dekOn, http.MethodPost, "/v1/dek/rotate", permission.DEKRotate, s.handleDEKRotate)
+	s.routeIf(dekOn, http.MethodPost, "/v1/dek/retire", permission.DEKRetire, s.handleDEKRetire)
+	s.routeIf(dekOn, http.MethodPost, "/v1/dek/encrypt", permission.DEKEncrypt, s.handleDEKEncrypt)
+	s.routeIf(dekOn, http.MethodPost, "/v1/dek/decrypt", permission.DEKDecrypt, s.handleDEKDecrypt)
+	s.routeIf(dekOn, http.MethodPost, "/v1/dek/rewrap", permission.DEKRewrap, s.handleDEKRewrap)
 
 	// Audit event retrieval route.
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)

@@ -54,17 +54,6 @@ func (l *listingLister) TenantDatabases(_ context.Context, _ string) ([]string, 
 	return l.names, l.err
 }
 
-// shredRecorder is a DEKShredder that records the tenants it shredded.
-type shredRecorder struct {
-	calls []string
-	err   error
-}
-
-func (s *shredRecorder) DeleteTenantDEK(_ context.Context, tenantID string) error {
-	s.calls = append(s.calls, tenantID)
-	return s.err
-}
-
 // TestTombstone_PrefixDoesNotCollideWithMetadata is the property that lets
 // ListTenants keep its prefix scan unchanged: the two prefixes are siblings,
 // so neither scan sees the other's keys.
@@ -236,53 +225,12 @@ func TestDeleteTenant_UnlistableDatabasesAbortTheDelete(t *testing.T) {
 	}
 }
 
-// TestDeleteTenant_ShredsTheDEKOnlyAfterTheFence pins the ordering the ruling
-// chose: the shred is the first step PAST the fence, so a shred failure finds
-// the id already retired and the metadata already gone, and it says so.
-//
-// The inverse -- shred first -- is what go-qrdb#483 reports: a transient store
-// failure after a successful shred left a live, listed, resolvable tenant
-// whose data was permanently undecryptable, under an error that read as
-// "nothing changed".
-func TestDeleteTenant_ShredsTheDEKOnlyAfterTheFence(t *testing.T) {
-	svc, _ := newTestService(t)
-	ctx := context.Background()
-	shred := &shredRecorder{err: errStoreFault}
-	reclaim := &recordingReclaimer{}
-	svc.SetDEKShredder(shred)
-	svc.SetKeyspaceReclaimer(reclaim)
-
-	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-
-	err := svc.DeleteTenant(ctx, "acme")
-	var de *DEKShredError
-	if !errors.As(err, &de) {
-		t.Fatalf("DeleteTenant = %v, want a DEKShredError", err)
-	}
-	var te *TeardownError
-	if !errors.As(err, &te) {
-		t.Fatalf("DeleteTenant = %v, want the shred failure wrapped in a TeardownError", err)
-	}
-	if _, gErr := svc.GetTenant(ctx, "acme"); !errors.Is(gErr, ErrTenantNotFound) {
-		t.Errorf("the fence must have removed the metadata before the shred ran, got %v", gErr)
-	}
-	if _, tombstoned, _ := svc.deletedAt(ctx, "acme"); !tombstoned {
-		t.Error("the fence must have retired the id before the shred ran")
-	}
-	if len(reclaim.calls) != 0 {
-		t.Errorf("the reclamation ran after a failed shred: %v", reclaim.calls)
-	}
-}
-
 // TestDeleteTenant_AFailedFenceLeavesTheTenantIntact is the property the
 // reordering exists to provide, asserted on each half of the fence in turn.
 //
 // Neither fence write destroys anything, so a failure in either must leave a
-// tenant that is still resolvable AND a DEK that was never touched -- which is
-// what makes "put-tombstone failed" readable as "nothing changed". Under the
-// shred-first ordering this test fails on the DEK: the key was already gone.
+// tenant that is still resolvable and a keyspace that was never touched --
+// which is what makes "put-tombstone failed" readable as "nothing changed".
 func TestDeleteTenant_AFailedFenceLeavesTheTenantIntact(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -298,9 +246,7 @@ func TestDeleteTenant_AFailedFenceLeavesTheTenantIntact(t *testing.T) {
 			ctx := context.Background()
 			backend := &failingBackend{inner: seal.NewMemoryBackend()}
 			svc, _ := newTestServiceWithStore(t, backend)
-			shred := &shredRecorder{}
 			reclaim := &recordingReclaimer{}
-			svc.SetDEKShredder(shred)
 			svc.SetKeyspaceReclaimer(reclaim)
 
 			if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
@@ -318,9 +264,6 @@ func TestDeleteTenant_AFailedFenceLeavesTheTenantIntact(t *testing.T) {
 			}
 
 			// THE assertion: the irreversible step did not run.
-			if len(shred.calls) != 0 {
-				t.Errorf("the DEK was shredded by a delete that failed at the fence: %v", shred.calls)
-			}
 			if len(reclaim.calls) != 0 {
 				t.Errorf("the keyspace was reclaimed by a delete that failed at the fence: %v", reclaim.calls)
 			}
@@ -337,27 +280,6 @@ func TestDeleteTenant_AFailedFenceLeavesTheTenantIntact(t *testing.T) {
 				t.Errorf("a failed fence must leave the tenant: %v", gErr)
 			}
 		})
-	}
-}
-
-// TestDeleteTenant_ShredRunsForEveryIsolationType: a prefix tenant may never
-// have had a DEK, but the shred is issued anyway and is expected to treat
-// that as success -- the alternative is a teardown that depends on knowing
-// which tenants were ever handed a key.
-func TestDeleteTenant_ShredRunsForEveryIsolationType(t *testing.T) {
-	svc, _ := newTestService(t)
-	ctx := context.Background()
-	shred := &shredRecorder{}
-	svc.SetDEKShredder(shred)
-
-	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
-		t.Fatalf("DeleteTenant: %v", err)
-	}
-	if len(shred.calls) != 1 || shred.calls[0] != "acme" {
-		t.Errorf("shred calls = %v, want one for acme", shred.calls)
 	}
 }
 
@@ -512,11 +434,9 @@ func TestKVTenantService_RefusesWhileDatabasesRemain(t *testing.T) {
 func TestTeardownOptions_WireTheSameSeamsAsTheSetters(t *testing.T) {
 	reclaim := &recordingReclaimer{}
 	lister := &listingLister{names: []string{"ledger"}}
-	shred := &shredRecorder{}
 
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger(),
 		WithDatabaseLister(lister),
-		WithDEKShredder(shred),
 		WithKeyspaceReclaimer(reclaim),
 	)
 	if err != nil {
@@ -535,13 +455,13 @@ func TestTeardownOptions_WireTheSameSeamsAsTheSetters(t *testing.T) {
 	if err := svc.DeleteTenant(ctx, "acme"); !errors.As(err, &has) {
 		t.Fatalf("DeleteTenant = %v, want a TenantHasDatabasesError", err)
 	}
-	// And so are the other two, once the databases are gone.
+	// And so is the reclaimer, once the databases are gone.
 	lister.names = nil
 	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
-	if len(shred.calls) != 1 || len(reclaim.calls) != 1 {
-		t.Errorf("shred=%v reclaim=%v, want one call each", shred.calls, reclaim.calls)
+	if len(reclaim.calls) != 1 {
+		t.Errorf("reclaim=%v, want one call", reclaim.calls)
 	}
 }
 
@@ -746,8 +666,8 @@ func (foreignTenantServicer) TenantBarrierShamirSealVote(context.Context, string
 var _ TenantServicer = foreignTenantServicer{}
 
 // TestKVTenantService_DeleteFailureModes covers the no-seal service's error
-// paths: a corrupt metadata record still retires the id, a shred failure
-// aborts with nothing changed, and a reclaim failure leaves the id retired.
+// paths: a corrupt metadata record still retires the id, and a reclaim
+// failure leaves the id retired.
 func TestKVTenantService_DeleteFailureModes(t *testing.T) {
 	ctx := context.Background()
 
@@ -766,41 +686,6 @@ func TestKVTenantService_DeleteFailureModes(t *testing.T) {
 		var deleted *TenantDeletedError
 		if _, err := svcI.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); !errors.As(err, &deleted) {
 			t.Fatalf("the id must be retired, got %v", err)
-		}
-	})
-
-	t.Run("shred failure finds the id already retired", func(t *testing.T) {
-		store := kvstore.NewMemoryKVStore()
-		svcI, err := NewKVTenantService(store, testLogger())
-		if err != nil {
-			t.Fatalf("NewKVTenantService: %v", err)
-		}
-		shred := &shredRecorder{err: errStoreFault}
-		svcI.(TeardownWiring).SetDEKShredder(shred) //nolint:errcheck // asserted in TestKVTenantService_DeletedIdIsRetired
-		if _, err := svcI.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
-			t.Fatalf("CreateTenant: %v", err)
-		}
-		dErr := svcI.DeleteTenant(ctx, "acme")
-		var de *DEKShredError
-		if !errors.As(dErr, &de) {
-			t.Fatalf("DeleteTenant = %v, want a DEKShredError", dErr)
-		}
-		var te *TeardownError
-		if !errors.As(dErr, &te) {
-			t.Fatalf("DeleteTenant = %v, want the shred failure wrapped in a TeardownError", dErr)
-		}
-		if _, gErr := svcI.GetTenant(ctx, "acme"); !errors.Is(gErr, ErrTenantNotFound) {
-			t.Errorf("the no-seal service must fence before it shreds too, got %v", gErr)
-		}
-
-		// Re-issuing resumes and completes once the shredder recovers -- the
-		// resume path reaches the shred, which is now past the fence.
-		shred.err = nil
-		if rErr := svcI.DeleteTenant(ctx, "acme"); rErr != nil {
-			t.Fatalf("re-issued DeleteTenant: %v", rErr)
-		}
-		if len(shred.calls) != 2 {
-			t.Errorf("shred calls = %v, want the resume to have re-run it", shred.calls)
 		}
 	})
 
@@ -890,8 +775,8 @@ func TestDeleteTenant_ResumeReachesTheBarrierDestroy(t *testing.T) {
 // the LAST step; the three irreversible control-plane mutations precede it.
 //
 // Every test below asserts what was NOT committed, not merely what was
-// returned. An assertion on the error alone would pass even if the DEK had
-// already been shredded.
+// returned. An assertion on the error alone would pass even if the id had
+// already been retired.
 // ---------------------------------------------------------------------------
 
 // reservedIDs is the full set this package declares, one id per form, so a
@@ -912,7 +797,6 @@ func assertNothingCommitted(
 	ctx context.Context,
 	store seal.StorageBackend,
 	id string,
-	shred *shredRecorder,
 	reclaim *recordingReclaimer,
 ) {
 	t.Helper()
@@ -921,9 +805,6 @@ func assertNothingCommitted(
 	}
 	if _, err := store.Get(ctx, metadataPrefix+id); err != nil {
 		t.Errorf("a refused delete of %q removed the metadata record: %v", id, err)
-	}
-	if len(shred.calls) != 0 {
-		t.Errorf("a refused delete of %q shredded a DEK: %v", id, shred.calls)
 	}
 	if len(reclaim.calls) != 0 {
 		t.Errorf("a refused delete of %q ran the reclamation: %v", id, reclaim.calls)
@@ -953,9 +834,7 @@ func TestDeleteTenant_ReservedIdsAreRefusedWithNothingCommitted(t *testing.T) {
 					ctx := context.Background()
 					store := seal.NewMemoryBackend()
 					svc, _ := newTestServiceWithStore(t, store)
-					shred := &shredRecorder{}
 					reclaim := &recordingReclaimer{}
-					svc.SetDEKShredder(shred)
 					svc.SetKeyspaceReclaimer(reclaim)
 					if wiring.lister != nil {
 						svc.SetDatabaseLister(wiring.lister)
@@ -976,7 +855,7 @@ func TestDeleteTenant_ReservedIdsAreRefusedWithNothingCommitted(t *testing.T) {
 					if re.TenantID != tc.id {
 						t.Errorf("refusal names %q, want %q", re.TenantID, tc.id)
 					}
-					assertNothingCommitted(t, ctx, store, tc.id, shred, reclaim)
+					assertNothingCommitted(t, ctx, store, tc.id, reclaim)
 				})
 			}
 		})
@@ -989,8 +868,8 @@ func TestDeleteTenant_ReservedGuardDoesNotRefuseOrdinaryIds(t *testing.T) {
 	ctx := context.Background()
 	store := seal.NewMemoryBackend()
 	svc, _ := newTestServiceWithStore(t, store)
-	shred := &shredRecorder{}
-	svc.SetDEKShredder(shred)
+	reclaim := &recordingReclaimer{}
+	svc.SetKeyspaceReclaimer(reclaim)
 
 	if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -998,8 +877,8 @@ func TestDeleteTenant_ReservedGuardDoesNotRefuseOrdinaryIds(t *testing.T) {
 	if err := svc.DeleteTenant(ctx, "acme"); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
 	}
-	if len(shred.calls) != 1 {
-		t.Errorf("shred calls = %v, want one for acme", shred.calls)
+	if len(reclaim.calls) != 1 {
+		t.Errorf("reclaim calls = %v, want one for acme", reclaim.calls)
 	}
 }
 
@@ -1038,13 +917,11 @@ func TestKVTenantService_ReservedIdsAreRefusedWithNothingCommitted(t *testing.T)
 			if err != nil {
 				t.Fatalf("NewKVTenantService: %v", err)
 			}
-			shred := &shredRecorder{}
 			reclaim := &recordingReclaimer{}
 			wiring, ok := svcI.(TeardownWiring)
 			if !ok {
 				t.Fatal("the KV tenant service must carry the teardown seams")
 			}
-			wiring.SetDEKShredder(shred)
 			wiring.SetKeyspaceReclaimer(reclaim)
 			// No DatabaseLister: the bottom-up refusal cannot fire here.
 
@@ -1062,8 +939,8 @@ func TestKVTenantService_ReservedIdsAreRefusedWithNothingCommitted(t *testing.T)
 			if data, gErr := store.Get(ctx, metadataPrefix+tc.id); gErr != nil || data == nil {
 				t.Errorf("a refused delete of %q removed the metadata record (%v, %v)", tc.id, data, gErr)
 			}
-			if len(shred.calls) != 0 || len(reclaim.calls) != 0 {
-				t.Errorf("a refused delete of %q ran shred=%v reclaim=%v", tc.id, shred.calls, reclaim.calls)
+			if len(reclaim.calls) != 0 {
+				t.Errorf("a refused delete of %q ran reclaim=%v", tc.id, reclaim.calls)
 			}
 		})
 	}

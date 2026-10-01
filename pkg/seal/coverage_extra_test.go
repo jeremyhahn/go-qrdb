@@ -166,26 +166,6 @@ func TestNewStorageBarrier_WithOptionalConfig(t *testing.T) {
 // tenant_keys.go: RotateTenantDEK — wrapAndStore error path
 // --------------------------------------------------------------------------
 
-// TestTenantKeyManager_RotateTenantDEK_WrapAndStoreError exercises the
-// error path in RotateTenantDEK when wrapAndStore fails (Put error).
-func TestTenantKeyManager_RotateTenantDEK_WrapAndStoreError(t *testing.T) {
-	b := newUnsealedBarrier(t)
-	store := &failingKVStore{
-		inner:  newMemoryKVStore(),
-		putErr: errors.New("storage write error"),
-	}
-	tkm, err := NewTenantKeyManager(b, store)
-	if err != nil {
-		t.Fatalf("NewTenantKeyManager: %v", err)
-	}
-
-	ctx := context.Background()
-	err = tkm.RotateTenantDEK(ctx, "tenant-rotate")
-	if err == nil {
-		t.Fatal("expected error when Put fails during RotateTenantDEK")
-	}
-}
-
 // --------------------------------------------------------------------------
 // barrier_registry.go: RegisterTenant successful path (with strategy)
 // --------------------------------------------------------------------------
@@ -411,22 +391,6 @@ func (a *alwaysFailBarrier) Encrypt(_ []byte) ([]byte, error) {
 }
 func (a *alwaysFailBarrier) Decrypt(_ []byte) ([]byte, error) {
 	return nil, errors.New("decrypt failed")
-}
-
-// TestWrapAndStore_EncryptError exercises the error path in wrapAndStore
-// when barrier.Encrypt fails after the sealed guard passes.
-func TestWrapAndStore_EncryptError(t *testing.T) {
-	failB := &alwaysFailBarrier{}
-	tkm, err := NewTenantKeyManager(failB, newMemoryKVStore())
-	if err != nil {
-		t.Fatalf("NewTenantKeyManager: %v", err)
-	}
-
-	ctx := context.Background()
-	_, err = tkm.GetTenantDEK(ctx, "tenant-enc-error")
-	if err == nil {
-		t.Fatal("expected error when Encrypt fails in wrapAndStore")
-	}
 }
 
 // --------------------------------------------------------------------------

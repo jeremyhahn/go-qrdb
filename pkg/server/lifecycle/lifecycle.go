@@ -97,15 +97,6 @@ type Infra struct {
 	// SealBarrier is non-nil.
 	BarrierRegistry *seal.BarrierRegistry
 
-	// TenantDEKManager holds the per-tenant data encryption keys. When
-	// non-nil it is wired into the tenant service as the DEK shredder, so
-	// DeleteTenant destroys the tenant's key BEFORE its metadata -- which is
-	// what makes a dedicated-isolation tenant's data unreadable at the moment
-	// of deletion rather than after a reclamation finishes (go-qrdb#413).
-	// When nil the shred step is skipped, which is correct for a composition
-	// that never issued a tenant DEK.
-	TenantDEKManager dek.TenantDEKManager
-
 	// StrategyRegistry is the canonical name→factory lookup for sealing
 	// strategies. When non-nil it is injected into the TenantService so
 	// operators can select hardware/cloud seal strategies (tpm2, pkcs11,
@@ -258,6 +249,12 @@ type Node struct {
 	// composition that cannot resolve a tenant gets no factor service rather
 	// than one serving every tenant out of one keyspace.
 	UserAuthFactor service.UserAuthFactorServicer
+
+	// DEK is the per-tenant data encryption keyring service. It is non-nil
+	// exactly when StoreResolver is: the keyring is a record in each
+	// tenant's resolved store, so it inherits that store's replication,
+	// barrier encryption, sealed-tenant refusal and teardown.
+	DEK service.DEKServicer
 
 	// KeyspaceReclaim reclaims a dropped database's data from the store it
 	// shares with other databases. It is always non-nil and is already wired
@@ -619,9 +616,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if w, ok := n.Tenant.(tenant.TeardownWiring); ok {
 		w.SetDatabaseLister(dbManager)
 		w.SetKeyspaceReclaimer(n.KeyspaceReclaim)
-		if infra.TenantDEKManager != nil {
-			w.SetDEKShredder(infra.TenantDEKManager)
+	}
+
+	// The tenant DEK keyring rides the StoreResolver both branches above
+	// build, so it is served whether or not the seal subsystem is enabled.
+	if n.StoreResolver != nil {
+		dekSvc, err := buildDEKService(n.StoreResolver)
+		if err != nil {
+			return nil, err
 		}
+		n.DEK = dekSvc
 	}
 
 	// Wire tenant-driven quota and entitlement enforcement into the database
@@ -641,6 +645,19 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	return n, nil
+}
+
+// buildDEKService builds the tenant DEK keyring service over resolver.
+func buildDEKService(resolver tenant.StoreResolver) (service.DEKServicer, error) {
+	keyring, err := dek.NewKeyring(resolver)
+	if err != nil {
+		return nil, &DEKServiceError{Err: err}
+	}
+	svc, err := service.NewDEKService(keyring)
+	if err != nil {
+		return nil, &DEKServiceError{Err: err}
+	}
+	return svc, nil
 }
 
 // buildDatabaseQuotaOpts derives the DatabaseService options that wire the

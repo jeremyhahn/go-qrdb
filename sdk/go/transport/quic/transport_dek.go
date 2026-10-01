@@ -17,93 +17,114 @@ package quic
 import (
 	"context"
 
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dekconv"
 )
 
 // Compile-time interface assertion.
 var _ transport.DEKClient = (*Transport)(nil)
 
-// ---------------------------------------------------------------------------
-// DEKClient implementation (stub - pending proto generation)
-// ---------------------------------------------------------------------------
+// DEKClient implementation: the dek.* QUIC methods, framed with the gRPC
+// protobuf messages. The server handlers live in pkg/api/quic/handlers_dek.go.
 
-// DEKInitialize initializes the cluster DEK with the given algorithm and key
-// size.
-func (t *Transport) DEKInitialize(ctx context.Context, req *transport.DEKInitializeRequest) error {
+// TenantDEKStatus returns the caller's keyring versions.
+func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKStatus")
+	}
+	var resp pb.TenantDEKStatusResponse
+	if err := t.dekCall(ctx, "dek.Status", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Status(&resp), nil
+}
+
+// TenantDEKRotate adds a key version and makes it current.
+func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKRotate")
+	}
+	var resp pb.TenantDEKStatusResponse
+	if err := t.dekCall(ctx, "dek.Rotate", &pb.TenantDEKRequest{TenantId: req.TenantID}, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Status(&resp), nil
+}
+
+// TenantDEKRetire destroys an old key version.
+func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDEKRetireRequest) (*transport.TenantDEKStatusResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKRetire")
+	}
+	var resp pb.TenantDEKStatusResponse
+	if err := t.dekCall(ctx, "dek.Retire", &pb.TenantDEKRetireRequest{TenantId: req.TenantID, Version: req.Version}, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Status(&resp), nil
+}
+
+// TenantDEKEncrypt seals plaintext under the current key version.
+func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantDEKEncryptRequest) (*transport.TenantDEKEncryptResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKEncrypt")
+	}
+	var resp pb.TenantDEKEncryptResponse
+	in := &pb.TenantDEKEncryptRequest{TenantId: req.TenantID, Plaintext: req.Plaintext, Aad: req.AAD}
+	if err := t.dekCall(ctx, "dek.Encrypt", in, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Encrypt(&resp), nil
+}
+
+// TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant.
+func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantDEKDecryptRequest) (*transport.TenantDEKDecryptResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKDecrypt")
+	}
+	var resp pb.TenantDEKDecryptResponse
+	in := &pb.TenantDEKDecryptRequest{TenantId: req.TenantID, Ciphertext: req.Ciphertext, Aad: req.AAD}
+	if err := t.dekCall(ctx, "dek.Decrypt", in, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Decrypt(&resp), nil
+}
+
+// TenantDEKRewrap re-seals a ciphertext under the current key version.
+func (t *Transport) TenantDEKRewrap(ctx context.Context, req *transport.TenantDEKRewrapRequest) (*transport.TenantDEKRewrapResponse, error) {
+	if req == nil {
+		return nil, dekNilRequest("TenantDEKRewrap")
+	}
+	var resp pb.TenantDEKRewrapResponse
+	in := &pb.TenantDEKRewrapRequest{TenantId: req.TenantID, Ciphertext: req.Ciphertext, Aad: req.AAD}
+	if err := t.dekCall(ctx, "dek.Rewrap", in, &resp); err != nil {
+		return nil, err
+	}
+	return dekconv.Rewrap(&resp), nil
+}
+
+// dekCall frames in, invokes method and decodes the reply into out.
+func (t *Transport) dekCall(ctx context.Context, method string, in, out proto.Message) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	return &transport.NotImplementedError{Method: "DEKInitialize"}
+	payload, err := proto.Marshal(in)
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	reply, err := t.call(ctx, method, payload)
+	if err != nil {
+		return err
+	}
+	if err := proto.Unmarshal(reply, out); err != nil {
+		return &unmarshalError{Err: err}
+	}
+	return nil
 }
 
-// DEKGetStatus returns the current cluster DEK status.
-func (t *Transport) DEKGetStatus(ctx context.Context) (*transport.DEKStatusResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	return nil, &transport.NotImplementedError{Method: "DEKGetStatus"}
-}
-
-// DEKRotate rotates the cluster DEK to a new version.
-func (t *Transport) DEKRotate(ctx context.Context) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	return &transport.NotImplementedError{Method: "DEKRotate"}
-}
-
-// DEKGetCurrent returns the current DEK metadata.
-func (t *Transport) DEKGetCurrent(ctx context.Context) (*transport.DEKCurrentResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	return nil, &transport.NotImplementedError{Method: "DEKGetCurrent"}
-}
-
-// DEKSyncToNode synchronizes the DEK to a specific node.
-func (t *Transport) DEKSyncToNode(ctx context.Context, req *transport.DEKSyncRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	return &transport.NotImplementedError{Method: "DEKSyncToNode"}
-}
-
-// TenantDEKGetOrCreate returns the DEK for a tenant, creating if needed.
-func (t *Transport) TenantDEKGetOrCreate(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	return nil, &transport.NotImplementedError{Method: "TenantDEKGetOrCreate"}
-}
-
-// TenantDEKRotate rotates the DEK for a specific tenant.
-func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDEKRotateRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	return &transport.NotImplementedError{Method: "TenantDEKRotate"}
-}
-
-// TenantDEKDelete deletes a tenant's DEK.
-func (t *Transport) TenantDEKDelete(ctx context.Context, req *transport.TenantDEKDeleteRequest) error {
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
-	return &transport.NotImplementedError{Method: "TenantDEKDelete"}
-}
-
-// TenantDEKList returns all tenant IDs that have DEKs.
-func (t *Transport) TenantDEKList(ctx context.Context) (*transport.TenantDEKListResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	return nil, &transport.NotImplementedError{Method: "TenantDEKList"}
-}
-
-// TenantDEKGetStatus returns the status of a tenant's DEK.
-func (t *Transport) TenantDEKGetStatus(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-	return nil, &transport.NotImplementedError{Method: "TenantDEKGetStatus"}
+// dekNilRequest is the error for a nil request struct.
+func dekNilRequest(method string) error {
+	return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
 }

@@ -713,6 +713,26 @@ const (
 	UserAuthFactorsLogin   Permission = "user_authfactors:login"
 )
 
+// Tenant DEK keyring permissions. The keyring holds a tenant's versioned
+// data encryption keys; the keys never leave the server. Every verb acts on
+// the caller's OWN tenant only — the service refuses another tenant even for
+// a system-tenant caller — so all six are ScopeSelf (registered in init).
+const (
+	// DEKEncrypt seals caller data under the tenant's current key version.
+	DEKEncrypt Permission = "dek:encrypt"
+	// DEKDecrypt opens data sealed under any live key version.
+	DEKDecrypt Permission = "dek:decrypt"
+	// DEKRewrap re-seals a ciphertext under the current key version without
+	// returning its plaintext.
+	DEKRewrap Permission = "dek:rewrap"
+	// DEKRotate adds a key version and makes it current.
+	DEKRotate Permission = "dek:rotate"
+	// DEKRetire destroys an old key version's key.
+	DEKRetire Permission = "dek:retire"
+	// DEKStatus reads the keyring's version metadata (never key material).
+	DEKStatus Permission = "dek:status"
+)
+
 // IndexList grants listing of secondary index names (a read, distinct from
 // IndexQuery which reads index contents).
 const IndexList Permission = "index:list"
@@ -1052,6 +1072,13 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "Tenant Data Encryption Keys",
+		Group: "Security Services",
+		Permissions: []Permission{
+			DEKEncrypt, DEKDecrypt, DEKRewrap, DEKRotate, DEKRetire, DEKStatus,
+		},
+	},
+	{
 		Name:  "Secondary Index (list)",
 		Group: "Data Services",
 		Permissions: []Permission{
@@ -1110,4 +1137,10 @@ func init() {
 	// narrow: it says these two were considered, and says nothing about any
 	// other untagged permission in this package.
 	RegisterScope(ScopeSelf, UsersAddCertBinding, UsersRemoveCertBinding)
+	// The DEK keyring verbs declare ScopeSelf explicitly, for the reason the
+	// cert-binding pair does: they gate key custody, so their scope is a
+	// decision, not a default. ScopeSelf lets a system-tenant identity pass
+	// the authorizer for another tenant; the DEK service closes that by
+	// acting on the caller's own tenant only.
+	RegisterScope(ScopeSelf, DEKEncrypt, DEKDecrypt, DEKRewrap, DEKRotate, DEKRetire, DEKStatus)
 }

@@ -19,22 +19,25 @@ import "context"
 // ---------------------------------------------------------------------------
 // What deleting a tenant has to reach
 //
-// A tenant owns four things this package cannot touch on its own, so each is
+// A tenant owns three things this package cannot touch on its own, so each is
 // a seam wired at composition time rather than a dependency taken here:
 //
 //   - its DATABASES, whose catalog lives in pkg/database -- which imports
 //     this package, so the arrow cannot be reversed;
-//   - its DATA ENCRYPTION KEY, in pkg/dek;
 //   - its KEYSPACE in the shared store, which is a replicated state machine
 //     several layers above this one;
 //   - its BARRIER and the durable records behind it, which the barrier
 //     registry owns and this service only holds a handle to.
 //
-// The three declared here are narrow on purpose: a teardown that accepted
-// database.Manager, dek.TenantDEKManager and a KV servicer would drag a
-// filesystem catalog, a key hierarchy and forty data-plane methods into a
-// package whose job is tenant metadata. Every production type satisfies its
-// seam structurally at the wiring site.
+// Its data encryption keyring (pkg/dek) is not a fourth: the keyring is a
+// record in the tenant's own store, so it becomes unreachable at the fence
+// (the store resolver refuses a retired id) and is destroyed with the
+// tenant's barrier and reclaimed keyspace.
+//
+// The seams declared here are narrow on purpose: a teardown that accepted
+// database.Manager and a KV servicer would drag a filesystem catalog and
+// forty data-plane methods into a package whose job is tenant metadata.
+// Every production type satisfies its seam structurally at the wiring site.
 // ---------------------------------------------------------------------------
 
 // DatabaseLister reports the databases a tenant still owns.
@@ -47,27 +50,6 @@ type DatabaseLister interface {
 	// TenantDatabases returns the names of the databases owned by tenantID,
 	// sorted. An unknown tenant owns none, which is not an error.
 	TenantDatabases(ctx context.Context, tenantID string) ([]string, error)
-}
-
-// DEKShredder destroys a tenant's data encryption key.
-//
-// Destroying the key is what makes a dedicated-isolation tenant's data
-// unreadable before any byte of it has been reclaimed. It is the first
-// IRREVERSIBLE step of a deletion, which is why DeleteTenant runs it
-// immediately after the fence and never before it: the retirement has to be
-// durable before the key dies, or a transient store failure leaves a live,
-// resolvable tenant with no key (go-qrdb#483). dek.TenantDEKManager satisfies
-// it.
-type DEKShredder interface {
-	// DeleteTenantDEK removes tenantID's DEK. A tenant that never had one is
-	// the success case, not a not-found error: the deletion must be
-	// re-issuable, and a prefix tenant may never have had a key at all.
-	//
-	// Implementations MUST be idempotent, for the reason
-	// KeyspaceReclaimer.ReclaimTenantKeyspace must be: a teardown interrupted
-	// past the fence is completed by re-issuing the delete, and that re-runs
-	// this call over a key that is already gone.
-	DeleteTenantDEK(ctx context.Context, tenantID string) error
 }
 
 // KeyspaceReclaimer deletes the data a tenant owns in the shared store.
@@ -95,9 +77,8 @@ type KeyspaceReclaimer interface {
 // -- so a teardown that only worked on the encrypted service would miss the
 // case go-qrdb#413 is about.
 type teardownSeams struct {
-	databases   DatabaseLister
-	dekShredder DEKShredder
-	reclaimer   KeyspaceReclaimer
+	databases DatabaseLister
+	reclaimer KeyspaceReclaimer
 }
 
 // TeardownWiring is the post-construction wiring surface for DeleteTenant's
@@ -128,11 +109,6 @@ type TeardownWiring interface {
 	// teardown order the operator can see.
 	SetDatabaseLister(DatabaseLister)
 
-	// SetDEKShredder sets the tenant DEK manager whose key DeleteTenant
-	// destroys. With none wired the shred step is skipped, which is correct
-	// for a composition that never issued a tenant DEK.
-	SetDEKShredder(DEKShredder)
-
 	// SetKeyspaceReclaimer sets the reclaimer DeleteTenant runs after the
 	// fence commits. A nil reclaimer means DeleteTenant retires the id
 	// and leaves the bytes, which is correct for a composition with no
@@ -150,9 +126,6 @@ var (
 // SetDatabaseLister implements TeardownWiring.
 func (t *teardownSeams) SetDatabaseLister(l DatabaseLister) { t.databases = l }
 
-// SetDEKShredder implements TeardownWiring.
-func (t *teardownSeams) SetDEKShredder(d DEKShredder) { t.dekShredder = d }
-
 // SetKeyspaceReclaimer implements TeardownWiring.
 func (t *teardownSeams) SetKeyspaceReclaimer(r KeyspaceReclaimer) { t.reclaimer = r }
 
@@ -165,12 +138,6 @@ func (t *teardownSeams) KeyspaceReclaimer() KeyspaceReclaimer { return t.reclaim
 // TeardownWiring.SetDatabaseLister.
 func WithDatabaseLister(l DatabaseLister) TenantServiceOption {
 	return func(s *TenantService) { s.SetDatabaseLister(l) }
-}
-
-// WithDEKShredder injects the tenant DEK manager whose key DeleteTenant
-// destroys. See TeardownWiring.SetDEKShredder.
-func WithDEKShredder(d DEKShredder) TenantServiceOption {
-	return func(s *TenantService) { s.SetDEKShredder(d) }
 }
 
 // WithKeyspaceReclaimer injects the reclaimer DeleteTenant runs after the

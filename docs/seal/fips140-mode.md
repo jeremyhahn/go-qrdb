@@ -123,13 +123,12 @@ and prepends it to the ciphertext.
 
 | Call site | Role |
 |---|---|
-| `pkg/crypto/aesgcm/aesgcm.go` | shared AES-256-GCM helper |
-| `pkg/dek/crypto.go` | DEK wrap / unwrap |
+| `pkg/crypto/aesgcm/aesgcm.go` | shared AES-256-GCM helper; the tenant DEK keyring (`pkg/dek`) encrypts through it |
 | `pkg/seal/encfs/block.go` | encrypted-filesystem block cipher |
 | `pkg/custodian/share_envelope.go` | Shamir share envelope |
 | `pkg/ceremony/external_officer.go` | external-officer share envelope |
 
-**No migration is required.** All five sites already framed their output as
+**No migration is required.** All four sites already framed their output as
 `nonce (12) || ciphertext || tag (16)` with a nonce drawn from `crypto/rand`,
 which is byte-for-byte what `NewGCMWithRandomNonce` produces. Ciphertext
 written by an older build opens under the new code and vice versa. The two

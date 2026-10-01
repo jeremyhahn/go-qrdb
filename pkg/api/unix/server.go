@@ -71,6 +71,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
+	dekSvc            service.DEKServicer
 	collectionSvc     service.CollectionServicer
 	mvccSvc           service.MVCCKVServicer
 	txSvc             service.TransactionServicer
@@ -241,6 +242,12 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 // WithCredentialService configures the Unix socket server with a credential service.
 func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithDEKService configures the Unix socket server with the tenant DEK
+// keyring service.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(s *Server) { s.dekSvc = svc }
 }
 
 // WithCollectionService configures the Unix socket server with a collection service.
@@ -536,6 +543,9 @@ func (s *Server) Start() error {
 	}
 	if s.credentialSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCredentialService(s.credentialSvc))
+	}
+	if s.dekSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterDEKService(s.dekSvc))
 	}
 	if s.collectionSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCollectionService(s.collectionSvc))

@@ -275,8 +275,8 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 		info = TenantInfo{ID: tenantID}
 	}
 
-	// 1. Bottom-up refusal, 2. tombstone, 3. metadata delete, 4. crypto-shred,
-	// 5. reclaim. There is no barrier step here: this service exists precisely
+	// 1. Bottom-up refusal, 2. tombstone, 3. metadata delete, 4. reclaim.
+	// There is no barrier step here: this service exists precisely
 	// because the seal subsystem is off. The ordering and the reasoning behind
 	// it -- fence first, destroy afterwards -- are documented on
 	// TenantService.DeleteTenant, and they hold here for the reason the
@@ -307,22 +307,17 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 
 	s.logger.Info("tenant retired", slog.String("tenant_id", tenantID))
 
-	// 4 and 5.
+	// 4.
 	return s.finishTeardown(ctx, tenantID)
 }
 
-// finishTeardown runs the two steps past the fence: shred the DEK, then
-// reclaim the keyspace. It is what a re-issued delete resumes, and both steps
-// are idempotent so resuming completes rather than wedges.
+// finishTeardown runs the step past the fence: reclaim the keyspace, which
+// also removes the tenant's DEK keyring record. It is what a re-issued delete
+// resumes, and it is idempotent so resuming completes rather than wedges.
 //
 // See TenantService.finishTeardown, whose barrier step is the only thing this
 // one lacks.
 func (s *kvTenantService) finishTeardown(ctx context.Context, tenantID string) error {
-	if s.dekShredder != nil {
-		if sErr := s.dekShredder.DeleteTenantDEK(ctx, tenantID); sErr != nil {
-			return &TeardownError{TenantID: tenantID, Err: &DEKShredError{TenantID: tenantID, Err: sErr}}
-		}
-	}
 	if err := s.reclaim(ctx, tenantID); err != nil {
 		return &TeardownError{TenantID: tenantID, Err: err}
 	}

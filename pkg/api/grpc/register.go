@@ -157,6 +157,11 @@ func WithRegisterCredentialService(svc service.CredentialServicer) RegisterOptio
 	return func(s *qrdbServiceServer) { s.credentialSvc = svc }
 }
 
+// WithRegisterDEKService attaches the tenant DEK keyring service for the registered gRPC service.
+func WithRegisterDEKService(svc service.DEKServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.dekSvc = svc }
+}
+
 // WithRegisterCertProvider attaches a certificate provider for the registered gRPC service.
 func WithRegisterCertProvider(svc cert.CertProvider) RegisterOption {
 	return func(s *qrdbServiceServer) { s.certProv = svc }

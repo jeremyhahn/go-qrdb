@@ -81,6 +81,7 @@ type Server struct {
 	embeddingSvc      service.EmbeddingServicer
 	ragSvc            service.RAGServicer
 	credentialSvc     service.CredentialServicer
+	dekSvc            service.DEKServicer
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	sqlSvc            service.SQLServicer
@@ -299,6 +300,12 @@ func WithRAGService(svc service.RAGServicer) ServerOption {
 // management service for credential storage, rotation, and versioning.
 func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithDEKService configures the QUIC server with the tenant DEK keyring
+// service. Without it the dek.* methods are not served.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(s *Server) { s.dekSvc = svc }
 }
 
 // WithAuthFactorService configures the QUIC server with an auth factor service

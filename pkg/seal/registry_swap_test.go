@@ -30,7 +30,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // newSwapBarrier builds a standalone StorageBarrier for use as a swap target.
@@ -363,77 +362,6 @@ func TestTenantBarrierKVStorePutIfAbsentIsSingleUse(t *testing.T) {
 	if string(got) != "first" {
 		t.Fatalf("value = %q, want %q", got, "first")
 	}
-}
-
-// TestCacheDEKDestroysTheSupersededSecret covers the swap branch. Each cached
-// DEK holds an enclave allocation, so replacing one without destroying the
-// previous Secret leaks protected memory for the lifetime of the process --
-// and on a rotating tenant that is every rotation.
-func TestCacheDEKDestroysTheSupersededSecret(t *testing.T) {
-	m := &tenantKeyManager{}
-
-	first := make([]byte, 32)
-	for i := range first {
-		first[i] = 0x11
-	}
-	m.cacheDEK("acme", first)
-
-	second := make([]byte, 32)
-	for i := range second {
-		second[i] = 0x22
-	}
-	m.cacheDEK("acme", second)
-
-	// The cache must hold exactly the replacement.
-	v, ok := m.cache.Load("acme")
-	if !ok {
-		t.Fatal("no DEK cached after two writes")
-	}
-	sec, ok := v.(*secure.Secret)
-	if !ok {
-		t.Fatalf("cached value is %T, want *secure.Secret", v)
-	}
-	got, err := sec.Open()
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer got.Destroy()
-	if got.Bytes()[0] != 0x22 {
-		t.Fatalf("cached DEK starts with %#x, want the replacement (0x22)", got.Bytes()[0])
-	}
-}
-
-// TestCacheDEKIgnoresEmptyInput covers the defensive branch. An empty DEK
-// cannot be turned into a Secret, and caching a nil in its place would make a
-// later Open panic rather than regenerate.
-func TestCacheDEKIgnoresEmptyInput(t *testing.T) {
-	m := &tenantKeyManager{}
-
-	m.cacheDEK("acme", nil)
-
-	if _, ok := m.cache.Load("acme"); ok {
-		t.Fatal("an empty DEK must not be cached")
-	}
-}
-
-// TestClearCachedDEKRemovesAndDestroys covers the eviction path used when a
-// tenant is sealed.
-func TestClearCachedDEKRemovesAndDestroys(t *testing.T) {
-	m := &tenantKeyManager{}
-
-	dek := make([]byte, 32)
-	for i := range dek {
-		dek[i] = 0x33
-	}
-	m.cacheDEK("acme", dek)
-
-	m.clearCachedDEK("acme")
-	if _, ok := m.cache.Load("acme"); ok {
-		t.Fatal("the DEK is still cached after clearCachedDEK")
-	}
-
-	// Clearing an absent tenant must be a no-op rather than a panic.
-	m.clearCachedDEK("never-cached")
 }
 
 // TestMigrationJournalRoundTripsThroughTheBackend covers the write/load pair

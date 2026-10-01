@@ -21,30 +21,12 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
-
-// mockTenantDEKManager is a minimal TenantDEKManager for option tests.
-type mockTenantDEKManager struct{}
-
-func (m *mockTenantDEKManager) GetOrCreateTenantDEK(_ context.Context, _ string) ([]byte, error) {
-	return nil, nil
-}
-func (m *mockTenantDEKManager) GetTenantDEK(_ context.Context, _ string) ([]byte, error) {
-	return nil, nil
-}
-func (m *mockTenantDEKManager) RotateTenantDEK(_ context.Context, _ string) error { return nil }
-func (m *mockTenantDEKManager) DeleteTenantDEK(_ context.Context, _ string) error { return nil }
-func (m *mockTenantDEKManager) GetTenantDEKStatus(_ context.Context, _ string) (*dek.TenantDEKStatus, error) {
-	return nil, nil
-}
-func (m *mockTenantDEKManager) ListTenantDEKs(_ context.Context) ([]string, error) { return nil, nil }
-func (m *mockTenantDEKManager) Close() error                                       { return nil }
-
-// Compile-time interface check.
-var _ dek.TenantDEKManager = (*mockTenantDEKManager)(nil)
 
 // mockTenantServicer is a minimal TenantServicer for option tests.
 type mockTenantServicer struct{}
@@ -124,49 +106,6 @@ func (m *mockTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _
 // Compile-time interface check.
 var _ tenant.TenantServicer = (*mockTenantServicer)(nil)
 
-// TestWithTenantDEKManager verifies that WithTenantDEKManager correctly
-// sets the tenantDEKMgr field on serverOptions and that the nil case
-// leaves the field unset.
-func TestWithTenantDEKManager(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		mgr     dek.TenantDEKManager
-		wantNil bool
-	}{
-		{
-			name:    "non-nil manager is stored",
-			mgr:     &mockTenantDEKManager{},
-			wantNil: false,
-		},
-		{
-			name:    "nil manager is stored as-is",
-			mgr:     nil,
-			wantNil: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			var opts serverOptions
-			WithTenantDEKManager(tc.mgr)(&opts)
-
-			if tc.wantNil && opts.tenantDEKMgr != nil {
-				t.Errorf("tenantDEKMgr: got non-nil, want nil")
-			}
-			if !tc.wantNil && opts.tenantDEKMgr == nil {
-				t.Errorf("tenantDEKMgr: got nil, want non-nil")
-			}
-			if !tc.wantNil && opts.tenantDEKMgr != tc.mgr {
-				t.Errorf("tenantDEKMgr: got %v, want %v", opts.tenantDEKMgr, tc.mgr)
-			}
-		})
-	}
-}
-
 // TestWithTenantService verifies that WithTenantService correctly sets
 // the tenantSvc field on serverOptions and that the nil case leaves the
 // field unset.
@@ -245,16 +184,16 @@ func TestWithBarrierRegistry(t *testing.T) {
 func TestTenantOptionsCombined(t *testing.T) {
 	t.Parallel()
 
-	mgr := &mockTenantDEKManager{}
+	dekSvc := newTestDEKService(t)
 	svc := &mockTenantServicer{}
 
 	var opts serverOptions
-	WithTenantDEKManager(mgr)(&opts)
+	WithDEKService(dekSvc)(&opts)
 	WithTenantService(svc)(&opts)
 	WithBarrierRegistry(nil)(&opts)
 
-	if opts.tenantDEKMgr == nil {
-		t.Error("tenantDEKMgr: got nil after WithTenantDEKManager")
+	if opts.dekSvc == nil {
+		t.Error("dekSvc: got nil after WithDEKService")
 	}
 	if opts.tenantSvc == nil {
 		t.Error("tenantSvc: got nil after WithTenantService")
@@ -264,24 +203,48 @@ func TestTenantOptionsCombined(t *testing.T) {
 	}
 }
 
-// TestWithTenantDEKManager_ServerIntegration verifies that the option is
-// correctly applied when passed to server.New.
-func TestWithTenantDEKManager_ServerIntegration(t *testing.T) {
+// TestWithDEKService_ServerIntegration verifies that the keyring service
+// option survives server.New, which is what threads it to every protocol
+// server.
+func TestWithDEKService_ServerIntegration(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, false, false)
-	mgr := &mockTenantDEKManager{}
+	dekSvc := newTestDEKService(t)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
-		WithTenantDEKManager(mgr),
+		WithDEKService(dekSvc),
 	)
 
-	if srv.opts.tenantDEKMgr == nil {
-		t.Fatal("tenantDEKMgr: got nil, want non-nil after New()")
+	if srv.opts.dekSvc != dekSvc {
+		t.Fatalf("dekSvc: got %v, want the injected service", srv.opts.dekSvc)
 	}
-	if srv.opts.tenantDEKMgr != mgr {
-		t.Errorf("tenantDEKMgr: got %v, want %v", srv.opts.tenantDEKMgr, mgr)
+}
+
+// newTestDEKService is the production keyring service over in-memory stores.
+func newTestDEKService(t *testing.T) service.DEKServicer {
+	t.Helper()
+	keyring, err := dek.NewKeyring(memTenantStores{})
+	if err != nil {
+		t.Fatal(err)
 	}
+	svc, err := service.NewDEKService(keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+// memTenantStores resolves one in-memory store per tenant.
+type memTenantStores map[string]*kvstore.MemoryKVStore
+
+func (m memTenantStores) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	s, ok := m[tenantID]
+	if !ok {
+		s = kvstore.NewMemoryKVStore()
+		m[tenantID] = s
+	}
+	return s, nil
 }
 
 // TestWithTenantService_ServerIntegration verifies that the option is

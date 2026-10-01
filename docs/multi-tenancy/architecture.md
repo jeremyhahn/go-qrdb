@@ -122,20 +122,31 @@ before anything irreversible**:
    policies" below.
 1. **Refuse while the tenant still owns databases.** Teardown is bottom-up. A
    database's own drop reclaims the keyspace that database owns, so by the
-   time a tenant's delete runs, what is left under it is its identity records.
+   time a tenant's delete runs, what is left under it is its identity records
+   and its DEK keyring.
 2. **Write the tombstone.** From here the id is retired, so no later principal
    can inherit whatever the remaining steps have not yet removed.
 3. **Delete the metadata record.** Steps 2 and 3 are the **fence**. Neither
    destroys anything, and together they make the tenant unresolvable: nothing
    reads it, nothing lists it, and the store resolver refuses its id outright
-   rather than serving it as an unregistered prefix tenant.
-4. **Shred the tenant DEK.** The first irreversible step, and deliberately the
-   first step after the fence.
-5. **Destroy the barrier**, including the durable records behind it — see
-   "Unregistering a barrier is not destroying it" below.
-6. **Reclaim the keyspace.**
+   rather than serving it as an unregistered prefix tenant. Because the
+   tenant's DEK keyring is a record in the store the resolver hands out, the
+   keyring is unusable from here on as well.
+4. **Destroy the barrier**, including the durable records behind it — see
+   "Unregistering a barrier is not destroying it" below. The first
+   irreversible step: a dedicated-isolation tenant's data and keyring are
+   encrypted under that barrier.
+5. **Reclaim the keyspace**, including a dedicated-isolation tenant's
+   barrier-encrypted range in the shared store, which holds its identity
+   records and DEK keyring.
 
-**Why the shred is not first.** It was, and that was a defect. The ordering was
+There is no separate DEK-shred step. The tenant DEK keyring
+([tenant-dek](../tenant-dek/architecture.md)) lives in the tenant's own store,
+so it dies with the tenant's barrier and keyspace and is unreachable from the
+fence on.
+
+**Why the fence is first.** The DEK used to be shredded first, and that was a
+defect. The ordering was
 argued from a choice of two — shred-then-delete can strand metadata for a
 tenant whose key is gone, delete-then-shred can strand a key nothing names *and*
 leave the data readable in the window — and the first was taken as the lesser.
@@ -146,11 +157,11 @@ permanently undecryptable. A third ordering was not on that list and dominates
 both. Fencing first leaves no readable window, because nothing resolves the
 tenant after step 3, and leaves no live tenant without a key, because the
 metadata is gone before the key is. What it can leave is a **retired id whose
-DEK still exists** — residue of the same kind steps 5 and 6 already leave,
-reachable by nobody, removed by re-issuing the call.
+barrier or keyspace still exists** — residue reachable by nobody, removed by
+re-issuing the call.
 
-A failure in steps 4 to 6 leaves the id retired and is reported as such: the
-error names the retirement and the remedy, because "shred failed" read as
+A failure in steps 4 or 5 leaves the id retired and is reported as such: the
+error names the retirement and the remedy, because "reclaim failed" read as
 "nothing changed" is what makes an operator stop. Re-issuing the delete resumes
 from step 4; every step past the fence is idempotent.
 

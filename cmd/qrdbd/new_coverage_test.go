@@ -62,57 +62,6 @@ func TestBarrierRegistryError_Unwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// errors.go: ClusterDEKError (lines 469-475) - not covered yet
-// ---------------------------------------------------------------------------
-
-func TestClusterDEKError_Error(t *testing.T) {
-	inner := errors.New("key derivation failed")
-	e := &ClusterDEKError{Err: inner}
-	assert.Equal(t, "cli: cluster DEK manager initialization failed: key derivation failed", e.Error())
-}
-
-func TestClusterDEKError_Unwrap(t *testing.T) {
-	inner := errors.New("storage unavailable")
-	e := &ClusterDEKError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-// ---------------------------------------------------------------------------
-// errors.go: DEKStorageError (lines 485-491) - not covered yet
-// ---------------------------------------------------------------------------
-
-func TestDEKStorageError_Error(t *testing.T) {
-	inner := errors.New("pebble open failed")
-	e := &DEKStorageError{Err: inner}
-	assert.Equal(t, "cli: DEK storage initialization failed: pebble open failed", e.Error())
-}
-
-func TestDEKStorageError_Unwrap(t *testing.T) {
-	inner := errors.New("permission denied")
-	e := &DEKStorageError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-// ---------------------------------------------------------------------------
-// errors.go: TenantDEKError (lines 501-507) - not covered yet
-// ---------------------------------------------------------------------------
-
-func TestTenantDEKError_Error(t *testing.T) {
-	inner := errors.New("tenant key missing")
-	e := &TenantDEKError{Err: inner}
-	assert.Equal(t, "cli: tenant DEK manager initialization failed: tenant key missing", e.Error())
-}
-
-func TestTenantDEKError_Unwrap(t *testing.T) {
-	inner := errors.New("kek not found")
-	e := &TenantDEKError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-// ---------------------------------------------------------------------------
 // kvstore_adapter.go: RegisterEntityIndexes (lines 111-116) - not covered yet
 // ---------------------------------------------------------------------------
 

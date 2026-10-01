@@ -6,230 +6,233 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package dek provides Data Encryption Key (DEK) management for go-qrdb.
-// It supports cluster-wide and per-tenant DEK lifecycle operations including
-// generation, rotation, wrapping/unwrapping, and cryptographic shredding.
 package dek
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
-// NilInputError indicates a required parameter was nil.
-type NilInputError struct {
+// Sentinel classes. Every error this package returns matches exactly one of
+// them under errors.Is, so a transport maps a class to its status code
+// without enumerating the concrete types.
+var (
+	// ErrInvalidInput: a required argument was missing or malformed.
+	ErrInvalidInput = errors.New("dek: invalid input")
+	// ErrCrossTenant: the caller asked for a tenant other than its own.
+	ErrCrossTenant = errors.New("dek: cross-tenant access refused")
+	// ErrMalformedCiphertext: the input is not a tenant DEK ciphertext.
+	ErrMalformedCiphertext = errors.New("dek: malformed ciphertext")
+	// ErrAuthenticationFailed: the ciphertext did not authenticate — it was
+	// tampered with, the associated data differs, or it belongs to another
+	// tenant.
+	ErrAuthenticationFailed = errors.New("dek: ciphertext authentication failed")
+	// ErrUnknownVersion: the keyring has no such version.
+	ErrUnknownVersion = errors.New("dek: unknown key version")
+	// ErrVersionRetired: the version existed but its key was destroyed.
+	ErrVersionRetired = errors.New("dek: key version retired")
+	// ErrRetireCurrentVersion: the current version cannot be retired.
+	ErrRetireCurrentVersion = errors.New("dek: cannot retire the current key version")
+	// ErrKeyringUnavailable: the tenant's keyring store cannot be reached
+	// (typically a sealed tenant barrier).
+	ErrKeyringUnavailable = errors.New("dek: tenant keyring unavailable")
+	// ErrCorruptKeyring: the stored keyring record does not decode.
+	ErrCorruptKeyring = errors.New("dek: corrupt keyring record")
+	// ErrConcurrentUpdate: the keyring changed under every retry of an update.
+	ErrConcurrentUpdate = errors.New("dek: keyring update lost to concurrent writers")
+	// ErrCrypto: a cryptographic primitive failed (entropy, cipher setup).
+	ErrCrypto = errors.New("dek: cryptographic failure")
+)
+
+// InvalidInputError reports a missing or malformed argument.
+type InvalidInputError struct {
 	Op    string
 	Field string
 }
 
-func (e *NilInputError) Error() string {
-	return e.Op + ": " + e.Field + " must not be nil"
+func (e *InvalidInputError) Error() string {
+	return "dek " + e.Op + ": " + e.Field + " is required"
 }
 
-// UnsupportedAlgorithmError indicates an unsupported encryption algorithm.
-type UnsupportedAlgorithmError struct {
-	Op        string
-	Algorithm string
+// Is matches ErrInvalidInput.
+func (e *InvalidInputError) Is(target error) bool { return target == ErrInvalidInput }
+
+// CrossTenantError reports a request naming a tenant other than the caller's.
+type CrossTenantError struct {
+	CallerTenant    string
+	RequestedTenant string
 }
 
-func (e *UnsupportedAlgorithmError) Error() string {
-	return e.Op + ": unsupported algorithm: " + e.Algorithm
+func (e *CrossTenantError) Error() string {
+	return "dek: tenant " + strconv.Quote(e.CallerTenant) + " may not use the keyring of tenant " +
+		strconv.Quote(e.RequestedTenant)
 }
 
-// SealedError indicates the barrier is in sealed state and cannot perform
-// the requested operation.
-type SealedError struct {
-	Op string
+// Is matches ErrCrossTenant.
+func (e *CrossTenantError) Is(target error) bool { return target == ErrCrossTenant }
+
+// MalformedCiphertextError reports input that is not a tenant DEK ciphertext.
+type MalformedCiphertextError struct {
+	Reason string
 }
 
-func (e *SealedError) Error() string {
-	return e.Op + ": barrier is sealed"
+func (e *MalformedCiphertextError) Error() string {
+	return "dek: malformed ciphertext: " + e.Reason
 }
 
-// CryptoError wraps a cryptographic operation failure.
+// Is matches ErrMalformedCiphertext.
+func (e *MalformedCiphertextError) Is(target error) bool { return target == ErrMalformedCiphertext }
+
+// AuthenticationFailedError reports a ciphertext that did not authenticate
+// under the named key version. The cause is deliberately not distinguished:
+// tampering, a different associated data and another tenant's ciphertext are
+// indistinguishable to an AEAD, and saying which would be an oracle.
+type AuthenticationFailedError struct {
+	TenantID string
+	Version  uint64
+	Err      error
+}
+
+func (e *AuthenticationFailedError) Error() string {
+	return "dek: ciphertext for tenant " + strconv.Quote(e.TenantID) + " version " +
+		strconv.FormatUint(e.Version, 10) + " failed authentication"
+}
+
+// Is matches ErrAuthenticationFailed.
+func (e *AuthenticationFailedError) Is(target error) bool { return target == ErrAuthenticationFailed }
+
+// Unwrap returns the AEAD error.
+func (e *AuthenticationFailedError) Unwrap() error { return e.Err }
+
+// UnknownVersionError reports a key version the tenant's keyring never had.
+type UnknownVersionError struct {
+	TenantID string
+	Version  uint64
+}
+
+func (e *UnknownVersionError) Error() string {
+	return "dek: tenant " + strconv.Quote(e.TenantID) + " has no key version " +
+		strconv.FormatUint(e.Version, 10)
+}
+
+// Is matches ErrUnknownVersion.
+func (e *UnknownVersionError) Is(target error) bool { return target == ErrUnknownVersion }
+
+// VersionRetiredError reports a key version whose key has been destroyed.
+type VersionRetiredError struct {
+	TenantID string
+	Version  uint64
+}
+
+func (e *VersionRetiredError) Error() string {
+	return "dek: tenant " + strconv.Quote(e.TenantID) + " key version " +
+		strconv.FormatUint(e.Version, 10) + " is retired"
+}
+
+// Is matches ErrVersionRetired.
+func (e *VersionRetiredError) Is(target error) bool { return target == ErrVersionRetired }
+
+// RetireCurrentVersionError reports an attempt to retire the current version.
+type RetireCurrentVersionError struct {
+	TenantID string
+	Version  uint64
+}
+
+func (e *RetireCurrentVersionError) Error() string {
+	return "dek: tenant " + strconv.Quote(e.TenantID) + " key version " +
+		strconv.FormatUint(e.Version, 10) + " is current and cannot be retired; rotate first"
+}
+
+// Is matches ErrRetireCurrentVersion.
+func (e *RetireCurrentVersionError) Is(target error) bool { return target == ErrRetireCurrentVersion }
+
+// KeyringUnavailableError reports that the tenant's keyring store could not
+// be used. Err carries the cause (for example tenant.ErrTenantSealed).
+type KeyringUnavailableError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *KeyringUnavailableError) Error() string {
+	return "dek: keyring for tenant " + strconv.Quote(e.TenantID) + " unavailable: " + e.Err.Error()
+}
+
+// Is matches ErrKeyringUnavailable.
+func (e *KeyringUnavailableError) Is(target error) bool { return target == ErrKeyringUnavailable }
+
+// Unwrap returns the cause.
+func (e *KeyringUnavailableError) Unwrap() error { return e.Err }
+
+// AtomicStoreRequiredError is the cause carried by KeyringUnavailableError
+// when the resolved store cannot perform the conditional writes the keyring
+// needs to be safe under concurrent rotation.
+type AtomicStoreRequiredError struct{}
+
+func (e *AtomicStoreRequiredError) Error() string {
+	return "store does not support atomic conditional writes"
+}
+
+// CorruptKeyringError reports a stored keyring record that does not decode.
+type CorruptKeyringError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *CorruptKeyringError) Error() string {
+	msg := "dek: keyring record for tenant " + strconv.Quote(e.TenantID) + " is corrupt"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Is matches ErrCorruptKeyring.
+func (e *CorruptKeyringError) Is(target error) bool { return target == ErrCorruptKeyring }
+
+// Unwrap returns the decode error.
+func (e *CorruptKeyringError) Unwrap() error { return e.Err }
+
+// ConcurrentUpdateError reports that every attempt of a keyring update lost
+// its compare-and-swap to another writer.
+type ConcurrentUpdateError struct {
+	TenantID string
+	Attempts int
+}
+
+func (e *ConcurrentUpdateError) Error() string {
+	return "dek: keyring update for tenant " + strconv.Quote(e.TenantID) + " lost to concurrent writers after " +
+		strconv.Itoa(e.Attempts) + " attempts"
+}
+
+// Is matches ErrConcurrentUpdate.
+func (e *ConcurrentUpdateError) Is(target error) bool { return target == ErrConcurrentUpdate }
+
+// StoreError reports a failed read or write of the keyring record.
+type StoreError struct {
+	TenantID string
+	Op       string
+	Err      error
+}
+
+func (e *StoreError) Error() string {
+	return "dek: keyring " + e.Op + " for tenant " + strconv.Quote(e.TenantID) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the store error.
+func (e *StoreError) Unwrap() error { return e.Err }
+
+// CryptoError reports a failed cryptographic primitive.
 type CryptoError struct {
-	Op     string
-	Detail string
-	Err    error
-}
-
-func (e *CryptoError) Error() string {
-	msg := e.Op + ": " + e.Detail
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-func (e *CryptoError) Unwrap() error {
-	return e.Err
-}
-
-// NotInitializedError indicates a resource has not been initialized.
-type NotInitializedError struct {
-	Op       string
-	Resource string
-}
-
-func (e *NotInitializedError) Error() string {
-	return e.Op + ": " + e.Resource + " not initialized"
-}
-
-// AlreadyInProgressError indicates an operation is already running.
-type AlreadyInProgressError struct {
-	Op       string
-	Resource string
-}
-
-func (e *AlreadyInProgressError) Error() string {
-	return e.Op + ": " + e.Resource + " already in progress"
-}
-
-// NoActiveOperationError indicates no active operation exists to cancel.
-type NoActiveOperationError struct {
-	Op       string
-	Resource string
-}
-
-func (e *NoActiveOperationError) Error() string {
-	return e.Op + ": no active " + e.Resource + " operation"
-}
-
-// NotImplementedError indicates a feature is not yet implemented.
-type NotImplementedError struct {
-	Message string
-}
-
-func (e *NotImplementedError) Error() string {
-	return "not implemented: " + e.Message
-}
-
-// ManagerClosedError indicates the manager has been closed.
-type ManagerClosedError struct {
-	Op       string
-	Resource string
-}
-
-func (e *ManagerClosedError) Error() string {
-	return e.Op + ": " + e.Resource + " is closed"
-}
-
-// NotFoundError indicates a resource was not found.
-type NotFoundError struct {
-	Resource string
-	ID       string
-}
-
-func (e *NotFoundError) Error() string {
-	return e.Resource + " not found: " + e.ID
-}
-
-// DecodeError wraps a decoding failure.
-type DecodeError struct {
-	Op       string
-	Resource string
-	Err      error
-}
-
-func (e *DecodeError) Error() string {
-	msg := e.Op + ": failed to decode " + e.Resource
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-func (e *DecodeError) Unwrap() error {
-	return e.Err
-}
-
-// EncodeError wraps an encoding failure.
-type EncodeError struct {
-	Op       string
-	Resource string
-	Err      error
-}
-
-func (e *EncodeError) Error() string {
-	msg := e.Op + ": failed to encode " + e.Resource
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-func (e *EncodeError) Unwrap() error {
-	return e.Err
-}
-
-// StorageOperationError wraps a storage backend failure.
-type StorageOperationError struct {
-	Op     string
-	Detail string
-	Err    error
-}
-
-func (e *StorageOperationError) Error() string {
-	msg := e.Op + ": " + e.Detail
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-func (e *StorageOperationError) Unwrap() error {
-	return e.Err
-}
-
-// CiphertextTooShortError indicates the ciphertext is shorter than expected.
-type CiphertextTooShortError struct {
-	Op     string
-	Detail string
-}
-
-func (e *CiphertextTooShortError) Error() string {
-	return e.Op + ": ciphertext too short: " + e.Detail
-}
-
-// DataTruncatedError indicates decoded data was truncated.
-type DataTruncatedError struct {
-	Field   string
-	Message string
-}
-
-func (e *DataTruncatedError) Error() string {
-	if e.Field != "" {
-		return e.Field + " " + e.Message
-	}
-	return "data truncated: " + e.Message
-}
-
-// RequiredFieldError indicates a required field was empty or missing.
-type RequiredFieldError struct {
-	Field string
-}
-
-func (e *RequiredFieldError) Error() string {
-	return "required field missing: " + e.Field
-}
-
-// InvalidInputError wraps an invalid input error.
-type InvalidInputError struct {
 	Op  string
 	Err error
 }
 
-func (e *InvalidInputError) Error() string {
-	msg := e.Op + ": invalid input"
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
+func (e *CryptoError) Error() string {
+	return "dek " + e.Op + ": " + e.Err.Error()
 }
 
-func (e *InvalidInputError) Unwrap() error {
-	return e.Err
-}
+// Is matches ErrCrypto.
+func (e *CryptoError) Is(target error) bool { return target == ErrCrypto }
 
-// IsNotFound reports whether err is a *NotFoundError.
-func IsNotFound(err error) bool {
-	var nfe *NotFoundError
-	return errors.As(err, &nfe)
-}
+// Unwrap returns the primitive's error.
+func (e *CryptoError) Unwrap() error { return e.Err }

@@ -348,18 +348,6 @@ func TestAuthFactorService_ListFactors_UnknownUser(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// dek_service.go – GetStatus (71.4%)
-// NewDEKService requires non-nil params; test via the error path.
-// ---------------------------------------------------------------------------
-
-func TestDEKService_NewDEKService_NilClusterManager(t *testing.T) {
-	_, err := NewDEKService(nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for nil cluster manager, got nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // lease_service.go – Grant, Revoke, KeepAlive (85.7%)
 // ---------------------------------------------------------------------------
 

@@ -353,274 +353,94 @@ func TestRESTCapabilities_AfterClose(t *testing.T) {
 // DEK transport tests
 // ===========================================================================
 
-func TestRESTDEK_Initialize_Success(t *testing.T) {
+func TestRESTDEK_EncryptPostsBase64Body(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/initialize"), func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/encrypt"), func(w http.ResponseWriter, r *http.Request) {
+		var req transport.TenantDEKEncryptRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		if string(req.Plaintext) != "secret" || string(req.AAD) != "ctx" {
+			t.Errorf("request = %+v", req)
+		}
+		writeJSON(w, &transport.TenantDEKEncryptResponse{Ciphertext: []byte("QDEK..."), Version: 2})
 	})
-	if err := rt.DEKInitialize(context.Background(), &transport.DEKInitializeRequest{
-		Algorithm: "AES-256-GCM",
-		KeyBytes:  32,
-	}); err != nil {
-		t.Fatalf("DEKInitialize: %v", err)
+	resp, err := rt.TenantDEKEncrypt(context.Background(), &transport.TenantDEKEncryptRequest{Plaintext: []byte("secret"), AAD: []byte("ctx")})
+	if err != nil || resp.Version != 2 || string(resp.Ciphertext) != "QDEK..." {
+		t.Fatalf("TenantDEKEncrypt = %+v, %v", resp, err)
 	}
 }
 
-func TestRESTDEK_Initialize_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	err := rt.DEKInitialize(context.Background(), &transport.DEKInitializeRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_GetStatus_Success(t *testing.T) {
+func TestRESTDEK_StatusCarriesTheTenantQuery(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodGet, "/v1/dek/status"), func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, &transport.DEKStatusResponse{
-			Initialized: true,
-			Version:     3,
-			Algorithm:   "AES-256-GCM",
-			KeyBytes:    32,
-		})
+		if got := r.URL.Query().Get("tenant_id"); got != "acme" {
+			t.Errorf("tenant_id = %q", got)
+		}
+		writeJSON(w, &transport.TenantDEKStatusResponse{TenantID: "acme", CurrentVersion: 3, Versions: []transport.TenantDEKVersion{{Version: 3}}})
 	})
-	resp, err := rt.DEKGetStatus(context.Background())
-	if err != nil {
-		t.Fatalf("DEKGetStatus: %v", err)
-	}
-	if !resp.Initialized || resp.Version != 3 {
-		t.Errorf("resp = %+v", resp)
+	st, err := rt.TenantDEKStatus(context.Background(), &transport.TenantDEKRequest{TenantID: "acme"})
+	if err != nil || st.CurrentVersion != 3 || len(st.Versions) != 1 {
+		t.Fatalf("TenantDEKStatus = %+v, %v", st, err)
 	}
 }
 
-func TestRESTDEK_GetStatus_ServerError(t *testing.T) {
+// TestRESTDEK_EveryVerbHitsItsRoute drives the remaining verbs against their
+// routes and checks the decoded bodies.
+func TestRESTDEK_EveryVerbHitsItsRoute(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/v1/dek/status"), func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "fail", http.StatusInternalServerError)
+	status := &transport.TenantDEKStatusResponse{TenantID: "acme", CurrentVersion: 2}
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/rotate"), func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, status) })
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/retire"), func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, status) })
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/decrypt"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.TenantDEKDecryptResponse{Plaintext: []byte("p"), Version: 1})
 	})
-	_, err := rt.DEKGetStatus(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/rewrap"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.TenantDEKRewrapResponse{Ciphertext: []byte("c"), FromVersion: 1, ToVersion: 2})
+	})
+	ctx := context.Background()
+	if st, err := rt.TenantDEKRotate(ctx, &transport.TenantDEKRequest{}); err != nil || st.CurrentVersion != 2 {
+		t.Errorf("rotate = %+v, %v", st, err)
+	}
+	if st, err := rt.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1}); err != nil || st.CurrentVersion != 2 {
+		t.Errorf("retire = %+v, %v", st, err)
+	}
+	if d, err := rt.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: []byte("c")}); err != nil || string(d.Plaintext) != "p" {
+		t.Errorf("decrypt = %+v, %v", d, err)
+	}
+	if r, err := rt.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: []byte("c")}); err != nil || r.ToVersion != 2 {
+		t.Errorf("rewrap = %+v, %v", r, err)
 	}
 }
 
-func TestRESTDEK_GetStatus_AfterClose(t *testing.T) {
+func TestRESTDEK_ServerRefusalIsReturned(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/v1/dek/retire"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(w, map[string]string{"error": "dek: cannot retire the current key version"})
+	})
+	if _, err := rt.TenantDEKRetire(context.Background(), &transport.TenantDEKRetireRequest{Version: 2}); err == nil {
+		t.Fatal("a 409 must surface as an error")
+	}
+}
+
+func TestRESTDEK_NilRequestAndClosed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
+	ctx := context.Background()
+	var nre *transport.NilRequestError
+	if _, err := rt.TenantDEKEncrypt(ctx, nil); !errors.As(err, &nre) {
+		t.Errorf("nil encrypt: %v", err)
+	}
+	if _, err := rt.TenantDEKStatus(ctx, nil); !errors.As(err, &nre) {
+		t.Errorf("nil status: %v", err)
+	}
 	_ = rt.Close()
-	_, err := rt.DEKGetStatus(context.Background())
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
+	var ce *transport.ClosedError
+	if _, err := rt.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); !errors.As(err, &ce) {
+		t.Errorf("status after close: %v", err)
 	}
-}
-
-func TestRESTDEK_Rotate_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/rotate"), func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if err := rt.DEKRotate(context.Background()); err != nil {
-		t.Fatalf("DEKRotate: %v", err)
-	}
-}
-
-func TestRESTDEK_Rotate_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	err := rt.DEKRotate(context.Background())
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_GetCurrent_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/v1/dek/current"), func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, &transport.DEKCurrentResponse{Version: 5})
-	})
-	resp, err := rt.DEKGetCurrent(context.Background())
-	if err != nil {
-		t.Fatalf("DEKGetCurrent: %v", err)
-	}
-	if resp.Version != 5 {
-		t.Errorf("Version = %d", resp.Version)
-	}
-}
-
-func TestRESTDEK_GetCurrent_ServerError(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/v1/dek/current"), func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "fail", http.StatusInternalServerError)
-	})
-	_, err := rt.DEKGetCurrent(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestRESTDEK_GetCurrent_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	_, err := rt.DEKGetCurrent(context.Background())
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_SyncToNode_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	var captured transport.DEKSyncRequest
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/sync"), func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&captured)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if err := rt.DEKSyncToNode(context.Background(), &transport.DEKSyncRequest{NodeID: 99}); err != nil {
-		t.Fatalf("DEKSyncToNode: %v", err)
-	}
-	if captured.NodeID != 99 {
-		t.Errorf("NodeID = %d", captured.NodeID)
-	}
-}
-
-func TestRESTDEK_SyncToNode_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	err := rt.DEKSyncToNode(context.Background(), &transport.DEKSyncRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_TenantGetOrCreate_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/tenant"), func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, &transport.TenantDEKResponse{
-			TenantID:  "t1",
-			Version:   1,
-			Algorithm: "AES-256-GCM",
-			KeyBytes:  32,
-		})
-	})
-	resp, err := rt.TenantDEKGetOrCreate(context.Background(), &transport.TenantDEKRequest{TenantID: "t1"})
-	if err != nil {
-		t.Fatalf("TenantDEKGetOrCreate: %v", err)
-	}
-	if resp.TenantID != "t1" {
-		t.Errorf("TenantID = %q", resp.TenantID)
-	}
-}
-
-func TestRESTDEK_TenantGetOrCreate_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	_, err := rt.TenantDEKGetOrCreate(context.Background(), &transport.TenantDEKRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_TenantRotate_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/tenant/rotate"), func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if err := rt.TenantDEKRotate(context.Background(), &transport.TenantDEKRotateRequest{TenantID: "t1"}); err != nil {
-		t.Fatalf("TenantDEKRotate: %v", err)
-	}
-}
-
-func TestRESTDEK_TenantRotate_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	err := rt.TenantDEKRotate(context.Background(), &transport.TenantDEKRotateRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_TenantDelete_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/tenant/delete"), func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if err := rt.TenantDEKDelete(context.Background(), &transport.TenantDEKDeleteRequest{TenantID: "t1"}); err != nil {
-		t.Fatalf("TenantDEKDelete: %v", err)
-	}
-}
-
-func TestRESTDEK_TenantDelete_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	err := rt.TenantDEKDelete(context.Background(), &transport.TenantDEKDeleteRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_TenantList_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/v1/dek/tenants"), func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, &transport.TenantDEKListResponse{TenantIDs: []string{"a", "b"}})
-	})
-	resp, err := rt.TenantDEKList(context.Background())
-	if err != nil {
-		t.Fatalf("TenantDEKList: %v", err)
-	}
-	if len(resp.TenantIDs) != 2 {
-		t.Errorf("TenantIDs = %v", resp.TenantIDs)
-	}
-}
-
-func TestRESTDEK_TenantList_ServerError(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/v1/dek/tenants"), func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "fail", http.StatusInternalServerError)
-	})
-	_, err := rt.TenantDEKList(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestRESTDEK_TenantList_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	_, err := rt.TenantDEKList(context.Background())
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTDEK_TenantGetStatus_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/v1/dek/tenant/status"), func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, &transport.TenantDEKStatusResponse{TenantID: "t1", Version: 2})
-	})
-	resp, err := rt.TenantDEKGetStatus(context.Background(), &transport.TenantDEKRequest{TenantID: "t1"})
-	if err != nil {
-		t.Fatalf("TenantDEKGetStatus: %v", err)
-	}
-	if resp.TenantID != "t1" || resp.Version != 2 {
-		t.Errorf("resp = %+v", resp)
-	}
-}
-
-func TestRESTDEK_TenantGetStatus_AfterClose(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	_, err := rt.TenantDEKGetStatus(context.Background(), &transport.TenantDEKRequest{})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected ClosedError, got %T", err)
+	if _, err := rt.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{}); !errors.As(err, &ce) {
+		t.Errorf("rewrap after close: %v", err)
 	}
 }
 

@@ -1030,6 +1030,49 @@ service QRDBService {
     }
 
     // -----------------------------------------------------------------------
+    // Tenant DEK keyring operations
+    //
+    // Every RPC acts on the CALLER's tenant. tenant_id is optional and, when
+    // set, must name that tenant; any other value is PermissionDenied, from
+    // the system tenant too. Keys never leave the server.
+    // -----------------------------------------------------------------------
+
+    // TenantDEKStatus returns the caller's keyring versions (no key material).
+    rpc TenantDEKStatus(TenantDEKRequest) returns (TenantDEKStatusResponse) {
+        option (qrdb.v1.permission) = "dek:status";
+    }
+
+    // TenantDEKRotate adds a key version and makes it current. Earlier
+    // versions keep decrypting until retired.
+    rpc TenantDEKRotate(TenantDEKRequest) returns (TenantDEKStatusResponse) {
+        option (qrdb.v1.permission) = "dek:rotate";
+    }
+
+    // TenantDEKRetire destroys an old key version. The current version is
+    // refused (FailedPrecondition).
+    rpc TenantDEKRetire(TenantDEKRetireRequest) returns (TenantDEKStatusResponse) {
+        option (qrdb.v1.permission) = "dek:retire";
+    }
+
+    // TenantDEKEncrypt seals plaintext under the current key version,
+    // binding aad.
+    rpc TenantDEKEncrypt(TenantDEKEncryptRequest) returns (TenantDEKEncryptResponse) {
+        option (qrdb.v1.permission) = "dek:encrypt";
+    }
+
+    // TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant and
+    // the same aad.
+    rpc TenantDEKDecrypt(TenantDEKDecryptRequest) returns (TenantDEKDecryptResponse) {
+        option (qrdb.v1.permission) = "dek:decrypt";
+    }
+
+    // TenantDEKRewrap re-seals a ciphertext under the current key version
+    // without returning its plaintext.
+    rpc TenantDEKRewrap(TenantDEKRewrapRequest) returns (TenantDEKRewrapResponse) {
+        option (qrdb.v1.permission) = "dek:rewrap";
+    }
+
+    // -----------------------------------------------------------------------
     // Backup operations
     // -----------------------------------------------------------------------
 
@@ -3494,6 +3537,80 @@ message TenantUpdateQuotasRequest {
 message TenantUpdateEntitlementsRequest {
     string             id           = 1;
     TenantEntitlements entitlements = 2;
+}
+
+// ===========================================================================
+// Tenant DEK keyring messages
+// ===========================================================================
+
+// TenantDEKRequest names the tenant a keyring call acts on. Empty means the
+// caller's own tenant, which is also the only tenant accepted.
+message TenantDEKRequest {
+    string tenant_id = 1;
+}
+
+// TenantDEKRetireRequest names the key version to retire.
+message TenantDEKRetireRequest {
+    string tenant_id = 1;
+    uint64 version   = 2;
+}
+
+// TenantDEKVersion describes one keyring version. retired_at_unix is 0 while
+// the version is live.
+message TenantDEKVersion {
+    uint64 version         = 1;
+    int64  created_at_unix = 2;
+    int64  retired_at_unix = 3;
+}
+
+// TenantDEKStatusResponse describes a tenant's keyring. current_version 0
+// means the tenant has no keyring yet.
+message TenantDEKStatusResponse {
+    string                    tenant_id       = 1;
+    string                    algorithm       = 2;
+    uint64                    current_version = 3;
+    repeated TenantDEKVersion versions        = 4;
+}
+
+// TenantDEKEncryptRequest carries data to seal and its associated data.
+message TenantDEKEncryptRequest {
+    string tenant_id = 1;
+    bytes  plaintext = 2;
+    bytes  aad       = 3;
+}
+
+// TenantDEKEncryptResponse carries the opaque ciphertext and its version.
+message TenantDEKEncryptResponse {
+    bytes  ciphertext = 1;
+    uint64 version    = 2;
+}
+
+// TenantDEKDecryptRequest carries a ciphertext and its associated data.
+message TenantDEKDecryptRequest {
+    string tenant_id  = 1;
+    bytes  ciphertext = 2;
+    bytes  aad        = 3;
+}
+
+// TenantDEKDecryptResponse carries the plaintext and the version it was
+// sealed under.
+message TenantDEKDecryptResponse {
+    bytes  plaintext = 1;
+    uint64 version   = 2;
+}
+
+// TenantDEKRewrapRequest carries a ciphertext to move to the current version.
+message TenantDEKRewrapRequest {
+    string tenant_id  = 1;
+    bytes  ciphertext = 2;
+    bytes  aad        = 3;
+}
+
+// TenantDEKRewrapResponse carries the re-sealed ciphertext.
+message TenantDEKRewrapResponse {
+    bytes  ciphertext   = 1;
+    uint64 from_version = 2;
+    uint64 to_version   = 3;
 }
 
 // ===========================================================================

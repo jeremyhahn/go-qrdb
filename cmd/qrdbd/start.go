@@ -66,7 +66,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
@@ -1371,41 +1370,6 @@ func runStart(f *startFlags) error {
 				barrierRegistry = sealSub.BarrierRegistry
 			}
 
-			// Initialize tenant DEK manager for per-tenant data encryption key
-			// management. The cluster DEK manager wraps the seal barrier to provide
-			// a shared cluster-level DEK that wraps each tenant's isolated DEK.
-			// A dedicated PebbleDB directory persists the wrapped tenant DEKs.
-			var tenantDEKMgr dek.TenantDEKManager
-			if sealBarrier != nil && barrierRegistry != nil {
-				clusterDEKMgr, cdErr := dek.NewClusterDEKManager(sealBarrier, slog.Default())
-				if cdErr != nil {
-					_ = shutdownNode(nodeCloser)
-					return &ClusterDEKError{Err: cdErr}
-				}
-				dekDataDir := filepath.Join(f.dataDir, "dek")
-				if err := os.MkdirAll(dekDataDir, 0o700); err != nil {
-					_ = shutdownNode(nodeCloser)
-					return &DEKStorageError{Err: err}
-				}
-				// SyncWrites is forced on: the wrapped per-tenant DEKs persisted here
-				// have no Raft-replicated backstop, so an unsynced write can be lost
-				// on crash while appearing to have succeeded.
-				dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir, SyncWrites: true})
-				if dekStoreErr != nil {
-					_ = shutdownNode(nodeCloser)
-					return &DEKStorageError{Err: dekStoreErr}
-				}
-				defer func() { _ = dekStore.Close() }()
-				dekBackend := seal.NewStorageAdapter(dekStore)
-				tdm, tdmErr := dek.NewTenantDEKManager(clusterDEKMgr, dekBackend, slog.Default(), nil)
-				if tdmErr != nil {
-					_ = shutdownNode(nodeCloser)
-					return &TenantDEKError{Err: tdmErr}
-				}
-				tenantDEKMgr = tdm
-				slog.Info("tenant DEK manager initialized", slog.String("data_dir", dekDataDir))
-			}
-
 			// Construct all services via the shared lifecycle package. Seal-gated
 			// services (barrier, ceremony, credential, tenant, cert) are wired when
 			// sealBarrier and barrierRegistry are non-nil. The barrier/credential/
@@ -1473,7 +1437,6 @@ func runStart(f *startFlags) error {
 				KVOptions:                 nil,
 				SealBarrier:               sealBarrier,
 				BarrierRegistry:           barrierRegistry,
-				TenantDEKManager:          tenantDEKMgr,
 				CredentialCoreSvc:         credCoreSvc,
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,
@@ -2075,6 +2038,9 @@ func runStart(f *startFlags) error {
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
 			}
+			if svcNode.DEK != nil {
+				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
+			}
 			if barrierRegistry != nil {
 				serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
 			}
@@ -2087,9 +2053,6 @@ func runStart(f *startFlags) error {
 			// allowlists.
 			if sealBarrier != nil {
 				serverOpts = append(serverOpts, server.WithSealedWindowProbe(sealBarrier))
-			}
-			if tenantDEKMgr != nil {
-				serverOpts = append(serverOpts, server.WithTenantDEKManager(tenantDEKMgr))
 			}
 			if tenantHostReg != nil {
 				serverOpts = append(serverOpts, server.WithTenantHostRegistry(tenantHostReg))

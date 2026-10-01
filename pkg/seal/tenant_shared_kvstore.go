@@ -29,6 +29,14 @@ import (
 // read can never resolve another tenant's record even by accident.
 const tenantIAMSharedPrefix = "__tiam:"
 
+// TenantSharedNamespace returns the shared-store key prefix under which a
+// dedicated-isolation tenant's barrier-encrypted records live. Tenant
+// teardown reclaims it; the prefix is composed here, in one place, so the
+// writer and the reclaimer cannot disagree about it.
+func TenantSharedNamespace(tenantID string) string {
+	return tenantIAMSharedPrefix + tenantID + "/"
+}
+
 // Compile-time interface checks. Note which type carries which: the base
 // wrapper is NOT an AtomicKVStore, and only the atomic variant is.
 var (
@@ -90,7 +98,7 @@ func NewTenantSharedKVStore(barrier *TenantBarrier, shared kvstore.KVStore) (kvs
 	base := &tenantSharedKVStore{
 		barrier: barrier,
 		shared:  shared,
-		prefix:  tenantIAMSharedPrefix + barrier.TenantID() + "/",
+		prefix:  TenantSharedNamespace(barrier.TenantID()),
 	}
 	if atomicShared, ok := shared.(kvstore.AtomicKVStore); ok {
 		return &atomicTenantSharedKVStore{

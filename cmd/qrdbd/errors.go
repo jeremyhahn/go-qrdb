@@ -327,55 +327,6 @@ func (e *BarrierRegistryError) Unwrap() error {
 	return e.Err
 }
 
-// ClusterDEKError is returned when the cluster DEK manager fails to
-// initialize. This prevents the tenant DEK hierarchy from being
-// established.
-type ClusterDEKError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *ClusterDEKError) Error() string {
-	return "cli: cluster DEK manager initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ClusterDEKError) Unwrap() error {
-	return e.Err
-}
-
-// DEKStorageError is returned when the DEK storage backend fails to
-// initialize.
-type DEKStorageError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *DEKStorageError) Error() string {
-	return "cli: DEK storage initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *DEKStorageError) Unwrap() error {
-	return e.Err
-}
-
-// TenantDEKError is returned when the tenant DEK manager fails to
-// initialize.
-type TenantDEKError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *TenantDEKError) Error() string {
-	return "cli: tenant DEK manager initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TenantDEKError) Unwrap() error {
-	return e.Err
-}
-
 // LegacyDataDirError is returned when the daemon refuses to start
 // because the data dir was created by a pre-encfs build whose seal
 // sub-store lacks a format-version sentinel. There is no in-place

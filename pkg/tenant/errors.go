@@ -361,21 +361,21 @@ func (e *TenantHasDatabasesError) Error() string {
 }
 
 // TeardownError wraps every failure DeleteTenant can report from the far side
-// of its fence -- the shred, the barrier destroy and the keyspace reclaim.
+// of its fence -- the barrier destroy and the keyspace reclaim.
 //
 // It exists because the message is the sharp edge of this call. A failure
 // BEFORE the fence leaves the tenant exactly as it was, and its error can be
 // read as "nothing changed". A failure AFTER it cannot: the id is retired
 // permanently, the metadata record is gone, and the tenant no longer resolves
-// for anybody. An operator who reads "shred failed" as "the delete did not
+// for anybody. An operator who reads "reclaim failed" as "the delete did not
 // happen", shrugs and moves on has left a half-torn-down tenant behind, so
 // the sentence has to say what is already true before it says what failed.
 //
 // Every wrapped step is idempotent, which is why the remedy is always the
 // same one: re-issue DeleteTenant.
 //
-// It wraps rather than replaces, so errors.As still finds *DEKShredError,
-// *BarrierError and *KeyspaceReclaimError underneath it and a transport that
+// It wraps rather than replaces, so errors.As still finds *BarrierError and
+// *KeyspaceReclaimError underneath it and a transport that
 // maps those keeps mapping them.
 type TeardownError struct {
 	TenantID string
@@ -388,31 +388,6 @@ func (e *TeardownError) Error() string {
 }
 
 func (e *TeardownError) Unwrap() error { return e.Err }
-
-// DEKShredError is returned by DeleteTenant when the tenant's data encryption
-// key could not be destroyed.
-//
-// The shred is the FIRST STEP PAST THE FENCE: the tombstone and the metadata
-// delete have already committed when it runs, so this error always surfaces
-// wrapped in *TeardownError and the tenant is already gone from every
-// reader's view. The shred is placed there rather than first because it is
-// the first IRREVERSIBLE step, and an irreversible step must not precede the
-// durable record of the intent to take it -- a transient store failure after
-// a successful shred used to leave a live, listed, resolvable tenant whose
-// every byte was permanently undecryptable (go-qrdb#483).
-//
-// DeleteTenantDEK treats an absent key as success, so a re-issued delete
-// re-runs the shred rather than wedging on it.
-type DEKShredError struct {
-	TenantID string
-	Err      error
-}
-
-func (e *DEKShredError) Error() string {
-	return "tenant: dek shred for " + e.TenantID + ": " + e.Err.Error()
-}
-
-func (e *DEKShredError) Unwrap() error { return e.Err }
 
 // KeyspaceReclaimError is returned by DeleteTenant when the tenant's
 // keyspace could not be reclaimed.

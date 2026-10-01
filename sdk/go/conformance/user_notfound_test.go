@@ -411,6 +411,26 @@ type userClients struct {
 // without varying anything the assertions read.
 func bootUserCell(t *testing.T, tk transportKind) userClients {
 	t.Helper()
+	var roleID string
+	var realUserID uint64
+	c := bootAuthorizedCell(t, tk, func(n *node.Node) {
+		roleID, realUserID = seedIdentityFixtures(t, n)
+	})
+	return userClients{
+		users:      c.Users(),
+		roles:      c.Roles(),
+		roleID:     roleID,
+		realUserID: realUserID,
+	}
+}
+
+// bootAuthorizedCell brings up a standalone node carrying exactly one
+// listener, runs seed against it (which grants the "matrix" identity the
+// remote cells authenticate as), and returns an SDK client reaching it over
+// the given transport — the node's own in-process client for the embedded
+// cell.
+func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *sdk.Client {
+	t.Helper()
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
@@ -452,15 +472,10 @@ func bootUserCell(t *testing.T, tk transportKind) userClients {
 	}
 	t.Cleanup(func() { _ = n.Close() })
 
-	roleID, realUserID := seedIdentityFixtures(t, n)
+	seed(n)
 
 	if !tk.remote() {
-		return userClients{
-			users:      n.Client().Users(),
-			roles:      n.Client().Roles(),
-			roleID:     roleID,
-			realUserID: realUserID,
-		}
+		return n.Client()
 	}
 
 	clientCert, err := clientKP.TLSCertificate()
@@ -482,13 +497,7 @@ func bootUserCell(t *testing.T, tk transportKind) userClients {
 	if err := sdkClient.Connect(boundedCtx(t)); err != nil {
 		t.Fatalf("%s connect: %v", tk, err)
 	}
-
-	return userClients{
-		users:      sdkClient.Users(),
-		roles:      sdkClient.Roles(),
-		roleID:     roleID,
-		realUserID: realUserID,
-	}
+	return sdkClient
 }
 
 // seedIdentityFixtures creates the role and the user the negative cases need,

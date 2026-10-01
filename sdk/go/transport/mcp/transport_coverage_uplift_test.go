@@ -19,7 +19,7 @@
 //   - applyRaftArgs and applyReadArgs helpers
 //   - watchPoll happy path with a real WatchService backed by a watch.Hub
 //   - Capabilities live JSON-decode path
-//   - DEK / Ceremony JSON-decode paths via stub-registered MCP tools
+//   - Ceremony JSON-decode paths via stub-registered MCP tools
 
 package mcp
 
@@ -717,7 +717,7 @@ func TestGetTopology_Success(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Stub-tool MCP server for exercising JSON-decode happy paths of methods
-// whose real server-side tools do not exist (DEK, external officer enroll).
+// whose real server-side tools do not exist (external officer enroll).
 // ---------------------------------------------------------------------------
 
 // stubMCPServer creates a bare MCP server with hand-registered stub tools
@@ -746,95 +746,6 @@ func connectStubInProcess(t *testing.T, stubs map[string]string) (*Transport, fu
 		t.Fatalf("Connect: %v", err)
 	}
 	return tr, func() { _ = tr.Close() }
-}
-
-// TestDEK_LiveDecodePaths exercises the JSON-decode + response-mapping
-// branches of every DEKClient method by registering stub MCP tools that
-// return canned payloads. Without these, the methods only ever exercised
-// the error branch.
-func TestDEK_LiveDecodePaths(t *testing.T) {
-	stubs := map[string]string{
-		"qrdb_dek_initialize":           `{"version":1}`,
-		"qrdb_dek_status":               `{"current_version":1,"initialized":true}`,
-		"qrdb_dek_rotate":               `{"version":2}`,
-		"qrdb_dek_current":              `{"version":1,"algorithm":"AES-GCM"}`,
-		"qrdb_dek_sync":                 `{"synced":true}`,
-		"qrdb_dek_tenant_get_or_create": `{"tenant_id":"t1","version":1}`,
-		"qrdb_dek_tenant_rotate":        `{"tenant_id":"t1","version":2}`,
-		"qrdb_dek_tenant_delete":        `{"tenant_id":"t1"}`,
-		"qrdb_dek_tenant_list":          `{"tenants":["t1","t2"]}`,
-		"qrdb_dek_tenant_status":        `{"tenant_id":"t1","initialized":true}`,
-	}
-
-	tr, cleanup := connectStubInProcess(t, stubs)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	if err := tr.DEKInitialize(ctx, &transport.DEKInitializeRequest{Algorithm: "AES", KeyBytes: 32}); err != nil {
-		t.Errorf("DEKInitialize: %v", err)
-	}
-	if _, err := tr.DEKGetStatus(ctx); err != nil {
-		t.Errorf("DEKGetStatus: %v", err)
-	}
-	if err := tr.DEKRotate(ctx); err != nil {
-		t.Errorf("DEKRotate: %v", err)
-	}
-	if _, err := tr.DEKGetCurrent(ctx); err != nil {
-		t.Errorf("DEKGetCurrent: %v", err)
-	}
-	if err := tr.DEKSyncToNode(ctx, &transport.DEKSyncRequest{NodeID: 7}); err != nil {
-		t.Errorf("DEKSyncToNode: %v", err)
-	}
-	if _, err := tr.TenantDEKGetOrCreate(ctx, &transport.TenantDEKRequest{TenantID: "t1"}); err != nil {
-		t.Errorf("TenantDEKGetOrCreate: %v", err)
-	}
-	if err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRotateRequest{TenantID: "t1"}); err != nil {
-		t.Errorf("TenantDEKRotate: %v", err)
-	}
-	if err := tr.TenantDEKDelete(ctx, &transport.TenantDEKDeleteRequest{TenantID: "t1"}); err != nil {
-		t.Errorf("TenantDEKDelete: %v", err)
-	}
-	if _, err := tr.TenantDEKList(ctx); err != nil {
-		t.Errorf("TenantDEKList: %v", err)
-	}
-	if _, err := tr.TenantDEKGetStatus(ctx, &transport.TenantDEKRequest{TenantID: "t1"}); err != nil {
-		t.Errorf("TenantDEKGetStatus: %v", err)
-	}
-}
-
-// TestDEK_JSONDecodeErrors exercises the JSON-decode error branch of each
-// DEK getter by registering stubs that return invalid JSON.
-func TestDEK_JSONDecodeErrors(t *testing.T) {
-	stubs := map[string]string{
-		"qrdb_dek_status":               `not-json`,
-		"qrdb_dek_current":              `not-json`,
-		"qrdb_dek_tenant_get_or_create": `not-json`,
-		"qrdb_dek_tenant_list":          `not-json`,
-		"qrdb_dek_tenant_status":        `not-json`,
-	}
-
-	tr, cleanup := connectStubInProcess(t, stubs)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	var reqErr *transport.RequestError
-	if _, err := tr.DEKGetStatus(ctx); !errors.As(err, &reqErr) {
-		t.Errorf("DEKGetStatus: want RequestError, got %T: %v", err, err)
-	}
-	if _, err := tr.DEKGetCurrent(ctx); !errors.As(err, &reqErr) {
-		t.Errorf("DEKGetCurrent: want RequestError, got %T: %v", err, err)
-	}
-	if _, err := tr.TenantDEKGetOrCreate(ctx, &transport.TenantDEKRequest{TenantID: "t1"}); !errors.As(err, &reqErr) {
-		t.Errorf("TenantDEKGetOrCreate: want RequestError, got %T: %v", err, err)
-	}
-	if _, err := tr.TenantDEKList(ctx); !errors.As(err, &reqErr) {
-		t.Errorf("TenantDEKList: want RequestError, got %T: %v", err, err)
-	}
-	if _, err := tr.TenantDEKGetStatus(ctx, &transport.TenantDEKRequest{TenantID: "t1"}); !errors.As(err, &reqErr) {
-		t.Errorf("TenantDEKGetStatus: want RequestError, got %T: %v", err, err)
-	}
 }
 
 // TestCeremonyEnrollExternalOfficer_LiveDecodePath exercises the

@@ -53,6 +53,20 @@ func defaultNewGCM(key []byte) (cipher.AEAD, error) {
 // The key must be exactly 32 bytes (AES-256).
 // Returns: [nonce (12 bytes)][ciphertext][tag (16 bytes)].
 func Encrypt(key, plaintext []byte) ([]byte, error) {
+	return EncryptWithAAD(key, plaintext, nil)
+}
+
+// Decrypt decrypts ciphertext produced by Encrypt.
+// The key must be exactly 32 bytes (AES-256).
+func Decrypt(key, ciphertext []byte) ([]byte, error) {
+	return DecryptWithAAD(key, ciphertext, nil)
+}
+
+// EncryptWithAAD is Encrypt with additional authenticated data. aad is not
+// stored in the output; it binds the ciphertext to a context the caller must
+// present again, unchanged, to DecryptWithAAD. A nil aad is identical to
+// Encrypt.
+func EncryptWithAAD(key, plaintext, aad []byte) ([]byte, error) {
 	if len(key) != 32 {
 		return nil, &InvalidKeyLengthError{Expected: 32, Actual: len(key)}
 	}
@@ -63,12 +77,13 @@ func Encrypt(key, plaintext []byte) ([]byte, error) {
 	// The nonce argument must be empty: the AEAD samples the nonce itself and
 	// prepends it to the returned ciphertext.
 	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
-	return gcm.Seal(nil, nil, plaintext, nil), nil
+	return gcm.Seal(nil, nil, plaintext, aad), nil
 }
 
-// Decrypt decrypts ciphertext produced by Encrypt.
-// The key must be exactly 32 bytes (AES-256).
-func Decrypt(key, ciphertext []byte) ([]byte, error) {
+// DecryptWithAAD decrypts ciphertext produced by EncryptWithAAD. aad must
+// equal the associated data given at encryption; any difference fails
+// authentication with *DecryptionError.
+func DecryptWithAAD(key, ciphertext, aad []byte) ([]byte, error) {
 	if len(key) != 32 {
 		return nil, &InvalidKeyLengthError{Expected: 32, Actual: len(key)}
 	}
@@ -84,7 +99,7 @@ func Decrypt(key, ciphertext []byte) ([]byte, error) {
 	}
 	// The nonce argument must be empty: the AEAD reads the nonce back off the
 	// front of ciphertext.
-	plaintext, err := gcm.Open(nil, nil, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nil, ciphertext, aad)
 	if err != nil {
 		return nil, &DecryptionError{Err: err}
 	}

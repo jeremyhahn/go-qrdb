@@ -17,6 +17,7 @@ package quic
 import (
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dekwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -253,6 +254,12 @@ func mapServiceError(err error) (uint16, []byte) {
 	}
 
 	msg := []byte(err.Error())
+
+	// Tenant DEK keyring errors carry the classification every transport
+	// shares, rendered through the gRPC-code correspondence table.
+	if code, ok := dekwire.Code(err); ok {
+		return wireStatusByGRPCCode[code], msg
+	}
 
 	// Unimplemented, not Error. The node is healthy; it simply was not built
 	// with this verb on the configured state machine (an absent opcode, or a

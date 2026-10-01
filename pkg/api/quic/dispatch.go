@@ -361,6 +361,15 @@ func (s *Server) buildHandlers() {
 	s.handleIf(credOn, "credential.Store", permission.CredentialsStore, s.handleCredentialStore)
 	s.handleIf(credOn, "credential.Retrieve", permission.CredentialsRetrieve, s.handleCredentialRetrieve)
 
+	// Tenant DEK keyring. Every method acts on the caller's own tenant.
+	dekOn := s.dekSvc != nil
+	s.handleIf(dekOn, "dek.Status", permission.DEKStatus, s.handleDEKStatus)
+	s.handleIf(dekOn, "dek.Rotate", permission.DEKRotate, s.handleDEKRotate)
+	s.handleIf(dekOn, "dek.Retire", permission.DEKRetire, s.handleDEKRetire)
+	s.handleIf(dekOn, "dek.Encrypt", permission.DEKEncrypt, s.handleDEKEncrypt)
+	s.handleIf(dekOn, "dek.Decrypt", permission.DEKDecrypt, s.handleDEKDecrypt)
+	s.handleIf(dekOn, "dek.Rewrap", permission.DEKRewrap, s.handleDEKRewrap)
+
 	// Per-tenant barrier lifecycle and SO distribution. These carry the
 	// tenant-scoped (ScopeTenantOnly) permissions; the handler additionally
 	// enforces the fine-grained gate against the request's tenant_id.

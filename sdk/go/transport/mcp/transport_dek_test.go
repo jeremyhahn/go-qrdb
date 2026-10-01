@@ -15,154 +15,116 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
+	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// DEK tools are not registered on the MCP server in this SDK. These tests
-// exercise the SDK's request path and verify the expected "tool not found"
-// error response when the SDK calls a non-existent MCP tool. This still
-// covers the SDK marshaling and error-handling code paths.
+// dekStores resolves one in-memory store per tenant.
+type dekStores map[string]*kvstore.MemoryKVStore
 
-// ---------------------------------------------------------------------------
-// Closed-state paths
-// ---------------------------------------------------------------------------
+func (d dekStores) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	s, ok := d[tenantID]
+	if !ok {
+		s = kvstore.NewMemoryKVStore()
+		d[tenantID] = s
+	}
+	return s, nil
+}
 
-func TestDEK_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
+// connectDEKInProcess connects the SDK to the REAL MCP server tools over the
+// production keyring service.
+func connectDEKInProcess(t *testing.T) *Transport {
+	t.Helper()
+	keyring, err := dek.NewKeyring(dekStores{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := service.NewDEKService(keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := mcpapi.NewServer(newMockKVService(), newMockAdminService(), ":0", mcpapi.WithDEKService(svc))
+	tr, err := NewInProcess(srv.MCPServer())
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	return tr
+}
+
+func TestDEK_RoundTripThroughTheServerTools(t *testing.T) {
+	tr := connectDEKInProcess(t)
 	ctx := context.Background()
+	aad := []byte("tenant/path/v1")
 
-	if err := tr.DEKInitialize(ctx, &transport.DEKInitializeRequest{}); !errors.As(err, &ce) {
-		t.Errorf("DEKInitialize: %v", err)
+	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
+	if err != nil || enc.Version != 1 {
+		t.Fatalf("encrypt = %+v, %v", enc, err)
 	}
-	if _, err := tr.DEKGetStatus(ctx); !errors.As(err, &ce) {
-		t.Errorf("DEKGetStatus: %v", err)
+	st, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{})
+	if err != nil || st.CurrentVersion != 2 {
+		t.Fatalf("rotate = %+v, %v", st, err)
 	}
-	if err := tr.DEKRotate(ctx); !errors.As(err, &ce) {
-		t.Errorf("DEKRotate: %v", err)
+	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || rw.FromVersion != 1 || rw.ToVersion != 2 {
+		t.Fatalf("rewrap = %+v, %v", rw, err)
 	}
-	if _, err := tr.DEKGetCurrent(ctx); !errors.As(err, &ce) {
-		t.Errorf("DEKGetCurrent: %v", err)
+	if st, err = tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1}); err != nil || st.Versions[0].RetiredAt == nil {
+		t.Fatalf("retire = %+v, %v", st, err)
 	}
-	if err := tr.DEKSyncToNode(ctx, &transport.DEKSyncRequest{}); !errors.As(err, &ce) {
-		t.Errorf("DEKSyncToNode: %v", err)
+	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: rw.Ciphertext, AAD: aad})
+	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) || dec.Version != 2 {
+		t.Fatalf("decrypt = %+v, %v", dec, err)
 	}
-	if _, err := tr.TenantDEKGetOrCreate(ctx, &transport.TenantDEKRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKGetOrCreate: %v", err)
-	}
-	if err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRotateRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKRotate: %v", err)
-	}
-	if err := tr.TenantDEKDelete(ctx, &transport.TenantDEKDeleteRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKDelete: %v", err)
-	}
-	if _, err := tr.TenantDEKList(ctx); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKList: %v", err)
-	}
-	if _, err := tr.TenantDEKGetStatus(ctx, &transport.TenantDEKRequest{}); !errors.As(err, &ce) {
-		t.Errorf("TenantDEKGetStatus: %v", err)
+	if st, err = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); err != nil || len(st.Versions) != 2 {
+		t.Fatalf("status = %+v, %v", st, err)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Live-call paths: DEK tools are not registered, so calls return a tool-
-// not-found error. We still exercise the SDK's marshaling and error wrap.
-// ---------------------------------------------------------------------------
-
-func TestDEKInitialize_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	err := tr.DEKInitialize(context.Background(), &transport.DEKInitializeRequest{
-		Algorithm: "AES",
-		KeyBytes:  32,
-	})
-	if err == nil {
-		t.Fatal("expected tool-not-found error")
+// TestDEK_RefusalsReachTheClient: the server's refusals arrive as errors.
+func TestDEK_RefusalsReachTheClient(t *testing.T) {
+	tr := connectDEKInProcess(t)
+	ctx := context.Background()
+	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("x"), AAD: []byte("a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: enc.Ciphertext, AAD: []byte("b")}); err == nil {
+		t.Error("a mismatched AAD must fail")
+	}
+	if _, err := tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1}); err == nil {
+		t.Error("retiring the current version must fail")
+	}
+	if _, err := tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{TenantID: "another"}); err == nil {
+		t.Error("a cross-tenant request must fail")
 	}
 }
 
-func TestDEKGetStatus_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, err := tr.DEKGetStatus(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestDEKRotate_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if err := tr.DEKRotate(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestDEKGetCurrent_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, err := tr.DEKGetCurrent(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestDEKSyncToNode_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if err := tr.DEKSyncToNode(context.Background(), &transport.DEKSyncRequest{NodeID: 1}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTenantDEKGetOrCreate_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, err := tr.TenantDEKGetOrCreate(context.Background(), &transport.TenantDEKRequest{TenantID: "t1"}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTenantDEKRotate_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if err := tr.TenantDEKRotate(context.Background(), &transport.TenantDEKRotateRequest{TenantID: "t1"}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTenantDEKDelete_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if err := tr.TenantDEKDelete(context.Background(), &transport.TenantDEKDeleteRequest{TenantID: "t1"}); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTenantDEKList_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, err := tr.TenantDEKList(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTenantDEKGetStatus_ToolNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, err := tr.TenantDEKGetStatus(context.Background(), &transport.TenantDEKRequest{TenantID: "t1"}); err == nil {
-		t.Fatal("expected error")
+func TestDEK_NilRequests(t *testing.T) {
+	tr := connectDEKInProcess(t)
+	ctx := context.Background()
+	checks := map[string]error{}
+	_, checks["status"] = tr.TenantDEKStatus(ctx, nil)
+	_, checks["rotate"] = tr.TenantDEKRotate(ctx, nil)
+	_, checks["retire"] = tr.TenantDEKRetire(ctx, nil)
+	_, checks["encrypt"] = tr.TenantDEKEncrypt(ctx, nil)
+	_, checks["decrypt"] = tr.TenantDEKDecrypt(ctx, nil)
+	_, checks["rewrap"] = tr.TenantDEKRewrap(ctx, nil)
+	for op, err := range checks {
+		var nre *transport.NilRequestError
+		if !errors.As(err, &nre) {
+			t.Errorf("%s(nil): err = %v, want *transport.NilRequestError", op, err)
+		}
 	}
 }

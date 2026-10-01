@@ -148,7 +148,6 @@ leaks to a caller with no access to the tier.
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |
 | Delete: tombstone write or metadata delete failed | 500 | `INTERNAL` — `*StoreError`; **nothing changed**, the tenant and its key are intact |
-| Delete: DEK shred failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*DEKShredError`; the id is already retired and the tenant no longer resolves, retry to resume |
 | Delete: keyspace reclaim failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*KeyspaceReclaimError`; the id is already retired, retry to resume |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 

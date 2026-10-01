@@ -456,6 +456,14 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/v1/users/factors/factor-1", permission.UserAuthFactorsGet},
 		{"DELETE", "/v1/users/factors/factor-1", permission.UserAuthFactorsRemove},
 		{"PUT", "/v1/users/factors/factor-1/label", permission.UserAuthFactorsRelabel},
+
+		// Tenant DEK keyring.
+		{"GET", "/v1/dek/status", permission.DEKStatus},
+		{"POST", "/v1/dek/rotate", permission.DEKRotate},
+		{"POST", "/v1/dek/retire", permission.DEKRetire},
+		{"POST", "/v1/dek/encrypt", permission.DEKEncrypt},
+		{"POST", "/v1/dek/decrypt", permission.DEKDecrypt},
+		{"POST", "/v1/dek/rewrap", permission.DEKRewrap},
 	}
 
 	for _, tc := range cases {

@@ -230,6 +230,7 @@ Supported transports:
 	rootCmd.AddCommand(newCACmd())
 	rootCmd.AddCommand(newCertsRedirectCmd())
 	rootCmd.AddCommand(newCredentialCmd())
+	rootCmd.AddCommand(newDEKCmd())
 	rootCmd.AddCommand(newBarrierCmd())
 	rootCmd.AddCommand(newCeremonyCmd())
 	rootCmd.AddCommand(newBackupCmd())

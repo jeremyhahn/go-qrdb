@@ -37,9 +37,6 @@ const (
 // backed by a sealed barrier.
 type EncryptionBarrier = seal.EncryptionBarrier
 
-// TenantKeyManager manages per-tenant DEK derivation.
-type TenantKeyManager = seal.TenantKeyManager
-
 // CeremonyDistributor seals Shamir share material to enrolled Security
 // Officers. Implementations split the share secret and seal one share to
 // each officer's enclave; the secret is wiped before either method returns.

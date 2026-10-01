@@ -22,55 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
-// The tenant DEK cache read must not take a nested borrow.
-//
-// The EXECUTED half of go-qrdb#74's callee trace for this site, and the one
-// the issue named as the trap: cacheDEK calls secure.NewSecret, which is
-// purge-class, and a conversion that pulled it inside the borrow would hang
-// the daemon on the first tenant key operation. The MISS path (which caches)
-// and the HIT path (which borrows) are driven in that order here, so both the
-// allocation and the borrow actually run.
-func TestGetTenantDEK_CacheHitTakesNoNestedBorrow(t *testing.T) {
-	defer secure.GuardBorrows(t.Fatalf)()
-
-	b := newUnsealedBarrier(t)
-	tkm, err := NewTenantKeyManager(b, newMemoryKVStore())
-	if err != nil {
-		t.Fatalf("NewTenantKeyManager: %v", err)
-	}
-	ctx := context.Background()
-
-	// Miss: generates, wraps, persists and calls cacheDEK -> secure.NewSecret.
-	first, err := tkm.GetTenantDEK(ctx, "tenant-borrow")
-	if err != nil {
-		t.Fatalf("GetTenantDEK (miss): %v", err)
-	}
-	// Hit: opens the cached Secret and copies out under the borrow.
-	second, err := tkm.GetTenantDEK(ctx, "tenant-borrow")
-	if err != nil {
-		t.Fatalf("GetTenantDEK (hit): %v", err)
-	}
-	if !bytes.Equal(first, second) {
-		t.Error("the cached read returned different material than the generated one")
-	}
-	if len(second) == 0 {
-		t.Error("the cached read returned nothing")
-	}
-
-	// Rotation destroys the cached Secret and caches a fresh one, which is a
-	// purge-class pair around the same cache entry the borrow above read.
-	if err := tkm.RotateTenantDEK(ctx, "tenant-borrow"); err != nil {
-		t.Fatalf("RotateTenantDEK: %v", err)
-	}
-	rotated, err := tkm.GetTenantDEK(ctx, "tenant-borrow")
-	if err != nil {
-		t.Fatalf("GetTenantDEK (after rotate): %v", err)
-	}
-	if bytes.Equal(first, rotated) {
-		t.Error("rotation returned the same DEK")
-	}
-}
-
 // The recovery strategy's root-key read must not take a nested borrow.
 //
 // UnsealRootKey hands a copy to Barrier.Unseal, and the copy now runs inside a

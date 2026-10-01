@@ -2206,6 +2206,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 			embedded.WithWatchService(svcNode.Watch),
 		)
 	}
+	if svcNode.DEK != nil {
+		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
+	}
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
@@ -2472,6 +2475,9 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, 
 	}
 	if svcNode.Credential != nil {
 		opts = append(opts, server.WithCredentialService(svcNode.Credential))
+	}
+	if svcNode.DEK != nil {
+		opts = append(opts, server.WithDEKService(svcNode.DEK))
 	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, server.WithCertProvider(svcNode.CertProv))

@@ -34,7 +34,7 @@ import (
 // serviceErrorClassifiers are this package's per-family error mappers, in the
 // order ServiceErrorCode consults them.
 //
-// There are nine of them because a gRPC SERVICE knows its own family and calls
+// There are ten of them because a gRPC SERVICE knows its own family and calls
 // exactly one. Each is total — every one ends in codes.Internal — and Internal
 // is what each of them means by "I do not recognise this", not by "this is a
 // server fault I have identified".
@@ -55,6 +55,7 @@ var serviceErrorClassifiers = []func(error) error{
 	mapUserAuthFactorGRPCError,
 	mapBarrierCeremonyError,
 	mapTenantBarrierCeremonyError,
+	mapDEKError,
 }
 
 // ServiceErrorCode reports the gRPC status code this package's classifiers

@@ -81,6 +81,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
+	dekSvc            service.DEKServicer
 	tenantSvc         tenant.TenantServicer
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
@@ -273,6 +274,12 @@ func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
 // WithCredentialService configures the gRPC server with a credential management service.
 func WithCredentialService(svc service.CredentialServicer) ServerOption {
 	return func(s *Server) { s.credentialSvc = svc }
+}
+
+// WithDEKService configures the gRPC server with the tenant DEK keyring
+// service. Without it the TenantDEK* RPCs answer Unimplemented.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(s *Server) { s.dekSvc = svc }
 }
 
 // WithAuditLogger configures the gRPC server with an audit logger, which
@@ -510,6 +517,7 @@ func (s *Server) Start() error {
 		ceremonySvc:   s.ceremonySvc,
 		ceremonyCA:    s.ceremonyCA,
 		credentialSvc: s.credentialSvc,
+		dekSvc:        s.dekSvc,
 		tenantSvc:     s.tenantSvc,
 		userSvc:       s.userSvc,
 		roleSvc:       s.roleSvc,

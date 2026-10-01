@@ -312,3 +312,15 @@ func (e *LocalEngineError) Error() string {
 func (e *LocalEngineError) Unwrap() error {
 	return e.Err
 }
+
+// DEKServiceError is returned when the tenant DEK keyring service cannot be
+// constructed.
+type DEKServiceError struct {
+	Err error
+}
+
+func (e *DEKServiceError) Error() string {
+	return "lifecycle: build tenant DEK service: " + e.Err.Error()
+}
+
+func (e *DEKServiceError) Unwrap() error { return e.Err }

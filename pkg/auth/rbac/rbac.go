@@ -103,6 +103,12 @@ var soDeniedActions = map[string]map[string]struct{}{
 		// (piv:read / piv:write / piv:delete) but never uses their keys.
 		"use": {},
 	},
+	"dek": {
+		// Rewrap decrypts a ciphertext and re-encrypts it under the tenant's
+		// current key: key use, like keys:wrap. dek:encrypt and dek:decrypt
+		// are already caught by the resource-independent verbs below.
+		"rewrap": {},
+	},
 }
 
 // soDeniedCryptoVerbs is the resource-independent half of the deny-list: action

@@ -16,6 +16,7 @@ package service
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -213,6 +214,13 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // kept its shards running and its shard data dirs on disk on every replica --
 // which the local node's DataRoot removal cannot reach.
 //
+// It DOES return the tenant's barrier-encrypted range in the shared store,
+// seal.TenantSharedNamespace. A dedicated-isolation tenant's identity records
+// and DEK keyring live there, outside "<tenant>/", so that the system shard
+// replicates them. Its barrier is destroyed earlier in the teardown, so what
+// is left is ciphertext — except under barrier protection "none", where it is
+// plaintext, which is why the range must be reclaimed rather than abandoned.
+//
 // The SYSTEM tenant returns nil. "<tenant>/" for the system tenant is
 // "system/", which is where the bootstrap database and every system identity
 // record live; a reclamation that accepted it would empty the store it was
@@ -229,6 +237,7 @@ func TenantKeyPrefixes(tenantID string) []string {
 		timeseries.KeyPrefixMetricIndex + ns,
 		timeseries.KeyPrefixRetention + ns,
 		placement.PlacementPrefix + ns,
+		seal.TenantSharedNamespace(tenantID),
 	}
 }
 

@@ -575,37 +575,34 @@ type CertClient interface {
 // DEK operations
 // ---------------------------------------------------------------------------
 
-// DEKClient manages data encryption keys for the cluster and tenants.
+// DEKClient serves the caller's per-tenant data encryption keyring: a
+// versioned set of AES-256-GCM keys that never leave the server.
+//
+// Every method acts on the caller's own tenant. A request naming another
+// tenant is refused with PermissionDenied (403), from the system tenant too.
+// Rotation keeps old versions decrypting; Rewrap moves a ciphertext to the
+// current version; Retire destroys an old version and refuses the current
+// one. The keyring cannot know where ciphertexts are stored, so rewrap
+// everything under a version before retiring it.
 type DEKClient interface {
-	// DEKInitialize initializes the cluster DEK with the given algorithm and key size.
-	DEKInitialize(ctx context.Context, req *DEKInitializeRequest) error
+	// TenantDEKStatus returns the keyring's versions. It never returns keys.
+	TenantDEKStatus(ctx context.Context, req *TenantDEKRequest) (*TenantDEKStatusResponse, error)
 
-	// DEKGetStatus returns the current cluster DEK status.
-	DEKGetStatus(ctx context.Context) (*DEKStatusResponse, error)
+	// TenantDEKRotate adds a key version and makes it current.
+	TenantDEKRotate(ctx context.Context, req *TenantDEKRequest) (*TenantDEKStatusResponse, error)
 
-	// DEKRotate rotates the cluster DEK to a new version.
-	DEKRotate(ctx context.Context) error
+	// TenantDEKRetire destroys an old key version's key.
+	TenantDEKRetire(ctx context.Context, req *TenantDEKRetireRequest) (*TenantDEKStatusResponse, error)
 
-	// DEKGetCurrent returns the current DEK metadata.
-	DEKGetCurrent(ctx context.Context) (*DEKCurrentResponse, error)
+	// TenantDEKEncrypt seals plaintext under the current key version.
+	TenantDEKEncrypt(ctx context.Context, req *TenantDEKEncryptRequest) (*TenantDEKEncryptResponse, error)
 
-	// DEKSyncToNode synchronizes the DEK to a specific node.
-	DEKSyncToNode(ctx context.Context, req *DEKSyncRequest) error
+	// TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant.
+	TenantDEKDecrypt(ctx context.Context, req *TenantDEKDecryptRequest) (*TenantDEKDecryptResponse, error)
 
-	// TenantDEKGetOrCreate returns the DEK for a tenant, creating if needed.
-	TenantDEKGetOrCreate(ctx context.Context, req *TenantDEKRequest) (*TenantDEKResponse, error)
-
-	// TenantDEKRotate rotates the DEK for a specific tenant.
-	TenantDEKRotate(ctx context.Context, req *TenantDEKRotateRequest) error
-
-	// TenantDEKDelete deletes a tenant's DEK.
-	TenantDEKDelete(ctx context.Context, req *TenantDEKDeleteRequest) error
-
-	// TenantDEKList returns all tenant IDs that have DEKs.
-	TenantDEKList(ctx context.Context) (*TenantDEKListResponse, error)
-
-	// TenantDEKGetStatus returns the status of a tenant's DEK.
-	TenantDEKGetStatus(ctx context.Context, req *TenantDEKRequest) (*TenantDEKStatusResponse, error)
+	// TenantDEKRewrap re-seals a ciphertext under the current key version
+	// without returning its plaintext.
+	TenantDEKRewrap(ctx context.Context, req *TenantDEKRewrapRequest) (*TenantDEKRewrapResponse, error)
 }
 
 // ---------------------------------------------------------------------------

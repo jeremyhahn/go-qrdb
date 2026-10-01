@@ -76,6 +76,10 @@ func registerCryptoUseDuties() {
 		// through a smart card. The Security Officer administers PIV slots
 		// (piv:read / piv:write / piv:delete) but never uses their keys.
 		PIVUse,
+		// Tenant DEK keyring use. Encrypt, decrypt and rewrap apply a tenant
+		// key to caller data; rotate, retire and status are lifecycle and
+		// read verbs and stay undeclared like the rest of the data plane.
+		DEKEncrypt, DEKDecrypt, DEKRewrap,
 	)
 }
 

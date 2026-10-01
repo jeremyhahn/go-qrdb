@@ -86,6 +86,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [trust-bootstrap](trust-bootstrap/) | client-side CA trust establishment *(command shape only — see its docs)* |
 | [certificate-authority](certificate-authority/) | client certificate issuance, export, revocation |
 | [credentials](credentials/) | named credentials, versioned rotation, secret resolution |
+| [tenant-dek](tenant-dek/) | the per-tenant versioned data encryption keyring: encrypt, decrypt, rewrap, rotate, retire |
 | [identity-rbac](identity-rbac/) | users, roles, the permission vocabulary, the RBAC PDP |
 | [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
 | [audit](audit/) | compliance-grade audit logging and query |
@@ -100,9 +101,10 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 36 currently-implemented features have a `docs/<feature>/` folder with all
+**All 37 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
-[coordination](coordination/) added 2026-09-10). The portfolio view is derived,
+[coordination](coordination/) added 2026-09-10; [tenant-dek](tenant-dek/) added
+2026-10-01). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 
 The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)

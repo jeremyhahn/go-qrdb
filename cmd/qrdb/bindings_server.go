@@ -279,6 +279,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	if svcNode.Credential != nil {
 		opts = append(opts, embedded.WithCredentialService(svcNode.Credential))
 	}
+	if svcNode.DEK != nil {
+		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
+	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, embedded.WithCertProvider(svcNode.CertProv))
 	}

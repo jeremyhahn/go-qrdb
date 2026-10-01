@@ -71,8 +71,8 @@ func validateTenantIDCharset(id string) error {
 //
 //   - validateDeletableTenantID (DELETE) does NOT. Nothing in this system
 //     legitimately deletes a reserved tenant, at boot or afterwards, and a
-//     delete is irreversible: it shreds the tenant DEK, retires the id and
-//     removes the metadata record. A bypass on that path would be a bypass of
+//     delete is irreversible: it retires the id, removes the metadata record and
+//     destroys the barrier and keyspace. A bypass on that path would be a bypass of
 //     the only guard standing between a caller and the platform's own tenant.
 //
 // Writing the set twice is what would let the two drift; giving one set two

@@ -83,6 +83,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.KeysCreate, permission.KeysRotate, permission.KeysDelete,
 	permission.KeysList, permission.KeysGet,
 	permission.KeysWrap, permission.KeysUnwrap,
+	permission.DEKRotate, permission.DEKRewrap, permission.DEKRetire, permission.DEKStatus,
 	permission.KeysImport, permission.KeysExport,
 	permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
 	permission.CertsList, permission.CertsRead,
@@ -140,6 +141,7 @@ var goldenOperatorPermissions = []permission.Permission{
 	permission.KeysSign, permission.KeysVerify,
 	permission.KeysEncrypt, permission.KeysDecrypt,
 	permission.KeysList, permission.KeysGet,
+	permission.DEKEncrypt, permission.DEKDecrypt, permission.DEKRewrap, permission.DEKStatus,
 	permission.KeysRotate,
 	permission.KeysDerive,
 	permission.BackendsList, permission.BackendsRead,
@@ -227,6 +229,7 @@ var goldenOperatorPermissions = []permission.Permission{
 var goldenUserPermissions = []permission.Permission{
 	permission.KeysSign, permission.KeysVerify,
 	permission.KeysEncrypt, permission.KeysDecrypt,
+	permission.DEKEncrypt, permission.DEKDecrypt,
 	permission.KeysDerive,
 	permission.KeysGet, permission.KeysList,
 	permission.PIVUse,

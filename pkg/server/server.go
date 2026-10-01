@@ -47,7 +47,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -184,7 +183,7 @@ type serverOptions struct {
 	ceremonyCA         ceremony.CeremonyCA
 	collectionSvc      service.CollectionServicer
 	barrierRegistry    *seal.BarrierRegistry
-	tenantDEKMgr       dek.TenantDEKManager
+	dekSvc             service.DEKServicer
 	tenantSvc          tenant.TenantServicer
 	tenantStoreRes     tenant.StoreResolver
 	backupSvc          service.BackupServicer
@@ -494,13 +493,10 @@ func WithBarrierRegistry(reg *seal.BarrierRegistry) ServerOption {
 	}
 }
 
-// WithTenantDEKManager sets the tenant DEK manager for per-tenant data
-// encryption key management. When set, each tenant's data is encrypted
-// with an isolated DEK wrapped by the cluster DEK.
-func WithTenantDEKManager(mgr dek.TenantDEKManager) ServerOption {
-	return func(o *serverOptions) {
-		o.tenantDEKMgr = mgr
-	}
+// WithDEKService configures the tenant DEK keyring service for all protocol
+// servers.
+func WithDEKService(svc service.DEKServicer) ServerOption {
+	return func(o *serverOptions) { o.dekSvc = svc }
 }
 
 // WithTenantService sets the tenant lifecycle service for multi-tenant
@@ -1132,6 +1128,9 @@ func (s *Server) startREST() error {
 	if s.opts.credentialSvc != nil {
 		restOpts = append(restOpts, rest.WithCredentialService(s.opts.credentialSvc))
 	}
+	if s.opts.dekSvc != nil {
+		restOpts = append(restOpts, rest.WithDEKService(s.opts.dekSvc))
+	}
 	if s.opts.ceremonyCA != nil {
 		restOpts = append(restOpts, rest.WithCeremonyCA(s.opts.ceremonyCA))
 	}
@@ -1315,6 +1314,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.credentialSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCredentialService(s.opts.credentialSvc))
 	}
+	if s.opts.dekSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithDEKService(s.opts.dekSvc))
+	}
 	if s.opts.auditLogger != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuditLogger(s.opts.auditLogger))
 	}
@@ -1497,6 +1499,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.credentialSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCredentialService(s.opts.credentialSvc))
 	}
+	if s.opts.dekSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithDEKService(s.opts.dekSvc))
+	}
 	if reg := s.transportServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
@@ -1555,6 +1560,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.credentialSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCredentialService(s.opts.credentialSvc))
+	}
+	if s.opts.dekSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithDEKService(s.opts.dekSvc))
 	}
 	if s.opts.collectionSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCollectionService(s.opts.collectionSvc))
@@ -1681,6 +1689,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.credentialSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCredentialService(s.opts.credentialSvc))
+	}
+	if s.opts.dekSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithDEKService(s.opts.dekSvc))
 	}
 	if s.opts.ceremonyCA != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyCA(s.opts.ceremonyCA))

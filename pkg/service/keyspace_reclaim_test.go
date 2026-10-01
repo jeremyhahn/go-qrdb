@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -996,6 +997,7 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		timeseries.KeyPrefixMetricIndex + tenant.ComposeNamespace("acme", "reports") + "cpu",
 		timeseries.KeyPrefixRetention + tenant.ComposeNamespace("acme", "reports") + "cpu",
 		placement.PlacementPrefix + "acme/reports",
+		seal.TenantSharedNamespace("acme") + "__sys:dek/keyring",
 	}
 	for _, key := range owned {
 		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
@@ -1006,6 +1008,8 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		"__sys:roles/admin",
 		timeseries.KeyPrefixTagIndex + "host:web1",
 		placement.PlacementPrefix + "other/reports",
+		seal.TenantSharedNamespace("other") + "__sys:dek/keyring",
+		seal.TenantSharedNamespace("acmecorp") + "__sys:dek/keyring",
 	}
 	for _, key := range notOwned {
 		assert.False(t, hasAnyPrefix(key, prefixes), "a tenant prefix wrongly covers %q", key)
