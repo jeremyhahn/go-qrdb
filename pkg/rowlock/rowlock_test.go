@@ -38,7 +38,7 @@ const (
 func TestAcquire_ExclusiveExcludesExclusive_NowaitFailsAndWithdraws(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, time.Second))
@@ -57,7 +57,7 @@ func TestAcquire_ExclusiveExcludesExclusive_NowaitFailsAndWithdraws(t *testing.T
 func TestAcquire_SharedIsCompatibleWithShared_NotWithExclusive(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b, c := NewOwner(), NewOwner(), NewOwner()
+	a, b, c := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{a, b, c} {
 			_ = o.Release(context.Background())
@@ -74,7 +74,7 @@ func TestAcquire_SharedIsCompatibleWithShared_NotWithExclusive(t *testing.T) {
 func TestAcquire_ReentryIsFree_AndExclusiveCoversShared(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA, keyA}, ModeExclusive, 0))
@@ -86,7 +86,7 @@ func TestAcquire_ReentryIsFree_AndExclusiveCoversShared(t *testing.T) {
 func TestAcquire_UpgradeAlone_IsGranted(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
@@ -97,7 +97,7 @@ func TestAcquire_UpgradeAlone_IsGranted(t *testing.T) {
 func TestAcquire_UpgradeWaitsForOtherSharedHolder(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
@@ -118,7 +118,7 @@ func TestAcquire_UpgradeWaitsForOtherSharedHolder(t *testing.T) {
 func TestAcquire_WaitersAreGrantedInFIFOOrder(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b, c := NewOwner(), NewOwner(), NewOwner()
+	a, b, c := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{a, b, c} {
 			_ = o.Release(context.Background())
@@ -145,7 +145,7 @@ func TestAcquire_WaitersAreGrantedInFIFOOrder(t *testing.T) {
 func TestAcquire_SharedBehindWaitingExclusive_DoesNotStarveWriter(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, w, r := NewOwner(), NewOwner(), NewOwner()
+	a, w, r := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{a, w, r} {
 			_ = o.Release(context.Background())
@@ -171,7 +171,7 @@ func TestAcquire_SharedBehindWaitingExclusive_DoesNotStarveWriter(t *testing.T) 
 func TestAcquire_LockWaitTimeout_FailsOnlyTheRequest(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
@@ -197,7 +197,7 @@ func TestAcquire_LockWaitTimeout_FailsOnlyTheRequest(t *testing.T) {
 func TestAcquire_PartiallyGrantedRequest_KeepsWhatItGot(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0))
@@ -211,7 +211,7 @@ func TestAcquire_PartiallyGrantedRequest_KeepsWhatItGot(t *testing.T) {
 func TestAcquire_ContextCancelled_WithdrawsWaitingRecord(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
@@ -231,7 +231,7 @@ func TestAcquire_ContextCancelled_WithdrawsWaitingRecord(t *testing.T) {
 func TestAcquire_TwoPartyDeadlock_NewestRequestIsVictimAndReleased(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
@@ -258,7 +258,7 @@ func TestAcquire_TwoPartyDeadlock_NewestRequestIsVictimAndReleased(t *testing.T)
 func TestAcquire_ThreePartyDeadlock_IsDetected(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b, c := NewOwner(), NewOwner(), NewOwner()
+	a, b, c := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{a, b, c} {
 			_ = o.Release(context.Background())
@@ -286,7 +286,7 @@ func TestAcquire_ThreePartyDeadlock_IsDetected(t *testing.T) {
 func TestAcquire_UpgradeDeadlock_IsDetected(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
@@ -304,7 +304,7 @@ func TestAcquire_UpgradeDeadlock_IsDetected(t *testing.T) {
 func TestAcquire_WaitWithoutCycle_IsNotADeadlock(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
@@ -317,7 +317,7 @@ func TestAcquire_WaitWithoutCycle_IsNotADeadlock(t *testing.T) {
 func TestAcquire_LockTableTooLargeToSearch_RequesterIsVictim(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	bulk, a, b := NewOwner(), NewOwner(), NewOwner()
+	bulk, a, b := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{bulk, a, b} {
 			_ = o.Release(context.Background())
@@ -344,7 +344,7 @@ func TestAcquire_LockTableTooLargeToSearch_RequesterIsVictim(t *testing.T) {
 func TestRelease_DeletesEveryRecord_AndIsIdempotent(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA, keyB}, ModeExclusive, 0))
 	assert.True(t, a.Active())
 
@@ -356,7 +356,7 @@ func TestRelease_DeletesEveryRecord_AndIsIdempotent(t *testing.T) {
 }
 
 func TestRelease_OwnerThatNeverLocked_IsANoOp(t *testing.T) {
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Release(context.Background()))
 	assert.False(t, a.Active())
 }
@@ -364,7 +364,7 @@ func TestRelease_OwnerThatNeverLocked_IsANoOp(t *testing.T) {
 func TestRelease_WorksWithACancelledContext(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -382,7 +382,7 @@ func TestLeaseExpiry_ReleasesACrashedHoldersLocks_AndWakesWaiters(t *testing.T) 
 	require.NoError(t, err)
 	tbl := s.table(t)
 
-	crashed, b := NewOwner(), NewOwner()
+	crashed, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = b.Release(context.Background()) })
 	require.NoError(t, crashed.Acquire(context.Background(), crashedTable, []string{keyA}, ModeExclusive, 0))
 
@@ -397,7 +397,7 @@ func TestKeepalive_KeepsLocksPastTheLeaseTTL(t *testing.T) {
 	s.runExpiry(t)
 	tbl := s.table(t, WithLeaseTTL(1))
 
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
 
@@ -410,7 +410,7 @@ func TestKeepalive_KeepsLocksPastTheLeaseTTL(t *testing.T) {
 func TestAcquire_WaiterWhoseLeaseIsRevoked_GetsLockLost(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
@@ -430,7 +430,7 @@ func TestAcquire_WaiterWhoseLeaseIsRevoked_GetsLockLost(t *testing.T) {
 func TestAcquire_AfterKeepaliveReportsLoss_FailsLockLost(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
 	a.lease.lost.Store(true)
 
@@ -450,7 +450,7 @@ func TestLocks_AreReplicatedState_NotHeldByTheTableHandle(t *testing.T) {
 	// leader change) would build: everything they agree on comes from the
 	// replicated records, nothing from the handle.
 	node1, node2 := s.table(t), s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), node1, []string{keyA}, ModeExclusive, 0))
@@ -469,7 +469,7 @@ func TestAcquire_SecondScope_IsRefusedBeforeWriting(t *testing.T) {
 	tbl := s.table(t)
 	other, err := New(s.deps, "acme/other")
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
@@ -483,13 +483,13 @@ func TestAcquire_SecondScope_IsRefusedBeforeWriting(t *testing.T) {
 func TestAcquire_InvalidMode_IsRefused(t *testing.T) {
 	s := newStack(t)
 	var invalid *InvalidModeError
-	require.ErrorAs(t, NewOwner().Acquire(context.Background(), s.table(t), []string{keyA}, Mode(9), 0), &invalid)
+	require.ErrorAs(t, NewSession().NewOwner().Acquire(context.Background(), s.table(t), []string{keyA}, Mode(9), 0), &invalid)
 	assert.Contains(t, invalid.Error(), "9")
 }
 
 func TestAcquire_NoKeys_IsANoOp(t *testing.T) {
 	s := newStack(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), s.table(t), nil, ModeExclusive, 0))
 	assert.False(t, a.Active(), "no lease is granted for an empty request")
 }

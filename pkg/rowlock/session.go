@@ -75,36 +75,57 @@ func NewSession() *Session {
 // NewOwner returns an owner for one transaction of the session: a fresh
 // identity whose records are bound to the session's lease.
 func (s *Session) NewOwner() *Owner {
-	o := newOwner()
-	o.session = s
-	return o
+	return newOwner(s)
 }
 
 // acquire returns the session's lease in t's store, granting one first if
-// the session holds none there, and counts one more user of it.
+// the session holds no live one there, and counts one more user of it.
+//
+// The grant -- a Raft proposal -- is made without holding the session's
+// lock, so the session's other owners, its keepalives and its Close are
+// never held up behind it. Two owners granting at once both succeed; the
+// first to install its lease keeps it, and the other's is revoked.
 func (s *Session) acquire(ctx context.Context, t *Table) (*sessionLease, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if l := s.leases[t.scope]; l != nil && !l.lost.Load() {
-		l.users++
+	if l := s.use(t.scope); l != nil {
 		return l, nil
 	}
 	granted, err := t.deps.Lease.Grant(ctx, t.leaseTTL)
 	if err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	if l := s.leases[t.scope]; l != nil && !l.lost.Load() {
+		l.users++
+		s.mu.Unlock()
+		_ = revoke(ctx, &sessionLease{table: t, id: granted.ID})
+		return l, nil
+	}
 	kctx, stop := context.WithCancel(context.Background())
 	l := &sessionLease{table: t, id: granted.ID, users: 1, stop: stop, stopped: make(chan struct{})}
 	s.leases[t.scope] = l
+	s.mu.Unlock()
 	go s.keepalive(kctx, l)
 	return l, nil
 }
 
+// use counts one more user of the session's live lease in scope and
+// returns it, or nil when the session holds none there.
+func (s *Session) use(scope string) *sessionLease {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l := s.leases[scope]
+	if l == nil || l.lost.Load() {
+		return nil
+	}
+	l.users++
+	return l
+}
+
 // release drops one user of l. clean reports whether the owner deleted every
-// record it wrote. When it could not, the lease is retired -- revoked, which
-// deletes every record still bound to it -- rather than kept: a record its
-// owner failed to delete would otherwise outlive the owner for as long as
-// the session renews the lease, instead of for at most its TTL. A lease
+// record it had to. When it could not, the lease is retired -- revoked,
+// which deletes every record still bound to it -- rather than kept: a record
+// its owner failed to delete would otherwise outlive the owner for as long
+// as the session renews the lease, instead of for at most its TTL. A lease
 // found lost is retired too, so the next owner is granted a live one.
 func (s *Session) release(ctx context.Context, l *sessionLease, clean bool) error {
 	s.mu.Lock()
@@ -112,12 +133,12 @@ func (s *Session) release(ctx context.Context, l *sessionLease, clean bool) erro
 	if l.users == 0 {
 		l.idleSince = s.now()
 	}
-	retire := !clean || l.lost.Load()
-	if retire {
-		s.detachLocked(l)
+	retired := false
+	if !clean || l.lost.Load() {
+		retired = s.retireLocked(l)
 	}
 	s.mu.Unlock()
-	if !retire {
+	if !retired {
 		return nil
 	}
 	l.stop()
@@ -126,14 +147,17 @@ func (s *Session) release(ctx context.Context, l *sessionLease, clean bool) erro
 }
 
 // Close revokes every lease the session holds, deleting every record still
-// bound to them. It is the session's end; the session may be used again
+// bound to them. It is the session's end. Every owner still on one of those
+// leases finds it lost: its next lock request fails with *LockLostError,
+// and its Release has nothing left to delete. The session may be used again
 // afterwards, and grants a new lease when it next locks.
 func (s *Session) Close(ctx context.Context) error {
 	s.mu.Lock()
 	leases := make([]*sessionLease, 0, len(s.leases))
 	for _, l := range s.leases {
-		leases = append(leases, l)
-		s.detachLocked(l)
+		if s.retireLocked(l) {
+			leases = append(leases, l)
+		}
 	}
 	s.mu.Unlock()
 
@@ -146,12 +170,18 @@ func (s *Session) Close(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// detachLocked removes l from the session, so the next acquire in its store
-// grants a fresh lease. Callers hold s.mu.
-func (s *Session) detachLocked(l *sessionLease) {
-	if s.leases[l.table.scope] == l {
-		delete(s.leases, l.table.scope)
+// retireLocked marks l lost -- before anything else, so no owner on it can
+// go on believing its records exist -- and removes it from the session, so
+// the next acquire in its store grants a fresh lease. It reports whether
+// this call detached it, i.e. whether the caller is the one to stop and
+// revoke it. Callers hold s.mu.
+func (s *Session) retireLocked(l *sessionLease) bool {
+	l.lost.Store(true)
+	if s.leases[l.table.scope] != l {
+		return false
 	}
+	delete(s.leases, l.table.scope)
+	return true
 }
 
 // keepalive renews l every third of its TTL until it is stopped, found lost,
@@ -169,10 +199,7 @@ func (s *Session) keepalive(ctx context.Context, l *sessionLease) {
 		}
 
 		s.mu.Lock()
-		idle := l.users == 0 && s.now().Sub(l.idleSince) >= ttl
-		if idle {
-			s.detachLocked(l)
-		}
+		idle := l.users == 0 && s.now().Sub(l.idleSince) >= ttl && s.retireLocked(l)
 		s.mu.Unlock()
 		if idle {
 			// Nothing is bound to an idle lease; revoking it is cleanup.
@@ -184,9 +211,8 @@ func (s *Session) keepalive(ctx context.Context, l *sessionLease) {
 		if _, err := l.table.deps.Lease.KeepAlive(ctx, l.id); err != nil {
 			var gone *service.LeaseNotFoundError
 			if errors.As(err, &gone) {
-				l.lost.Store(true)
 				s.mu.Lock()
-				s.detachLocked(l)
+				s.retireLocked(l)
 				s.mu.Unlock()
 				return
 			}

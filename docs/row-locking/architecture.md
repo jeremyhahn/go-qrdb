@@ -151,7 +151,8 @@ queue.
   renewing.
 - A lease no transaction has used for one lease TTL is revoked, so an idle or
   abandoned connection holds nothing and renews nothing. The connection's end
-  revokes its leases.
+  revokes its leases — one proposal, which also deletes every record the
+  abandoned transaction held.
 - A session that crashes, or whose node is lost, stops renewing; the leader's
   expiry sweep deletes its records when the lease runs out, and its waiters
   wake — exactly as when every transaction had a lease of its own.

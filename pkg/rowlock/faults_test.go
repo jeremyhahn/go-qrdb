@@ -85,7 +85,7 @@ func TestAcquire_LeaseGrantFailure_IsReturned(t *testing.T) {
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
 	var inj *injectedError
-	require.ErrorAs(t, NewOwner().Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
+	require.ErrorAs(t, NewSession().NewOwner().Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
 }
 
 func TestAcquire_EnqueueFailure_IsReturned(t *testing.T) {
@@ -95,7 +95,7 @@ func TestAcquire_EnqueueFailure_IsReturned(t *testing.T) {
 	d.Txn = ft
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	var inj *injectedError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
@@ -109,7 +109,7 @@ func TestAcquire_QueueReadFailure_WithdrawsTheRequest(t *testing.T) {
 	d.MVCC = fm
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	var inj *injectedError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
@@ -118,7 +118,7 @@ func TestAcquire_QueueReadFailure_WithdrawsTheRequest(t *testing.T) {
 
 func TestAcquire_DeadlockReadFailure_WithdrawsTheWaitingRecord(t *testing.T) {
 	s := newStack(t)
-	holder := NewOwner()
+	holder := NewSession().NewOwner()
 	t.Cleanup(func() { _ = holder.Release(context.Background()) })
 	require.NoError(t, holder.Acquire(context.Background(), s.table(t), []string{keyA}, ModeExclusive, 0))
 
@@ -128,7 +128,7 @@ func TestAcquire_DeadlockReadFailure_WithdrawsTheWaitingRecord(t *testing.T) {
 	d.MVCC = fm
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	b := NewOwner()
+	b := NewSession().NewOwner()
 	t.Cleanup(func() { _ = b.Release(context.Background()) })
 	var inj *injectedError
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, time.Second), &inj)
@@ -137,7 +137,7 @@ func TestAcquire_DeadlockReadFailure_WithdrawsTheWaitingRecord(t *testing.T) {
 
 func TestAcquire_WatchFailure_IsReturnedAndWithdraws(t *testing.T) {
 	s := newStack(t)
-	holder := NewOwner()
+	holder := NewSession().NewOwner()
 	t.Cleanup(func() { _ = holder.Release(context.Background()) })
 	require.NoError(t, holder.Acquire(context.Background(), s.table(t), []string{keyA}, ModeExclusive, 0))
 
@@ -145,7 +145,7 @@ func TestAcquire_WatchFailure_IsReturnedAndWithdraws(t *testing.T) {
 	d.Watch = failingWatch{s.deps.Watch}
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	b := NewOwner()
+	b := NewSession().NewOwner()
 	t.Cleanup(func() { _ = b.Release(context.Background()) })
 	var inj *injectedError
 	require.ErrorAs(t, b.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, time.Second), &inj)
@@ -156,9 +156,11 @@ func TestRelease_RevokeFailure_IsReturned(t *testing.T) {
 	s := newStack(t)
 	d := s.deps
 	d.Lease = failingRevoke{s.deps.Lease}
+	// Release revokes only when deleting the owner's records failed.
+	d.Txn = failingDeletes{s.deps.Txn}
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	var inj *injectedError
 	require.ErrorAs(t, a.Release(context.Background()), &inj)
@@ -169,7 +171,7 @@ func TestRelease_RevokeFailure_IsReturned(t *testing.T) {
 func TestRelease_AlreadyRevokedLease_IsNotAnError(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
 	require.NoError(t, a.Release(context.Background()))
@@ -178,7 +180,7 @@ func TestRelease_AlreadyRevokedLease_IsNotAnError(t *testing.T) {
 func TestKeepalive_RevokedLease_MarksTheOwnerLost(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t, WithLeaseTTL(1))
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
@@ -198,7 +200,7 @@ func TestAcquire_CorruptRecordInQueue_IsReported(t *testing.T) {
 		Type: service.OpPut, Key: []byte(queuePrefix(keyA) + "junk"), Value: []byte{1},
 	}}, nil)
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	var corrupt *CorruptRecordError
 	require.ErrorAs(t, a.Acquire(context.Background(), s.table(t), []string{keyA}, ModeShared, 0), &corrupt)
@@ -212,7 +214,7 @@ func TestAcquire_CorruptRecordInQueue_IsReported(t *testing.T) {
 func TestAcquire_EnqueueOnAnEndedLease_IsALostLock(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
@@ -241,7 +243,7 @@ func TestAcquire_LeaseCheckFailure_IsReturnedAndWithdraws(t *testing.T) {
 	d.Lease = failingTimeToLive{LeaseServicer: s.deps.Lease}
 	tbl, err := New(d, "acme/shop")
 	require.NoError(t, err)
-	a := NewOwner()
+	a := NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	var inj *injectedError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)

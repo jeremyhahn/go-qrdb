@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sqlengine "github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
@@ -87,6 +89,47 @@ func TestPessimisticAutocommit_StatementsShareTheConnectionsLease(t *testing.T) 
 	c.sess.SessionEnd()
 	assert.Equal(t, int32(1), counter.revokes.Load(), "the connection's end revokes its lease")
 	assert.Zero(t, h.lockRecords(t))
+}
+
+// lockDeleteCounter counts transactions that delete row-lock records.
+type lockDeleteCounter struct {
+	service.TransactionServicer
+	deletes atomic.Int32
+}
+
+func (c *lockDeleteCounter) Execute(ctx context.Context, cmp []service.Compare, s, fo []service.Op) (*service.TransactionResponse, error) {
+	for _, op := range s {
+		if op.Type == service.OpDelete && strings.HasPrefix(string(op.Key), rowlock.Prefix) {
+			c.deletes.Add(1)
+			break
+		}
+	}
+	return c.TransactionServicer.Execute(ctx, cmp, s, fo)
+}
+
+func TestSessionEnd_RevokesOnceAndDeletesNoRecord(t *testing.T) {
+	h, closeFn, err := sqltest.NewLockingHarness()
+	require.NoError(t, err)
+	t.Cleanup(closeFn)
+	reg := h.Registry.(*sqltest.FakeRegistry)
+	inner, err := reg.TransactionServiceFn("", "shop")
+	require.NoError(t, err)
+	counter := &lockDeleteCounter{TransactionServicer: inner}
+	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) { return counter, nil }
+	prov := NewProviderWithEngine("shop", h.KVSvc, "", WithRegistry(h.Registry))
+	eng := sqlengine.New(sqlengine.Config{Provider: prov})
+	t.Cleanup(func() { _ = eng.Close() })
+	lh := &lockHarness{prov: prov, mvcc: h.MVCCSvc, eng: eng}
+	setupAccounts(t, lh)
+
+	c := lh.conn(t)
+	c.must("START TRANSACTION")
+	c.must("SELECT * FROM accounts FOR UPDATE")
+	require.Equal(t, 2, lh.lockRecords(t))
+
+	c.sess.SessionEnd()
+	assert.Zero(t, lh.lockRecords(t))
+	assert.Zero(t, counter.deletes.Load(), "the lease revoke removes the records; deleting them first is a wasted proposal")
 }
 
 func TestPessimisticAutocommit_LockHeldUntilTheStatementEnds(t *testing.T) {

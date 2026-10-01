@@ -417,11 +417,17 @@ func (s *QRDBSession) CommandEnd() {
 // so its open transaction is abandoned, every row lock it holds is released
 // now, and its lock lease is revoked. A connection that dies without this
 // call is covered by the lease expiring.
+//
+// The lease is revoked first: that one proposal deletes every lock record
+// the session holds, so the abandoned transaction's release that follows
+// finds its lease ended and has nothing left to delete. A per-request
+// session -- the ad-hoc query service's -- pays one proposal to end, not
+// two.
 func (s *QRDBSession) SessionEnd() {
+	_ = s.locks.Close(context.Background())
 	if ws := s.ws.Swap(nil); ws != nil {
 		_ = ws.releaseLocks(context.Background())
 	}
-	_ = s.locks.Close(context.Background())
 }
 
 // CreateSavepoint marks the current position of the session's write-set

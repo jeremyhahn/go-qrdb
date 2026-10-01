@@ -55,7 +55,7 @@ func requestCount(t *testing.T, mode Mode, outcome string) float64 {
 func TestMetrics_UnsearchedVictimHasItsOwnOutcome(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	bulk, a, b := NewOwner(), NewOwner(), NewOwner()
+	bulk, a, b := NewSession().NewOwner(), NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() {
 		for _, o := range []*Owner{bulk, a, b} {
 			_ = o.Release(context.Background())
@@ -83,7 +83,7 @@ func TestMetrics_UnsearchedVictimHasItsOwnOutcome(t *testing.T) {
 func TestMetrics_DetectedDeadlockCountsAsDeadlock(t *testing.T) {
 	s := newStack(t)
 	tbl := s.table(t)
-	a, b := NewOwner(), NewOwner()
+	a, b := NewSession().NewOwner(), NewSession().NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()); _ = b.Release(context.Background()) })
 
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))

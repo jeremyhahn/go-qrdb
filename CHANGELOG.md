@@ -11,6 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING (Go API): `rowlock.NewOwner`.** An owner is made from the
+  session whose lease it uses, `rowlock.NewSession().NewOwner()`; nothing
+  outside the package's own tests used an owner with a private lease.
+
+### Fixed
+
+- **Row-lock lease edge cases.** A transaction's first lock request on a
+  connection whose lease had ended unnoticed (expired or swept between
+  keepalives) failed with 1213 although it held nothing; it now withdraws,
+  and retries once on a fresh lease. A lease the session retires (a failed
+  release, `Close`, idleness) is marked lost before it is detached, so another
+  owner on it can no longer believe it holds a lock the revoke deleted. An
+  owner released while its enqueue was in flight deleted nothing and left the
+  record on the connection's lease; it now deletes it and fails with
+  `OwnerReleasedError`. A lease grant no longer holds the session's lock, and
+  of two concurrent grants the loser is revoked. A connection's end revokes
+  its lease first and deletes no record one by one.
+
 ## [0.27.0-alpha] - 2026-10-02
 
 Standalone parity (#582) and durable leases. Highlights:

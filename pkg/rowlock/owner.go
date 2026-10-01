@@ -42,11 +42,8 @@ const releaseTimeout = 10 * time.Second
 type Owner struct {
 	id string
 
-	// session holds the lease the owner's records are bound to. private is
-	// true for an owner made by NewOwner, whose session is its own: its
-	// release revokes the lease rather than deleting its records one by one.
+	// session holds the lease the owner's records are bound to.
 	session *Session
-	private bool
 
 	mu       sync.Mutex
 	table    *Table
@@ -54,29 +51,31 @@ type Owner struct {
 	held     map[string]Mode
 	released bool
 
-	// records are the keys of every record the owner has written and not
-	// withdrawn: what Release deletes.
+	// records are the keys of every record the owner has written, bound to
+	// its lease, and not withdrawn: what Release deletes while the lease is
+	// live. A lease that has ended took them with it.
 	records map[string]struct{}
+
+	// unattached are the keys of records written after the owner's lease had
+	// already ended, which the store keeps attached to nothing, and which an
+	// explicit withdraw failed to delete: no revoke or expiry will ever
+	// remove them, so Release deletes them whatever became of the lease.
+	unattached map[string]struct{}
 }
 
-// NewOwner returns an owner with a fresh, random identity, no locks, and a
-// lease of its own, granted at its first lock and revoked by Release. An
-// owner of a long-lived client session is made with Session.NewOwner
-// instead, which shares the session's lease.
-func NewOwner() *Owner {
-	o := newOwner()
-	o.session = NewSession()
-	o.private = true
-	return o
-}
-
-// newOwner returns an owner with a fresh, random identity and no session.
-func newOwner() *Owner {
+// newOwner returns an owner of session with a fresh, random identity.
+func newOwner(session *Session) *Owner {
 	var raw [ownerIDLen / 2]byte
 	// crypto/rand.Read never returns an error on the platforms Go supports
 	// (it panics internally if the system source fails), per its contract.
 	_, _ = rand.Read(raw[:])
-	return &Owner{id: hex.EncodeToString(raw[:]), held: make(map[string]Mode), records: make(map[string]struct{})}
+	return &Owner{
+		id:         hex.EncodeToString(raw[:]),
+		session:    session,
+		held:       make(map[string]Mode),
+		records:    make(map[string]struct{}),
+		unattached: make(map[string]struct{}),
+	}
 }
 
 // ID returns the owner's identity as it appears in its lock records.
@@ -136,24 +135,13 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 		return nil
 	}
 	o.table = t
-	if err := o.ensureLease(ctx); err != nil {
-		o.mu.Unlock()
-		return err
-	}
-	leaseID := o.lease.id
+	// An owner that holds nothing and has written nothing has nothing to
+	// lose: if the session's lease turns out to have ended, it can start
+	// over on a live one instead of failing its transaction.
+	fresh := len(o.held) == 0 && len(o.records) == 0 && len(o.unattached) == 0
 	o.mu.Unlock()
 
-	written, err := t.enqueue(ctx, pending, o.id, mode, leaseID)
-	o.wrote(written, mode)
-	if err == nil {
-		err = t.leaseAlive(ctx, leaseID)
-	}
-	if err != nil {
-		var gone *service.LeaseNotFoundError
-		if errors.As(err, &gone) {
-			return o.lostAtEnqueue(ctx, t, written, pending[0], mode)
-		}
-		o.withdrawBestEffort(ctx, t, written, mode)
+	if err := o.enqueue(ctx, t, pending, mode, fresh); err != nil {
 		return err
 	}
 
@@ -189,6 +177,65 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 	}
 
 	return o.wait(ctx, t, waiting, mode, wait)
+}
+
+// enqueue writes the owner's records for mode on pending, bound to the
+// session's lease, and confirms the lease outlived the write (invariant 9).
+//
+// A lease found ended is a lost lock -- unless the owner is fresh (it held
+// nothing and wrote nothing before this request), in which case the
+// records it just wrote are withdrawn, the lease is retired, and the
+// request is made once more on a live lease. An owner released while its
+// records were being written deletes them and fails with
+// *OwnerReleasedError: nothing will ever release them otherwise.
+func (o *Owner) enqueue(ctx context.Context, t *Table, pending []string, mode Mode, fresh bool) error {
+	for attempt := 0; ; attempt++ {
+		l, err := o.ensureLease(ctx)
+		if err != nil {
+			return err
+		}
+
+		written, err := t.enqueue(ctx, pending, o.id, mode, l.id)
+		if !o.wrote(written, mode) {
+			o.deleteBestEffort(ctx, t, written, mode)
+			return &OwnerReleasedError{}
+		}
+		if err == nil {
+			err = t.leaseAlive(ctx, l.id)
+		}
+		if err == nil {
+			return nil
+		}
+		var gone *service.LeaseNotFoundError
+		if !errors.As(err, &gone) {
+			o.withdrawBestEffort(ctx, t, written, mode)
+			return err
+		}
+		if !fresh || attempt > 0 {
+			return o.lostAtEnqueue(ctx, t, written, pending[0], mode)
+		}
+		if err := o.renewLease(ctx, t, l, written, mode); err != nil {
+			return o.lostAtEnqueue(ctx, t, written, pending[0], mode)
+		}
+	}
+}
+
+// renewLease drops l, found ended under a fresh owner, after withdrawing
+// the records just written to it (attached to nothing, so only an explicit
+// delete removes them). The next ensureLease is granted a live lease.
+func (o *Owner) renewLease(ctx context.Context, t *Table, l *sessionLease, written []string, mode Mode) error {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	if err := t.withdraw(rctx, written, o.id, mode); err != nil {
+		return err
+	}
+	o.withdrawn(written, mode)
+	l.lost.Store(true)
+	_ = o.session.release(rctx, l, true)
+	o.mu.Lock()
+	o.lease = nil
+	o.mu.Unlock()
+	return nil
 }
 
 // needed returns the distinct keys of keys this owner does not already hold
@@ -332,30 +379,48 @@ func (o *Owner) markHeld(key string, mode Mode) {
 	}
 }
 
-// ensureLease binds the owner to its session's lease in the owner's store,
-// once. Callers hold o.mu.
-func (o *Owner) ensureLease(ctx context.Context) error {
+// ensureLease returns the owner's lease, binding it to its session's lease
+// in the owner's store the first time. The session may have to grant one,
+// which is done without holding the owner's lock, so a Release arriving
+// meanwhile is not held up by it.
+func (o *Owner) ensureLease(ctx context.Context) (*sessionLease, error) {
+	o.mu.Lock()
 	if o.lease != nil {
-		return nil
+		l := o.lease
+		o.mu.Unlock()
+		return l, nil
 	}
-	l, err := o.session.acquire(ctx, o.table)
-	if err != nil {
-		return err
-	}
-	o.lease = l
-	return nil
-}
+	t := o.table
+	o.mu.Unlock()
 
-// wrote records that the owner's records for mode on keys were written.
-func (o *Owner) wrote(keys []string, mode Mode) {
-	if len(keys) == 0 {
-		return
+	l, err := o.session.acquire(ctx, t)
+	if err != nil {
+		return nil, err
 	}
 	o.mu.Lock()
+	if o.released {
+		o.mu.Unlock()
+		_ = o.session.release(ctx, l, true)
+		return nil, &OwnerReleasedError{}
+	}
+	o.lease = l
+	o.mu.Unlock()
+	return l, nil
+}
+
+// wrote records that the owner's records for mode on keys were written,
+// and reports false -- recording nothing -- when the owner was released
+// meanwhile, in which case the caller must delete them itself.
+func (o *Owner) wrote(keys []string, mode Mode) bool {
+	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.released {
+		return false
+	}
 	for _, k := range keys {
 		o.records[recordKey(k, o.id, mode)] = struct{}{}
 	}
+	return true
 }
 
 // withdrawn records that the owner's records for mode on keys were deleted.
@@ -363,69 +428,92 @@ func (o *Owner) withdrawn(keys []string, mode Mode) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, k := range keys {
-		delete(o.records, recordKey(k, o.id, mode))
+		r := recordKey(k, o.id, mode)
+		delete(o.records, r)
+		delete(o.unattached, r)
 	}
 }
 
-// Release releases every lock the owner holds. It is idempotent and safe to
-// call from any goroutine.
+// Release releases every lock the owner holds by deleting its records, in
+// one proposal per thousand. It is idempotent and safe to call from any
+// goroutine.
 //
-// An owner sharing a session's lease deletes its own records -- in one
-// proposal per thousand -- and leaves the lease to the session's next
-// transaction. If the delete fails, the session's lease is revoked instead,
-// which removes the records just the same; a record is never left bound to
-// a lease the session goes on renewing. An owner made by NewOwner revokes
-// its private lease, which deletes all of its records in one replicated
-// operation.
+// A lease that has ended -- expired, swept, or revoked by the session (its
+// Close, or a failed release) -- took the owner's records with it, so none
+// are deleted; only a record written after the lease ended, which is bound
+// to nothing, still is. If the delete fails, the session revokes the lease
+// instead, which removes the records just the same: a record is never left
+// bound to a lease the session goes on renewing.
 //
-// The deletes and the revoke run detached from ctx's cancellation, bounded
-// by their own timeout, because the paths that release -- a dropped
-// connection, a statement past its deadline -- are exactly the ones whose
-// context is already done.
+// The deletes run detached from ctx's cancellation, bounded by their own
+// timeout, because the paths that release -- a dropped connection, a
+// statement past its deadline -- are exactly the ones whose context is
+// already done.
 func (o *Owner) Release(ctx context.Context) error {
-	o.mu.Lock()
-	if o.released {
-		o.mu.Unlock()
+	t, l, attached, unattached, ok := o.markReleased()
+	if !ok || l == nil {
 		return nil
 	}
-	o.released = true
-	t, l := o.table, o.lease
-	records := make([]string, 0, len(o.records))
-	for k := range o.records {
-		records = append(records, k)
-	}
-	o.held = make(map[string]Mode)
-	o.records = make(map[string]struct{})
-	o.mu.Unlock()
-
-	if l == nil {
-		return nil
-	}
-	if o.private {
-		return o.session.Close(ctx)
+	toDelete := unattached
+	if !l.lost.Load() {
+		toDelete = append(toDelete, attached...)
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	err := t.deleteRecords(rctx, records)
+	err := t.deleteRecords(rctx, toDelete)
 	return o.session.release(rctx, l, err == nil)
 }
 
+// markReleased marks the owner released, forgets its locks, and returns
+// what was needed to release them: its table and lease and the records it
+// wrote, bound to the lease and not. ok is false when it was already
+// released.
+func (o *Owner) markReleased() (t *Table, l *sessionLease, attached, unattached []string, ok bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.released {
+		return nil, nil, nil, nil, false
+	}
+	o.released = true
+	for k := range o.records {
+		attached = append(attached, k)
+	}
+	for k := range o.unattached {
+		unattached = append(unattached, k)
+	}
+	t, l = o.table, o.lease
+	o.held = make(map[string]Mode)
+	o.records = make(map[string]struct{})
+	o.unattached = make(map[string]struct{})
+	return t, l, attached, unattached, true
+}
+
 // lostAtEnqueue handles a lease found ended at enqueue: expired, or revoked
-// by the leader's sweep, after the session's last renewal and before its
-// keepalive noticed. Every record the owner held went with the lease, so the
-// transaction has lost its locks; the request fails with *LockLostError and
-// the owner is released, exactly as a waiter whose record disappeared.
+// by the leader's sweep or by the session, after the session's last renewal
+// and before its keepalive noticed. Every record the owner held went with
+// the lease, so the transaction has lost its locks; the request fails with
+// *LockLostError and the owner is released, exactly as a waiter whose
+// record disappeared.
 //
 // The state machine refuses an enqueue naming a lease it no longer holds,
 // with *service.LeaseNotFoundError, and writes nothing. A request split over
 // several proposals can still have written its earlier batches before the
 // lease ended; those records are bound to the lease and go with its revoke,
 // but they are deleted explicitly here too, so the request leaves nothing
-// behind whatever the lease's state.
+// behind whatever the lease's state. One the withdraw fails to delete stays
+// on the owner's list for Release.
 // The lease is marked lost, so the session grants a live one for its next
 // transaction.
 func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, key string, mode Mode) error {
-	if l := o.lease; l != nil {
+	o.mu.Lock()
+	l := o.lease
+	for _, k := range written {
+		r := recordKey(k, o.id, mode)
+		delete(o.records, r)
+		o.unattached[r] = struct{}{}
+	}
+	o.mu.Unlock()
+	if l != nil {
 		l.lost.Store(true)
 	}
 	if len(written) > 0 {
@@ -443,6 +531,18 @@ func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, k
 // releaseAfterLoss releases an owner whose lease was found lost.
 func (o *Owner) releaseAfterLoss(ctx context.Context) {
 	_ = o.Release(ctx)
+}
+
+// deleteBestEffort deletes the owner's records for mode on keys, written
+// for an owner that was released while they were being written, detached
+// from ctx's cancellation for the same reason as Release.
+func (o *Owner) deleteBestEffort(ctx context.Context, t *Table, keys []string, mode Mode) {
+	if len(keys) == 0 {
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	_ = t.withdraw(rctx, keys, o.id, mode)
 }
 
 // withdrawBestEffort deletes the owner's records for mode on the keys of

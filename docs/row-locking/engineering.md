@@ -39,8 +39,6 @@ func (s *Session) Close(ctx context.Context) error // revokes every lease
 
 // Owner is one transaction's lock holder. Its zero value is not usable;
 // Session.NewOwner allocates its identity, bound to the session's lease.
-// NewOwner allocates one with a lease of its own, revoked by Release.
-func NewOwner() *Owner
 func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode, wait time.Duration) error
 func (o *Owner) Holds(key string, mode Mode) bool
 func (o *Owner) Active() bool
@@ -197,7 +195,12 @@ lease  = the owning session's lease in this store
    that store to it. Each transaction is still its own owner, with its own
    identity. A lease no owner has used for one `DefaultLeaseTTL` is revoked by
    the session; `Session.Close` revokes them all. `DefaultLeaseTTL` is 10
-   seconds.
+   seconds. The grant is made outside the session's lock; two owners granting
+   at once keep the first lease installed and revoke the other. A lease the
+   session retires — `Close`, a failed release, idleness, or a keepalive that
+   finds it gone — is marked lost **before** it is detached, so every owner
+   still on it fails its next request with `LockLostError` instead of
+   believing it holds records the lease took with it.
 5. **Release points.** `COMMIT` (after the commit proposal is decided, whether it
    succeeded or lost its CAS), `ROLLBACK`, the end of an autocommit statement,
    a deadlock-victim rollback, the start of a new transaction on the session
@@ -208,8 +211,10 @@ lease  = the owning session's lease in this store
    ⌈N / 1,000⌉ proposals. If that delete fails, the session revokes the lease
    instead, which deletes every record bound to it, and grants a fresh lease
    for its next transaction: no record outlives its owner by more than the
-   lease TTL. An owner made by `NewOwner`, with a lease of its own, releases
-   by revoking it.
+   lease TTL. An owner whose lease has already ended deletes nothing — the
+   lease took its records — except a record written after the lease ended,
+   which is bound to nothing. `SessionEnd` therefore revokes the session's
+   lease first: one proposal ends a session however many locks it held.
 6. **Enqueue is one proposal per batch.** A statement's locks on many keys are
    written in as few transactions as the per-proposal ceiling allows, never one
    per key.
@@ -233,6 +238,12 @@ lease  = the owning session's lease in this store
    been written attached to nothing — the state machine stores a write whose
    lease no longer exists without attaching it — so the request deletes them
    explicitly, fails with `LockLostError`, and the owner is released.
+   A **fresh** owner — one that held nothing and wrote nothing before the
+   request — has lost nothing: it withdraws what it just wrote, the session
+   retires the ended lease, and the request is made once more on a live one.
+   An owner released while its enqueue was in flight (a connection closing
+   under its statement) deletes the records it just wrote and fails with
+   `OwnerReleasedError`.
 10. **One database per owner.** An owner is bound to the first database it
     locks in; locking in a second is refused with
     `provider.CrossDatabaseTransactionError` before anything is written.
