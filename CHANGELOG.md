@@ -401,8 +401,16 @@ are not reconstructed here — their history is in the git log.
 ### Changed — BREAKING
 
 - **`service.BarrierServicer.BarrierRekeyStart` and `BarrierOfficerRevoke`
-  take the SO PIN.** The service verifies it; transports no longer do. A
-  node with no SO PIN provisioned refuses both.
+  take the SO PIN.** The service verifies it; transports no longer do.
+- **Rekeying or revoking a holder of the system barrier requires a
+  provisioned SO PIN.** Until now a node with a PIN backend but no SO PIN
+  provisioned opened rekey and revocation rounds for any PIN, or none. They
+  are now refused with `pin.ErrPINNotSet` (`412` / `FAILED_PRECONDITION`) on
+  every transport until an SO PIN is provisioned, by the initialization
+  ceremony or by barrier initialization with `so_pin`. An operator who rekeys
+  or revokes on such a node must provision an SO PIN first and present it in
+  `so_pin` (`--so-pin` on the CLI). Tenant and database barriers, whose rekey
+  and revocation are RBAC-only, are unaffected.
 - **`seal.CeremonyDistributor.Distribute` takes the domain key as a
   `*secure.Buffer`.** It used to take a plain `[]byte`. The distributor
   borrows the buffer (`WithBytes`) only to split it, and neither retains nor

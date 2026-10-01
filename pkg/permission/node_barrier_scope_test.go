@@ -23,13 +23,11 @@ import "testing"
 // barrier's unseal and recovery domains.
 func TestNodeBarrierPermissions_AreCrossScope(t *testing.T) {
 	for _, p := range []Permission{
-		BarrierUnsealShare,
 		SealBootstrap, SealEnableEncryption, SealGenerateRecovery,
-		SealInitializeShamir, SealRecoverWithKeys, SealRekey,
-		SealRotateRootKey, SealSeal, SealSubmitSealVote, SealUnseal,
-		SealOfficerRegister, SealOfficerList,
-		CeremonyInitialize, CeremonyEnrollCustodian,
-		CeremonyRevokeCustodian, CeremonySignCSR,
+		SealInitializeShamir, SealRekey,
+		SealRotateRootKey, SealSeal, SealUnseal,
+		SealOfficerRegister, SealOfficerList, SealOfficerRevoke,
+		CeremonyInitialize, CeremonySignCSR,
 	} {
 		if got, err := LookupScope(p); err != nil || got != ScopeCross {
 			t.Errorf("%s: scope = %v (err %v), want ScopeCross", p, got, err)
@@ -39,14 +37,11 @@ func TestNodeBarrierPermissions_AreCrossScope(t *testing.T) {
 
 // TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf pins the node
 // verbs deliberately left ScopeSelf: seal:status and ceremony:status name no
-// share holder, and the claim verbs are bound to an enrollment the caller
-// must possess. barrier:unseal-share is NOT among them: the accumulator takes
-// whatever share it is given, so admitting every tenant's Custodian let one
-// poison an in-progress node unseal. It is ScopeCross.
+// share holder. A holder's claim and quorum steps carry no permission at all:
+// they are identity-gated by the holder's certificate and factor proof.
 func TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf(t *testing.T) {
 	for _, p := range []Permission{
 		SealStatus, CeremonyStatus,
-		CeremonyClaimCert, CeremonyClaimShareBegin, CeremonyClaimShareComplete,
 	} {
 		if got, err := LookupScope(p); err != nil || got != ScopeSelf {
 			t.Errorf("%s: scope = %v (err %v), want ScopeSelf", p, got, err)
@@ -65,8 +60,8 @@ func TestNodeBarrierPermissions_DeclaredOnce(t *testing.T) {
 	node := append(nodeBarrierSOPermissions(), nodeBarrierShareHolderPermissions()...)
 	node = append(node, clusterAdminPermissions()...)
 	node = append(node, clusterBackupPermissions()...)
-	if len(node) < 35 {
-		t.Fatalf("node-barrier and cluster lists hold %d permissions, want at least 35", len(node))
+	if len(node) < 31 {
+		t.Fatalf("node-barrier and cluster lists hold %d permissions, want at least 31", len(node))
 	}
 	for _, p := range node {
 		if _, dup := self[p]; dup {

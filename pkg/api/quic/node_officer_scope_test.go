@@ -38,11 +38,15 @@ import (
 )
 
 // TestNodeOfficerScope: the node barrier is a platform singleton, so only the
-// system tenant may register its unseal or recovery officers or list them. A
-// tenant's SO, and a tenant Admin its own tenant granted the officer
+// system tenant may register, list or revoke its unseal or recovery holders.
+// A tenant's SO, and a tenant Admin its own tenant granted the holder
 // permissions, are refused before the barrier service is reached.
 func TestNodeOfficerScope(t *testing.T) {
 	register, err := proto.Marshal(&pb.BarrierOfficerRegisterRequest{Username: "planted", CsrPem: []byte("csr")})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	revoke, err := proto.Marshal(&pb.BarrierOfficerRevokeRequest{Domain: "unseal", Username: "bob", SoPin: soTestPIN})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -54,14 +58,16 @@ func TestNodeOfficerScope(t *testing.T) {
 		{"barrier.OfficerRegister", register, (*authtest.Barrier).OfficerRegistrations},
 		{"barrier.RecoveryOfficerRegister", register, (*authtest.Barrier).RecoveryOfficerRegistrations},
 		{"barrier.OfficerList", nil, (*authtest.Barrier).OfficerReads},
-		{"barrier.OfficerClaimStatus", nil, (*authtest.Barrier).OfficerReads},
+		// Revocation is a rekey that removes a holder; the service checks
+		// the SO PIN.
+		{"barrier.OfficerRevoke", revoke, (*authtest.Barrier).Revocations},
 	}
 	for _, op := range ops {
 		roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 		for _, c := range authtest.NodeOfficerCallers(t, roles) {
 			t.Run(op.method+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
-				barrier := &authtest.Barrier{}
+				barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, soTestPIN)}
 				serverCfg, clientCfg := generateCredentialE2ETLS(t)
 				serverCfg.ClientAuth = tls.RequireAnyClientCert
 				clientCfg.Certificates = serverCfg.Certificates

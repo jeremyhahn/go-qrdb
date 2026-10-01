@@ -32,8 +32,8 @@ import (
 
 // TestNodeBarrierRoutes_TenantHolderRefused pins the route-to-permission
 // wiring of the node barrier's lifecycle routes. For each route, a tenant's
-// identity is given the route's permission -- its built-in SO or Custodian
-// role, plus a custom role of its own tenant granting the permission, so the
+// identity is given the route's permission -- its built-in SO role, plus a
+// custom role of its own tenant granting the permission, so the
 // grant is never what is missing -- and is refused with 403 before the
 // service is reached. The same identity in the system tenant is not refused,
 // so the 403 is the scope rule on the permission this route maps to, not a
@@ -41,7 +41,6 @@ import (
 func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 	type holder func(tenantID string) *auth.Identity
 	so := func(tenantID string) *auth.Identity { return authtest.SOIdentity(tenantID, "officer") }
-	custodian := func(tenantID string) *auth.Identity { return authtest.CustodianIdentity(tenantID, "custodian") }
 	routes := []struct {
 		path string
 		perm permission.Permission
@@ -51,11 +50,6 @@ func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 		{"/v1/barrier/unseal", permission.SealUnseal, so},
 		{"/v1/barrier/enable-encryption", permission.SealEnableEncryption, so},
 		{"/v1/ceremony/sign-csr", permission.CeremonySignCSR, so},
-		{"/v1/ceremony/enroll-custodian", permission.CeremonyEnrollCustodian, so},
-		// A tenant's Custodian holds barrier:unseal-share through its own
-		// built-in role; it must not feed the node barrier's accumulator.
-		{"/v1/barrier/shamir/unseal-share", permission.BarrierUnsealShare, custodian},
-		{"/v1/barrier/unseal-share", permission.BarrierUnsealShare, custodian},
 	}
 	for _, rt := range routes {
 		for _, tid := range []string{authtest.NodeOfficerTenant, tenantid.System} {
@@ -66,8 +60,7 @@ func TestNodeBarrierRoutes_TenantHolderRefused(t *testing.T) {
 				ceremony := &authtest.Ceremony{}
 				srv := NewServer(nil, nil, "127.0.0.1:0",
 					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id)))),
-					WithBarrierService(barrier), WithCeremonyService(ceremony),
-					WithCustodianService(newStubCustodianSvc()))
+					WithBarrierService(barrier), WithCeremonyService(ceremony))
 				req := httptest.NewRequest(http.MethodPost, rt.path, strings.NewReader(`{}`))
 				req.TLS = &tls.ConnectionState{}
 				rec := httptest.NewRecorder()
@@ -105,14 +98,16 @@ func TestNodeOfficerScope(t *testing.T) {
 		{http.MethodPost, "/v1/barrier/officers", register, (*authtest.Barrier).OfficerRegistrations},
 		{http.MethodPost, "/v1/barrier/recovery/officers", register, (*authtest.Barrier).RecoveryOfficerRegistrations},
 		{http.MethodGet, "/v1/barrier/officers", "", (*authtest.Barrier).OfficerReads},
-		{http.MethodGet, "/v1/barrier/officers/claim-status", "", (*authtest.Barrier).OfficerReads},
+		// Revocation is a rekey that removes a holder: cross-scope, and
+		// SO-PIN-gated by the service.
+		{http.MethodPost, "/v1/barrier/officers/revoke", `{"domain":"unseal","username":"bob","so_pin":"so-pin-1234"}`, (*authtest.Barrier).Revocations},
 	}
 	for _, op := range ops {
 		roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 		for _, c := range authtest.NodeOfficerCallers(t, roles) {
 			t.Run(op.method+" "+op.path+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
-				barrier := &authtest.Barrier{}
+				barrier := &authtest.Barrier{PINs: authtest.BarrierPINBackend(t, "so-pin-1234")}
 				srv := NewServer(nil, nil, "127.0.0.1:0",
 					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
 					WithBarrierService(barrier))

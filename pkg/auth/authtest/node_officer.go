@@ -60,17 +60,6 @@ func NodeOfficerCallers(t testing.TB, roles role.RoleServicer) []NodeOfficerCall
 	}
 }
 
-// CustodianIdentity returns an identity holding the built-in Custodian role of
-// its own tenant, by the identifier BuiltInRoles persists it under, and
-// nothing else.
-func CustodianIdentity(tenantID, subject string) *auth.Identity {
-	return &auth.Identity{
-		Subject:  subject,
-		TenantID: tenantID,
-		Roles:    []string{role.SystemRoleID(tenantID, role.RoleNameCustodian)},
-	}
-}
-
 // GrantedAdminIdentity returns an identity holding the built-in Admin role of
 // tenantID and a custom role of tenantID, created in roles, that grants perms:
 // a tenant Admin whose own tenant granted it more than the built-in role does.

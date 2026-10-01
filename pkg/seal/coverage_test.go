@@ -16,7 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -526,68 +525,6 @@ func (e *errorBackend) Exists(_ context.Context, _ string) (bool, error) {
 }
 func (e *errorBackend) Close() error { return nil }
 
-// failingKVStore wraps a KVStore and injects errors on specific operations.
-type failingKVStore struct {
-	inner     *memoryKVStore
-	putErr    error
-	getErr    error
-	deleteErr error
-}
-
-func (f *failingKVStore) Put(ctx context.Context, key string, value []byte) error {
-	if f.putErr != nil {
-		return f.putErr
-	}
-	return f.inner.Put(ctx, key, value)
-}
-
-func (f *failingKVStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
-	}
-	return f.inner.Get(ctx, key)
-}
-
-func (f *failingKVStore) Delete(ctx context.Context, key string) error {
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
-	return f.inner.Delete(ctx, key)
-}
-
-func (f *failingKVStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
-	return f.inner.Scan(ctx, prefix, fn)
-}
-
-func (f *failingKVStore) List(ctx context.Context, prefix string) ([]string, error) {
-	return f.inner.List(ctx, prefix)
-}
-
-func (f *failingKVStore) Exists(ctx context.Context, key string) (bool, error) {
-	return f.inner.Exists(ctx, key)
-}
-
-func (f *failingKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
-	return nil
-}
-
-func (f *failingKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (f *failingKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-// --------------------------------------------------------------------------
 // The temporary recovery strategy's protected copy of the root key is
 // destroyed before a quorum unseal returns.
 //

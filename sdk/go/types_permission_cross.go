@@ -162,12 +162,10 @@ const (
 	// PermissionSealUnseal ("seal:unseal") unseals the node barrier.
 	PermissionSealUnseal = permission.SealUnseal
 
-
 	// PermissionSealEnableEncryption ("seal:enable_encryption") migrates the
 	// node barrier, or a tenant's barrier named in the request, to an
 	// encrypting strategy.
 	PermissionSealEnableEncryption = permission.SealEnableEncryption
-
 
 	// PermissionSealOfficerRegister ("seal:officer_register") enrols a share
 	// holder into the node barrier's unseal or recovery domain.
@@ -180,8 +178,6 @@ const (
 	// PermissionCeremonyInitialize ("ceremony:initialize") initializes the
 	// node key ceremony.
 	PermissionCeremonyInitialize = permission.CeremonyInitialize
-
-
 
 	// PermissionCeremonySignCSR ("ceremony:sign_csr") signs an enrollment
 	// CSR with the cluster CA.

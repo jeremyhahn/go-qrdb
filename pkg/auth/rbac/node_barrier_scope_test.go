@@ -42,12 +42,10 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 	authz := rbac.New(roles)
 	nodePerms := []permission.Permission{
 		permission.SealBootstrap, permission.SealEnableEncryption, permission.SealGenerateRecovery,
-		permission.SealInitializeShamir, permission.SealRecoverWithKeys, permission.SealRekey,
-		permission.SealRotateRootKey, permission.SealSeal, permission.SealSubmitSealVote, permission.SealUnseal,
-		permission.SealOfficerRegister, permission.SealOfficerList,
-		permission.CeremonyInitialize, permission.CeremonyEnrollCustodian,
-		permission.CeremonyRevokeCustodian, permission.CeremonySignCSR,
-		permission.BarrierUnsealShare,
+		permission.SealInitializeShamir, permission.SealRekey,
+		permission.SealRotateRootKey, permission.SealSeal, permission.SealUnseal,
+		permission.SealOfficerRegister, permission.SealOfficerList, permission.SealOfficerRevoke,
+		permission.CeremonyInitialize, permission.CeremonySignCSR,
 		// The cluster: Raft membership and shards, shared by every tenant.
 		permission.AdminAddMember, permission.AdminRemoveMember,
 		permission.AdminDrain, permission.AdminSnapshot,
@@ -57,7 +55,7 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 		permission.AdminNodeCompaction,
 	}
 	exercised := 0
-	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator, role.RoleNameCustodian} {
+	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator} {
 		held, err := roles.ResolvePermissions(tenant.WithTenantID(context.Background(), tenantid.System),
 			[]string{role.SystemRoleID(tenantid.System, name)})
 		if err != nil {

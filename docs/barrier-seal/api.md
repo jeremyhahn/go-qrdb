@@ -45,17 +45,14 @@ Migrating the node barrier, or a tenant's dedicated barrier named by
 tenant cannot migrate even its own barrier, and the declared
 `tenant_barrier:enable_encryption` permission is checked by no handler.
 
-**`barrier:unseal-share` is cross-scope too.** The node barrier's unseal
-accumulator takes whatever share it is given, and every tenant's built-in
-Custodian role carries the permission, so admitting a tenant's Custodian let
-it submit a wrong share into an in-progress node unseal and poison the
-accumulation. The node barrier's custodians are enrolled by the `system`
-tenant's Security Officer (`ceremony:enroll_custodian`, also cross-scope); a
-tenant custodian's shares belong to its tenant's barrier, whose unseal-share
-route is identity-gated and bound to the tenant it names.
+A node holder's shares reach the node barrier only through the identity-gated
+quorum submission, authenticated against the roster; there is no permission a
+tenant identity could hold to feed the node barrier's quorum. A tenant
+holder's shares belong to its tenant's barrier, whose quorum routes are bound
+to the tenant they name.
 
 On the boot-time sealed-window listener no RBAC runs at all, so first-boot
-initialize, unseal and unseal-share are unaffected.
+initialize and unseal are unaffected.
 
 Enable-encryption is registered **unconditionally** on REST, gRPC, Unix, QUIC,
 and MCP, independent of whether a barrier service exists on the node (a

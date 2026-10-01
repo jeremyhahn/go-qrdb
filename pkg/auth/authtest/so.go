@@ -160,7 +160,6 @@ func (b *Barrier) BarrierOfficerList(context.Context, seal.QuorumDomain) ([]*ser
 
 // OfficerReads reports how many holder list reads reached the service.
 func (b *Barrier) OfficerReads() int64 { return b.officerReads.Load() }
-}
 
 // BarrierGenerateRecoveryKeys records the generation.
 func (b *Barrier) BarrierGenerateRecoveryKeys(_ context.Context, threshold int, _ seal.FactorPolicy) (*service.RecoveryKeysInfo, error) {

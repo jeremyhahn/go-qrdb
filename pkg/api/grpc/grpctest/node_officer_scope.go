@@ -30,12 +30,16 @@ import (
 
 // NodeOfficerScope is the node-officer scope conformance suite for the
 // transports that serve the QRDBService protobuf API. The node barrier's
-// Security Officer registry -- unseal-officer registration, recovery-officer
-// registration, the officer list and the claim status -- belongs to the
-// platform: every rekey, revocation and recovery-key generation hands each
-// registered officer a share of the key that protects every tenant. Only the
-// system tenant may register or list those officers. The SO gate is off, so
+// share-holder registry -- unseal-domain registration, recovery-domain
+// registration, the holder list and revocation -- belongs to the platform:
+// every rekey, revocation and recovery-key generation hands each registered
+// holder a share of the key that protects every tenant. Only the system
+// tenant may register, list or revoke those holders. The SO gate is off, so
 // the refusals are the authorizer's.
+// nodeOfficerSOPIN is the barrier SO PIN a revocation in NodeOfficerScope
+// presents; the barrier service checks it.
+const nodeOfficerSOPIN = "so-pin-1234"
+
 func NodeOfficerScope(t *testing.T, start SOStartFunc) {
 	ops := []struct {
 		name string
@@ -54,18 +58,19 @@ func NodeOfficerScope(t *testing.T, start SOStartFunc) {
 			_, err := c.BarrierOfficerList(callCtx(t), &emptypb.Empty{})
 			return err
 		}, (*authtest.Barrier).OfficerReads},
-		{"officer claim status", func(c pb.QRDBServiceClient, t *testing.T) error {
-			_, err := c.BarrierOfficerClaimStatus(callCtx(t), &emptypb.Empty{})
+		{"officer revoke", func(c pb.QRDBServiceClient, t *testing.T) error {
+			_, err := c.BarrierOfficerRevoke(callCtx(t), &pb.BarrierOfficerRevokeRequest{Domain: "unseal", Username: "bob", SoPin: nodeOfficerSOPIN})
 			return err
-		}, (*authtest.Barrier).OfficerReads},
+		}, (*authtest.Barrier).Revocations},
 	}
 	for _, op := range ops {
 		roles := authtest.BuiltInRoles(t, tenantid.System, authtest.NodeOfficerTenant)
 		for _, c := range authtest.NodeOfficerCallers(t, roles) {
 			t.Run(op.name+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
-				barrier := &authtest.Barrier{}
-				conn := start(t, authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)), nil, barrier)
+				pins := authtest.BarrierPINBackend(t, nodeOfficerSOPIN)
+				barrier := &authtest.Barrier{PINs: pins}
+				conn := start(t, authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller)), nil, pins, barrier)
 				err := op.call(pb.NewQRDBServiceClient(conn), t)
 				if c.Admitted {
 					if err != nil || op.hits(barrier) != 1 {

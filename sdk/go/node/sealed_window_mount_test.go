@@ -181,9 +181,9 @@ func officerCSR(t *testing.T, cn string) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
 
-// TestSealedWindowMount_RESTServesTheSealedSurface: officer registration (the
-// 404 a host-built listener used to answer), barrier status and the claim
-// status reach qrdb's handlers through the host's mux; a verb off the
+// TestSealedWindowMount_RESTServesTheSealedSurface: holder registration (the
+// 404 a host-built listener used to answer), barrier status and a holder's
+// claim reach qrdb's handlers through the host's mux; a verb off the
 // allowlist and GET /health answer the sealed envelope; the host's own route
 // is untouched.
 func TestSealedWindowMount_RESTServesTheSealedSurface(t *testing.T) {
@@ -192,16 +192,16 @@ func TestSealedWindowMount_RESTServesTheSealedSurface(t *testing.T) {
 	code, body := h.do(t, http.MethodPost, "/v1/barrier/officers", map[string]string{"username": "off1", "csr_pem": officerCSR(t, "off1")})
 	require.Equal(t, http.StatusOK, code, "officer register: %s", body)
 	var reg struct {
-		CertPEM    string `json:"cert_pem"`
-		ShareIndex int    `json:"share_index"`
+		CertPEM string `json:"cert_pem"`
 	}
 	require.NoError(t, json.Unmarshal(body, &reg))
-	require.Equal(t, 1, reg.ShareIndex)
 	require.Contains(t, reg.CertPEM, "BEGIN CERTIFICATE")
 
-	code, body = h.do(t, http.MethodGet, "/v1/barrier/officers/claim-status", nil)
-	require.Equal(t, http.StatusOK, code, "claim status: %s", body)
-	require.NotContains(t, string(body), "off1", "the anonymous claim status names no officer")
+	// A holder's claim reaches qrdb's handler, which refuses it without the
+	// holder's certificate on the connection -- not the sealed envelope.
+	code, body = h.do(t, http.MethodPost, "/v1/barrier/officers/off1/claim/begin", map[string]string{})
+	require.Equal(t, http.StatusUnauthorized, code, "claim begin: %s", body)
+	require.NotContains(t, string(body), `"code":"SEALED"`)
 
 	code, body = h.do(t, http.MethodGet, "/v1/barrier/status", nil)
 	require.Equal(t, http.StatusOK, code, "barrier status: %s", body)
