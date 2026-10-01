@@ -32,6 +32,7 @@ import (
 func SOGateUnaryInterceptor(gate *SOGate) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		ctx, err := enforceSOGateGRPC(ctx, gate, info.FullMethod)
+		defer WipeSOFactor(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -43,6 +44,7 @@ func SOGateUnaryInterceptor(gate *SOGate) grpc.UnaryServerInterceptor {
 func SOGateStreamInterceptor(gate *SOGate) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx, err := enforceSOGateGRPC(ss.Context(), gate, info.FullMethod)
+		defer WipeSOFactor(ctx)
 		if err != nil {
 			return err
 		}

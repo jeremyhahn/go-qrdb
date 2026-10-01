@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // SOPINMetadataKey is the gRPC metadata key (and the Unix socket's, which
@@ -50,6 +51,14 @@ type soFactorKey struct{}
 // WithSOFactor binds the second factor presented with a request into ctx.
 func WithSOFactor(ctx context.Context, f SOFactor) context.Context {
 	return context.WithValue(ctx, soFactorKey{}, f)
+}
+
+// WipeSOFactor wipes the PIN of the factor bound into ctx by WithSOFactor. A
+// transport defers it where it binds the factor, so the PIN is wiped even on
+// a request the gate never sees -- one whose permission is not SO-gated.
+// Enforce wipes it too; wiping twice is harmless.
+func WipeSOFactor(ctx context.Context) {
+	secure.Wipe(soFactorFromContext(ctx).PIN)
 }
 
 // soFactorFromContext returns the factor bound by WithSOFactor, or the zero
@@ -106,6 +115,9 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 		return nil
 	}
 	factor := soFactorFromContext(ctx)
+	// The server's copy of the PIN is wiped once the gate has decided,
+	// admitted or refused, on every path out of here.
+	defer secure.Wipe(factor.PIN)
 	if !factor.Secure {
 		return &SOFactorError{Reason: SOReasonInsecureTransport}
 	}

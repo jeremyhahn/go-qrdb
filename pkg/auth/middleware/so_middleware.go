@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const (
@@ -119,6 +120,7 @@ func SOMiddleware(
 				factor.PIN = []byte(pin)
 			}
 		}
+		defer secure.Wipe(factor.PIN)
 		ctx := WithSOFactor(r.Context(), factor)
 
 		if err := gate.Enforce(ctx, perm, r.URL.Path, r.Method); err != nil {

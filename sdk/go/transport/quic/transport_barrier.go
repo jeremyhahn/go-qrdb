@@ -79,7 +79,7 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if err != nil {
 		return &marshalError{Err: err}
 	}
-	_, err = t.call(ctx, "barrier.Seal", payload)
+	_, err = t.callWithSecret(ctx, "barrier.Seal", payload)
 	return err
 }
 
@@ -127,7 +127,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.ShamirInitialize", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.ShamirInitialize", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.Rekey", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.Rekey", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.RecoveryGenerate", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.RecoveryGenerate", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +318,7 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if err != nil {
 		return &marshalError{Err: err}
 	}
-	_, err = t.call(ctx, "barrier.RecoveryDelete", payload)
+	_, err = t.callWithSecret(ctx, "barrier.RecoveryDelete", payload)
 	return err
 }
 

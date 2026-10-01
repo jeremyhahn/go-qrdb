@@ -271,6 +271,9 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			// The SO PIN bound for this request is wiped once the call is
+			// done, whether or not the tool was SO-gated.
+			defer authmw.WipeSOFactor(ctx)
 			if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name, req.GetArguments()); err != nil {
 				slog.Warn("mcp: tool call denied",
 					"tool", req.Params.Name, "error", err)

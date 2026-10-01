@@ -158,3 +158,57 @@ func TestSOGateStreamInterceptor(t *testing.T) {
 		t.Fatalf("non-SO caller: %v, want PermissionDenied", err)
 	}
 }
+
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TestSOGate_EnforceWipesThePresentedPIN: the server's copy of the PIN is
+// wiped once the gate has decided, whether it admitted the request or
+// refused it.
+func TestSOGate_EnforceWipesThePresentedPIN(t *testing.T) {
+	gate, soRoleID := newTestSOGate(t)
+	for _, pinText := range []string{soGatePIN, "wrong"} {
+		pinBytes := []byte(pinText)
+		ctx := WithSOFactor(officerCtx(soRoleID), SOFactor{PIN: pinBytes, Secure: true})
+		_ = gate.Enforce(ctx, permission.SealRekey, "r", "a")
+		if !allZero(pinBytes) {
+			t.Fatalf("PIN %q survived Enforce", pinText)
+		}
+	}
+	// Refusals that never reach the verifier wipe it too: a caller without
+	// the SO role, and a factor that did not arrive over TLS.
+	for name, ctx := range map[string]func([]byte) context.Context{
+		"not the SO": func(p []byte) context.Context {
+			return WithSOFactor(auth.WithIdentity(context.Background(), &auth.Identity{Subject: "x", TenantID: soGateTenant}), SOFactor{PIN: p, Secure: true})
+		},
+		"not over TLS": func(p []byte) context.Context {
+			return WithSOFactor(officerCtx(soRoleID), SOFactor{PIN: p})
+		},
+	} {
+		pinBytes := []byte(soGatePIN)
+		if err := gate.Enforce(ctx(pinBytes), permission.SealRekey, "r", "a"); err == nil {
+			t.Fatalf("%s: admitted", name)
+		}
+		if !allZero(pinBytes) {
+			t.Fatalf("%s: PIN survived a refusal", name)
+		}
+	}
+}
+
+// TestWipeSOFactor: a transport that bound a factor and did not reach the
+// gate -- a request whose permission is not SO-gated -- still wipes it.
+func TestWipeSOFactor(t *testing.T) {
+	pinBytes := []byte("1234")
+	ctx := WithSOFactor(context.Background(), SOFactor{PIN: pinBytes, Secure: true})
+	WipeSOFactor(ctx)
+	if !allZero(pinBytes) {
+		t.Fatal("WipeSOFactor left the PIN in place")
+	}
+	WipeSOFactor(context.Background()) // no factor bound: no-op
+}

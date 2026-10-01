@@ -59,7 +59,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "ceremony.Initialize", payload)
+	respBytes, err := t.callWithSecret(ctx, "ceremony.Initialize", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "ceremony.SignCSR", payload)
+	respBytes, err := t.callWithSecret(ctx, "ceremony.SignCSR", payload)
 	if err != nil {
 		return nil, err
 	}

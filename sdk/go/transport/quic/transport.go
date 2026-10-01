@@ -32,6 +32,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -724,6 +725,18 @@ func (t *Transport) callContext(ctx context.Context) (context.Context, context.C
 // acknowledgement that the response arrived, which the server waits for
 // before it can close the connection during a system-scope migration's
 // recycle (go-qrdb#550). See wire.ProtocolV2.
+// callWithSecret is call for a request whose payload carries the SO PIN in
+// its so_pin field: the payload is wiped once the call returns, sent or not.
+// The PIN string the message was built from cannot be wiped; this removes the
+// one byte copy the SDK owns.
+func (t *Transport) callWithSecret(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	defer secure.Wipe(payload)
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.call(ctx, method, payload)
+}
+
 func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
 	ctx, cancel := t.callContext(ctx)
 	defer cancel()
