@@ -12,7 +12,7 @@
  *   POST /v1/tenants/{id}/barrier/unseal {key}         -> key must be BASE64 encoded
  *
  * API asymmetry note:
- *   POST .../barrier/init accepts a plaintext `passphrase` field.
+ *   POST .../barrier/init takes the `passphrase` as base64 bytes.
  *   POST .../barrier/unseal expects a BASE64-encoded `key` field.
  *   Providing a plaintext string to the unseal endpoint returns 400
  *   "illegal base64 data at input byte N". This is the current server
@@ -23,7 +23,7 @@
  */
 
 import { test, expect } from "./fixtures/sealed-daemon.ts";
-import { waitForHealthExported } from "./fixtures/daemon-helpers.ts";
+import { b64, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
 
 function tenantId(): string {
   return `e2e-tb-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -38,7 +38,7 @@ test.describe("Per-tenant barrier", () => {
     const initResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret: "sys-barrier-secret" },
+        data: { secret: b64("sys-barrier-secret") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -73,7 +73,7 @@ test.describe("Per-tenant barrier", () => {
     const barrierInit = await request.post(
       `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init`,
       {
-        data: { passphrase: "tenant-passphrase" },
+        data: { passphrase: b64("tenant-passphrase") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -102,7 +102,7 @@ test.describe("Per-tenant barrier", () => {
     await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret: "sys-barrier-secret-2" },
+        data: { secret: b64("sys-barrier-secret-2") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -127,7 +127,7 @@ test.describe("Per-tenant barrier", () => {
     await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret: "sys-barrier-secret-3" },
+        data: { secret: b64("sys-barrier-secret-3") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -148,13 +148,13 @@ test.describe("Per-tenant barrier", () => {
     await request.post(
       `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/init`,
       {
-        data: { passphrase: "my-tenant-secret" },
+        data: { passphrase: b64("my-tenant-secret") },
         headers: { "Content-Type": "application/json" },
       },
     );
 
     // Unseal with plaintext key — must return 400 (base64 decode fails).
-    // API asymmetry: init uses plaintext `passphrase`, unseal expects BASE64 `key`.
+    // Both `passphrase` and `key` are []byte fields, sent as base64.
     const plainResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/tenants/${tid}/barrier/unseal`,
       {

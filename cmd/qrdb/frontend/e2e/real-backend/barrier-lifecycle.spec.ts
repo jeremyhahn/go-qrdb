@@ -23,7 +23,7 @@
  */
 
 import { test, expect } from "./fixtures/sealed-daemon.ts";
-import { waitForHealthExported } from "./fixtures/daemon-helpers.ts";
+import { b64, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
 
 test.describe("Barrier lifecycle (passphrase strategy)", () => {
   test("GET /v1/barrier/status returns sealed:true before initialization", async ({
@@ -58,7 +58,7 @@ test.describe("Barrier lifecycle (passphrase strategy)", () => {
     const initResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret: "lifecycle-e2e-secret" },
+        data: { secret: b64("lifecycle-e2e-secret") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -83,7 +83,7 @@ test.describe("Barrier lifecycle (passphrase strategy)", () => {
     const initResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret },
+        data: { secret: b64(secret) },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -121,7 +121,7 @@ test.describe("Barrier lifecycle (passphrase strategy)", () => {
     const wrongResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/unseal`,
       {
-        data: { secret: "wrong-secret" },
+        data: { secret: b64("wrong-secret") },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -134,7 +134,7 @@ test.describe("Barrier lifecycle (passphrase strategy)", () => {
     const unsealResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/unseal`,
       {
-        data: { secret },
+        data: { secret: b64(secret) },
         headers: { "Content-Type": "application/json" },
       },
     );

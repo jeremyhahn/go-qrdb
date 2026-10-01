@@ -15,6 +15,15 @@ import * as net from "net";
 // ---------------------------------------------------------------------------
 
 /**
+ * b64 encodes text for a JSON field the server declares as []byte (barrier
+ * secrets, tenant passphrases and unseal keys): encoding/json reads such a
+ * field as base64.
+ */
+export function b64(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64");
+}
+
+/**
  * Finds a free TCP port on 127.0.0.1 by binding to port 0 and reading
  * the OS-assigned port back. Returns the port number.
  */

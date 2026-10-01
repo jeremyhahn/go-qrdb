@@ -28,13 +28,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { findFreePort, waitForSealedWindow, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
+import { b64, findFreePort, waitForSealedWindow, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
 import { enrolHolders, mustClaim, newHolder, quorum, submitShare } from "./fixtures/officer-bootstrap.ts";
-
-/** b64 encodes a secret for a []byte JSON field. */
-function b64(s: string): string {
-  return Buffer.from(s, "utf8").toString("base64");
-}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

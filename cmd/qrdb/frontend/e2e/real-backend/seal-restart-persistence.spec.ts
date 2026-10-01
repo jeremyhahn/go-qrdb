@@ -21,7 +21,7 @@
  */
 
 import { test, expect } from "./fixtures/sealed-daemon.ts";
-import { waitForHealthExported, waitForSealedWindow } from "./fixtures/daemon-helpers.ts";
+import { b64, waitForHealthExported, waitForSealedWindow } from "./fixtures/daemon-helpers.ts";
 
 function kvKey(label: string): string {
   return `seal-persist-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -40,7 +40,7 @@ test.describe("Seal + restart persistence", () => {
     const initResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret },
+        data: { secret: b64(secret) },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -87,7 +87,7 @@ test.describe("Seal + restart persistence", () => {
     const unsealResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/unseal`,
       {
-        data: { secret },
+        data: { secret: b64(secret) },
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -112,7 +112,7 @@ test.describe("Seal + restart persistence", () => {
     const initResp = await request.post(
       `${sealedDaemon.adminUrl}/v1/barrier/initialize`,
       {
-        data: { secret },
+        data: { secret: b64(secret) },
         headers: { "Content-Type": "application/json" },
       },
     );

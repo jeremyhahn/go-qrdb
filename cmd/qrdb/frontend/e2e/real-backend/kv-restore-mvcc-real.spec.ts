@@ -24,10 +24,7 @@
 
 import { test, expect } from "./fixtures/daemon.ts";
 import { ApiClient } from "./fixtures/api.ts";
-
-function b64(text: string): string {
-  return Buffer.from(text, "utf-8").toString("base64");
-}
+import { b64 } from "./fixtures/daemon-helpers.ts";
 
 function uniqueKey(label: string): string {
   return `e2e-restore-mvcc-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
