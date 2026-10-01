@@ -287,6 +287,13 @@ are not reconstructed here — their history is in the git log.
   the new signature. The stored value grows from 8 to 16 bytes, counter
   first; a counter-only value written by an earlier release is read as that
   counter at epoch 0, so no sequence restarts on upgrade.
+- **Upgrade note: finish upgrading every node before running
+  `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`** (#547).
+  During a mixed-version window, a node still on an earlier release rewrites
+  a sequence's stored value as 8 bytes whenever it allocates, which resets
+  its epoch to 0. A later reset can then bring the epoch back to a value
+  that a block reserved before the first reset still carries, and that block
+  would be accepted as current.
 
 ### Changed
 

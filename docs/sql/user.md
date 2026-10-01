@@ -74,6 +74,11 @@ not renumbered and the counter is not checked against them: an
 fails with a duplicate-key error (MySQL would instead move the counter past
 the largest id).
 
+**Upgrading a cluster:** finish upgrading every node before running
+`ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`. While some
+nodes still run an earlier release, a reset cannot reliably stop other
+sessions from reusing ids they reserved before it.
+
 `TRUNCATE TABLE users` resets `AUTO_INCREMENT` back to 1 on the MySQL wire
 protocol, matching MySQL. On the PostgreSQL wire protocol, plain `TRUNCATE`
 leaves the sequence exactly where it was, matching PostgreSQL's own default
