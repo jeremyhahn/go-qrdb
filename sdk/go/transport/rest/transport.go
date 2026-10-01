@@ -133,8 +133,9 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	// Every request made with a context bound by transport.WithSOPIN carries
-	// the SO PIN header.
-	t.baseRT = transport.SOPINRoundTripper(httpTransport)
+	// the SO PIN header -- over https to the configured host only, on every
+	// hop including redirects.
+	t.baseRT = transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,

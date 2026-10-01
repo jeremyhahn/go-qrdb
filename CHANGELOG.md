@@ -816,6 +816,14 @@ are not reconstructed here — their history is in the git log.
   rekey or regenerate recovery keys for the node barrier that protects every
   tenant -- on every transport, gate on or off. They are now `ScopeCross`:
   system-tenant identities only.
+- **The Go SDK sends the SO PIN only over TLS, and only to the configured
+  host.** `sdk.WithSOPIN` attached the PIN on gRPC and Unix connections with
+  insecure credentials, on MCP to `http://` URLs, and on REST to every redirect
+  hop, including a cross-host or `http` one. gRPC and Unix now send it only over
+  TLS credentials. REST and MCP send it only on an `https` hop to the configured
+  host, checked on every hop. A PIN-bound call otherwise fails before anything
+  is sent, with the new `sdk.SOPINRequiresTLSError` (plaintext) or
+  `sdk.SOPINForeignHostError` (a redirect elsewhere).
 
 ### Known limits
 

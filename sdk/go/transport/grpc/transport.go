@@ -652,9 +652,11 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 	// admin RPCs ignore it, so universal injection is safe.
 	// A context bound by transport.WithSOPIN carries the SO PIN in the
 	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	// Only over TLS credentials: on a plaintext connection a PIN-bound RPC is
+	// refused with *transport.SOPINRequiresTLSError and never sent.
 	opts = append(opts,
-		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor()),
-		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor()),
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("grpc", t.config.TLSEnabled)),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("grpc", t.config.TLSEnabled)),
 	)
 
 	if t.activeDatabase != "" {

@@ -32,10 +32,26 @@ import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 // REST and MCP send it in the X-QRDB-SO-PIN header, gRPC and the Unix socket
 // in the x-qrdb-so-pin metadata entry, QUIC in the request message's so_pin
 // field. The embedded transport has no SO gate and ignores it. The PIN is
+// sent only over TLS and, on REST and MCP, only to the configured host on
+// every hop: otherwise the call is refused with SOPINRequiresTLSError or
+// SOPINForeignHostError before anything is sent. The PIN is
 // copied, never logged, and the copies the transports make are wiped once
 // written; HTTP header and gRPC metadata values are Go strings, which cannot
 // be wiped. (Aliases sdk/go/transport.WithSOPIN.)
 var WithSOPIN = transport.WithSOPIN
+
+// SOPINRequiresTLSError is returned when a call made with a context bound by
+// WithSOPIN would travel over a connection that is not TLS -- a plaintext
+// gRPC or Unix socket connection, or an http hop on REST or MCP, redirects
+// included. It is refused before anything is sent.
+// (Aliases sdk/go/transport.SOPINRequiresTLSError.)
+type SOPINRequiresTLSError = transport.SOPINRequiresTLSError
+
+// SOPINForeignHostError is returned when a REST or MCP call made with a
+// context bound by WithSOPIN is redirected to a host other than the
+// configured one. It is refused before anything is sent.
+// (Aliases sdk/go/transport.SOPINForeignHostError.)
+type SOPINForeignHostError = transport.SOPINForeignHostError
 
 // SOPINConflictError is returned by the QUIC transport when a request's own
 // SOPin and the PIN bound by WithSOPIN are both set and differ: QUIC carries

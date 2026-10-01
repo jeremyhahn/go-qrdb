@@ -105,9 +105,9 @@ func (c *captureRT) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestSOPINRoundTripper(t *testing.T) {
 	base := &captureRT{}
-	rt := SOPINRoundTripper(base)
+	rt := SOPINRoundTripper(base, "rest", "db.example.com:8443")
 
-	req, _ := http.NewRequest(http.MethodPost, "https://db.example.com/v1/barrier/rekey", nil)
+	req, _ := http.NewRequest(http.MethodPost, "https://db.example.com:8443/v1/barrier/rekey", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
@@ -133,14 +133,47 @@ func TestSOPINRoundTripper(t *testing.T) {
 	}
 }
 
-func TestSOPINHeaders(t *testing.T) {
-	if SOPINHeaders(context.Background()) != nil {
-		t.Fatal("headers without a bound PIN")
-	}
+func TestSOPINRoundTripper_RefusesPlaintextAndForeignHops(t *testing.T) {
 	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
 	defer release()
-	if got := SOPINHeaders(ctx)[SOPINHeader]; got != "1234" {
-		t.Fatalf("header = %q", got)
+	cases := []struct {
+		name, url string
+		tlsErr    bool
+	}{
+		{"http to the configured host", "http://db.example.com:8443/v1/barrier/rekey", true},
+		{"http to another host", "http://other.example.com/v1/barrier/rekey", true},
+		{"https to another host", "https://other.example.com/v1/barrier/rekey", false},
+		{"https to another port", "https://db.example.com:9443/v1/barrier/rekey", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &captureRT{}
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, tc.url, nil)
+			_, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req)
+			if base.req != nil {
+				t.Fatal("the refused request was sent")
+			}
+			var tlsErr *SOPINRequiresTLSError
+			var hostErr *SOPINForeignHostError
+			if tc.tlsErr && !errors.As(err, &tlsErr) {
+				t.Fatalf("err = %v, want *SOPINRequiresTLSError", err)
+			}
+			if !tc.tlsErr && (!errors.As(err, &hostErr) || hostErr.Host == "") {
+				t.Fatalf("err = %v, want *SOPINForeignHostError", err)
+			}
+			if strings.Contains(err.Error(), "1234") {
+				t.Fatal("the error names the PIN")
+			}
+		})
+	}
+}
+
+func TestConfiguredHost(t *testing.T) {
+	if got := ConfiguredHost("https://db.example.com:8443/mcp"); got != "db.example.com:8443" {
+		t.Fatalf("ConfiguredHost = %q", got)
+	}
+	if got := ConfiguredHost("://bad"); got != "" {
+		t.Fatalf("ConfiguredHost(bad) = %q, want empty", got)
 	}
 }
 
@@ -156,7 +189,7 @@ func TestSOPINClientInterceptors(t *testing.T) {
 	}
 
 	var unaryPIN string
-	err := SOPINUnaryClientInterceptor()(ctx, "/m", nil, nil, nil,
+	err := SOPINUnaryClientInterceptor("grpc", true)(ctx, "/m", nil, nil, nil,
 		func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
 			unaryPIN = pinOf(ctx)
 			return nil
@@ -166,7 +199,7 @@ func TestSOPINClientInterceptors(t *testing.T) {
 	}
 
 	var streamPIN string
-	_, err = SOPINStreamClientInterceptor()(context.Background(), &grpc.StreamDesc{}, nil, "/m",
+	_, err = SOPINStreamClientInterceptor("grpc", true)(context.Background(), &grpc.StreamDesc{}, nil, "/m",
 		func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
 			streamPIN = pinOf(ctx)
 			return nil, nil
@@ -174,12 +207,51 @@ func TestSOPINClientInterceptors(t *testing.T) {
 	if err != nil || streamPIN != "" {
 		t.Fatalf("unbound stream metadata = %q, %v; want none", streamPIN, err)
 	}
-	_, _ = SOPINStreamClientInterceptor()(ctx, &grpc.StreamDesc{}, nil, "/m",
+	_, _ = SOPINStreamClientInterceptor("grpc", true)(ctx, &grpc.StreamDesc{}, nil, "/m",
 		func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
 			streamPIN = pinOf(ctx)
 			return nil, nil
 		})
 	if streamPIN != "1234" {
 		t.Fatalf("stream metadata = %q", streamPIN)
+	}
+}
+
+func TestSOPINClientInterceptors_RefusePlaintext(t *testing.T) {
+	ctx, release := WithSOPIN(context.Background(), []byte("1234"))
+	defer release()
+	called := false
+	err := SOPINUnaryClientInterceptor("unix", false)(ctx, "/m", nil, nil, nil,
+		func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+			called = true
+			return nil
+		})
+	var tlsErr *SOPINRequiresTLSError
+	if !errors.As(err, &tlsErr) || tlsErr.Transport != "unix" || called {
+		t.Fatalf("unary over plaintext: err=%v called=%v, want refused before sending", err, called)
+	}
+	_, err = SOPINStreamClientInterceptor("unix", false)(ctx, &grpc.StreamDesc{}, nil, "/m",
+		func(context.Context, *grpc.StreamDesc, *grpc.ClientConn, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+			called = true
+			return nil, nil
+		})
+	if !errors.As(err, &tlsErr) || called {
+		t.Fatalf("stream over plaintext: err=%v called=%v, want refused before sending", err, called)
+	}
+	// No bound PIN: plaintext RPCs pass as before.
+	if err := SOPINUnaryClientInterceptor("unix", false)(context.Background(), "/m", nil, nil, nil,
+		func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }); err != nil {
+		t.Fatalf("unbound plaintext RPC refused: %v", err)
+	}
+}
+
+func TestSOPINErrors_NeverNameThePIN(t *testing.T) {
+	for _, err := range []error{
+		&SOPINRequiresTLSError{Transport: "grpc"},
+		&SOPINForeignHostError{Transport: "mcp", Host: "other.example.com"},
+	} {
+		if err.Error() == "" {
+			t.Fatalf("%T: empty message", err)
+		}
 	}
 }

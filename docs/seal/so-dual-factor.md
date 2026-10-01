@@ -76,6 +76,20 @@ defer release()
 _, err := client.Barrier().BarrierRekey(ctx, &sdk.BarrierRekeyRequest{Threshold: 2, Total: 3})
 ```
 
+**The SDK sends the PIN only over TLS, and only to the configured host.**
+
+- gRPC and the Unix socket send it only when the connection uses TLS
+  credentials.
+- REST and MCP send it only on a hop that is `https` and addressed to the host
+  the transport was configured with. That includes every redirect hop.
+
+A PIN-bound call on a plaintext connection, or redirected to `http`, is
+refused with `sdk.SOPINRequiresTLSError` before anything is sent. A call
+redirected to another host is refused with `sdk.SOPINForeignHostError`. A Unix
+socket is a local channel, not an encrypted one: **SO operations over the Unix
+socket need TLS**, like every other transport. The server refuses an SO PIN
+read off a non-TLS connection in any case.
+
 `WithSOPIN` copies the PIN; `release` wipes the SDK's copy, after which the
 context presents no PIN. The transports take a fresh copy per request, write
 it and wipe it, and never log it. HTTP header and gRPC metadata values are Go

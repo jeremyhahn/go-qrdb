@@ -17,6 +17,7 @@ package transport
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -119,54 +120,79 @@ func ResolveSOPIN(ctx context.Context, method, requestPIN string) (string, error
 }
 
 // SOPINUnaryClientInterceptor sends the PIN bound by WithSOPIN in the
-// x-qrdb-so-pin metadata entry of every unary RPC made with that context.
-// Shared by the gRPC and Unix SDK transports. gRPC metadata values are
-// strings, which Go cannot wipe; the SDK's byte copy is wiped as soon as the
-// string is built.
-func SOPINUnaryClientInterceptor() grpc.UnaryClientInterceptor {
+// x-qrdb-so-pin metadata entry of every unary RPC made with that context --
+// when secure reports that the connection uses TLS transport credentials.
+// Over a plaintext connection a PIN-bound RPC is refused with
+// *SOPINRequiresTLSError before it is sent; an RPC with no bound PIN passes
+// either way. Shared by the gRPC and Unix SDK transports, which name
+// themselves in transportName. gRPC metadata values are strings, which Go
+// cannot wipe; the SDK's byte copy is wiped as soon as the string is built.
+func SOPINUnaryClientInterceptor(transportName string, secure bool) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		return invoker(withSOPINMetadata(ctx), method, req, reply, cc, opts...)
+		ctx, err := withSOPINMetadata(ctx, transportName, secure)
+		if err != nil {
+			return err
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 }
 
 // SOPINStreamClientInterceptor is SOPINUnaryClientInterceptor for streaming
 // RPCs.
-func SOPINStreamClientInterceptor() grpc.StreamClientInterceptor {
+func SOPINStreamClientInterceptor(transportName string, secure bool) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		return streamer(withSOPINMetadata(ctx), desc, cc, method, opts...)
+		ctx, err := withSOPINMetadata(ctx, transportName, secure)
+		if err != nil {
+			return nil, err
+		}
+		return streamer(ctx, desc, cc, method, opts...)
 	}
 }
 
-func withSOPINMetadata(ctx context.Context) context.Context {
+func withSOPINMetadata(ctx context.Context, transportName string, tlsConn bool) (context.Context, error) {
 	pin, ok := SOPINFromContext(ctx)
 	if !ok {
-		return ctx
+		return ctx, nil
 	}
 	defer secure.Wipe(pin)
-	return metadata.AppendToOutgoingContext(ctx, SOPINMetadataKey, string(pin))
+	if !tlsConn {
+		return ctx, &SOPINRequiresTLSError{Transport: transportName}
+	}
+	return metadata.AppendToOutgoingContext(ctx, SOPINMetadataKey, string(pin)), nil
 }
 
-// SOPINHeaders returns the X-QRDB-SO-PIN header for the PIN bound by
-// WithSOPIN, or nil when none is bound. It is the header function the MCP
-// transport installs, which its HTTP client calls per request with that
-// request's context.
-func SOPINHeaders(ctx context.Context) map[string]string {
-	pin, ok := SOPINFromContext(ctx)
-	if !ok {
-		return nil
+// ConfiguredHost returns the host[:port] of a transport's configured address,
+// the only host SOPINRoundTripper sends the SO PIN to. An address that does
+// not parse yields "", which matches no request, so a bound PIN is refused
+// rather than sent.
+func ConfiguredHost(address string) string {
+	u, err := url.Parse(address)
+	if err != nil {
+		return ""
 	}
-	defer secure.Wipe(pin)
-	return map[string]string{SOPINHeader: string(pin)}
+	return u.Host
 }
 
 // SOPINRoundTripper wraps base so that a request made with a context bound by
-// WithSOPIN carries the PIN in the X-QRDB-SO-PIN header. The REST transport
-// installs it. A request without a bound PIN passes through untouched.
-func SOPINRoundTripper(base http.RoundTripper) http.RoundTripper {
-	return &soPINRoundTripper{base: base}
+// WithSOPIN carries the PIN in the X-QRDB-SO-PIN header -- but only on a hop
+// that is https AND addressed to configuredHost, the host the transport was
+// configured with. The REST and MCP transports install it, naming themselves
+// in transportName for the errors.
+//
+// Every hop is checked, because an http.Client calls RoundTrip again for each
+// redirect it follows: a PIN-bound request whose hop is plaintext is refused
+// with *SOPINRequiresTLSError, and one whose hop names another host with
+// *SOPINForeignHostError, before anything is sent. A request without a bound
+// PIN passes through untouched.
+func SOPINRoundTripper(base http.RoundTripper, transportName, configuredHost string) http.RoundTripper {
+	return &soPINRoundTripper{base: base, transport: transportName, host: configuredHost}
 }
 
-type soPINRoundTripper struct{ base http.RoundTripper }
+type soPINRoundTripper struct {
+	base      http.RoundTripper
+	transport string
+	host      string
+}
 
 // RoundTrip implements http.RoundTripper.
 func (rt *soPINRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -174,9 +200,48 @@ func (rt *soPINRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if !ok {
 		return rt.base.RoundTrip(req)
 	}
+	if req.URL.Scheme != "https" {
+		secure.Wipe(pin)
+		return nil, &SOPINRequiresTLSError{Transport: rt.transport}
+	}
+	if req.URL.Host != rt.host {
+		secure.Wipe(pin)
+		return nil, &SOPINForeignHostError{Transport: rt.transport, Host: req.URL.Host}
+	}
 	// Clone before mutating headers, per the RoundTripper contract.
 	clone := req.Clone(req.Context())
 	clone.Header.Set(SOPINHeader, string(pin))
 	secure.Wipe(pin)
 	return rt.base.RoundTrip(clone)
+}
+
+// SOPINRequiresTLSError is returned when a call made with a context bound by
+// WithSOPIN would travel over a connection that is not TLS: a plaintext gRPC
+// or Unix socket connection, or an http:// hop on REST or MCP -- including a
+// redirect to one. The request is refused before it is sent, so the PIN never
+// crosses a plaintext connection.
+type SOPINRequiresTLSError struct {
+	// Transport names the SDK transport that refused ("rest", "grpc", ...).
+	Transport string
+}
+
+// Error returns a description that never contains the PIN.
+func (e *SOPINRequiresTLSError) Error() string {
+	return "transport: " + e.Transport + ": the SO PIN is sent only over TLS; this connection is not TLS"
+}
+
+// SOPINForeignHostError is returned when a REST or MCP call made with a
+// context bound by WithSOPIN is redirected to a host other than the one the
+// transport was configured with. The redirected request is refused before it
+// is sent, so the PIN never reaches a host the caller did not name.
+type SOPINForeignHostError struct {
+	// Transport names the SDK transport that refused.
+	Transport string
+	// Host is the host the redirect named.
+	Host string
+}
+
+// Error returns a description that never contains the PIN.
+func (e *SOPINForeignHostError) Error() string {
+	return "transport: " + e.Transport + ": refusing to send the SO PIN to " + e.Host + ", which is not the configured host"
 }

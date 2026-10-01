@@ -183,22 +183,25 @@ func (t *Transport) Connect(ctx context.Context) error {
 		client, err = mcpclient.NewInProcessClient(t.mcpServer)
 	} else {
 		// Network connection via Streamable HTTP.
-		// A call made with a context bound by transport.WithSOPIN carries the
-		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request.
-		httpOpts := []mcptransport.StreamableHTTPCOption{
-			mcptransport.WithHTTPHeaderFunc(transport.SOPINHeaders),
-		}
-		if tlsCfg, tlsErr := t.buildTLSConfig(); tlsErr != nil {
+		tlsCfg, tlsErr := t.buildTLSConfig()
+		if tlsErr != nil {
 			return &transport.ConnectionError{
 				Address: t.config.Address,
 				Err:     tlsErr,
 			}
-		} else if tlsCfg != nil {
-			httpOpts = append(httpOpts, mcptransport.WithHTTPBasicClient(&http.Client{
-				Transport: &http.Transport{TLSClientConfig: tlsCfg},
-			}))
 		}
-		client, err = mcpclient.NewStreamableHttpClient(t.config.Address, httpOpts...)
+		base := http.DefaultTransport.(*http.Transport).Clone()
+		if tlsCfg != nil {
+			base.TLSClientConfig = tlsCfg
+		}
+		// A call made with a context bound by transport.WithSOPIN carries the
+		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
+		// https to the configured host only, on every hop including
+		// redirects.
+		client, err = mcpclient.NewStreamableHttpClient(t.config.Address,
+			mcptransport.WithHTTPBasicClient(&http.Client{
+				Transport: transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(t.config.Address)),
+			}))
 	}
 	if err != nil {
 		return &transport.ConnectionError{

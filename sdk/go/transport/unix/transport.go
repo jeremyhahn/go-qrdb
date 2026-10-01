@@ -91,9 +91,11 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 
 	// A context bound by transport.WithSOPIN carries the SO PIN in the
 	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	// Only over TLS credentials: on a plaintext connection a PIN-bound RPC is
+	// refused with *transport.SOPINRequiresTLSError and never sent.
 	opts = append(opts,
-		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor()),
-		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor()),
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("unix", t.config.TLSEnabled)),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("unix", t.config.TLSEnabled)),
 	)
 
 	if t.activeDatabase != "" {
