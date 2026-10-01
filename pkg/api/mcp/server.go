@@ -527,31 +527,25 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(adminTools(s.adminSvc)...)
 	}
 
-	// Register optional feature tools when their services are provided.
-	if s.mvccSvc != nil {
-		s.addTools(mvccTools(s.mvccSvc)...)
-	}
+	// The raft-only families (MVCC, watch, lease, lock) are registered
+	// UNCONDITIONALLY. A node composed without one -- every standalone node --
+	// answers the call with the typed "not configured" refusal the other
+	// transports give (Unimplemented, from which the SDK rebuilds
+	// transport.CapabilityUnsupportedError) instead of "tool not found", so a
+	// client sees one answer whichever transport it holds. The resolve*
+	// helpers refuse when neither a registry nor a singleton is wired.
+	s.addTools(mvccTools(s.mvccSvc)...)
 	if s.txSvc != nil {
 		s.addTools(transactionTools(s.txSvc)...)
 	}
 	if s.batchSvc != nil {
 		s.addTools(batchTools(s.batchSvc)...)
 	}
-	if s.watchSvc != nil {
-		s.addTools(watchTools(s.watchSvc)...)
-	}
-	if s.leaseSvc != nil {
-		s.addTools(leaseTools(s.leaseSvc)...)
-	}
-	// Registered when either the singleton is wired or a registry is
-	// configured, for the reason the collection tools below are: the
-	// per-(tenant, database) lock servicer resolves at call time through
-	// resolveLock, so gating on the singleton alone would omit the lock tools
-	// entirely from a multi-tenant server that resolves them per request
-	// (go-qrdb#455).
-	if s.lockSvc != nil || s.registry != nil {
-		s.addTools(lockTools(s.lockSvc)...)
-	}
+	s.addTools(watchTools(s.watchSvc)...)
+	s.addTools(leaseTools(s.leaseSvc)...)
+	// The lock servicer resolves per (tenant, database) at call time through
+	// resolveLock (go-qrdb#455); unconditional for the reason above.
+	s.addTools(lockTools(s.lockSvc)...)
 	if s.indexSvc != nil {
 		s.addTools(indexTools(s.indexSvc)...)
 	}

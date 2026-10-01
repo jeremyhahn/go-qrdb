@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -161,12 +162,13 @@ func TestMCPLockWithNeitherIsRefused(t *testing.T) {
 	for _, c := range lockToolCases {
 		t.Run(c.name, func(t *testing.T) {
 			req := buildCallToolRequest(t, c.tool, c.args)
-			res, err := c.handler(nil)(context.Background(), req)
-			if err != nil {
-				t.Fatalf("%s returned a transport error rather than a tool error: %v", c.tool, err)
-			}
-			if res == nil || !res.IsError {
-				t.Fatalf("%s answered without a lock servicer: %+v", c.tool, res)
+			// The refusal is returned as an error so the coding middleware
+			// classifies it (Unimplemented), as every other tool's resolve
+			// refusal is -- not rendered as an uncoded tool result.
+			_, err := c.handler(nil)(context.Background(), req)
+			var nc *ServiceNotConfiguredError
+			if !errors.As(err, &nc) {
+				t.Fatalf("%s: err = %T (%v), want *ServiceNotConfiguredError", c.tool, err, err)
 			}
 		})
 	}

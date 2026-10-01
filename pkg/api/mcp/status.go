@@ -115,6 +115,14 @@ var _ errclass.Classed = (*mcpClientCertRequiredError)(nil)
 // ErrorClass reports an authentication failure.
 func (e *mcpClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
 
+var _ errclass.Classed = (*ServiceNotConfiguredError)(nil)
+
+// ErrorClass reports Unimplemented: this node cannot serve the tool's service
+// -- a raft-only family on a standalone node, or a service the node was
+// composed without -- which is the answer gRPC, Unix, QUIC and REST give, and
+// the one the SDK rebuilds transport.CapabilityUnsupportedError from.
+func (e *ServiceNotConfiguredError) ErrorClass() errclass.Class { return errclass.Unimplemented }
+
 // toolErrorResult renders a failed tool call as an MCP tool result carrying
 // both the prose a human reads and the code a client branches on.
 //

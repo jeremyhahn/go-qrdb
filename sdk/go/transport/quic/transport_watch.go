@@ -131,9 +131,13 @@ func readWatchResponses(ctx context.Context, stream *quicgo.Stream, ch chan<- tr
 		}
 
 		if statusCode != wire.StatusOK {
+			reason := string(payload)
+			if statusCode == wire.StatusUnimplemented {
+				reason = transport.UnsupportedWatchReason(reason)
+			}
 			ch <- transport.WatchResponse{
 				Canceled:     true,
-				CancelReason: string(payload),
+				CancelReason: reason,
 			}
 			return
 		}

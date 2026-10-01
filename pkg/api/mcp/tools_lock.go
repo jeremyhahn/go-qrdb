@@ -89,7 +89,7 @@ func handleLockAcquire(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -146,7 +146,7 @@ func handleLockTryLock(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -196,7 +196,7 @@ func handleLockRelease(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -235,7 +235,7 @@ func handleLockExtend(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -276,7 +276,7 @@ func handleLockStatus(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -312,7 +312,7 @@ func handleLockList(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		lockSvc, rerr := resolveLock(ctx, lockSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		prefix := mcp.ParseString(req, "prefix", "")
 

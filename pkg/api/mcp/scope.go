@@ -94,6 +94,9 @@ func resolveKV(ctx context.Context, fallback service.KVServicer) (service.KVServ
 func resolveMVCC(ctx context.Context, fallback service.MVCCKVServicer) (service.MVCCKVServicer, error) {
 	reg := registryFromContext(ctx)
 	if reg == nil {
+		if fallback == nil {
+			return nil, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
 		return fallback, nil
 	}
 	return reg.MVCCService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
@@ -121,6 +124,9 @@ func resolveBatch(ctx context.Context, fallback service.BatchServicer) (service.
 func resolveWatch(ctx context.Context, fallback service.WatchServicer) (service.WatchServicer, error) {
 	reg := registryFromContext(ctx)
 	if reg == nil {
+		if fallback == nil {
+			return nil, &ServiceNotConfiguredError{Service: "watch"}
+		}
 		return fallback, nil
 	}
 	return reg.WatchService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
@@ -130,6 +136,9 @@ func resolveWatch(ctx context.Context, fallback service.WatchServicer) (service.
 func resolveLease(ctx context.Context, fallback service.LeaseServicer) (service.LeaseServicer, error) {
 	reg := registryFromContext(ctx)
 	if reg == nil {
+		if fallback == nil {
+			return nil, &ServiceNotConfiguredError{Service: "lease"}
+		}
 		return fallback, nil
 	}
 	return reg.LeaseService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))

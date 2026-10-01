@@ -146,3 +146,33 @@ func TestWatchStartRevisionUnsupportedError_Error(t *testing.T) {
 		t.Error("Error() must not be empty")
 	}
 }
+
+// TestUnsupportedWatchReason_RoundTripsThroughErr: the reason a stream client
+// builds from an Unimplemented refusal comes back out of Err as the typed
+// CapabilityUnsupportedError carrying the server's message.
+func TestUnsupportedWatchReason_RoundTripsThroughErr(t *testing.T) {
+	reason := UnsupportedWatchReason("grpc: watch service is not configured")
+	err := WatchResponse{Canceled: true, CancelReason: reason}.Err()
+	var unsupported *CapabilityUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("Err() = %T (%v), want *CapabilityUnsupportedError", err, err)
+	}
+	if unsupported.Message != "grpc: watch service is not configured" {
+		t.Errorf("Message = %q, want the server's message unchanged", unsupported.Message)
+	}
+}
+
+// TestUnsupportedWatchReason_KeepsWatchHistoryConditions: an Unimplemented
+// refusal that is the start-revision condition keeps its own, more specific
+// type rather than being folded into the capability refusal.
+func TestUnsupportedWatchReason_KeepsWatchHistoryConditions(t *testing.T) {
+	msg := "qrdb/watch: start revision replay is not supported by this store"
+	if got := UnsupportedWatchReason(msg); got != msg {
+		t.Fatalf("UnsupportedWatchReason(%q) = %q, want it unchanged", msg, got)
+	}
+	err := WatchResponse{Canceled: true, CancelReason: msg}.Err()
+	var wsue *WatchStartRevisionUnsupportedError
+	if !errors.As(err, &wsue) {
+		t.Fatalf("Err() = %T (%v), want *WatchStartRevisionUnsupportedError", err, err)
+	}
+}

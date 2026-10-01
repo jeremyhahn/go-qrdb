@@ -31,11 +31,11 @@ import (
 
 // A standalone node omits the raft-only families — MVCC, watch, lease and
 // lock — by design. The refusal must be the SAME typed error however the node
-// is reached: transport.CapabilityUnsupportedError. The network transports
-// already gave it; the embedded transport answered *embedded.NilServiceError,
-// the error it reserves for a wiring defect, so an in-process consumer such
-// as Coordinator.AcquireLease could not tell "this mode does not serve
-// leases" from "this composition is broken".
+// is reached: transport.CapabilityUnsupportedError. The embedded transport
+// used to answer *embedded.NilServiceError (the error it reserves for a
+// wiring defect), REST a router 404 for lease and lock, and MCP "tool not
+// found", so a consumer such as Coordinator.AcquireLease could not tell "this
+// mode does not serve leases" from "this composition is broken".
 
 // seedRaftOnlyIdentity grants the "matrix" identity the raft-only verbs, so a
 // remote refusal is the mode's and not the authorizer's.
@@ -100,45 +100,21 @@ var raftOnlyCalls = []struct {
 	}},
 }
 
-// typedRaftOnlyRefusal says which transports deliver the standalone refusal
-// as transport.CapabilityUnsupportedError.
-//
-// REST and MCP do not, and that gap is recorded here rather than hidden: a
-// standalone REST server does not register the lease and lock routes (404)
-// and answers mvcc with an untyped 501, and a standalone MCP server does not
-// register the raft-only tools at all ("tool not found"). Both are deliberate
-// properties of those servers' route and tool registration, so changing them
-// is a decision of its own. When one is made, its row flips here and the test
-// holds it.
-var typedRaftOnlyRefusal = map[transportKind]bool{
-	embeddedTransport: true,
-	grpcTransport:     true,
-	quicTransport:     true,
-	unixTransport:     true,
-	restTransport:     false,
-	mcpTransport:      false,
-}
-
-// TestStandaloneRaftOnlyFamilies_RefusalTypeByTransport pins the refusal of
-// every raft-only family on a standalone node, per transport. The embedded
-// cell is the fix: it now matches gRPC, QUIC and Unix.
-func TestStandaloneRaftOnlyFamilies_RefusalTypeByTransport(t *testing.T) {
+// TestStandaloneRaftOnlyFamilies_RefusedTypedOnEveryTransport pins the
+// refusal of every raft-only family on a standalone node: every transport
+// answers transport.CapabilityUnsupportedError. REST used to answer lease and
+// lock with a bare router 404 and MCP did not register the tools at all
+// ("tool not found"); both now attach the route or tool and refuse it typed.
+func TestStandaloneRaftOnlyFamilies_RefusedTypedOnEveryTransport(t *testing.T) {
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			wantTyped, listed := typedRaftOnlyRefusal[tk]
-			if !listed {
-				t.Fatalf("%s has no row in typedRaftOnlyRefusal; declare what it does", tk)
-			}
 			c := bootAuthorizedCell(t, tk, func(n *node.Node) { seedRaftOnlyIdentity(t, n) })
 			for _, rc := range raftOnlyCalls {
 				t.Run(rc.name, func(t *testing.T) {
 					err := rc.call(boundedCtx(t), c)
-					if err == nil {
-						t.Fatalf("%s/%s: a raft-only family was served on a standalone node", tk, rc.name)
-					}
 					var unsupported *transport.CapabilityUnsupportedError
-					if typed := errors.As(err, &unsupported); typed != wantTyped {
-						t.Fatalf("%s/%s: typed refusal = %v, want %v (err %T: %v)", tk, rc.name, typed, wantTyped, err, err)
+					if !errors.As(err, &unsupported) {
+						t.Fatalf("%s/%s: err = %T (%v), want *transport.CapabilityUnsupportedError", tk, rc.name, err, err)
 					}
 				})
 			}
@@ -146,14 +122,33 @@ func TestStandaloneRaftOnlyFamilies_RefusalTypeByTransport(t *testing.T) {
 	}
 }
 
-// TestStandaloneEmbeddedWatchOpenIsRefusedTyped covers the family the unary
-// matrix leaves out: in process, opening a watch on a standalone node is
-// refused at once with the typed error.
-func TestStandaloneEmbeddedWatchOpenIsRefusedTyped(t *testing.T) {
-	c := bootAuthorizedCell(t, embeddedTransport, func(n *node.Node) { seedRaftOnlyIdentity(t, n) })
-	_, err := c.Watch().Watch(boundedCtx(t), "standalone/watch", transport.WatchOptions{})
-	var unsupported *transport.CapabilityUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("err = %T (%v), want *transport.CapabilityUnsupportedError", err, err)
+// TestStandaloneWatchIsRefusedTypedOnEveryTransport pins the watch refusal on
+// a standalone node. Watch is a stream: embedded and REST refuse at open, while
+// gRPC, Unix, QUIC and MCP learn of it on the stream's first receive. Either
+// way the caller gets the same *transport.CapabilityUnsupportedError — from
+// Watch itself, or from the terminal response's Err — and the stream ends
+// (MCP used to re-poll the refusal forever).
+func TestStandaloneWatchIsRefusedTypedOnEveryTransport(t *testing.T) {
+	for _, tk := range transportKinds {
+		t.Run(string(tk), func(t *testing.T) {
+			c := bootAuthorizedCell(t, tk, func(n *node.Node) { seedRaftOnlyIdentity(t, n) })
+			ctx := boundedCtx(t)
+			ch, err := c.Watch().Watch(ctx, "standalone/watch", transport.WatchOptions{})
+			if err == nil {
+				select {
+				case resp, ok := <-ch:
+					if !ok {
+						t.Fatal("watch stream closed without a terminal refusal")
+					}
+					err = resp.Err()
+				case <-ctx.Done():
+					t.Fatal("no refusal before the deadline: the stream neither failed nor ended")
+				}
+			}
+			var unsupported *transport.CapabilityUnsupportedError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("err = %T (%v), want *transport.CapabilityUnsupportedError", err, err)
+			}
+		})
 	}
 }

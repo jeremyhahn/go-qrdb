@@ -43,6 +43,22 @@ type the gRPC, Unix and QUIC clients reconstitute; it keeps
 `*embedded.NilServiceError` for a service that should have been wired and was
 not.
 
+The refusal is the same on every transport for every family, not just for the
+calls a transport happened to route. REST attaches the lease and lock routes
+unconditionally and each handler answers 501 before proposing anything (they
+used to be registered only when a service was wired, so a standalone node
+answered a router `404 page not found`); MCP registers the MVCC, watch, lease
+and lock tools unconditionally and each answers `UNIMPLEMENTED` (they used to
+be absent: `tool not found`). Pinned per transport by
+`sdk/go/conformance/standalone_refusal_test.go`.
+
+Watch is a stream, so where the refusal surfaces differs while its type does
+not: embedded and REST refuse at open, so `Watch` returns the error; gRPC,
+Unix, QUIC and MCP learn of it on the stream's first receive, which ends the
+stream with a terminal response whose `Err()` is the same
+`*transport.CapabilityUnsupportedError`. (MCP used to re-poll the refusal
+forever.)
+
 The refusal is a **service-layer** error, `*service.CapabilityUnsupportedError`,
 whose message names the refused service and the remedy
 (`mvcc: not implemented on this server: requires mode: raft`). That type is the

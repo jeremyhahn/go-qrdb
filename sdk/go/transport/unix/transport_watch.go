@@ -126,6 +126,9 @@ func readGRPCWatchResponses(ctx context.Context, stream pb.QRDBService_WatchClie
 			reason := err.Error()
 			if st, ok := status.FromError(err); ok {
 				reason = st.Message()
+				if st.Code() == codes.Unimplemented {
+					reason = transport.UnsupportedWatchReason(reason)
+				}
 			}
 			select {
 			case ch <- transport.WatchResponse{Canceled: true, CancelReason: reason}:

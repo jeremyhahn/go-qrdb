@@ -24,6 +24,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -2765,18 +2766,6 @@ func TestWithMVCC_ToolsRegistered(t *testing.T) {
 	}
 }
 
-func TestWithMVCC_NilNotRegistered(t *testing.T) {
-	kvSvc := newMockKVService()
-	adminSvc := newMockAdminService()
-
-	s := NewServer(kvSvc, adminSvc, ":0")
-	tools := s.MCPServer().ListTools()
-
-	if _, ok := tools["qrdb_mvcc_put_with_lease"]; ok {
-		t.Error("mvcc tools should not be registered when service is nil")
-	}
-}
-
 func TestWithTransaction_ToolsRegistered(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
@@ -2840,18 +2829,6 @@ func TestWithWatch_ToolsRegistered(t *testing.T) {
 	}
 }
 
-func TestWithWatch_NilNotRegistered(t *testing.T) {
-	kvSvc := newMockKVService()
-	adminSvc := newMockAdminService()
-
-	s := NewServer(kvSvc, adminSvc, ":0")
-	tools := s.MCPServer().ListTools()
-
-	if _, ok := tools["qrdb_watch"]; ok {
-		t.Error("watch tools should not be registered when service is nil")
-	}
-}
-
 func TestWithLease_ToolsRegistered(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
@@ -2871,18 +2848,6 @@ func TestWithLease_ToolsRegistered(t *testing.T) {
 		if _, ok := tools[name]; !ok {
 			t.Errorf("tool %q not registered", name)
 		}
-	}
-}
-
-func TestWithLease_NilNotRegistered(t *testing.T) {
-	kvSvc := newMockKVService()
-	adminSvc := newMockAdminService()
-
-	s := NewServer(kvSvc, adminSvc, ":0")
-	tools := s.MCPServer().ListTools()
-
-	if _, ok := tools["qrdb_lease_grant"]; ok {
-		t.Error("lease tools should not be registered when service is nil")
 	}
 }
 
@@ -3013,6 +2978,9 @@ func TestNewServer_AllOptions(t *testing.T) {
 		"lease (WithLease)":    leaseTools(leaseSvc),
 		"index (WithIndex)":    indexTools(indexSvc),
 		"ts (WithTimeSeries)":  timeSeriesTools(tsSvc),
+		// The raft-only families are registered unconditionally; lock has no
+		// option here, so its tools are present and refuse at call time.
+		"lock (base)": lockTools(nil),
 	}
 
 	// Every tool a wired group defines must be on the server. A group whose
@@ -4045,4 +4013,42 @@ func (m *mockMVCCService) RestoreToRevision(ctx context.Context, req *service.Re
 // CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
 func (*mockMVCCService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
+}
+
+// TestRaftOnlyTools_RegisteredWithoutAServiceAndRefuseTyped: the MVCC, watch,
+// lease and lock tools exist on a server composed without those services and
+// refuse with *ServiceNotConfiguredError, which classifies Unimplemented —
+// the answer every other transport gives a node that does not serve them.
+func TestRaftOnlyTools_RegisteredWithoutAServiceAndRefuseTyped(t *testing.T) {
+	s := NewServer(newMockKVService(), newMockAdminService(), ":0")
+	registered := s.MCPServer().ListTools()
+	for _, group := range [][]serverTool{mvccTools(nil), watchTools(nil), leaseTools(nil), lockTools(nil)} {
+		for _, tl := range group {
+			if _, ok := registered[tl.Tool.Name]; !ok {
+				t.Errorf("tool %q is not registered on a server without its service", tl.Tool.Name)
+			}
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		handler func() error
+	}{
+		{"qrdb_mvcc_get_revision", func() error {
+			_, err := handleMVCCGetRevision(nil)(context.Background(), buildCallToolRequest(t, "qrdb_mvcc_get_revision", map[string]any{"key": "k"}))
+			return err
+		}},
+		{"qrdb_lease_grant", func() error {
+			_, err := handleLeaseGrant(nil)(context.Background(), buildCallToolRequest(t, "qrdb_lease_grant", map[string]any{"ttl": float64(5)}))
+			return err
+		}},
+	} {
+		err := c.handler()
+		var nc *ServiceNotConfiguredError
+		if !errors.As(err, &nc) {
+			t.Fatalf("%s: err = %T (%v), want *ServiceNotConfiguredError", c.name, err, err)
+		}
+		if got := ServiceErrorCode(err); got != wire.CodeUnimplemented {
+			t.Errorf("%s: code %v, want CodeUnimplemented", c.name, got)
+		}
+	}
 }

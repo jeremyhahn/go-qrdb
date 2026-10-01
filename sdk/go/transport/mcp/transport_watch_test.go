@@ -664,3 +664,23 @@ func TestWatchPoll_TruncatedReplayResumesRatherThanSkips(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyWatchPollError_CapabilityRefusalIsTerminal: a node that serves
+// no watch refuses every poll identically, so the refusal ends the watch (with
+// a reason Err rebuilds as the typed error) instead of being retried forever.
+// An ordinary transient failure is still retried.
+func TestClassifyWatchPollError_CapabilityRefusalIsTerminal(t *testing.T) {
+	refusal := &transport.RequestError{Method: "qrdb_watch", Err: &transport.CapabilityUnsupportedError{Message: "mcp: service not configured: watch"}}
+	reason, terminal := classifyWatchPollError(refusal)
+	if !terminal {
+		t.Fatal("capability refusal classified as transient; the poll loop would retry it forever")
+	}
+	var unsupported *transport.CapabilityUnsupportedError
+	if err := (transport.WatchResponse{Canceled: true, CancelReason: reason}).Err(); !errors.As(err, &unsupported) {
+		t.Fatalf("terminal reason %q rebuilds as %T, want *transport.CapabilityUnsupportedError", reason, err)
+	}
+
+	if _, terminal := classifyWatchPollError(errors.New("connection reset")); terminal {
+		t.Error("a transient failure was classified terminal")
+	}
+}

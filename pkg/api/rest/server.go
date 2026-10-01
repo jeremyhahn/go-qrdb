@@ -1408,24 +1408,26 @@ func (s *Server) registerRoutes() {
 	// ResponseWriter, so the handler's http.Flusher assertion holds).
 	s.route(http.MethodGet, "/watch", permission.WatchWatch, s.handleWatch)
 
-	// Lease routes: only attached when a lease service is wired. Without
-	// gating, proposals would reach a SM instance that has no lease subsystem,
-	// causing SM.Apply to fail and blocking all subsequent linearizable reads.
-	leaseOn := s.leaseSvc != nil || s.serviceRegistry != nil
-	s.routeIf(leaseOn, http.MethodPost, "/lease/grant", permission.LeaseGrant, s.handleLeaseGrant)
-	s.routeIf(leaseOn, http.MethodPost, "/lease/revoke", permission.LeaseRevoke, s.handleLeaseRevoke)
-	s.routeIf(leaseOn, http.MethodPost, "/lease/keepalive", permission.LeaseKeepAlive, s.handleLeaseKeepAlive)
-	s.routeIf(leaseOn, http.MethodGet, "/lease/ttl", permission.LeaseTTL, s.handleLeaseTimeToLive)
-	s.routeIf(leaseOn, http.MethodGet, "/lease/list", permission.LeaseList, s.handleLeaseList)
+	// Lease and lock routes are attached UNCONDITIONALLY. Every handler
+	// resolves its service first and answers 501 with the typed
+	// not-implemented refusal when the node has none -- a raft-only family on
+	// a standalone node, or a composition without it -- before anything is
+	// proposed. Attaching them only when a service was wired made REST answer
+	// a bare router 404 where gRPC, Unix, QUIC and MCP answer Unimplemented,
+	// so a client could not tell "this node does not serve leases" from "no
+	// such path".
+	s.route(http.MethodPost, "/lease/grant", permission.LeaseGrant, s.handleLeaseGrant)
+	s.route(http.MethodPost, "/lease/revoke", permission.LeaseRevoke, s.handleLeaseRevoke)
+	s.route(http.MethodPost, "/lease/keepalive", permission.LeaseKeepAlive, s.handleLeaseKeepAlive)
+	s.route(http.MethodGet, "/lease/ttl", permission.LeaseTTL, s.handleLeaseTimeToLive)
+	s.route(http.MethodGet, "/lease/list", permission.LeaseList, s.handleLeaseList)
 
-	// Lock routes: only attached when a lock service is wired.
-	lockOn := s.lockSvc != nil || s.serviceRegistry != nil
-	s.routeIf(lockOn, http.MethodPost, "/lock/acquire", permission.LocksAcquire, s.handleLockAcquire)
-	s.routeIf(lockOn, http.MethodPost, "/lock/trylock", permission.LocksAcquire, s.handleLockTryLock)
-	s.routeIf(lockOn, http.MethodPost, "/lock/release", permission.LocksRelease, s.handleLockRelease)
-	s.routeIf(lockOn, http.MethodPost, "/lock/extend", permission.LocksExtend, s.handleLockExtend)
-	s.routeIf(lockOn, http.MethodGet, "/lock/status", permission.LocksStatus, s.handleLockStatus)
-	s.routeIf(lockOn, http.MethodGet, "/lock/list", permission.LocksList, s.handleLockList)
+	s.route(http.MethodPost, "/lock/acquire", permission.LocksAcquire, s.handleLockAcquire)
+	s.route(http.MethodPost, "/lock/trylock", permission.LocksAcquire, s.handleLockTryLock)
+	s.route(http.MethodPost, "/lock/release", permission.LocksRelease, s.handleLockRelease)
+	s.route(http.MethodPost, "/lock/extend", permission.LocksExtend, s.handleLockExtend)
+	s.route(http.MethodGet, "/lock/status", permission.LocksStatus, s.handleLockStatus)
+	s.route(http.MethodGet, "/lock/list", permission.LocksList, s.handleLockList)
 
 	// Index routes.
 	s.route(http.MethodPost, "/index/create", permission.IndexCreate, s.handleIndexCreate)

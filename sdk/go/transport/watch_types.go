@@ -86,6 +86,26 @@ const (
 	watchStartRevisionUnsupportedSubstr = "start revision replay is not supported by this store"
 )
 
+// capabilityUnsupportedPrefix opens every CapabilityUnsupportedError message.
+// A node that serves no watch at all (standalone mode) refuses a remote
+// stream with Unimplemented on its first receive; the stream clients carry
+// that as a terminal CancelReason built from CapabilityUnsupportedError, and
+// Err rebuilds the typed error from it, so a watch refusal is the same typed
+// error on every transport whether it surfaces from Watch itself (embedded,
+// REST) or from the stream's terminal response (gRPC, Unix, QUIC, MCP).
+var capabilityUnsupportedPrefix = (&CapabilityUnsupportedError{}).Error()
+
+// UnsupportedWatchReason returns the CancelReason a stream client delivers
+// when the server refuses a watch with Unimplemented: msg unchanged when it is
+// a watch-history condition Err already types, otherwise msg as a
+// CapabilityUnsupportedError, which Err rebuilds.
+func UnsupportedWatchReason(msg string) string {
+	if classifyWatchReason(msg) != nil {
+		return msg
+	}
+	return (&CapabilityUnsupportedError{Message: msg}).Error()
+}
+
 // classifyWatchReason returns the typed error for a known watch-history
 // condition matching reason, or nil if reason does not match either
 // condition.
@@ -95,6 +115,8 @@ func classifyWatchReason(reason string) error {
 		return &WatchCompactedError{Reason: reason}
 	case strings.Contains(reason, watchStartRevisionUnsupportedSubstr):
 		return &WatchStartRevisionUnsupportedError{Reason: reason}
+	case strings.HasPrefix(reason, capabilityUnsupportedPrefix):
+		return &CapabilityUnsupportedError{Message: strings.TrimPrefix(reason, capabilityUnsupportedPrefix)}
 	default:
 		return nil
 	}

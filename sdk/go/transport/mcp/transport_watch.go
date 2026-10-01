@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -355,6 +356,13 @@ func classifyWatchPollError(err error) (reason string, terminal bool) {
 	}
 	if isWatchCanceledError(err) {
 		return err.Error(), true
+	}
+	// A node that serves no watch (standalone mode) refuses every poll the
+	// same way; retrying would poll forever. End the watch with the typed
+	// refusal, which WatchResponse.Err rebuilds.
+	var unsupported *transport.CapabilityUnsupportedError
+	if errors.As(err, &unsupported) {
+		return unsupported.Error(), true
 	}
 	return "", false
 }

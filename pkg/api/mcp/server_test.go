@@ -637,6 +637,13 @@ func TestServer_ToolRegistration(t *testing.T) {
 		// absent.
 		"qrdb_barrier_enable_encryption",
 	}
+	// The raft-only families are registered unconditionally and refuse at
+	// call time when the node has no such service.
+	for _, group := range [][]serverTool{mvccTools(nil), watchTools(nil), leaseTools(nil), lockTools(nil)} {
+		for _, tl := range group {
+			expectedTools = append(expectedTools, tl.Tool.Name)
+		}
+	}
 
 	registeredTools := s.MCPServer().ListTools()
 

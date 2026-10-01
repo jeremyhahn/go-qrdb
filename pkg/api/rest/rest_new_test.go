@@ -1501,16 +1501,16 @@ func TestHandleLeaseGrant_Success(t *testing.T) {
 }
 
 func TestHandleLeaseGrant_NilService(t *testing.T) {
-	// With route gating, /lease/grant is not registered without a lease service.
-	// The dispatcher returns 404 (route not found) rather than reaching a handler
-	// that would propose to a SM without a lease subsystem (which would stall reads).
+	// The route is attached without a lease service and the handler refuses
+	// with the typed not-implemented answer before anything is proposed, as
+	// every other transport does.
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 
 	req := httptest.NewRequest(http.MethodPost, "/lease/grant", strings.NewReader(`{"ttl":60}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotFound)
+	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
 func TestHandleLeaseGrant_BadBody(t *testing.T) {
@@ -1565,7 +1565,7 @@ func TestHandleLeaseRevoke_NilService(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotFound)
+	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
 func TestHandleLeaseRevoke_BadBody(t *testing.T) {
@@ -1622,7 +1622,7 @@ func TestHandleLeaseKeepAlive_NilService(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotFound)
+	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
 func TestHandleLeaseKeepAlive_BadBody(t *testing.T) {
@@ -1679,7 +1679,7 @@ func TestHandleLeaseTimeToLive_NilService(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotFound)
+	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
 func TestHandleLeaseTimeToLive_MissingParam(t *testing.T) {
@@ -1750,7 +1750,7 @@ func TestHandleLeaseList_NilService(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusNotFound)
+	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
 func TestHandleLeaseList_ServiceError(t *testing.T) {
