@@ -1986,3 +1986,25 @@ func TestAuthMethodNotPermitted_MapsToForbidden(t *testing.T) {
 		t.Errorf("gRPC: got %v, want %v", got, codes.PermissionDenied)
 	}
 }
+
+// TestAuthenticate_NoUserStoreCarriesNoBindings asserts RoleBindings and
+// Attributes an authenticator hands in never survive authentication, even
+// with no user store configured: they are user-record state, and with no
+// store there is no record to grant them.
+func TestAuthenticate_NoUserStoreCarriesNoBindings(t *testing.T) {
+	id := &auth.Identity{
+		Subject:      "charlie",
+		TenantID:     "t1",
+		RoleBindings: []auth.RoleBinding{{RoleID: "smuggled", TenantID: "acme"}},
+		Attributes:   map[string]string{"department": "smuggled"},
+	}
+	m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if identity.RoleBindings != nil || identity.Attributes != nil {
+		t.Fatalf("identity kept RoleBindings=%v Attributes=%v, want both cleared", identity.RoleBindings, identity.Attributes)
+	}
+}

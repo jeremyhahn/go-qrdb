@@ -723,9 +723,10 @@ user the gate cannot find is the ordinary `*user.UserNotFoundError`.
 
 `pkg/auth/rbac.RBACAuthorizer.Authorize` consumes `RoleBindings` on the READ
 side. `finalizeIdentity` clears `auth.Identity.RoleBindings` and
-`Attributes` before the user lookup whenever a user store is configured, then
-fills them from the record, so the store is their only source and a withdrawn
-binding stops applying on every path — found, not found, tenant sealed. The
+`Attributes` unconditionally before the user lookup, then fills them from the
+record, so the store is their only source and a withdrawn binding stops
+applying on every path — found, not found, tenant sealed, and no user store
+at all, where an authenticator-asserted binding has no record behind it. The
 bindings whose `TenantID` equals the check's target tenant are resolved
 SEPARATELY from `identity.Roles`, in that tenant, and the two permission sets
 are unioned. Resolving both as one role-id list in one tenant — the shape

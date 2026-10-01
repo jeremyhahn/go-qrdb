@@ -259,11 +259,12 @@ for tenant X without being an admin of the system tenant.
 
 All three fields influence an authorization decision. `finalizeIdentity`
 carries `RoleBindings` and `Attributes` onto the authenticated identity
-alongside `RoleIDs`. With a user store configured the store is their only
-source: whatever the authenticator carried in is cleared before the lookup,
-and the store's current state replaces it, so a withdrawn binding or a
-cleared attribute stops applying on the next request — including when the
-record is not found or the tenant is sealed. `pkg/auth/rbac.RBACAuthorizer.
+alongside `RoleIDs`. The user store is their only source: whatever the
+authenticator carried in is always cleared, and the store's current state
+replaces it, so a withdrawn binding or a cleared attribute stops applying on
+the next request — including when the record is not found, the tenant is
+sealed, or no user store is configured at all (then the identity carries
+none). `pkg/auth/rbac.RBACAuthorizer.
 Authorize` resolves `RoleIDs` in the identity's own tenant and, separately,
 resolves any `RoleBindings` entry whose `TenantID` equals the tenant the
 check targets, in THAT tenant, then unions the two permission sets — a

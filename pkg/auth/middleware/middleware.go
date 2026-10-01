@@ -388,16 +388,16 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// decision; it is not this one, and it does not belong in a fold.
 	identity.TenantID = tenant.Normalize(identity.TenantID)
 
-	if m.users != nil {
-		// RoleBindings and Attributes are user-record state, and with a user
-		// store configured the store is their ONLY source. Clear whatever the
-		// authenticator carried in BEFORE the lookup, so every path below --
-		// found, not found, tenant sealed -- starts from none: a binding
-		// withdrawn from the record, or never on it, cannot survive on an
-		// identity issued earlier or forwarded from elsewhere.
-		identity.RoleBindings = nil
-		identity.Attributes = nil
+	// RoleBindings and Attributes are user-record state: the user store is
+	// their ONLY source. Clear whatever the authenticator carried in, before
+	// anything else, so every path below -- found, not found, tenant sealed,
+	// and no user store at all -- starts from none: a binding withdrawn from
+	// the record, never on it, or asserted by an authenticator with no record
+	// behind it cannot reach the authorizer.
+	identity.RoleBindings = nil
+	identity.Attributes = nil
 
+	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
 			// A dedicated-isolation tenant whose barrier is sealed (or not
