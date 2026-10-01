@@ -39,6 +39,17 @@ SET qrdb_concurrency = 'pessimistic';
 
 `SET qrdb_concurrency = 'database'` goes back to whatever the database is set to.
 
+**The database setting is per node.** A database's settings live in each
+node's own catalog, not in the replicated data. `update-sql` (and the API
+call behind it) changes the node that receives the request, and sessions
+connected to that node follow it; a session on another node still follows
+that node's setting. In a cluster, set it on every node — or, simplest, put
+`sql.concurrency` under the database in every node's configuration file, which
+applies it at each start. Sessions that must be pessimistic whatever node they
+land on can say so themselves with `SET qrdb_concurrency`. Either way the
+locks are cluster-wide: a lock taken through one node blocks a session on any
+other.
+
 With the in-process driver or GORM, put it in the DSN so every pooled connection
 gets it:
 
