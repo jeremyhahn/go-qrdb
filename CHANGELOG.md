@@ -198,7 +198,11 @@ are not reconstructed here — their history is in the git log.
     `HolderRevokedError` or `HolderAlreadySubmittedError`;
   - every request and every submission passes a per-caller throttle on the
     shared rate-limit engine (one bucket for both): 2/s burst 10 per
-    identity or certificate, 5/s burst 20 for the anonymous bucket. A
+    identity or TLS-verified certificate, 5/s burst 20 for the anonymous
+    bucket, which every other caller shares (an unverified certificate is
+    anyone's to mint, so it buys no bucket of its own; a flood of
+    anonymous requests can starve another anonymous caller until the bucket
+    refills, never a holder with a verified certificate). A
     refusal is `ceremony.QuorumRateLimitedError`, `RESOURCE_EXHAUSTED`, sent
     with `Retry-After` on REST.
 - **A late share submission destroyed a newer quorum round.** A submission

@@ -887,22 +887,33 @@ func (h *holderScope) oldestQuorumChallenge(ids []string, bound bool) string {
 	return oldest
 }
 
-// quorumCaller identifies who is asking for a quorum challenge, for the
-// throttle key: an authenticated identity, else the certificate the TLS
-// connection presented, else the scope's single anonymous bucket. It also
-// returns the presented certificate's thumbprint, which binds a challenge to
-// the holder it names.
+// quorumCaller identifies who is making a quorum request, for the throttle
+// key: an authenticated identity, else a certificate the TLS stack VERIFIED,
+// else the scope's single anonymous bucket. It also returns the presented
+// certificate's thumbprint, verified or not, which binds a challenge to the
+// holder it names: the handshake proved possession of that certificate's key,
+// and binding compares it to the holder's enrolled one.
+//
+// An unverified certificate never keys a bucket of its own. Anyone can mint
+// one, so keying on it would hand a caller a fresh bucket per request. Every
+// anonymous caller of a scope therefore shares one bucket. That is a
+// deliberate trade-off: a flood of anonymous requests can starve another
+// anonymous caller -- a holder connecting without a verified certificate
+// included -- until the bucket refills, while a holder who presents a
+// verified certificate, or authenticates, has a bucket of their own.
 func quorumCaller(ctx context.Context) (key, peerThumb string, anonymous bool) {
+	var verified bool
 	if st := auth.TLSStateFromContext(ctx); st != nil && len(st.PeerCertificates) > 0 {
 		peerThumb = mtls.Thumbprint(st.PeerCertificates[0].Raw)
+		verified = len(st.VerifiedChains) > 0
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil && id.Subject != "" && !sealedwindow.Anonymous(ctx) {
 		return "id\x00" + id.TenantID + "\x00" + id.Subject, peerThumb, false
 	}
-	if peerThumb != "" {
+	if verified {
 		return "tls\x00" + peerThumb, peerThumb, false
 	}
-	return "anonymous", "", true
+	return "anonymous", peerThumb, true
 }
 
 // decoyQuorumChallenge returns a challenge for a holder that cannot answer

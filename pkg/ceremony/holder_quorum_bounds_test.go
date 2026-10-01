@@ -190,7 +190,7 @@ func (l *recordingLimiter) allow(key string, anonymous bool) (bool, time.Duratio
 
 // TestQuorum_BeginIsRateLimitedPerCaller: every quorum-challenge request,
 // including one for an unknown holder, passes the composer's limiter, keyed
-// per scope and per caller: an authenticated identity, else the TLS peer
+// per scope and per caller: an authenticated identity, else a verified TLS peer
 // certificate, else the one anonymous bucket of the scope. A refused request
 // is *QuorumRateLimitedError carrying the retry delay, and issues
 // nothing.
@@ -211,9 +211,9 @@ func TestQuorum_BeginIsRateLimitedPerCaller(t *testing.T) {
 	require.ErrorAs(t, err, &limited, "the anonymous bucket is spent, for every holder name")
 	assert.Equal(t, time.Second, limited.RetryAfter)
 
-	// A caller presenting a certificate has a bucket of its own, which its
+	// A caller presenting a verified certificate has a bucket of its own, which its
 	// submission draws on too.
-	certCtx := withPeerCert(t, ctx, a)
+	certCtx := withVerifiedPeerCert(t, ctx, a)
 	ch, err := e.svc.BeginQuorum(certCtx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	require.NoError(t, err)
 	_, err = e.barrier.SubmitHolderShare(certCtx, &seal.HolderSubmission{

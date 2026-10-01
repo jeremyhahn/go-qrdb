@@ -213,7 +213,15 @@ hardened against a caller who is not the holder:
   before anything else, including a request for an unknown holder. Both draw
   on the caller's one bucket. The key names the scope instance and the caller: an
   authenticated identity, else the certificate the TLS connection presented,
-  else the scope's single anonymous bucket. The node's composer installs the
+  else the scope's single anonymous bucket. A certificate keys the caller
+  only when the TLS stack verified it (`VerifiedChains` non-empty); an
+  unverified certificate is anyone's to present, so its caller is anonymous.
+  Every anonymous caller of a scope shares one bucket, which is a deliberate
+  trade-off: a flood of anonymous requests can starve another anonymous
+  caller, a holder included, of challenges until the bucket refills. A holder
+  who connects with their verified certificate, or authenticates, has a
+  bucket of their own and is never starved by anonymous traffic. The node's
+  composer installs the
   shared `pkg/ratelimit` engine:
   - each identified caller gets 2 requests per second, burst 10;
   - the anonymous bucket gets 5 per second, burst 20.
