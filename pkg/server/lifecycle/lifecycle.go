@@ -974,7 +974,11 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetCA(infra.CeremonyCA)
 	svc.SetTrustDomain(infra.HolderTrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
-	svc.SetPINBackend(infra.PINBackend)
+	// The SO PIN lockout is installed where the composer chose the backend
+	// (NewSealStorePINBackend, server.WithPINBackend); NewLockoutBackend is
+	// idempotent, so a backend that arrives decorated keeps its one counter,
+	// and one that does not is never left without a lockout.
+	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
 	svc.SetQuorumBeginLimiter(QuorumBeginLimit)
 	return svc, nil
 }

@@ -60,9 +60,19 @@ func (s sealPINStore) Put(ctx context.Context, key string, value []byte) error {
 // backend of its own (a hardware one, say) wires this one, so the SO and
 // User PINs have exactly one home per node: barrier initialization and the
 // initialization ceremony both provision into it through pin.Provision.
-func NewSealStorePINBackend(backend seal.StorageBackend) (*pin.SoftwareBackend, error) {
+//
+// The backend is returned decorated with the node's SO PIN lockout
+// (pin.NewLockoutBackend), installed here because this is where the node's
+// backend is chosen, before the composer hands it to lifecycle (Infra) and to
+// the server (server.WithPINBackend): both receive this one decorated
+// instance, so every SO PIN check on the node counts against one counter.
+func NewSealStorePINBackend(backend seal.StorageBackend) (pin.PINBackend, error) {
 	if backend == nil {
 		return nil, &NilSealStoreError{}
 	}
-	return pin.NewSoftwareBackend(sealPINStore{backend: backend}, pin.AutoDetectHashConfig())
+	software, err := pin.NewSoftwareBackend(sealPINStore{backend: backend}, pin.AutoDetectHashConfig())
+	if err != nil {
+		return nil, err
+	}
+	return pin.NewLockoutBackend(software), nil
 }

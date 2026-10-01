@@ -32,7 +32,7 @@ const signCSRGuessBudget = 50
 // reachable without authentication on the sealed-window listener, and
 // possession of the SO PIN is its only authorization, so it is an online PIN
 // oracle on every transport. It used to answer every guess immediately,
-// without limit. Guesses are now throttled per ceremony: after a short burst
+// without limit. Guesses are now throttled by the node's SO PIN lockout: after a short burst
 // the service refuses with a PIN lockout (pin.ErrPINLocked, answered 429 /
 // RESOURCE_EXHAUSTED) instead of checking another guess, and the refusal
 // covers the correct PIN too, so it cannot confirm a guess while throttled.

@@ -29,18 +29,19 @@ import (
 )
 
 // TestAuthorizeSOPIN_ProvisionedAndLockedOut drives the governance SO PIN
-// gate directly: refused before an SO PIN exists, refused when wrong, and
-// locked out after the free failures -- the right PIN included -- sharing the
-// ceremony's one counter.
+// gate directly: refused before an SO PIN exists, refused when wrong, and,
+// over a backend carrying the node's SO PIN lockout as a composer installs
+// it, locked out after the free failures -- the right PIN included.
 func TestAuthorizeSOPIN_ProvisionedAndLockedOut(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
+	e.svc.SetPINBackend(pin.NewLockoutBackend(e.pins))
 	require.ErrorIs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), pin.ErrPINNotSet)
 	require.NoError(t, e.pins.SetSOPIN("", "so-pin-1234"))
 	require.NoError(t, e.svc.AuthorizeSOPIN("so-pin-1234"))
-	for i := 0; i < soPINFreeFailures; i++ {
+	for i := 0; i < pin.SOPINFreeFailures; i++ {
 		require.ErrorIs(t, e.svc.AuthorizeSOPIN("wrong-pin-00"), pin.ErrPINInvalid)
 	}
-	var locked *SOPINLockedError
+	var locked *pin.SOPINLockedError
 	require.ErrorAs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), &locked)
 	require.ErrorIs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), pin.ErrPINLocked)
 

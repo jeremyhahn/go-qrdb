@@ -71,6 +71,33 @@ func TestWithPINBackend_Applied(t *testing.T) {
 	}
 }
 
+// TestWithPINBackend_OneLockoutPerOption: the option decorates the backend
+// with the SO PIN lockout when it is built, so every resolution of it -- the
+// server's own and a composer's ResolveCryptoOptions for lifecycle -- yields
+// the same decorated instance, and therefore one failure counter. A nil
+// backend stays nil and fails closed.
+func TestWithPINBackend_OneLockoutPerOption(t *testing.T) {
+	backend, err := pin.NewSoftwareBackend(nil, pin.DefaultHashConfig())
+	if err != nil {
+		t.Fatalf("NewSoftwareBackend: %v", err)
+	}
+	opt := WithPINBackend(backend)
+	first := ResolveCryptoOptions(opt).PINBackend
+	second := ResolveCryptoOptions(opt).PINBackend
+	if first == nil || first != second {
+		t.Fatal("two resolutions of one WithPINBackend option must yield the same backend instance")
+	}
+	if pin.NewLockoutBackend(first) != first {
+		t.Fatal("WithPINBackend must store the backend decorated with the SO PIN lockout")
+	}
+	if ResolveCryptoOptions(WithPINBackend(first)).PINBackend != first {
+		t.Fatal("re-injecting a decorated backend must not add a second lockout")
+	}
+	if ResolveCryptoOptions(WithPINBackend(nil)).PINBackend != nil {
+		t.Fatal("a nil backend must stay nil")
+	}
+}
+
 // TestWithFactorRegistry_Applied asserts that an injected FactorRegistry
 // is reachable from the server's serverOptions for the AuthFactorService.
 func TestWithFactorRegistry_Applied(t *testing.T) {
@@ -106,8 +133,8 @@ func TestWithAllInjections_Compose(t *testing.T) {
 		t.Fatal("sealStrategy clobbered by other options")
 	case srv.opts.strategyRegistry != reg:
 		t.Fatal("strategyRegistry clobbered by other options")
-	case srv.opts.pinBackend != backend:
-		t.Fatal("pinBackend clobbered by other options")
+	case srv.opts.pinBackend == nil || pin.NewLockoutBackend(srv.opts.pinBackend) != srv.opts.pinBackend:
+		t.Fatal("pinBackend clobbered by other options, or stored without the SO PIN lockout")
 	case srv.opts.factorRegistry != factors:
 		t.Fatal("factorRegistry clobbered by other options")
 	}

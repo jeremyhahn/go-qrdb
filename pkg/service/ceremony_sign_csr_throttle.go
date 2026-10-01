@@ -20,9 +20,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 )
 
-// SignCSRThrottledError is returned by CeremonySignCSR while the ceremony's
+// SignCSRThrottledError is returned by CeremonySignCSR while the node's
 // SO PIN check is locked out after repeated failures
-// (ceremony.SOPINLockedError); the presented PIN was not checked. It unwraps
+// (pin.SOPINLockedError); the presented PIN was not checked. It unwraps
 // to pin.ErrPINLocked, the PIN-lockout condition every transport answers as
 // 429 / RESOURCE_EXHAUSTED, and REST sets Retry-After from RetryAfter.
 type SignCSRThrottledError struct {

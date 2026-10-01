@@ -54,6 +54,11 @@ func (f *fakeBarrierServicer) BarrierStatus(_ context.Context) (*service.Barrier
 }
 
 func (f *fakeBarrierServicer) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
+
+// BarrierInitialized reports the double as never initialized: its
+// initialize paths answer for themselves through their canned results.
+func (f *fakeBarrierServicer) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
 func (f *fakeBarrierServicer) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return true, nil
 }

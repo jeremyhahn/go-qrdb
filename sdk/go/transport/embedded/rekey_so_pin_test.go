@@ -42,10 +42,11 @@ const rekeySOPIN = "so-pin-1234"
 
 // newRekeyTransport is the embedded transport over the REAL barrier service
 // and ceremony: a 2-of-2 Shamir system barrier with two enrolled holders,
-// initialized, and the PIN backend pins shared by the ceremony and the
-// transport, as a node wires them.
+// initialized, and the PIN backend pins -- decorated with the node's SO PIN
+// lockout -- shared by the ceremony and the transport, as a node wires them.
 func newRekeyTransport(t *testing.T, pins pin.PINBackend) *Transport {
 	t.Helper()
+	pins = pin.NewLockoutBackend(pins)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin"})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	strategy, err := seal.NewShamirStrategy(2, 2)
@@ -107,8 +108,8 @@ func TestRekeySOPIN_RefusedUntilProvisioned(t *testing.T) {
 }
 
 // TestRekeySOPIN_GuessesAreLockedOut: every rekey start or revocation is an
-// online guess at the SO PIN, so they count against the same lockout as the
-// ceremony's other SO PIN checks. After the free failures -- here spent on
+// online guess at the SO PIN, so they count against the node's one SO PIN
+// lockout. After the free failures -- here spent on
 // revocations -- even the right PIN is refused, for rekey too, until the
 // backoff passes.
 func TestRekeySOPIN_GuessesAreLockedOut(t *testing.T) {
@@ -143,5 +144,51 @@ func TestRekeySOPIN_RightPINOpensTheRound(t *testing.T) {
 	}
 	if round.Required != 2 {
 		t.Fatalf("round = %+v", round)
+	}
+}
+
+// TestRekeySOPIN_RecoveryGuessesLockRekey: a wrong SO PIN spent on another
+// transport-checked operation -- recovery-key generation -- counts against
+// the same lockout as a rekey, so the right PIN is then refused for the rekey.
+func TestRekeySOPIN_RecoveryGuessesLockRekey(t *testing.T) {
+	pins := pintest.NewBackend(t)
+	if err := pins.SetSOPIN("", rekeySOPIN); err != nil {
+		t.Fatal(err)
+	}
+	tr := newRekeyTransport(t, pins)
+	ctx := context.Background()
+	for i := 0; i < pin.SOPINFreeFailures; i++ {
+		if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "wrong-pin-0000"}); !errors.Is(err, pin.ErrPINInvalid) {
+			t.Fatalf("wrong PIN %d = %v, want pin.ErrPINInvalid", i+1, err)
+		}
+	}
+	var locked *pin.SOPINLockedError
+	if _, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: rekeySOPIN}); !errors.As(err, &locked) {
+		t.Fatalf("the right PIN during the lockout = %v, want *pin.SOPINLockedError", err)
+	}
+}
+
+// TestInitializeOnInitialized_RefusedBeforePIN: both initialize paths refuse
+// an initialized barrier before comparing the SO PIN, so a right and a wrong
+// PIN get the same answer and neither counts against the lockout.
+func TestInitializeOnInitialized_RefusedBeforePIN(t *testing.T) {
+	pins := pintest.NewBackend(t)
+	if err := pins.SetSOPIN("", rekeySOPIN); err != nil {
+		t.Fatal(err)
+	}
+	tr := newRekeyTransport(t, pins)
+	ctx := context.Background()
+	for _, presented := range []string{"wrong-pin-0000", rekeySOPIN} {
+		for i := 0; i < pin.SOPINFreeFailures; i++ {
+			if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: []byte("secret-secret-1234"), SOPin: presented}); !errors.Is(err, seal.ErrAlreadyInitialized) {
+				t.Fatalf("initialize with SO PIN %q = %v, want seal.ErrAlreadyInitialized", presented, err)
+			}
+			if _, err := tr.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 2, SOPin: presented}); !errors.Is(err, seal.ErrAlreadyInitialized) {
+				t.Fatalf("Shamir initialize with SO PIN %q = %v, want seal.ErrAlreadyInitialized", presented, err)
+			}
+		}
+	}
+	if _, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: rekeySOPIN}); err != nil {
+		t.Fatalf("rekey with the right PIN after initialize calls = %v; they must not count against the lockout", err)
 	}
 }

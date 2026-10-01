@@ -437,7 +437,7 @@ type nodeSealSubsystem struct {
 	// pinBackend is the software PIN backend over the node-local seal store
 	// (lifecycle.NewSealStorePINBackend). It is the node's PIN backend
 	// unless the caller injects one through server.WithPINBackend.
-	pinBackend *pin.SoftwareBackend
+	pinBackend pin.PINBackend
 	// volumePool is non-nil when the config declares at least one volume pool.
 	// It is closed during node shutdown after the per-tenant registry is
 	// drained, mirroring the daemon's shutdown ordering.

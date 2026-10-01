@@ -79,6 +79,12 @@ func (s *embeddableBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) 
 	return nil
 }
 
+// BarrierInitialized reports the double as never initialized: its
+// initialize paths answer for themselves through their canned results.
+func (s *embeddableBarrierService) BarrierInitialized(_ context.Context) (bool, error) {
+	return false, nil
+}
+
 func (s *embeddableBarrierService) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return false, nil
 }

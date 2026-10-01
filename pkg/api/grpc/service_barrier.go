@@ -49,7 +49,7 @@ func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.Barri
 	// so a deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.GetSecret())
 
-	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, s.barrierSvc, s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -125,7 +125,7 @@ func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
-	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, s.barrierSvc, s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, int(req.GetThreshold()), int(req.GetTotalShares()), seal.FactorPolicy(req.GetPolicy()))

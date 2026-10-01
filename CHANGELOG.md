@@ -132,6 +132,34 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **The SO PIN lockout could be bypassed by spending guesses on any SO PIN
+  check but sign-csr, rekey and revocation.** Present in v0.25.2-alpha. The
+  lockout was a counter inside the ceremony service, so only the ceremony's
+  own checks counted. The transports compared the SO PIN for seal,
+  recovery-key generation and both initialize paths straight against the PIN
+  backend, uncounted and unlimited, and sign-csr, seal and initialization are
+  reachable anonymously in the sealed window. The lockout now lives in the PIN
+  backend: `pin.NewLockoutBackend` decorates a `pin.PINBackend` and counts
+  every failed SO PIN comparison (`VerifySOPIN`, `SetSOPIN` with a current
+  PIN, `ChangeSOPIN`, `SetUserPIN`, `ResetLockout`). It is installed once,
+  where the node's backend is chosen (`lifecycle.NewSealStorePINBackend`
+  returns it decorated; `server.WithPINBackend` decorates an injected backend
+  when the option is built; both are idempotent), so the ceremony and every
+  transport share one counter: 5 free failures, then a backoff doubling from
+  1 s to 15 min during which every SO PIN check, the right PIN included, is
+  refused with `pin.SOPINLockedError`. The ceremony's own counter is deleted.
+  `ResetLockout` now verifies the SO PIN itself, because the software
+  backend's no-op answered nil for any PIN.
+- **Initializing an initialized barrier was an anonymous SO PIN oracle.**
+  Present in v0.25.2-alpha. Both initialize paths verified a supplied SO PIN
+  before the barrier refused the call as already initialized, so a right PIN
+  and a wrong one got different answers on a barrier that could never be
+  initialized again. Every transport now calls
+  `service.ProvisionInitializePINs`, which answers
+  `seal.ErrAlreadyInitialized` before comparing any PIN; the calls no longer
+  count against the lockout. A failure to read the initialization record is
+  returned rather than treated as "not initialized".
+
 - **A holder registered while sealed took over an enrolled holder at unseal.**
   Registering a share holder while the barrier was sealed and already
   initialized cached the record unchecked. A registry read that failed while
@@ -201,9 +229,9 @@ are not reconstructed here — their history is in the git log.
   `pin.RequireSOPIN` admitted the call when no SO PIN had been provisioned.
   The barrier service now verifies it (`BarrierRekeyStart` and
   `BarrierOfficerRevoke` take the PIN) through
-  `ceremony.CeremonyService.AuthorizeSOPIN`. That shares the SO PIN lockout
-  `CeremonySignCSR` counts against, and refuses with `pin.ErrPINNotSet` while
-  no SO PIN is provisioned (`pin.RequireProvisionedSOPIN`).
+  `ceremony.CeremonyService.AuthorizeSOPIN`. That counts against the node's
+  one SO PIN lockout, and refuses with `pin.ErrPINNotSet` while no SO PIN is
+  provisioned (`pin.RequireProvisionedSOPIN`).
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading
@@ -400,6 +428,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **`ceremony.SOPINLockedError` is now `pin.SOPINLockedError`.** The lockout
+  moved from the ceremony service into the PIN backend
+  (`pin.NewLockoutBackend`); the error moved with it and still unwraps to
+  `pin.ErrPINLocked`. `lifecycle.NewSealStorePINBackend` returns a
+  `pin.PINBackend` (the decorated backend) rather than a
+  `*pin.SoftwareBackend`. A composer that hands a PIN backend to the ceremony
+  without going through `lifecycle` or `server.WithPINBackend` must decorate
+  it with `pin.NewLockoutBackend` itself.
+- **`service.BarrierServicer` gains `BarrierInitialized(ctx) (bool, error)`.**
+  The initialize paths use it to refuse an initialized barrier before any PIN
+  is compared. Implementations of the interface must add it.
 - **`service.BarrierServicer.BarrierRekeyStart` and `BarrierOfficerRevoke`
   take the SO PIN.** The service verifies it; transports no longer do.
 - **Rekeying or revoking a holder of the system barrier requires a

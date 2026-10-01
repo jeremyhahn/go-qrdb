@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -1148,7 +1149,7 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 // delay-seconds) when err says how long the caller must wait: a throttled
 // ceremony-sign-csr (service.SignCSRThrottledError), a throttled
 // quorum-challenge request (ceremony.QuorumBeginRateLimitedError), or an SO
-// PIN check locked out after repeated failures (ceremony.SOPINLockedError,
+// PIN check locked out after repeated failures (pin.SOPINLockedError,
 // from a rekey or revocation). The delay
 // is rounded up, and never below one second, so a caller that honours it is
 // never early. It must run before the status is written: net/http drops
@@ -1157,7 +1158,7 @@ func setRetryAfter(w http.ResponseWriter, err error) {
 	var wait time.Duration
 	var signCSR *service.SignCSRThrottledError
 	var quorumBegin *ceremony.QuorumBeginRateLimitedError
-	var soPINLocked *ceremony.SOPINLockedError
+	var soPINLocked *pin.SOPINLockedError
 	switch {
 	case errors.As(err, &signCSR):
 		wait = signCSR.RetryAfter

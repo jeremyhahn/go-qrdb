@@ -46,6 +46,13 @@ type BarrierServicer interface {
 	// BarrierStatus returns the current barrier status.
 	BarrierStatus(ctx context.Context) (*BarrierStatusInfo, error)
 
+	// BarrierInitialized reports whether the barrier has been initialized.
+	// Unlike BarrierStatus, a failure to read the initialization record is
+	// returned rather than reported as "not initialized", so the initialize
+	// paths can refuse an initialized barrier before comparing any PIN and
+	// fail closed (ProvisionInitializePINs).
+	BarrierInitialized(ctx context.Context) (bool, error)
+
 	// BarrierInitializeShamir initializes the barrier under Shamir custody:
 	// the barrier unseal key is split threshold-of-totalShares to the
 	// enrolled share holders (totalShares must equal their number), each
@@ -333,6 +340,14 @@ func (s *BarrierService) BarrierSeal(_ context.Context) error {
 	return s.barrier.Seal()
 }
 
+// BarrierInitialized reports whether the barrier has been initialized,
+// reading the persisted record on a barrier this process did not initialize.
+// A read failure is returned, never reported as "not initialized", so a caller
+// gating on the answer (ProvisionInitializePINs) fails closed.
+func (s *BarrierService) BarrierInitialized(ctx context.Context) (bool, error) {
+	return s.barrier.Initialized(ctx)
+}
+
 // BarrierStatus returns the current barrier status, mapping the seal
 // package's BarrierStatus to the service-layer BarrierStatusInfo type.
 func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, error) {
@@ -508,8 +523,9 @@ func QuorumOutcomeFrom(out *seal.QuorumOutcome) *QuorumOutcomeInfo {
 
 // BarrierRekeyStart opens a rekey round for domain.
 //
-// soPIN is verified here, behind the ceremony's SO PIN lockout, so every
-// transport gets the same check (ceremony.CeremonyService.AuthorizeSOPIN).
+// soPIN is verified here, behind the node's one SO PIN lockout in the PIN
+// backend, so every transport gets the same check
+// (ceremony.CeremonyService.AuthorizeSOPIN).
 func (s *BarrierService) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*QuorumRoundInfo, error) {
 	if s.ceremony == nil {
 		return nil, ErrCeremonyNotConfigured

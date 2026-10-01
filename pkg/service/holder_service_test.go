@@ -95,7 +95,9 @@ func (e *holderSvcEnv) wire(barrier *seal.StorageBarrier) {
 	require.NoError(e.t, err)
 	core.SetCA(e.ca)
 	core.SetTrustDomain("db.example.com")
-	core.SetPINBackend(e.pins)
+	// A composer installs the node's SO PIN lockout around the backend it
+	// hands the ceremony (lifecycle, server.WithPINBackend); so does this one.
+	core.SetPINBackend(pin.NewLockoutBackend(e.pins))
 	e.barrier, e.core = barrier, core
 	e.svc = NewBarrierServiceWithCeremony(barrier, core)
 	e.cer = NewCeremonyService(core)

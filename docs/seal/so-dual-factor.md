@@ -138,9 +138,12 @@ which the server reads as well: `BarrierSeal`, `BarrierInitializeShamir`,
 `BarrierRekeyStart`, `BarrierOfficerRevoke`, `BarrierGenerateRecoveryKeys`,
 `CeremonyInitialize` and `CeremonySignCSR`. On QUIC that field is the only
 carrier. For rekey start and holder revocation, the barrier **service**
-verifies that field. It does so behind the ceremony's SO PIN lockout, which
-`CeremonySignCSR` counts against too, so every transport makes the same check
-and a guess costs the same everywhere. It refuses while no SO PIN has been
+verifies that field. Every SO PIN comparison on the node -- these, the
+transports' checks for seal, recovery-key generation and initialization, and
+`CeremonySignCSR` -- runs through the PIN backend's SO PIN lockout
+(`pin.NewLockoutBackend`), installed once where the node's backend is chosen,
+so all of them count against one counter and a guess costs the same on every
+operation and every transport. Rekey and revocation refuse while no SO PIN has been
 provisioned (`pin.ErrPINNotSet`, `412` / `FAILED_PRECONDITION`). A
 locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with `Retry-After` on
 REST. **Every network

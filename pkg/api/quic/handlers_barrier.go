@@ -44,7 +44,7 @@ func (s *Server) handleBarrierInitialize(ctx context.Context, payload []byte) ([
 	// so a deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.GetSecret())
 
-	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, s.barrierSvc, s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, err
 	}
 
@@ -137,7 +137,7 @@ func (s *Server) handleBarrierShamirInitialize(ctx context.Context, payload []by
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := pin.Provision(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, s.barrierSvc, s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, err
 	}
 

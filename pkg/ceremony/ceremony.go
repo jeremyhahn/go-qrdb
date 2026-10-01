@@ -49,9 +49,6 @@ const (
 // seal.CeremonyDistributor and seal.HolderVerifier, and NewCeremonyService
 // installs it as both.
 type CeremonyService struct {
-	// soPIN serializes and counts SO PIN checks; see soPINAttempts.
-	soPIN soPINAttempts
-
 	mu      sync.Mutex
 	config  *CeremonyConfig
 	barrier *seal.StorageBarrier
@@ -390,7 +387,7 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	if soPin == "" {
 		return nil, ErrInvalidSOPIN
 	}
-	if err := s.soPIN.check(func() error { return pin.RequireSOPIN(pins, soPin) }); err != nil {
+	if err := pin.RequireSOPIN(pins, soPin); err != nil {
 		return nil, err
 	}
 	if len(csrPEM) == 0 {
@@ -426,15 +423,16 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 // AuthorizeSOPIN verifies soPIN as the SO PIN that gates a governance
 // operation on the barrier -- a rekey, a holder revocation. It refuses when
 // no SO PIN has been provisioned (pin.ErrPINNotSet) or no PIN backend is
-// wired (pin.ErrBackendNotConfigured), and it shares the lockout every SO PIN
-// check of this ceremony counts against: once the free failures are spent,
-// any SO PIN check, the right PIN included, is refused with
-// *SOPINLockedError until the backoff passes.
+// wired (pin.ErrBackendNotConfigured). The PIN backend the composer installs
+// is decorated with the node's one SO PIN lockout (pin.NewLockoutBackend), so
+// this check counts against the same counter as every other SO PIN check on
+// the node: once the free failures are spent, the right PIN included is
+// refused with *pin.SOPINLockedError until the backoff passes.
 func (s *CeremonyService) AuthorizeSOPIN(soPIN string) error {
 	s.mu.Lock()
 	pins := s.pins
 	s.mu.Unlock()
-	return s.soPIN.check(func() error { return pin.RequireProvisionedSOPIN(pins, soPIN) })
+	return pin.RequireProvisionedSOPIN(pins, soPIN)
 }
 
 // RegisterOfficer enrols a share holder — Security Officer or key custodian —

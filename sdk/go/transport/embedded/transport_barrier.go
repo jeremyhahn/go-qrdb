@@ -46,7 +46,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := pin.Provision(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
 		return err
 	}
 	return t.barrierSvc.BarrierInitialize(ctx, req.Secret)
@@ -114,7 +114,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := pin.Provision(t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
 		return nil, err
 	}
 	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Threshold, req.TotalShares, seal.FactorPolicy(req.Policy))

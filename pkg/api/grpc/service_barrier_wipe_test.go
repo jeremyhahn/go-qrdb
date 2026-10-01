@@ -58,6 +58,10 @@ var _ service.BarrierServicer = (*capturingBarrierSvc)(nil)
 
 func newCapturingBarrierSvc() *capturingBarrierSvc { return &capturingBarrierSvc{} }
 
+// BarrierInitialized reports the double as never initialized, so the
+// initialize handler reaches BarrierInitialize and hands it the credential.
+func (c *capturingBarrierSvc) BarrierInitialized(context.Context) (bool, error) { return false, nil }
+
 func (c *capturingBarrierSvc) BarrierInitialize(_ context.Context, secret []byte) error {
 	c.seen = secret
 	return c.err

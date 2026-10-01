@@ -260,7 +260,7 @@ func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBack
 
 		soPIN := mcp.ParseString(req, "so_pin", "")
 		userPIN := mcp.ParseString(req, "user_pin", "")
-		if err := pin.Provision(pinBackend, soPIN, userPIN); err != nil {
+		if err := service.ProvisionInitializePINs(ctx, svc, pinBackend, soPIN, userPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_initialize", Err: err}
 		}
 
@@ -418,7 +418,7 @@ func handleBarrierShamirInitialize(svc service.BarrierServicer, pinBackend pin.P
 
 		soPIN := mcp.ParseString(req, "so_pin", "")
 		userPIN := mcp.ParseString(req, "user_pin", "")
-		if err := pin.Provision(pinBackend, soPIN, userPIN); err != nil {
+		if err := service.ProvisionInitializePINs(ctx, svc, pinBackend, soPIN, userPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: err}
 		}
 

@@ -285,8 +285,12 @@ call is routed to rather than anything in the request:
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
 Every PIN failure path fails closed. Note that the **software backend has no
-lockout**: `GetLockoutStatus()` returns nil and `ResetLockout()` is a no-op, so
-a nil status means "this backend has no lockout", **not** "not locked out".
+lockout of its own**: `GetLockoutStatus()` returns nil and `ResetLockout()` is a
+no-op, so a nil status means "this backend has no lockout", **not** "not locked
+out". The SO PIN lockout is `pin.NewLockoutBackend(backend) PINBackend`, a
+decorator a node installs once around its backend; while locked it refuses
+every SO PIN check with `*pin.SOPINLockedError{RetryAfter}` (unwraps to
+`ErrPINLocked`; 429 / `RESOURCE_EXHAUSTED`).
 
 ## Versioning
 

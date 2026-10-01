@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -212,7 +211,7 @@ func TestBarrierHandlers_SOPINGated_ServiceRefusals(t *testing.T) {
 		pin.ErrPINInvalid:           http.StatusUnauthorized,
 		pin.ErrBackendNotConfigured: http.StatusPreconditionFailed,
 		pin.ErrPINNotSet:            http.StatusPreconditionFailed,
-		&ceremony.SOPINLockedError{RetryAfter: 1500 * time.Millisecond}: http.StatusTooManyRequests,
+		&pin.SOPINLockedError{RetryAfter: 1500 * time.Millisecond}: http.StatusTooManyRequests,
 	} {
 		svc := &mockBarrierService{
 			rekeyStartFn: func(context.Context, seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error) {

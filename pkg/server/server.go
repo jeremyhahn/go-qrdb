@@ -866,8 +866,16 @@ func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
 // callers inject TPM2 or PKCS#11 backends from go-xkms here; the
 // ceremony service uses the backend to store and verify the SO and
 // User PINs (never as raw bytes).
+//
+// The backend is decorated with the node's SO PIN lockout
+// (pin.NewLockoutBackend) once, here, when the option is built -- not each
+// time it is applied -- so every resolution of the option, by the server and
+// by a composer that hands ResolveCryptoOptions' backend to lifecycle, yields
+// the same instance and therefore one counter. A backend that is already
+// decorated is kept as it is.
 func WithPINBackend(backend pin.PINBackend) ServerOption {
-	return func(o *serverOptions) { o.pinBackend = backend }
+	locked := pin.NewLockoutBackend(backend)
+	return func(o *serverOptions) { o.pinBackend = locked }
 }
 
 // WithFactorRegistry injects a populated authentication-factor registry.

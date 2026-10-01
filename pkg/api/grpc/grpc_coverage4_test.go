@@ -85,6 +85,11 @@ func (m *barrierSvcMini) BarrierStatus(_ context.Context) (*service.BarrierStatu
 func (m *barrierSvcMini) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return m.recoveryDeleteErr
 }
+
+// BarrierInitialized reports the double as never initialized: its
+// initialize paths answer for themselves through their canned results.
+func (m *barrierSvcMini) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
 func (m *barrierSvcMini) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return m.recoveryHasResult, m.recoveryHasErr
 }

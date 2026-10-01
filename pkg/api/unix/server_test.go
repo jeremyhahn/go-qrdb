@@ -1115,7 +1115,12 @@ func (s *stubBarrierSvc) BarrierSeal(_ context.Context) error                 { 
 func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return nil, nil
 }
-func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error      { return nil }
+func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
+
+// BarrierInitialized reports the double as never initialized: its
+// initialize paths answer for themselves through their canned results.
+func (s *stubBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
 func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error) { return false, nil }
 
 // stubCeremonySvc satisfies service.CeremonyServicer for option propagation tests.

@@ -102,11 +102,15 @@ surface applies to its own by-id verbs. See
 - **Interpreting the enrolment blob.** Rejected: qrdb stores
   `FactorEnrollment.Data` and never parses it, so a factor implementation cannot
   smuggle an authorization decision through it.
-- **A software attempt-counter lockout.** Deliberately absent:
+- **A lockout inside the software backend.** Deliberately absent:
   `SoftwareBackend.GetLockoutStatus()` returns **nil** and `ResetLockout()` is a
-  **no-op**. A counter that a process restart resets is theatre; a caller that
-  needs real lockout injects a hardware backend. This is stated rather than
-  implied so nobody assumes protection that is not there.
+  **no-op**. The SO PIN lockout is a separate decorator,
+  `pin.NewLockoutBackend`, that a node installs around whichever backend it
+  uses, so one counter covers every SO PIN check whatever the backend. Its
+  counter is in memory and a process restart clears it; a deployment that
+  needs a lockout that survives restarts injects a hardware backend, which the
+  decorator then fronts. This is stated rather than implied so nobody assumes
+  protection that is not there.
 - **Choosing the hash algorithm from the runtime.** Rejected: the algorithm is
   persisted **inside each `PINRecord`** and resolved at verification time. That
   is what lets a FIPS binary verify a PIN hashed by a non-FIPS binary and vice
@@ -171,7 +175,10 @@ can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
   delegation, so every backend gets the same floor.
 - **Verification is constant-time** (`crypto/subtle`) and hashes are re-derived
   on every call.
-- **The software backend has no lockout.** Its protection is the hash.
+- **The software backend has no lockout of its own.** Its protection is the
+  hash. A node fronts it with the SO PIN lockout decorator
+  (`pin.NewLockoutBackend`): 5 free failures, then a backoff doubling from 1 s
+  to 15 min, in memory.
 
 ## The seam's error contract
 

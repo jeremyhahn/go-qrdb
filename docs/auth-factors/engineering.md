@@ -99,9 +99,18 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
 - **Verification re-derives the hash on every call** and compares in constant
   time (`crypto/subtle`).
 - **`SoftwareBackend.GetLockoutStatus()` returns nil and `ResetLockout()` is a
-  no-op.** There is no software attempt counter. A caller that needs lockout
-  injects a hardware backend. Do not read the nil as "not locked out" in a
-  security decision.
+  no-op.** The backend itself has no attempt counter. Do not read the nil as
+  "not locked out" in a security decision.
+- **The SO PIN lockout is a decorator, `pin.NewLockoutBackend`.** It counts
+  failed SO PIN comparisons (`VerifySOPIN`; `SetSOPIN` with a current PIN;
+  `ChangeSOPIN`; `SetUserPIN`; `ResetLockout`, which it verifies itself
+  because the software backend's no-op answers nil for any PIN) and refuses
+  every one of them with `SOPINLockedError` (unwraps to `ErrPINLocked`) while
+  locked: 5 free failures, then a backoff doubling from 1 s to 15 min. It is
+  idempotent and is installed where a node chooses its backend
+  (`lifecycle.NewSealStorePINBackend`, `server.WithPINBackend`), so the
+  ceremony and every transport share one counter. Over a backend with no
+  native lockout its `GetLockoutStatus` reports the decorator's own state.
 - **`SoftwareBackend` loads existing records at construction**, so
   `SOPINSet()` / `UserPINSet()` report prior state correctly after a restart.
 - **The CTAP2 hash is cached in an atomic pointer** and wiped on `Close`, so a
@@ -551,6 +560,10 @@ storage.
   from the record (FIPS record verified by a non-FIPS config and vice versa),
   CTAP2 hash caching and wipe on `Close`, and state reload at construction.
 - **The lockout no-ops are explicitly tested** so their absence stays visible.
+- **The SO PIN lockout decorator is tested** for the doubling backoff and
+  reset, every SO-PIN-comparing method sharing one counter, concurrent guesses
+  counted one at a time, idempotent installation, and -- at the composition
+  seams -- that wrong SO PINs spent on a seal lock out a rekey.
 - **Error tests** for every sentinel and typed error above.
 
 ## Observability

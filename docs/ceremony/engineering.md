@@ -105,27 +105,50 @@ the last initial holder claims.
   receive buffers are wiped.
 - **No PIN backend, no PIN operation**: SO-PIN-gated operations fail closed
   with `pin.ErrBackendNotConfigured`.
-- **sign-csr is an online SO PIN oracle, so failed checks lock it out.** On the
-  boot-time sealed-window listener it is reachable without authentication, and
-  the SO PIN is its only authorization. `SignCSRInit` runs the PIN backend's
-  check through the ceremony's `soPINAttempts`.
+- **Every SO PIN check on the node counts against one lockout, held in the
+  PIN backend.** sign-csr, seal and both initialize paths are reachable
+  without authentication on the boot-time sealed-window listener, and the SO
+  PIN is their only authorization, so each call is an online guess. The
+  lockout is a `pin.PINBackend` decorator (`pin.NewLockoutBackend`) that
+  counts failed SO PIN comparisons: `VerifySOPIN`, and `SetSOPIN` with a
+  current PIN, `ChangeSOPIN`, `SetUserPIN` and `ResetLockout`. The ceremony
+  keeps no counter of its own.
+  - It is installed once, where the node's backend is chosen:
+    `lifecycle.NewSealStorePINBackend` returns the seal-store backend already
+    decorated, and `server.WithPINBackend` decorates an injected backend when
+    the option is built. `NewLockoutBackend` is idempotent, so the ceremony
+    (through lifecycle's `Infra`) and every transport (through the server)
+    hold the same decorated instance. A guess spent on a seal, a recovery-key
+    generation, an initialize, a sign-csr, a rekey or a revocation therefore
+    costs the same, on every transport.
   - Checks run one at a time, and a failure is counted before the next check
     starts, so concurrent guesses are no cheaper than sequential ones.
   - The first 5 failures in a row cost nothing, so an operator can mistype.
-    Every later failure locks the check for a backoff that doubles from 1 s up
-    to 15 min, and a correct PIN resets the count.
-  - Only a wrong PIN (`pin.ErrPINInvalid`) counts. Successful signings,
-    requests that fail before the PIN is looked at, and a backend that cannot
-    answer never consume anything, so anonymous load cannot starve a
-    legitimate officer.
+    Every later failure locks the SO PIN for a backoff that doubles from 1 s
+    up to 15 min, and a correct PIN resets the count. While locked out every
+    SO PIN check, the right PIN included, is refused with
+    `pin.SOPINLockedError` without comparing the PIN.
+  - Only a wrong PIN counts (`pin.ErrPINInvalid`, `pin.ErrInvalidCurrentPIN`,
+    `pin.ErrPINInvalidWithStatus`). Successful checks, requests that fail
+    before the PIN is looked at, and a backend that cannot answer never
+    consume anything, so anonymous load cannot starve a legitimate officer.
+  - The counter is in memory, so a process restart clears it. A deployment
+    that needs a lockout that survives restarts injects a hardware PIN backend
+    with native dictionary-attack protection; the decorator then sits in front
+    of it.
   - The comparison is the PIN backend's constant-time hash comparison.
-  - The same `soPINAttempts` gates the barrier's SO-PIN-gated governance
-    operations, rekey start and holder revocation
-    (`CeremonyService.AuthorizeSOPIN`, called by the barrier service on every
-    transport). One counter covers all of them, so guesses spread across
-    operations are no cheaper. These operations also refuse while no SO PIN
-    has been provisioned (`pin.ErrPINNotSet`, through
+  - Rekey start and holder revocation (`CeremonyService.AuthorizeSOPIN`, called
+    by the barrier service on every transport) also refuse while no SO PIN has
+    been provisioned (`pin.ErrPINNotSet`, through
     `pin.RequireProvisionedSOPIN`), rather than admitting any PIN.
+- **Initialization refuses an initialized barrier before it compares a PIN.**
+  Both initialize paths provision or verify the supplied PINs through
+  `service.ProvisionInitializePINs`, which answers
+  `seal.ErrAlreadyInitialized` first when `BarrierInitialized` reports the
+  barrier initialized. Otherwise an anonymous caller could tell a right SO PIN
+  from a wrong one by the answer on a barrier that can never be initialized
+  again. A failure to read the initialization record is returned, not treated
+  as "not initialized".
 - **The SO PIN needs at least 40 bits of entropy.** With the backoff at its
   cap an attacker gets about 96 guesses a day. Use, for example, 8 random
   characters from a 62-character alphabet (about 47 bits) or a 12-digit
@@ -153,9 +176,9 @@ the last initial holder claims.
 | Ceremony already performed | `ErrAlreadyInitialized` | **yes** |
 | Node restarts before every holder claims | unclaimed envelopes are lost; a rekey redistributes | **yes** |
 | Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |
-| sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `ceremony.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not checked, so a locked-out call cannot confirm a guess | **yes** |
+| sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `pin.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not checked, so a locked-out call cannot confirm a guess | **yes** |
 | Anonymous holder registration after enrolment closed | `ErrEnrollmentClosed` | **yes** |
-| Rekey start or holder revocation with the wrong SO PIN, or while the check is locked out | `pin.ErrPINInvalid`; `ceremony.SOPINLockedError` (`429` / `RESOURCE_EXHAUSTED`, REST `Retry-After`) | **yes** |
+| Rekey start or holder revocation with the wrong SO PIN, or while the check is locked out | `pin.ErrPINInvalid`; `pin.SOPINLockedError` (`429` / `RESOURCE_EXHAUSTED`, REST `Retry-After`) | **yes** |
 | Rekey start or holder revocation before an SO PIN is provisioned | `pin.ErrPINNotSet` (`412` / `FAILED_PRECONDITION`) | **yes** |
 
 ## Permission model

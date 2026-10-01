@@ -100,6 +100,11 @@ func (m *mockBarrierService) BarrierGenerateRecoveryKeys(_ context.Context, _ in
 func (m *mockBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return m.recoveryDeleteErr
 }
+
+// BarrierInitialized reports the double as never initialized: its
+// initialize paths answer for themselves through their canned results.
+func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
 func (m *mockBarrierService) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	if m.recoveryHasErr != nil {
 		return false, m.recoveryHasErr

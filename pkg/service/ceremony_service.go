@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -198,7 +199,7 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*CeremonySignCSRResult, error) {
 	result, err := s.ceremony.SignCSRInit(ctx, username, soPin, []byte(csrPEM), role)
 	if err != nil {
-		var locked *ceremony.SOPINLockedError
+		var locked *pin.SOPINLockedError
 		if errors.As(err, &locked) {
 			return nil, &SignCSRThrottledError{RetryAfter: locked.RetryAfter}
 		}

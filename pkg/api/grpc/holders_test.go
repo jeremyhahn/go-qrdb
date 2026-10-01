@@ -335,11 +335,11 @@ func TestGRPCHolders_RekeyAndRevokeCarryTheSOPIN(t *testing.T) {
 	}
 
 	for refusal, code := range map[error]codes.Code{
-		pin.ErrBackendNotConfigured:               codes.FailedPrecondition,
-		pin.ErrPINNotSet:                          codes.FailedPrecondition,
-		pin.ErrPINInvalid:                         codes.Unauthenticated,
-		&ceremony.SOPINLockedError{RetryAfter: 1}: codes.ResourceExhausted,
-		seal.ErrQuorumRoundInProgress:             codes.AlreadyExists,
+		pin.ErrBackendNotConfigured:          codes.FailedPrecondition,
+		pin.ErrPINNotSet:                     codes.FailedPrecondition,
+		pin.ErrPINInvalid:                    codes.Unauthenticated,
+		&pin.SOPINLockedError{RetryAfter: 1}: codes.ResourceExhausted,
+		seal.ErrQuorumRoundInProgress:        codes.AlreadyExists,
 	} {
 		svc.rekeyStart = func(seal.QuorumDomain, int, seal.FactorPolicy) (*service.QuorumRoundInfo, error) { return nil, refusal }
 		_, err := s.BarrierRekeyStart(context.Background(), rekey)

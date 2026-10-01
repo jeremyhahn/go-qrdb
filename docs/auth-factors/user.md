@@ -92,9 +92,12 @@ Minimum length is **6 characters**, enforced server side.
 | TPM 2.0 | native dictionary-attack protection |
 | PKCS#11 token | the token's own policy |
 
-The software backend has **no attempt counter**. A lockout status of "none" from
-it means "this backend does not do lockout", not "you have attempts left". If
-you need real lockout, the deployment must inject a hardware PIN backend.
+The software backend has **no attempt counter** of its own. A node fronts its
+PIN backend with an SO PIN lockout: after 5 wrong SO PINs in a row, every SO
+PIN check -- the right PIN included -- is refused for a backoff that doubles
+from 1 s up to 15 min, on every operation and transport. That counter is in
+memory, so a restart clears it. If you need a lockout that survives restarts,
+the deployment must inject a hardware PIN backend.
 
 A FIPS binary can verify a PIN hashed by a non-FIPS binary and vice versa —
 the algorithm is stored with each record and resolved at verification time.
