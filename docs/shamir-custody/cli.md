@@ -113,7 +113,11 @@ HSM). `claim-begin --username` prints the nonce and `SignMessageHex`
 
 Issue a challenge for a holder's factor. Needed only when the factor is
 answered outside the CLI; the `mtls` factor is answered by `quorum submit`
-itself.
+itself. A key that signs outside the CLI answers an `mtls` challenge with a
+signature over the challenge message -- `qrdb/mtls-challenge/v1`, the
+`challenge_id`, `method_data.purpose` and the nonce, NUL-separated
+([engineering.md](engineering.md#holder-verification)) -- never over the bare
+nonce.
 
 | Flag | Type | Meaning |
 |---|---|---|

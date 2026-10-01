@@ -62,6 +62,16 @@ const (
 	// enrolled certificate's SubjectPublicKeyInfo, standard base64.
 	MethodDataPublicKey = "public_key"
 
+	// MethodDataPurpose is the Challenge.MethodData key carrying the purpose
+	// the issuer bound the challenge to -- for a share-holder quorum, the
+	// scope, key domain and operation. The answer signs it (ChallengeMessage);
+	// an issuer that sets none binds the challenge to its ID alone.
+	MethodDataPurpose = "purpose"
+
+	// ChallengeContext is the domain-separation prefix of the message an mtls
+	// challenge is answered over (ChallengeMessage).
+	ChallengeContext = "qrdb/mtls-challenge/v1"
+
 	// nonceSize is the challenge nonce length in bytes.
 	nonceSize = 32
 
@@ -170,10 +180,44 @@ func (f *Factor) Verify(_ context.Context, challenge *authfactors.Challenge, res
 		subtle.ConstantTimeCompare([]byte(peer), []byte(enrolledThumb)) != 1 {
 		return &authfactors.VerificationFailedError{FactorName: Name, Reason: "TLS peer certificate is not the enrolled certificate"}
 	}
-	if !VerifyNonceSignature(pub, challenge.Nonce, response.Value) {
+	purpose, _ := challenge.MethodData[MethodDataPurpose].(string)
+	if len(challenge.Nonce) == 0 || !VerifyNonceSignature(pub, ChallengeMessage(challenge.ChallengeID, purpose, challenge.Nonce), response.Value) {
 		return &authfactors.VerificationFailedError{FactorName: Name, Reason: "signature does not verify"}
 	}
 	return nil
+}
+
+// ChallengeMessage returns the message an mtls challenge is answered over:
+// ChallengeContext, the challenge ID, the purpose the issuer bound it to
+// (Challenge.MethodData[MethodDataPurpose], "" when none) and the nonce,
+// NUL-separated.
+//
+// The answer is never a signature over the bare nonce. A bare-nonce signature
+// is what any other protocol that has the key holder sign server-chosen bytes
+// produces; binding the prefix, the challenge and its purpose means a
+// signature made for anything else -- a share claim, another challenge,
+// another operation -- never answers this one. A challenge ID and a purpose
+// cannot contain NUL, so distinct challenges never share a message.
+func ChallengeMessage(challengeID, purpose string, nonce []byte) []byte {
+	msg := make([]byte, 0, len(ChallengeContext)+len(challengeID)+len(purpose)+len(nonce)+3)
+	msg = append(msg, ChallengeContext...)
+	msg = append(msg, 0)
+	msg = append(msg, challengeID...)
+	msg = append(msg, 0)
+	msg = append(msg, purpose...)
+	msg = append(msg, 0)
+	return append(msg, nonce...)
+}
+
+// SignChallenge answers the mtls challenge challengeID, bound to purpose and
+// carrying nonce, with signer: SignNonce over ChallengeMessage. A client takes
+// all three from the challenge it was issued, purpose from its method data
+// (MethodDataPurpose).
+func SignChallenge(signer crypto.Signer, challengeID, purpose string, nonce []byte) ([]byte, error) {
+	if len(nonce) == 0 {
+		return nil, &UnsupportedSignerError{}
+	}
+	return SignNonce(signer, ChallengeMessage(challengeID, purpose, nonce))
 }
 
 // VerifyNonceSignature reports whether signature is pub's signature over
@@ -198,8 +242,9 @@ func VerifyNonceSignature(pub crypto.PublicKey, nonce, signature []byte) bool {
 
 // SignNonce produces the signature VerifyNonceSignature accepts: ECDSA
 // (ASN.1 DER) and RSA PKCS#1 v1.5 over SHA-256(nonce), Ed25519 over the
-// nonce itself. It is the one signing format holders answer the mtls
-// factor's challenge and the share-claim nonce with.
+// nonce itself. It is the one signature format; what is signed is always a
+// domain-separated message -- ChallengeMessage for the mtls factor, the
+// share-claim message for a claim -- never a bare server nonce.
 func SignNonce(signer crypto.Signer, nonce []byte) ([]byte, error) {
 	if signer == nil || len(nonce) == 0 {
 		return nil, &UnsupportedSignerError{}

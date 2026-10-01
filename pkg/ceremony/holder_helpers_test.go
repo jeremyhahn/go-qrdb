@@ -204,7 +204,7 @@ func (h *testHolder) answer(t testing.TB, ch *QuorumChallenge) []byte {
 		require.NotNil(t, h.auth, "holder has no authenticator")
 		return h.auth.Assert(ch.Nonce)
 	}
-	sig, err := mtls.SignNonce(h.certKey, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.certKey, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	require.NoError(t, err)
 	return sig
 }

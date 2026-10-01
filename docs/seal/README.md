@@ -366,7 +366,9 @@ chal, err := barrier.BarrierQuorumBegin(ctx, &transport.QuorumBeginRequest{
 })
 out, err := barrier.BarrierQuorumSubmit(ctx, &transport.QuorumSubmitRequest{
     Domain: transport.DomainUnseal, Op: transport.OpUnseal, Username: "alice",
-    ChallengeID: chal.ChallengeID, Factor: chal.Factor, Response: signedNonce,
+    ChallengeID: chal.ChallengeID, Factor: chal.Factor,
+    // mtls: mtls.SignChallenge(key, chal.ChallengeID, chal.MethodData[mtls.MethodDataPurpose], chal.Nonce)
+    Response: answer,
     Share: shareFromEnvelope,
 })
 // out.Submitted / out.Required / out.Complete

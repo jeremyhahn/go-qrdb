@@ -44,7 +44,7 @@ func TestClaim_SignatureIsDomainSeparated(t *testing.T) {
 
 	label := ScopeSystem.ClaimLabel()
 	for name, sign := range map[string]func(nonce []byte) ([]byte, error){
-		"the bare nonce, as the mtls factor signs it": func(nonce []byte) ([]byte, error) {
+		"the bare nonce": func(nonce []byte) ([]byte, error) {
 			return mtls.SignNonce(a.certKey, nonce)
 		},
 		"another scope's claim": func(nonce []byte) ([]byte, error) {

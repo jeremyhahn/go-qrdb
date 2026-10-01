@@ -165,8 +165,9 @@ holders, the unclaimed envelopes and the pending challenges.
   share-claim message, returns the envelope and destroys the held copy. The
   message (`ceremony.ShareClaimMessage`) is `qrdb/share-claim/v1`, the scope's
   claim label (`BarrierScope.ClaimLabel`), the username and the nonce,
-  NUL-separated. The `mtls` quorum factor signs the bare nonce, so the two
-  signatures are domain-separated and neither verifies as the other.
+  NUL-separated. The `mtls` quorum factor signs `mtls.ChallengeMessage`
+  instead (see Holder verification), so the two signatures are
+  domain-separated and neither verifies as the other.
 - Opened offline by the holder; opening needs no server.
 
 ## Quorum rounds
@@ -187,8 +188,8 @@ roster is re-read under the lock:
 2. the op is valid in the domain and the barrier's state
    (`QuorumOpInvalidError`);
 3. the verifier admits the submission at all (`HolderVerifier.AdmitSubmission`):
-   pkg/ceremony throttles it on the caller's quorum bucket, the one its
-   challenge requests draw on, and the refusal
+   pkg/ceremony throttles it per caller with the policy its challenge
+   requests have, in a submission bucket of its own, and the refusal
    (`*ceremony.QuorumRateLimitedError`) is returned before anything in the
    submission is looked at;
 4. the verifier accepts the proof (`HolderAuthenticationError`, wrapping e.g.
@@ -217,6 +218,17 @@ verifies the factor response with the registered `authfactors.Factor` against
 the **roster's** copy of the factor's public material, not the registry's.
 Each challenge expires on the factor's own deadline.
 
+Every quorum challenge is bound to its purpose: `BeginQuorum` records
+`quorum:<claim label>:<domain>:<op>` (for example `quorum:system:unseal:seal`
+or `quorum:tenant:acme:unseal:rekey`) in the challenge's method data under
+`purpose` (`mtls.MethodDataPurpose`), decoys included. The `mtls` factor's
+answer is a signature over `mtls.ChallengeMessage`:
+`qrdb/mtls-challenge/v1`, the challenge ID, the purpose and the nonce,
+NUL-separated (`mtls.SignChallenge`). It is verified against the
+**server-held** challenge, so a client cannot change the purpose, and a
+signature over the bare nonce, or one made for another challenge, scope,
+domain or operation, does not verify.
+
 ### Challenge issuance
 
 The sealed window admits a challenge request anonymously, so `BeginQuorum` is
@@ -224,8 +236,10 @@ hardened against a caller who is not the holder:
 
 - **Throttled per caller.** Every request -- a challenge request, and a share
   submission through `AdmitSubmission` -- passes `HolderDeps.QuorumLimiter`
-  before anything else, including a request for an unknown holder. Both draw
-  on the caller's one bucket. The key names the scope instance and the caller: an
+  before anything else, including a request for an unknown holder. Each kind
+  has a bucket of its own per caller: a holder answers every challenge with
+  one submission, so a shared bucket would halve the quorums the anonymous
+  bucket can serve. The key names the scope instance and the caller: an
   authenticated identity, else the certificate the TLS connection presented,
   else the scope's single anonymous bucket. A certificate keys the caller
   only when the TLS stack verified it (`VerifiedChains` non-empty); an

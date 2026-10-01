@@ -123,7 +123,7 @@ func submitDB(t *testing.T, bm *DatabaseBarrierManager, dbName string, op seal.Q
 	if err != nil {
 		return nil, err
 	}
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

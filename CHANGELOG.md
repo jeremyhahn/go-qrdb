@@ -199,7 +199,7 @@ are not reconstructed here — their history is in the git log.
     `HolderAuthenticationError` whoever it names; only a verified one learns
     `HolderRevokedError` or `HolderAlreadySubmittedError`;
   - every request and every submission passes a per-caller throttle on the
-    shared rate-limit engine (one bucket for both): 2/s burst 10 per
+    shared rate-limit engine (a bucket per kind): 2/s burst 10 per
     identity or TLS-verified certificate, 5/s burst 20 for the anonymous
     bucket, which every other caller shares (an unverified certificate is
     anyone's to mint, so it buys no bucket of its own; a flood of
@@ -232,6 +232,13 @@ are not reconstructed here — their history is in the git log.
   - the domain key is generated into protected memory, and
     `seal.CeremonyDistributor.Distribute` takes it as a `*secure.Buffer` it
     borrows rather than a plain `[]byte`.
+- **An mtls quorum answer was a signature over the bare nonce.** Any other
+  protocol that had a holder sign 32 server-chosen bytes with the same key
+  produced a valid quorum answer, and one answer was not bound to the scope,
+  key domain or operation it was issued for. The mtls answer is now a
+  signature over a domain-separated message binding the challenge ID and the
+  quorum purpose (`quorum:<claim label>:<domain>:<op>`), verified against the
+  server-held challenge.
 - **A share claim and an mtls factor answer were the same signature.** Both
   were the holder's certificate key over a bare server nonce, so a signature
   obtained for one verified as the other. A claim now signs the
@@ -452,6 +459,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **An `mtls` factor answer signs a domain-separated message, not the bare
+  nonce.** The answer is now a signature over `mtls.ChallengeMessage`:
+  `qrdb/mtls-challenge/v1`, the challenge ID, the purpose the issuer bound
+  the challenge to (`method_data.purpose`; for a quorum challenge
+  `quorum:<claim label>:<domain>:<op>`) and the nonce, NUL-separated. Use
+  `mtls.SignChallenge`; a client that signs outside qrdb must sign that
+  message. A bare-nonce signature no longer verifies. The CLI's `quorum
+  submit` signs it.
 - **`ceremony.SOPINLockedError` is now `pin.SOPINLockedError`.** The lockout
   moved from the ceremony service into the PIN backend
   (`pin.NewLockoutBackend`); the error moved with it and still unwraps to

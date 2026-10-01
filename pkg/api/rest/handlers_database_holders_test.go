@@ -129,7 +129,7 @@ func submitREST(t *testing.T, srv *Server, op string, h *restDBHolder) *transpor
 	t.Helper()
 	var ch transport.QuorumChallenge
 	decodeInto(t, postJSON(t, srv, "/v1/databases/vault/barrier/quorum/begin", transport.QuorumBeginRequest{Op: op, Username: h.name}, nil), &ch)
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

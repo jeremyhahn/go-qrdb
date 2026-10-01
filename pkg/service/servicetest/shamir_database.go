@@ -144,10 +144,12 @@ func (h *Holder) Thumbprint() string {
 	return mtls.Thumbprint(h.Cert.Raw)
 }
 
-// Sign signs nonce with h's key, as the mtls factor requires.
-func (h *Holder) Sign(t testing.TB, nonce []byte) []byte {
+// Sign answers the mtls challenge challengeID, bound to purpose (the
+// challenge's mtls.MethodDataPurpose method data) and carrying nonce, with
+// h's key, as the mtls factor requires (mtls.SignChallenge).
+func (h *Holder) Sign(t testing.TB, challengeID, purpose string, nonce []byte) []byte {
 	t.Helper()
-	sig, err := mtls.SignNonce(h.Key, nonce)
+	sig, err := mtls.SignChallenge(h.Key, challengeID, purpose, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -118,8 +118,10 @@ On the in-process (embedded) transport there is no connection to carry a
 certificate. A claim there is bound to the holder's enrolled certificate and
 released only for a signature over the fresh claim nonce made with that
 certificate's key. The signed message is the domain-separated share-claim
-message, not the bare nonce the `mtls` quorum factor signs, so a factor
-answer can never be replayed as a claim, nor a claim as a factor answer. A certificate that is presented is
+message. The `mtls` quorum factor's answer is a domain-separated message of
+its own, bound to the challenge and to the scope, key domain and operation it
+was issued for, so a factor answer can never be replayed as a claim, nor a
+claim as a factor answer, nor one operation's answer as another's. A certificate that is presented is
 still checked. The network transports keep requiring the certificate on the
 connection.
 

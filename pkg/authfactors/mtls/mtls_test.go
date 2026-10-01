@@ -55,17 +55,21 @@ func selfSigned(t *testing.T, signer crypto.Signer) *x509.Certificate {
 	return cert
 }
 
-// sign produces the signature the factor expects from key over nonce.
-func sign(t *testing.T, key crypto.Signer, nonce []byte) []byte {
+// answer produces the signature the factor expects from key for ch: the raw
+// signature format over ChallengeMessage, built here by hand so the test does
+// not lean on SignChallenge.
+func answer(t *testing.T, key crypto.Signer, ch *authfactors.Challenge) []byte {
 	t.Helper()
+	purpose, _ := ch.MethodData[MethodDataPurpose].(string)
+	msg := ChallengeMessage(ch.ChallengeID, purpose, ch.Nonce)
 	if _, ok := key.(ed25519.PrivateKey); ok {
-		sig, err := key.Sign(rand.Reader, nonce, crypto.Hash(0))
+		sig, err := key.Sign(rand.Reader, msg, crypto.Hash(0))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return sig
 	}
-	digest := sha256.Sum256(nonce)
+	digest := sha256.Sum256(msg)
 	sig, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +108,7 @@ func TestFactor_ProvesPossessionForEveryKeyType(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp := &authfactors.Response{Value: sign(t, key, ch.Nonce)}
+			resp := &authfactors.Response{Value: answer(t, key, ch)}
 			if err := f.Verify(context.Background(), ch, resp); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
@@ -120,7 +124,7 @@ func TestFactor_RefusesAnotherKeysSignature(t *testing.T) {
 	f := New()
 	e := enrollPEM(t, f, selfSigned(t, enrolled))
 	ch, _ := f.Challenge(context.Background(), e)
-	err := f.Verify(context.Background(), ch, &authfactors.Response{Value: sign(t, other, ch.Nonce)})
+	err := f.Verify(context.Background(), ch, &authfactors.Response{Value: answer(t, other, ch)})
 	var failed *authfactors.VerificationFailedError
 	if !errors.As(err, &failed) {
 		t.Fatalf("Verify = %v, want VerificationFailedError", err)
@@ -136,7 +140,7 @@ func TestFactor_BindsTheTLSPeerCertificate(t *testing.T) {
 	cert := selfSigned(t, key)
 	e := enrollPEM(t, f, cert)
 	ch, _ := f.Challenge(context.Background(), e)
-	sig := sign(t, key, ch.Nonce)
+	sig := answer(t, key, ch)
 
 	wrong := &authfactors.Response{Value: sig, Metadata: map[string]string{
 		authfactors.ResponseMetaPeerCertThumbprint: Thumbprint([]byte("some other certificate")),
@@ -163,7 +167,7 @@ func TestFactor_RefusesExpiredAndMalformedChallenges(t *testing.T) {
 	if ch.ExpiresAt.Sub(time.Now()) > time.Minute+time.Second {
 		t.Fatalf("TTL override ignored: %v", ch.ExpiresAt)
 	}
-	sig := sign(t, key, ch.Nonce)
+	sig := answer(t, key, ch)
 
 	expired := *ch
 	expired.ExpiresAt = time.Now().Add(-time.Second)

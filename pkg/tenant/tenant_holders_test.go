@@ -86,7 +86,7 @@ func submitTenant(t *testing.T, svc *TenantService, ctx context.Context, tenantI
 	if err != nil {
 		return nil, err
 	}
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

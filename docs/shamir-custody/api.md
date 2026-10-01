@@ -165,7 +165,12 @@ Quorum challenge request and response:
 ```
 
 `factor` empty selects the designated factor. `op` is one of `unseal`, `seal`,
-`root-token`, `rekey`, `recover`.
+`root-token`, `rekey`, `recover`. `method_data.purpose` is the purpose the
+challenge is bound to, `quorum:<claim label>:<domain>:<op>`; an `mtls` answer
+is a signature over `qrdb/mtls-challenge/v1`, the `challenge_id`, the purpose
+and the nonce, NUL-separated (`mtls.SignChallenge`), never over the bare
+nonce. An `mtls` challenge's method data also carries the enrolled
+`public_key` and `thumbprint`.
 
 Quorum submission:
 

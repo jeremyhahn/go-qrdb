@@ -226,7 +226,7 @@ func (h *e2eHolder) answer(t *testing.T, ch *transport.QuorumChallenge) []byte {
 	if ch.Factor == e2eFIDO {
 		return h.fido.Assert(ch.Nonce)
 	}
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := sdk.SignQuorumChallenge(h.key, ch.ChallengeID, ch.MethodData[sdk.QuorumChallengePurposeKey], ch.Nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

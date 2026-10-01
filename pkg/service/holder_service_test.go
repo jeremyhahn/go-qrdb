@@ -147,7 +147,7 @@ func (e *holderSvcEnv) submit(domain seal.QuorumDomain, op seal.QuorumOp, h *svc
 	if err != nil {
 		return nil, err
 	}
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	require.NoError(e.t, err)
 	env, err := ceremony.ParseShareEnvelope(h.envelope)
 	require.NoError(e.t, err)

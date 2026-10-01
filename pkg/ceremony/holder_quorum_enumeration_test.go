@@ -195,8 +195,9 @@ func TestQuorum_SubmitDoesNotRevealHolders(t *testing.T) {
 }
 
 // TestQuorum_SubmitIsRateLimitedPerCaller: submissions pass the same throttle
-// as challenge requests, before anything about them is examined, so an
-// anonymous caller cannot spend unlimited guesses on submit either.
+// as challenge requests, in a bucket of their own, before anything about them
+// is examined, so an anonymous caller cannot spend unlimited guesses on
+// submit either.
 func TestQuorum_SubmitIsRateLimitedPerCaller(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
@@ -208,11 +209,11 @@ func TestQuorum_SubmitIsRateLimitedPerCaller(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		require.ErrorIs(t, submitBogus(t, e, "mallory", []byte("share")), ErrQuorumChallengeNotFound)
 	}
-	ch, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	var limited *QuorumRateLimitedError
-	require.ErrorAs(t, err, &limited, "submissions and challenge requests share the caller's bucket")
-	require.Nil(t, ch)
-	require.ErrorAs(t, submitBogus(t, e, "alice", []byte("share")), &limited)
+	require.ErrorAs(t, submitBogus(t, e, "alice", []byte("share")), &limited, "the caller's submission bucket is spent")
+	_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
+	require.NoError(t, err, "challenge requests have a bucket of their own")
+	require.Len(t, limiter.seen, 2, "one submission and one challenge bucket for the anonymous caller")
 }
 
 // TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge: when every

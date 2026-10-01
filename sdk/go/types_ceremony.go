@@ -332,8 +332,9 @@ type QuorumChallenge = ceremony.QuorumChallenge
 
 // A holder claims its envelope by signing a share-claim message with its
 // certificate key: ShareClaimContext, the barrier's claim label, the holder
-// and the claim nonce. The message is distinct from the bare nonce the mtls
-// quorum factor signs, so neither signature verifies as the other.
+// and the claim nonce. A holder answers an mtls quorum challenge by signing a
+// message of its own (SignQuorumChallenge), so neither signature verifies as
+// the other.
 
 // ShareClaimContext is the share-claim message's domain-separation prefix.
 const ShareClaimContext = ceremony.ShareClaimContext
@@ -355,6 +356,20 @@ var ShareClaimMessage = ceremony.ShareClaimMessage
 
 // SignShareClaim signs a share claim with the holder's certificate key.
 var SignShareClaim = ceremony.SignShareClaim
+
+// QuorumChallengePurposeKey is the method-data key of the purpose a quorum
+// challenge is bound to ("purpose").
+const QuorumChallengePurposeKey = mtls.MethodDataPurpose
+
+// QuorumChallengeMessage returns the message an mtls quorum challenge is
+// answered over: the mtls challenge context, the challenge ID, its purpose
+// and its nonce, NUL-separated.
+var QuorumChallengeMessage = mtls.ChallengeMessage
+
+// SignQuorumChallenge answers an mtls quorum challenge with the holder's
+// certificate key: SignQuorumChallenge(key, ch.ChallengeID,
+// ch.MethodData[QuorumChallengePurposeKey], ch.Nonce).
+var SignQuorumChallenge = mtls.SignChallenge
 
 // ShareEnvelope is a holder's sealed share.
 type ShareEnvelope = ceremony.ShareEnvelope

@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -82,7 +83,7 @@ func submitMCPDBShare(t *testing.T, d dbHolderTools, op string, h *servicetest.H
 		Database: "vault",
 		QuorumSubmitRequest: transport.QuorumSubmitRequest{
 			Op: op, Username: h.Name, ChallengeID: ch.ChallengeID, Factor: ch.Factor,
-			Response: h.Sign(t, ch.Nonce), Share: h.Share(t),
+			Response: h.Sign(t, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce), Share: h.Share(t),
 		},
 	}, &out); err != nil {
 		t.Fatalf("%s submit %s: %v", op, h.Name, err)

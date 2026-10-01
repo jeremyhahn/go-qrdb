@@ -25,10 +25,11 @@ import (
 //
 // The claim proof and the mtls quorum factor's answer are both signatures by
 // the holder's certificate key over a server nonce. Signed over the bare
-// nonce, a signature obtained for one could be presented for the other. The
-// claim therefore signs a message of its own -- this context, the scope's
-// claim label, the holder and the nonce -- while the mtls factor signs the
-// bare nonce, so neither signature verifies as the other.
+// nonce, a signature obtained for one could be presented for the other. Each
+// therefore signs a domain-separated message of its own: the claim this
+// context, the scope's claim label, the holder and the nonce; the mtls factor
+// mtls.ChallengeMessage (its own context, the challenge ID, the quorum
+// purpose and the nonce). Neither signature verifies as the other.
 const ShareClaimContext = "qrdb/share-claim/v1"
 
 // ShareClaimMessage returns the message a holder signs to claim a share

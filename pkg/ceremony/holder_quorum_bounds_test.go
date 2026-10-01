@@ -153,7 +153,7 @@ func TestQuorum_UnknownHolderIsIndistinguishable(t *testing.T) {
 		assert.Equal(t, tc.holder, decoy.Holder, tc.name)
 		assert.NotEqual(t, real.MethodData[mtls.MetaThumbprint], decoy.MethodData[mtls.MetaThumbprint], tc.name)
 
-		sig, err := mtls.SignNonce(a.certKey, decoy.Nonce)
+		sig, err := mtls.SignChallenge(a.certKey, decoy.ChallengeID, decoy.MethodData[mtls.MethodDataPurpose], decoy.Nonce)
 		require.NoError(t, err)
 		_, err = e.barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
 			Domain: seal.DomainUnseal, Op: seal.OpSeal, Holder: "alice",
@@ -235,7 +235,7 @@ func TestQuorum_BeginIsRateLimitedPerCaller(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, anonymous)
-	assert.Len(t, lim.seen, 3, "anonymous, certificate and identity buckets")
+	assert.Len(t, lim.seen, 4, "anonymous, certificate (challenge and submission) and identity buckets")
 }
 
 // TestQuorum_ScopesHaveSeparateBuckets: the limiter key names the scope, so

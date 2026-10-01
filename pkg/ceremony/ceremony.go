@@ -552,9 +552,8 @@ func (s *CeremonyService) Committed(ctx context.Context, roster *seal.HolderRost
 	return h.committed(ctx, roster, removed)
 }
 
-// AdmitSubmission implements seal.HolderVerifier: a share submission draws on
-// the caller's quorum throttle bucket for domain's scope, as a challenge
-// request does.
+// AdmitSubmission implements seal.HolderVerifier: a share submission passes
+// the caller's quorum throttle for domain's scope, in the submission bucket.
 func (s *CeremonyService) AdmitSubmission(ctx context.Context, domain seal.QuorumDomain) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -562,7 +561,7 @@ func (s *CeremonyService) AdmitSubmission(ctx context.Context, domain seal.Quoru
 	if err != nil {
 		return err
 	}
-	_, err = h.throttle(ctx, &s.deps)
+	_, err = h.throttle(ctx, &s.deps, quorumKindSubmit)
 	return err
 }
 

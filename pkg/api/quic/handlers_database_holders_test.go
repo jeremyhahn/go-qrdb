@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
@@ -71,7 +72,7 @@ func submitQUICDBShare(t *testing.T, s *Server, op string, h *servicetest.Holder
 		Database: "vault",
 		Submit: &pb.BarrierQuorumSubmitRequest{
 			Op: op, Username: h.Name, ChallengeId: ch.GetChallengeId(), Factor: ch.GetFactor(),
-			Response: h.Sign(t, ch.GetNonce()), Share: h.Share(t),
+			Response: h.Sign(t, ch.GetChallengeId(), ch.GetMethodData()[mtls.MethodDataPurpose], ch.GetNonce()), Share: h.Share(t),
 		},
 	}, &out); err != nil {
 		t.Fatalf("%s submit %s: %v", op, h.Name, err)

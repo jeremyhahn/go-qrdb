@@ -92,7 +92,7 @@ func submitDBSvc(t *testing.T, svc *DatabaseService, ctx context.Context, op sea
 	if err != nil {
 		return nil, err
 	}
-	sig, err := mtls.SignNonce(h.key, ch.Nonce)
+	sig, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
 	if err != nil {
 		t.Fatal(err)
 	}

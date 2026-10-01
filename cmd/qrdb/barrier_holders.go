@@ -872,7 +872,7 @@ func submitHolderShare(ctx context.Context, target holderTarget, in *holderSubmi
 		if err != nil {
 			return nil, err
 		}
-		sig, err := mtls.SignNonce(in.CertKey, challenge.Nonce)
+		sig, err := mtls.SignChallenge(in.CertKey, challenge.ChallengeID, challenge.MethodData[mtls.MethodDataPurpose], challenge.Nonce)
 		if err != nil {
 			return nil, err
 		}

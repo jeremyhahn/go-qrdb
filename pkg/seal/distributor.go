@@ -77,8 +77,8 @@ type HolderVerifier interface {
 	// examined at all. It runs before anything in the submission is looked
 	// at -- the holder's name, the proof, the round -- and its refusal is
 	// returned to the caller unchanged, so a throttled caller learns nothing
-	// about the roster. pkg/ceremony throttles here with the same per-caller
-	// bucket its quorum-challenge requests draw on.
+	// about the roster. pkg/ceremony throttles here per caller, with the
+	// policy its quorum-challenge requests have.
 	AdmitSubmission(ctx context.Context, domain QuorumDomain) error
 
 	// VerifyHolder checks proof authenticates holder for op in domain against

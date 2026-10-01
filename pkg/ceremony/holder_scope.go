@@ -791,7 +791,7 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if !op.ValidIn(h.domain) {
 		return nil, &seal.QuorumOpInvalidError{Domain: h.domain, Op: op}
 	}
-	peerThumb, err := h.throttle(ctx, d)
+	peerThumb, err := h.throttle(ctx, d, quorumKindBegin)
 	if err != nil {
 		return nil, err
 	}
@@ -832,6 +832,7 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if err != nil {
 		return nil, err
 	}
+	bindQuorumPurpose(ch, h.quorumPurpose(op))
 	out := &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
 		Domain:      h.domain,
@@ -855,15 +856,24 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	return out, nil
 }
 
-// throttle passes one quorum request -- a challenge request or a share
-// submission -- through the composer's throttle, keyed by this scope instance
-// and the caller (quorumCaller), and returns the thumbprint of the
-// certificate the caller's TLS connection presented, if any. Both kinds of
-// request draw on the caller's one bucket.
-func (h *holderScope) throttle(ctx context.Context, d *HolderDeps) (string, error) {
+// Quorum request kinds, each throttled in a bucket of its own per caller: a
+// holder answers every challenge it requests with one submission, so the two
+// kinds arrive in equal numbers, and a shared bucket would halve the quorums
+// the anonymous bucket can serve without slowing a caller who only does one.
+const (
+	quorumKindBegin  = "begin"
+	quorumKindSubmit = "submit"
+)
+
+// throttle passes one quorum request of kind -- a challenge request or a
+// share submission -- through the composer's throttle, keyed by this scope
+// instance, the kind and the caller (quorumCaller), and returns the
+// thumbprint of the certificate the caller's TLS connection presented, if
+// any.
+func (h *holderScope) throttle(ctx context.Context, d *HolderDeps, kind string) (string, error) {
 	caller, peerThumb, anonymous := quorumCaller(ctx)
 	if d.QuorumLimiter != nil {
-		if ok, retry := d.QuorumLimiter(h.limitID+"\x00"+caller, anonymous); !ok {
+		if ok, retry := d.QuorumLimiter(h.limitID+"\x00"+kind+"\x00"+caller, anonymous); !ok {
 			return "", &QuorumRateLimitedError{RetryAfter: retry}
 		}
 	}
@@ -992,6 +1002,7 @@ func (h *holderScope) decoyQuorumChallenge(ctx context.Context, op seal.QuorumOp
 	if err != nil {
 		return nil, err
 	}
+	bindQuorumPurpose(ch, h.quorumPurpose(op))
 	return &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
 		Domain:      h.domain,
@@ -1002,6 +1013,25 @@ func (h *holderScope) decoyQuorumChallenge(ctx context.Context, op seal.QuorumOp
 		MethodData:  stringMethodData(ch.MethodData),
 		ExpiresAt:   ch.ExpiresAt,
 	}, nil
+}
+
+// quorumPurpose is the purpose a quorum challenge of this scope for op is
+// bound to: "quorum:<claim label>:<domain>:<op>". Neither a domain nor an
+// operation contains ':', so distinct (scope, domain, op) never share one.
+func (h *holderScope) quorumPurpose(op seal.QuorumOp) string {
+	return "quorum:" + h.scope.ClaimLabel() + ":" + string(h.domain) + ":" + string(op)
+}
+
+// bindQuorumPurpose records purpose in ch's method data
+// (mtls.MethodDataPurpose). The mtls factor signs it into the answer
+// (mtls.ChallengeMessage) alongside the challenge ID, so an answer made for
+// another scope, domain or operation never verifies; the server-held copy of
+// ch is what the answer is verified against, so a client cannot change it.
+func bindQuorumPurpose(ch *authfactors.Challenge, purpose string) {
+	if ch.MethodData == nil {
+		ch.MethodData = make(map[string]any, 1)
+	}
+	ch.MethodData[mtls.MethodDataPurpose] = purpose
 }
 
 // stringMethodData keeps the string-valued entries of a factor's method data.

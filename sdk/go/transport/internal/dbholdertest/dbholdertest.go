@@ -25,6 +25,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -180,7 +181,7 @@ func submit(t *testing.T, c transport.DatabaseClient, op string, h *servicetest.
 		Database: Database,
 		QuorumSubmitRequest: transport.QuorumSubmitRequest{
 			Op: op, Username: h.Name, ChallengeID: ch.ChallengeID, Factor: ch.Factor,
-			Response: h.Sign(t, ch.Nonce), Share: h.Share(t),
+			Response: h.Sign(t, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce), Share: h.Share(t),
 		},
 	})
 	if err != nil {
