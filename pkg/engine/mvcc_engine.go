@@ -149,6 +149,16 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 	for _, opt := range opts {
 		opt(e)
 	}
+	// The lessor's in-memory table is a cache of the lease table persisted in
+	// this storage. Rebuild it from there, so a restart or a snapshot recovery
+	// -- both of which build a fresh engine over storage the lessor has not
+	// seen -- comes back with the same leases and the same key bindings it
+	// had, rather than with keys that name leases nobody will ever revoke.
+	if e.lessor != nil {
+		if err := e.lessor.Restore(stg); err != nil {
+			return nil, err
+		}
+	}
 	// Attach the revision-index replayer so watches created with a start
 	// revision replay durable history before switching to live delivery.
 	if e.hub != nil {
@@ -549,7 +559,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpGuarded:          e.handleGuarded,
 		protocol.OpBatch:            e.handleBatch,
 		protocol.OpLeaseGrant:       handleLeaseGrant,
-		protocol.OpLeaseRevoke:      handleLeaseRevoke,
+		protocol.OpLeaseRevoke:      e.handleLeaseRevoke,
 		protocol.OpLeaseKeepAlive:   handleLeaseKeepAlive,
 		protocol.OpIndexCreate:      e.handleIndexCreate,
 		protocol.OpIndexDrop:        e.handleIndexDrop,
@@ -664,7 +674,7 @@ func decodeBaseKVPut(payload []byte) (key, value []byte, err error) {
 // handleBaseKVPut processes a base KV Put command (kv.OpPut) by decoding the
 // simple [keyLen:2 LE][key][value] payload and delegating to the MVCC store
 // with leaseID=0. After writing, registered secondary indexes are updated.
-func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	key, value, err := decodeBaseKVPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -688,11 +698,17 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 		return sm.Result{}, nil, err
 	}
 
-	kvResult, err := s.PutInBatch(batch, key, value, 0, s.CurrentRevision()+1)
+	kvResult, err := s.PutInBatch(batch, key, value, lease.NoLease, s.CurrentRevision()+1)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
 	s.SetRevision(kvResult.ModRevision)
+
+	// A base KV put carries no lease, so the key leaves any lease its previous
+	// value was bound to.
+	if err := bindLease(lr, batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
+	}
 
 	notifs := []Notification{{
 		EventType: service.EventPut,
@@ -721,7 +737,7 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 // write against an MVCC-engine-backed store -- including the metadata write
 // service.TableService.CreateTable performs, and therefore every CREATE TABLE --
 // failed the whole proposal with protocol.UnknownOpError.
-func (e *MVCCEngine) handleBaseKVPutIfAbsent(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleBaseKVPutIfAbsent(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	key, value, err := decodeBaseKVPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -734,7 +750,7 @@ func (e *MVCCEngine) handleBaseKVPutIfAbsent(s *mvcc.Store, _ *lease.Lessor, bat
 	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
 	}
-	return e.putIfAbsentInBatch(s, nil, batch, key, value, 0)
+	return e.putIfAbsentInBatch(s, lr, batch, key, value, lease.NoLease)
 }
 
 // handleCompareAndDelete removes a key only when its stored value still
@@ -774,8 +790,8 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 	}
 	s.SetRevision(rev)
 
-	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-		lr.DetachKey(prevKv.LeaseID, key)
+	if err := bindLease(lr, batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 	if ierr := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
 		return sm.Result{}, nil, ierr
@@ -946,8 +962,8 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 	}
 	s.SetRevision(kvResult.ModRevision)
 
-	if lr != nil && leaseID > 0 {
-		lr.AttachKey(leaseID, key)
+	if err := bindLease(lr, batch, key, leaseID); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	return sm.Result{Value: kv.ResultStored}, []Notification{{
@@ -977,8 +993,8 @@ func (e *MVCCEngine) handleBaseKVDelete(s *mvcc.Store, lr *lease.Lessor, batch s
 	}
 	s.SetRevision(rev)
 
-	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-		lr.DetachKey(prevKv.LeaseID, key)
+	if err := bindLease(lr, batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
@@ -1011,6 +1027,9 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.LeaseRefusal(lr, leaseID); refused {
+		return res, nil, nil
+	}
 
 	prevKv, _ := s.GetInBatch(batch, key)
 
@@ -1036,8 +1055,8 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	}
 	s.SetRevision(kvResult.ModRevision)
 
-	if lr != nil && leaseID > 0 {
-		lr.AttachKey(leaseID, key)
+	if err := bindLease(lr, batch, key, leaseID); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	notifs := []Notification{{
@@ -1061,6 +1080,9 @@ func (e *MVCCEngine) handleMVCCPutIfAbsent(s *mvcc.Store, lr *lease.Lessor, batc
 	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.LeaseRefusal(lr, leaseID); refused {
+		return res, nil, nil
 	}
 
 	absent, getErr := keyIsAbsentInBatch(s, batch, key)
@@ -1089,8 +1111,8 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 	}
 	s.SetRevision(rev)
 
-	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-		lr.DetachKey(prevKv.LeaseID, key)
+	if err := bindLease(lr, batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
@@ -1176,6 +1198,9 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	if verr := validateDecodedOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
 	}
+	if res, refused := statemachine.OpsLeaseRefusal(lr, ops); refused {
+		return res, nil, nil
+	}
 
 	// Pre-validate unique-index constraints for the whole selected op set
 	// (read-only, delete-aware) so a violation rejects the transaction
@@ -1220,6 +1245,9 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	// refuses the whole batch and stages nothing (validateDecodedOps).
 	if verr := validateDecodedOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
+	}
+	if res, refused := statemachine.OpsLeaseRefusal(lr, ops); refused {
+		return res, nil, nil
 	}
 
 	// Pre-validate unique-index constraints for the whole batch (read-only,
@@ -1279,8 +1307,8 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		if err != nil {
 			return nil, err
 		}
-		if lr != nil && op.LeaseID > 0 {
-			lr.AttachKey(op.LeaseID, op.Key)
+		if err := bindLease(lr, batch, op.Key, op.LeaseID); err != nil {
+			return nil, err
 		}
 		return []Notification{{
 			EventType: service.EventPut,
@@ -1294,8 +1322,8 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		if err != nil {
 			return nil, err
 		}
-		if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
-			lr.DetachKey(prevKv.LeaseID, op.Key)
+		if err := bindLease(lr, batch, op.Key, lease.NoLease); err != nil {
+			return nil, err
 		}
 		if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, op.Key, prevKv); err != nil {
 			return nil, err
@@ -1320,8 +1348,22 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 // Lease handlers
 // ---------------------------------------------------------------------------
 
+// bindLease records, in the apply batch and the lessor, that key's newly
+// written value names leaseID (lease.NoLease for none, which is also what a
+// delete records). Every write path calls it, so a key always belongs to the
+// lease of its latest value and to no other.
+//
+// With no lessor there is nothing to bind: a write naming a lease was already
+// refused by statemachine.LeaseRefusal before it staged anything.
+func bindLease(lr *lease.Lessor, batch storage.Batch, key []byte, leaseID int64) error {
+	if lr == nil {
+		return nil
+	}
+	return lr.Bind(batch, key, leaseID)
+}
+
 // handleLeaseGrant creates a new lease with the specified TTL.
-func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	ttl, err := protocol.DecodeLeaseGrant(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1333,8 +1375,14 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	info, err := lr.Grant(ttl)
+	info, err := lr.Grant(batch, ttl)
 	if err != nil {
+		// A lease-table write fault is local to this replica and must halt
+		// apply, never be answered as a refusal its peers did not make.
+		var twe *lease.TableWriteError
+		if errors.As(err, &twe) {
+			return sm.Result{}, nil, err
+		}
 		// Invalid TTL (and similar input-shaped grant failures) are
 		// deterministic application errors, not corruption: surface via the
 		// result payload rather than stalling consensus.
@@ -1344,12 +1392,15 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
 }
 
-// handleLeaseRevoke expires a lease and deletes all attached keys at a new
-// revision. If the lease does not exist the operation is a no-op; Raft
-// state machine handlers must be idempotent so cleanup proposals (e.g.
-// deferred test teardown or duplicate revoke) do not produce a fatal Apply
-// error that would stall consensus.
-func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+// handleLeaseRevoke expires a lease and deletes the keys still bound to it at
+// a new revision, retracting their secondary-index entries as an ordinary
+// delete does. A key re-put under another lease or with none since it was
+// bound here has already left the lease (lease.Lessor.Bind) and is untouched.
+// If the lease does not exist the operation is a no-op; Raft state machine
+// handlers must be idempotent so cleanup proposals (e.g. deferred test
+// teardown or duplicate revoke) do not produce a fatal Apply error that would
+// stall consensus.
+func (e *MVCCEngine) handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	leaseID, err := protocol.DecodeLeaseRevoke(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1359,7 +1410,7 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	keys, err := lr.Revoke(leaseID)
+	keys, err := lr.Revoke(batch, leaseID)
 	if err != nil {
 		var nfe *lease.NotFoundError
 		if errors.As(err, &nfe) {
@@ -1382,6 +1433,9 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 				slog.Warn("engine: lease revoke could not delete attached key",
 					"lease_id", leaseID, "error", delErr)
 				continue
+			}
+			if ierr := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
+				return sm.Result{}, nil, ierr
 			}
 			deleteKv := &service.KeyValue{
 				Key:         key,

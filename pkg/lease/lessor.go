@@ -18,15 +18,21 @@
 // service discovery, and distributed locking patterns.
 //
 // Leases are replicated through Raft consensus. The lessor maintains an
-// in-memory lease table that is rebuilt from committed log entries on
-// startup. Only the Raft leader runs the expiration timer to avoid
-// duplicate revocations.
+// in-memory lease table, and the state machine stages every change to it into
+// the same apply batch as the data write that caused it (see table.go), so
+// the table is durable, travels in snapshots, and is restored with Restore
+// when a state machine opens or recovers. Only the Raft leader runs the
+// expiration timer to avoid duplicate revocations.
 package lease
 
 import (
+	"bytes"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // lease is the internal lease state tracked by the Lessor.
@@ -79,41 +85,61 @@ func (l *lease) isExpired() bool {
 	return l.isExpiredLocked()
 }
 
+// NoLease is the lease ID that means "no lease". Binding a key to it releases
+// the key from whatever lease held it, which is what a write without a lease
+// does to a key that had one.
+const NoLease int64 = 0
+
 // Lessor manages the lifecycle of leases in memory. Lease mutations
-// (grant, revoke, keep-alive) are driven by the state machine after
-// Raft consensus, ensuring all replicas maintain consistent state.
+// (grant, revoke, keep-alive, key binding) are driven by the state machine
+// after Raft consensus, ensuring all replicas maintain consistent state.
+//
+// Every mutation except KeepAlive is also staged into the lease table
+// (table.go) through the Writer the state machine passes in -- its apply
+// batch -- so the table commits atomically with the data write that caused
+// it, and Restore can rebuild this state after a restart or a snapshot
+// recovery. The table is written FIRST: a mutation whose write fails leaves
+// the in-memory state untouched.
+//
+// A Lessor serves exactly one state machine. Restore replaces the whole
+// in-memory table with the one state machine's persisted copy, so sharing a
+// Lessor across shards would let one shard's restore erase another's leases.
+//
+// The binding invariant: a key is bound to at most one lease, bindings[k]
+// names it, and that lease's keys set holds k. Revoke therefore deletes only
+// keys whose most recent write named the revoked lease -- a key re-put under
+// another lease, or with none, has already left it.
 type Lessor struct {
-	mu     sync.RWMutex
-	leases map[int64]*lease
-	idSeq  atomic.Int64
-	closed atomic.Bool
+	mu       sync.RWMutex
+	leases   map[int64]*lease
+	bindings map[string]int64 // key -> the lease it is bound to
+	idSeq    int64            // highest ID granted; guarded by mu
+	closed   atomic.Bool
 }
 
 // NewLessor creates a new Lessor.
 func NewLessor() *Lessor {
 	return &Lessor{
-		leases: make(map[int64]*lease),
+		leases:   make(map[int64]*lease),
+		bindings: make(map[string]int64),
 	}
 }
 
-// Grant registers a new lease with the given TTL in seconds. The lease
-// ID is auto-generated using an atomic sequence. Returns the lease info
-// including the assigned ID.
-func (lr *Lessor) Grant(ttl int64) (*Lease, error) {
-	if lr.closed.Load() {
-		return nil, &LessorClosedError{}
+// newLease builds the in-memory state of lease id with a full TTL ahead of it.
+func newLease(id, ttl int64) *lease {
+	return &lease{
+		id:     id,
+		ttl:    ttl,
+		expiry: time.Now().Add(time.Duration(ttl) * time.Second),
+		keys:   make(map[string]struct{}),
 	}
-	if ttl <= 0 {
-		return nil, &InvalidTTLError{TTL: ttl}
-	}
-
-	id := lr.idSeq.Add(1)
-	return lr.GrantWithID(id, ttl)
 }
 
-// GrantWithID registers a new lease with the specified ID and TTL.
-// Used by the state machine to replay leases with deterministic IDs.
-func (lr *Lessor) GrantWithID(id, ttl int64) (*Lease, error) {
+// Grant registers a new lease with the given TTL in seconds under the next
+// ID in sequence, and records the lease and the advanced sequence through w.
+// The sequence is part of the table, so a replica that restarts or recovers
+// from a snapshot allocates the same next ID as its peers.
+func (lr *Lessor) Grant(w Writer, ttl int64) (*Lease, error) {
 	if lr.closed.Load() {
 		return nil, &LessorClosedError{}
 	}
@@ -124,24 +150,30 @@ func (lr *Lessor) GrantWithID(id, ttl int64) (*Lease, error) {
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
+	id := lr.idSeq + 1
 	if _, ok := lr.leases[id]; ok {
 		return nil, &ExistsError{ID: id}
 	}
 
-	l := &lease{
-		id:     id,
-		ttl:    ttl,
-		expiry: time.Now().Add(time.Duration(ttl) * time.Second),
-		keys:   make(map[string]struct{}),
+	if err := w.Set(leaseRecordKey(id), encodeInt64(ttl)); err != nil {
+		return nil, &TableWriteError{Err: err}
 	}
+	if err := w.Set([]byte(sequenceKey), encodeInt64(id)); err != nil {
+		return nil, &TableWriteError{Err: err}
+	}
+
+	lr.idSeq = id
+	l := newLease(id, ttl)
 	lr.leases[id] = l
 
 	return lr.toLease(l), nil
 }
 
-// Revoke removes a lease and returns the keys that were attached to it.
-// The caller is responsible for deleting the attached keys.
-func (lr *Lessor) Revoke(id int64) ([][]byte, error) {
+// Revoke removes a lease, releases every key bound to it, and returns those
+// keys in ascending order. The caller is responsible for deleting them; the
+// order is fixed so every replica emits the resulting delete events in the
+// same sequence.
+func (lr *Lessor) Revoke(w Writer, id int64) ([][]byte, error) {
 	if lr.closed.Load() {
 		return nil, &LessorClosedError{}
 	}
@@ -160,7 +192,20 @@ func (lr *Lessor) Revoke(id int64) ([][]byte, error) {
 		keys = append(keys, []byte(k))
 	}
 	l.mu.RUnlock()
+	slices.SortFunc(keys, bytes.Compare)
 
+	for _, k := range keys {
+		if err := w.Delete(bindingKey(k)); err != nil {
+			return nil, &TableWriteError{Err: err}
+		}
+	}
+	if err := w.Delete(leaseRecordKey(id)); err != nil {
+		return nil, &TableWriteError{Err: err}
+	}
+
+	for _, k := range keys {
+		delete(lr.bindings, string(k))
+	}
 	delete(lr.leases, id)
 
 	return keys, nil
@@ -168,6 +213,10 @@ func (lr *Lessor) Revoke(id int64) ([][]byte, error) {
 
 // KeepAlive resets the expiry of a lease to now + TTL. Returns the
 // updated lease info.
+//
+// The reset is not written to the lease table. Expiry is wall-clock state
+// local to each replica, and a replica rebuilding its table starts every lease
+// on a full TTL (see Restore), so there is nothing durable to record.
 func (lr *Lessor) KeepAlive(id int64) (*Lease, error) {
 	if lr.closed.Load() {
 		return nil, &LessorClosedError{}
@@ -186,6 +235,131 @@ func (lr *Lessor) KeepAlive(id int64) (*Lease, error) {
 	l.mu.Unlock()
 
 	return lr.toLease(l), nil
+}
+
+// Bind makes leaseID the one lease key belongs to, recording the change
+// through w. It is called for EVERY write of key, with the lease that write
+// named:
+//
+//   - a write naming a lease moves the key to it, out of any lease it was in;
+//   - a write naming NoLease releases the key from any lease it was in.
+//
+// Either way, revoking or expiring a lease the key has left no longer deletes
+// it. This is etcd's semantics: a key belongs to the lease of its latest
+// value, not to every lease any of its values ever named.
+//
+// A leaseID the Lessor does not hold is a *NotFoundError and changes nothing.
+// The state machine checks for that BEFORE writing the key (see Has), so the
+// error here is a backstop rather than the refusal path.
+func (lr *Lessor) Bind(w Writer, key []byte, leaseID int64) error {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+
+	k := string(key)
+	prev, bound := lr.bindings[k]
+
+	if leaseID == NoLease {
+		if !bound {
+			return nil
+		}
+		if err := w.Delete(bindingKey(key)); err != nil {
+			return &TableWriteError{Err: err}
+		}
+		lr.releaseLocked(prev, k)
+		delete(lr.bindings, k)
+		return nil
+	}
+
+	l, ok := lr.leases[leaseID]
+	if !ok {
+		return &NotFoundError{ID: leaseID}
+	}
+	if bound && prev == leaseID {
+		return nil
+	}
+	if err := w.Set(bindingKey(key), encodeInt64(leaseID)); err != nil {
+		return &TableWriteError{Err: err}
+	}
+	if bound {
+		lr.releaseLocked(prev, k)
+	}
+	l.mu.Lock()
+	l.keys[k] = struct{}{}
+	l.mu.Unlock()
+	lr.bindings[k] = leaseID
+	return nil
+}
+
+// Unbind releases key from whatever lease it is bound to. It is what a delete
+// of key does to its lease: Bind with NoLease.
+func (lr *Lessor) Unbind(w Writer, key []byte) error {
+	return lr.Bind(w, key, NoLease)
+}
+
+// releaseLocked removes k from lease id's key set. The CALLER MUST HOLD lr.mu
+// for writing.
+func (lr *Lessor) releaseLocked(id int64, k string) {
+	l, ok := lr.leases[id]
+	if !ok {
+		return
+	}
+	l.mu.Lock()
+	delete(l.keys, k)
+	l.mu.Unlock()
+}
+
+// Has reports whether the Lessor holds lease id. NoLease is always held: a
+// write naming it attaches nothing and needs no lease to exist.
+func (lr *Lessor) Has(id int64) bool {
+	if id == NoLease {
+		return true
+	}
+	lr.mu.RLock()
+	defer lr.mu.RUnlock()
+	_, ok := lr.leases[id]
+	return ok
+}
+
+// LeaseOf returns the lease key is bound to, or NoLease.
+func (lr *Lessor) LeaseOf(key []byte) int64 {
+	lr.mu.RLock()
+	defer lr.mu.RUnlock()
+	return lr.bindings[string(key)]
+}
+
+// Restore replaces the Lessor's entire in-memory state with the lease table
+// persisted in r. A state machine calls it when it opens and after it
+// recovers from a snapshot -- the two moments its storage changes underneath
+// the Lessor without passing through apply.
+//
+// Every restored lease starts a full TTL from now. The remaining TTL is
+// wall-clock state that was never replicated, so the only safe value after a
+// gap of unknown length is the granted one: expiring a lease early deletes
+// keys whose owner may still be renewing it, while expiring it a TTL late
+// costs one TTL of staleness. etcd makes the same choice when a new leader
+// takes over its lessor.
+//
+// A table that fails to read or validate leaves the Lessor unchanged.
+func (lr *Lessor) Restore(r storage.Reader) error {
+	t, err := readTable(r)
+	if err != nil {
+		return err
+	}
+
+	leases := make(map[int64]*lease, len(t.ttls))
+	for id, ttl := range t.ttls {
+		leases[id] = newLease(id, ttl)
+	}
+	for k, id := range t.bindings {
+		leases[id].keys[k] = struct{}{}
+	}
+
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+	lr.leases = leases
+	lr.bindings = t.bindings
+	lr.idSeq = t.seq
+	return nil
 }
 
 // Lookup returns the lease info for the given ID. Returns nil if the
@@ -233,39 +407,6 @@ func (lr *Lessor) Leases() []*Lease {
 		result = append(result, lr.toLease(l))
 	}
 	return result
-}
-
-// AttachKey associates a key with a lease. If the lease does not exist
-// or is expired, the attachment is silently ignored (the state machine
-// handles validation).
-func (lr *Lessor) AttachKey(leaseID int64, key []byte) {
-	lr.mu.RLock()
-	l, ok := lr.leases[leaseID]
-	lr.mu.RUnlock()
-
-	if !ok {
-		return
-	}
-
-	l.mu.Lock()
-	l.keys[string(key)] = struct{}{}
-	l.mu.Unlock()
-}
-
-// DetachKey removes a key's association with a lease. If the lease
-// does not exist, the detachment is silently ignored.
-func (lr *Lessor) DetachKey(leaseID int64, key []byte) {
-	lr.mu.RLock()
-	l, ok := lr.leases[leaseID]
-	lr.mu.RUnlock()
-
-	if !ok {
-		return
-	}
-
-	l.mu.Lock()
-	delete(l.keys, string(key))
-	l.mu.Unlock()
 }
 
 // ExpiredLeaseIDs returns the IDs of all expired leases.

@@ -225,10 +225,11 @@ func TestMVCCStateMachine_PutExistingKeyVersionIncrements(t *testing.T) {
 }
 
 func TestMVCCStateMachine_PutWithLeaseID(t *testing.T) {
-	s := newTestMVCCStateMachine(t)
+	s, _ := newTestMVCCWithLessor(t)
+	leaseID := grantLease(t, s, 1, 60)
 
 	applyMVCCEntries(t, s, []sm.Entry{
-		mvccPutEntry(1, []byte("leased"), []byte("value"), 12345),
+		mvccPutEntry(2, []byte("leased"), []byte("value"), leaseID),
 	})
 
 	val, err := s.Lookup(context.Background(), service.MVCCGetQuery{Key: []byte("leased")})
@@ -236,8 +237,27 @@ func TestMVCCStateMachine_PutWithLeaseID(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 	kv := val.(*service.KeyValue)
-	if kv.LeaseID != 12345 {
-		t.Fatalf("expected leaseID 12345, got %d", kv.LeaseID)
+	if kv.LeaseID != leaseID {
+		t.Fatalf("expected leaseID %d, got %d", leaseID, kv.LeaseID)
+	}
+}
+
+// A state machine built without a lessor cannot bind a lease, so a put naming
+// one is refused as an absent capability instead of being written as a key no
+// lease will ever delete.
+func TestMVCCStateMachine_PutWithLeaseID_NoLessorIsRefused(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+
+	results := applyMVCCEntries(t, s, []sm.Entry{
+		mvccPutEntry(1, []byte("leased"), []byte("value"), 12345),
+	})
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("put naming a lease without a lessor: result kind = %v (refused=%v), want a capability refusal", kind, ok)
+	}
+
+	val, err := s.Lookup(context.Background(), service.MVCCGetQuery{Key: []byte("leased")})
+	if err == nil && val != nil {
+		t.Fatalf("refused put wrote %+v", val)
 	}
 }
 

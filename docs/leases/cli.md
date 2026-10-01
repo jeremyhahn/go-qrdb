@@ -1,6 +1,6 @@
 # Leases — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Command group: `qrdb lease` — create, revoke, renew, inspect and list
 distributed TTL leases. All verbs accept the root persistent flags documented in
@@ -34,8 +34,9 @@ leased key does **not** renew the lease.
 
 ## `qrdb lease ttl <lease-id>`
 
-Show the current state of a lease: granted TTL, remaining TTL, and the attached
-keys where tracked. No flags.
+Show the current state of a lease: granted TTL, remaining TTL, and the keys
+currently attached. A key re-written under another lease or with none since is
+no longer listed. No flags.
 
 ```bash
 qrdb lease ttl 7 --output json
@@ -43,7 +44,9 @@ qrdb lease ttl 7 --output json
 
 ## `qrdb lease revoke <lease-id>`
 
-Revoke a lease immediately. **Every key attached to it is deleted.** No flags.
+Revoke a lease immediately. **Every key attached to it is deleted.** Attached
+means the key's latest write named this lease: a key re-written since under
+another lease, or with none, is left alone. No flags.
 
 ```bash
 qrdb lease revoke 7

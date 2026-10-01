@@ -301,7 +301,26 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 		return 0, &ReadError{Key: metaKeyLastApplied, Err: err}
 	}
 
+	// A disk state machine resumes from lastApplied rather than replaying the
+	// log, so the lessor's state has to come back from the lease table this
+	// database already holds.
+	if err := s.restoreLessor(); err != nil {
+		_ = s.db.Close()
+		s.db = nil
+		s.ts = nil
+		return 0, &OpenError{Dir: initialDir, Err: err}
+	}
+
 	return lastApplied, nil
+}
+
+// restoreLessor rebuilds the attached lessor, if any, from the lease table
+// persisted in the database. The CALLER MUST HOLD s.mu for writing.
+func (s *PebbleStateMachine) restoreLessor() error {
+	if s.lessor == nil {
+		return nil
+	}
+	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true))
 }
 
 // readLastApplied reads the persisted last applied index from the metadata key.
@@ -711,7 +730,7 @@ func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interfa
 	var counter snapshotEntryCounter
 	for iter.First(); iter.Valid(); iter.Next() {
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 		if err := counter.add(); err != nil {
@@ -744,7 +763,7 @@ func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interfa
 		}
 
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 
@@ -818,6 +837,12 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
+	// The snapshot carried the lease table with the data it governs; the
+	// lessor must now reflect it rather than the state it held before.
+	if err := s.restoreLessor(); err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+
 	return nil
 }
 
@@ -885,7 +910,7 @@ func (s *PebbleStateMachine) GetHash() (uint64, error) {
 	// PebbleDB iterates in sorted order by default.
 	for iter.First(); iter.Valid(); iter.Next() {
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 		v, err := iter.ValueAndErr()
@@ -924,15 +949,16 @@ func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte)
 	}
 
 	// Capture previous value for watch notifications.
-	var prevKv *qrdbkv.KeyValue
-	if s.hub != nil {
-		if val, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
-			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
-		}
-	}
+	prevKv := s.watchPrevKV(batch, cmd.Key)
 
 	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	// A base KV put carries no lease, so the key leaves any lease its previous
+	// value was bound to.
+	if err := s.bindLease(batch, cmd.Key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -978,6 +1004,9 @@ func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload
 
 	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+	if err := s.bindLease(batch, cmd.Key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	// No prevKv: the key was absent, which is the only path that reaches here.
@@ -1026,8 +1055,12 @@ func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, pa
 		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
 	}
 
+	prevLease := s.leaseOf(key)
 	if derr := batch.Delete(key, pebble.Sync); derr != nil {
 		return sm.Result{}, nil, &WriteError{Err: derr}
+	}
+	if err := s.bindLease(batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -1036,7 +1069,7 @@ func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, pa
 			eventType: watch.EventDelete,
 			key:       key,
 			kv:        &qrdbkv.KeyValue{Key: key},
-			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current},
+			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current, LeaseID: prevLease},
 		}}
 	}
 
@@ -1077,13 +1110,17 @@ func pebbleHandleCompareAndSwap(s *PebbleStateMachine, batch *pebble.Batch, payl
 		return sm.Result{}, nil, &WriteError{Err: serr}
 	}
 
+	// The lease survives the swap, as it does on the MVCC engine: a value edit
+	// is not a reason to change the record's lifetime. The binding is
+	// untouched, so the key stays in whatever lease it was in.
 	var notifs []pebbleNotification
 	if s.hub != nil {
+		heldLease := s.leaseOf(key)
 		notifs = []pebbleNotification{{
 			eventType: watch.EventPut,
 			key:       key,
-			kv:        &qrdbkv.KeyValue{Key: key, Value: next},
-			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current},
+			kv:        &qrdbkv.KeyValue{Key: key, Value: next, LeaseID: heldLease},
+			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current, LeaseID: heldLease},
 		}}
 	}
 
@@ -1105,15 +1142,13 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 	}
 
 	// Capture previous value for watch notifications.
-	var prevKv *qrdbkv.KeyValue
-	if s.hub != nil {
-		if val, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
-			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
-		}
-	}
+	prevKv := s.watchPrevKV(batch, cmd.Key)
 
 	if err := batch.Delete(cmd.Key, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+	if err := s.bindLease(batch, cmd.Key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -1134,29 +1169,27 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 // ---------------------------------------------------------------------------
 
 // pebbleHandleMVCCPut processes an MVCC Put command without revision
-// tracking. The key-value pair is stored directly in PebbleDB. Lease
-// attachment is tracked if a lessor is configured.
+// tracking. The key-value pair is stored directly in PebbleDB, and the key is
+// bound to the lease the write names -- or released from any lease, when it
+// names none -- in the same batch.
 func pebbleHandleMVCCPut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.LeaseRefusal(s.lessor, leaseID); refused {
+		return res, nil, nil
+	}
 
 	// Capture previous value for watch notifications.
-	var prevKv *qrdbkv.KeyValue
-	if s.hub != nil {
-		if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
-			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
-		}
-	}
+	prevKv := s.watchPrevKV(batch, key)
 
 	if err := batch.Set(key, value, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
 	}
 
-	// Track key-lease attachment.
-	if s.lessor != nil && leaseID > 0 {
-		s.lessor.AttachKey(leaseID, key)
+	if err := s.bindLease(batch, key, leaseID); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -1186,6 +1219,9 @@ func pebbleHandleMVCCPutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, pay
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.LeaseRefusal(s.lessor, leaseID); refused {
+		return res, nil, nil
+	}
 
 	absent, getErr := s.keyIsAbsentInBatch(batch, key)
 	if getErr != nil {
@@ -1199,8 +1235,8 @@ func pebbleHandleMVCCPutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, pay
 		return sm.Result{}, nil, &WriteError{Err: err}
 	}
 
-	if s.lessor != nil && leaseID > 0 {
-		s.lessor.AttachKey(leaseID, key)
+	if err := s.bindLease(batch, key, leaseID); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -1224,20 +1260,15 @@ func pebbleHandleMVCCDelete(s *PebbleStateMachine, batch *pebble.Batch, payload 
 	}
 
 	// Capture previous value for watch notifications.
-	var prevKv *qrdbkv.KeyValue
-	if s.hub != nil {
-		if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
-			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
-		}
-	}
+	prevKv := s.watchPrevKV(batch, key)
 
 	if err := batch.Delete(key, pebble.Sync); err != nil {
 		return sm.Result{}, nil, &WriteError{Err: err}
 	}
 
-	// Detach key from lease if it had one.
-	if s.lessor != nil && prevKv != nil && prevKv.LeaseID > 0 {
-		s.lessor.DetachKey(prevKv.LeaseID, key)
+	// Release the key from the lease it was bound to, if any.
+	if err := s.bindLease(batch, key, lease.NoLease); err != nil {
+		return sm.Result{}, nil, err
 	}
 
 	var notifs []pebbleNotification
@@ -1269,6 +1300,9 @@ func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byt
 	// refuses the whole batch and stages nothing (validatePebbleOps).
 	if verr := validatePebbleOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
+	}
+	if res, refused := statemachine.OpsLeaseRefusal(s.lessor, ops); refused {
+		return res, nil, nil
 	}
 
 	var notifs []pebbleNotification
@@ -1337,6 +1371,9 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	// machine cannot execute refuses the whole transaction and stages nothing.
 	if verr := validatePebbleOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
+	}
+	if res, refused := statemachine.OpsLeaseRefusal(s.lessor, ops); refused {
+		return res, nil, nil
 	}
 
 	// Execute all operations atomically.
@@ -1411,19 +1448,14 @@ func validatePebbleOps(ops []protocol.DecodedOp) error {
 func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.DecodedOp) ([]pebbleNotification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
-		var prevKv *qrdbkv.KeyValue
-		if s.hub != nil {
-			if val, err := s.getKeyInBatch(batch, op.Key); err == nil {
-				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
-			}
-		}
+		prevKv := s.watchPrevKV(batch, op.Key)
 
 		if err := batch.Set(op.Key, op.Value, pebble.Sync); err != nil {
 			return nil, &WriteError{Err: err}
 		}
 
-		if s.lessor != nil && op.LeaseID > 0 {
-			s.lessor.AttachKey(op.LeaseID, op.Key)
+		if err := s.bindLease(batch, op.Key, op.LeaseID); err != nil {
+			return nil, err
 		}
 
 		var notifs []pebbleNotification
@@ -1438,19 +1470,14 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 		return notifs, nil
 
 	case protocol.OpMVCCDelete:
-		var prevKv *qrdbkv.KeyValue
-		if s.hub != nil {
-			if val, err := s.getKeyInBatch(batch, op.Key); err == nil {
-				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
-			}
-		}
+		prevKv := s.watchPrevKV(batch, op.Key)
 
 		if err := batch.Delete(op.Key, pebble.Sync); err != nil {
 			return nil, &WriteError{Err: err}
 		}
 
-		if s.lessor != nil && prevKv != nil && prevKv.LeaseID > 0 {
-			s.lessor.DetachKey(prevKv.LeaseID, op.Key)
+		if err := s.bindLease(batch, op.Key, lease.NoLease); err != nil {
+			return nil, err
 		}
 
 		var notifs []pebbleNotification
@@ -1474,7 +1501,7 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 // ---------------------------------------------------------------------------
 
 // pebbleHandleLeaseGrant creates a new lease with the specified TTL.
-func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+func pebbleHandleLeaseGrant(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	ttl, err := protocol.DecodeLeaseGrant(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1484,8 +1511,14 @@ func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []by
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	info, grantErr := s.lessor.Grant(ttl)
+	info, grantErr := s.lessor.Grant(pebbleLeaseWriter{batch: batch}, ttl)
 	if grantErr != nil {
+		// A lease-table write fault is local to this replica and must halt
+		// apply, never be answered as a refusal its peers did not make.
+		var twe *lease.TableWriteError
+		if errors.As(grantErr, &twe) {
+			return sm.Result{}, nil, grantErr
+		}
 		// Invalid TTL (and similar input-shaped grant failures) are
 		// deterministic application errors: surface via the result payload
 		// rather than stalling consensus.
@@ -1495,7 +1528,9 @@ func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []by
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
 }
 
-// pebbleHandleLeaseRevoke expires a lease and deletes all attached keys.
+// pebbleHandleLeaseRevoke expires a lease and deletes the keys still bound to
+// it. A key re-put under another lease or with none since it was bound here
+// has already left the lease (lease.Lessor.Bind) and is untouched.
 func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	leaseID, err := protocol.DecodeLeaseRevoke(payload)
 	if err != nil {
@@ -1506,7 +1541,7 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
-	keys, revokeErr := s.lessor.Revoke(leaseID)
+	keys, revokeErr := s.lessor.Revoke(pebbleLeaseWriter{batch: batch}, leaseID)
 	if revokeErr != nil {
 		var nfe *lease.NotFoundError
 		if errors.As(revokeErr, &nfe) {
@@ -1521,15 +1556,18 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 	// Delete all attached keys.
 	var notifs []pebbleNotification
 	for _, key := range keys {
-		var prevKv *qrdbkv.KeyValue
-		if s.hub != nil {
-			if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
-				prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
-			}
+		prevKv := s.watchPrevKV(batch, key)
+		if prevKv != nil {
+			// The binding was released by Revoke above; the deleted value
+			// belonged to this lease.
+			prevKv.LeaseID = leaseID
 		}
 
+		// Deleting an absent key is not an error in Pebble, so a failure here
+		// is a fault in the batch, local to this replica. Skipping the key
+		// would leave it on this replica while its peers delete it.
 		if delErr := batch.Delete(key, pebble.Sync); delErr != nil {
-			continue // key may already be deleted
+			return sm.Result{}, nil, &WriteError{Err: delErr}
 		}
 
 		if s.hub != nil {
@@ -1851,8 +1889,61 @@ func (s *PebbleStateMachine) getKeyInBatch(batch *pebble.Batch, key []byte) ([]b
 	return cp, nil
 }
 
+// pebbleLeaseWriter stages lease-table mutations into the apply batch, so a
+// key's lease binding commits atomically with the write that changed it.
+type pebbleLeaseWriter struct {
+	batch *pebble.Batch
+}
+
+// Set stages key = value.
+func (w pebbleLeaseWriter) Set(key, value []byte) error {
+	return w.batch.Set(key, value, pebble.Sync)
+}
+
+// Delete stages the removal of key.
+func (w pebbleLeaseWriter) Delete(key []byte) error {
+	return w.batch.Delete(key, pebble.Sync)
+}
+
+// bindLease records, in the apply batch and the lessor, that key's newly
+// written value names leaseID (lease.NoLease for none, which is also what a
+// delete records). Every write path calls it, so a key always belongs to the
+// lease of its latest value and to no other.
+//
+// With no lessor there is nothing to bind: a write naming a lease was already
+// refused by statemachine.LeaseRefusal before it staged anything.
+func (s *PebbleStateMachine) bindLease(batch *pebble.Batch, key []byte, leaseID int64) error {
+	if s.lessor == nil {
+		return nil
+	}
+	return s.lessor.Bind(pebbleLeaseWriter{batch: batch}, key, leaseID)
+}
+
+// leaseOf returns the lease key is bound to, or lease.NoLease.
+func (s *PebbleStateMachine) leaseOf(key []byte) int64 {
+	if s.lessor == nil {
+		return lease.NoLease
+	}
+	return s.lessor.LeaseOf(key)
+}
+
+// watchPrevKV returns key's value as the apply batch sees it, with the lease
+// it is bound to, for a watch notification's previous value. It returns nil
+// when there is no watch hub to notify or the key is absent.
+func (s *PebbleStateMachine) watchPrevKV(batch *pebble.Batch, key []byte) *qrdbkv.KeyValue {
+	if s.hub == nil {
+		return nil
+	}
+	val, err := s.getKeyInBatch(batch, key)
+	if err != nil {
+		return nil
+	}
+	return &qrdbkv.KeyValue{Key: key, Value: val, LeaseID: s.leaseOf(key)}
+}
+
 // Compile-time assertions.
 var (
+	_ lease.Writer        = pebbleLeaseWriter{}
 	_ sm.DiskStateMachine = (*PebbleStateMachine)(nil)
 	_ sm.Hasher           = (*PebbleStateMachine)(nil)
 	_ sm.NALookup         = (*PebbleStateMachine)(nil)

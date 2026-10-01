@@ -332,7 +332,7 @@ func (s *MVCCStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface
 	var counter snapshotEntryCounter
 	for iter.First(); iter.Valid(); iter.Next() {
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 		if err := counter.add(); err != nil {
@@ -365,7 +365,7 @@ func (s *MVCCStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface
 		}
 
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 
@@ -533,7 +533,7 @@ func (s *MVCCStateMachine) GetHash() (uint64, error) {
 
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		k := iter.Key()
-		if len(k) > 0 && k[0] == '\x00' {
+		if isNodeLocalKey(k) {
 			continue
 		}
 		v := iter.Value()

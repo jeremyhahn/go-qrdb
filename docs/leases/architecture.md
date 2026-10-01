@@ -1,6 +1,6 @@
 # Leases — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Problem
 
@@ -21,6 +21,22 @@ deleted, in one place, by the leader.
   keys go.
 - `LeaseRevoke(id)` expires it immediately.
 
+**A key belongs to the lease its latest write named, and to no other.** Writing
+a key again under a different lease moves it to that lease; writing it again
+with no lease (a plain `Put`, or `PutWithLease` with lease `0`) releases it from
+any lease; deleting it releases it too. Revoking or expiring a lease deletes only
+the keys still bound to it. A key re-written under lease B is untouched when its
+earlier lease A expires. This is etcd's model, and the one a service registry
+needs: a restarted instance re-registers under a fresh lease while its previous
+registration's lease is still counting down, and that countdown must not delete
+the new registration. A compare-and-swap is a value edit, not a re-attachment,
+so the key keeps the lease it had.
+
+The lease table is replicated state like the keys it governs. Each lease's
+granted TTL, every key's binding and the lease-ID sequence are written in the
+same atomic apply batch as the data write that changed them, carried in
+snapshots, and restored when a node restarts or recovers from a snapshot.
+
 Expiry is decided by the Raft leader and applied as a normal committed
 operation, so every replica sees the deletions at the same point in the log.
 
@@ -34,6 +50,15 @@ operation, so every replica sees the deletions at the same point in the log.
 - **Wall-clock expiry evaluated independently on each node.** Rejected: clock
   skew makes replicas disagree about whether a key exists, which is a
   consistency violation, not a rounding error. Expiry goes through the log.
+- **A key stays in every lease any of its values named.** This was the
+  behaviour until it was corrected. Rejected because it makes a lease delete
+  data written after the key left it: the old lease's revoke or expiry deleted
+  the newer value, silently.
+- **Checking each key's current lease at revoke time instead of keeping a
+  binding.** Rejected as the mechanism: it needs every key's lease to be
+  readable from the stored value, which the non-MVCC state machine does not
+  keep. The binding record answers "which lease holds this key" on both state
+  machines from one place.
 
 ## Component boundaries
 
@@ -68,13 +93,21 @@ without anybody asking.
 ## Data flow
 
 1. `LeaseGrant(ttl)` is proposed through Raft; the committed entry creates the
-   lease and fixes its granted TTL.
-2. The caller attaches keys by naming the lease ID on a write.
+   lease, fixes its granted TTL and takes the next ID from the replicated
+   sequence.
+2. The caller attaches keys by naming the lease ID on a write. Applying the
+   write moves the key's binding to that lease, or releases it when the write
+   names none, in the same batch as the value. A write naming a lease that no
+   longer exists at apply time is refused and writes nothing.
 3. `LeaseKeepAlive` resets the remaining TTL, again through the log.
 4. The leader detects expiry and proposes the cascade delete. Followers apply it
-   from the log, so no follower expires anything on its own clock.
-5. `LeaseTimeToLive` reports `TTL`, `GrantedTTL`, `RemainingTTL` and, where
-   tracked, the attached `Keys`.
+   from the log, so no follower expires anything on its own clock. The delete
+   covers the keys bound to the lease at that log position.
+5. `LeaseTimeToLive` reports `TTL`, `GrantedTTL`, `RemainingTTL` and the keys
+   currently bound to the lease (`Keys`).
+6. On restart or snapshot recovery the node rebuilds its leases and bindings
+   from the persisted lease table. Every restored lease starts a full TTL, since
+   the remaining TTL was never replicated.
 
 ## Trust boundaries
 

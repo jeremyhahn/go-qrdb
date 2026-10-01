@@ -97,7 +97,7 @@ func TestMVCCEngine_MVCCPutIfAbsent_StoresWhenAbsent(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	leaseID, err := lr.Grant(60)
+	leaseID, err := lr.Grant(stg, 60)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestMVCCEngine_MVCCPutIfAbsent_StoresWhenAbsent(t *testing.T) {
 	}
 	// Revoke reports the keys attached to the lease, which is how the stored
 	// key's attachment is observed.
-	attached, err := lr.Revoke(leaseID.ID)
+	attached, err := lr.Revoke(stg, leaseID.ID)
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}

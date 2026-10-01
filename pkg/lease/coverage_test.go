@@ -51,7 +51,7 @@ func TestLeases_FiltersExpired(t *testing.T) {
 	lr := NewLessor()
 
 	// Grant an active lease.
-	active, err := lr.Grant(60)
+	active, err := lr.Grant(nopWriter{}, 60)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}

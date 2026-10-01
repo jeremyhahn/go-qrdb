@@ -243,3 +243,73 @@ func TestCLIClusterLeaseExpiryNotifiesWatch(t *testing.T) {
 		})
 	}
 }
+
+// TestCLIMultiProtocolLeaseRePutLeavesOldLease checks, over every transport,
+// that a key belongs to the lease its latest write named: a key re-put under
+// a second lease, or with no lease, survives the revoke of the lease its
+// earlier value named. This is the service-registry case -- an instance that
+// re-registers under a fresh lease while its previous registration's lease is
+// still counting down must not be deleted when that old lease ends.
+func TestCLIMultiProtocolLeaseRePutLeavesOldLease(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	grant := func(t *testing.T, proto ProtocolType) string {
+		t.Helper()
+		stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "lease", "grant", "--ttl", "300")
+		if err != nil {
+			t.Fatalf("[%s] lease grant: %v\nstdout: %s\nstderr: %s", proto, err, stdout, stderr)
+		}
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.HasPrefix(line, "ID:") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
+			}
+		}
+		t.Fatalf("[%s] could not extract lease ID from output: %s", proto, stdout)
+		return ""
+	}
+	run := func(t *testing.T, proto ProtocolType, args ...string) string {
+		t.Helper()
+		stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
+		if err != nil {
+			t.Fatalf("[%s] %v: %v\nstdout: %s\nstderr: %s", proto, args, err, stdout, stderr)
+		}
+		return stdout
+	}
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			oldLease, newLease := grant(t, proto), grant(t, proto)
+			ts := testTimestamp()
+			moved := fmt.Sprintf("test-lease-reput-%s-%d/moved", proto, ts)
+			released := fmt.Sprintf("test-lease-reput-%s-%d/released", proto, ts)
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", moved)          //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "kv", "del", released)       //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "lease", "revoke", newLease) //nolint:errcheck
+				execCLIWithProtocol(t, cfg, proto, "lease", "revoke", oldLease) //nolint:errcheck
+			})
+
+			run(t, proto, "kv", "put", moved, "old", "--lease-id", oldLease)
+			run(t, proto, "kv", "put", moved, "new", "--lease-id", newLease)
+			run(t, proto, "kv", "put", released, "leased", "--lease-id", oldLease)
+			run(t, proto, "kv", "put", released, "permanent")
+
+			run(t, proto, "lease", "revoke", oldLease)
+
+			assertContains(t, strings.TrimSpace(run(t, proto, "kv", "get", moved)), "new",
+				fmt.Sprintf("[%s] a key re-put under another lease must survive the old lease's revoke", proto))
+			assertContains(t, strings.TrimSpace(run(t, proto, "kv", "get", released)), "permanent",
+				fmt.Sprintf("[%s] a key re-put without a lease must survive the old lease's revoke", proto))
+
+			run(t, proto, "lease", "revoke", newLease)
+			if stdout, _, err := execCLIWithProtocol(t, cfg, proto, "kv", "get", moved); err == nil {
+				t.Fatalf("[%s] %s survived the revoke of the lease its latest value named: %s", proto, moved, stdout)
+			}
+		})
+	}
+}

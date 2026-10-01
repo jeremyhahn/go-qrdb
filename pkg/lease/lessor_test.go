@@ -36,7 +36,7 @@ func TestNewLessorStartsEmpty(t *testing.T) {
 
 func TestGrantCreatesLease(t *testing.T) {
 	lr := NewLessor()
-	info, err := lr.Grant(10)
+	info, err := lr.Grant(nopWriter{}, 10)
 	if err != nil {
 		t.Fatalf("Grant(10) returned unexpected error: %v", err)
 	}
@@ -56,11 +56,11 @@ func TestGrantCreatesLease(t *testing.T) {
 
 func TestGrantAutoIncrementsID(t *testing.T) {
 	lr := NewLessor()
-	info1, err := lr.Grant(10)
+	info1, err := lr.Grant(nopWriter{}, 10)
 	if err != nil {
 		t.Fatalf("Grant(10) first call returned unexpected error: %v", err)
 	}
-	info2, err := lr.Grant(10)
+	info2, err := lr.Grant(nopWriter{}, 10)
 	if err != nil {
 		t.Fatalf("Grant(10) second call returned unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGrantAutoIncrementsID(t *testing.T) {
 
 func TestGrantInvalidTTLZero(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.Grant(0)
+	_, err := lr.Grant(nopWriter{}, 0)
 	if err == nil {
 		t.Fatal("Grant(0) expected error, got nil")
 	}
@@ -85,7 +85,7 @@ func TestGrantInvalidTTLZero(t *testing.T) {
 
 func TestGrantInvalidTTLNegative(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.Grant(-5)
+	_, err := lr.Grant(nopWriter{}, -5)
 	if err == nil {
 		t.Fatal("Grant(-5) expected error, got nil")
 	}
@@ -101,7 +101,7 @@ func TestGrantInvalidTTLNegative(t *testing.T) {
 func TestGrantOnClosedLessor(t *testing.T) {
 	lr := NewLessor()
 	lr.Close()
-	_, err := lr.Grant(10)
+	_, err := lr.Grant(nopWriter{}, 10)
 	if err == nil {
 		t.Fatal("Grant on closed lessor expected error, got nil")
 	}
@@ -113,7 +113,7 @@ func TestGrantOnClosedLessor(t *testing.T) {
 func TestGrantOnClosedLessorMessage(t *testing.T) {
 	lr := NewLessor()
 	lr.Close()
-	_, err := lr.Grant(10)
+	_, err := lr.Grant(nopWriter{}, 10)
 	if err == nil {
 		t.Fatal("Grant on closed lessor expected error, got nil")
 	}
@@ -122,93 +122,10 @@ func TestGrantOnClosedLessorMessage(t *testing.T) {
 	}
 }
 
-func TestGrantWithIDCreatesLease(t *testing.T) {
-	lr := NewLessor()
-	info, err := lr.GrantWithID(100, 30)
-	if err != nil {
-		t.Fatalf("GrantWithID(100, 30) returned unexpected error: %v", err)
-	}
-	if info.ID != 100 {
-		t.Errorf("GrantWithID(100, 30) ID = %d, want 100", info.ID)
-	}
-	if info.TTL != 30 {
-		t.Errorf("GrantWithID(100, 30) TTL = %d, want 30", info.TTL)
-	}
-}
-
-func TestGrantWithIDUsesSpecifiedID(t *testing.T) {
-	lr := NewLessor()
-	info, err := lr.GrantWithID(42, 10)
-	if err != nil {
-		t.Fatalf("GrantWithID(42, 10) returned unexpected error: %v", err)
-	}
-	if info.ID != 42 {
-		t.Errorf("GrantWithID(42, 10) ID = %d, want 42", info.ID)
-	}
-	found := lr.Lookup(42)
-	if found == nil {
-		t.Fatal("Lookup(42) returned nil after GrantWithID")
-	}
-}
-
-func TestGrantWithIDDuplicateReturnsExistsError(t *testing.T) {
-	lr := NewLessor()
-	_, err := lr.GrantWithID(1, 10)
-	if err != nil {
-		t.Fatalf("GrantWithID(1, 10) first call returned unexpected error: %v", err)
-	}
-	_, err = lr.GrantWithID(1, 10)
-	if err == nil {
-		t.Fatal("GrantWithID(1, 10) duplicate expected error, got nil")
-	}
-	if _, ok := err.(*ExistsError); !ok {
-		t.Errorf("GrantWithID duplicate error type = %T, want *ExistsError", err)
-	}
-}
-
-func TestGrantWithIDDuplicateContainsID(t *testing.T) {
-	lr := NewLessor()
-	_, _ = lr.GrantWithID(99, 10)
-	_, err := lr.GrantWithID(99, 10)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	ee, ok := err.(*ExistsError)
-	if !ok {
-		t.Fatalf("error type = %T, want *ExistsError", err)
-	}
-	if ee.ID != 99 {
-		t.Errorf("ExistsError.ID = %d, want 99", ee.ID)
-	}
-}
-
-func TestGrantWithIDInvalidTTL(t *testing.T) {
-	lr := NewLessor()
-	_, err := lr.GrantWithID(1, 0)
-	if err == nil {
-		t.Fatal("GrantWithID with TTL=0 expected error, got nil")
-	}
-	if _, ok := err.(*InvalidTTLError); !ok {
-		t.Errorf("error type = %T, want *InvalidTTLError", err)
-	}
-}
-
-func TestGrantWithIDOnClosedLessor(t *testing.T) {
-	lr := NewLessor()
-	lr.Close()
-	_, err := lr.GrantWithID(1, 10)
-	if err == nil {
-		t.Fatal("GrantWithID on closed lessor expected error, got nil")
-	}
-	if _, ok := err.(*LessorClosedError); !ok {
-		t.Errorf("error type = %T, want *LessorClosedError", err)
-	}
-}
-
 func TestRevokeRemovesLease(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	_, err := lr.Revoke(info.ID)
+	info, _ := lr.Grant(nopWriter{}, 60)
+	_, err := lr.Revoke(nopWriter{}, info.ID)
 	if err != nil {
 		t.Fatalf("Revoke(%d) returned unexpected error: %v", info.ID, err)
 	}
@@ -219,11 +136,11 @@ func TestRevokeRemovesLease(t *testing.T) {
 
 func TestRevokeReturnsAttachedKeys(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("key1"))
-	lr.AttachKey(info.ID, []byte("key2"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("key1"))
+	mustBind(t, lr, info.ID, []byte("key2"))
 
-	keys, err := lr.Revoke(info.ID)
+	keys, err := lr.Revoke(nopWriter{}, info.ID)
 	if err != nil {
 		t.Fatalf("Revoke(%d) returned unexpected error: %v", info.ID, err)
 	}
@@ -245,7 +162,7 @@ func TestRevokeReturnsAttachedKeys(t *testing.T) {
 
 func TestRevokeUnknownIDReturnsNotFoundError(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.Revoke(999)
+	_, err := lr.Revoke(nopWriter{}, 999)
 	if err == nil {
 		t.Fatal("Revoke(999) expected error, got nil")
 	}
@@ -256,7 +173,7 @@ func TestRevokeUnknownIDReturnsNotFoundError(t *testing.T) {
 
 func TestRevokeUnknownIDContainsID(t *testing.T) {
 	lr := NewLessor()
-	_, err := lr.Revoke(12345)
+	_, err := lr.Revoke(nopWriter{}, 12345)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -271,9 +188,9 @@ func TestRevokeUnknownIDContainsID(t *testing.T) {
 
 func TestRevokeOnClosedLessor(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
-	_, err := lr.Revoke(info.ID)
+	_, err := lr.Revoke(nopWriter{}, info.ID)
 	if err == nil {
 		t.Fatal("Revoke on closed lessor expected error, got nil")
 	}
@@ -284,7 +201,7 @@ func TestRevokeOnClosedLessor(t *testing.T) {
 
 func TestKeepAliveResetsTTL(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 
 	updated, err := lr.KeepAlive(info.ID)
 	if err != nil {
@@ -303,7 +220,7 @@ func TestKeepAliveResetsTTL(t *testing.T) {
 
 func TestKeepAlivePreservesID(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	updated, err := lr.KeepAlive(info.ID)
 	if err != nil {
 		t.Fatalf("KeepAlive returned unexpected error: %v", err)
@@ -341,7 +258,7 @@ func TestKeepAliveUnknownIDMessage(t *testing.T) {
 
 func TestKeepAliveOnClosedLessor(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
 	_, err := lr.KeepAlive(info.ID)
 	if err == nil {
@@ -354,7 +271,7 @@ func TestKeepAliveOnClosedLessor(t *testing.T) {
 
 func TestLookupReturnsLeaseInfo(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(30)
+	info, _ := lr.Grant(nopWriter{}, 30)
 	found := lr.Lookup(info.ID)
 	if found == nil {
 		t.Fatal("Lookup returned nil for existing lease")
@@ -377,8 +294,8 @@ func TestLookupUnknownIDReturnsNil(t *testing.T) {
 
 func TestLookupAfterRevoke(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	_, _ = lr.Revoke(info.ID)
+	info, _ := lr.Grant(nopWriter{}, 60)
+	_, _ = lr.Revoke(nopWriter{}, info.ID)
 	found := lr.Lookup(info.ID)
 	if found != nil {
 		t.Errorf("Lookup after Revoke returned non-nil: %v", found)
@@ -391,7 +308,7 @@ func TestLookupAfterRevoke(t *testing.T) {
 
 func TestLookupOrNotFoundReturnsLeaseInfo(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(30)
+	info, _ := lr.Grant(nopWriter{}, 30)
 
 	found, err := lr.LookupOrNotFound(info.ID)
 	if err != nil {
@@ -420,8 +337,8 @@ func TestLookupOrNotFoundUnknownIDReturnsNotFoundError(t *testing.T) {
 
 func TestLookupOrNotFoundAfterRevoke(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	_, _ = lr.Revoke(info.ID)
+	info, _ := lr.Grant(nopWriter{}, 60)
+	_, _ = lr.Revoke(nopWriter{}, info.ID)
 
 	found, err := lr.LookupOrNotFound(info.ID)
 	if found != nil {
@@ -435,9 +352,9 @@ func TestLookupOrNotFoundAfterRevoke(t *testing.T) {
 
 func TestLeasesReturnsAll(t *testing.T) {
 	lr := NewLessor()
-	_, _ = lr.Grant(10)
-	_, _ = lr.Grant(20)
-	_, _ = lr.Grant(30)
+	_, _ = lr.Grant(nopWriter{}, 10)
+	_, _ = lr.Grant(nopWriter{}, 20)
+	_, _ = lr.Grant(nopWriter{}, 30)
 
 	leases := lr.Leases()
 	if len(leases) != 3 {
@@ -455,8 +372,8 @@ func TestLeasesEmptyLessor(t *testing.T) {
 
 func TestLeasesContainsGrantedIDs(t *testing.T) {
 	lr := NewLessor()
-	info1, _ := lr.Grant(10)
-	info2, _ := lr.Grant(20)
+	info1, _ := lr.Grant(nopWriter{}, 10)
+	info2, _ := lr.Grant(nopWriter{}, 20)
 
 	leases := lr.Leases()
 	idSet := make(map[int64]struct{})
@@ -473,8 +390,8 @@ func TestLeasesContainsGrantedIDs(t *testing.T) {
 
 func TestAttachKeyAddsKey(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("mykey"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("mykey"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -490,10 +407,10 @@ func TestAttachKeyAddsKey(t *testing.T) {
 
 func TestAttachKeyMultipleKeys(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("a"))
-	lr.AttachKey(info.ID, []byte("b"))
-	lr.AttachKey(info.ID, []byte("c"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("a"))
+	mustBind(t, lr, info.ID, []byte("b"))
+	mustBind(t, lr, info.ID, []byte("c"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -504,9 +421,16 @@ func TestAttachKeyMultipleKeys(t *testing.T) {
 	}
 }
 
-func TestAttachKeyUnknownLeaseIsNoOp(t *testing.T) {
+func TestBindUnknownLeaseReturnsNotFoundAndChangesNothing(t *testing.T) {
 	lr := NewLessor()
-	lr.AttachKey(999, []byte("orphan"))
+	err := lr.Bind(nopWriter{}, []byte("orphan"), 999)
+	var nfe *NotFoundError
+	if !errors.As(err, &nfe) || nfe.ID != 999 {
+		t.Fatalf("Bind to unknown lease error = %v, want *NotFoundError{ID: 999}", err)
+	}
+	if got := lr.LeaseOf([]byte("orphan")); got != NoLease {
+		t.Errorf("LeaseOf after refused Bind = %d, want NoLease", got)
+	}
 	if lr.Count() != 0 {
 		t.Errorf("Count() = %d after attach to unknown lease, want 0", lr.Count())
 	}
@@ -514,9 +438,9 @@ func TestAttachKeyUnknownLeaseIsNoOp(t *testing.T) {
 
 func TestAttachKeyDuplicateKeyIdempotent(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("dup"))
-	lr.AttachKey(info.ID, []byte("dup"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("dup"))
+	mustBind(t, lr, info.ID, []byte("dup"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -529,10 +453,10 @@ func TestAttachKeyDuplicateKeyIdempotent(t *testing.T) {
 
 func TestDetachKeyRemovesKey(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("key1"))
-	lr.AttachKey(info.ID, []byte("key2"))
-	lr.DetachKey(info.ID, []byte("key1"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("key1"))
+	mustBind(t, lr, info.ID, []byte("key2"))
+	mustUnbind(t, lr, []byte("key1"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -546,20 +470,19 @@ func TestDetachKeyRemovesKey(t *testing.T) {
 	}
 }
 
-func TestDetachKeyUnknownLeaseIsNoOp(t *testing.T) {
+func TestUnbindUnboundKeyIsNoOp(t *testing.T) {
 	lr := NewLessor()
-	lr.DetachKey(999, []byte("ghost"))
-	// No panic, no error - just silently ignored
+	mustUnbind(t, lr, []byte("ghost"))
 	if lr.Count() != 0 {
-		t.Errorf("Count() = %d after detach from unknown lease, want 0", lr.Count())
+		t.Errorf("Count() = %d after unbinding an unbound key, want 0", lr.Count())
 	}
 }
 
 func TestDetachKeyNonexistentKeyIsNoOp(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("exists"))
-	lr.DetachKey(info.ID, []byte("does-not-exist"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("exists"))
+	mustUnbind(t, lr, []byte("does-not-exist"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -572,8 +495,8 @@ func TestDetachKeyNonexistentKeyIsNoOp(t *testing.T) {
 
 func TestExpiredLeaseIDsWithNoExpired(t *testing.T) {
 	lr := NewLessor()
-	_, _ = lr.Grant(60)
-	_, _ = lr.Grant(120)
+	_, _ = lr.Grant(nopWriter{}, 60)
+	_, _ = lr.Grant(nopWriter{}, 120)
 	expired := lr.ExpiredLeaseIDs()
 	if len(expired) != 0 {
 		t.Errorf("ExpiredLeaseIDs() returned %d IDs, want 0", len(expired))
@@ -582,7 +505,7 @@ func TestExpiredLeaseIDsWithNoExpired(t *testing.T) {
 
 func TestExpiredLeaseIDsWithExpired(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(1)
+	info, _ := lr.Grant(nopWriter{}, 1)
 	time.Sleep(1100 * time.Millisecond)
 	expired := lr.ExpiredLeaseIDs()
 	if len(expired) != 1 {
@@ -595,8 +518,8 @@ func TestExpiredLeaseIDsWithExpired(t *testing.T) {
 
 func TestExpiredLeaseIDsMixedExpiredAndActive(t *testing.T) {
 	lr := NewLessor()
-	expiredInfo, _ := lr.Grant(1)
-	_, _ = lr.Grant(600)
+	expiredInfo, _ := lr.Grant(nopWriter{}, 1)
+	_, _ = lr.Grant(nopWriter{}, 600)
 	time.Sleep(1100 * time.Millisecond)
 
 	expired := lr.ExpiredLeaseIDs()
@@ -613,11 +536,11 @@ func TestCountReflectsGrants(t *testing.T) {
 	if lr.Count() != 0 {
 		t.Errorf("Count() = %d, want 0", lr.Count())
 	}
-	_, _ = lr.Grant(10)
+	_, _ = lr.Grant(nopWriter{}, 10)
 	if lr.Count() != 1 {
 		t.Errorf("Count() = %d after 1 grant, want 1", lr.Count())
 	}
-	_, _ = lr.Grant(10)
+	_, _ = lr.Grant(nopWriter{}, 10)
 	if lr.Count() != 2 {
 		t.Errorf("Count() = %d after 2 grants, want 2", lr.Count())
 	}
@@ -625,16 +548,16 @@ func TestCountReflectsGrants(t *testing.T) {
 
 func TestCountReflectsRevokes(t *testing.T) {
 	lr := NewLessor()
-	info1, _ := lr.Grant(60)
-	info2, _ := lr.Grant(60)
+	info1, _ := lr.Grant(nopWriter{}, 60)
+	info2, _ := lr.Grant(nopWriter{}, 60)
 	if lr.Count() != 2 {
 		t.Errorf("Count() = %d, want 2", lr.Count())
 	}
-	_, _ = lr.Revoke(info1.ID)
+	_, _ = lr.Revoke(nopWriter{}, info1.ID)
 	if lr.Count() != 1 {
 		t.Errorf("Count() after 1 revoke = %d, want 1", lr.Count())
 	}
-	_, _ = lr.Revoke(info2.ID)
+	_, _ = lr.Revoke(nopWriter{}, info2.ID)
 	if lr.Count() != 0 {
 		t.Errorf("Count() after 2 revokes = %d, want 0", lr.Count())
 	}
@@ -643,7 +566,7 @@ func TestCountReflectsRevokes(t *testing.T) {
 func TestClosePreventsGrant(t *testing.T) {
 	lr := NewLessor()
 	lr.Close()
-	_, err := lr.Grant(10)
+	_, err := lr.Grant(nopWriter{}, 10)
 	if err == nil {
 		t.Fatal("Grant after Close expected error, got nil")
 	}
@@ -652,23 +575,11 @@ func TestClosePreventsGrant(t *testing.T) {
 	}
 }
 
-func TestClosePreventsGrantWithID(t *testing.T) {
-	lr := NewLessor()
-	lr.Close()
-	_, err := lr.GrantWithID(1, 10)
-	if err == nil {
-		t.Fatal("GrantWithID after Close expected error, got nil")
-	}
-	if _, ok := err.(*LessorClosedError); !ok {
-		t.Errorf("error type = %T, want *LessorClosedError", err)
-	}
-}
-
 func TestClosePreventsRevoke(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
-	_, err := lr.Revoke(info.ID)
+	_, err := lr.Revoke(nopWriter{}, info.ID)
 	if err == nil {
 		t.Fatal("Revoke after Close expected error, got nil")
 	}
@@ -679,7 +590,7 @@ func TestClosePreventsRevoke(t *testing.T) {
 
 func TestClosePreventsKeepAlive(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	lr.Close()
 	_, err := lr.KeepAlive(info.ID)
 	if err == nil {
@@ -692,7 +603,7 @@ func TestClosePreventsKeepAlive(t *testing.T) {
 
 func TestLeaseInfoRemainingTTLApproximate(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	if info.RemainingTTL < 58 || info.RemainingTTL > 60 {
 		t.Errorf("RemainingTTL = %d, want between 58 and 60", info.RemainingTTL)
 	}
@@ -700,7 +611,7 @@ func TestLeaseInfoRemainingTTLApproximate(t *testing.T) {
 
 func TestLeaseInfoKeysInitiallyEmpty(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
+	info, _ := lr.Grant(nopWriter{}, 60)
 	if len(info.Keys) != 0 {
 		t.Errorf("new lease Keys count = %d, want 0", len(info.Keys))
 	}
@@ -708,8 +619,8 @@ func TestLeaseInfoKeysInitiallyEmpty(t *testing.T) {
 
 func TestRevokeNoKeysReturnsEmptySlice(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	keys, err := lr.Revoke(info.ID)
+	info, _ := lr.Grant(nopWriter{}, 60)
+	keys, err := lr.Revoke(nopWriter{}, info.ID)
 	if err != nil {
 		t.Fatalf("Revoke returned unexpected error: %v", err)
 	}
@@ -731,9 +642,9 @@ func TestExpiredLeaseIDsEmptyLessor(t *testing.T) {
 
 func TestLookupShowsAttachedKeys(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("k1"))
-	lr.AttachKey(info.ID, []byte("k2"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("k1"))
+	mustBind(t, lr, info.ID, []byte("k2"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -746,9 +657,9 @@ func TestLookupShowsAttachedKeys(t *testing.T) {
 
 func TestDetachAllKeysThenLookup(t *testing.T) {
 	lr := NewLessor()
-	info, _ := lr.Grant(60)
-	lr.AttachKey(info.ID, []byte("a"))
-	lr.DetachKey(info.ID, []byte("a"))
+	info, _ := lr.Grant(nopWriter{}, 60)
+	mustBind(t, lr, info.ID, []byte("a"))
+	mustUnbind(t, lr, []byte("a"))
 
 	found := lr.Lookup(info.ID)
 	if found == nil {
@@ -761,9 +672,9 @@ func TestDetachAllKeysThenLookup(t *testing.T) {
 
 func TestLeasesAfterRevoke(t *testing.T) {
 	lr := NewLessor()
-	info1, _ := lr.Grant(60)
-	_, _ = lr.Grant(60)
-	_, _ = lr.Revoke(info1.ID)
+	info1, _ := lr.Grant(nopWriter{}, 60)
+	_, _ = lr.Grant(nopWriter{}, 60)
+	_, _ = lr.Revoke(nopWriter{}, info1.ID)
 
 	leases := lr.Leases()
 	if len(leases) != 1 {
@@ -775,7 +686,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 	lr := NewLessor()
 	lr.Close()
 	lr.Close() // should not panic
-	_, err := lr.Grant(10)
+	_, err := lr.Grant(nopWriter{}, 10)
 	if err == nil {
 		t.Fatal("Grant after double Close expected error, got nil")
 	}

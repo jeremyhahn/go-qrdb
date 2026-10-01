@@ -1,6 +1,6 @@
 # Leases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Exported surface
 
@@ -52,6 +52,31 @@ revisions, rather than an error after the write applied. This is what lets
 lease-backed registrations -- dynamic membership, feature advertisements --
 run on the default state machine.
 
+`pkg/lease` is the state machines' side of the contract. Every mutation that
+changes durable lease state takes a `Writer`, which is the apply batch:
+
+```go
+type Writer interface {
+	Set(key, value []byte) error
+	Delete(key []byte) error
+}
+
+const NoLease int64 = 0
+const TablePrefix = "\x00qrdb.lease/"
+
+func (lr *Lessor) Grant(w Writer, ttl int64) (*Lease, error)
+func (lr *Lessor) Revoke(w Writer, id int64) ([][]byte, error) // keys still bound, ascending
+func (lr *Lessor) Bind(w Writer, key []byte, leaseID int64) error // NoLease releases
+func (lr *Lessor) Unbind(w Writer, key []byte) error
+func (lr *Lessor) Has(id int64) bool
+func (lr *Lessor) LeaseOf(key []byte) int64
+func (lr *Lessor) Restore(r storage.Reader) error
+func IsTableKey(k []byte) bool
+```
+
+`statemachine.LeaseRefusal` and `statemachine.OpsLeaseRefusal` answer, before a
+write stages anything, whether it names a lease the state machine cannot bind.
+
 ## Invariants
 
 - **The sweeper is started by the composer, and every clustered composition
@@ -80,6 +105,46 @@ run on the default state machine.
   resets `RemainingTTL` to it, it does not change the grant.
 - **Attachment is many-to-one**: many keys, one lease. Deleting the lease
   deletes all of them.
+- **A key is bound to the lease of its latest write, and to at most one.** Every
+  write path calls `Lessor.Bind` with the lease the write named: `PutWithLease`,
+  a plain `Put` (which binds `NoLease`, releasing the key), the conditional
+  puts, and every put inside a batch or transaction. Every delete path,
+  including compare-and-delete and transaction deletes, calls `Unbind`.
+  Compare-and-swap does neither: it edits the value, and the key keeps its
+  lease on both state machines. `Revoke` therefore returns only keys whose
+  latest write named the revoked lease. The binding goes into the same apply
+  batch as the value, so the two commit together or not at all.
+- **The lease table is replicated state, not a node-local cache.** It lives in
+  each state machine's raw keyspace under `lease.TablePrefix` (`\x00qrdb.lease/`):
+  one record per lease (ID -> granted TTL), one binding record per bound key
+  (key -> lease ID), and the highest ID ever granted. The 0x00 prefix hides it
+  from user key enumeration. Unlike the last-applied index, which is also
+  0x00-prefixed but local to a node, the lease table is carried in snapshots and
+  covered by the replica hash (`store.isNodeLocalKey` draws the line).
+- **The lessor is rebuilt from the table whenever storage changes underneath
+  it.** `PebbleStateMachine.Open` and `RecoverFromSnapshot` call
+  `Lessor.Restore`. The MVCC engine restores its lessor whenever it is
+  constructed, which covers `MVCCStateMachine.Open`, its snapshot recovery, and
+  the standalone engine. A table that fails to decode or contradicts itself
+  (a binding to a lease it does not hold, an ID above the sequence) is a
+  `lease.CorruptTableError`, and the state machine refuses to open rather than
+  guess which keys a lease owns.
+- **Restored leases start a full TTL.** Remaining TTL is wall-clock state that
+  was never replicated, so after a gap of unknown length the only safe value is
+  the granted one. Expiring early deletes keys whose owner may still be renewing;
+  expiring a TTL late costs one TTL of staleness.
+- **Lease IDs come from a replicated sequence.** `Grant` takes the next ID after
+  the persisted highest, so a replica that restarts or recovers allocates the
+  same ID as its peers for the next grant, and a revoked lease's ID is never
+  reused.
+- **A `Lessor` serves exactly one state machine.** `Restore` replaces its whole
+  table, so sharing one across shards would let one shard's recovery erase
+  another's leases. Every composition builds one per shard.
+- **The table is written before memory changes.** A `Grant`, `Revoke` or `Bind`
+  whose table write fails returns `lease.TableWriteError` and leaves the
+  in-memory state as it was. The state machine treats that error as an apply
+  fault, never as a refusal: a fault local to one replica, answered as a
+  refusal, would diverge it from peers whose write succeeded.
 - **Reading or writing a leased key does not renew the lease.** Only
   `LeaseKeepAlive` does.
 - **Revoke is immediate and idempotent from the caller's view**: revoking an
@@ -112,7 +177,8 @@ the transport boundary, never by string.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Lease ID not found (expired, revoked, or never existed) | not-found | yes |
-| Attaching a write to an unknown lease | the write is **refused** | **yes** — a key silently written without its lease would never expire |
+| Attaching a write to an unknown lease | the write is **refused**: by the namespaced view before proposal (`service.LeaseNotFoundError`), and again at apply if the lease was revoked or expired in between (`lease.NotFoundError`, an `AppErrorInvalid` refusal that reaches the caller as `service.CommandRejectedError`). A batch or transaction naming one stages none of its operations | **yes** — a key silently written without its lease would never expire |
+| A write naming a lease on a state machine built without a lessor | refused as unimplemented (`service.CapabilityUnsupportedError`) | yes |
 | `ttl <= 0` on grant | invalid-argument (`service.CommandRejectedError`, encoded by the state machine as an `AppErrorInvalid` refusal) | yes |
 | Grant, revoke or keep-alive on a state machine built without a lessor | unimplemented (`service.CapabilityUnsupportedError`) | yes |
 | Missing `lease:*` permission | permission denied | **yes** |
@@ -194,18 +260,50 @@ follows the Raft tick rather than a separate setting.
 
 ## Persistence
 
-Lease objects live in the internal namespace and are replicated like any other
+Lease objects and key bindings live in the lease table described under
+Invariants, written in the apply batch and replicated like any other
 state-machine record. They are **not** visible through user-facing KV
 enumeration — see the internal-key guard in
-[../key-value/engineering.md](../key-value/engineering.md). Attachment is stored
-on the key's MVCC record (`lease` field), so a snapshot restores keys and their
-lease bindings together.
+[../key-value/engineering.md](../key-value/engineering.md). A snapshot carries
+the table, so a recovering replica restores keys and their bindings together.
+
+*(Corrected: this section used to say the binding lived on the key's MVCC
+record, so a snapshot restored keys and bindings together. It did not. The
+lessor's table was held only in memory on both state machines. A restart or
+snapshot recovery came back with no leases at all, so leased keys never
+expired, and the next grant reused ID 1. The MVCC record's `lease` field is
+still written and reported to readers, but the binding is the lease table's.)*
+
+**Upgrading.** Leases granted by a release without the lease table are not in
+any table, so they do not survive the upgrade's restart. That matches what a
+restart has always done to them. Keys still bound to such a lease stay as they
+are and never expire. Re-grant and re-write them, which is what a client whose
+keep-alive starts returning not-found does anyway.
 
 ## Test strategy
 
 - **Unit**: `pkg/lease` — grant, keep-alive resetting `RemainingTTL` to
   `GrantedTTL`, revoke cascade, list, and expiry sweep. Each function has a
-  happy path and an error path.
+  happy path and an error path. `bind_test.go` covers re-binding, release,
+  idempotence, unknown leases and write faults; `table_test.go` covers the
+  table round trip, replacement on restore, every corruption the reader
+  refuses, and read faults.
+- **State machine**: `pkg/store/lease_binding_test.go` runs every case against
+  both lease-capable state machines through committed commands only. It covers
+  re-put under another lease, re-put without a lease, base KV put,
+  compare-and-swap keeping the lease, delete then recreate, transaction and
+  batch paths, refusal of a write naming a revoked lease, restart, snapshot
+  recovery onto a replica that held other leases (with a hash comparison),
+  expiry through the real sweeper, and a corrupt table refusing both open and
+  recovery. Run its behavioural cases against a tree without the binding and
+  ten of the eleven fail. Compare-and-swap passes because that behaviour was
+  already correct.
+- **Integration** (`test/integration/lease_binding_test.go`): a three-node
+  qrdbd cluster re-puts and revokes, then repeats the check after a full
+  cluster restart over the same data directories, on every replica. qrdbd
+  serves leases only on an MVCC shard, so these run on `sm_type: mvcc`. The
+  standalone multi-protocol suite repeats the re-put case over every
+  transport.
 - **No `time.Sleep`.** Expiry is exercised by driving the clock/tick seam, not
   by waiting — the repo rule and the only way these tests stay deterministic on
   a loaded runner.

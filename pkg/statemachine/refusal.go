@@ -52,6 +52,9 @@ var refusalRules = []refusalRule{
 	// timeseries.NotCompiledError does.
 	{func(err error) bool { _, ok := protocol.AsCapabilityError(err); return ok }, protocol.AppErrorCapability},
 	{isType[lease.InvalidTTLError], protocol.AppErrorInvalid},
+	// A write naming a lease this state machine does not hold: the caller
+	// named a lease that was never granted or has already been revoked.
+	{isType[lease.NotFoundError], protocol.AppErrorInvalid},
 	{isType[lease.ExistsError], protocol.AppErrorConflict},
 	{isType[lease.LessorClosedError], protocol.AppErrorUnavailable},
 	{isType[timeseries.InvalidMetricError], protocol.AppErrorInvalid},
@@ -86,4 +89,49 @@ func RefusalResult(err error) sm.Result {
 // state machine was built without (a nil lessor, no time-series store).
 func CapabilityResult(msg string) sm.Result {
 	return sm.Result{Data: protocol.EncodeCapabilityError(msg)}
+}
+
+// LeaseRefusal answers whether a write naming leaseIDs must be refused
+// because a lease it names cannot be bound, and if so returns the refusal.
+// lease.NoLease names nothing and always passes.
+//
+// It is asked BEFORE the write stages anything, for every write that carries
+// a lease. The service layer checks the lease too, but that check runs on the
+// proposer before the write is committed; a revoke or an expiry committed in
+// between leaves the write naming a lease that no longer exists. Writing the
+// key anyway would produce a key bound to no lease -- one that never expires,
+// with nothing to tell its owner -- so the write is refused here, in the
+// apply path, where every replica decides it against the same state. This is
+// etcd's behaviour for a put naming an unknown lease.
+//
+// A state machine built without a lessor cannot bind any lease, so a write
+// naming one is a capability refusal rather than a silently lease-less key.
+func LeaseRefusal(lr *lease.Lessor, leaseIDs ...int64) (sm.Result, bool) {
+	for _, id := range leaseIDs {
+		if id == lease.NoLease {
+			continue
+		}
+		if lr == nil {
+			return RefusalResult(&ServiceNotConfiguredError{Service: "lease"}), true
+		}
+		if !lr.Has(id) {
+			return RefusalResult(&lease.NotFoundError{ID: id}), true
+		}
+	}
+	return sm.Result{}, false
+}
+
+// OpsLeaseRefusal is LeaseRefusal for every put in a batch or transaction
+// operation set, asked before any of the set is staged so a refusal leaves
+// the whole set unapplied.
+func OpsLeaseRefusal(lr *lease.Lessor, ops []protocol.DecodedOp) (sm.Result, bool) {
+	for _, op := range ops {
+		if op.Type != protocol.OpMVCCPut {
+			continue
+		}
+		if res, refused := LeaseRefusal(lr, op.LeaseID); refused {
+			return res, true
+		}
+	}
+	return sm.Result{}, false
 }

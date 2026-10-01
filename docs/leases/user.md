@@ -1,6 +1,6 @@
 # Leases — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 A lease is a timer with a name. Attach keys to it, keep it alive while you care
 about them, and the server deletes them all when you stop.
@@ -49,6 +49,26 @@ half the TTL is a good default, so one missed renewal is not fatal.
 while sleep 25; do qrdb lease keep-alive "$LEASE" >/dev/null || break; done &
 ```
 
+**Move a key to a new lease, or make it permanent.** Write it again. A key
+belongs to the lease its latest write named, so re-writing it under another
+lease moves it there, and re-writing it without `--lease-id` makes it permanent.
+The old lease's revoke or expiry no longer touches it:
+
+```bash
+OLD=$(qrdb lease grant --ttl 30 --output json | jq -r .id)
+qrdb kv put registry/web-1 'addr=192.0.2.5' --lease-id "$OLD"
+
+# The service restarts and re-registers before the old lease runs out.
+NEW=$(qrdb lease grant --ttl 30 --output json | jq -r .id)
+qrdb kv put registry/web-1 'addr=192.0.2.6' --lease-id "$NEW"
+
+qrdb lease revoke "$OLD"
+qrdb kv get registry/web-1   # addr=192.0.2.6, still there
+```
+
+A compare-and-swap is different. It edits the value and keeps whatever lease
+the key already had.
+
 **Check how long you have left.**
 
 ```bash
@@ -94,6 +114,16 @@ than to whether the owner is still alive.
 or was revoked between your grant and your write. The write is refused rather
 than accepted lease-less, because a key silently written without its lease would
 never expire. Grant a new lease and retry.
+
+**A key you re-wrote disappeared when an older lease expired.** On current
+releases that cannot happen: re-writing a key moves it out of its old lease.
+Releases before the correction kept the key in every lease any of its values had
+named, so the oldest lease's expiry deleted the newest value. Upgrade.
+
+**Leases disappeared after a node restarted.** Leases are persisted and survive
+restarts and snapshot recovery, and each one restarts on a full TTL. Leases
+granted by a release that did not persist them are lost on the restart into the
+upgrade. Grant new ones and re-write their keys.
 
 **`lease keep-alive` returns not-found.** The lease already expired; its keys are
 already gone. Grant a new one and re-create the state.

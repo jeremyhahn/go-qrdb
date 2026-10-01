@@ -23,7 +23,7 @@ func TestLessor_RunExpiry_RevokesExpiredOnLeader(t *testing.T) {
 	lr := NewLessor()
 	defer lr.Close()
 
-	l, err := lr.Grant(1)
+	l, err := lr.Grant(nopWriter{}, 1)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestLessor_RunExpiry_RevokesExpiredOnLeader(t *testing.T) {
 		mu.Unlock()
 		// Simulate the consensus-applied revoke removing the lease, so the
 		// sweeper does not propose it again on the next tick.
-		_, _ = lr.Revoke(id)
+		_, _ = lr.Revoke(nopWriter{}, id)
 		return nil
 	}
 
@@ -68,7 +68,7 @@ func TestLessor_RunExpiry_NoSweepOnFollower(t *testing.T) {
 	lr := NewLessor()
 	defer lr.Close()
 
-	if _, err := lr.Grant(1); err != nil {
+	if _, err := lr.Grant(nopWriter{}, 1); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 

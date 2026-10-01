@@ -14,11 +14,29 @@
 
 package store
 
-import "github.com/jeremyhahn/go-qrdb/pkg/service"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // metaKeyLastApplied is the reserved key used to persist the last applied
 // Raft log index for crash recovery. Uses a null prefix to sort before user data.
 const metaKeyLastApplied = "\x00__quicraft_last_applied__"
+
+// isNodeLocalKey reports whether k is a record local to this node -- the
+// last-applied index -- which a snapshot must not carry and a replica hash
+// must not cover, because every replica holds its own value for it.
+//
+// Both state machines reserve the 0x00 prefix for their own records. All but
+// one of those are node-local; the lease table (lease.TablePrefix) is
+// replicated state, written in the apply batch alongside the data it
+// governs, so it travels in snapshots and is covered by the hash like any
+// other applied record. A snapshot that dropped it would hand the recovering
+// replica keys bound to leases it has never heard of, which then never
+// expire.
+func isNodeLocalKey(k []byte) bool {
+	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k)
+}
 
 // The internal key namespace is declared once, in pkg/service. This package
 // delegates both halves of the guard to it — the predicate and the skip rule —

@@ -252,19 +252,15 @@ func TestPebbleStateMachine_MVCCPutWithHub_UpdateExistingKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPebbleStateMachine_MVCCDeleteWithLessor_DetachKey(t *testing.T) {
-	s, lr := openStoreWithLessor(t)
-
-	info, err := lr.Grant(60) // 60 second TTL
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+	s, _ := openStoreWithLessor(t)
+	id := grantLease(t, s, 1, 60)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-key"), []byte("val"), info.ID))},
-		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCDelete([]byte("lease-key")))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-key"), []byte("val"), id))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCDelete([]byte("lease-key")))},
 	})
 
-	_, err = s.Lookup(context.Background(), []byte("lease-key"))
+	_, err := s.Lookup(context.Background(), []byte("lease-key"))
 	if err == nil {
 		t.Fatal("expected error for deleted key")
 	}
@@ -540,15 +536,11 @@ func TestPebbleStateMachine_GetKeyInBatch_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPebbleStateMachine_MVCCPut_WithLessorAttachKey(t *testing.T) {
-	s, lr := openStoreWithLessor(t)
-
-	info, err := lr.Grant(60) // 60 second TTL
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
+	s, _ := openStoreWithLessor(t)
+	id := grantLease(t, s, 1, 60)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-attach-key"), []byte("val"), info.ID))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-attach-key"), []byte("val"), id))},
 	})
 
 	val, err := s.Lookup(context.Background(), []byte("lease-attach-key"))

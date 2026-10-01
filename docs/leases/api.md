@@ -1,6 +1,6 @@
 # Leases — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -27,6 +27,13 @@ state machine attaches the lease and stores the value the same way but keeps no
 revision history, so on every transport the response carries the key, value and
 lease with all three revisions `0`. A client that needs revisions runs the
 `mvcc` state machine; the etcd API refuses to serve without one.
+
+Attachment follows the key's latest write. A put naming lease B moves a key out
+of the lease it was in. A put naming no lease (lease `0`, or any plain `Put`)
+releases it, and so does a delete. Revoking or expiring a lease deletes only the
+keys still attached to it, and only those appear in its `keys`. A
+compare-and-swap keeps the key's current lease. Every transport behaves the same
+way, because the binding is decided in the state machine.
 
 ## Schemas
 

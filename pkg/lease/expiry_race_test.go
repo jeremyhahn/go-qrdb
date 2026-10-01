@@ -43,11 +43,11 @@ func TestLessor_KeepAliveVsExpirySweep_NoRace(t *testing.T) {
 	// A 1s TTL keeps the lease oscillating across the expiry boundary for the
 	// whole run, so the sweeper's read and KeepAlive's write genuinely
 	// interleave rather than the reader always taking the same branch.
-	l, err := lr.Grant(1)
+	l, err := lr.Grant(nopWriter{}, 1)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	lr.AttachKey(l.ID, []byte("bound/key"))
+	mustBind(t, lr, l.ID, []byte("bound/key"))
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

@@ -11,6 +11,56 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Revoking or expiring a lease no longer deletes a key that was written again
+  under another lease, or with none.** A key stayed in every lease any of its
+  values had named. The MVCC put paths attached the key to the new lease
+  without detaching it from the old one, and on the Pebble state machine the
+  delete-path detach never ran, because the previous value it read carried no
+  lease. Revoking or expiring the old lease then deleted the newer value. A
+  service that re-registered under a fresh lease while its previous
+  registration's lease was still alive lost the new registration when the old
+  lease expired. A key now belongs to the lease its latest write named. A put
+  naming another lease moves it, a put naming none (including a plain base-KV
+  put) releases it, and every delete releases it. The binding is written in
+  the same apply batch as the value, on puts, deletes, batches and
+  transactions, on both the Pebble and the MVCC state machine.
+  Compare-and-swap still keeps the key's lease. `Revoke` returns its keys in
+  key order, so every replica emits the delete events in the same order. On
+  the MVCC engine a revoke now retracts the deleted keys' secondary-index
+  entries, as any other delete does.
+- **Leases survive a restart and a snapshot recovery.** The lessor lived only
+  in memory. A restarted node, or a replica recovering from a snapshot, came
+  back with no leases: their keys never expired, keep-alive answered
+  not-found, and the next grant reused ID 1, so lease IDs diverged across
+  replicas. The lease table (each lease's granted TTL, every key binding, and
+  the lease-ID sequence) is now persisted under the reserved
+  `\x00qrdb.lease/` prefix, carried in snapshots and covered by the replica
+  hash. It is restored when a state machine opens or recovers. A restored
+  lease starts a full TTL. Leases granted before this release are not in the
+  table and do not survive the upgrade's restart, which is what happened to
+  them on every restart before.
+- **A write naming a lease that no longer exists is refused at apply.** The
+  namespaced view checks lease ownership before proposing. A revoke or expiry
+  committed between that check and the write let the write through as a key
+  bound to no lease, which never expires. The state machine now refuses it
+  (`service.CommandRejectedError`, `INVALID_ARGUMENT`), and a batch or
+  transaction naming one stages none of its operations. A write naming a lease
+  on a state machine built without a lessor is refused as unimplemented
+  instead of being written lease-less.
+
+### Changed — BREAKING
+
+- **`pkg/lease`: mutations take the apply batch.** `Lessor.Grant(w, ttl)` and
+  `Lessor.Revoke(w, id)` take a `lease.Writer`. `AttachKey` and `DetachKey` are
+  replaced by `Bind(w, key, leaseID)`, where `lease.NoLease` releases the key,
+  and `Unbind(w, key)`. `GrantWithID` is removed, since IDs now come from the
+  persisted sequence. New: `Restore`, `Has`, `LeaseOf`, `IsTableKey`,
+  `TablePrefix`, and the typed `TableWriteError`, `TableReadError` and
+  `CorruptTableError`. A state machine opening over a corrupt lease table
+  fails with `CorruptTableError` rather than guessing which keys a lease owns.
+
 ## [0.26.0-alpha] - 2026-10-01
 
 Merge train 5. Highlights:

@@ -51,3 +51,46 @@ type LessorClosedError struct{}
 func (e *LessorClosedError) Error() string {
 	return "lessor is closed"
 }
+
+// TableWriteError is returned when a lease-table mutation could not be staged
+// into the apply batch. It is a storage fault, not a refusal: the state
+// machine must surface it as an apply failure, never as a per-command answer,
+// because a fault local to one replica decided as a refusal would let that
+// replica diverge from peers whose write succeeded.
+type TableWriteError struct {
+	Err error
+}
+
+func (e *TableWriteError) Error() string {
+	return "lease table write failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying storage error.
+func (e *TableWriteError) Unwrap() error { return e.Err }
+
+// TableReadError is returned when the lease table could not be read back
+// from storage while restoring the Lessor.
+type TableReadError struct {
+	Err error
+}
+
+func (e *TableReadError) Error() string {
+	return "lease table read failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying storage error.
+func (e *TableReadError) Unwrap() error { return e.Err }
+
+// CorruptTableError is returned when a persisted lease-table record does not
+// decode, or contradicts the rest of the table.
+type CorruptTableError struct {
+	// Key is the offending record's raw key.
+	Key string
+
+	// Reason says what is wrong with it.
+	Reason string
+}
+
+func (e *CorruptTableError) Error() string {
+	return "lease table corrupt at " + strconv.Quote(e.Key) + ": " + e.Reason
+}
