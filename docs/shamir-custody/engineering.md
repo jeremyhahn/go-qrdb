@@ -71,10 +71,32 @@ barrier.
 | `Factors`, `Designated` | each enrolled factor's public credential; the designated one |
 | `EnrolledAt`, `ClaimedAt`, `ShareIndex` | lifecycle |
 
-Records written while the barrier is sealed (the initialization ceremony
-enrols before the barrier exists) are cached and written the first time the
-barrier is seen unsealed. The roster in the wrapped blob, not the record, is
-what a sealed node authenticates submissions against.
+Records written while the barrier is sealed are cached and written the first
+time the barrier is seen unsealed. That is legitimate only **before
+initialization**: the initialization ceremony enrols holders before the
+barrier exists. On a barrier that is sealed and already initialized,
+registration is refused with `ceremony.ErrRegistrationWhileSealed`. The
+persisted roster sits behind the barrier, so a sealed scope can neither check
+the name nor persist the record. A record cached unchecked would otherwise be
+written over the persisted holder of the same name at the next unseal, giving
+the registrant that holder's identity.
+
+The reconciliation on the first unsealed access never overwrites a persisted
+holder:
+
+- It writes a cached record only when storage has no holder of that name.
+- A cached record with the same identity (certificate, signing key and
+  envelope key) as the persisted one leaves the persisted record standing.
+  Only a claim recorded while sealed, for the same distribution, is carried
+  onto it.
+- A cached record with a different identity fails with
+  `*ceremony.HolderRecordConflictError`.
+
+Unsealed, a registry read that fails for any reason other than "not found" is
+an error. It never counts as a free name.
+
+The roster in the wrapped blob, not the record, is what a sealed node
+authenticates submissions against.
 
 ## Distribution
 

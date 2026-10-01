@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -286,6 +287,61 @@ func (r *OfficerRegistry) cacheOnly(officer *PersistentOfficer) {
 	defer r.mu.Unlock()
 	cp := *officer
 	r.cache[officer.Username] = &cp
+}
+
+// cached returns a copy of username's cached record, without consulting the
+// backend.
+func (r *OfficerRegistry) cached(username string) (*PersistentOfficer, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rec, ok := r.cache[username]
+	if !ok {
+		return nil, false
+	}
+	cp := *rec
+	return &cp, true
+}
+
+// reconcile writes officer, a record cached while the barrier was sealed, to
+// the backend without ever overwriting a persisted holder:
+//
+//   - absent from storage: it is written;
+//   - persisted with the same identity (certificate, signing key and
+//     envelope key): the persisted record stands, and only a claim recorded
+//     while sealed for the same distribution is carried onto it;
+//   - persisted with a different identity: *HolderRecordConflictError, and
+//     storage is left as it was.
+//
+// A read that fails for any other reason than "not found" is returned.
+func (r *OfficerRegistry) reconcile(ctx context.Context, officer *PersistentOfficer) error {
+	blob, err := r.backend.Get(ctx, r.officerKey(officer.Username))
+	if err != nil {
+		if errors.Is(err, seal.ErrSecretNotFound) {
+			return r.Save(ctx, officer)
+		}
+		return err
+	}
+	var persisted PersistentOfficer
+	if err := json.Unmarshal(blob, &persisted); err != nil {
+		return &OfficerRegistryError{Op: "unmarshal", Err: err}
+	}
+	if !sameHolderIdentity(&persisted, officer) {
+		return &HolderRecordConflictError{Username: officer.Username}
+	}
+	if officer.Distribution == persisted.Distribution && officer.ClaimedAt.After(persisted.ClaimedAt) {
+		persisted.ClaimedAt = officer.ClaimedAt
+		return r.Save(ctx, &persisted)
+	}
+	return nil
+}
+
+// sameHolderIdentity reports whether a and b enrol the same person: the same
+// issued certificate, signing key and envelope recipient key.
+func sameHolderIdentity(a, b *PersistentOfficer) bool {
+	return a.CertThumbprint == b.CertThumbprint &&
+		a.PubKeyPEM == b.PubKeyPEM &&
+		a.EncryptionKEM == b.EncryptionKEM &&
+		bytes.Equal(a.EncryptionKey, b.EncryptionKey)
 }
 
 // Reload empties the in-memory cache and re-populates it from the backend.

@@ -801,6 +801,11 @@ var holderRules = []rule{
 	is(ceremony.ErrQuorumChallengeMismatch, PermissionDenied),
 	is(ceremony.ErrDuplicateHolderKey, AlreadyExists),
 	is(ceremony.ErrDuplicateUsername, AlreadyExists),
+	// Registration on a sealed, initialized barrier: unseal first.
+	is(ceremony.ErrRegistrationWhileSealed, FailedPrecondition),
+	// A holder cached while sealed names a persisted holder with another
+	// identity; the persisted record stands and an operator must resolve it.
+	as(&ceremony.HolderRecordConflictError{}, FailedPrecondition),
 	is(ceremony.ErrNoOfficers, InvalidArgument),
 	is(ceremony.ErrInvalidThreshold, InvalidArgument),
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),

@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -93,7 +94,12 @@ type holderScope struct {
 	claims   map[string]*ChallengeResponse
 	quorum   map[string]*pendingQuorumChallenge
 	sealed   func() bool
-	logger   *slog.Logger
+	// initialized reports whether the backing barrier has been initialized,
+	// reading its persisted metadata so it answers while sealed. A backend
+	// that is not a barrier (the tenant service store before the tenant
+	// barrier exists) is never sealed, so it is never consulted.
+	initialized func(context.Context) (bool, error)
+	logger      *slog.Logger
 	// synced records that the registry has been reconciled with its
 	// backend since the barrier was last seen unsealed.
 	synced bool
@@ -106,16 +112,28 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		return nil, err
 	}
 	return &holderScope{
-		scope:    scope,
-		domain:   domain,
-		tenantID: tenantID,
-		registry: reg,
-		store:    newSealedShareStore(ttl),
-		claims:   make(map[string]*ChallengeResponse),
-		quorum:   make(map[string]*pendingQuorumChallenge),
-		sealed:   sealed,
-		logger:   logger,
+		scope:       scope,
+		domain:      domain,
+		tenantID:    tenantID,
+		registry:    reg,
+		store:       newSealedShareStore(ttl),
+		claims:      make(map[string]*ChallengeResponse),
+		quorum:      make(map[string]*pendingQuorumChallenge),
+		sealed:      sealed,
+		initialized: initializedProbe(backend),
+		logger:      logger,
 	}, nil
+}
+
+// initializedProbe returns backend's initialization probe. A backend that is
+// not a barrier has no initialization state and reports false.
+func initializedProbe(backend seal.StorageBackend) func(context.Context) (bool, error) {
+	if b, ok := backend.(interface {
+		Initialized(context.Context) (bool, error)
+	}); ok {
+		return b.Initialized
+	}
+	return func(context.Context) (bool, error) { return false, nil }
 }
 
 // sync reconciles the registry with its backend the first time the backing
@@ -124,6 +142,10 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 // records an earlier process persisted are loaded. Every registry-reading
 // operation calls it, so a restarted node's holders are back in view as soon
 // as a quorum unseals it.
+//
+// It never overwrites a persisted holder: a cached record is written only
+// when storage has no holder of that name, and one naming a persisted holder
+// with a different identity fails the sync with *HolderRecordConflictError.
 func (h *holderScope) sync(ctx context.Context) error {
 	if h.sealed() {
 		h.synced = false
@@ -133,7 +155,7 @@ func (h *holderScope) sync(ctx context.Context) error {
 		return nil
 	}
 	for _, rec := range h.registry.Cached() {
-		if err := h.registry.Save(ctx, rec); err != nil {
+		if err := h.registry.reconcile(ctx, rec); err != nil {
 			return err
 		}
 	}
@@ -151,6 +173,7 @@ func (h *holderScope) sync(ctx context.Context) error {
 func (h *holderScope) rebind(barrier *seal.StorageBarrier) {
 	h.registry.rebind(barrier)
 	h.sealed = barrier.IsSealed
+	h.initialized = barrier.Initialized
 	h.synced = false
 }
 
@@ -192,8 +215,8 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 	if err := h.sync(ctx); err != nil {
 		return nil, err
 	}
-	if _, err := h.registry.Load(ctx, req.Username); err == nil {
-		return nil, ErrDuplicateUsername
+	if err := h.nameFree(ctx, req.Username); err != nil {
+		return nil, err
 	}
 
 	csr, err := parseCSR(req.CSRPEM)
@@ -289,6 +312,44 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 		EncryptionKEM: encKEM,
 		Factors:       names,
 	}, nil
+}
+
+// nameFree reports whether username can be enrolled, failing closed.
+//
+// While the barrier is sealed the persisted roster cannot be read, so
+// enrolment is allowed only before initialization -- the ceremony that
+// enrols the first holders runs before the barrier exists -- and is checked
+// against the holders cached so far. On an initialized sealed barrier the
+// roster already exists behind it and the name cannot be checked, so the
+// registration is refused: it would otherwise be cached unchecked and written
+// over the persisted holder of the same name at the next unseal.
+//
+// Unsealed, a read that finds the holder is a duplicate and one that finds
+// nothing frees the name; any other read failure is returned, never taken
+// as "free".
+func (h *holderScope) nameFree(ctx context.Context, username string) error {
+	if h.sealed() {
+		initialized, err := h.initialized(ctx)
+		if err != nil {
+			return err
+		}
+		if initialized {
+			return ErrRegistrationWhileSealed
+		}
+		if _, ok := h.registry.cached(username); ok {
+			return ErrDuplicateUsername
+		}
+		return nil
+	}
+	_, err := h.registry.Load(ctx, username)
+	switch {
+	case err == nil:
+		return ErrDuplicateUsername
+	case errors.Is(err, ErrUserNotFound):
+		return nil
+	default:
+		return err
+	}
 }
 
 // enrolFactors enrols "mtls" from the issued certificate and every requested

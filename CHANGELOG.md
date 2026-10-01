@@ -132,6 +132,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **A holder registered while sealed took over an enrolled holder at unseal.**
+  Registering a share holder while the barrier was sealed and already
+  initialized cached the record unchecked. A registry read that failed while
+  sealed counted as a free name. The next unseal wrote the cached record over
+  the persisted holder of the same name, so the registrant became that holder.
+  This applied to the system, tenant and database scopes. Registration on a
+  sealed, initialized barrier is now refused
+  (`ceremony.ErrRegistrationWhileSealed`, `FAILED_PRECONDITION`), and a read
+  failure other than "not found" is an error. The unseal reconciliation writes
+  only holders storage does not have, and fails with
+  `ceremony.HolderRecordConflictError` on a different identity under a
+  persisted name.
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading

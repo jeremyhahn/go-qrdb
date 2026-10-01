@@ -55,7 +55,28 @@ var (
 	// ErrShareEnvelopeMalformed is returned for an envelope that does not
 	// decode as the current format.
 	ErrShareEnvelopeMalformed = errors.New("ceremony: malformed share envelope")
+
+	// ErrRegistrationWhileSealed is returned when a holder is registered
+	// while the scope's barrier is sealed and already initialized. The
+	// persisted roster is behind the barrier, so a sealed scope can neither
+	// see whether the name is taken nor persist the record; enrolment while
+	// sealed is legitimate only before initialization. Unseal first.
+	ErrRegistrationWhileSealed = errors.New("ceremony: share holders cannot be registered while the initialized barrier is sealed")
 )
+
+// HolderRecordConflictError is returned when a holder record enrolled while
+// the barrier was sealed names a holder storage already holds with a
+// different identity. The persisted record is authoritative and is never
+// overwritten.
+type HolderRecordConflictError struct {
+	// Username is the conflicting holder.
+	Username string
+}
+
+// Error returns a human-readable description.
+func (e *HolderRecordConflictError) Error() string {
+	return "ceremony: share holder " + strconv.Quote(e.Username) + " is already enrolled with a different identity"
+}
 
 // InvalidHolderNameError is returned for a username that cannot be a
 // certificate CN and a SPIFFE path segment.

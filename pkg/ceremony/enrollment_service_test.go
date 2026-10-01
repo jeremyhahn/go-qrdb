@@ -65,10 +65,20 @@ func TestRegisterOfficer_AnonymousAdmittedWhileEnrollmentOpen(t *testing.T) {
 
 // TestRegisterOfficer_AuthenticatedCallerUnaffected: a caller whose context
 // is not marked anonymous -- an authenticated listener's -- still enrols
-// holders after enrollment closed, as rekey and recovery need.
+// holders after enrollment closed, as rekey and recovery need. It does so on
+// the unsealed barrier: on a sealed, initialized one no caller can enrol
+// (ErrRegistrationWhileSealed), because the persisted roster is out of sight.
 func TestRegisterOfficer_AuthenticatedCallerUnaffected(t *testing.T) {
+	ctx := context.Background()
 	e, _ := registerAnonymouslyAfterInit(t)
 	h := newHolder(t, "alice", seal.RoleSecurityOfficer)
-	_, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, h.request("admin"))
+	_, err := e.svc.RegisterOfficer(ctx, seal.DomainUnseal, h.request("admin"))
+	require.ErrorIs(t, err, ErrRegistrationWhileSealed, "sealed and initialized")
+
+	barrier := testBarrier(t)
+	require.NoError(t, barrier.Initialize(ctx, seal.Credentials{}))
+	e.barrier = barrier
+	e.svc = e.newService(barrier)
+	_, err = e.svc.RegisterOfficer(ctx, seal.DomainUnseal, h.request("admin"))
 	require.NoError(t, err)
 }
