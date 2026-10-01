@@ -31,13 +31,25 @@ unchanged.
 
 ## The node barrier is platform scope
 
-`seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery` and
-`seal:initialize-shamir` act on the **node** barrier, a singleton that
-protects every tenant's data. They are `ScopeCross`: only an identity of the
-system tenant may exercise them, on every transport, with the gate on or off.
-An SO of any other tenant -- holding that tenant's SO role and presenting that
-tenant's own valid PIN -- is refused with `403` / `PERMISSION_DENIED`. A
-tenant's own barrier is governed by the `tenant_barrier:*` permissions.
+`seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery`,
+`seal:initialize-shamir` and `seal:seal` act on the **node** barrier, a
+singleton that protects every tenant's data. They are `ScopeCross`: only an
+identity of the system tenant may exercise them, on every transport, with the
+gate on or off. An SO of any other tenant -- holding that tenant's SO role and
+presenting that tenant's own valid PIN -- is refused with `403` /
+`PERMISSION_DENIED`, and so is another tenant's Admin or Operator sealing the
+node barrier. A tenant's own barrier is governed by the `tenant_barrier:*`
+permissions.
+
+Sealing is not an SO-gated operation: Admin and Operator hold `seal:seal` by
+design, and the dual-factor gate does not cover it. When a barrier SO PIN is
+configured (the `pin.PINBackend`), a seal must present it in the request's
+`so_pin` on **every** transport. REST and MCP always required it. gRPC, the
+Unix socket and QUIC now require it too: `BarrierSeal` takes
+`BarrierSealRequest{so_pin}` instead of `google.protobuf.Empty`, and the QUIC
+handler reads the body it used to ignore. The Go SDK fills that `so_pin` from
+the PIN bound by `sdk.WithSOPIN`, since `BarrierSeal` takes no request of its
+own.
 
 ## Every network transport
 

@@ -524,7 +524,7 @@ type QRDBServiceClient interface {
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
-	BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
@@ -1990,7 +1990,7 @@ func (c *qRDBServiceClient) BarrierUnseal(ctx context.Context, in *BarrierUnseal
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierSeal_FullMethodName, in, out, cOpts...)
@@ -3000,7 +3000,7 @@ type QRDBServiceServer interface {
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
-	BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
@@ -3575,7 +3575,7 @@ func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *Barrie
 func (UnimplementedQRDBServiceServer) BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierUnseal not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierSeal not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
@@ -6074,7 +6074,7 @@ func _QRDBService_BarrierUnseal_Handler(srv interface{}, ctx context.Context, de
 }
 
 func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(BarrierSealRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -6086,7 +6086,7 @@ func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec 
 		FullMethod: QRDBService_BarrierSeal_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierSeal(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).BarrierSeal(ctx, req.(*BarrierSealRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }

@@ -69,7 +69,17 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.call(ctx, "barrier.Seal", nil)
+	// The barrier SO PIN, when one is configured, comes from the PIN bound by
+	// transport.WithSOPIN: BarrierSeal takes no request of its own.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(&pb.BarrierSealRequest{SoPin: soPIN})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	_, err = t.call(ctx, "barrier.Seal", payload)
 	return err
 }
 

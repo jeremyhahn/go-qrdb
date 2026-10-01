@@ -78,9 +78,19 @@ func (s *Server) handleBarrierUnseal(ctx context.Context, payload []byte) ([]byt
 
 // handleBarrierSeal transitions the storage barrier to the sealed state
 // by delegating to the barrier service layer.
-func (s *Server) handleBarrierSeal(ctx context.Context, _ []byte) ([]byte, error) {
+func (s *Server) handleBarrierSeal(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.barrierSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	// The configured barrier SO PIN, exactly as REST and MCP verify it. The
+	// handler used to ignore the request body, so the PIN was skipped.
+	var req pb.BarrierSealRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, err
 	}
 
 	if err := s.barrierSvc.BarrierSeal(ctx); err != nil {

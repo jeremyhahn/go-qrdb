@@ -235,3 +235,29 @@ func TestSODualFactor_TenantSORefusedOnTheNodeBarrier(t *testing.T) {
 		}
 	}
 }
+
+// TestBarrierSeal_TenantAdminRefused: the node barrier is platform scope, so
+// a tenant's Admin -- who holds seal:seal in its own tenant -- may not seal
+// it, while the system tenant's Admin may.
+func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
+	for _, tc := range []struct {
+		id   *auth.Identity
+		want int
+	}{
+		{authtest.AdminIdentity("acme", "acme-admin"), http.StatusForbidden},
+		{authtest.AdminIdentity(tenant.SystemTenantID, "root"), http.StatusNoContent},
+	} {
+		caller := authtest.NewFixedAuthenticator(tc.id)
+		roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, "acme")
+		srv := NewServer(nil, nil, "127.0.0.1:0",
+			WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))),
+			WithRoleService(roles), WithBarrierService(newExtBarrierSvc()))
+		req := httptest.NewRequest(http.MethodPost, "/v1/barrier/seal", nil)
+		req.TLS = &tls.ConnectionState{}
+		rec := httptest.NewRecorder()
+		srv.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s/%s seal: status=%d body=%q, want %d", tc.id.TenantID, tc.id.Subject, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}

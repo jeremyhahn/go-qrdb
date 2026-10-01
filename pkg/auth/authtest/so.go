@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -83,7 +85,17 @@ type Barrier struct {
 	service.BarrierServicer
 	rekeys  atomic.Int64
 	deletes atomic.Int64
+	seals   atomic.Int64
 }
+
+// BarrierSeal records the seal.
+func (b *Barrier) BarrierSeal(context.Context) error {
+	b.seals.Add(1)
+	return nil
+}
+
+// Seals reports how many seals reached the service.
+func (b *Barrier) Seals() int64 { return b.seals.Load() }
 
 // BarrierDeleteRecoveryKeys records the deletion.
 func (b *Barrier) BarrierDeleteRecoveryKeys(context.Context) error {
@@ -93,6 +105,47 @@ func (b *Barrier) BarrierDeleteRecoveryKeys(context.Context) error {
 
 // RecoveryDeletes reports how many recovery-key deletions reached the service.
 func (b *Barrier) RecoveryDeletes() int64 { return b.deletes.Load() }
+
+// BarrierPINBackend returns the real software pin.PINBackend over an
+// in-memory store, with soPIN committed as the barrier SO PIN, so a transport
+// that verifies a request's so_pin against it is tested against the real
+// verifier.
+func BarrierPINBackend(t testing.TB, soPIN string) pin.PINBackend {
+	t.Helper()
+	b, err := pin.NewSoftwareBackend(&memPINStore{kv: map[string][]byte{}}, pin.HashConfig{
+		Algorithm: pin.HashArgon2id, Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16,
+	})
+	if err != nil {
+		t.Fatalf("authtest: PIN backend: %v", err)
+	}
+	if err := b.SetSOPIN("", soPIN); err != nil {
+		t.Fatalf("authtest: set barrier SO PIN: %v", err)
+	}
+	return b
+}
+
+// memPINStore is the in-memory pin.Storage BarrierPINBackend runs over.
+type memPINStore struct {
+	mu sync.Mutex
+	kv map[string][]byte
+}
+
+func (m *memPINStore) Get(_ context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.kv[key]
+	if !ok {
+		return nil, pin.ErrNotFound
+	}
+	return append([]byte(nil), v...), nil
+}
+
+func (m *memPINStore) Put(_ context.Context, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.kv[key] = append([]byte(nil), value...)
+	return nil
+}
 
 // BarrierRekey records the rekey.
 func (b *Barrier) BarrierRekey(_ context.Context, threshold, total int) (*service.ShamirInitInfo, error) {

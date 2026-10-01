@@ -93,7 +93,17 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
-	if _, err := t.callTool(ctx, "qrdb_barrier_seal", nil); err != nil {
+	// The barrier SO PIN, when one is configured, comes from the PIN bound by
+	// transport.WithSOPIN: BarrierSeal takes no request of its own.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return &transport.RequestError{Method: "BarrierSeal", Err: err}
+	}
+	var args map[string]any
+	if soPIN != "" {
+		args = map[string]any{"so_pin": soPIN}
+	}
+	if _, err := t.callTool(ctx, "qrdb_barrier_seal", args); err != nil {
 		return &transport.RequestError{Method: "BarrierSeal", Err: err}
 	}
 

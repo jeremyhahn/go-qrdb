@@ -177,7 +177,7 @@ func TestGRPC_BarrierSeal_Error(t *testing.T) {
 		WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

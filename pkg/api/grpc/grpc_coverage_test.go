@@ -1197,7 +1197,7 @@ func TestGRPC_BarrierSeal_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err != nil {
 		t.Fatalf("BarrierSeal failed: %v", err)
 	}
@@ -1207,7 +1207,7 @@ func TestGRPC_BarrierSeal_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -165,3 +165,31 @@ func TestSODualFactor(t *testing.T) {
 		}
 	})
 }
+
+// TestBarrierSeal_TenantAdminRefused: the node barrier is platform scope, so
+// a tenant's Admin -- who holds seal:seal in its own tenant -- may not seal
+// it, while the system tenant's Admin may.
+func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
+	seal := func(t *testing.T, id *auth.Identity) (*mcpgo.CallToolResult, *authtest.Barrier) {
+		t.Helper()
+		f := newSOFixture(t, false)
+		f.caller.Set(id)
+		req := mcpgo.CallToolRequest{}
+		req.Params.Name = "qrdb_barrier_seal"
+		res, err := f.client.CallTool(callCtx(t), req)
+		if err != nil {
+			t.Fatalf("qrdb_barrier_seal: %v", err)
+		}
+		return res, f.barrier
+	}
+	res, barrier := seal(t, authtest.AdminIdentity(soOtherTenant, "acme-admin"))
+	if barrier.Seals() != 0 {
+		t.Fatal("a tenant Admin sealed the node barrier")
+	}
+	wantToolCode(t, "tenant admin seal", res, wire.CodePermissionDenied)
+
+	res, barrier = seal(t, authtest.AdminIdentity(tenant.SystemTenantID, "root"))
+	if res.IsError || barrier.Seals() != 1 {
+		t.Fatalf("system Admin seal: %+v, seals=%d", res.Content, barrier.Seals())
+	}
+}

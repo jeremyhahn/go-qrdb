@@ -752,7 +752,7 @@ service QRDBService {
     }
 
     // BarrierSeal seals the barrier, preventing data access until unsealed.
-    rpc BarrierSeal(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    rpc BarrierSeal(BarrierSealRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:seal";
     }
 
@@ -3281,6 +3281,15 @@ message BarrierRecoveryGenerateRequest {
     int32 threshold = 1;
     int32 total = 2;
     string so_pin = 3;
+}
+
+// BarrierSealRequest seals the node barrier. It replaced google.protobuf.Empty
+// so the request can carry the barrier SO PIN, which REST and MCP already
+// verified against the configured PIN backend and gRPC, the Unix socket and
+// QUIC could not carry. An empty message encodes exactly as Empty did, so the
+// change is wire-compatible.
+message BarrierSealRequest {
+    string so_pin = 1;
 }
 
 // BarrierRecoveryDeleteRequest deletes all stored recovery keys. It replaced

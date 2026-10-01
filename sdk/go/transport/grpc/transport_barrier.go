@@ -67,7 +67,11 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.client.BarrierSeal(ctx, &emptypb.Empty{})
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return err
+	}
+	_, err = t.client.BarrierSeal(ctx, &pb.BarrierSealRequest{SoPin: soPIN})
 	if err != nil {
 		return mapGRPCError("BarrierSeal", err)
 	}

@@ -57,7 +57,17 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
-	return t.postJSONDecode(ctx, "BarrierSeal", "/v1/barrier/seal", nil, nil)
+	// The barrier SO PIN, when one is configured, comes from the PIN bound by
+	// transport.WithSOPIN: BarrierSeal takes no request of its own.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return err
+	}
+	var body any
+	if soPIN != "" {
+		body = map[string]string{"so_pin": soPIN}
+	}
+	return t.postJSONDecode(ctx, "BarrierSeal", "/v1/barrier/seal", body, nil)
 }
 
 // BarrierStatus returns the current state of the cryptographic barrier.

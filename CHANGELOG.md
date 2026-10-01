@@ -427,6 +427,13 @@ are not reconstructed here — their history is in the git log.
   returns nothing on namespaces loaded at startup until the index is rebuilt;
   time-series retention policies are stored but never applied; and no check
   refuses etcd on a non-raft database. No code changes.
+- **BREAKING (gRPC API and generated Go client):** `BarrierSeal` takes
+  `BarrierSealRequest{so_pin}` instead of `google.protobuf.Empty`, so gRPC and
+  the Unix socket can carry the barrier SO PIN. The wire is compatible (an empty
+  request encodes exactly as `Empty` did). Go code calling or implementing
+  `QRDBServiceClient`/`QRDBServiceServer.BarrierSeal` must pass or accept
+  `*qrdbv1.BarrierSealRequest`. The SDK's `BarrierSeal(ctx)` signature is
+  unchanged, and every SDK transport fills `so_pin` from `sdk.WithSOPIN`.
 
 ### Removed
 
@@ -832,6 +839,15 @@ are not reconstructed here — their history is in the git log.
   host, checked on every hop. A PIN-bound call otherwise fails before anything
   is sent, with the new `sdk.SOPINRequiresTLSError` (plaintext) or
   `sdk.SOPINForeignHostError` (a redirect elsewhere).
+- **A configured barrier SO PIN is required to seal the node barrier on every
+  transport, and only the system tenant may seal it.** REST and MCP verified
+  the request's `so_pin` against the PIN backend. gRPC and the Unix socket took
+  `google.protobuf.Empty` for `BarrierSeal`, and QUIC ignored the request body,
+  so on those three transports the configured PIN was skipped. They now verify
+  it the same way. Separately, `seal:seal` was ScopeSelf. For an operation that
+  names no tenant, ScopeSelf passes vacuously, so another tenant's Admin or
+  Operator could seal the node barrier and stop every tenant's data plane. It
+  is now `ScopeCross`, like the other node-barrier verbs.
 
 ### Known limits
 

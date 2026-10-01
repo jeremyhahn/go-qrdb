@@ -516,7 +516,7 @@ func TestBarrier_Seal_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err != nil {
 		t.Fatalf("BarrierSeal failed: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestBarrier_Seal_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

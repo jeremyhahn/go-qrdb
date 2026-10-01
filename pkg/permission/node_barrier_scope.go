@@ -14,9 +14,11 @@
 
 package permission
 
-// nodeBarrierSOPermissions are the Security Officer operations on the NODE
-// barrier: rekeying it, rotating its root key, generating (and deleting) its
-// recovery keys, and initializing its Shamir sealing.
+// nodeBarrierSOPermissions are the operations on the NODE barrier that
+// change or stop it: rekeying it, rotating its root key, generating (and
+// deleting) its recovery keys, initializing its Shamir sealing, and sealing
+// it. Sealing is an operational verb Admin and Operator hold, not an
+// SO-exclusive one, but it stops every tenant's data plane at once.
 //
 // The node barrier is a platform singleton. There is one per node, it
 // protects every tenant's data, and no tenant owns it. These permissions were
@@ -37,6 +39,7 @@ func nodeBarrierSOPermissions() []Permission {
 		SealInitializeShamir,
 		SealRekey,
 		SealRotateRootKey,
+		SealSeal,
 	}
 }
 
