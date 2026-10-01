@@ -30,6 +30,14 @@ type AuditLogger interface {
 	Close() error
 }
 
+// Audit records a security event about this barrier, from a component built
+// over it -- the holder authority reconciling its registry, say -- on the
+// barrier's audit log, with the barrier's root key path as the resource id.
+// Without an audit logger it is a no-op.
+func (b *StorageBarrier) Audit(action, outcome string, details map[string]string) {
+	emitAudit(b.config.AuditLogger, action, "barrier", b.config.RootKeyPath, outcome, details)
+}
+
 // emitAudit sends an audit event to the logger. If logger is nil the
 // call is a no-op. Errors from the logger are intentionally ignored
 // because audit failures must not block barrier operations.

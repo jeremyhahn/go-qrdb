@@ -215,30 +215,50 @@ func TestRegister_LoadFaultIsNotAFreeName(t *testing.T) {
 	require.ErrorIs(t, err, fault)
 }
 
-// TestSync_NeverOverwritesAPersistedHolder: the reconciliation that runs on
-// the first unsealed access writes only cached holders storage does not have.
-// A cached record that names a persisted holder with a different identity is
-// a conflict, reported, and the persisted record is left as it was.
-func TestSync_NeverOverwritesAPersistedHolder(t *testing.T) {
+// TestSync_ConflictEvictsAndAuditsWithoutWedging: the reconciliation that
+// runs on the first unsealed access writes only cached holders storage does
+// not have. A cached record that names a persisted holder with a different
+// identity is a conflict: the persisted record is left as it was, the cached
+// one is evicted and the conflict audited, and the reconciliation carries on
+// -- the other cached holders are written and the scope is usable. A
+// conflict must not wedge the scope, or one sealed-window registration could
+// lock every holder operation out until restart.
+func TestSync_ConflictEvictsAndAuditsWithoutWedging(t *testing.T) {
 	ctx := context.Background()
 	backend := seal.NewMemoryBackend()
 	h, err := newHolderScope(ScopeTenant("acme"), seal.DomainUnseal, "acme", backend, DefaultShareTTL, func() bool { return false }, testLogger())
 	require.NoError(t, err)
+	var audited []map[string]string
+	h.audit = func(action, outcome string, details map[string]string) {
+		require.Equal(t, "holder-record-conflict", action)
+		require.Equal(t, "deny", outcome)
+		audited = append(audited, details)
+	}
 
 	persisted := &PersistentOfficer{Username: "alice", CertThumbprint: "aa", PubKeyPEM: "alice-key"}
 	require.NoError(t, h.registry.Save(ctx, persisted))
 	h.registry.cacheOnly(&PersistentOfficer{Username: "alice", CertThumbprint: "ff", PubKeyPEM: "attacker-key"})
 	h.registry.cacheOnly(&PersistentOfficer{Username: "carol", CertThumbprint: "cc", PubKeyPEM: "carol-key"})
 
-	var conflict *HolderRecordConflictError
-	require.ErrorAs(t, h.sync(ctx), &conflict)
-	require.Equal(t, "alice", conflict.Username)
+	require.NoError(t, h.sync(ctx), "a conflict must not wedge the scope")
+	require.Len(t, audited, 1)
+	require.Equal(t, "alice", audited[0]["username"])
+	require.Equal(t, h.scope.String(), audited[0]["scope"])
 
+	cached, ok := h.registry.cached("alice")
+	require.True(t, ok)
+	require.Equal(t, "aa", cached.CertThumbprint, "the conflicting cached record was evicted for the persisted one")
 	fresh, err := NewScopedOfficerRegistry(backend, ScopeTenant("acme"))
 	require.NoError(t, err)
 	got, err := fresh.Load(ctx, "alice")
 	require.NoError(t, err)
 	require.Equal(t, "aa", got.CertThumbprint, "the persisted holder is untouched")
+	carol, err := fresh.Load(ctx, "carol")
+	require.NoError(t, err, "the other cached holders were still written")
+	require.Equal(t, "cc", carol.CertThumbprint)
+
+	_, err = h.status(ctx)
+	require.NoError(t, err, "the scope serves holder operations after the conflict")
 }
 
 // TestSync_PersistsHoldersEnrolledBeforeInitialization: the legitimate

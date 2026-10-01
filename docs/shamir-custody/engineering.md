@@ -89,8 +89,14 @@ holder:
   envelope key) as the persisted one leaves the persisted record standing.
   Only a claim recorded while sealed, for the same distribution, is carried
   onto it.
-- A cached record with a different identity fails with
-  `*ceremony.HolderRecordConflictError`.
+- A cached record with a different identity is a conflict
+  (`*ceremony.HolderRecordConflictError`). The cached record is evicted, the
+  persisted holder kept, and the conflict recorded on the barrier's audit log
+  (`holder-record-conflict`, `deny`, with the scope, username and the cached
+  certificate thumbprint) and the service log. The reconciliation then carries
+  on with the other cached holders. It does not fail: a failed reconciliation
+  is retried by every later holder operation, so one conflicting registration
+  would otherwise wedge every holder operation of the scope.
 
 Unsealed, a registry read that fails for any reason other than "not found" is
 an error. It never counts as a free name.

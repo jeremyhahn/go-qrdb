@@ -139,7 +139,10 @@ type holderScope struct {
 	// that is not a barrier (the tenant service store before the tenant
 	// barrier exists) is never sealed, so it is never consulted.
 	initialized func(context.Context) (bool, error)
-	logger      *slog.Logger
+	// audit records a security event on the backing barrier's audit log. A
+	// backend that is not a barrier has none, and the event is only logged.
+	audit  func(action, outcome string, details map[string]string)
+	logger *slog.Logger
 	// synced records that the registry has been reconciled with its
 	// backend since the barrier was last seen unsealed.
 	synced bool
@@ -164,6 +167,7 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		sealed:      sealed,
 		roster:      rosterProbe(backend),
 		initialized: initializedProbe(backend),
+		audit:       auditProbe(backend),
 		logger:      logger,
 	}, nil
 }
@@ -179,6 +183,17 @@ func rosterProbe(backend seal.StorageBackend) func(context.Context, seal.QuorumD
 	return func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error) {
 		return nil, nil, seal.ErrHolderRosterMissing
 	}
+}
+
+// auditProbe returns backend's audit sink. A backend that is not a barrier
+// has no audit log, and its events are dropped (the caller logs them).
+func auditProbe(backend seal.StorageBackend) func(action, outcome string, details map[string]string) {
+	if b, ok := backend.(interface {
+		Audit(action, outcome string, details map[string]string)
+	}); ok {
+		return b.Audit
+	}
+	return func(string, string, map[string]string) {}
 }
 
 // initializedProbe returns backend's initialization probe. A backend that is
@@ -200,8 +215,12 @@ func initializedProbe(backend seal.StorageBackend) func(context.Context) (bool, 
 // as a quorum unseals it.
 //
 // It never overwrites a persisted holder: a cached record is written only
-// when storage has no holder of that name, and one naming a persisted holder
-// with a different identity fails the sync with *HolderRecordConflictError.
+// when storage has no holder of that name. One naming a persisted holder with
+// a different identity is a conflict (*HolderRecordConflictError): the cached
+// record is evicted and the conflict audited (evictConflict), and the sync
+// carries on. It does not fail the sync, because a failing sync is retried by
+// every later holder operation and would wedge the scope -- one registration
+// accepted while sealed could otherwise lock every holder out.
 func (h *holderScope) sync(ctx context.Context) error {
 	if h.sealed() {
 		h.synced = false
@@ -211,7 +230,13 @@ func (h *holderScope) sync(ctx context.Context) error {
 		return nil
 	}
 	for _, rec := range h.registry.Cached() {
-		if err := h.registry.reconcile(ctx, rec); err != nil {
+		err := h.registry.reconcile(ctx, rec)
+		var conflict *HolderRecordConflictError
+		if errors.As(err, &conflict) {
+			h.evictConflict(rec)
+			continue
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -220,6 +245,24 @@ func (h *holderScope) sync(ctx context.Context) error {
 	}
 	h.synced = true
 	return nil
+}
+
+// evictConflict drops rec, a cached record that conflicts with the persisted
+// holder of its name, from the registry cache, and records the conflict on
+// the barrier's audit log and the service log. The persisted holder stays,
+// and is what the cache holds once the sync reloads it.
+func (h *holderScope) evictConflict(rec *PersistentOfficer) {
+	h.registry.evict(rec.Username)
+	details := map[string]string{
+		"scope":       h.scope.String(),
+		"username":    rec.Username,
+		"cached_cert": rec.CertThumbprint,
+		"reason":      "a holder enrolled while the barrier was sealed names a persisted holder with a different identity",
+	}
+	h.audit("holder-record-conflict", "deny", details)
+	h.logger.Warn("share holder record conflict: the record enrolled while sealed was discarded and the persisted holder kept",
+		slog.String("scope", h.scope.String()), slog.String("username", rec.Username),
+		slog.String("cached_cert", rec.CertThumbprint))
 }
 
 // rebind moves the scope to barrier, a new barrier instance over the same
@@ -231,6 +274,7 @@ func (h *holderScope) rebind(barrier *seal.StorageBarrier) {
 	h.sealed = barrier.IsSealed
 	h.roster = barrier.HolderRoster
 	h.initialized = barrier.Initialized
+	h.audit = barrier.Audit
 	h.synced = false
 }
 

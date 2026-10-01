@@ -289,6 +289,13 @@ func (r *OfficerRegistry) cacheOnly(officer *PersistentOfficer) {
 	r.cache[officer.Username] = &cp
 }
 
+// evict drops username's cached record without touching the backend.
+func (r *OfficerRegistry) evict(username string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, username)
+}
+
 // cached returns a copy of username's cached record, without consulting the
 // backend.
 func (r *OfficerRegistry) cached(username string) (*PersistentOfficer, bool) {

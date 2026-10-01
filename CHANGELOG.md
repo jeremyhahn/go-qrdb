@@ -169,9 +169,11 @@ are not reconstructed here — their history is in the git log.
   sealed, initialized barrier is now refused
   (`ceremony.ErrRegistrationWhileSealed`, `FAILED_PRECONDITION`), and a read
   failure other than "not found" is an error. The unseal reconciliation writes
-  only holders storage does not have, and fails with
-  `ceremony.HolderRecordConflictError` on a different identity under a
-  persisted name.
+  only holders storage does not have. A cached record with a different
+  identity under a persisted name is evicted, the persisted holder kept, and
+  the conflict audited on the barrier's audit log
+  (`holder-record-conflict`); the reconciliation carries on rather than
+  failing, so the conflict cannot wedge the scope's holder operations.
 - **The quorum-challenge request and the share submission could be used to
   deny an unseal, and to enumerate holders.** The sealed window admits both
   anonymously. Naming real holders filled a scope's 256-challenge table, so
