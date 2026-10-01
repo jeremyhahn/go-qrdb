@@ -265,6 +265,11 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"db.UpdateEtcd": true, "db.UpdateRaft": true, "db.Scale": true,
 		"db.UpdateBarrier": true, "db.UpdateConnection": true, "db.UpdateSQL": true, "db.UpdateCompaction": true,
 		"db.Seal": true, "db.Unseal": true, "db.BarrierStatus": true,
+		"db.BarrierOfficerRegister": true, "db.BarrierOfficerList": true,
+		"db.BarrierShamirInitialize": true,
+		"db.BarrierShareClaimBegin":  true, "db.BarrierShareClaimComplete": true,
+		"db.BarrierQuorumBegin": true, "db.BarrierQuorumSubmit": true,
+		"db.BarrierRekeyStart": true, "db.BarrierOfficerRevoke": true,
 		// SQL
 		"sql.Query": true,
 		// Barrier

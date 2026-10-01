@@ -1192,6 +1192,57 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:barrier_status";
     }
 
+    // Shamir custody of a database barrier (docs/databases/api.md): the
+    // share-holder operations of a tenant barrier, scoped to one database.
+    // Each request names the database and nests the system holder request,
+    // whose fields mean what they mean there; a database barrier has the
+    // unseal domain only.
+
+    // DatabaseBarrierOfficerRegister enrols a share holder of a database's barrier.
+    rpc DatabaseBarrierOfficerRegister(DatabaseBarrierOfficerRegisterRequest) returns (BarrierOfficerRegisterResponse) {
+        option (qrdb.v1.permission) = "databases:officer_register";
+    }
+
+    // DatabaseBarrierOfficerList lists a database barrier's holders.
+    rpc DatabaseBarrierOfficerList(DatabaseBarrierOfficerListRequest) returns (BarrierOfficerListResponse) {
+        option (qrdb.v1.permission) = "databases:officer_list";
+    }
+
+    // DatabaseBarrierShamirInitialize splits a database's root key to its holders.
+    rpc DatabaseBarrierShamirInitialize(DatabaseBarrierShamirInitializeRequest) returns (BarrierShamirOperationResponse) {
+        option (qrdb.v1.permission) = "databases:initialize_shamir";
+    }
+
+    // DatabaseBarrierShareClaimBegin issues a holder's claim nonce. Identity-gated.
+    rpc DatabaseBarrierShareClaimBegin(DatabaseBarrierShareClaimBeginRequest) returns (BarrierShareClaimBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // DatabaseBarrierShareClaimComplete delivers a holder's envelope once. Identity-gated.
+    rpc DatabaseBarrierShareClaimComplete(DatabaseBarrierShareClaimCompleteRequest) returns (BarrierShareClaimCompleteResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // DatabaseBarrierQuorumBegin issues a holder's quorum challenge. Identity-gated.
+    rpc DatabaseBarrierQuorumBegin(DatabaseBarrierQuorumBeginRequest) returns (BarrierQuorumChallenge) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // DatabaseBarrierQuorumSubmit submits a holder's share. Identity-gated.
+    rpc DatabaseBarrierQuorumSubmit(DatabaseBarrierQuorumSubmitRequest) returns (BarrierQuorumOutcome) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // DatabaseBarrierRekeyStart opens a rekey round on a database barrier.
+    rpc DatabaseBarrierRekeyStart(DatabaseBarrierRekeyStartRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "databases:rekey";
+    }
+
+    // DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
+    rpc DatabaseBarrierOfficerRevoke(DatabaseBarrierOfficerRevokeRequest) returns (BarrierQuorumRound) {
+        option (qrdb.v1.permission) = "databases:officer_revoke";
+    }
+
     // -----------------------------------------------------------------------
     // SQL operations
     // -----------------------------------------------------------------------
@@ -4328,6 +4379,62 @@ message DatabaseUnsealRequest {
 // DatabaseBarrierStatusRequest names the database to query.
 message DatabaseBarrierStatusRequest {
     string name = 1;
+}
+
+// DatabaseBarrierOfficerRegisterRequest enrols a holder of database's barrier.
+message DatabaseBarrierOfficerRegisterRequest {
+    string database = 1;
+    BarrierOfficerRegisterRequest officer = 2;
+}
+
+// DatabaseBarrierOfficerListRequest names the database whose holders to list.
+message DatabaseBarrierOfficerListRequest {
+    string database = 1;
+}
+
+// DatabaseBarrierShamirInitializeRequest initializes a database barrier's
+// custody at the M-of-N the database was created with, under policy.
+message DatabaseBarrierShamirInitializeRequest {
+    string database = 1;
+    string policy   = 2;
+}
+
+// DatabaseBarrierShareClaimBeginRequest opens a database holder's claim.
+message DatabaseBarrierShareClaimBeginRequest {
+    string database = 1;
+    BarrierShareClaimBeginRequest claim = 2;
+}
+
+// DatabaseBarrierShareClaimCompleteRequest completes a database holder's claim.
+message DatabaseBarrierShareClaimCompleteRequest {
+    string database = 1;
+    BarrierShareClaimCompleteRequest claim = 2;
+}
+
+// DatabaseBarrierQuorumBeginRequest asks for a database holder's challenge.
+message DatabaseBarrierQuorumBeginRequest {
+    string database = 1;
+    BarrierQuorumBeginRequest begin = 2;
+}
+
+// DatabaseBarrierQuorumSubmitRequest submits a database holder's share.
+message DatabaseBarrierQuorumSubmitRequest {
+    string database = 1;
+    BarrierQuorumSubmitRequest submit = 2;
+}
+
+// DatabaseBarrierRekeyStartRequest opens a rekey round on a database barrier.
+message DatabaseBarrierRekeyStartRequest {
+    string database  = 1;
+    int32  threshold = 2;
+    string policy    = 3;
+}
+
+// DatabaseBarrierOfficerRevokeRequest revokes a database holder.
+message DatabaseBarrierOfficerRevokeRequest {
+    string database  = 1;
+    string username  = 2;
+    int32  threshold = 3;
 }
 
 // DatabaseBarrierStatusResponse reports a database barrier's sealed state and

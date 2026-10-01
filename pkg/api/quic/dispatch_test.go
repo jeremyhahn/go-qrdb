@@ -183,6 +183,15 @@ var expectedMethods = []string{
 	"db.Seal",
 	"db.Unseal",
 	"db.BarrierStatus",
+	"db.BarrierOfficerRegister",
+	"db.BarrierOfficerList",
+	"db.BarrierShamirInitialize",
+	"db.BarrierShareClaimBegin",
+	"db.BarrierShareClaimComplete",
+	"db.BarrierQuorumBegin",
+	"db.BarrierQuorumSubmit",
+	"db.BarrierRekeyStart",
+	"db.BarrierOfficerRevoke",
 
 	// SQL (1)
 	"sql.Query",
@@ -241,6 +250,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 171 = 162 + the 9 db.Barrier* share-holder verbs of a Shamir database
+	// barrier (docs/databases/api.md).
 	// 162 = 172 - 14 share verbs retired by the unified share-holder quorum
 	// (7 barrier, 7 ceremony; 3 tenant ones sat outside this table) + the 4
 	// barrier quorum/rekey/revoke verbs that replace them. Every share is now
@@ -263,7 +274,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 162
+	const wantCount = 171
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

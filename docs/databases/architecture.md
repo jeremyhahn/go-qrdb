@@ -803,8 +803,6 @@ store instead of walking it (see "Drop under a binding").
 
 ## Shamir custody of a database barrier
 
-> **Status: CONTRACT** for new work — written ahead of the code it governs.
-
 A database barrier may be split M-of-N to **share holders** instead of sealed
 by a passphrase. There is no database-specific custody system: a database is
 one more **holder scope** of the one share-holder model in
@@ -823,12 +821,13 @@ policies, rekey and revocation that serve the system and tenant barriers.
   contributes only its public key. The authentication layer refuses a holder
   identity as a login identity, as for every other scope.
 - **Lifecycle.** A database is created with `barrier: {enabled: true, mode:
-  "shamir"}` and no secret. It then has a registered, **uninitialized**
-  barrier and fails closed — its data plane answers sealed — until custody is
-  initialized. Holders are enrolled against the database; initialization
-  (`threshold`, `total_shares` equal to the enrolled holder count, factor
-  `policy`) generates the root key, splits it to the holders and seals each
-  share to its holder in an envelope held only in protected memory. Each
+  "shamir", sharesRequired: M, sharesTotal: N}` and no secret. It then has a
+  registered, **uninitialized** barrier, reports itself `sealed`, and fails
+  closed until custody is initialized. Exactly N holders are enrolled against
+  the database; initialization (a factor `policy` only — the M-of-N is the
+  create's, and is not restated) generates the root key, splits it to the
+  holders and seals each share to its holder in an envelope held only in
+  protected memory, and leaves the database unsealed. Each
   holder claims its envelope once. From then on unseal and seal are quorum
   rounds of the database's holders; a direct `unseal` with a secret and a
   single-caller `seal` are refused (`ErrShamirUnsealRequiresQuorum`,
@@ -836,7 +835,20 @@ policies, rekey and revocation that serve the system and tenant barriers.
 - **Rekey and revocation.** Starting a rekey (new threshold or policy) is
   RBAC-gated; revoking a holder is a rekey that removes them, refused when the
   remaining holders cannot meet the threshold. Either completes only with a
-  fresh M-of-N quorum of the current holders.
+  fresh M-of-N quorum of the current holders, and the new M-of-N is recorded
+  on the database's configuration. A configuration update never changes a
+  Shamir barrier's strategy or M-of-N: that is a rekey.
+- **Authorization.** The `databases:officer_register`, `officer_list`,
+  `initialize_shamir`, `rekey` and `officer_revoke` permissions are
+  self-scoped like the rest of `databases:*`; the database service confines
+  each call to a database in the caller's tenant before it learns whether the
+  database or its barrier exists. Claim and quorum are identity-gated: the
+  holder's certificate and factor proof are the credential.
+- **Tenants.** A Shamir barrier is held to the passphrase barrier's rule: it
+  is accepted only on the database's data path, a non-raft database with its
+  own data directory, which only the system tenant can set. Until per-database
+  storage bindings land, a non-system tenant cannot create one; the bindings
+  restore it, as they do the passphrase barrier.
 - **Where it lives.** The database barrier's wrapped key and holder roster
   live with the barrier's metadata in the database's dedicated store, beside
   the passphrase barrier's: a Shamir database barrier needs a dedicated store

@@ -1674,6 +1674,18 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/databases/{name}/seal", permission.DatabasesSeal, s.handleDatabaseByName)
 	s.route(http.MethodPost, "/v1/databases/{name}/unseal", permission.DatabasesUnseal, s.handleDatabaseByName)
 	s.route(http.MethodGet, "/v1/databases/{name}/barrier/status", permission.DatabasesBarrierStatus, s.handleDatabaseByName)
+	// Shamir custody of a database barrier (docs/databases/api.md). Claims and
+	// quorum submissions are identity-gated: the holder's certificate or
+	// factor proof is the credential.
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers", permission.DatabasesOfficerRegister, s.handleDatabaseByName)
+	s.route(http.MethodGet, "/v1/databases/{name}/barrier/officers", permission.DatabasesOfficerList, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/shamir/initialize", permission.DatabasesInitializeShamir, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/quorum/begin", permission.IdentityGated, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/quorum/submit", permission.IdentityGated, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/rekey/start", permission.DatabasesRekey, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers/revoke", permission.DatabasesOfficerRevoke, s.handleDatabaseByName)
 
 	// Collection management routes. Attached when either the singleton is
 	// wired or a registry is configured, for the reason the lease routes give

@@ -229,6 +229,15 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_seal",
 		"qrdb_database_unseal",
 		"qrdb_database_barrier_status",
+		"qrdb_database_barrier_officer_register",
+		"qrdb_database_barrier_officer_list",
+		"qrdb_database_barrier_shamir_initialize",
+		"qrdb_database_barrier_share_claim_begin",
+		"qrdb_database_barrier_share_claim_complete",
+		"qrdb_database_barrier_quorum_begin",
+		"qrdb_database_barrier_quorum_submit",
+		"qrdb_database_barrier_rekey_start",
+		"qrdb_database_barrier_officer_revoke",
 	}
 
 	if len(tools) != len(expectedNames) {

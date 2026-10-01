@@ -48,11 +48,11 @@ func newSealedDBBarrierManager(t *testing.T) *database.DatabaseBarrierManager {
 	if err != nil {
 		t.Fatalf("NewBarrier: %v", err)
 	}
-	registry, err := seal.NewBarrierRegistry(logger, system)
+	bm, err := database.NewDatabaseBarrierManager(logger, system)
 	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
+		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-	return database.NewDatabaseBarrierManager(logger, registry)
+	return bm
 }
 
 // dialSealedDBTransports connects every network SDK transport to srv and

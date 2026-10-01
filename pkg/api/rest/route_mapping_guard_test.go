@@ -388,6 +388,16 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"POST", "/v1/databases/mydb/seal", permission.DatabasesSeal},
 		{"POST", "/v1/databases/mydb/unseal", permission.DatabasesUnseal},
 		{"GET", "/v1/databases/mydb/barrier/status", permission.DatabasesBarrierStatus},
+		// Shamir custody of a database barrier.
+		{"POST", "/v1/databases/mydb/barrier/officers", permission.DatabasesOfficerRegister},
+		{"GET", "/v1/databases/mydb/barrier/officers", permission.DatabasesOfficerList},
+		{"POST", "/v1/databases/mydb/barrier/shamir/initialize", permission.DatabasesInitializeShamir},
+		{"POST", "/v1/databases/mydb/barrier/officers/alice/claim/begin", permission.IdentityGated},
+		{"POST", "/v1/databases/mydb/barrier/officers/alice/claim/complete", permission.IdentityGated},
+		{"POST", "/v1/databases/mydb/barrier/quorum/begin", permission.IdentityGated},
+		{"POST", "/v1/databases/mydb/barrier/quorum/submit", permission.IdentityGated},
+		{"POST", "/v1/databases/mydb/barrier/rekey/start", permission.DatabasesRekey},
+		{"POST", "/v1/databases/mydb/barrier/officers/revoke", permission.DatabasesOfficerRevoke},
 
 		// Collections + documents.
 		{"POST", "/v1/collections", permission.CollectionsCreate},

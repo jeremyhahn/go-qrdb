@@ -290,17 +290,22 @@ discovery on any transport; the Go SDK's MCP transport also dropped `peers` and
 `sharesRequired`, `sharesTotal`, `secret`. On a create with `enabled` and
 `mode: "passphrase"`, the server initializes the barrier from `secret` in the
 same call; `secret` is request-only, never persisted and never returned. A
-create with `mode: "shamir"` registers an uninitialized barrier that its
-share holders' custody initializes — see the share-holder matrix below
-(contract).
+create with `mode: "shamir"` registers an uninitialized barrier at
+`sharesRequired`-of-`sharesTotal` that its share holders' custody initializes —
+see the share-holder matrix below. Either strategy is accepted only where the
+barrier is on the database's data path: a non-raft database with its own
+`dataDir`, which only the system tenant can set (`BarrierOffDataPathError`,
+`SharedStoreBarrierUnsupportedError` otherwise). Until per-database storage
+bindings land, a non-system tenant cannot create a barrier-backed database of
+either kind.
 
 `DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
 `caFile`, `certFile`, `keyFile`.
 
 ## Capability matrix — database barrier share holders
 
-> **Status: CONTRACT** for new work. A database barrier with Shamir custody
-> has the unseal domain only; the holder model, error classes and identity
+A database barrier with Shamir custody
+has the unseal domain only; the holder model, error classes and identity
 > gating are [../shamir-custody/api.md](../shamir-custody/api.md)'s. `{name}`
 > is the database, resolved in the caller's tenant.
 
@@ -317,14 +322,30 @@ share holders' custody initializes — see the share-holder matrix below
 | Revoke holder | `POST /v1/databases/{name}/barrier/officers/revoke` | `DatabaseBarrierOfficerRevoke` | `db.BarrierOfficerRevoke` | `qrdb_database_barrier_officer_revoke` | `DatabaseBarrierOfficerRevoke` | `databases:officer_revoke` |
 
 Unseal and seal of a Shamir database barrier have no route of their own: each
-is the quorum submission with `op` `unseal` or `seal`. The new permissions are
-granted to the Admin role, as `tenant_barrier:*` are; a holder identity holds
-none of them.
+is the quorum submission with `op` `unseal` or `seal`; a single caller's
+`db.Seal` / `POST /v1/databases/{name}/seal` is refused (422) and a secret
+unseal is refused by the strategy. The new permissions are self-scoped like the
+rest of `databases:*`: no built-in role but Owner carries them, and a holder
+identity holds none of them. (Correction: the contract first said they were
+granted to Admin; the `databases:*` family is granted to no built-in role but
+Owner, and these follow it.)
 
-Initialization request: `{"threshold": 3, "total_shares": 5, "policy":
-"designated"}` — `total_shares` must equal the number of enrolled holders. The
-response is share-free: `{"threshold", "total_shares", "share_count"}`. A
-create with `mode: "shamir"` carries no `secret`; one that does is refused.
+Initialization request: `{"policy": "designated"}` — the M-of-N is the
+`sharesRequired`/`sharesTotal` the database was created with, and exactly
+`sharesTotal` holders must be enrolled. (Correction: the contract first carried
+`threshold` and `total_shares` here; the create already fixes them, and a
+second copy could only disagree.) The response is share-free:
+`{"threshold", "total_shares", "share_count"}`. A create with `mode: "shamir"`
+carries no `secret`; one that does is refused. A completed rekey records its
+new M-of-N on the database's configuration.
+
+Every request body is the system holder request of
+[../shamir-custody/api.md](../shamir-custody/api.md); the SDK types embed it
+beside `database` (`DatabaseOfficerRegisterRequest`, ...), and the gRPC
+messages nest it (`DatabaseBarrierOfficerRegisterRequest{database, officer}`).
+Rekey takes `{"threshold", "policy"}` and revocation
+`{"username", "threshold"}`. A client refuses a request that names no database
+with `DatabaseNameRequiredError` before it is sent.
 
 ## Status and error mapping
 
@@ -337,7 +358,11 @@ create with `mode: "shamir"` carries no `secret`; one that does is refused.
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
 | Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; this refusal is Unprocessable)* |
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 422 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
-| Barrier strategy other than `passphrase` (`UnsupportedBarrierStrategyError`) | 400 | `INVALID_ARGUMENT` |
+| Barrier strategy other than `passphrase` or `shamir` (`UnsupportedBarrierStrategyError`) | 400 | `INVALID_ARGUMENT` |
+| A `secret` on a `shamir` create (`ShamirSecretNotAllowedError`) | 400 | `INVALID_ARGUMENT` |
+| A holder operation on a database with no Shamir barrier (`NotShamirBarrierError`) | 409 | `FAILED_PRECONDITION` |
+| A `shamir` create on a node with no holder CA (`ShamirCustodyNotConfiguredError`) | 409 | `FAILED_PRECONDITION` |
+| Changing a Shamir barrier's strategy or M-of-N by update (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` — rekey instead |
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |

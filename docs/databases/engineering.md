@@ -743,6 +743,9 @@ Deliberately finer than one grant per verb:
 | `databases:delete` | dropping a database — including SQL `DROP DATABASE`, which may drop only a database the session's tenant owns |
 | `databases:seal` / `databases:unseal` | barrier custody, gated apart from configuration |
 | `databases:barrier_status` | reading barrier state |
+| `databases:officer_register` / `officer_list` / `officer_revoke` | a Shamir barrier's holder enrolment, listing and revocation |
+| `databases:initialize_shamir` | splitting a Shamir barrier's key to its enrolled holders |
+| `databases:rekey` | opening a Shamir barrier's rekey round |
 
 Unchanged by the target design. A create that takes `backend: raft` from the
 node defaults (OD-3 A) is checked for `databases:create_raft` exactly as an
@@ -1183,29 +1186,52 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 | Admin | `qrdb admin migrate vectors` added (OD-11 C) | no |
 
 Breaking rows land in one MINOR release, recorded in the CHANGELOG.
-## Shamir custody per database (contract)
 
-> **Status: CONTRACT** for new work.
+## Shamir custody per database
 
-- `pkg/ceremony`: the holder engine's scope gains `ScopeDatabase(tenant,
-  database)` (registry prefix `ceremony/tenants/<tenant>/databases/<db>/officers/`).
-  The per-scope holder authority that today serves only tenants becomes the
-  one service for both — constructed for a tenant or for a database — and is
-  installed on the database barrier as its distributor and holder verifier.
-- `pkg/database`: `DatabaseBarrierManager` accepts the `shamir` strategy: a
-  create registers the barrier uninitialized with a Shamir strategy and
-  installs the database's holder authority; `InitializeShamir` distributes
-  through it; reopening re-installs it; drop destroys the scope.
-- `pkg/service`: the database service gains the holder operations of the
-  capability matrix, each resolving the database in the caller's tenant and
-  delegating to the database's holder authority and barrier — the same calls
-  the tenant service makes for a tenant barrier.
-- Every transport serves the matrix; errors classify through
-  `pkg/api/errclass` as every holder error does.
-- The desktop `OfficerBinding` takes a database in its `HolderScope`; the web
-  UI's database wizard offers Shamir with a dedicated store, then enrols the
-  holders (`HolderEnrolmentForms`) and initializes; the database view lists
-  holders and offers rekey and revocation (`HolderRekeyPanel`).
+- `pkg/ceremony`: `ScopedCeremonyService` is the one holder authority for a
+  tenant barrier (`NewTenantCeremonyService`) and a database barrier
+  (`NewDatabaseCeremonyService`, scope `ScopeDatabase(tenant, database)`,
+  registry prefix `ceremony/tenants/<tenant>/databases/<db>/officers/`). It is
+  installed on the database barrier as its distributor and holder verifier,
+  and keeps its records under that barrier.
+- `pkg/database`: `DatabaseBarrierManager` keeps its own `BarrierRegistry` over
+  the system barrier, so a database name can never collide with a tenant id.
+  `SetHolderDeps` (the CA and trust domain, wired by the server lifecycle from
+  the ceremony service) enables Shamir; without it a `shamir` create is refused
+  (`ShamirCustodyNotConfiguredError`). A create registers the barrier
+  uninitialized and marks the database `sealed`; `InitializeShamir` splits
+  through the holder authority; a reopen re-installs it; drop destroys the
+  scope. `Holders(name)` answers `NotShamirBarrierError` for any database
+  without one. `Manager.UpdateBarrier` refuses a strategy or M-of-N change, and
+  `RecordShamirScheme` records the M-of-N a completed rekey produced.
+- `pkg/service`: `DatabaseHolderServicer` is additive to `DatabaseServicer`, as
+  `DatabaseCredentialCreator` is; transports type-assert for it. Every method
+  runs the tenant-ownership check before resolving the barrier. A completed
+  seal or unseal quorum updates the database's status; initialization leaves
+  it open.
+- Transports: REST `handlers_database_holders.go` (map dispatch under
+  `/v1/databases/{name}/barrier/`), gRPC/Unix `service_database_holders.go`
+  (messages nest the system holder request), QUIC `db.Barrier*`, MCP
+  `qrdb_database_barrier_*`, embedded (claims in process are bound by proof of
+  possession). Errors classify through `pkg/api/errclass`.
+- SDK: `transport.DatabaseClient` gains the nine methods; the request types
+  embed the system holder requests. `internal/holderconv.DatabaseHolders`
+  carries the protobuf calls once for gRPC, Unix and QUIC (QUIC frames the same
+  messages through a `DatabaseHolderRPC` of its own). A client refuses a
+  request naming no database with `DatabaseNameRequiredError`.
+- CLI and desktop: the holder verbs are written once against `holderTarget`;
+  `holderKind` (system, tenant, database) selects the scope flag and target by
+  map. The desktop `OfficerBinding` takes `HolderScope.Database` and adds
+  `InitializeDatabaseShamir`.
+- Web UI: the database wizard offers Shamir with a dedicated store, then a
+  holders step enrols N holders (`HolderEnrolmentForms` with an `enrol`
+  callback) and initializes; the admin database view shows
+  `DatabaseHoldersPanel` (holders, `HolderRekeyPanel`) for a Shamir database.
+- Tests: `pkg/service/servicetest.NewShamirDatabase` is a real database service
+  with one Shamir database; every server transport drives a lifecycle through
+  its handlers with it, and `sdk/go/transport/internal/dbholdertest` runs the
+  same client-side suite through all six SDK transports.
 
 ## Test strategy
 

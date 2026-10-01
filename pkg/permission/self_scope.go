@@ -152,6 +152,11 @@ func selfScopedPermissions() []Permission {
 		DatabasesSeal,
 		DatabasesUnseal,
 		DatabasesUpdate,
+		DatabasesOfficerRegister,
+		DatabasesOfficerList,
+		DatabasesOfficerRevoke,
+		DatabasesRekey,
+		DatabasesInitializeShamir,
 
 		// dek. ScopeSelf lets a system-tenant identity pass the authorizer for
 		// another tenant; the keyring service closes that by acting on the

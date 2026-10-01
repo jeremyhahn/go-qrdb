@@ -243,26 +243,38 @@ Absent, the server's default database (`system`) is used.
 
 ## Share-holder verbs (Shamir database barrier)
 
-> **Status: CONTRACT** for new work. The same verbs and flags as the tenant
-> forms in [../shamir-custody/cli.md](../shamir-custody/cli.md), taking
-> `--database <name>`; rekey and revocation are authorized by RBAC.
+The same verbs and flags as the tenant forms in
+[../shamir-custody/cli.md](../shamir-custody/cli.md), taking `--database <name>`
+in place of `--tenant-id`; rekey and revocation are authorized by RBAC and take
+no `--so-pin`. The database is resolved in the caller's tenant.
 
 ```bash
-qrdb database create vault --data-dir /var/lib/qrdb/vault \
-     --barrier-enabled --barrier-strategy shamir
+qrdb database create vault --backend file --data-dir <install-dir>/vault \
+     --barrier-enabled --barrier-strategy shamir \
+     --barrier-shamir-threshold 2 --barrier-shamir-total 3
 qrdb database barrier-officer register --database vault --username alice \
-     --role so --csr alice.csr --out alice.crt
+     --role so --csr-file alice.csr
 qrdb database barrier-officer list --database vault
-qrdb database barrier-init-shamir --database vault --threshold 2 --shares 3 \
-     --policy designated
+qrdb database barrier-init-shamir --database vault --policy designated
 qrdb database barrier-officer claim --database vault --username alice \
-     --cert alice.crt --key alice.key --out alice.envelope
+     --key alice.key --out alice.envelope
 qrdb database barrier-quorum submit --database vault --op unseal \
-     --username alice --cert alice.crt --key alice.key --envelope alice.envelope
+     --username alice --key alice.key --envelope alice.envelope
 qrdb database barrier-rekey --database vault --threshold 2
 qrdb database barrier-officer revoke --database vault --username bob --threshold 2
 ```
 
+| Verb | Does |
+|---|---|
+| `barrier-officer register\|list\|claim\|claim-begin\|claim-complete\|revoke` | Enrol, list, claim (whole handshake or split), revoke |
+| `barrier-init-shamir` | Split the key at the M-of-N the create fixed (`--barrier-shamir-threshold` of `--barrier-shamir-total`); exactly that many holders must be enrolled |
+| `barrier-quorum begin\|submit` | A holder's factor challenge and share submission |
+| `barrier-rekey` | Open a rekey round |
+
+`register` prints the CA-issued certificate (`--output json` for
+`cert_pem`). `claim` needs the connection to present the holder's certificate;
+in process (the embedded profile) the claim is bound to the enrolled
+certificate by the holder's signature over the server's nonce instead.
 `qrdb database unseal` with `--secret` and `qrdb database seal` are refused for
 a Shamir database barrier; its holders unseal and seal it with
 `barrier-quorum submit --op unseal|seal`.

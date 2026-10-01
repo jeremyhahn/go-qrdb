@@ -37,6 +37,10 @@ func TestClassify_DatabaseBarrierRequestRefusals(t *testing.T) {
 		// Turning an existing database's barrier on or off would need a data
 		// migration this release does not perform.
 		{&database.BarrierMigrationNotSupportedError{Name: "orders", Direction: "enable"}, FailedPrecondition},
+		// Shamir custody of a database barrier.
+		{&database.ShamirSecretNotAllowedError{Name: "vault"}, InvalidArgument},
+		{&database.ShamirCustodyNotConfiguredError{Name: "vault"}, FailedPrecondition},
+		{&database.NotShamirBarrierError{Name: "plain"}, FailedPrecondition},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.err); got != tc.want {

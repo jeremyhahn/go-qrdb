@@ -651,6 +651,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if err := n.buildSealServices(ctx, infra, log); err != nil {
 			return nil, err
 		}
+		// A Shamir database barrier's holders are enrolled and verified by
+		// the same CA, trust domain and factors as the system and tenant
+		// barriers' holders.
+		if bm := dbManager.BarrierManager(); bm != nil && n.Ceremony != nil {
+			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
+				bm.SetHolderDeps(coreSvc.HolderDeps())
+			}
+		}
 		// Tenant storage isolation: when a barrier registry and a barrier-mode
 		// tenant service are present, route IAM (user/role) reads and writes
 		// through a StoreResolver. Barrier-isolated tenants persist their IAM

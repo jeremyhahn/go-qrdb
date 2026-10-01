@@ -13,6 +13,27 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Shamir custody of a database barrier.** A database on a dedicated store
+  can be created with `barrier: {enabled: true, mode: "shamir",
+  sharesRequired: M, sharesTotal: N}` and no secret; it is created sealed and
+  its key is split M-of-N to share holders enrolled for that database alone,
+  on the one share-holder model (scope (tenant, database), unseal domain
+  only). Enrolment, listing, initialization (a factor policy; the M-of-N is
+  the create's), claim, quorum seal/unseal, rekey and revocation are Tier-1 on
+  all six transports: REST `/v1/databases/{name}/barrier/...`, gRPC/Unix
+  `DatabaseBarrier*`, QUIC `db.Barrier*`, MCP `qrdb_database_barrier_*` and
+  the embedded SDK, with the CLI verbs `qrdb database barrier-officer`,
+  `barrier-init-shamir`, `barrier-quorum` and `barrier-rekey`, the desktop
+  `OfficerBinding` (`HolderScope.Database`, `InitializeDatabaseShamir`) and
+  the TypeScript SDK's `OfficerClient`. New self-scoped permissions
+  `databases:officer_register`, `officer_list`, `officer_revoke`, `rekey` and
+  `initialize_shamir`. The web UI's database wizard offers Shamir beside the
+  passphrase and enrols the holders and initializes after the create; the
+  database view lists the holders and opens rekey and revocation rounds.
+  Per-database barriers now live in a barrier registry of their own, so a
+  database name can no longer collide with a tenant id. Refusals classify as
+  `ShamirSecretNotAllowedError` (400), `NotShamirBarrierError` and
+  `ShamirCustodyNotConfiguredError` (409).
 - **The audit log's tamper-evidence hash chain can now be verified.**
   `pkg/audit.Verify` is the single canonical entry point (a `Verifier`
   interface `*ChainFileLogger` implements and `aggregateLogger` delegates to),

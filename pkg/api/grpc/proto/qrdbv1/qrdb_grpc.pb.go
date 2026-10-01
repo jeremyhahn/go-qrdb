@@ -230,6 +230,15 @@ const (
 	QRDBService_DatabaseSeal_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseSeal"
 	QRDBService_DatabaseUnseal_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseUnseal"
 	QRDBService_DatabaseBarrierStatus_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
+	QRDBService_DatabaseBarrierOfficerRegister_FullMethodName    = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRegister"
+	QRDBService_DatabaseBarrierOfficerList_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerList"
+	QRDBService_DatabaseBarrierShamirInitialize_FullMethodName   = "/qrdb.v1.QRDBService/DatabaseBarrierShamirInitialize"
+	QRDBService_DatabaseBarrierShareClaimBegin_FullMethodName    = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimBegin"
+	QRDBService_DatabaseBarrierShareClaimComplete_FullMethodName = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimComplete"
+	QRDBService_DatabaseBarrierQuorumBegin_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumBegin"
+	QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName       = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumSubmit"
+	QRDBService_DatabaseBarrierRekeyStart_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierRekeyStart"
+	QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName      = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRevoke"
 	QRDBService_SQLQuery_FullMethodName                          = "/qrdb.v1.QRDBService/SQLQuery"
 )
 
@@ -708,6 +717,24 @@ type QRDBServiceClient interface {
 	DatabaseUnseal(ctx context.Context, in *DatabaseUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
 	DatabaseBarrierStatus(ctx context.Context, in *DatabaseBarrierStatusRequest, opts ...grpc.CallOption) (*DatabaseBarrierStatusResponse, error)
+	// DatabaseBarrierOfficerRegister enrols a share holder of a database's barrier.
+	DatabaseBarrierOfficerRegister(ctx context.Context, in *DatabaseBarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error)
+	// DatabaseBarrierOfficerList lists a database barrier's holders.
+	DatabaseBarrierOfficerList(ctx context.Context, in *DatabaseBarrierOfficerListRequest, opts ...grpc.CallOption) (*BarrierOfficerListResponse, error)
+	// DatabaseBarrierShamirInitialize splits a database's root key to its holders.
+	DatabaseBarrierShamirInitialize(ctx context.Context, in *DatabaseBarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
+	// DatabaseBarrierShareClaimBegin issues a holder's claim nonce. Identity-gated.
+	DatabaseBarrierShareClaimBegin(ctx context.Context, in *DatabaseBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error)
+	// DatabaseBarrierShareClaimComplete delivers a holder's envelope once. Identity-gated.
+	DatabaseBarrierShareClaimComplete(ctx context.Context, in *DatabaseBarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error)
+	// DatabaseBarrierQuorumBegin issues a holder's quorum challenge. Identity-gated.
+	DatabaseBarrierQuorumBegin(ctx context.Context, in *DatabaseBarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error)
+	// DatabaseBarrierQuorumSubmit submits a holder's share. Identity-gated.
+	DatabaseBarrierQuorumSubmit(ctx context.Context, in *DatabaseBarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error)
+	// DatabaseBarrierRekeyStart opens a rekey round on a database barrier.
+	DatabaseBarrierRekeyStart(ctx context.Context, in *DatabaseBarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
+	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
+	DatabaseBarrierOfficerRevoke(ctx context.Context, in *DatabaseBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
 	// SQLQuery executes an ad-hoc SQL query against a named database and
 	// returns the result set. Mirrors the REST POST /sql/query contract.
 	SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error)
@@ -2680,6 +2707,96 @@ func (c *qRDBServiceClient) DatabaseBarrierStatus(ctx context.Context, in *Datab
 	return out, nil
 }
 
+func (c *qRDBServiceClient) DatabaseBarrierOfficerRegister(ctx context.Context, in *DatabaseBarrierOfficerRegisterRequest, opts ...grpc.CallOption) (*BarrierOfficerRegisterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerRegisterResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierOfficerRegister_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierOfficerList(ctx context.Context, in *DatabaseBarrierOfficerListRequest, opts ...grpc.CallOption) (*BarrierOfficerListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierOfficerListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierOfficerList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierShamirInitialize(ctx context.Context, in *DatabaseBarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShamirOperationResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierShamirInitialize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierShareClaimBegin(ctx context.Context, in *DatabaseBarrierShareClaimBeginRequest, opts ...grpc.CallOption) (*BarrierShareClaimBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimBeginResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierShareClaimBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierShareClaimComplete(ctx context.Context, in *DatabaseBarrierShareClaimCompleteRequest, opts ...grpc.CallOption) (*BarrierShareClaimCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierShareClaimCompleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierShareClaimComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierQuorumBegin(ctx context.Context, in *DatabaseBarrierQuorumBeginRequest, opts ...grpc.CallOption) (*BarrierQuorumChallenge, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumChallenge)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierQuorumBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierQuorumSubmit(ctx context.Context, in *DatabaseBarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*BarrierQuorumOutcome, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumOutcome)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierRekeyStart(ctx context.Context, in *DatabaseBarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierRekeyStart_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DatabaseBarrierOfficerRevoke(ctx context.Context, in *DatabaseBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BarrierQuorumRound)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SQLQueryResponse)
@@ -3165,6 +3282,24 @@ type QRDBServiceServer interface {
 	DatabaseUnseal(context.Context, *DatabaseUnsealRequest) (*emptypb.Empty, error)
 	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
 	DatabaseBarrierStatus(context.Context, *DatabaseBarrierStatusRequest) (*DatabaseBarrierStatusResponse, error)
+	// DatabaseBarrierOfficerRegister enrols a share holder of a database's barrier.
+	DatabaseBarrierOfficerRegister(context.Context, *DatabaseBarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error)
+	// DatabaseBarrierOfficerList lists a database barrier's holders.
+	DatabaseBarrierOfficerList(context.Context, *DatabaseBarrierOfficerListRequest) (*BarrierOfficerListResponse, error)
+	// DatabaseBarrierShamirInitialize splits a database's root key to its holders.
+	DatabaseBarrierShamirInitialize(context.Context, *DatabaseBarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error)
+	// DatabaseBarrierShareClaimBegin issues a holder's claim nonce. Identity-gated.
+	DatabaseBarrierShareClaimBegin(context.Context, *DatabaseBarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error)
+	// DatabaseBarrierShareClaimComplete delivers a holder's envelope once. Identity-gated.
+	DatabaseBarrierShareClaimComplete(context.Context, *DatabaseBarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error)
+	// DatabaseBarrierQuorumBegin issues a holder's quorum challenge. Identity-gated.
+	DatabaseBarrierQuorumBegin(context.Context, *DatabaseBarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error)
+	// DatabaseBarrierQuorumSubmit submits a holder's share. Identity-gated.
+	DatabaseBarrierQuorumSubmit(context.Context, *DatabaseBarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error)
+	// DatabaseBarrierRekeyStart opens a rekey round on a database barrier.
+	DatabaseBarrierRekeyStart(context.Context, *DatabaseBarrierRekeyStartRequest) (*BarrierQuorumRound, error)
+	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
+	DatabaseBarrierOfficerRevoke(context.Context, *DatabaseBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error)
 	// SQLQuery executes an ad-hoc SQL query against a named database and
 	// returns the result set. Mirrors the REST POST /sql/query contract.
 	SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error)
@@ -3762,6 +3897,33 @@ func (UnimplementedQRDBServiceServer) DatabaseUnseal(context.Context, *DatabaseU
 }
 func (UnimplementedQRDBServiceServer) DatabaseBarrierStatus(context.Context, *DatabaseBarrierStatusRequest) (*DatabaseBarrierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierOfficerRegister(context.Context, *DatabaseBarrierOfficerRegisterRequest) (*BarrierOfficerRegisterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierOfficerRegister not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierOfficerList(context.Context, *DatabaseBarrierOfficerListRequest) (*BarrierOfficerListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierOfficerList not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierShamirInitialize(context.Context, *DatabaseBarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierShamirInitialize not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierShareClaimBegin(context.Context, *DatabaseBarrierShareClaimBeginRequest) (*BarrierShareClaimBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierShareClaimBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierShareClaimComplete(context.Context, *DatabaseBarrierShareClaimCompleteRequest) (*BarrierShareClaimCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierShareClaimComplete not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierQuorumBegin(context.Context, *DatabaseBarrierQuorumBeginRequest) (*BarrierQuorumChallenge, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierQuorumBegin not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierQuorumSubmit(context.Context, *DatabaseBarrierQuorumSubmitRequest) (*BarrierQuorumOutcome, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierQuorumSubmit not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierRekeyStart(context.Context, *DatabaseBarrierRekeyStartRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierRekeyStart not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierOfficerRevoke(context.Context, *DatabaseBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierOfficerRevoke not implemented")
 }
 func (UnimplementedQRDBServiceServer) SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SQLQuery not implemented")
@@ -7290,6 +7452,168 @@ func _QRDBService_DatabaseBarrierStatus_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_DatabaseBarrierOfficerRegister_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierOfficerRegisterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerRegister(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierOfficerRegister_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerRegister(ctx, req.(*DatabaseBarrierOfficerRegisterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierOfficerList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierOfficerListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierOfficerList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerList(ctx, req.(*DatabaseBarrierOfficerListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierShamirInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierShamirInitializeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierShamirInitialize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierShamirInitialize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierShamirInitialize(ctx, req.(*DatabaseBarrierShamirInitializeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierShareClaimBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierShareClaimBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierShareClaimBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierShareClaimBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierShareClaimBegin(ctx, req.(*DatabaseBarrierShareClaimBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierShareClaimComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierShareClaimCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierShareClaimComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierShareClaimComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierShareClaimComplete(ctx, req.(*DatabaseBarrierShareClaimCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierQuorumBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierQuorumBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierQuorumBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierQuorumBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierQuorumBegin(ctx, req.(*DatabaseBarrierQuorumBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierQuorumSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierQuorumSubmitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierQuorumSubmit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierQuorumSubmit(ctx, req.(*DatabaseBarrierQuorumSubmitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierRekeyStart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierRekeyStartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierRekeyStart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierRekeyStart_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierRekeyStart(ctx, req.(*DatabaseBarrierRekeyStartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DatabaseBarrierOfficerRevoke_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierOfficerRevokeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerRevoke(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerRevoke(ctx, req.(*DatabaseBarrierOfficerRevokeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_SQLQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SQLQueryRequest)
 	if err := dec(in); err != nil {
@@ -8090,6 +8414,42 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseBarrierStatus",
 			Handler:    _QRDBService_DatabaseBarrierStatus_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierOfficerRegister",
+			Handler:    _QRDBService_DatabaseBarrierOfficerRegister_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierOfficerList",
+			Handler:    _QRDBService_DatabaseBarrierOfficerList_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierShamirInitialize",
+			Handler:    _QRDBService_DatabaseBarrierShamirInitialize_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierShareClaimBegin",
+			Handler:    _QRDBService_DatabaseBarrierShareClaimBegin_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierShareClaimComplete",
+			Handler:    _QRDBService_DatabaseBarrierShareClaimComplete_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierQuorumBegin",
+			Handler:    _QRDBService_DatabaseBarrierQuorumBegin_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierQuorumSubmit",
+			Handler:    _QRDBService_DatabaseBarrierQuorumSubmit_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierRekeyStart",
+			Handler:    _QRDBService_DatabaseBarrierRekeyStart_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierOfficerRevoke",
+			Handler:    _QRDBService_DatabaseBarrierOfficerRevoke_Handler,
 		},
 		{
 			MethodName: "SQLQuery",

@@ -32,6 +32,8 @@ type mockDatabaseClient struct {
 	listErr   error
 	dropErr   error
 	updateErr error
+	// holderCalls records the share-holder calls that reached the client.
+	holderCalls []string
 }
 
 func newMockDatabaseClient() *mockDatabaseClient {

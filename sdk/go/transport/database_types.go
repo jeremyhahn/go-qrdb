@@ -363,6 +363,30 @@ type DatabaseClient interface {
 
 	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
 	DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatus, error)
+
+	// Shamir custody of a database barrier (docs/databases): the share-holder
+	// operations of a tenant barrier, scoped to one database.
+
+	// DatabaseBarrierOfficerRegister enrols a share holder of the database's
+	// barrier.
+	DatabaseBarrierOfficerRegister(ctx context.Context, req *DatabaseOfficerRegisterRequest) (*OfficerRegisterResponse, error)
+	// DatabaseBarrierOfficerList lists the database barrier's holders.
+	DatabaseBarrierOfficerList(ctx context.Context, name string) ([]*OfficerStatus, error)
+	// DatabaseBarrierShamirInitialize splits the database's root key to its
+	// enrolled holders.
+	DatabaseBarrierShamirInitialize(ctx context.Context, req *DatabaseShamirInitializeRequest) (*BarrierInitializeShamirResponse, error)
+	// DatabaseBarrierShareClaimBegin opens a holder's claim handshake.
+	DatabaseBarrierShareClaimBegin(ctx context.Context, req *DatabaseShareClaimBeginRequest) (*ShareClaimBeginResponse, error)
+	// DatabaseBarrierShareClaimComplete delivers a holder's envelope once.
+	DatabaseBarrierShareClaimComplete(ctx context.Context, req *DatabaseShareClaimCompleteRequest) (*ShareClaimCompleteResponse, error)
+	// DatabaseBarrierQuorumBegin issues a holder's quorum challenge.
+	DatabaseBarrierQuorumBegin(ctx context.Context, req *DatabaseQuorumBeginRequest) (*QuorumChallenge, error)
+	// DatabaseBarrierQuorumSubmit submits a holder's share to the open round.
+	DatabaseBarrierQuorumSubmit(ctx context.Context, req *DatabaseQuorumSubmitRequest) (*QuorumOutcome, error)
+	// DatabaseBarrierRekeyStart opens a rekey round.
+	DatabaseBarrierRekeyStart(ctx context.Context, req *DatabaseRekeyStartRequest) (*QuorumRound, error)
+	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
+	DatabaseBarrierOfficerRevoke(ctx context.Context, req *DatabaseOfficerRevokeRequest) (*QuorumRound, error)
 }
 
 // DatabaseBarrierStatus reports a database barrier's sealed state and active

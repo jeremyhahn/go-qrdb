@@ -288,6 +288,17 @@ func (s *Server) buildHandlers() {
 	s.handle("db.Seal", permission.DatabasesSeal, s.handleDatabaseSeal)
 	s.handle("db.Unseal", permission.DatabasesUnseal, s.handleDatabaseUnseal)
 	s.handle("db.BarrierStatus", permission.DatabasesBarrierStatus, s.handleDatabaseBarrierStatus)
+	// Shamir custody of a database barrier; claims and quorum submissions are
+	// identity-gated.
+	s.handle("db.BarrierOfficerRegister", permission.DatabasesOfficerRegister, s.handleDatabaseBarrierOfficerRegister)
+	s.handle("db.BarrierOfficerList", permission.DatabasesOfficerList, s.handleDatabaseBarrierOfficerList)
+	s.handle("db.BarrierShamirInitialize", permission.DatabasesInitializeShamir, s.handleDatabaseBarrierShamirInitialize)
+	s.handle("db.BarrierShareClaimBegin", permission.IdentityGated, s.handleDatabaseBarrierShareClaimBegin)
+	s.handle("db.BarrierShareClaimComplete", permission.IdentityGated, s.handleDatabaseBarrierShareClaimComplete)
+	s.handle("db.BarrierQuorumBegin", permission.IdentityGated, s.handleDatabaseBarrierQuorumBegin)
+	s.handle("db.BarrierQuorumSubmit", permission.IdentityGated, s.handleDatabaseBarrierQuorumSubmit)
+	s.handle("db.BarrierRekeyStart", permission.DatabasesRekey, s.handleDatabaseBarrierRekeyStart)
+	s.handle("db.BarrierOfficerRevoke", permission.DatabasesOfficerRevoke, s.handleDatabaseBarrierOfficerRevoke)
 
 	// SQL query (read-through over the KV range surface). Mirrors the REST
 	// "POST /sql/query" route / the gRPC SQLQuery permission option.

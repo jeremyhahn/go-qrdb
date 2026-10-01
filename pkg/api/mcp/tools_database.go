@@ -33,7 +33,7 @@ import (
 // databaseTools returns the MCP tool registrations for database management
 // operations.
 func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
-	return []serverTool{
+	return append([]serverTool{
 		{
 			Tool:    toolDatabaseCreate(),
 			Perm:    permission.DatabasesCreate,
@@ -110,7 +110,7 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 			Perm:    permission.DatabasesBarrierStatus,
 			Handler: handleDatabaseBarrierStatus(dbSvc),
 		},
-	}
+	}, databaseHolderTools(dbSvc)...)
 }
 
 // toolDatabaseCreate defines the qrdb_database_create tool schema.

@@ -388,6 +388,12 @@ var databaseRules = []rule{
 	// Turning an existing database's barrier on or off needs a data
 	// migration that is not performed.
 	as(&database.BarrierMigrationNotSupportedError{}, FailedPrecondition),
+	// A Shamir database barrier: given a secret it has no use for; created
+	// on a node with no holder custody configured; or a holder operation on
+	// a database whose barrier is not a Shamir barrier.
+	as(&database.ShamirSecretNotAllowedError{}, InvalidArgument),
+	as(&database.ShamirCustodyNotConfiguredError{}, FailedPrecondition),
+	as(&database.NotShamirBarrierError{}, FailedPrecondition),
 }
 
 // placementRules are the quota, placement and raft-topology conditions.

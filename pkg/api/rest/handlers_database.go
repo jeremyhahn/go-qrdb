@@ -379,6 +379,9 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 		s.handleDatabaseBarrierStatus(w, r, name)
 		return
 	}
+	if s.dispatchDatabaseHolder(w, r, name, subPath) {
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
