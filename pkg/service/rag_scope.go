@@ -30,65 +30,112 @@ import (
 //
 // Every record the pipeline reads or writes -- chunk text, document metadata
 // and vectors -- is resolved through the registry for the request's tenant
-// (tenant.FromContext) and database (tenant.DatabaseFromContext), exactly as
+// (tenant.IDFromContext) and database (tenant.DatabaseFromContext), exactly as
 // a data-plane request on any transport is. That is what applies the
 // database's seal, its ownership, the tenant's quota and its isolation
 // routing, and what refuses a database the caller does not have: an unknown
 // or foreign X-QRDB-Database is a not-found, never a new keyspace.
+//
+// A call whose context carries no tenant is refused (RAGTenantRequiredError)
+// rather than resolved for the system tenant: on an authenticated node every
+// transport binds the caller's tenant, so a missing one is a composition
+// fault, and guessing the system tenant would hand the caller the system
+// tenant's records. A composition with no request authentication -- where no
+// call carries a tenant -- binds with RAGUnauthenticatedTenant to name the
+// tenant such calls act for.
 type RAGBinding struct {
 	reg atomic.Pointer[registryRef]
 }
 
-// registryRef boxes a Registry so it can live in an atomic.Pointer.
-type registryRef struct{ Registry }
+// registryRef boxes a Registry so it can live in an atomic.Pointer, with the
+// tenant a call that carries none acts for ("" refuses such calls).
+type registryRef struct {
+	Registry
+	unauthenticatedTenant string
+}
+
+// RAGTenantRequiredError is returned when a RAG call's context carries no
+// tenant on a composition that authenticates requests: there every transport
+// binds the caller's tenant, so a call without one is refused rather than
+// resolved for a guessed tenant.
+type RAGTenantRequiredError struct {
+	Op string
+}
+
+// Error returns a human-readable description.
+func (e *RAGTenantRequiredError) Error() string {
+	return "service: " + e.Op + ": the call carries no tenant"
+}
+
+// RAGBindOption configures Bind.
+type RAGBindOption func(*registryRef)
+
+// RAGUnauthenticatedTenant names the tenant a call whose context carries no
+// tenant acts for. Only a composition with no request authentication sets it:
+// there, no call carries a tenant, and the node's operator owns every call.
+func RAGUnauthenticatedTenant(tenantID string) RAGBindOption {
+	return func(r *registryRef) { r.unauthenticatedTenant = tenantID }
+}
 
 // NewRAGBinding returns an unbound binding.
 func NewRAGBinding() *RAGBinding { return &RAGBinding{} }
 
 // Bind sets the registry the pipeline resolves through. A nil registry
 // unbinds it.
-func (b *RAGBinding) Bind(reg Registry) {
+func (b *RAGBinding) Bind(reg Registry, opts ...RAGBindOption) {
 	if reg == nil {
 		b.reg.Store(nil)
 		return
 	}
-	b.reg.Store(&registryRef{Registry: reg})
+	ref := &registryRef{Registry: reg}
+	for _, opt := range opts {
+		opt(ref)
+	}
+	b.reg.Store(ref)
 }
 
-// registry returns the bound registry, or the refusal an unbound pipeline
-// answers with.
-func (b *RAGBinding) registry() (Registry, error) {
+// resolve returns the bound registry and the tenant the call acts for, or the
+// refusal: an unbound pipeline, or a call that carries no tenant on a
+// composition that did not name one for such calls.
+func (b *RAGBinding) resolve(ctx context.Context, op string) (Registry, string, error) {
 	ref := b.reg.Load()
 	if ref == nil {
-		return nil, &CapabilityUnsupportedError{Message: "rag: the node's database registry is not bound"}
+		return nil, "", &CapabilityUnsupportedError{Message: "rag: the node's database registry is not bound"}
 	}
-	return ref.Registry, nil
+	tenantID, ok := tenant.IDFromContext(ctx)
+	if !ok {
+		if ref.unauthenticatedTenant == "" {
+			return nil, "", &RAGTenantRequiredError{Op: op}
+		}
+		tenantID = ref.unauthenticatedTenant
+	}
+	return ref.Registry, tenantID, nil
 }
 
 // KV resolves the caller's KV servicer.
 func (b *RAGBinding) KV(ctx context.Context) (KVServicer, error) {
-	reg, err := b.registry()
+	reg, tenantID, err := b.resolve(ctx, "rag")
 	if err != nil {
 		return nil, err
 	}
-	return reg.KVService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
+	return reg.KVService(tenantID, tenant.DatabaseFromContext(ctx))
 }
 
 // Vector resolves the caller's vector servicer. It is scoped to the
 // caller's database, so one database's documents cannot overwrite another's
 // vectors.
 func (b *RAGBinding) Vector(ctx context.Context) (VectorService, error) {
-	reg, err := b.registry()
+	reg, tenantID, err := b.resolve(ctx, "rag")
 	if err != nil {
 		return nil, err
 	}
-	return reg.VectorService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
+	return reg.VectorService(tenantID, tenant.DatabaseFromContext(ctx))
 }
 
 // RAGRegistryBinder is implemented by a RAG service whose pipeline resolves
 // through a RAGBinding. The server binds its registry at start.
 type RAGRegistryBinder interface {
-	BindRegistry(reg Registry)
+	BindRegistry(reg Registry, opts ...RAGBindOption)
 }
 
 // RAGKVStore is the part of the KV service the RAG pipeline keeps chunk text

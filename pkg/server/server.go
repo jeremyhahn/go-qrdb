@@ -1134,8 +1134,16 @@ func (s *Server) start() error {
 	// per-(tenant, database) registry the transports use. A node with no
 	// database registry leaves it unbound, and RAG then refuses rather than
 	// serve records outside any database's seal, ownership and isolation.
+	//
+	// With request authentication every transport binds the caller's tenant,
+	// and a call without one is refused. Without it no call carries a tenant
+	// and the operator owns every call, so they act for the system tenant.
 	if binder, ok := s.opts.ragSvc.(service.RAGRegistryBinder); ok {
-		binder.BindRegistry(s.transportServiceRegistry())
+		var opts []service.RAGBindOption
+		if s.opts.authMW == nil {
+			opts = append(opts, service.RAGUnauthenticatedTenant(tenant.SystemTenantID))
+		}
+		binder.BindRegistry(s.transportServiceRegistry(), opts...)
 	}
 
 	if s.config.Protocols.REST {

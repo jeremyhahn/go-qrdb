@@ -74,7 +74,7 @@ func (r *ragScopeRegistry) VectorService(tenantID, db string) (VectorService, er
 // (tenant, database) to kv.
 func newBoundRAGStore(kv KVServicer) *ScopedRAGStore {
 	b := NewRAGBinding()
-	b.Bind(&singleKVRegistry{kv: kv})
+	b.Bind(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
 	return NewScopedRAGStore(b)
 }
 
@@ -150,7 +150,7 @@ func TestRAGBinding_UnboundRefuses(t *testing.T) {
 	if _, err := b.Vector(context.Background()); !errors.As(err, &unsupported) {
 		t.Fatalf("Vector on an unbound binding = %v, want *CapabilityUnsupportedError", err)
 	}
-	b.Bind(&singleKVRegistry{kv: newRAGMockKV()})
+	b.Bind(&singleKVRegistry{kv: newRAGMockKV()}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
 	if err := store.Put(context.Background(), "k", []byte("v")); err != nil {
 		t.Fatalf("Put once bound: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRAGService_BindRegistry(t *testing.T) {
 		t.Fatal("the RAG service does not implement RAGRegistryBinder")
 	}
 	kv := newRAGMockKV()
-	binder.BindRegistry(&singleKVRegistry{kv: kv})
+	binder.BindRegistry(&singleKVRegistry{kv: kv}, RAGUnauthenticatedTenant(tenant.SystemTenantID))
 	if err := store.Put(context.Background(), "k", []byte("v")); err != nil || string(kv.kvStore["k"]) != "v" {
 		t.Fatalf("Put after BindRegistry = %v, store %v", err, kv.kvStore)
 	}

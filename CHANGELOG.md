@@ -556,7 +556,9 @@ are not reconstructed here — their history is in the git log.
   (`service.RAGBinding`, bound by the server at start; `service.ScopedRAGStore`
   and `service.NewScopedVectorStoreAdapter`), so a sealed database refuses
   RAG, an unknown or foreign `X-QRDB-Database` is a not-found, and vectors are
-  per database. REST and gRPC/Unix now also bind the request's database as the
+  per database. On a node with request authentication a RAG call that carries
+  no tenant is refused (`service.RAGTenantRequiredError`) instead of acting
+  for the system tenant. REST and gRPC/Unix now also bind the request's database as the
   canonical `tenant.DatabaseFromContext` scope, as QUIC and MCP already did.
 - **Another tenant's database is answered as missing (medium).** Database
   names are one node-wide namespace, and a tenant addressing another tenant's

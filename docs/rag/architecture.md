@@ -104,7 +104,11 @@ live.
   The registry is bound by the server at start. A server composed with no
   database registry refuses RAG rather than serve records outside any
   database's seal and isolation; `qrdbd`, `sdk/go/node` and the `node://`
-  driver all compose one.
+  driver all compose one. The tenant is the one the request carries: on a
+  node with request authentication, a call whose context carries no tenant is
+  refused (`service.RAGTenantRequiredError`, `PERMISSION_DENIED`) rather than
+  resolved for the system tenant; only a node without request authentication,
+  where no call carries a tenant, acts for the system tenant.
   *(Corrected: chunk text used to be keyed `rag:{namespace}:{document}:{chunk}`
   with no tenant at all, and vectors were scoped by tenant only.)*
 - **Ingest sends document text to the configured embedding provider**, which may

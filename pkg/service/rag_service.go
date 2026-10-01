@@ -150,8 +150,8 @@ var _ RAGRegistryBinder = (*ragService)(nil)
 // BindRegistry implements RAGRegistryBinder: it binds the registry the
 // service's store -- and the ingestor and retriever built over the same
 // binding -- resolve every record through.
-func (s *ragService) BindRegistry(reg Registry) {
-	s.kvSvc.binding.Bind(reg)
+func (s *ragService) BindRegistry(reg Registry, opts ...RAGBindOption) {
+	s.kvSvc.binding.Bind(reg, opts...)
 }
 
 // IngestDocument validates the request, delegates to the Ingestor, and

@@ -190,6 +190,7 @@ var vectorRules = []rule{
 	as(&service.VectorServiceClosedError{}, Unavailable),
 	// Strict tenant isolation refuses a request bound to no tenant.
 	as(&service.TenantRequiredError{}, PermissionDenied),
+	as(&service.RAGTenantRequiredError{}, PermissionDenied),
 }
 
 // collectionRules are the document-collection conditions.

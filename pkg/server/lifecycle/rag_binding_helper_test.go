@@ -17,6 +17,7 @@ package lifecycle_test
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // nodeRAGRegistry resolves every (tenant, database) to the node's own KV and
@@ -39,6 +40,6 @@ func (r *nodeRAGRegistry) VectorService(string, string) (service.VectorServicer,
 // binds it to its registry at start. It does nothing for a node without RAG.
 func bindNodeRAG(node *lifecycle.Node) {
 	if binder, ok := node.RAG.(service.RAGRegistryBinder); ok {
-		binder.BindRegistry(&nodeRAGRegistry{node: node})
+		binder.BindRegistry(&nodeRAGRegistry{node: node}, service.RAGUnauthenticatedTenant(tenant.SystemTenantID))
 	}
 }
