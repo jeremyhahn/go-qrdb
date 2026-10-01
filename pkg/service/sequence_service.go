@@ -59,7 +59,8 @@ type SequenceServicer interface {
 	// never been reset) without allocating or changing anything. It is a
 	// linearizable read, not a compare-and-swap, so it never contends with
 	// a concurrent writer; a caller holding a cached block compares its
-	// block's epoch against this before handing out a value from it.
+	// block's epoch against this before using the block for work other
+	// than the work that reserved it.
 	Epoch(ctx context.Context, database, name string) (uint64, error)
 
 	// Advance raises the sequence's current value to atLeast if it is not

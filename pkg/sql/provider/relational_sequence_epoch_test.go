@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,12 +33,12 @@ import (
 // and TableServicer.TruncateTable's MySQL-dialect sequence reset -- advances
 // the sequence's epoch in the same compare-and-swap that zeroes its counter.
 // sequenceBlock records the epoch its cached [cursor, end) range was reserved
-// under and verifies it against SequenceServicer.Epoch before handing out
-// ANY cached value, discarding the range on a mismatch. These tests pin what
-// that gives a caller: a range that still has unconsumed capacity when a
-// reset commits through a different handle stops being usable at once, so a
-// session holding a pre-reset block never emits a value the post-reset
-// sequence will hand out again.
+// under and verifies it against SequenceServicer.Epoch once per statement
+// that draws from a range it did not reserve, discarding the range on a
+// mismatch. These tests pin what that gives a caller: a range that still has
+// unconsumed capacity when a reset commits through a different handle is not
+// used by any later statement, so a session holding a pre-reset block never
+// emits a value the post-reset sequence will hand out again.
 // ---------------------------------------------------------------------------
 
 // newEpochTestTable resolves def the way a statement does: a fresh
@@ -148,26 +149,38 @@ func (epochFailingSequence) Epoch(context.Context, string, string) (uint64, erro
 	return 0, assert.AnError
 }
 
+// countingEpochSequence is a real SequenceServicer that counts its Epoch
+// reads, so a test can assert how many round trips fencing costs.
+type countingEpochSequence struct {
+	service.SequenceServicer
+	epochReads atomic.Int64
+}
+
+func (c *countingEpochSequence) Epoch(ctx context.Context, database, name string) (uint64, error) {
+	c.epochReads.Add(1)
+	return c.SequenceServicer.Epoch(ctx, database, name)
+}
+
 // TestSequenceBlock_EpochReadErrorFailsTheValue verifies a block whose
 // freshness cannot be proven hands out nothing: the Epoch read's error is
 // the caller's, and the cached value is not consumed.
 func TestSequenceBlock_EpochReadErrorFailsTheValue(t *testing.T) {
 	h := newDDLHarness()
-	ctx := context.Background()
+	stmt := newTestContext()
 
 	var b sequenceBlock
 	for i := 0; i < 2; i++ {
-		_, _, err := b.next(ctx, h.seqSvc, "shop", "seq")
+		_, _, err := b.next(stmt, h.seqSvc, "shop", "seq")
 		require.NoError(t, err)
 	}
 	require.Less(t, b.cursor, b.end, "the second block of two has one value left")
 	cursor := b.cursor
 
-	_, _, err := b.next(ctx, epochFailingSequence{h.seqSvc}, "shop", "seq")
+	_, _, err := b.next(newTestContext(), epochFailingSequence{h.seqSvc}, "shop", "seq")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Equal(t, cursor, b.cursor, "a value whose block could not be proven current is not consumed")
 
-	v, _, err := b.next(ctx, h.seqSvc, "shop", "seq")
+	v, _, err := b.next(newTestContext(), h.seqSvc, "shop", "seq")
 	require.NoError(t, err)
 	assert.Equal(t, cursor, v)
 }
@@ -179,10 +192,102 @@ func TestSequenceBlock_EmptyBlockSkipsEpochRead(t *testing.T) {
 	h := newDDLHarness()
 
 	var b sequenceBlock
-	v, epoch, err := b.next(context.Background(), epochFailingSequence{h.seqSvc}, "shop", "seq")
+	v, epoch, err := b.next(newTestContext(), epochFailingSequence{h.seqSvc}, "shop", "seq")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), v)
 	assert.Equal(t, uint64(0), epoch)
+}
+
+// TestSequenceBlock_ReservingStatementNeverReadsEpoch verifies a statement
+// drawing from blocks it reserved itself pays no epoch read at all: Allocate
+// reported each block's epoch as it reserved it.
+func TestSequenceBlock_ReservingStatementNeverReadsEpoch(t *testing.T) {
+	h := newDDLHarness()
+	seq := &countingEpochSequence{SequenceServicer: h.seqSvc}
+	stmt := newTestContext()
+
+	var b sequenceBlock
+	for i := uint64(1); i <= 100; i++ {
+		v, _, err := b.next(stmt, seq, "shop", "seq")
+		require.NoError(t, err)
+		require.Equal(t, i, v)
+	}
+	assert.Zero(t, seq.epochReads.Load())
+}
+
+// TestSequenceBlock_EpochCheckedOncePerStatement verifies a statement drawing
+// from a block an earlier statement reserved verifies its epoch exactly once,
+// however many values it draws -- not once per value, which would cost a
+// multi-row INSERT one linearizable read per row.
+func TestSequenceBlock_EpochCheckedOncePerStatement(t *testing.T) {
+	h := newDDLHarness()
+	seq := &countingEpochSequence{SequenceServicer: h.seqSvc}
+
+	var b sequenceBlock
+	first := newTestContext()
+	for i := 0; i < 8; i++ {
+		_, _, err := b.next(first, seq, "shop", "seq")
+		require.NoError(t, err)
+	}
+	require.Equal(t, uint64(7), b.end-b.cursor, "blocks of 1, 2, 4 and 8 reserved; 7 values still cached")
+
+	second := newTestContext()
+	for i := 0; i < 5; i++ {
+		_, _, err := b.next(second, seq, "shop", "seq")
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int64(1), seq.epochReads.Load(), "one read for the whole statement")
+
+	// A context derived from the statement's -- as the engine derives them
+	// for spans and subqueries -- is the same statement.
+	derived := second.WithContext(context.Background())
+	_, _, err := b.next(derived, seq, "shop", "seq")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), seq.epochReads.Load(), "a derived context is the same statement")
+}
+
+// TestSequenceBlock_ResetBetweenStatementsIsFenced verifies the
+// per-statement check still fences a reset that commits between two
+// statements sharing one block: the second statement's first value comes
+// from the post-reset counter, not from the block reserved before it.
+func TestSequenceBlock_ResetBetweenStatementsIsFenced(t *testing.T) {
+	h := newDDLHarness()
+	ctx := context.Background()
+	seq := &countingEpochSequence{SequenceServicer: h.seqSvc}
+
+	var b sequenceBlock
+	first := newTestContext()
+	for i := 0; i < 4; i++ {
+		_, _, err := b.next(first, seq, "shop", "seq")
+		require.NoError(t, err)
+	}
+	require.Less(t, b.cursor, b.end, "the statement leaves a block with values cached")
+
+	require.NoError(t, h.seqSvc.Reset(ctx, "shop", "seq"))
+
+	second := newTestContext()
+	v, epoch, err := b.next(second, seq, "shop", "seq")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), v, "the stale block is discarded and the refill reads the post-reset counter")
+	assert.Equal(t, uint64(1), epoch)
+	assert.Equal(t, int64(1), seq.epochReads.Load())
+
+	for i := 0; i < 3; i++ {
+		_, _, err := b.next(second, seq, "shop", "seq")
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int64(1), seq.epochReads.Load(), "the refilled block is the statement's own")
+}
+
+// TestStatementID_Is pins what counts as one statement.
+func TestStatementID_Is(t *testing.T) {
+	a, b := newTestContext(), newTestContext()
+
+	assert.True(t, statementOf(a).is(statementOf(a)))
+	assert.True(t, statementOf(a).is(statementOf(a.WithQuery("SELECT 1"))), "derived contexts keep the statement")
+	assert.False(t, statementOf(a).is(statementOf(b)), "a new context is a new statement")
+	assert.False(t, statementID{}.is(statementID{}), "the zero value names no statement")
+	assert.False(t, statementOf(a).is(statementID{pid: 7, began: a.QueryTime()}), "a different pid is a different statement")
 }
 
 // TestSequenceEpoch_ConcurrentAllocationsNeverDuplicateWithinAnEpoch races
@@ -218,7 +323,7 @@ func TestSequenceEpoch_ConcurrentAllocationsNeverDuplicateWithinAnEpoch(t *testi
 		go func() {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
-				v, epoch, err := tbl.autoInc.next(context.Background(), h.seqSvc, "shop", tbl.autoIncSequenceName())
+				v, epoch, err := tbl.autoInc.next(newTestContext(), h.seqSvc, "shop", tbl.autoIncSequenceName())
 				if err != nil {
 					t.Errorf("next: %v", err)
 					return

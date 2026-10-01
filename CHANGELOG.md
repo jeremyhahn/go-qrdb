@@ -453,9 +453,10 @@ are not reconstructed here — their history is in the git log.
   a MySQL `TRUNCATE TABLE`, a session still holding part of a pre-reset block
   kept handing those values out while the restarted counter handed them out
   again, so concurrent inserts collided with MySQL error 1062. The block
-  allocator now checks its block's epoch before every cached value and
-  refills from the post-reset counter when a reset has intervened, on this
-  node or any other.
+  allocator now checks a block's epoch once per statement that draws from a
+  block it did not reserve, and refills from the post-reset counter when a
+  reset has intervened, on this node or any other. A statement costs at most
+  one extra linearizable read, however many rows it inserts.
 - **PostgreSQL `TRUNCATE TABLE` keeps the table's sequence on every server
   construction path** (#547). A PostgreSQL server composed with
   `WithServiceRegistry` but no database manager built its provider without
