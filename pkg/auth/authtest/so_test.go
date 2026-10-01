@@ -85,3 +85,31 @@ func TestBarrier_CountsRecoveryDeletes(t *testing.T) {
 		t.Fatalf("RecoveryDeletes = %d, want 1", b.RecoveryDeletes())
 	}
 }
+
+func TestBarrier_CountsSeals(t *testing.T) {
+	b := &authtest.Barrier{}
+	if err := b.BarrierSeal(context.Background()); err != nil {
+		t.Fatalf("BarrierSeal: %v", err)
+	}
+	if b.Seals() != 1 {
+		t.Fatalf("Seals = %d, want 1", b.Seals())
+	}
+}
+
+// TestBarrierPINBackend_VerifiesTheCommittedPIN pins the double to the real
+// verifier's behaviour: the committed PIN verifies and nothing else does.
+func TestBarrierPINBackend_VerifiesTheCommittedPIN(t *testing.T) {
+	b := authtest.BarrierPINBackend(t, "barrier-1234")
+	if !b.SOPINSet() {
+		t.Fatal("no SO PIN set")
+	}
+	if err := b.VerifySOPIN("barrier-1234"); err != nil {
+		t.Fatalf("committed PIN refused: %v", err)
+	}
+	if err := b.VerifySOPIN("wrong"); err == nil {
+		t.Fatal("wrong PIN accepted")
+	}
+	if err := b.VerifySOPIN(""); err == nil {
+		t.Fatal("empty PIN accepted")
+	}
+}
