@@ -170,9 +170,47 @@ default 15m, `ErrShamirQuorumExpired`).
 `VerifyHolder` resolves the challenge by id, checks it was issued for exactly
 this domain, op, holder and roster digest (`ErrQuorumChallengeMismatch`), and
 verifies the factor response with the registered `authfactors.Factor` against
-the **roster's** copy of the factor's public material, not the registry's. A
-scope holds at most 256 pending challenges (`ErrTooManyPendingChallenges`);
-each expires on the factor's own deadline.
+the **roster's** copy of the factor's public material, not the registry's.
+Each challenge expires on the factor's own deadline.
+
+### Challenge issuance
+
+The sealed window admits a challenge request anonymously, so `BeginQuorum` is
+hardened against a caller who is not the holder:
+
+- **Throttled per caller.** Every request passes
+  `HolderDeps.QuorumBeginLimiter` before anything else, including a request
+  for an unknown holder. The key names the scope instance and the caller: an
+  authenticated identity, else the certificate the TLS connection presented,
+  else the scope's single anonymous bucket. The node's composer installs the
+  shared `pkg/ratelimit` engine:
+  - each identified caller gets 2 requests per second, burst 10;
+  - the anonymous bucket gets 5 per second, burst 20.
+
+  A refusal is `*ceremony.QuorumBeginRateLimitedError`, carrying the retry
+  delay; REST sends it as `Retry-After`. An embedder that builds a ceremony
+  service by hand and installs no limiter gets no throttling.
+- **No holder enumeration.** A name outside the roster, or a holder asked for
+  a factor the policy does not admit, gets a decoy challenge. A decoy is
+  shaped like an mtls challenge to a real holder: a fresh nonce, the public
+  key and thumbprint of a key generated for it, and the same lifetime. It is
+  never stored, so a submission against it fails with
+  `ErrQuorumChallengeNotFound`, as an expired or evicted challenge does. The
+  decoy names the requested factor, or mtls when none was requested. A holder
+  whose designated factor is not mtls, asked for without a factor, therefore
+  answers with that factor's name.
+- **Bounded per holder and operation.** A holder keeps at most 2 pending
+  challenges per operation, and a further request evicts the oldest. A
+  challenge requested over a connection presenting the holder's own enrolled
+  certificate is *bound*. A request that does not present the holder's
+  certificate never evicts a bound challenge. Such a request is refused with
+  `ErrTooManyPendingChallenges` when every slot is bound. A holder who
+  connects with their certificate therefore cannot be locked out by a caller
+  naming them.
+- **Bounded per scope.** Challenges issued against a replaced roster are
+  dropped, since they can never verify. The table is capped at what the roster
+  can use: every holder, every operation of the domain, 2 each, and never
+  above 256.
 
 ## Rekey and revocation
 
@@ -228,7 +266,7 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
 | `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
 | `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
-| `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `ErrTooManyPendingChallenges` | challenge refusals |
+| `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `ErrTooManyPendingChallenges`, `*QuorumBeginRateLimitedError` | challenge refusals |
 | `ceremony.ErrShareEnvelopeMalformed`, `ShareEnvelopeError` | envelope parse/open failures |
 
 Every one is classified by the `holderRules` block of `pkg/api/errclass`;

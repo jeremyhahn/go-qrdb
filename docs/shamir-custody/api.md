@@ -186,7 +186,7 @@ one classification table every transport renders (`pkg/api/errclass`):
 | Gone | 410 | `FAILED_PRECONDITION` | the envelope outlived its claim window and was destroyed (`ceremony.ErrShareExpired`); only a rekey deals a new one |
 | PreconditionFailed | 412 | `FAILED_PRECONDITION` | no PIN backend is configured (`pin.ErrBackendNotConfigured`) |
 | Unprocessable | 422 | `FAILED_PRECONDITION` | a Shamir barrier unsealed or sealed by one caller instead of its quorum; no ceremony service configured; too few officers |
-| ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges |
+| ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges; quorum challenges requested faster than the caller's throttle allows (`QuorumBeginRateLimitedError`, with `Retry-After` on REST) |
 | Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
 | Internal | 500 | `INTERNAL` | an initialization whose distribution failed could not be rolled back (`ShamirInitRollbackError`) |
 

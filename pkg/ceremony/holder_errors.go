@@ -17,6 +17,7 @@ package ceremony
 import (
 	"errors"
 	"strconv"
+	"time"
 )
 
 // Share-holder errors.
@@ -63,6 +64,18 @@ var (
 	// sealed is legitimate only before initialization. Unseal first.
 	ErrRegistrationWhileSealed = errors.New("ceremony: share holders cannot be registered while the initialized barrier is sealed")
 )
+
+// QuorumBeginRateLimitedError is returned when a quorum-challenge request is
+// refused by the scope's throttle. Nothing was issued.
+type QuorumBeginRateLimitedError struct {
+	// RetryAfter is the delay before a retry can succeed.
+	RetryAfter time.Duration
+}
+
+// Error returns a human-readable description.
+func (e *QuorumBeginRateLimitedError) Error() string {
+	return "ceremony: too many quorum challenge requests; retry after " + e.RetryAfter.String()
+}
 
 // HolderRecordConflictError is returned when a holder record enrolled while
 // the barrier was sealed names a holder storage already holds with a

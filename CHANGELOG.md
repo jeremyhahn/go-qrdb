@@ -144,6 +144,22 @@ are not reconstructed here — their history is in the git log.
   only holders storage does not have, and fails with
   `ceremony.HolderRecordConflictError` on a different identity under a
   persisted name.
+- **The quorum-challenge request could be used to deny an unseal, and to
+  enumerate holders.** The sealed window admits a quorum challenge request
+  anonymously. Naming real holders filled a scope's 256-challenge table, so
+  no holder could get one, and a name outside the roster was refused
+  differently from a real one. Now:
+  - a holder keeps at most 2 challenges per operation, the oldest evicted
+    first;
+  - a challenge requested over a connection presenting the holder's own
+    certificate can never be evicted by a request that does not present it;
+  - the table is capped at what the roster can use;
+  - an unknown holder, or a factor the policy does not admit, gets a decoy
+    challenge of the same shape that never verifies;
+  - every request passes a per-caller throttle on the shared rate-limit
+    engine: 2/s burst 10 per identity or certificate, 5/s burst 20 for the
+    anonymous bucket. A refusal is `ceremony.QuorumBeginRateLimitedError`,
+    `RESOURCE_EXHAUSTED`, sent with `Retry-After` on REST.
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading

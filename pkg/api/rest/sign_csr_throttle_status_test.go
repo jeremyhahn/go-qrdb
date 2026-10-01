@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -52,6 +53,19 @@ func TestWriteErrorJSON_SignCSRThrottledSetsRetryAfter(t *testing.T) {
 		if got := rec.Header().Get("Retry-After"); got != c.want {
 			t.Errorf("wait %v: Retry-After = %q, want %q", c.wait, got, c.want)
 		}
+	}
+}
+
+// A throttled quorum-challenge request is a 429 with the same Retry-After.
+func TestWriteErrorJSON_QuorumBeginThrottledSetsRetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	err := &ceremony.QuorumBeginRateLimitedError{RetryAfter: 1500 * time.Millisecond}
+	writeErrorJSON(rec, mapHTTPError(err), err)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Errorf("Retry-After = %q, want 2", got)
 	}
 }
 

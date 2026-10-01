@@ -975,6 +975,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetTrustDomain(infra.HolderTrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
 	svc.SetPINBackend(infra.PINBackend)
+	svc.SetQuorumBeginLimiter(QuorumBeginLimit)
 	return svc, nil
 }
 

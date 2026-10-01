@@ -17,6 +17,8 @@ package ceremony
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
@@ -27,6 +29,8 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
@@ -51,7 +55,20 @@ type HolderDeps struct {
 	// registry does not carry it, the built-in pkg/authfactors/mtls factor
 	// is used.
 	Factors *authfactors.FactorRegistry
+
+	// QuorumBeginLimiter throttles quorum-challenge requests, which the
+	// sealed window admits anonymously. Nil applies no throttling; the
+	// node's composer always installs one (lifecycle wires the shared
+	// pkg/ratelimit engine).
+	QuorumBeginLimiter QuorumBeginLimitFunc
 }
+
+// QuorumBeginLimitFunc decides whether one quorum-challenge request may
+// proceed. key names the scope and the caller -- an authenticated identity,
+// else the TLS peer certificate, else the scope's one anonymous bucket --
+// and anonymous reports the last case, so the composer can apply a separate
+// policy to it. A refusal carries the delay before a retry can succeed.
+type QuorumBeginLimitFunc func(key string, anonymous bool) (allowed bool, retryAfter time.Duration)
 
 // factor resolves a factor name.
 func (d *HolderDeps) factor(name string) (authfactors.Factor, error) {
@@ -70,6 +87,10 @@ func (d *HolderDeps) factor(name string) (authfactors.Factor, error) {
 // an unauthenticated caller naming real holders cannot grow it without limit.
 const maxPendingQuorumChallenges = 256
 
+// maxPendingPerHolderOp bounds the unanswered challenges one holder has for
+// one operation.
+const maxPendingPerHolderOp = 2
+
 // pendingQuorumChallenge is one issued, unanswered quorum challenge.
 type pendingQuorumChallenge struct {
 	domain    seal.QuorumDomain
@@ -78,6 +99,11 @@ type pendingQuorumChallenge struct {
 	digest    []byte
 	factor    string
 	challenge *authfactors.Challenge
+	// issued orders the holder's challenges for eviction.
+	issued time.Time
+	// bound records that the request presented the holder's own enrolled
+	// certificate. A request that does not can never evict it.
+	bound bool
 }
 
 // holderScope is the one share-holder engine. The system, recovery and every
@@ -93,7 +119,11 @@ type holderScope struct {
 	store    *sealedShareStore
 	claims   map[string]*ChallengeResponse
 	quorum   map[string]*pendingQuorumChallenge
-	sealed   func() bool
+	// limitID names this scope instance in the quorum-begin throttle's keys,
+	// so two instances of one scope (a test's second node, a re-created
+	// tenant authority) never share a bucket.
+	limitID string
+	sealed  func() bool
 	// initialized reports whether the backing barrier has been initialized,
 	// reading its persisted metadata so it answers while sealed. A backend
 	// that is not a barrier (the tenant service store before the tenant
@@ -119,6 +149,7 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		store:       newSealedShareStore(ttl),
 		claims:      make(map[string]*ChallengeResponse),
 		quorum:      make(map[string]*pendingQuorumChallenge),
+		limitID:     scope.String() + "#" + randomHex(8),
 		sealed:      sealed,
 		initialized: initializedProbe(backend),
 		logger:      logger,
@@ -598,9 +629,29 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 
 // beginQuorum issues a factor challenge for one holder's submission to op.
 // The roster is read from the barrier, so this works while it is sealed.
+//
+// The sealed window admits this request anonymously, so it is hardened
+// against a caller who is not the holder:
+//
+//   - every request passes the composer's throttle first, keyed by scope and
+//     caller (see quorumCaller);
+//   - a name outside the roster, or a holder asked for a factor the policy
+//     does not admit, gets a decoy challenge of the same shape as a real one
+//     (decoyQuorumChallenge), which is never stored and never verifies, so
+//     the request does not reveal which holders exist;
+//   - a holder has at most maxPendingPerHolderOp challenges per operation,
+//     the oldest evicted first, and a challenge requested over a connection
+//     presenting the holder's own certificate is never evicted by one that
+//     did not (admitQuorumChallenge).
 func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *seal.StorageBarrier, op seal.QuorumOp, username, factorName string) (*QuorumChallenge, error) {
 	if !op.ValidIn(h.domain) {
 		return nil, &seal.QuorumOpInvalidError{Domain: h.domain, Op: op}
+	}
+	caller, peerThumb, anonymous := quorumCaller(ctx)
+	if d.QuorumBeginLimiter != nil {
+		if ok, retry := d.QuorumBeginLimiter(h.limitID+"\x00"+caller, anonymous); !ok {
+			return nil, &QuorumBeginRateLimitedError{RetryAfter: retry}
+		}
 	}
 	roster, digest, err := barrier.HolderRoster(ctx, h.domain)
 	if err != nil {
@@ -608,12 +659,19 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	}
 	rf, err := roster.AdmittedFactor(username, factorName)
 	if err != nil {
+		var notInRoster *seal.HolderNotInRosterError
+		var notAdmitted *seal.FactorNotAdmittedError
+		if errors.As(err, &notInRoster) || errors.As(err, &notAdmitted) {
+			return decoyQuorumChallenge(ctx, h.domain, op, username, factorName)
+		}
 		return nil, err
 	}
 	f, err := d.factor(rf.Name)
 	if err != nil {
 		return nil, err
 	}
+	holder, _ := roster.Holder(username)
+	bound := peerThumb != "" && thumbprintsEqual(peerThumb, holder.CertThumbprint)
 	ch, err := f.Challenge(ctx, &authfactors.Enrollment{
 		EnrollmentID: rf.EnrollmentID,
 		UserID:       username,
@@ -625,19 +683,14 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if err != nil {
 		return nil, err
 	}
-	h.pruneQuorumChallenges()
-	if len(h.quorum) >= maxPendingQuorumChallenges {
-		return nil, ErrTooManyPendingChallenges
+	if err := h.admitQuorumChallenge(roster, digest, op, username, bound); err != nil {
+		return nil, err
 	}
 	h.quorum[ch.ChallengeID] = &pendingQuorumChallenge{
 		domain: h.domain, op: op, holder: username, digest: digest, factor: rf.Name, challenge: ch,
+		issued: time.Now(), bound: bound,
 	}
-	methodData := make(map[string]string, len(ch.MethodData))
-	for k, v := range ch.MethodData {
-		if s, ok := v.(string); ok {
-			methodData[k] = s
-		}
-	}
+	methodData := stringMethodData(ch.MethodData)
 	return &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
 		Domain:      h.domain,
@@ -658,6 +711,148 @@ func (h *holderScope) pruneQuorumChallenges() {
 			delete(h.quorum, id)
 		}
 	}
+}
+
+// admitQuorumChallenge makes room for one more challenge for holder's op.
+//
+// Expired challenges, and those issued against a roster the barrier no longer
+// holds (they can never verify), are dropped. The holder may then keep
+// maxPendingPerHolderOp challenges for op: beyond that the oldest one not
+// bound to the holder's certificate is evicted, and a bound one only to make
+// room for another bound request. An unbound request that finds every slot
+// bound is refused with ErrTooManyPendingChallenges. The scope's whole table
+// is capped at what its roster can legitimately use -- every holder, every
+// operation of the domain, maxPendingPerHolderOp each -- and never above
+// maxPendingQuorumChallenges.
+func (h *holderScope) admitQuorumChallenge(roster *seal.HolderRoster, digest []byte, op seal.QuorumOp, holder string, bound bool) error {
+	h.pruneQuorumChallenges()
+	for id, p := range h.quorum {
+		if !bytes.Equal(p.digest, digest) {
+			delete(h.quorum, id)
+		}
+	}
+	for {
+		var same []string
+		for id, p := range h.quorum {
+			if p.holder == holder && p.op == op {
+				same = append(same, id)
+			}
+		}
+		if len(same) < maxPendingPerHolderOp {
+			break
+		}
+		victim := h.oldestQuorumChallenge(same, false)
+		if victim == "" {
+			if !bound {
+				return ErrTooManyPendingChallenges
+			}
+			victim = h.oldestQuorumChallenge(same, true)
+		}
+		delete(h.quorum, victim)
+	}
+	limit := max(roster.Total, 1) * seal.QuorumOpCount(h.domain) * maxPendingPerHolderOp
+	if len(h.quorum) >= min(limit, maxPendingQuorumChallenges) {
+		return ErrTooManyPendingChallenges
+	}
+	return nil
+}
+
+// oldestQuorumChallenge returns the earliest-issued of ids whose bound flag
+// is bound, or "" when there is none.
+func (h *holderScope) oldestQuorumChallenge(ids []string, bound bool) string {
+	oldest := ""
+	for _, id := range ids {
+		p := h.quorum[id]
+		if p.bound != bound {
+			continue
+		}
+		if oldest == "" || p.issued.Before(h.quorum[oldest].issued) {
+			oldest = id
+		}
+	}
+	return oldest
+}
+
+// quorumCaller identifies who is asking for a quorum challenge, for the
+// throttle key: an authenticated identity, else the certificate the TLS
+// connection presented, else the scope's single anonymous bucket. It also
+// returns the presented certificate's thumbprint, which binds a challenge to
+// the holder it names.
+func quorumCaller(ctx context.Context) (key, peerThumb string, anonymous bool) {
+	if st := auth.TLSStateFromContext(ctx); st != nil && len(st.PeerCertificates) > 0 {
+		peerThumb = mtls.Thumbprint(st.PeerCertificates[0].Raw)
+	}
+	if id := auth.IdentityFromContext(ctx); id != nil && id.Subject != "" && !sealedwindow.Anonymous(ctx) {
+		return "id\x00" + id.TenantID + "\x00" + id.Subject, peerThumb, false
+	}
+	if peerThumb != "" {
+		return "tls\x00" + peerThumb, peerThumb, false
+	}
+	return "anonymous", "", true
+}
+
+// decoyQuorumChallenge returns a challenge for a holder that cannot answer
+// one -- a name outside the roster, or a factor the policy does not admit --
+// shaped exactly like an mtls challenge to a real holder: a fresh nonce, the
+// public key and thumbprint of a key generated for it, the same lifetime. It
+// is not stored, so a submission against it is ErrQuorumChallengeNotFound,
+// as for any expired or evicted challenge.
+//
+// The factor it names is the one requested, or mtls when none was: a holder
+// whose designated factor is not mtls, asked for with no factor, would answer
+// with that factor's name, so such a holder is distinguishable to a caller
+// who omits the factor. Every built-in holder is designated mtls by default.
+func decoyQuorumChallenge(ctx context.Context, domain seal.QuorumDomain, op seal.QuorumOp, username, factorName string) (*QuorumChallenge, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, ErrInitFailed
+	}
+	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return nil, ErrInitFailed
+	}
+	thumb := randomHex(32)
+	ch, err := mtls.New().Challenge(ctx, &authfactors.Enrollment{
+		EnrollmentID: mtls.Name + ":" + thumb,
+		UserID:       username,
+		FactorName:   mtls.Name,
+		PublicKey:    spki,
+		Metadata:     map[string]string{mtls.MetaThumbprint: thumb},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if factorName == "" {
+		factorName = mtls.Name
+	}
+	return &QuorumChallenge{
+		ChallengeID: ch.ChallengeID,
+		Domain:      domain,
+		Op:          op,
+		Holder:      username,
+		Factor:      factorName,
+		Nonce:       ch.Nonce,
+		MethodData:  stringMethodData(ch.MethodData),
+		ExpiresAt:   ch.ExpiresAt,
+	}, nil
+}
+
+// stringMethodData keeps the string-valued entries of a factor's method data.
+func stringMethodData(in map[string]any) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// randomHex returns n random bytes, hex encoded.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24+).
+	return hex.EncodeToString(b)
 }
 
 // verifyHolder implements seal.HolderVerifier for the scope. The challenge is

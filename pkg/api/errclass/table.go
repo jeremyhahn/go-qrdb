@@ -810,6 +810,7 @@ var holderRules = []rule{
 	is(ceremony.ErrInvalidThreshold, InvalidArgument),
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),
 	is(ceremony.ErrTooManyPendingChallenges, ResourceExhausted),
+	as(&ceremony.QuorumBeginRateLimitedError{}, ResourceExhausted),
 	is(ceremony.ErrTrustDomainNotConfigured, FailedPrecondition),
 	is(ceremony.ErrCANotInitialized, FailedPrecondition),
 	is(ceremony.ErrInvalidHolderRole, InvalidArgument),

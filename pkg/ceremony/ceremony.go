@@ -171,6 +171,15 @@ func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry) {
 	s.deps.Factors = r
 }
 
+// SetQuorumBeginLimiter installs the throttle quorum-challenge requests pass
+// (HolderDeps.QuorumBeginLimiter). It is carried to every tenant and database
+// holder authority built from HolderDeps.
+func (s *CeremonyService) SetQuorumBeginLimiter(l QuorumBeginLimitFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.QuorumBeginLimiter = l
+}
+
 // SetPINBackend installs the PIN backend. Without one, every PIN-gated
 // ceremony operation fails closed with pin.ErrBackendNotConfigured.
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend) {

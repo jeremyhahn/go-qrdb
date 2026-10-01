@@ -148,8 +148,16 @@ func TestQuorum_DesignatedPolicyRefusesOtherFactors(t *testing.T) {
 	e.initShamir(seal.FactorPolicyDesignated, a, b)
 	b2, svc2 := e.restart(2, 2)
 
-	_, err := svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "alice", testFactorName)
-	assert.True(t, errorAs[*seal.FactorNotAdmittedError](err), "designated policy admits only mtls: %v", err)
+	// The request is answered with a decoy, so it does not reveal that alice
+	// exists; the decoy never verifies.
+	ch, err := svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "alice", testFactorName)
+	require.NoError(t, err)
+	_, err = b2.SubmitHolderShare(ctx, &seal.HolderSubmission{
+		Domain: seal.DomainUnseal, Op: seal.OpUnseal, Holder: "alice",
+		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: testFactorName, Response: a.answer(t, ch)},
+		Share: a.openShare(t),
+	})
+	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound, "designated policy admits only mtls")
 
 	out, err := e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, a, "")
 	require.NoError(t, err, "an empty factor selects the designated one")
@@ -202,28 +210,35 @@ func TestQuorum_AuthenticationRefusals(t *testing.T) {
 		ResponseMetadata: map[string]string{"peer_cert_thumbprint": b.thumb}}, a, seal.OpUnseal)
 	require.NoError(t, err, "client-supplied peer metadata is discarded")
 
-	// Holders outside the roster are refused.
-	_, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "mallory", "")
-	assert.True(t, errorAs[*seal.HolderNotInRosterError](err), err)
+	// Holders outside the roster get a decoy, refused at submission.
+	ch, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "mallory", "")
+	require.NoError(t, err)
+	err = submit(seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: mtls.Name, Response: c.answer(t, ch)}, c, seal.OpUnseal)
+	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
 
 	// An operation outside the domain is refused.
 	_, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpRecover, "alice", "")
 	assert.True(t, errorAs[*seal.QuorumOpInvalidError](err), err)
 }
 
-// TestQuorum_PendingChallengesAreBounded pins that an unauthenticated caller
-// cannot grow the challenge table without limit.
+// TestQuorum_PendingChallengesAreBounded pins that no caller can grow the
+// challenge table without limit: once every slot a holder has for an
+// operation is bound to the holder's certificate, a request that does not
+// present it is refused rather than evicting one.
 func TestQuorum_PendingChallengesAreBounded(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
 	a, b := newHolder(t, "alice", ""), newHolder(t, "bob", "")
 	e.initShamir("", a, b)
-	for i := 0; i < maxPendingQuorumChallenges; i++ {
-		_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
+	for i := 0; i < maxPendingPerHolderOp; i++ {
+		_, err := e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
 		require.NoError(t, err)
 	}
 	_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	assert.ErrorIs(t, err, ErrTooManyPendingChallenges)
+	_, err = e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
+	assert.NoError(t, err, "the holder's own certificate evicts its oldest challenge")
+	assert.LessOrEqual(t, len(e.svc.system.quorum), maxPendingPerHolderOp)
 }
 
 // TestQuorum_SealAndRootToken drives the seal and root-token operations.
@@ -286,9 +301,15 @@ func TestRevoke_QuorumOfRemainingHoldersRedistributes(t *testing.T) {
 	// After a restart the new split opens the barrier and carol's old share
 	// is neither in the roster nor a valid share.
 	b2, svc2 := e.restart(2, 2)
-	_, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "carol", "")
-	assert.True(t, errorAs[*seal.HolderNotInRosterError](err), err)
 	c.envelope = oldCarolEnvelope
+	ch, err := svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "carol", "")
+	require.NoError(t, err, "a revoked holder gets a decoy")
+	_, err = b2.SubmitHolderShare(ctx, &seal.HolderSubmission{
+		Domain: seal.DomainUnseal, Op: seal.OpUnseal, Holder: "carol",
+		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: c.answer(t, ch)},
+		Share: c.openShare(t),
+	})
+	assert.True(t, errorAs[*seal.HolderNotInRosterError](err), err)
 	_, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, a, "")
 	require.NoError(t, err)
 	out, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, b, "")

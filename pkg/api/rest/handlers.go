@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -1145,16 +1146,24 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 
 // setRetryAfter sets the standard Retry-After header (RFC 9110 §10.2.3,
 // delay-seconds) when err says how long the caller must wait: a throttled
-// ceremony-sign-csr (service.SignCSRThrottledError). The delay is rounded up,
-// and never below one second, so a caller that honours it is never early. It
-// must run before the status is written: net/http drops headers set after
-// WriteHeader.
+// ceremony-sign-csr (service.SignCSRThrottledError) or a throttled
+// quorum-challenge request (ceremony.QuorumBeginRateLimitedError). The delay
+// is rounded up, and never below one second, so a caller that honours it is
+// never early. It must run before the status is written: net/http drops
+// headers set after WriteHeader.
 func setRetryAfter(w http.ResponseWriter, err error) {
-	var throttled *service.SignCSRThrottledError
-	if !errors.As(err, &throttled) {
+	var wait time.Duration
+	var signCSR *service.SignCSRThrottledError
+	var quorumBegin *ceremony.QuorumBeginRateLimitedError
+	switch {
+	case errors.As(err, &signCSR):
+		wait = signCSR.RetryAfter
+	case errors.As(err, &quorumBegin):
+		wait = quorumBegin.RetryAfter
+	default:
 		return
 	}
-	seconds := int64((throttled.RetryAfter + time.Second - 1) / time.Second)
+	seconds := int64((wait + time.Second - 1) / time.Second)
 	if seconds < 1 {
 		seconds = 1
 	}

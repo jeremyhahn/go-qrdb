@@ -97,6 +97,17 @@ func (op QuorumOp) ValidIn(d QuorumDomain) bool {
 	return quorumOpDomains[op][d]
 }
 
+// QuorumOpCount returns how many operations may run in domain.
+func QuorumOpCount(d QuorumDomain) int {
+	n := 0
+	for _, domains := range quorumOpDomains {
+		if domains[d] {
+			n++
+		}
+	}
+	return n
+}
+
 // HolderRole is a share holder's policy role. It selects the certificate
 // profile and the RBAC role the holder's identity maps to, and nothing about
 // share handling.
