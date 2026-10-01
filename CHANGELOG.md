@@ -29,6 +29,8 @@ are not reconstructed here — their history is in the git log.
   and the body bound a receiver applies to a forwarded on-behalf request
   before reading its body.
 - `ceremony.CeremonyService.InstanceID` and `service.SignCSRThrottledError`.
+- `sealedwindow.WithAnonymous` / `Anonymous`, the mark the boot-time
+  sealed-window listener sets on every request it admits.
 
 ### Changed — BREAKING
 
@@ -329,6 +331,16 @@ are not reconstructed here — their history is in the git log.
   written to the barrier's plaintext store, readable while sealed), or when
   the barrier is initialized. It fails closed. The refusal is `403`
   `ENROLLMENT_CLOSED` / `PERMISSION_DENIED`.
+- **The anonymous officer claim status no longer names the officers
+  (medium).** `officer-claim-status` is anonymous on the boot-time
+  sealed-window listener, so the first-boot wizard can follow claims, and it
+  returned every officer's username, certificate thumbprint and auth factor
+  to any caller. That listener now answers with the share index, enrolment
+  and claim times and pending state only. Requests it admits carry
+  `sealedwindow.WithAnonymous`, and `BarrierOfficerClaimStatus` redacts when
+  it sees the mark. An authenticated caller on a regular listener still gets
+  the full record. The wizard keys its claim table by share index and names
+  rows from its own registrations.
 
 ### Known limits
 

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 type fakeSealProbe struct {
@@ -317,5 +319,25 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 		if rr := send(listener, http.MethodPost, path); rr.Code != http.StatusOK {
 			t.Errorf("POST %s, enrollment open: status %d, want 200", path, rr.Code)
 		}
+	}
+}
+
+// TestSealedWindowGate_MarksListenerRequestsAnonymous: requests the boot-time
+// listener admits carry the sealedwindow.Anonymous mark; a regular gate's do
+// not.
+func TestSealedWindowGate_MarksListenerRequestsAnonymous(t *testing.T) {
+	probe := newFakeSealed(true)
+	var anonymous bool
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anonymous = sealedwindow.Anonymous(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	SealedWindowListenerMiddleware(probe, nil)(h).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil))
+	if !anonymous {
+		t.Error("the listener did not mark an admitted request anonymous")
+	}
+	SealedWindowMiddleware(probe, nil)(h).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil))
+	if anonymous {
+		t.Error("a regular gate marked a request anonymous")
 	}
 }

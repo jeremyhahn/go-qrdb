@@ -213,6 +213,17 @@
   // Per-officer registration
   // ---------------------------------------------------------------------------
 
+  /**
+   * The sealed-window listener answers claim status anonymously, so it omits
+   * officer usernames. Name each row from this wizard's own registrations by
+   * share index, and fall back to the index alone.
+   */
+  function officerLabel(officer: OfficerStatus): string {
+    if (officer.username) return officer.username;
+    const registered = officerForms.find((f) => f.result?.shareIndex === officer.shareIndex);
+    return registered?.username || `Officer #${officer.shareIndex}`;
+  }
+
   async function registerOfficer(index: number): Promise<void> {
     const form = officerForms[index];
     if (form === undefined) return;
@@ -575,9 +586,9 @@
                         </tr>
                       </thead>
                       <tbody>
-                        {#each officerStatuses as officer (officer.username)}
+                        {#each officerStatuses as officer (officer.shareIndex)}
                           <tr>
-                            <td class="font-mono text-sm">{officer.username}</td>
+                            <td class="font-mono text-sm">{officerLabel(officer)}</td>
                             <td class="text-center">{officer.shareIndex}</td>
                             <td class="text-xs text-base-content/60">
                               {new Date(officer.enrolledAt).toLocaleDateString()}

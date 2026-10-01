@@ -1765,9 +1765,15 @@ export interface OfficerRegisterResponse {
  * public metadata; no share bytes are ever present.
  */
 export interface OfficerStatus {
-    /** Officer username. */
+    /**
+     * Officer username. Empty when the boot-time sealed-window listener
+     * answers, because it answers anonymously; key rows by shareIndex.
+     */
     readonly username: string;
-    /** SHA-256 thumbprint of the officer's mTLS certificate. */
+    /**
+     * SHA-256 thumbprint of the officer's mTLS certificate. Empty from the
+     * sealed-window listener.
+     */
     readonly certThumbprint: string;
     /** 1-based share index assigned at registration time. */
     readonly shareIndex: number;

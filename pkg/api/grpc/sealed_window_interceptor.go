@@ -104,6 +104,9 @@ func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener s
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
 			return nil, err
 		}
+		if listener != nil {
+			ctx = sealedwindow.WithAnonymous(ctx)
+		}
 		return handler(ctx, req)
 	}
 }
@@ -115,9 +118,22 @@ func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener 
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
 			return err
 		}
+		if listener != nil {
+			ss = anonymousServerStream{ServerStream: ss, ctx: sealedwindow.WithAnonymous(ss.Context())}
+		}
 		return handler(srv, ss)
 	}
 }
+
+// anonymousServerStream is a stream admitted by the boot-time sealed-window
+// listener, whose context carries the sealedwindow.WithAnonymous mark.
+type anonymousServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+// Context returns the marked context.
+func (s anonymousServerStream) Context() context.Context { return s.ctx }
 
 // sealedWindowAllowSet indexes allowlist, defaulting to
 // SealedWindowAllowlist when it is nil.

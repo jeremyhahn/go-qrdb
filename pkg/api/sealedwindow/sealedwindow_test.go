@@ -15,6 +15,7 @@
 package sealedwindow_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -477,5 +478,22 @@ func TestPreOperationalOnlyFlags(t *testing.T) {
 		if sealedwindow.PreOperationalOnly(v) {
 			t.Errorf("unseal-flow verb %q must not be PreOperationalOnly", v)
 		}
+	}
+}
+
+// TestAnonymous: the mark is absent until set and survives derived contexts.
+func TestAnonymous(t *testing.T) {
+	ctx := context.Background()
+	if sealedwindow.Anonymous(ctx) {
+		t.Fatal("a plain context must not be marked anonymous")
+	}
+	marked := sealedwindow.WithAnonymous(ctx)
+	if !sealedwindow.Anonymous(marked) {
+		t.Fatal("WithAnonymous did not mark the context")
+	}
+	child, cancel := context.WithCancel(marked)
+	defer cancel()
+	if !sealedwindow.Anonymous(child) {
+		t.Fatal("the mark must survive a derived context")
 	}
 }

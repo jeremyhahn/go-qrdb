@@ -120,6 +120,9 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
 			if !refused {
+				if req.Listener {
+					r = r.WithContext(sealedwindow.WithAnonymous(r.Context()))
+				}
 				next.ServeHTTP(w, r)
 				return
 			}

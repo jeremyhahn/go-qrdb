@@ -819,6 +819,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		s.logRequest(method, requestID, refusal.status, start)
 		return
 	}
+	if s.sealedWindowListener != nil {
+		ctx = sealedwindow.WithAnonymous(ctx)
+	}
 
 	// Watch is server-streaming: it writes a stream of response frames on this
 	// same stream rather than a single unary response, so it bypasses the

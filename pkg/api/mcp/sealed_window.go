@@ -64,6 +64,9 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			}
 			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(decision)]
 			if !refused {
+				if decision.Listener {
+					ctx = sealedwindow.WithAnonymous(ctx)
+				}
 				return next(ctx, req)
 			}
 			// CodeUnavailable for a sealed or closed window, matching REST's

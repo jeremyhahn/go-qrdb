@@ -23,6 +23,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 // fakeMCPSealedProbe is a deterministic sealedWindowProbe test double.
@@ -229,5 +230,19 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 	called = false
 	if _, err := mw(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_officer_register", map[string]any{})); err != nil || !called {
 		t.Errorf("enrollment open: called=%v err=%v", called, err)
+	}
+}
+
+// TestSealedWindowListener_MarksToolCallsAnonymous: tool calls the listener
+// admits carry the sealedwindow.Anonymous mark.
+func TestSealedWindowListener_MarksToolCallsAnonymous(t *testing.T) {
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(&fakeMCPSealedProbe{sealed: true}))
+	var anonymous bool
+	next := func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		anonymous = sealedwindow.Anonymous(ctx)
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	if _, err := srv.sealedWindowMiddleware()(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_status", map[string]any{})); err != nil || !anonymous {
+		t.Errorf("listener tool call: anonymous=%v err=%v", anonymous, err)
 	}
 }

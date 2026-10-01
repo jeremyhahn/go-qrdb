@@ -337,3 +337,39 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 		t.Errorf("enrollment open: %v", err)
 	}
 }
+
+// TestSealedWindowListener_MarksCallsAnonymous: unary calls and streams the
+// listener admits carry the sealedwindow.Anonymous mark; a regular gate's do
+// not.
+func TestSealedWindowListener_MarksCallsAnonymous(t *testing.T) {
+	probe := newProbe(true)
+	info := &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}
+	var anonymous bool
+	handler := func(ctx context.Context, _ any) (any, error) {
+		anonymous = sealedwindow.Anonymous(ctx)
+		return nil, nil
+	}
+	if _, err := SealedWindowListenerUnaryInterceptor(probe, nil)(context.Background(), nil, info, handler); err != nil || !anonymous {
+		t.Errorf("listener unary: anonymous=%v err=%v", anonymous, err)
+	}
+	if _, err := SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil, info, handler); err != nil || anonymous {
+		t.Errorf("regular unary: anonymous=%v err=%v", anonymous, err)
+	}
+	stream := &ctxServerStream{ctx: context.Background()}
+	streamHandler := func(_ any, ss grpc.ServerStream) error {
+		anonymous = sealedwindow.Anonymous(ss.Context())
+		return nil
+	}
+	sinfo := &grpc.StreamServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}
+	if err := SealedWindowListenerStreamInterceptor(probe, nil)(nil, stream, sinfo, streamHandler); err != nil || !anonymous {
+		t.Errorf("listener stream: anonymous=%v err=%v", anonymous, err)
+	}
+}
+
+// ctxServerStream is a grpc.ServerStream with a context.
+type ctxServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *ctxServerStream) Context() context.Context { return s.ctx }

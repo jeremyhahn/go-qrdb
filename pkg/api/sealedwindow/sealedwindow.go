@@ -47,7 +47,10 @@
 // flows, and ceremony-sign-csr's SO PIN).
 package sealedwindow
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 // Verb is a transport-neutral identifier for one sealed-window operation.
 type Verb string
@@ -422,6 +425,24 @@ type failClosed struct{}
 
 func (failClosed) IsSealed() bool       { return false }
 func (failClosed) EnrollmentOpen() bool { return false }
+
+// anonymousKey is the context key WithAnonymous sets.
+type anonymousKey struct{}
+
+// WithAnonymous marks ctx as a request the boot-time sealed-window listener
+// admitted. That listener has no authentication middleware, so every request
+// it serves is anonymous, and a handler that answers differently to an
+// anonymous caller reads the mark with Anonymous. The listener's gates set it
+// on every request they admit.
+func WithAnonymous(ctx context.Context) context.Context {
+	return context.WithValue(ctx, anonymousKey{}, true)
+}
+
+// Anonymous reports whether ctx carries the WithAnonymous mark.
+func Anonymous(ctx context.Context) bool {
+	v, _ := ctx.Value(anonymousKey{}).(bool)
+	return v
+}
 
 // Request is what a sealed-window gate knows about one request.
 type Request struct {
