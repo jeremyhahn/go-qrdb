@@ -54,12 +54,13 @@ justified as an anonymous verb, and belongs to one of these classes:
   On this listener `officer-claim-status` is **redacted**: each officer's
   share index, enrolment and claim times and whether a share is pending,
   with the username, certificate thumbprint and auth factor left empty.
-  That is what the wizard needs, and nothing that names an officer. The
-  listener marks every request it admits as anonymous
-  (`sealedwindow.WithAnonymous`), and
-  `service.BarrierService.BarrierOfficerClaimStatus` redacts when it sees the
-  mark. A regular listener's authenticated caller with
-  `seal:officer_list` gets the full record.
+  That is what the wizard needs, and nothing that names an officer.
+  `service.BarrierService.BarrierOfficerClaimStatus` redacts **by default**:
+  every caller whose context carries no authenticated identity
+  (`auth.IdentityFromContext`) gets the redacted form, and so does any
+  request the listener marked anonymous (`sealedwindow.WithAnonymous`). A
+  regular listener's authenticated caller with `seal:officer_list` gets the
+  full record.
 
 The full per-transport names are in `sealedwindow.Table`.
 

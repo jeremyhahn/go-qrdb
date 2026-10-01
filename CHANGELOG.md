@@ -717,10 +717,11 @@ are not reconstructed here — their history is in the git log.
   sealed-window listener, so the first-boot wizard can follow claims, and it
   returned every officer's username, certificate thumbprint and auth factor
   to any caller. That listener now answers with the share index, enrolment
-  and claim times and pending state only. Requests it admits carry
-  `sealedwindow.WithAnonymous`, and `BarrierOfficerClaimStatus` redacts when
-  it sees the mark. An authenticated caller on a regular listener still gets
-  the full record. The wizard keys its claim table by share index and names
+  and claim times and pending state only. `BarrierOfficerClaimStatus` redacts
+  by default, for every caller whose context carries no authenticated
+  identity and for every request the sealed-window listener marks anonymous
+  (`sealedwindow.WithAnonymous`). An authenticated caller on a regular
+  listener still gets the full record. The wizard keys its claim table by share index and names
   rows from its own registrations.
 - **The SO dual-factor gate recognises a real Security Officer, and only
   one.** `middleware.SOMiddleware` checked `identity.HasRole("so")`, but an

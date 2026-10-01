@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
 
@@ -42,13 +43,14 @@ func TestBarrierOfficerClaimStatus_RedactedForAnonymousCallers(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	full, err := svc.BarrierOfficerClaimStatus(ctx)
+	full, err := svc.BarrierOfficerClaimStatus(auth.WithIdentity(ctx, &auth.Identity{Subject: "admin"}))
 	require.NoError(t, err)
 	require.Len(t, full, 1)
 	require.Equal(t, "alice-officer", full[0].Username)
 	require.NotEmpty(t, full[0].CertThumbprint)
 
-	redacted, err := svc.BarrierOfficerClaimStatus(sealedwindow.WithAnonymous(ctx))
+	// The anonymous mark redacts even with an identity in the context.
+	redacted, err := svc.BarrierOfficerClaimStatus(sealedwindow.WithAnonymous(auth.WithIdentity(ctx, &auth.Identity{Subject: "admin"})))
 	require.NoError(t, err)
 	require.Len(t, redacted, 1)
 	require.Empty(t, redacted[0].Username)
