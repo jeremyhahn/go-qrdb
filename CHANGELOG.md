@@ -28,7 +28,7 @@ are not reconstructed here — their history is in the git log.
 - `forward.ClusterPeer` and `forward.MaxBodyBytes`, the cluster-node check
   and the body bound a receiver applies to a forwarded on-behalf request
   before reading its body.
-- `ceremony.CeremonyService.InstanceID` and `service.SignCSRThrottledError`.
+- `ceremony.SOPINLockedError` and `service.SignCSRThrottledError`.
 - `sealedwindow.WithAnonymous` / `Anonymous`, the mark the boot-time
   sealed-window listener sets on every request it admits.
 - `pkg/authfactors/authfactorstest`: a software `authfactors.Factor` for tests
@@ -678,12 +678,16 @@ are not reconstructed here — their history is in the git log.
   boot-time sealed-window listener, and the SO PIN is its only authorization.
   It compared the PIN with `!=` and answered every guess immediately, which
   made it a timing side channel and an unthrottled online PIN oracle. The
-  comparison is now `subtle.ConstantTimeCompare` over SHA-256 digests. Every
-  call takes a permit from a per-ceremony budget (10 back to back, then one
-  every 5 s) before the PIN is checked. Over budget the call fails with
+  comparison is now `subtle.ConstantTimeCompare` over SHA-256 digests.
+  Checks run one at a time, and each failure is counted before the next
+  check. After 5 failures in a row, every further failure locks the check
+  for a backoff that doubles from 1 s up to 15 min. A correct PIN resets the
+  count. Only failed checks count, so anonymous load cannot starve a
+  legitimate officer. While locked, the call fails with
   `service.SignCSRThrottledError`, which unwraps to `pin.ErrPINLocked` and is
   answered `429` / `RESOURCE_EXHAUSTED` on every transport. The REST 429
-  carries `Retry-After` with the wait in seconds, rounded up.
+  carries `Retry-After` with the wait in seconds, rounded up. The SO PIN needs
+  at least 40 bits of entropy (docs/ceremony).
 - **Neither the native QUIC listener nor REST's HTTP/3 listener accepts 0-RTT
   any more (medium).** The native listener set `Allow0RTT`. The HTTP/3
   listener had no QUIC configuration, and quic-go's `http3.Server` allows 0-RTT

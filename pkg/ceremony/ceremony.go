@@ -25,7 +25,6 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -63,9 +62,8 @@ type CredentialServicer interface {
 // sharing for officer enrollment, and coordinates certificate issuance
 // and claim operations.
 type CeremonyService struct {
-	// instanceID identifies this service among those in the process; see
-	// InstanceID.
-	instanceID uint64
+	// soPIN serializes and counts SO PIN checks; see soPINAttempts.
+	soPIN soPINAttempts
 
 	mu          sync.RWMutex
 	config      *CeremonyConfig
@@ -126,7 +124,6 @@ func NewCeremonyService(
 	}
 
 	return &CeremonyService{
-		instanceID:        instanceSeq.Add(1),
 		config:            config,
 		barrier:           barrier,
 		credService:       credService,
@@ -138,16 +135,6 @@ func NewCeremonyService(
 		thresholdRegistry: NewThresholdRegistry(),
 	}, nil
 }
-
-// instanceSeq numbers CeremonyService instances for InstanceID.
-var instanceSeq atomic.Uint64
-
-// InstanceID identifies this CeremonyService among those in the process. It
-// is assigned at construction, never changes, and is never reused by another
-// instance, so a caller can key per-ceremony state -- such as the SO PIN
-// attempt budget the service layer keeps -- on it without the address reuse
-// that keying on the pointer would allow.
-func (s *CeremonyService) InstanceID() uint64 { return s.instanceID }
 
 // CA returns the CeremonyCA used by this service. It is safe to call before
 // Initialize; the return value is nil until a CA has been set either via
@@ -491,8 +478,8 @@ func (s *CeremonyService) SignCSRInit(
 	if soPin == "" {
 		return nil, ErrInvalidSOPIN
 	}
-	if !soPINMatches(soPin, s.config.SOPin) {
-		return nil, ErrSOPINMismatch
+	if err := s.soPIN.check(soPin, s.config.SOPin); err != nil {
+		return nil, err
 	}
 	if len(csrPEM) == 0 {
 		return nil, ErrMissingCSRPEM

@@ -80,14 +80,23 @@ qrdb ships only `NoopThresholdInitializer`
 - **Verification ignores the authenticator kind.** `BeginClaimCert` and
   `CompleteClaimCert` operate on the officer's CSR public key. The kind is
   routing metadata for higher layers.
-- **sign-csr is an online SO PIN oracle, so it is throttled and compared in
-  constant time.** On the boot-time sealed-window listener it is reachable
-  without authentication, and the SO PIN is its only authorization.
-  `service.CeremonyService.CeremonySignCSR` takes a permit from a per-ceremony
-  token bucket (burst 10, then one every 5 s, keyed by the core's
-  `InstanceID`) before the PIN is looked at. That service is where all six
-  transports meet, so they share the budget. `SignCSRInit` compares the PIN
-  with `subtle.ConstantTimeCompare` over SHA-256 digests.
+- **sign-csr is an online SO PIN oracle, so failed checks lock it out and the
+  comparison is constant-time.** On the boot-time sealed-window listener it is
+  reachable without authentication, and the SO PIN is its only authorization.
+  `SignCSRInit` checks the PIN through the ceremony's `soPINAttempts`.
+  - Checks run one at a time, and a failure is counted before the next check
+    starts, so concurrent guesses are no cheaper than sequential ones.
+  - The first 5 failures in a row cost nothing, so an operator can mistype.
+    Every later failure locks the check for a backoff that doubles from 1 s up
+    to 15 min, and a correct PIN resets the count.
+  - Only failed checks count. Successful signings, and requests that fail
+    before the PIN is looked at, never consume anything, so anonymous load
+    cannot starve a legitimate officer.
+  - The comparison is `subtle.ConstantTimeCompare` over SHA-256 digests.
+- **The SO PIN needs at least 40 bits of entropy.** With the backoff at its
+  cap an attacker gets about 96 guesses a day. Use, for example, 8 random
+  characters from a 62-character alphabet (about 47 bits) or a 12-digit
+  random number (about 40 bits).
 - **`AuthenticatorType` empty means `software`**; anything outside the set
   yields `ErrInvalidAuthenticatorType`.
 - **Ceremony and firstboot are both idempotent** and safe to re-run on cluster
@@ -111,7 +120,7 @@ the first successful PIN backend write**.
 | Ceremony abandoned (restart mid-enrolment) | shares lost; must re-run | **yes** |
 | No `CeremonyCA` wired | initialization fails | **yes** |
 | Wrong SO PIN on sign-csr | `ErrSOPINMismatch`. The comparison is constant-time over SHA-256 digests, so it leaks neither where the PIN differs nor its length | **yes** |
-| More than 10 sign-csr calls back to back on one ceremony | `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The SO PIN is not checked, so a throttled call cannot confirm a guess. One call is admitted every 5 s after that | **yes** |
+| sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `ceremony.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, and REST sets `Retry-After` to the wait in seconds, rounded up. The PIN is not compared, so a locked-out call cannot confirm a guess | **yes** |
 
 ## Permission model
 

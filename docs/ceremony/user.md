@@ -97,8 +97,15 @@ Note these hyphenated verbs are the **custodian** path. The nested
 
 ```bash
 qrdb ceremony sign-csr --csr-file dave.csr --username dave \
-     --role operator --so-pin SO123
+     --role operator --so-pin "$SO_PIN"
 ```
+
+Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
+characters from letters and digits, or a 12-digit random number. Before
+unseal, sign-csr can be reached without authentication, so the PIN is all that
+protects it. After 5 wrong PINs in a row the check locks for a delay that
+doubles from 1 second up to 15 minutes, and the server answers `429` with
+`Retry-After`. A correct PIN resets the count.
 
 To give a new officer a *share*, you rekey — see
 [../shamir-custody/user.md](../shamir-custody/user.md).

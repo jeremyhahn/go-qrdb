@@ -36,23 +36,3 @@ func TestSOPINMatches(t *testing.T) {
 		}
 	}
 }
-
-// TestInstanceID: every CeremonyService gets its own identifier, and it does
-// not change.
-func TestInstanceID(t *testing.T) {
-	a, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
-	if err != nil {
-		t.Fatalf("NewCeremonyService: %v", err)
-	}
-	b, err := NewCeremonyService(defaultConfig(), testBarrier(t), newTestCredentialService(), testLogger())
-	if err != nil {
-		t.Fatalf("NewCeremonyService: %v", err)
-	}
-	first := a.InstanceID()
-	if first == 0 || first == b.InstanceID() {
-		t.Fatalf("instance ids %d and %d: want distinct and non-zero", first, b.InstanceID())
-	}
-	if a.InstanceID() != first {
-		t.Fatal("InstanceID changed between calls")
-	}
-}
