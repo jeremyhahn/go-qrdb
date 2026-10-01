@@ -285,9 +285,12 @@ var databaseRules = []rule{
 	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
 	// A per-database barrier requested where it would not wrap the store the
-	// database is served from: the request is refused, not failed.
-	as(&database.SharedStoreBarrierUnsupportedError{}, FailedPrecondition),
-	as(&database.BarrierOffDataPathError{}, FailedPrecondition),
+	// database is served from. The caller cannot change a database's backend
+	// or data_dir, so this is the configuration refusing the feature, as
+	// tenant.ErrBarrierIsolationUnavailable is -- not a precondition the
+	// caller can restore.
+	as(&database.SharedStoreBarrierUnsupportedError{}, Unprocessable),
+	as(&database.BarrierOffDataPathError{}, Unprocessable),
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),

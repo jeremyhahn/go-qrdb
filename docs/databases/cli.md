@@ -43,7 +43,7 @@ can set. It is **rejected**, not warned about, on a database sharing the default
 store (`SharedStoreBarrierUnsupportedError`), on a `--backend raft` database and
 on any database of a volume- or raft-isolated tenant
 (`BarrierOffDataPathError`): each is served from a store the barrier would not
-wrap. Both refusals are `409` / `FAILED_PRECONDITION`.
+wrap. Both refusals are `422` / `FAILED_PRECONDITION`.
 
 **Reserved names.** `wal` and `nodehost` (in any case) name node state and
 are refused for every database.

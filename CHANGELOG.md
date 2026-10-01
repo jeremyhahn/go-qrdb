@@ -186,7 +186,7 @@ are not reconstructed here — their history is in the git log.
   barrier was accepted on a `backend: raft` database and on any database of a
   volume- or raft-isolated tenant, although none of those is served from the
   store the barrier wraps — the barrier was decorative. Those requests now fail
-  with `database.BarrierOffDataPathError` (`409` / `FAILED_PRECONDITION`). The
+  with `database.BarrierOffDataPathError` (`422` / `FAILED_PRECONDITION`). The
   one remaining shape is a non-raft database with an explicit `--data-dir`,
   which only the system tenant can set, so until per-database storage bindings
   land (they restore per-database barriers for every tenant and backend, with
@@ -505,9 +505,9 @@ are not reconstructed here — their history is in the git log.
 - `database.SharedStoreBarrierUnsupportedError` was answered as an internal
   error (`500` / `INTERNAL`) on every transport, contrary to the documented
   `FAILED_PRECONDITION`; it and the new `BarrierOffDataPathError` now map to
-  `409` / `FAILED_PRECONDITION` on REST, gRPC, Unix, QUIC and MCP (the
-  unified error table renders a failed precondition as `409` on REST; the
-  documentation said `400`).
+  Unprocessable -- `422` on REST, `FAILED_PRECONDITION` on gRPC, Unix, QUIC
+  and MCP -- because the caller cannot change a database's backend or
+  data_dir (the documentation said `400`).
 - **The per-database etcd listener is confined to its database and
   authenticates every request (high).** It was wired to the node's raw,
   un-namespaced system-shard services, so any etcd client reaching the port

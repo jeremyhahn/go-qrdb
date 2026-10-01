@@ -35,8 +35,8 @@ func TestDatabaseBarrierRefusal_IsFailedPrecondition(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := mapHTTPError(c.err); got != http.StatusConflict {
-				t.Errorf("status = %v, want 409", got)
+			if got := mapHTTPError(c.err); got != http.StatusUnprocessableEntity {
+				t.Errorf("status = %v, want 422", got)
 			}
 		})
 	}

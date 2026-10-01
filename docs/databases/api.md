@@ -135,8 +135,8 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
 | Name reserved for node state (`wal`, `nodehost`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
-| Barrier enabled on a shared store | 409 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; every failed precondition is 409 on REST)* |
-| Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 409 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
+| Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; this refusal is Unprocessable)* |
+| Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 422 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
 | etcd enabled on a non-`kv` database | 400 | `INVALID_ARGUMENT` — `database.EtcdEngineUnsupportedError` *(corrected: documented as non-`kv` / non-`raft`, `FAILED_PRECONDITION`)* |
