@@ -63,6 +63,13 @@ go.work.sum
 # `git add -A` swept it in. The entry is added here rather than the habit being
 # relied on, because the second instance of a trap is evidence about the trap.
 /nightlysignal
+# And once more: `go build` run inside cmd/qrdb or cmd/qrdbd drops the binary
+# beside its sources, named for the directory, and a 60 MB cmd/qrdb/qrdb rode
+# a `git add -A` into a commit. These are the only main packages under cmd/.
+# Anchored to the full path for the reason at the top of this file -- a bare
+# `qrdb` would match the source directories themselves.
+/cmd/qrdb/qrdb
+/cmd/qrdbd/qrdbd
 
 # scripts/secure-analyzer_test.sh plants its probe package here (#429). It has
 # to be INSIDE the root module for memguard to resolve, and the leading dot is
