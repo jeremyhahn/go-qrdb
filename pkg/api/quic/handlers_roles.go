@@ -405,8 +405,9 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	// Validate that the role exists.
-	if _, err := s.roleSvc.GetRole(ctx, req.RoleID); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant, and the role must exist there.
+	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.UserID, []string{req.RoleID}, nil); err != nil {
 		return nil, err
 	}
 
@@ -449,6 +450,10 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 	var req assignRoleWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID); err != nil {
+		return nil, err
 	}
 
 	// Get the user and remove the role.

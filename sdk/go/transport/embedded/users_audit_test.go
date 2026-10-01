@@ -132,7 +132,9 @@ func TestRoleAudit_AssignRole_RoleLookupFails(t *testing.T) {
 			return nil, errors.New("role lookup failed")
 		},
 	}
-	userSvc := &mockUserServicer{}
+	userSvc := &mockUserServicer{
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return testUser(), nil },
+	}
 	tr := newAuthTransport(t, WithUserService(userSvc), WithRoleService(roleSvc))
 
 	err := tr.AssignRole(context.Background(), 1001, "missing")

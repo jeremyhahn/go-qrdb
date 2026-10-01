@@ -691,6 +691,13 @@ Each gate is two steps with different conditions:
    unavailable. A role reference with no role service to check it is
    `*role.ServiceRequiredError`: a refusal, never an unvalidated write.
 
+`AssignRole` and `UnassignRole` pass the same gate on every transport,
+embedded included: `AssignRole` is `AuthorizeRoleAssignmentWrite` with the
+one role being added (`roles:assign` in the user's tenant, and the role must
+exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
+(`roles:unassign` in the user's tenant; removing a grant names no role to
+validate).
+
 The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
 (`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
 context tenant: `UpdateUser` routes its target purely by id, so a

@@ -99,6 +99,26 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, bindings)
 }
 
+// AuthorizeRoleUnassignment authorizes removing a role from userID: the
+// caller needs roles:unassign in the tenant the user belongs to, read from the
+// record. Removing a grant names no role to validate, so there is no
+// validation step. AssignRole's twin is AuthorizeRoleAssignmentWrite with the
+// one role being added. A nil m authorizes nothing, as every AuthMiddleware
+// gate does when no RBAC is configured.
+func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc user.UserServicer, userID uint64) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := userSvc.GetUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return &user.UserNotFoundError{ID: userID}
+	}
+	return m.AuthorizeTenant(ctx, existing.TenantID, permission.RolesUnassign)
+}
+
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a
 // CreateUser request's RoleIDs, applying AuthorizeRoleAssignmentWrite's gate
 // to the create path: roles:assign in the tenant the record will be created

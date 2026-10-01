@@ -460,3 +460,29 @@ func TestTouchesRoleAssignment(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizeRoleUnassignment(t *testing.T) {
+	acme := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+	tests := []struct {
+		name  string
+		mw    *AuthMiddleware
+		ctx   context.Context
+		users user.UserServicer
+		check func(t *testing.T, err error)
+	}{
+		{name: "no RBAC configured", mw: nil, ctx: context.Background(), users: acme, check: wantNoError},
+		{name: "granted in the user's tenant", mw: mwWithPerms(permission.RolesUnassign), ctx: roleAssignmentCtx("acme"), users: acme, check: wantNoError},
+		{name: "caller of another tenant", mw: mwWithPerms(permission.RolesUnassign), ctx: roleAssignmentCtx("globex"), users: acme, check: func(t *testing.T, err error) {
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("err = %v, want an authorization denial", err)
+			}
+		}},
+		{name: "unknown user", mw: mwWithPerms(permission.RolesUnassign), ctx: roleAssignmentCtx("acme"), users: &userTenantFixture{err: &user.UserNotFoundError{ID: 1}}, check: wantErrorAs[*user.UserNotFoundError]},
+		{name: "contract-violating nil user", mw: mwWithPerms(permission.RolesUnassign), ctx: roleAssignmentCtx("acme"), users: &userTenantFixture{}, check: wantErrorAs[*user.UserNotFoundError]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.mw.AuthorizeRoleUnassignment(tt.ctx, tt.users, 1))
+		})
+	}
+}

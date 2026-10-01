@@ -598,7 +598,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(userTools(s.userSvc, s.userAuthFactorSvc, s.authMW, s.roleSvc)...)
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
-		s.addTools(roleTools(s.roleSvc, s.userSvc)...)
+		s.addTools(roleTools(s.roleSvc, s.userSvc, s.authMW)...)
 	}
 	if s.certProv != nil {
 		s.addTools(certTools(s.certProv, s.authMW)...)

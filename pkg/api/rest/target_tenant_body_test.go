@@ -149,3 +149,31 @@ func TestRouteCheck_QueryTarget(t *testing.T) {
 		})
 	}
 }
+
+// TestAssignRole_GoesThroughTheRoleAssignmentGate asserts /roles/assign
+// validates the role as every other role-assignment write does: a role from
+// another tenant is refused (400) and never reaches the store, while the
+// target tenant's own role is assigned.
+func TestAssignRole_GoesThroughTheRoleAssignmentGate(t *testing.T) {
+	tests := []struct {
+		name   string
+		roleID string
+		status int
+	}{
+		{name: "the user's own tenant's role", roleID: role.SystemRoleID(authtest.BindingTenant, role.RoleNameUser), status: http.StatusOK},
+		{name: "another tenant's role", roleID: role.SystemRoleID(authtest.OtherTenant, role.RoleNameAdmin), status: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, users := bindingServer(t)
+			rec := serve(srv, http.MethodPost, "/roles/assign", `{"user_id":"200","role_id":"`+tt.roleID+`"}`)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
+			}
+			assigned := slices.Contains(users.User(authtest.UserInBindingTenant).RoleIDs, tt.roleID)
+			if assigned != (tt.status == http.StatusOK) {
+				t.Fatalf("assigned = %v, want %v", assigned, tt.status == http.StatusOK)
+			}
+		})
+	}
+}

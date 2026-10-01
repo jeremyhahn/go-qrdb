@@ -1207,7 +1207,9 @@ func TestAssignRole_RoleNotFound(t *testing.T) {
 			return nil, &role.RoleNotFoundError{ID: id}
 		},
 	}
-	userMock := &mockUserServicer{}
+	userMock := &mockUserServicer{
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return testUser(), nil },
+	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
 	err := tr.AssignRole(context.Background(), 1001, "role-missing")

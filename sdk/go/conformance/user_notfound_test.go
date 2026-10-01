@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -367,7 +368,7 @@ func TestUserNotFound_MissingRoleIsNotAMissingUser(t *testing.T) {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
 
-			err := c.roles.AssignRole(boundedCtx(t), c.realUserID, "no-such-role")
+			err := c.roles.AssignRole(c.callerCtx(t, tk), c.realUserID, "no-such-role")
 			if err == nil {
 				t.Fatalf("%s: assigning a role that does not exist succeeded", tk)
 			}
@@ -427,6 +428,25 @@ type userClients struct {
 	// through here, the same way store seeds the identity fixtures no
 	// transport's own client can create.
 	rawUserAuthFactors service.UserAuthFactorServicer
+}
+
+// callerCtx returns a bounded context to call this cell with. The five remote
+// cells authenticate by their client certificate, which resolves to the
+// "matrix" identity seedIdentityFixtures grants c.roleID. The embedded
+// transport authenticates nothing on its own, but sdk/go/node hands it the
+// same AuthMiddleware the remote cells enforce with, so its context carries
+// an identity holding the same role.
+func (c userClients) callerCtx(t *testing.T, tk transportKind) context.Context {
+	t.Helper()
+	ctx := boundedCtx(t)
+	if tk == embeddedTransport {
+		ctx = auth.WithIdentity(ctx, &auth.Identity{
+			Subject:  "conformance-embedded",
+			TenantID: tenant.SystemTenantID,
+			Roles:    []string{c.roleID},
+		})
+	}
+	return ctx
 }
 
 // bootUserCell brings up a standalone node carrying exactly one listener and

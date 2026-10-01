@@ -407,8 +407,9 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
-	// Validate that the role exists.
-	if _, err := s.roleSvc.GetRole(ctx, req.GetRoleId()); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant, and the role must exist there.
+	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.GetUserId(), []string{req.GetRoleId()}, nil); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -443,6 +444,10 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 	}
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.GetUserId()); err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	// Get the user and remove the role.

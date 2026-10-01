@@ -44,23 +44,7 @@ func TestUserExtensionFields_RoundTripOnEveryTransport(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
-			ctx := boundedCtx(t)
-			if tk == embeddedTransport {
-				// The embedded transport authenticates nothing on its own:
-				// there is no mTLS handshake to resolve an identity from,
-				// unlike the five remote cells, whose client certificate
-				// resolves to the "matrix" identity seedIdentityFixtures
-				// grants roles:assign (among others) via c.roleID. sdk/go/node
-				// hands the embedded transport the same AuthMiddleware the
-				// remote cells enforce with, so the UpdateUser(replace) call
-				// below needs an identity in ctx here, holding the same
-				// granted role the remote cells' certificate resolves to.
-				ctx = auth.WithIdentity(ctx, &auth.Identity{
-					Subject:  "conformance-embedded",
-					TenantID: tenant.SystemTenantID,
-					Roles:    []string{c.roleID},
-				})
-			}
+			ctx := c.callerCtx(t, tk)
 
 			created, err := c.users.CreateUser(ctx, &transport.CreateUserRequest{
 				Username:             "ext-fields-" + string(tk),

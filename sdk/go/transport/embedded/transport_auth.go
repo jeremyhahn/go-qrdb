@@ -319,8 +319,10 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 		return &transport.NotImplementedError{Method: "AssignRole"}
 	}
 
-	// Validate role exists.
-	if _, err := t.roleSvc.GetRole(ctx, roleID); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant (when an AuthMiddleware is installed), and the role must
+	// exist there.
+	if err := t.authMW.AuthorizeRoleAssignmentWrite(ctx, t.userSvc, t.roleSvc, userID, []string{roleID}, nil); err != nil {
 		return err
 	}
 
@@ -349,6 +351,9 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "UnassignRole"}
+	}
+	if err := t.authMW.AuthorizeRoleUnassignment(ctx, t.userSvc, userID); err != nil {
+		return err
 	}
 
 	u, err := t.userSvc.GetUser(ctx, userID)

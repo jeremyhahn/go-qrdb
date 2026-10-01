@@ -1348,7 +1348,7 @@ func TestRoleListTool_ServiceError(t *testing.T) {
 
 func TestRoleAssignTool_Success(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1370,7 +1370,7 @@ func TestRoleAssignTool_RoleNotFound(t *testing.T) {
 		},
 	}
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(roleSvc, userSvc)
+	handler := handleRoleAssign(roleSvc, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1394,7 +1394,7 @@ func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1411,7 +1411,7 @@ func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 
 func TestRoleAssignTool_MissingUserID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"role_id": "r-001",
@@ -1426,7 +1426,7 @@ func TestRoleAssignTool_MissingUserID(t *testing.T) {
 
 func TestRoleAssignTool_MissingRoleID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1445,7 +1445,7 @@ func TestRoleAssignTool_GetUserError(t *testing.T) {
 			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "9999",
@@ -1469,7 +1469,7 @@ func TestRoleAssignTool_UpdateUserError(t *testing.T) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1498,7 +1498,7 @@ func TestRoleUnassignTool_Success(t *testing.T) {
 			return &user.User{ID: req.ID, RoleIDs: req.RoleIDs}, nil
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1526,7 +1526,7 @@ func TestRoleUnassignTool_Success(t *testing.T) {
 
 func TestRoleUnassignTool_MissingUserID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"role_id": "r-001",
@@ -1541,7 +1541,7 @@ func TestRoleUnassignTool_MissingUserID(t *testing.T) {
 
 func TestRoleUnassignTool_MissingRoleID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1560,7 +1560,7 @@ func TestRoleUnassignTool_GetUserError(t *testing.T) {
 			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "9999",
@@ -1584,7 +1584,7 @@ func TestRoleUnassignTool_UpdateUserError(t *testing.T) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1638,7 +1638,7 @@ func TestPermissionsListTool_ReturnsValidJSON(t *testing.T) {
 func TestRoleTools_Registration(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	userSvc := &mockUserService{}
-	tools := roleTools(roleSvc, userSvc)
+	tools := roleTools(roleSvc, userSvc, nil)
 
 	expectedNames := []string{
 		"qrdb_role_create",

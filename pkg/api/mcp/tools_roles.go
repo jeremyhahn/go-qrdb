@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -29,7 +30,7 @@ import (
 // roleTools returns the MCP tool registrations for role management and
 // permission operations. Role assignment and unassignment require both
 // the role and user services.
-func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []serverTool {
+func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *authmw.AuthMiddleware) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolRoleCreate(),
@@ -64,12 +65,12 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []serverToo
 		{
 			Tool:    toolRoleAssign(),
 			Perm:    permission.RolesAssign,
-			Handler: handleRoleAssign(roleSvc, userSvc),
+			Handler: handleRoleAssign(roleSvc, userSvc, authMW),
 		},
 		{
 			Tool:    toolRoleUnassign(),
 			Perm:    permission.RolesUnassign,
-			Handler: handleRoleUnassign(userSvc),
+			Handler: handleRoleUnassign(userSvc, authMW),
 		},
 		{
 			Tool:    toolPermissionsList(),
@@ -385,7 +386,7 @@ func toolRoleAssign() mcp.Tool {
 
 // handleRoleAssign returns a tool handler that fetches the user, appends the
 // role ID if not already present, and updates the user.
-func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userIDStr := mcp.ParseString(req, "user_id", "")
 		if userIDStr == "" {
@@ -400,9 +401,9 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer) mcps
 			return mcp.NewToolResultError("role_id is required"), nil
 		}
 
-		// Validate the role exists (and is visible to the caller's tenant)
-		// before assigning it, matching the REST/QUIC/gRPC handlers.
-		if _, err := roleSvc.GetRole(ctx, roleID); err != nil {
+		// The same gate every role-assignment write passes: roles:assign in
+		// the user's tenant, and the role must exist there.
+		if err := authMW.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, userID, []string{roleID}, nil); err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_assign", Err: err}
 		}
 
@@ -450,7 +451,7 @@ func toolRoleUnassign() mcp.Tool {
 
 // handleRoleUnassign returns a tool handler that fetches the user, removes the
 // role ID from the user's role set, and updates the user.
-func handleRoleUnassign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
+func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		userIDStr := mcp.ParseString(req, "user_id", "")
 		if userIDStr == "" {
@@ -463,6 +464,10 @@ func handleRoleUnassign(userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
 		roleID := mcp.ParseString(req, "role_id", "")
 		if roleID == "" {
 			return mcp.NewToolResultError("role_id is required"), nil
+		}
+
+		if err := authMW.AuthorizeRoleUnassignment(ctx, userSvc, userID); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_unassign", Err: err}
 		}
 
 		u, err := userSvc.GetUser(ctx, userID)

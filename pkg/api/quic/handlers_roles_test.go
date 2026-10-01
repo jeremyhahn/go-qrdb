@@ -521,7 +521,11 @@ func TestHandleAssignRole_RoleNotFound(t *testing.T) {
 		},
 	}
 
-	mockUser := &mockUserService{}
+	mockUser := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			return &user.User{ID: id, TenantID: "t1"}, nil
+		},
+	}
 	srv := newRoleServer(mockRole, mockUser)
 	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 1, RoleID: "bad"})
 

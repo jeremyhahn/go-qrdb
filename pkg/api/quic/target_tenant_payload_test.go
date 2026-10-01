@@ -96,3 +96,33 @@ func TestRouteCheck_UndecodablePayloadIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestAssignRole_GoesThroughTheRoleAssignmentGate asserts role.Assign
+// validates the role as every other role-assignment write does.
+func TestAssignRole_GoesThroughTheRoleAssignmentGate(t *testing.T) {
+	tests := []struct {
+		name   string
+		roleID string
+		ok     bool
+	}{
+		{name: "the user's own tenant's role", roleID: role.SystemRoleID(authtest.BindingTenant, role.RoleNameUser), ok: true},
+		{name: "another tenant's role", roleID: role.SystemRoleID(authtest.OtherTenant, role.RoleNameAdmin), ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, users, ctx := bindingServer(t)
+			_, err := srv.handleAssignRole(ctx, []byte(`{"userID":200,"roleID":"`+tt.roleID+`"}`))
+			if tt.ok != (err == nil) {
+				t.Fatalf("handleAssignRole = %v, want ok=%v", err, tt.ok)
+			}
+			if !tt.ok {
+				if code, _ := mapServiceError(err); code != wire.StatusInvalidArgument {
+					t.Fatalf("status = %v, want StatusInvalidArgument", code)
+				}
+			}
+			if assigned := slices.Contains(users.User(authtest.UserInBindingTenant).RoleIDs, tt.roleID); assigned != tt.ok {
+				t.Fatalf("assigned = %v, want %v", assigned, tt.ok)
+			}
+		})
+	}
+}
