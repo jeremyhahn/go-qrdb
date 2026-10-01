@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ScopedCeremonyService is the share-holder authority for one tenant or
@@ -132,7 +133,7 @@ func (t *ScopedCeremonyService) PrepareRoster(ctx context.Context, domain seal.Q
 }
 
 // Distribute implements seal.CeremonyDistributor.
-func (t *ScopedCeremonyService) Distribute(ctx context.Context, secret []byte, roster *seal.HolderRoster, digest []byte) (int, error) {
+func (t *ScopedCeremonyService) Distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.holder.distribute(ctx, secret, roster, digest)

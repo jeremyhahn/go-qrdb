@@ -167,6 +167,19 @@ are not reconstructed here — their history is in the git log.
   counted against the old roster. The roster is now re-read under the lock
   when the digests differ. A stale submission, or `StartRekey`, is refused
   with `seal.StaleRosterError` (`ABORTED`, retryable).
+- **A failed redistribution destroyed the unclaimed shares in force, and a
+  revoked holder could come back.** A distribution destroyed the previous
+  envelopes before the blob for the new ones was persisted. A failed persist
+  therefore left holders who had not yet claimed with no share for the blob
+  still in force, or a share for a blob that was never stored. A revocation
+  deleted the revoked holder's record only after persisting the blob, so a
+  failed delete brought the holder back into the next distribution. Now:
+  - envelopes are staged and swapped in only once the blob is durable;
+  - a holder who took part in an earlier distribution but is absent from the
+    roster in force is never dealt a share again;
+  - the domain key is generated into protected memory, and
+    `seal.CeremonyDistributor.Distribute` takes it as a `*secure.Buffer` it
+    borrows rather than a plain `[]byte`.
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading
@@ -357,6 +370,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **`seal.CeremonyDistributor.Distribute` takes the domain key as a
+  `*secure.Buffer`.** It used to take a plain `[]byte`. The distributor
+  borrows the buffer (`WithBytes`) only to split it, and neither retains nor
+  destroys it. It stages the sealed shares, and `Committed` for the same
+  roster swaps them in. A custom distributor must split under the borrow and
+  defer replacing its previous shares to `Committed`.
 - **`ceremony.TenantCeremonyService` is `ceremony.ScopedCeremonyService`**
   (and `TenantCeremonyRegistry` is `ScopedCeremonyRegistry`): one holder
   authority type serves a tenant barrier (`NewTenantCeremonyService`) and a

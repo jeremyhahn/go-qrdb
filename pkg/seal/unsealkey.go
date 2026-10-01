@@ -145,10 +145,18 @@ func (b *StorageBarrier) unsealKeyAEAD(unsealKey []byte) (cipher.AEAD, error) {
 	return provider.NewAEAD(AlgAES256GCM, unsealKey)
 }
 
-// generateUnsealKey returns a fresh random 256-bit domain key.
-func generateUnsealKey() ([]byte, error) {
-	key := make([]byte, unsealKeySize)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+// newUnsealKey returns a fresh random 256-bit domain key, generated straight
+// into protected memory. The caller owns the buffer and must destroy it.
+func newUnsealKey() (*secure.Buffer, error) {
+	key, err := secure.NewBuffer(unsealKeySize)
+	if err != nil {
+		return nil, err
+	}
+	if err := key.WithBytes(func(k []byte) error {
+		_, rerr := io.ReadFull(rand.Reader, k)
+		return rerr
+	}); err != nil {
+		key.Destroy()
 		return nil, err
 	}
 	return key, nil
@@ -165,11 +173,21 @@ func (b *StorageBarrier) wrapRootKey(domain QuorumDomain, key, rootKey []byte, r
 	if roster == nil || roster.Domain != domain {
 		return nil, nil, &InvalidRosterError{Reason: "roster belongs to another domain"}
 	}
-	rosterRaw, digest, err := encodeRoster(roster)
+	aead, err := b.unsealKeyAEAD(key)
 	if err != nil {
 		return nil, nil, err
 	}
-	aead, err := b.unsealKeyAEAD(key)
+	return b.wrapRootKeyWith(domain, aead, rootKey, roster)
+}
+
+// wrapRootKeyWith is wrapRootKey under an AEAD already built from the domain
+// key, so the key can stay in protected memory while the root key is
+// borrowed.
+func (b *StorageBarrier) wrapRootKeyWith(domain QuorumDomain, aead cipher.AEAD, rootKey []byte, roster *HolderRoster) ([]byte, []byte, error) {
+	if roster == nil || roster.Domain != domain {
+		return nil, nil, &InvalidRosterError{Reason: "roster belongs to another domain"}
+	}
+	rosterRaw, digest, err := encodeRoster(roster)
 	if err != nil {
 		return nil, nil, err
 	}

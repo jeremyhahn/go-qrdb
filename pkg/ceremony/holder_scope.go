@@ -117,13 +117,21 @@ type holderScope struct {
 	tenantID string
 	registry *OfficerRegistry
 	store    *sealedShareStore
-	claims   map[string]*ChallengeResponse
-	quorum   map[string]*pendingQuorumChallenge
+	// staged holds the envelopes of a distribution whose blob is not yet
+	// durable, for stagedDistribution. committed swaps it in; until then
+	// store, the set in force, is untouched.
+	staged             *sealedShareStore
+	stagedDistribution string
+	claims             map[string]*ChallengeResponse
+	quorum             map[string]*pendingQuorumChallenge
 	// limitID names this scope instance in the quorum-begin throttle's keys,
 	// so two instances of one scope (a test's second node, a re-created
 	// tenant authority) never share a bucket.
 	limitID string
 	sealed  func() bool
+	// roster reads the domain's roster in force from the backing barrier,
+	// whose blob it is bound to. A backend that is not a barrier has none.
+	roster func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error)
 	// initialized reports whether the backing barrier has been initialized,
 	// reading its persisted metadata so it answers while sealed. A backend
 	// that is not a barrier (the tenant service store before the tenant
@@ -151,9 +159,23 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		quorum:      make(map[string]*pendingQuorumChallenge),
 		limitID:     scope.String() + "#" + randomHex(8),
 		sealed:      sealed,
+		roster:      rosterProbe(backend),
 		initialized: initializedProbe(backend),
 		logger:      logger,
 	}, nil
+}
+
+// rosterProbe returns backend's roster reader. A backend that is not a
+// barrier reports seal.ErrHolderRosterMissing.
+func rosterProbe(backend seal.StorageBackend) func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error) {
+	if b, ok := backend.(interface {
+		HolderRoster(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error)
+	}); ok {
+		return b.HolderRoster
+	}
+	return func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error) {
+		return nil, nil, seal.ErrHolderRosterMissing
+	}
 }
 
 // initializedProbe returns backend's initialization probe. A backend that is
@@ -204,6 +226,7 @@ func (h *holderScope) sync(ctx context.Context) error {
 func (h *holderScope) rebind(barrier *seal.StorageBarrier) {
 	h.registry.rebind(barrier)
 	h.sealed = barrier.IsSealed
+	h.roster = barrier.HolderRoster
 	h.initialized = barrier.Initialized
 	h.synced = false
 }
@@ -433,6 +456,15 @@ func enrolmentEncryptionKey(req *EncryptionKeyEnrolment, csr *x509.CertificateRe
 
 // prepareRoster snapshots every active holder except exclude, in enrolment
 // order, with share indexes 1..N.
+//
+// A holder is active unless a distribution removed them. Removal is recorded
+// twice: in the roster bound to the blob, durable the moment the blob is,
+// and by deleting the holder's record in committed, which runs after it and
+// can fail. So a holder whose record says they took part in an earlier
+// distribution but who is absent from the roster in force was removed, and
+// is never dealt a share again, whatever happened to the record. A holder
+// enrolled since the last distribution has no distribution recorded and
+// joins.
 func (h *holderScope) prepareRoster(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, exclude []string) (*seal.HolderRoster, error) {
 	if domain != h.domain {
 		return nil, &seal.QuorumOpInvalidError{Domain: domain}
@@ -443,6 +475,19 @@ func (h *holderScope) prepareRoster(ctx context.Context, domain seal.QuorumDomai
 	skip := make(map[string]bool, len(exclude))
 	for _, e := range exclude {
 		skip[e] = true
+	}
+	current, _, err := h.roster(ctx, domain)
+	switch {
+	case err == nil:
+		for _, rec := range h.registry.Cached() {
+			if _, inForce := current.Holder(rec.Username); rec.Distribution != "" && !inForce {
+				skip[rec.Username] = true
+			}
+		}
+	case errors.Is(err, seal.ErrHolderRosterMissing):
+		// No distribution is in force yet: nobody has been removed.
+	default:
+		return nil, err
 	}
 	roster := seal.NewHolderRoster(domain, policy, threshold)
 	for _, rec := range h.registry.Cached() {
@@ -466,10 +511,13 @@ func (h *holderScope) prepareRoster(ctx context.Context, domain seal.QuorumDomai
 }
 
 // distribute splits secret and seals each share into an envelope to its
-// holder's encryption key, held in protected memory until claimed. Every
-// share and envelope of the previous distribution is destroyed first.
-func (h *holderScope) distribute(ctx context.Context, secret []byte, roster *seal.HolderRoster, digest []byte) (int, error) {
-	defer secure.Wipe(secret)
+// holder's encryption key, held in protected memory. The envelopes are
+// STAGED: the distribution in force, and every envelope of it nobody has
+// claimed yet, stays as it is until committed swaps the staged set in, once
+// the blob the new shares belong to is durable. A staged set left by a
+// distribution that never committed is destroyed here. secret is borrowed
+// only to split it; the caller owns it.
+func (h *holderScope) distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
 	if roster.Domain != h.domain {
 		return 0, &seal.QuorumOpInvalidError{Domain: roster.Domain}
 	}
@@ -486,8 +534,13 @@ func (h *holderScope) distribute(ctx context.Context, secret []byte, roster *sea
 		}
 	}
 
-	shares, err := shamir.SplitProtected(secret, roster.Threshold, roster.Total)
-	if err != nil {
+	var shares []*shamir.ProtectedShare
+	//secure:unborrowed allocates-protected SplitProtected seals each share into a go-enclave enclave of its own
+	if err := secret.WithBytes(func(k []byte) error {
+		var serr error
+		shares, serr = shamir.SplitProtected(k, roster.Threshold, roster.Total)
+		return serr
+	}); err != nil {
 		return 0, &ShamirSplitError{Err: err}
 	}
 	defer func() {
@@ -496,10 +549,8 @@ func (h *holderScope) distribute(ctx context.Context, secret []byte, roster *sea
 		}
 	}()
 
-	h.store.Reset()
-	for username := range h.claims {
-		delete(h.claims, username)
-	}
+	h.discardStaged()
+	staged := newSealedShareStore(h.store.ttl)
 	for i := range roster.Holders {
 		holder := &roster.Holders[i]
 		var envelope []byte
@@ -508,20 +559,51 @@ func (h *holderScope) distribute(ctx context.Context, secret []byte, roster *sea
 			envelope, serr = sealShareEnvelope(h.scope, roster, digest, holder, records[holder.Username], v)
 			return serr
 		}); err != nil {
-			h.store.Reset()
+			staged.DestroyAll()
 			return 0, err
 		}
-		if err := h.store.Store(holder.Username, envelope); err != nil {
-			h.store.Reset()
+		if err := staged.Store(holder.Username, envelope); err != nil {
+			staged.DestroyAll()
 			return 0, &ShareStoreError{Err: err}
 		}
 	}
+	h.staged, h.stagedDistribution = staged, roster.Distribution
 	return roster.Total, nil
 }
 
-// committed records the durable roster's share indexes and drops removed
-// holders.
+// promoteStaged swaps in the envelopes staged for distribution: the previous
+// set and its pending claims are destroyed, and the staged set is now the one
+// holders claim from. It reports whether a staged set for distribution was
+// there to promote.
+func (h *holderScope) promoteStaged(distribution string) bool {
+	if h.staged == nil || h.stagedDistribution != distribution {
+		return false
+	}
+	previous := h.store
+	h.store, h.staged, h.stagedDistribution = h.staged, nil, ""
+	previous.DestroyAll()
+	for username, c := range h.claims {
+		secure.Wipe(c.Nonce)
+		delete(h.claims, username)
+	}
+	return true
+}
+
+// discardStaged destroys a staged set that was never committed.
+func (h *holderScope) discardStaged() {
+	if h.staged != nil {
+		h.staged.DestroyAll()
+	}
+	h.staged, h.stagedDistribution = nil, ""
+}
+
+// committed swaps in the envelopes staged for roster, now that the blob they
+// belong to is durable, then records the durable roster's share indexes and
+// drops removed holders. The swap comes first and cannot fail, so the
+// envelopes in force always belong to the blob in force; a failure recording
+// the rest leaves the removed holders excluded by prepareRoster all the same.
 func (h *holderScope) committed(ctx context.Context, roster *seal.HolderRoster, removed []string) error {
+	h.promoteStaged(roster.Distribution)
 	if err := h.sync(ctx); err != nil {
 		return err
 	}
@@ -935,6 +1017,7 @@ func (h *holderScope) allClaimed() bool {
 // cleanup destroys every held envelope and pending challenge.
 func (h *holderScope) cleanup() {
 	h.store.DestroyAll()
+	h.discardStaged()
 	for k, c := range h.claims {
 		secure.Wipe(c.Nonce)
 		delete(h.claims, k)

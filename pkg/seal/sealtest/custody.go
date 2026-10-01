@@ -58,6 +58,15 @@ type Distributor struct {
 	mu      sync.Mutex
 	holders map[seal.QuorumDomain][]string
 	shares  map[seal.QuorumDomain]map[string]string
+	// staged holds what Distribute sealed until Committed for the same
+	// roster swaps it in, as the real distributor does.
+	staged map[seal.QuorumDomain]staged
+}
+
+// staged is one staged distribution.
+type staged struct {
+	distribution string
+	shares       map[string]string
 }
 
 var _ seal.CeremonyDistributor = (*Distributor)(nil)
@@ -67,6 +76,7 @@ func NewDistributor(holders ...string) *Distributor {
 	return &Distributor{
 		holders: map[seal.QuorumDomain][]string{seal.DomainUnseal: append([]string(nil), holders...)},
 		shares:  map[seal.QuorumDomain]map[string]string{},
+		staged:  map[seal.QuorumDomain]staged{},
 	}
 }
 
@@ -119,13 +129,16 @@ func (d *Distributor) PrepareRoster(_ context.Context, domain seal.QuorumDomain,
 }
 
 // Distribute implements seal.CeremonyDistributor.
-func (d *Distributor) Distribute(_ context.Context, secret []byte, roster *seal.HolderRoster, _ []byte) (int, error) {
-	defer secure.Wipe(secret)
+func (d *Distributor) Distribute(_ context.Context, secret *secure.Buffer, roster *seal.HolderRoster, _ []byte) (int, error) {
 	// SplitBytes returns each share's wire value (the bytes of Share.Value),
 	// in index order. The double keeps them as strings because a test reads
 	// them back to submit; the split buffers themselves are wiped here.
-	values, err := quicraftshamir.SplitBytes(secret, roster.Threshold, roster.Total)
-	if err != nil {
+	var values [][]byte
+	if err := secret.WithBytes(func(k []byte) error {
+		var serr error
+		values, serr = quicraftshamir.SplitBytes(k, roster.Threshold, roster.Total)
+		return serr
+	}); err != nil {
 		return 0, err
 	}
 	defer func() {
@@ -138,7 +151,7 @@ func (d *Distributor) Distribute(_ context.Context, secret []byte, roster *seal.
 		byHolder[h.Username] = string(values[h.ShareIndex-1])
 	}
 	d.mu.Lock()
-	d.shares[roster.Domain] = byHolder
+	d.staged[roster.Domain] = staged{distribution: roster.Distribution, shares: byHolder}
 	d.mu.Unlock()
 	return len(values), nil
 }
@@ -148,6 +161,10 @@ func (d *Distributor) Distribute(_ context.Context, secret []byte, roster *seal.
 func (d *Distributor) Committed(_ context.Context, roster *seal.HolderRoster, removed []string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if s, ok := d.staged[roster.Domain]; ok && s.distribution == roster.Distribution {
+		d.shares[roster.Domain] = s.shares
+		delete(d.staged, roster.Domain)
+	}
 	gone := make(map[string]bool, len(removed))
 	for _, r := range removed {
 		gone[r] = true

@@ -14,7 +14,11 @@
 
 package seal
 
-import "context"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+)
 
 // CeremonyDistributor seals a domain key's Shamir shares to that domain's
 // share holders. pkg/seal defines the interface (consumer side); pkg/ceremony
@@ -26,13 +30,20 @@ import "context"
 //  1. PrepareRoster snapshots the active holders into a roster. It has no
 //     side effects, so the barrier may also call it to validate a rekey
 //     before a quorum is gathered.
-//  2. Distribute splits the key and seals one share to each roster holder.
+//  2. Distribute splits the key and seals one share to each roster holder,
+//     into a STAGED set: the previous distribution's shares stay the ones
+//     held and claimable.
 //  3. Committed tells the distributor the wrapped key and its roster are
-//     durable, so it can record the new share indexes and drop removed
-//     holders.
+//     durable. It swaps the staged set in -- only now are the previous
+//     shares destroyed -- then records the new share indexes and drops
+//     removed holders.
 //
 // If anything fails between 2 and 3 the previously persisted blob, and with
-// it the previous share set, stays in force.
+// it the previous share set and every unclaimed share of it, stays in force;
+// the staged set is discarded by the next Distribute. A holder removed by a
+// durable blob whose Committed failed must still never be dealt a share
+// again: PrepareRoster excludes a holder that took part in an earlier
+// distribution and is absent from the roster in force.
 type CeremonyDistributor interface {
 	// PrepareRoster returns a roster of every active holder of the domain
 	// except those named in exclude, with share indexes 1..N assigned, the
@@ -42,14 +53,17 @@ type CeremonyDistributor interface {
 
 	// Distribute splits secret into roster.Total shares with roster.Threshold
 	// and seals the share with index i to the roster holder whose ShareIndex
-	// is i, binding rosterDigest into each sealed share. Every share from any
-	// earlier distribution of the domain is destroyed first. secret is wiped
-	// before Distribute returns, whatever the outcome. It returns the number
-	// of shares sealed.
-	Distribute(ctx context.Context, secret []byte, roster *HolderRoster, rosterDigest []byte) (int, error)
+	// is i, binding rosterDigest into each sealed share, into a staged set
+	// that Committed for this roster swaps in. secret is the domain key in
+	// protected memory, owned by the caller: Distribute borrows it
+	// (WithBytes) only to split it, and neither retains nor destroys it. It
+	// returns the number of shares sealed.
+	Distribute(ctx context.Context, secret *secure.Buffer, roster *HolderRoster, rosterDigest []byte) (int, error)
 
 	// Committed records that roster is now the domain's durable roster and
-	// that the holders in removed are no longer holders.
+	// that the holders in removed are no longer holders. It first swaps in
+	// the shares Distribute staged for roster (matched by its Distribution),
+	// so they are claimable from the moment the blob they belong to is.
 	Committed(ctx context.Context, roster *HolderRoster, removed []string) error
 }
 

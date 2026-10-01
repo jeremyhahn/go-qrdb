@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // TestHolderScope_DistributeRefusesAnUnknownHolder pins that a roster naming
@@ -36,11 +37,14 @@ func TestHolderScope_DistributeRefusesAnUnknownHolder(t *testing.T) {
 	roster, err := e.svc.PrepareRoster(ctx, seal.DomainUnseal, 2, "", nil)
 	require.NoError(t, err)
 	roster.Holders[1].Username = "mallory"
-	_, err = e.svc.Distribute(ctx, []byte("0123456789abcdef0123456789abcdef"), roster, []byte("digest"))
+	secret, err := secure.NewBufferFromBytes([]byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	defer secret.Destroy()
+	_, err = e.svc.Distribute(ctx, secret, roster, []byte("digest"))
 	assert.ErrorIs(t, err, ErrOfficerNotFound)
 
 	roster.Domain = seal.DomainRecovery
-	_, err = e.svc.system.distribute(ctx, []byte("x"), roster, nil)
+	_, err = e.svc.system.distribute(ctx, secret, roster, nil)
 	assert.True(t, errorAs[*seal.QuorumOpInvalidError](err), err)
 	_, err = e.svc.system.prepareRoster(ctx, seal.DomainRecovery, 2, "", nil)
 	assert.True(t, errorAs[*seal.QuorumOpInvalidError](err), err)

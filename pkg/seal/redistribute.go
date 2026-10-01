@@ -16,6 +16,7 @@ package seal
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -45,10 +46,16 @@ func (e *HolderCountMismatchError) Error() string {
 // initialization, the encryption-migration mint, recovery-key generation and
 // every rekey (including revocation) go through it.
 //
-// Ordering is deliberate: distribute FIRST, persist the blob LAST. If
-// distribution fails, the previous blob — and so the previous share set —
-// stays valid and the operation can be retried. Committed runs only once the
-// blob is durable.
+// Ordering is deliberate: distribute FIRST, persist the blob, then commit.
+// Distribute only stages the new shares, so if distribution or the persist
+// fails, the previous blob -- and the previous share set, unclaimed shares
+// included -- stays valid and the operation can be retried. Committed runs
+// only once the blob is durable, and swaps the staged shares in before
+// anything else, so the shares in force always match the blob in force.
+//
+// The domain key is generated straight into protected memory and never
+// leaves it as an ordinary slice: the AEAD is built under a borrow, the
+// distributor borrows the buffer to split it, and it is destroyed on return.
 //
 // expectTotal, when positive, is the share count the caller asked for; a
 // different number of enrolled holders is refused rather than silently
@@ -81,26 +88,31 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 	}
 	roster.Distribution = hex.EncodeToString(distribution)
 
-	key, err := generateUnsealKey()
+	key, err := newUnsealKey()
 	if err != nil {
 		return nil, err
 	}
-	defer secure.Wipe(key)
+	defer key.Destroy()
 
+	var aead cipher.AEAD
+	//secure:unborrowed injected-interface unsealKeyAEAD hands the key to the configured AEADProvider (go-qrdb#428)
+	if err := key.WithBytes(func(k []byte) error {
+		var aerr error
+		aead, aerr = b.unsealKeyAEAD(k)
+		return aerr
+	}); err != nil {
+		return nil, err
+	}
 	var blob, digest []byte
 	if err := rootKey.WithBytes(func(rk []byte) error {
 		var werr error
-		blob, digest, werr = b.wrapRootKey(domain, key, rk, roster)
+		blob, digest, werr = b.wrapRootKeyWith(domain, aead, rk, roster)
 		return werr
 	}); err != nil {
 		return nil, err
 	}
 
-	// Distribute wipes the slice it is handed, so it gets its own copy and
-	// the deferred wipe above still owns key.
-	shareSecret := make([]byte, len(key))
-	copy(shareSecret, key)
-	count, err := b.distributor.Distribute(ctx, shareSecret, roster, digest)
+	count, err := b.distributor.Distribute(ctx, key, roster, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -108,13 +120,15 @@ func (b *StorageBarrier) redistributeTo(ctx context.Context, target *StorageBarr
 	if err := target.base.Put(ctx, target.wrappedKeyPath(domain), blob); err != nil {
 		return nil, err
 	}
+	// The blob is durable: the staged shares go live before anything else
+	// can fail.
+	if err := b.distributor.Committed(ctx, roster, remove); err != nil {
+		return nil, err
+	}
 	if domain == DomainUnseal {
 		if err := target.recordShamirParams(ctx, roster.Threshold, roster.Total); err != nil {
 			return nil, err
 		}
-	}
-	if err := b.distributor.Committed(ctx, roster, remove); err != nil {
-		return nil, err
 	}
 
 	emitAudit(b.config.AuditLogger, "distribute", "barrier", b.config.RootKeyPath, "allow",

@@ -106,21 +106,31 @@ authenticates submissions against.
 1. `PrepareRoster` snapshots the active holders (minus any being removed) with
    share indexes 1..N, the policy, the threshold and a random distribution id.
    Initialization refuses a holder count different from the requested total
-   (`HolderCountMismatchError`).
-2. A fresh 256-bit domain key wraps the root key (AES-256-GCM) with associated
-   data `go-qrdb/seal/wrapped-root-key/v2|<RootKeyPath>|<domain>|<roster digest>`;
-   the blob stores the roster bytes in clear.
-3. `Distribute` splits the domain key and HPKE-seals share *i* to the holder
-   with share index *i*. The envelope header — version, KEM, scope, domain,
-   holder, share index, threshold, total, distribution id and roster digest —
-   is bound into the HPKE info, so an
-   edited header makes the envelope unopenable. Every earlier envelope of the
-   domain is destroyed first. The domain key is wiped.
-4. The blob is persisted, **last**. `Committed` then records share indexes and
-   deletes removed holders' records.
+   (`HolderCountMismatchError`). A holder whose record shows an earlier
+   distribution but who is absent from the roster in force was removed. Such
+   a holder is excluded even if deleting their record failed (see step 4). A
+   holder enrolled since the last distribution joins.
+2. A fresh 256-bit domain key is generated straight into protected memory
+   (`secure.Buffer`). It wraps the root key (AES-256-GCM) with associated data
+   `go-qrdb/seal/wrapped-root-key/v2|<RootKeyPath>|<domain>|<roster digest>`,
+   and the blob stores the roster bytes in clear.
+3. `Distribute` is handed the key buffer and borrows it only to split it. It
+   HPKE-seals share *i* to the holder with share index *i*, into a **staged**
+   set. The envelope header — version, KEM, scope, domain, holder, share
+   index, threshold, total, distribution id and roster digest — is bound into
+   the HPKE info, so an edited header makes the envelope unopenable. The
+   envelopes in force, unclaimed ones included, are untouched. A staged set
+   that never committed is discarded by the next `Distribute`.
+4. The blob is persisted. `Committed` then swaps the staged envelopes in,
+   destroying the previous set. Only after that does it record share indexes
+   and delete removed holders' records. The domain key buffer is destroyed
+   when the distribution returns.
 
-A failure before step 4 leaves the previous blob, and the previous share set,
-in force; the operation can be re-run.
+A failure before the blob is persisted leaves the previous blob in force,
+with the previous share set and every unclaimed envelope of it; the
+operation can be re-run. The envelopes in force always belong to the blob in
+force. If `Committed` fails after the swap, a removed holder's record may
+survive, but step 1 never deals that holder a share again.
 
 Envelopes live only in the running ceremony service, so an in-process
 data-plane restart (the one a system-scope encryption migration performs)

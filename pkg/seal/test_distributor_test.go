@@ -46,6 +46,16 @@ type captureDistributor struct {
 	digests   map[QuorumDomain][]byte
 	committed map[QuorumDomain]*HolderRoster
 	failNext  error
+	// staged holds what Distribute sealed until Committed for the same
+	// roster swaps it in, as the real distributor does.
+	staged map[QuorumDomain]*stagedCapture
+}
+
+// stagedCapture is one staged distribution.
+type stagedCapture struct {
+	distribution string
+	shares       map[string]string
+	digest       []byte
 }
 
 // newCaptureDistributor returns a distributor whose unseal domain has the
@@ -56,6 +66,7 @@ func newCaptureDistributor(holders ...string) *captureDistributor {
 		shares:    map[QuorumDomain]map[string]string{},
 		digests:   map[QuorumDomain][]byte{},
 		committed: map[QuorumDomain]*HolderRoster{},
+		staged:    map[QuorumDomain]*stagedCapture{},
 	}
 }
 
@@ -109,31 +120,41 @@ func (c *captureDistributor) PrepareRoster(_ context.Context, domain QuorumDomai
 }
 
 // Distribute implements CeremonyDistributor.
-func (c *captureDistributor) Distribute(_ context.Context, secret []byte, roster *HolderRoster, digest []byte) (int, error) {
-	defer secure.Wipe(secret)
+func (c *captureDistributor) Distribute(_ context.Context, secret *secure.Buffer, roster *HolderRoster, digest []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.failNext; err != nil {
 		c.failNext = nil
 		return 0, err
 	}
-	raw, err := quicraftShamir.Split(secret, roster.Threshold, roster.Total)
-	if err != nil {
+	var values [][]byte
+	if err := secret.WithBytes(func(k []byte) error {
+		var serr error
+		values, serr = quicraftShamir.SplitBytes(k, roster.Threshold, roster.Total)
+		return serr
+	}); err != nil {
 		return 0, err
 	}
-	byHolder := make(map[string]string, len(raw))
+	byHolder := make(map[string]string, len(values))
 	for _, h := range roster.Holders {
-		byHolder[h.Username] = raw[h.ShareIndex-1].Value
+		byHolder[h.Username] = string(values[h.ShareIndex-1])
 	}
-	c.shares[roster.Domain] = byHolder
-	c.digests[roster.Domain] = append([]byte(nil), digest...)
-	return len(raw), nil
+	for _, v := range values {
+		clear(v)
+	}
+	c.staged[roster.Domain] = &stagedCapture{distribution: roster.Distribution, shares: byHolder, digest: append([]byte(nil), digest...)}
+	return len(values), nil
 }
 
 // Committed implements CeremonyDistributor.
 func (c *captureDistributor) Committed(_ context.Context, roster *HolderRoster, removed []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if s := c.staged[roster.Domain]; s != nil && s.distribution == roster.Distribution {
+		c.shares[roster.Domain] = s.shares
+		c.digests[roster.Domain] = s.digest
+		delete(c.staged, roster.Domain)
+	}
 	gone := map[string]bool{}
 	for _, r := range removed {
 		gone[r] = true

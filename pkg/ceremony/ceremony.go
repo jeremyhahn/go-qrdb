@@ -519,7 +519,7 @@ func (s *CeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumD
 }
 
 // Distribute implements seal.CeremonyDistributor.
-func (s *CeremonyService) Distribute(ctx context.Context, secret []byte, roster *seal.HolderRoster, digest []byte) (int, error) {
+func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	h, err := s.scope(roster.Domain)

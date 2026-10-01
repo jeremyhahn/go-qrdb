@@ -11,6 +11,7 @@ package seal
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"testing"
 )
 
@@ -89,9 +90,9 @@ func TestShamirOption3_SharedUnsealKeyPerNodeRootKeys(t *testing.T) {
 
 	// ONE shared unseal key U — in a cluster this is the secret split via Shamir
 	// to the officers (one quorum). Here we model it directly.
-	u, err := generateUnsealKey()
-	if err != nil {
-		t.Fatalf("generateUnsealKey: %v", err)
+	u := make([]byte, unsealKeySize)
+	if _, err := rand.Read(u); err != nil {
+		t.Fatalf("rand: %v", err)
 	}
 
 	// Each node wraps ITS OWN root key under the shared U, bound to the same
