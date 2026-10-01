@@ -2725,8 +2725,22 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// barrier too. Shards on the shared WAL resolve a nil per-shard barrier and
 	// fall back to the host-wide system barrier, keeping Route A byte-identical.
 	// Single-node hosts keep the plain WithBarrier path unchanged.
+	//
+	// The multiplex is a CALLER-SUPPLIED LogDB, and go-quicraft >= 0.15 accepts
+	// one beside WithBarrier only when it declares itself encrypted at rest
+	// (logdb.AtRestBarrierEncrypted). The multiplex declares what its shared
+	// route's waldb declares, and that waldb truthfully reports UNPROTECTED
+	// while the system barrier is in plaintext mode -- system protection
+	// "none", the state a cluster boots in before EnableEncryption. Such a node
+	// takes the default-WAL path instead: quicraft opens the SAME <data-dir>/wal
+	// under the same barrier, so the log is continuous across a restart that
+	// changes paths, and once EnableEncryption flips the barrier the WAL
+	// encrypts with it, exactly as on a single node. Dedicated-WAL shards fall
+	// back to the shared WAL while there is no multiplex (see
+	// RaftBackendFactory.openAndRegisterDedicatedWAL), as they do on a single
+	// node; the next boot after encryption is enabled restores the multiplex.
 	if f.walBarrier != nil {
-		if !isSingleNode(f) && f.walSystemBarrier != nil {
+		if useWALMultiplex(f) {
 			walDir := filepath.Join(f.dataDir, "wal")
 			sharedWAL, err := waldb.Open(walDir, waldb.WithBarrier(f.walSystemBarrier))
 			if err != nil {
@@ -2751,7 +2765,11 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			slog.Info("raft WAL at-rest encryption enabled (multiplex: shared system barrier + per-tenant dedicated WALs)")
 		} else {
 			hostOpts = append(hostOpts, quicraft.WithBarrier(f.walBarrier))
-			slog.Info("raft WAL at-rest encryption enabled (system barrier)")
+			if f.walSystemBarrier != nil && f.walSystemBarrier.IsPlaintextMode() {
+				slog.Info("raft WAL under the system barrier, which is in plaintext mode: the log is stored unencrypted until encryption is enabled, then encrypts with it (no per-tenant dedicated WALs until the next boot)")
+			} else {
+				slog.Info("raft WAL at-rest encryption enabled (system barrier)")
+			}
 		}
 	} else {
 		// Seal disabled: the Raft log is stored in plaintext, as every other
@@ -2998,6 +3016,15 @@ func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig) 
 		name = smType + ":" + smBackend
 	}
 	return nil, &UnknownSMError{Name: name}
+}
+
+// useWALMultiplex reports whether the shared host's LogDB is the multiplex
+// (shared system-barrier WAL plus per-tenant dedicated WALs): a clustered node
+// whose system barrier actually encrypts. A barrier in plaintext mode cannot
+// back a caller-supplied LogDB that go-quicraft will accept beside WithBarrier,
+// because the WAL it opens is honestly unprotected; see the caller.
+func useWALMultiplex(f *startFlags) bool {
+	return !isSingleNode(f) && f.walSystemBarrier != nil && !f.walSystemBarrier.IsPlaintextMode()
 }
 
 // buildHostConfig constructs a HostConfig from the parsed start flags.
