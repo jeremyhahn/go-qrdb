@@ -123,7 +123,11 @@ func TestSOPINFromContext_UnopenablePINRefusesTheCall(t *testing.T) {
 	}
 	base := &captureRT{}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://db.example.com:8443/v1/barrier/seal", nil)
-	if _, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req); !errors.As(err, &nilSecret) || base.req != nil {
+	resp, err := SOPINRoundTripper(base, "rest", "db.example.com:8443").RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.As(err, &nilSecret) || base.req != nil {
 		t.Fatalf("round tripper: err=%v sent=%v, want refused before sending", err, base.req != nil)
 	}
 }
