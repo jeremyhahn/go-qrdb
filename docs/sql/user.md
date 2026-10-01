@@ -105,6 +105,12 @@ truncated, dropped or altered while it ran fails the same way, as do the REST
 statements**, not by re-issuing `COMMIT`: the server buffered operations, not
 your SQL, so replaying `SET n = n + 1` would re-apply a stale value.
 
+**Wait instead of retrying.** If 1213s are frequent, lock the rows instead:
+`SELECT ... FOR UPDATE` serialises a read-modify-write in any mode, and
+`SET qrdb_concurrency = 'pessimistic'` makes every `UPDATE`/`DELETE`/`INSERT`
+wait for the row rather than fail at `COMMIT`. See
+[../row-locking/user.md](../row-locking/user.md).
+
 **Tighten conflict detection for one session.**
 
 ```sql
@@ -224,7 +230,9 @@ statement*, naming it, rather than surprising you at `COMMIT`.
 
 **`SET TRANSACTION ISOLATION LEVEL` seems to do nothing.** It is accepted and
 recorded, not interpreted. Those levels describe a lock-based engine; QRDB's
-transactions are optimistic. Use `qrdb_isolation` instead.
+transactions are optimistic unless you select pessimistic mode. Use
+`qrdb_isolation` for conflict detection and `qrdb_concurrency` (see
+[../row-locking/](../row-locking/)) for blocking behaviour.
 
 **Your PostgreSQL client cannot introspect the schema.** The `pg_catalog`
 subset covers `pg_type`, `pg_class`, `pg_namespace`, `pg_description` and

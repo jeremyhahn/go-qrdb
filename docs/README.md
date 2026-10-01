@@ -57,6 +57,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [full-text-search](full-text-search/) | inverted index, analyzer, tokenizer *(build tag `qrdb_fts`)* |
 | [collections](collections/) | document collections and ID strategies |
 | [sql](sql/) | MySQL and PostgreSQL wire protocols, relational tables, transactions, privileges |
+| [row-locking](row-locking/) | optimistic vs pessimistic SQL concurrency, `FOR UPDATE` / `FOR SHARE`, the replicated lock table, deadlock detection |
 | [vectors](vectors/) | vector namespaces, k-NN and hybrid search, index maintenance *(`qrdb_vector`)* |
 | [time-series](time-series/) | metrics, tags, aggregation, retention *(`qrdb_ts`)* |
 | [embeddings](embeddings/) | text→vector provider proxy with caching |
@@ -103,10 +104,11 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 37 currently-implemented features have a `docs/<feature>/` folder with all
+**All 39 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
 [coordination](coordination/) added 2026-09-10;
-[attested-caller](attested-caller/) added 2026-09-25). The portfolio view is derived,
+[attested-caller](attested-caller/) added 2026-09-25;
+[row-locking](row-locking/) added 2026-09-30). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 
 The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)

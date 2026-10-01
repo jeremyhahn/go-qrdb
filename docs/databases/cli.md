@@ -155,6 +155,15 @@ qrdb database unseal secure --secret "$SECRET"
 | `--mysql` | bool | enable the MySQL wire protocol |
 | `--postgresql` | bool | enable the PostgreSQL wire protocol |
 
+### `qrdb database update-sql <name>`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--concurrency` | string | `optimistic \| pessimistic` — the database's default SQL concurrency mode |
+
+`qrdb database create` takes the same setting as `--sql-concurrency`. See
+[../row-locking/cli.md](../row-locking/cli.md).
+
 ### `qrdb database update-etcd <name>`
 
 | Flag | Type | Default | Meaning |

@@ -32,6 +32,7 @@ type DatabaseClient interface {
 	UpdateDatabaseBarrier(ctx context.Context, req UpdateDatabaseBarrierRequest) (*DatabaseInfo, error)
 	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
 	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
+	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
 	SealDatabase(ctx context.Context, name string) error
 	UnsealDatabase(ctx context.Context, name, secret string) error
 	DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierConfig, error)
@@ -59,7 +60,13 @@ type DatabaseInfo struct {
 	Replicas   int                       `json:"replicas,omitempty"`
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
+	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
 	Binding    *DatabaseBinding          `json:"binding,omitempty"`    // new, read-only
+}
+
+// DatabaseSQLConfig is specified in ../row-locking/engineering.md.
+type DatabaseSQLConfig struct {
+	Concurrency string `json:"concurrency,omitempty"` // optimistic | pessimistic
 }
 
 // DatabaseBinding is the resolved placement of the database's storage.
@@ -81,8 +88,8 @@ type DatabaseRaftConfig struct {
 }
 ```
 
-`ProtocolConfig`, `EtcdProtocolConfig`, `DatabaseBarrierConfig` and
-`ScaleDatabaseRequest` are unchanged. `DatabaseConnectionConfig`, the
+`ProtocolConfig`, `EtcdProtocolConfig`, `DatabaseBarrierConfig`,
+`DatabaseSQLConfig` and `ScaleDatabaseRequest` are unchanged. `DatabaseConnectionConfig`, the
 `Connection` field and remote mode are removed (OD-9, ruled A). `Name` is
 `json:"-"` on the update and scale requests: it travels in the path, not the
 body.

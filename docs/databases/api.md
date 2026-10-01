@@ -22,13 +22,15 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Update etcd | `PATCH /v1/databases/{name}/etcd` | `DatabaseUpdateEtcd` | `db.UpdateEtcd` | `qrdb_database_update_etcd` | `UpdateDatabaseEtcd` | `databases:update` |
 | Update raft | `PATCH /v1/databases/{name}/raft` | `DatabaseUpdateRaft` | `db.UpdateRaft` | `qrdb_database_update_raft` | `UpdateDatabaseRaft` | `databases:update` |
 | Update barrier | `PATCH /v1/databases/{name}/barrier` | `DatabaseUpdateBarrier` | `db.UpdateBarrier` | `qrdb_database_update_barrier` | `UpdateDatabaseBarrier` | `databases:update` |
+| Update SQL settings | `PATCH /v1/databases/{name}/sql` | `DatabaseUpdateSQL` | `db.UpdateSQL` | `qrdb_database_update_sql` | `UpdateDatabaseSQL` | `databases:update` |
 | Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | `UpdateDatabaseConnection` | `databases:update` |
 | Scale | `PATCH /v1/databases/{name}/scale` | `DatabaseScale` | `db.Scale` | `qrdb_database_scale` | `ScaleDatabase` | `databases:scale` |
 | Seal | `POST /v1/databases/{name}/seal` | `DatabaseSeal` | `db.Seal` | `qrdb_database_seal` | `SealDatabase` | `databases:seal` |
 | Unseal | `POST /v1/databases/{name}/unseal` | `DatabaseUnseal` | `db.Unseal` | `qrdb_database_unseal` | `UnsealDatabase` | `databases:unseal` |
 | Barrier status | `GET /v1/databases/{name}/barrier/status` | `DatabaseBarrierStatus` | `db.BarrierStatus` | `qrdb_database_barrier_status` | `DatabaseBarrierStatus` | `databases:barrier_status` |
 
-Thirteen capabilities, all present on all six transports.
+Fourteen capabilities, all present on all six transports. Update SQL settings
+is specified in [../row-locking/api.md](../row-locking/api.md).
 
 **Note the additive permissions.** Creating a raft-backed database checks
 `databases:create_raft` *in addition to* `databases:create`, as does every

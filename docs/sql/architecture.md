@@ -345,7 +345,11 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
   [engineering.md](engineering.md).
 - **Isolation levels are accepted, not differentiated.** MySQL's
   `transaction_isolation` names lock-engine behaviour; QRDB's transactions are
-  optimistic and the two do not correspond.
+  optimistic by default and the two do not correspond. Blocking behaviour is
+  selected by the concurrency mode instead — `SELECT ... FOR UPDATE` /
+  `FOR SHARE` always take real row locks, and a database or session in
+  `pessimistic` mode locks the rows its DML touches. See
+  [../row-locking/](../row-locking/).
 - **A collection table's `PRIMARY KEY`, `REPLACE` and `ON DUPLICATE KEY UPDATE`
   hold under concurrency.** The `_id` column of a document-collection table is
   enforced by `CollectionService.InsertDocument`'s guarded write, so two
@@ -361,6 +365,9 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
   [../collections/architecture.md](../collections/architecture.md#replace-into-and-on-duplicate-key-update).
 
 ## Companion documents
+
+- [../row-locking/](../row-locking/) — optimistic vs pessimistic concurrency,
+  lock clauses, the replicated lock table and deadlock detection.
 
 - [gorm.md](gorm.md) — the GORM provider, DSN forms, migrations, error mapping,
   conformance harness.

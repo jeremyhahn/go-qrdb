@@ -445,6 +445,18 @@ because the row is locked until commit, which `none` does not; InnoDB's
 `REPEATABLE READ` *blocks* a second writer and then applies it, where QRDB
 aborts it with 1213.
 
+### Row locks and pessimistic mode
+
+Everything above is the **optimistic** mode, which is the default. `SELECT ...
+FOR UPDATE` / `FOR SHARE` take real, Raft-replicated row locks in either mode,
+and `SET qrdb_concurrency = 'pessimistic'` (or the database's
+`sql.concurrency`) makes DML lock the rows it touches and read them at their
+latest committed version. The commit-time compare-and-swap described here stays
+in both modes; a locked row's precondition is the revision observed when its
+lock was granted. The full contract — lock modes, the lock table, timeouts
+(1205 / 55P03), deadlocks (1213 / 40P01) — is in
+[../row-locking/engineering.md](../row-locking/engineering.md).
+
 ### Conflicts surface as MySQL 1213
 
 A losing commit clears the write-set (matching InnoDB, which rolls back a transaction that hits `ER_LOCK_DEADLOCK`) and returns a `TransactionConflictError` wrapped in go-mysql-server's `sql.ErrLockDeadlock` — which `sql.CastSQLError` maps to **MySQL error 1213 / SQLSTATE 40001**. That is the code `database/sql` clients and ORM retry loops already recognise as "retry the transaction". A genuine infrastructure error (an unreachable leader, say) leaves the write-set in place instead, so `COMMIT` may safely be retried without losing buffered work.
@@ -582,6 +594,7 @@ QRDB-specific string:
 |---|---|---|
 | Duplicate key / unique violation | MySQL **1062** | from `sql.NewUniqueKeyErr`, naming `PRIMARY` or the index |
 | Transaction conflict (first-committer-wins loss) | MySQL **1213** / SQLSTATE **40001** | the code ORM retry loops already recognise |
+| Row lock wait timeout / `NOWAIT` / deadlock | MySQL **1205** / **3572** / **1213**; SQLSTATE **55P03** / **55P03** / **40P01** | see [../row-locking/engineering.md](../row-locking/engineering.md#error-mapping) |
 | Database access denied | MySQL **1044** | `ER_DBACCESS_DENIED_ERROR` |
 | Table access denied | MySQL **1142** | `ER_TABLEACCESS_DENIED_ERROR` |
 | Column access denied | MySQL **1143** | `ER_COLUMNACCESS_DENIED_ERROR` |
@@ -642,3 +655,6 @@ Coverage floors are enforced by those targets, not by convention:
   database costs no reads at all**, which is the signal that the latch has not
   been tripped.
 - `SELECT @@qrdb_isolation` reports the session's conflict-detection scope.
+- `SELECT @@qrdb_concurrency` reports the session's concurrency mode; row-lock
+  metrics (`qrdb_sql_row_lock_*`) are listed in
+  [../row-locking/engineering.md](../row-locking/engineering.md#observability).
