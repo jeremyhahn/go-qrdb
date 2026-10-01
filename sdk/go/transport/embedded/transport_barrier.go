@@ -449,10 +449,7 @@ func (t *Transport) claimBegin(ctx context.Context, domain seal.QuorumDomain, re
 	if err != nil {
 		return nil, err
 	}
-	thumbprint, err := contextCertThumbprint(ctx)
-	if err != nil {
-		return nil, err
-	}
+	ctx, thumbprint := claimContext(ctx)
 	challenge, err := svc.BarrierShareClaimBegin(ctx, domain, req.Username, thumbprint)
 	if err != nil {
 		return nil, err
@@ -466,10 +463,7 @@ func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain,
 	if err != nil {
 		return nil, err
 	}
-	thumbprint, err := contextCertThumbprint(ctx)
-	if err != nil {
-		return nil, err
-	}
+	ctx, thumbprint := claimContext(ctx)
 	result, err := svc.BarrierShareClaimComplete(ctx, domain, req.Username, req.NonceHex, req.Signature, thumbprint)
 	if err != nil {
 		return nil, err

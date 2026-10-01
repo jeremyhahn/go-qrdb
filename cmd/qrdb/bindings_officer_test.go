@@ -32,9 +32,9 @@ import (
 
 // TestOfficerBinding_SystemLifecycle drives the desktop holder binding
 // against a real barrier: enrolment, listing, a submission that opens a real
-// envelope, rekey and revocation. The claim itself needs the holder's
-// certificate on the connection, which an embedded connection cannot
-// present, so it is refused here and the envelope is claimed at the service.
+// envelope, rekey and revocation. An embedded connection carries no TLS
+// certificate, so the claim is in process: bound to the holder's enrolled
+// certificate and released only for the nonce signature by its key.
 func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 	stack := newCLIHolderStack(t, 2, 3)
 	conn := newTestConnectionBinding(t, newMockKVService(), newMockAdminService(),
@@ -79,9 +79,21 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.ClaimEnvelope(&HolderClaimParams{Username: alice.name, KeyPEM: string(aliceKey)}); err == nil {
-		t.Fatal("a claim without the holder's certificate on the connection was answered")
+	bobKey, err := os.ReadFile(holders[1].keyFile)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, err := b.ClaimEnvelope(&HolderClaimParams{Username: alice.name, KeyPEM: string(bobKey)}); !errors.Is(err, ceremony.ErrChallengeVerificationFailed) {
+		t.Fatalf("a claim signed by another holder's key = %v, want ErrChallengeVerificationFailed", err)
+	}
+	claimed, err := b.ClaimEnvelope(&HolderClaimParams{Username: alice.name, KeyPEM: string(aliceKey)})
+	if err != nil || len(claimed.Envelope) == 0 {
+		t.Fatalf("ClaimEnvelope over an embedded profile = %+v, %v", claimed, err)
+	}
+	if _, err := b.ClaimEnvelope(&HolderClaimParams{Username: alice.name, KeyPEM: string(aliceKey)}); !errors.Is(err, ceremony.ErrNoPendingShare) {
+		t.Fatalf("a second claim = %v, want ErrNoPendingShare", err)
+	}
+	envelopes := map[*cliHolder][]byte{alice: claimed.Envelope, carol: serviceClaim(t, stack.svc, carol, carol.cert)}
 
 	round, err := b.StartRekey(&HolderRekeyParams{Threshold: 2})
 	if err != nil || round.Op != transport.OpRekey {
@@ -101,7 +113,7 @@ func TestOfficerBinding_SystemLifecycle(t *testing.T) {
 		enc    []byte
 	}{{alice, aliceKey, nil}, {carol, carolKey, carolEnc}} {
 		out, err := b.SubmitShare(&HolderSubmitParams{Op: transport.OpRekey, Username: h.holder.name,
-			Envelope: string(serviceClaim(t, stack.svc, h.holder, h.holder.cert)), KeyPEM: string(h.key), EncryptionKey: h.enc})
+			Envelope: string(envelopes[h.holder]), KeyPEM: string(h.key), EncryptionKey: h.enc})
 		if err != nil {
 			t.Fatalf("SubmitShare(%s): %v", h.holder.name, err)
 		}

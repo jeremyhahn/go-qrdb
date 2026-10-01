@@ -406,10 +406,7 @@ func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *trans
 	if err != nil {
 		return nil, err
 	}
-	thumbprint, err := contextCertThumbprint(ctx)
-	if err != nil {
-		return nil, err
-	}
+	ctx, thumbprint := claimContext(ctx)
 	challenge, err := svc.TenantBarrierShareClaimBegin(ctx, req.TenantID, req.Username, thumbprint)
 	if err != nil {
 		return nil, err
@@ -424,10 +421,7 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 	if err != nil {
 		return nil, err
 	}
-	thumbprint, err := contextCertThumbprint(ctx)
-	if err != nil {
-		return nil, err
-	}
+	ctx, thumbprint := claimContext(ctx)
 	result, err := svc.TenantBarrierShareClaimComplete(ctx, req.TenantID, req.Username, req.NonceHex, req.Signature, thumbprint)
 	if err != nil {
 		return nil, err

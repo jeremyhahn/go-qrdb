@@ -90,8 +90,10 @@ signed by its key; for a submission, that the factor proof verifies against
 the roster the key is bound to. The routes are reachable through the sealed
 window ([../seal/sealed-window.md](../seal/sealed-window.md)).
 
-A claim **requires** a client certificate on the connection. A quorum
-submission does not — the factor proof authenticates the holder — but when a
+A claim over a network transport **requires** a client certificate on the
+connection. On the embedded transport, which has no connection, the claim is
+bound to the holder's enrolled certificate (`ceremony.WithInProcessClaim`) and
+the nonce signature by its key is the proof. A quorum submission does not — the factor proof authenticates the holder — but when a
 certificate is present the `mtls` factor also requires it to be the holder's.
 The peer certificate is always taken from the connection, never from the
 request.
@@ -190,7 +192,7 @@ one classification table every transport renders (`pkg/api/errclass`):
 
 QUIC and MCP carry the gRPC code name, and the embedded transport returns
 the classified error itself. A claim without a client certificate is
-Unauthenticated on every transport. An SO-PIN-gated route answers 401 for a
+Unauthenticated on every network transport. An SO-PIN-gated route answers 401 for a
 wrong PIN and 412 when no PIN backend is configured — it fails closed.
 
 ## Versioning

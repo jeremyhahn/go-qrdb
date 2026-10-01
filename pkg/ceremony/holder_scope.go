@@ -456,7 +456,9 @@ func (h *holderScope) committed(ctx context.Context, roster *seal.HolderRoster, 
 }
 
 // beginClaim issues the claim nonce to a holder presenting its enrolled
-// certificate over mTLS.
+// certificate over mTLS, or claiming in process (WithInProcessClaim), where
+// the claim is bound to the enrolled certificate and completeClaim demands
+// the nonce signature by its key.
 func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint string) (*ChallengeResponse, error) {
 	if username == "" {
 		return nil, ErrMissingUsername
@@ -468,7 +470,7 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 	if err != nil {
 		return nil, ErrOfficerNotFound
 	}
-	if !thumbprintsEqual(callerThumbprint, rec.CertThumbprint) {
+	if !thumbprintsEqual(claimCertificate(ctx, callerThumbprint, rec.CertThumbprint), rec.CertThumbprint) {
 		return nil, ErrCertThumbprintMismatch
 	}
 	if !h.store.Exists(username) {
@@ -510,7 +512,7 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 	if err != nil {
 		return nil, ErrOfficerNotFound
 	}
-	if !thumbprintsEqual(callerThumbprint, rec.CertThumbprint) {
+	if !thumbprintsEqual(claimCertificate(ctx, callerThumbprint, rec.CertThumbprint), rec.CertThumbprint) {
 		return nil, ErrCertThumbprintMismatch
 	}
 	pub, err := parsePublicKeyPEM(rec.PubKeyPEM)

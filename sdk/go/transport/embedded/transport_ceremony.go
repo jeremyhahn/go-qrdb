@@ -90,6 +90,22 @@ func contextCertThumbprint(ctx context.Context) (string, error) {
 	return mtls.Thumbprint(state.PeerCertificates[0].Raw), nil
 }
 
+// claimContext prepares a share claim made through this transport. A claim
+// whose ctx carries a verified TLS peer certificate presents it, exactly as on
+// a network transport. One with none is in process: there is no connection to
+// carry a certificate, so ctx is marked with ceremony.WithInProcessClaim and
+// the claim is bound to the holder's enrolled certificate, released only for
+// a signature over the fresh claim nonce by that certificate's key.
+func claimContext(ctx context.Context) (context.Context, string) {
+	if thumb, err := contextCertThumbprint(ctx); err == nil {
+		return ctx, thumb
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return ceremony.WithInProcessClaim(ctx), ""
+}
+
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {

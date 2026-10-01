@@ -109,6 +109,14 @@ envelope and wipes the server's copy. The holder opens the envelope offline
 with its recipient private key. Nobody else — not the administrator, not the
 node operator — ever sees the share.
 
+On the in-process (embedded) transport there is no connection to carry a
+certificate. A claim there is bound to the holder's enrolled certificate and
+released only for a signature over the fresh claim nonce made with that
+certificate's key — the same proof of possession the `mtls` quorum factor
+verifies (`mtls.VerifyNonceSignature`). A certificate that is presented is
+still checked. The network transports keep requiring the certificate on the
+connection.
+
 ### The one quorum accumulator
 
 Every share-gated operation is a **quorum round** run by one accumulator,

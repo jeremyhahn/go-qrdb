@@ -281,8 +281,15 @@ are not reconstructed here — their history is in the git log.
   (which must equal the enrolled holder count) and `policy`; there is no
   secret. Recovery generation takes `threshold`, `policy` and the SO PIN and
   splits to every enrolled recovery holder.
+- **A desktop or embedded holder can claim its envelope.** The embedded
+  transport has no connection to present a certificate, so its claims were
+  refused outright. An in-process claim (`ceremony.WithInProcessClaim`) is now
+  bound to the holder's enrolled certificate and released only for a
+  signature over the fresh claim nonce made with that certificate's key, the
+  proof the `mtls` quorum factor verifies. A presented certificate is still
+  checked, and the network transports keep requiring one.
 - **A share claim without a client certificate is Unauthenticated on every
-  transport.** gRPC and Unix answered `INVALID_ARGUMENT`, QUIC
+  network transport.** gRPC and Unix answered `INVALID_ARGUMENT`, QUIC
   PermissionDenied and MCP Internal. The one typed error is now
   `service.ClientCertRequiredError`, classified Unauthenticated in
   `pkg/api/errclass` (REST 401, gRPC/Unix/QUIC/MCP `UNAUTHENTICATED`). The
