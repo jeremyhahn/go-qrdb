@@ -165,6 +165,24 @@ func TestVerifyFactor_RevokedAfterChallengeIsRefused(t *testing.T) {
 	}
 }
 
+// TestNewAuthFactorService_RefusesFactorsThatNormaliseAlike: two factors whose
+// names normalise to the same key are one factor name, so the second would
+// silently replace the first. The service refuses the configuration instead.
+func TestNewAuthFactorService_RefusesFactorsThatNormaliseAlike(t *testing.T) {
+	_, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{authfactorstest.New("PIV"), authfactorstest.NewPermissive("piv")},
+		KV:      kvstore.NewMemoryKVStore(),
+	})
+	var dup *authfactors.FactorAlreadyRegisteredError
+	if !errors.As(err, &dup) {
+		t.Fatalf("err = %v, want *authfactors.FactorAlreadyRegisteredError", err)
+	}
+	var reg *authfactors.FactorRegisterError
+	if _, err := NewAuthFactorService(AuthFactorServiceConfig{Factors: []authfactors.Factor{nil}}); !errors.As(err, &reg) {
+		t.Fatalf("nil factor: err = %v, want *authfactors.FactorRegisterError", err)
+	}
+}
+
 // TestVerifyFactor_RegistrationUsesTheSameNormalisation: a factor whose Name()
 // is not lower case is registered under the same key the lookup computes, so
 // it can be enrolled and verified at all.
@@ -191,7 +209,7 @@ func TestVerifyFactor_RegistrationUsesTheSameNormalisation(t *testing.T) {
 	}
 }
 
-// TestVerifyFactor_FactorNameComparedAsFactorLookupDoes:the caller's name is
+// TestVerifyFactor_FactorNameComparedAsFactorLookupDoes: the caller's name is
 // normalised exactly as the factor registry lookup normalises it, so the
 // enrolled factor named in another case is the same factor, not a mismatch --
 // and a different factor in any case is still refused.

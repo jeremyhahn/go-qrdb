@@ -188,7 +188,17 @@ type AuthFactorServiceConfig struct {
 func NewAuthFactorService(cfg AuthFactorServiceConfig) (AuthFactorServicer, error) {
 	factors := make(map[string]authfactors.Factor, len(cfg.Factors))
 	for _, f := range cfg.Factors {
-		factors[factorKey(f.Name())] = f
+		if f == nil {
+			return nil, &authfactors.FactorRegisterError{Reason: "nil factor"}
+		}
+		key := factorKey(f.Name())
+		// Two factors whose names normalise alike are one factor name: the
+		// second would silently replace the first, and which one a challenge
+		// is verified by would depend on list order.
+		if _, dup := factors[key]; dup {
+			return nil, &authfactors.FactorAlreadyRegisteredError{Name: key}
+		}
+		factors[key] = f
 	}
 	return &authFactorService{
 		factors: factors,
@@ -390,7 +400,7 @@ func (s *authFactorService) factor(name string) (authfactors.Factor, error) {
 // factor and the enrollment-versus-caller comparison in VerifyFactor both use
 // it, so two names that select the same factor can never be judged different
 // factors, nor two that select different factors the same one.
-func factorKey(name string) string { return strings.ToLower(name) }
+func factorKey(name string) string { return authfactors.NormalizeName(name) }
 
 // persistEnrollment serialises the enrollment to JSON and writes it to the KV store.
 func (s *authFactorService) persistEnrollment(ctx context.Context, e *authfactors.Enrollment) error {

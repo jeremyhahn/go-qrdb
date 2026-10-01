@@ -308,7 +308,12 @@ call, with no cache to keep coherent across resolver behavior.
   instead of silently being verified against a different one. Names are
   compared through the same normalisation the registry uses to register and
   look a factor up (case-insensitive), so `PIV` and `piv` are one factor and
-  can never be judged different, nor two different factors the same.
+  can never be judged different, nor two different factors the same. That
+  normalisation is `authfactors.NormalizeName`, and both
+  `authfactors.FactorRegistry` and `NewAuthFactorService` key factors by it. A
+  second factor whose name normalises to a registered one is refused
+  (`*authfactors.FactorAlreadyRegisteredError`) rather than silently
+  replacing it.
 - **Single-use consumption is a guarded delete, not a tombstone.**
   `VerifyFactor` reads the pending challenge and clears it with
   `CompareAndDelete(key, dataJustRead)`, not an unconditional `Put`: a Get

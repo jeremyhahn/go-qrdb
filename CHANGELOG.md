@@ -500,6 +500,14 @@ are not reconstructed here — their history is in the git log.
   whole — across every table it edited — while the transaction's earlier
   statements are kept, as in InnoDB. Outside a transaction a multi-row statement
   is still not atomic: each row is its own commit.
+- **Auth-factor names have one normalisation.** `authfactors.NormalizeName`
+  (case-insensitive) keys factors in `FactorRegistry` (Register, Lookup,
+  Unregister) and in `NewAuthFactorService`, which also uses it for dispatch.
+  Two factors whose names normalise alike, such as `PIV` and `piv`, are now
+  refused with `*authfactors.FactorAlreadyRegisteredError`; before, the second
+  silently replaced the first. A nil factor is refused with
+  `*authfactors.FactorRegisterError`. `FactorRegistry.List` reports normalised
+  names.
 
 ### Security
 
