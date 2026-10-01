@@ -285,6 +285,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Per-database barrier refusals answered 500.** A barrier asked for on the
+  shared default store (`SharedStoreBarrierUnsupportedError`) or with an
+  unimplemented strategy (`UnsupportedBarrierStrategyError`) is now
+  InvalidArgument (400), and turning an existing database's barrier on or off
+  (`BarrierMigrationNotSupportedError`) FailedPrecondition (409), on every
+  transport.
 - **The transactions docs said a branch could carry get and range ops.** The
   code has always refused them (`UnsupportedTransactionOpError`, 400 /
   `INVALID_ARGUMENT`) rather than risk a read defaulting to a write; the

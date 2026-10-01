@@ -1204,7 +1204,10 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   through the holder authority; a reopen re-installs it; drop destroys the
   scope. `Holders(name)` answers `NotShamirBarrierError` for any database
   without one. `Manager.UpdateBarrier` refuses a strategy or M-of-N change, and
-  `RecordShamirScheme` records the M-of-N a completed rekey produced.
+  `RecordShamirScheme` records the M-of-N a completed rekey produced. The
+  rekey has already completed when it runs, so a failure there is logged and
+  the completed outcome is still returned: the barrier's own record of the
+  scheme is the new one, and only the catalog's copy is stale.
 - `pkg/service`: `DatabaseHolderServicer` is additive to `DatabaseServicer`, as
   `DatabaseCredentialCreator` is; transports type-assert for it. Every method
   runs the tenant-ownership check before resolving the barrier. A completed

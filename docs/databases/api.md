@@ -337,7 +337,9 @@ Initialization request: `{"policy": "designated"}` — the M-of-N is the
 second copy could only disagree.) The response is share-free:
 `{"threshold", "total_shares", "share_count"}`. A create with `mode: "shamir"`
 carries no `secret`; one that does is refused. A completed rekey records its
-new M-of-N on the database's configuration.
+new M-of-N on the database's configuration. If that write fails, the rekey is
+still reported complete, because it is: the old shares no longer open the
+barrier. The failure is logged.
 
 Every request body is the system holder request of
 [../shamir-custody/api.md](../shamir-custody/api.md); the SDK types embed it

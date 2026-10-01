@@ -198,9 +198,17 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 		case seal.OpSeal:
 			s.setDatabaseStatus(name, database.StatusSealed)
 		case seal.OpRekey:
+			// The rekey has completed: the barrier holds the new key and the
+			// old shares are dead. Recording the new M-of-N in the catalog
+			// comes after, and a failure there must not report the rekey as
+			// failed, which would tell the last holder their submission
+			// did not count. The barrier's own record of the scheme is
+			// already the new one; the catalog's is logged as stale.
 			if out.Rekey != nil {
 				if rerr := s.manager.RecordShamirScheme(name, out.Rekey.Threshold, out.Rekey.TotalShares); rerr != nil {
-					return nil, rerr
+					s.holderWarn("database barrier rekey completed but its scheme was not recorded in the catalog", name,
+						slog.Int("threshold", out.Rekey.Threshold), slog.Int("total", out.Rekey.TotalShares),
+						slog.String("error", rerr.Error()))
 				}
 			}
 		}
@@ -241,12 +249,18 @@ func (s *DatabaseService) setDatabaseStatus(name string, status database.StatusT
 
 // holderLog logs a database holder event when a logger is configured.
 func (s *DatabaseService) holderLog(msg, name string, attrs ...slog.Attr) {
+	s.holderLogAt(slog.LevelInfo, msg, name, attrs...)
+}
+
+// holderWarn logs a holder operation's degraded outcome.
+func (s *DatabaseService) holderWarn(msg, name string, attrs ...slog.Attr) {
+	s.holderLogAt(slog.LevelWarn, msg, name, attrs...)
+}
+
+// holderLogAt logs a holder operation at level, naming the database.
+func (s *DatabaseService) holderLogAt(level slog.Level, msg, name string, attrs ...slog.Attr) {
 	if s.logger == nil {
 		return
 	}
-	args := []any{slog.String("database", name)}
-	for _, a := range attrs {
-		args = append(args, a)
-	}
-	s.logger.Info(msg, args...)
+	s.logger.LogAttrs(context.Background(), level, msg, append([]slog.Attr{slog.String("database", name)}, attrs...)...)
 }
