@@ -699,6 +699,57 @@ func TestRaftBackendFactory_RefuseIfDropping_UnresolvedDatabaseIsANoOp(t *testin
 	}
 }
 
+// TestRaftBackendFactory_RefuseIfDropping_RefusesAStaleIncarnation is N1: the
+// shard IS the incarnation for a dedicated-raft database (see the comment
+// where resolve builds its vector fence), so RefuseIfDropping -- the vector
+// view's check-before-write, called on the shard cached at resolution time
+// without going through Services' own re-resolution -- must refuse once
+// placement names a DIFFERENT shard for (tenantID, db), even though that new
+// placement is perfectly healthy and not Dropping at all: a healthy
+// placement for a NEW incarnation is exactly what a drop followed by a
+// create-again under the same name produces, and the cached shard this call
+// was made against belongs to the old one.
+func TestRaftBackendFactory_RefuseIfDropping_RefusesAStaleIncarnation(t *testing.T) {
+	store := newPlacementStore(t)
+	reg := newVolumePooledRegistry(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	ctx := context.Background()
+	place := func(shardID uint64) {
+		t.Helper()
+		if err := store.Put(ctx, &placement.Placement{
+			TenantID: "rt", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{
+				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			},
+		}); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+
+	place(6020)
+	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+	if _, err := f.Services(ctx, "rt", "orders"); err != nil {
+		t.Fatalf("Services(): %v", err)
+	}
+	if err := f.RefuseIfDropping("rt", "orders"); err != nil {
+		t.Fatalf("RefuseIfDropping() (same incarnation) = %v, want nil", err)
+	}
+
+	// The name is dropped and created again -- a healthy, NOT-dropping
+	// placement under a new shard ID -- without ever calling Services or
+	// FenceServices again, so the factory's cache still holds the shard from
+	// BEFORE this change.
+	if err := store.Delete(ctx, "rt", "orders"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	place(6021)
+
+	var dropping *database.DroppingError
+	if err := f.RefuseIfDropping("rt", "orders"); !errors.As(err, &dropping) {
+		t.Fatalf("RefuseIfDropping() (new incarnation, cache not yet refreshed) = %v (%T), want *database.DroppingError", err, err)
+	}
+}
+
 // TestDatabaseFenceApply_PassThroughViewCarriesTheGuard proves the shape the
 // IsolationRaft branch of resolve builds with databaseFence.apply(base, "",
 // false): KV is a pass-through view -- an EMPTY namespace prefix, because a

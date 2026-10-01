@@ -262,6 +262,47 @@ func TestManager_DropForTenant_CrossTenantDenied(t *testing.T) {
 	}
 }
 
+// TestManager_GetForTenant_CrossTenantDroppingIndistinguishableFromMissing is
+// SEC-8(b): getOwned used to resolve ownership through Get, whose drop-fence
+// refusal (DroppingError) fires before ownership is ever checked. A probe of
+// another tenant's DROPPING database therefore answered 409/ABORTED while the
+// identical probe of a name nobody holds answered 404/NOT_FOUND -- an oracle
+// telling tenant B that tenant A's database exists and is mid-drop. Both
+// answers must now be the same NotFoundError, byte for byte once the name is
+// normalized out.
+func TestManager_GetForTenant_CrossTenantDroppingIndistinguishableFromMissing(t *testing.T) {
+	mgr := newTestManager(t)
+	defer func() { _ = mgr.Close() }()
+
+	ctxA := tenantContext("tenant-a")
+	cfg := validMemoryConfig("acme-ledger")
+	db, err := mgr.CreateForTenant(ctxA, cfg)
+	if err != nil {
+		t.Fatalf("CreateForTenant() error = %v", err)
+	}
+	db.SetDropping(true)
+
+	_, owned := mgr.getOwned("acme-ledger", "tenant-b")
+	_, missing := mgr.getOwned("nobody-has-this", "tenant-b")
+
+	var ownedNotFound, missingNotFound *NotFoundError
+	if !errors.As(owned, &ownedNotFound) {
+		t.Fatalf("cross-tenant probe of a DROPPING database = %v (%T), want *NotFoundError", owned, owned)
+	}
+	if !errors.As(missing, &missingNotFound) {
+		t.Fatalf("probe of a missing database = %v (%T), want *NotFoundError", missing, missing)
+	}
+	if ownedNotFound.Error() == "" || missingNotFound.Error() == "" {
+		t.Fatal("empty error message")
+	}
+
+	// The same probe through the exported, context-based accessor (what an
+	// HTTP handler actually calls) must agree.
+	if _, err := mgr.GetForTenant(tenantContext("tenant-b"), "acme-ledger"); !errors.As(err, &ownedNotFound) {
+		t.Fatalf("GetForTenant cross-tenant on a DROPPING database = %v (%T), want *NotFoundError", err, err)
+	}
+}
+
 func TestManager_DropForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()

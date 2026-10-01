@@ -245,7 +245,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// a database being dropped and supplies the incarnation its views are
 	// guarded by, so no drop can start between the two (see
 	// managedDatabase).
-	managed, err := r.managedDatabase(db)
+	managed, err := r.managedDatabase(tenantID, db)
 	if err != nil {
 		return nil, err
 	}
@@ -469,12 +469,7 @@ func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Data
 	if err != nil {
 		return nil, false
 	}
-	owner := dbase.TenantID()
-	if tenantID == r.systemTenant {
-		if owner != "" && owner != r.systemTenant {
-			return nil, false
-		}
-	} else if owner != tenantID {
+	if !ownsManagedRecord(r.systemTenant, tenantID, dbase.TenantID()) {
 		return nil, false
 	}
 	return dbase, true
@@ -590,15 +585,26 @@ func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 //
 // This is a RESOLUTION-time refusal: it keeps new handles from being handed
 // out. Handles already in hand are refused by the store fence their writes
-// carry (see databaseFence), not by this check.
-func (r *restServiceRegistry) refuseIfDropping(db string) error {
+// carry (see databaseFence) -- except the vector view, whose writes are not
+// Raft proposals and so carry no such fence; its handle is this function's
+// one caller, re-invoked on every write, and incarnation is how it is
+// refused too. A live record for db that is not dropping is not enough: a
+// handle resolved before a drop+recreate cycle names the OLD incarnation,
+// and the CURRENT record -- a different, healthy database under the same
+// name -- would otherwise answer "not dropping" and let the stale write
+// land in the namespace the new database now owns. incarnation is empty for
+// a caller with no incarnation to pin (there is none to compare against).
+func (r *restServiceRegistry) refuseIfDropping(db, incarnation string) error {
 	if db == "" || r.dbManager == nil {
 		return nil
 	}
-	_, err := r.dbManager.Get(db)
+	current, err := r.dbManager.Get(db)
 	var dropping *database.DroppingError
 	if errors.As(err, &dropping) {
 		return dropping
+	}
+	if err == nil && incarnation != "" && current.Incarnation() != incarnation {
+		return &database.DroppingError{Name: db}
 	}
 	return nil
 }
@@ -774,12 +780,14 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 		}
 		return databaseFence{}, nil
 	}
-	return newDatabaseFence(tenantID, db, managed.db.Incarnation(), func() error { return r.refuseIfDropping(db) })
+	incarnation := managed.db.Incarnation()
+	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(db, incarnation) })
 }
 
-// managedDatabase returns db's catalog record, or nil for a name the
-// database.Manager has never held (and nil for the unscoped name, or when
-// no manager is wired in).
+// managedDatabase returns db's catalog record when tenantID owns it, or the
+// zero managedRecord for a name the database.Manager has never held, one it
+// holds for a DIFFERENT tenant, or the unscoped name, or when no manager is
+// wired in.
 //
 // It is resolve's ONE catalog lookup, and that is the point: the refusal of
 // a database being dropped and the incarnation its views are guarded by come
@@ -787,17 +795,29 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 // incarnation read -- let a drop that started between them produce a view
 // with no guard at all, writing into a keyspace the drop reclaims.
 //
-// Every error is returned: *database.DroppingError for a database being
-// dropped, and anything else the lookup reports. A missing record reports
-// whether this node dropped the name (database.Manager.WasDropped): for a
-// database in a store this node's catalog governs, that is a database that
-// no longer exists, not a name it never held.
-func (r *restServiceRegistry) managedDatabase(db string) (managedRecord, error) {
+// The lookup is GetIgnoringFence, NOT Get: Get's drop-fence refusal
+// (DroppingError) fires before ownership is ever checked, so a lookup of
+// ANOTHER tenant's DROPPING database returned DroppingError (409/ABORTED)
+// while the same tenant's lookup of a merely-absent name returned
+// NotFoundError (404/NOT_FOUND) -- the oracle SEC-8(b) exists to close.
+// Ownership is checked here instead, mirroring ownedDatabase's rule (the
+// system tenant sees an unowned or system-owned record, every other tenant
+// sees only its own), and a record that fails it is treated as no record at
+// all: resolve's own existence check (databaseExists) answers NotFoundError
+// for it exactly as it would for a name nobody has ever held. DroppingError
+// is therefore only ever returned for the CALLER's own database.
+func (r *restServiceRegistry) managedDatabase(tenantID, db string) (managedRecord, error) {
 	if db == "" || r.dbManager == nil {
 		return managedRecord{}, nil
 	}
-	dbase, err := r.dbManager.Get(db)
+	dbase, err := r.dbManager.GetIgnoringFence(db)
 	if err == nil {
+		if !ownsManagedRecord(r.systemTenant, tenantID, dbase.TenantID()) {
+			return managedRecord{}, nil
+		}
+		if dbase.Dropping() {
+			return managedRecord{}, &database.DroppingError{Name: db, TenantID: tenantID}
+		}
 		return managedRecord{db: dbase}, nil
 	}
 	var notFound *database.NotFoundError
@@ -809,6 +829,16 @@ func (r *restServiceRegistry) managedDatabase(db string) (managedRecord, error) 
 		return managedRecord{}, derr
 	}
 	return managedRecord{droppedHere: dropped, notFound: notFound}, nil
+}
+
+// ownsManagedRecord applies the same ownership rule as ownedDatabase (see its
+// doc comment): the system tenant sees a record with no owner or the system
+// owner; every other tenant sees only a record it owns itself.
+func ownsManagedRecord(systemTenant, tenantID, owner string) bool {
+	if tenantID == systemTenant {
+		return owner == "" || owner == systemTenant
+	}
+	return owner == tenantID
 }
 
 // managedRecord is what managedDatabase found for a name.

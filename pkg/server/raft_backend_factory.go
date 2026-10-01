@@ -392,12 +392,29 @@ func NewRaftBackendFactoryFromManager(
 // pInfo, infoOK are re-read from the info source on every call rather than
 // cached on rs, because the whole point is to observe a fence set (or an
 // entry deleted) AFTER rs was populated (go-qrdb#482).
+//
+// A shard ID mismatch is refused the same as Dropping: the shard IS the
+// incarnation (see the comment where the vector fence is built), so
+// placement naming a DIFFERENT shard than rs means the name was dropped and
+// created again after rs was resolved. cachedServicesLocked's caller already
+// filters this case out before reaching here -- it evicts the stale entry
+// and resolves the current shard instead, so the check below never fires on
+// that path -- but RefuseIfDropping, the vector view's check-before-write
+// fence, calls straight in with the shard it cached at resolution time and
+// has no such pre-filter. Without this, a vector write made through a
+// handle resolved before the drop would check a CURRENT placement record
+// that is healthy -- it belongs to the new incarnation, not Dropping at all
+// -- and never refuse, so the stale handle would keep writing into a
+// namespace a database create-again now owns.
 func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raftShard) error {
 	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
 	if err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
 	}
 	if infoOK {
+		if pInfo.ShardID != rs.shardID {
+			return &database.DroppingError{Name: db}
+		}
 		return refusalFromPlacement(db, pInfo)
 	}
 	if rs.hadPlacement {

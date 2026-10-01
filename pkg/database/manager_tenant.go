@@ -240,13 +240,25 @@ func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *S
 // another tenant owns alike. Database names are one node-wide namespace, so
 // answering another tenant's database with an access denial told the caller
 // which names other tenants use; the two answers are now the same.
+//
+// Ownership is checked directly against the catalog (m.databases), NOT
+// through Get: Get's drop-fence refusal (DroppingError) fires before an
+// ownership check ever would, so routing through it answered a cross-tenant
+// probe of someone else's DROPPING database with 409/ABORTED while an
+// ordinary missing name got 404/NOT_FOUND -- the exact oracle this function
+// exists to close (SEC-8(b)). The fence is therefore checked AFTER
+// ownership, and only for the caller's own database.
 func (m *Manager) getOwned(name, tenantID string) (*Database, error) {
-	db, err := m.Get(name)
-	if err != nil {
-		return nil, err
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return nil, &NotFoundError{Name: name}
 	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	if db.TenantID() != tenantID {
 		return nil, &NotFoundError{Name: name}
+	}
+	if db.Dropping() {
+		return nil, &DroppingError{Name: name, TenantID: tenantID}
 	}
 	return db, nil
 }

@@ -167,7 +167,7 @@ func (r *restServiceRegistry) journaledCollectionService(tenantID, db string) (s
 	// reclamation itself, so it is fenced exactly like any other write to
 	// this database's keyspace: a drop in flight refuses it, same as a
 	// request that resolved the same (tenant, db) through resolve.
-	managed, err := r.managedDatabase(db)
+	managed, err := r.managedDatabase(tenantID, db)
 	if err != nil {
 		return nil, err
 	}
