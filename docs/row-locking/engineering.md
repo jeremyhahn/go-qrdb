@@ -178,14 +178,24 @@ lease  = the owning transaction's lease
    per key.
 7. **A timed-out or cancelled request deletes its own waiting records** before
    it returns, so it stops blocking the requests queued behind it. Records the
-   owner already held stay held.
+   owner already held stay held. The delete is best-effort: if the store
+   refuses it, the request still fails with its own error, and the stale
+   waiting record stays queued — blocking the requests behind it, and visible
+   to the deadlock detector as a wait — until the owner's transaction ends or
+   its lease expires, the same bound as its held locks.
 8. **Deadlock detection runs once per wait, after enqueue, before waiting**,
    over at most `MaxDetectionRecords` (10,000) records read linearizably. A
    cycle through the requester, or a lock table larger than the bound, makes
    the requester the victim.
 9. **A missing own record is a lost lock.** A waiter whose record disappeared
    (its lease expired, or the database's namespace was reclaimed) fails with
-   `*rowlock.LockLostError` and its transaction is rolled back.
+   `*rowlock.LockLostError` and its transaction is rolled back. So does a
+   request whose lease is found gone just after its enqueue (expired or swept
+   before the keepalive noticed): after every enqueue the owner reads its
+   lease back linearizably, and a missing lease means the records may have
+   been written attached to nothing — the state machine stores a write whose
+   lease no longer exists without attaching it — so the request deletes them
+   explicitly, fails with `LockLostError`, and the owner is released.
 10. **One database per owner.** An owner is bound to the first database it
     locks in; locking in a second is refused with
     `provider.CrossDatabaseTransactionError` before anything is written.
@@ -353,6 +363,7 @@ A statement that locks N rows it does not already hold costs, uncontended:
 | Step | Cost | Batched? |
 |---|---|---|
 | enqueue | ⌈N / 1,000⌉ Raft proposals | yes, per proposal batch |
+| lease check | one linearizable lease read after the enqueue (invariant 9) | once per request |
 | grant evaluation | N linearizable range reads, one per row's queue | no |
 | current reads | N linearizable point reads (`GetRevision`) | no |
 | deadlock detection | one linearizable range read of the lock table, only when a request has to wait | — |

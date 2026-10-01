@@ -130,7 +130,14 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 	o.mu.Unlock()
 
 	written, err := t.enqueue(ctx, pending, o.id, mode, leaseID)
+	if err == nil {
+		err = t.leaseAlive(ctx, leaseID)
+	}
 	if err != nil {
+		var gone *service.LeaseNotFoundError
+		if errors.As(err, &gone) {
+			return o.lostAtEnqueue(ctx, t, written, pending[0], mode)
+		}
 		o.withdrawBestEffort(ctx, t, written, mode)
 		return err
 	}
@@ -391,6 +398,27 @@ func (o *Owner) Release(ctx context.Context) error {
 	return nil
 }
 
+// lostAtEnqueue handles a lease found ended at enqueue: expired, or revoked
+// by the leader's sweep, after the owner's last renewal and before the
+// keepalive noticed. Every record the owner held went with the lease, so the
+// transaction has lost its locks; the request fails with *LockLostError and
+// the owner is released, exactly as a waiter whose record disappeared.
+//
+// The records this request just wrote are deleted explicitly. A write that
+// carries a lease ID no longer in the lessor is stored but attached to
+// nothing (the state machine does not refuse it), so no lease revoke or
+// expiry would ever remove it: left behind, it would block its row forever.
+func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, key string, mode Mode) error {
+	if len(written) > 0 {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		_ = t.withdraw(rctx, written, o.id, mode)
+		cancel()
+	}
+	_ = o.Release(ctx)
+	requests(mode, outcomeLost).Inc()
+	return &LockLostError{Key: key}
+}
+
 // releaseAfterLoss releases an owner whose lease was found lost.
 func (o *Owner) releaseAfterLoss(ctx context.Context) {
 	_ = o.Release(ctx)
@@ -399,8 +427,21 @@ func (o *Owner) releaseAfterLoss(ctx context.Context) {
 // withdrawBestEffort deletes the owner's records for mode on the keys of
 // keys it does not hold in mode (a granted lock stays held until Release),
 // detached from ctx's cancellation for the same reason as Release. A failure
-// is not returned: the records are bound to the lease, which Release or
-// expiry removes regardless.
+// is not returned: the caller is already failing the request with the error
+// that made it withdraw, and the records are bound to the lease, which
+// Release or expiry removes regardless.
+//
+// What a failed withdraw costs: the owner's transaction stays open after a
+// lock-wait timeout or NOWAIT (only the statement fails), so a waiting
+// record that could not be deleted stays in its row's queue until that
+// transaction ends. Until then it blocks every request queued behind it as
+// a waiter would, and the deadlock detector sees the owner as waiting on
+// that row, which can make a later request the victim of a cycle through a
+// wait that no longer exists. Both end at the owner's COMMIT, ROLLBACK,
+// session end or lease expiry -- the same bound as every other lock it
+// holds. A failed withdraw requires the store to refuse a delete the same
+// owner's enqueue just succeeded at, so it is the rare path, not the
+// common one.
 func (o *Owner) withdrawBestEffort(ctx context.Context, t *Table, keys []string, mode Mode) {
 	o.mu.Lock()
 	unheld := make([]string, 0, len(keys))

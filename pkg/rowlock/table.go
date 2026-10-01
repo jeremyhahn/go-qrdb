@@ -183,6 +183,19 @@ func (t *Table) enqueue(ctx context.Context, keys []string, owner string, mode M
 	return written, nil
 }
 
+// leaseAlive confirms, with a linearizable read issued after an enqueue
+// has been applied, that leaseID still exists. Raft orders the enqueue and
+// any revoke of the lease (an explicit revoke or the leader's expiry
+// sweep): if the lease is still present now, the revoke has not been
+// applied yet, so the records were written while it existed, were attached
+// to it, and will go with it. If it is gone, the records may have been
+// written after it ended and attached to nothing; the caller removes them
+// (see Owner.lostAtEnqueue). A missing lease is *service.LeaseNotFoundError.
+func (t *Table) leaseAlive(ctx context.Context, leaseID int64) error {
+	_, err := t.deps.Lease.TimeToLive(ctx, leaseID)
+	return err
+}
+
 // withdraw deletes owner's records for mode on keys.
 func (t *Table) withdraw(ctx context.Context, keys []string, owner string, mode Mode) error {
 	for start := 0; start < len(keys); start += maxRecordsPerProposal {

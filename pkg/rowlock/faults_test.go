@@ -203,3 +203,48 @@ func TestAcquire_CorruptRecordInQueue_IsReported(t *testing.T) {
 	var corrupt *CorruptRecordError
 	require.ErrorAs(t, a.Acquire(context.Background(), s.table(t), []string{keyA}, ModeShared, 0), &corrupt)
 }
+
+// A lease that ends between the owner's last renewal and its next enqueue
+// (expired, or revoked by the leader's sweep) is a lost lock: every record
+// the transaction held went with the lease, so the request must not surface
+// as an infrastructure error the caller could retry inside the same
+// transaction.
+func TestAcquire_EnqueueOnAnEndedLease_IsALostLock(t *testing.T) {
+	s := newStack(t)
+	tbl := s.table(t)
+	a := NewOwner()
+	t.Cleanup(func() { _ = a.Release(context.Background()) })
+	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
+	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.leaseID))
+	require.False(t, a.lost.Load(), "the keepalive has not noticed yet")
+
+	err := a.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0)
+	var lost *LockLostError
+	require.ErrorAs(t, err, &lost)
+	assert.Equal(t, keyB, lost.Key)
+	assert.False(t, a.Active(), "a lost owner is released")
+	var released *OwnerReleasedError
+	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyC}, ModeShared, 0), &released)
+	assert.Empty(t, queueOwners(t, tbl, keyB), "no record was left behind")
+}
+
+// failingTimeToLive refuses every lease lookup.
+type failingTimeToLive struct{ service.LeaseServicer }
+
+func (failingTimeToLive) TimeToLive(context.Context, int64) (*lease.Lease, error) {
+	return nil, &injectedError{op: "ttl"}
+}
+
+func TestAcquire_LeaseCheckFailure_IsReturnedAndWithdraws(t *testing.T) {
+	s := newStack(t)
+	d := s.deps
+	d.Lease = failingTimeToLive{LeaseServicer: s.deps.Lease}
+	tbl, err := New(d, "acme/shop")
+	require.NoError(t, err)
+	a := NewOwner()
+	t.Cleanup(func() { _ = a.Release(context.Background()) })
+	var inj *injectedError
+	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0), &inj)
+	assert.Empty(t, queueOwners(t, s.table(t), keyA), "an unconfirmed request is withdrawn")
+	assert.True(t, a.Active(), "an infrastructure failure is not a lost lock")
+}
