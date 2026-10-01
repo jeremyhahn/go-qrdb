@@ -691,6 +691,22 @@ Each gate is two steps with different conditions:
    unavailable. A role reference with no role service to check it is
    `*role.ServiceRequiredError`: a refusal, never an unvalidated write.
 
+The user store then applies `user.NormalizeRoleBindings` to the request's
+bindings against the decoded record, before the first index mutation, so it
+holds on every path that writes a user and with or without the gate:
+
+- **Each `TenantID` is stored as `tenant.Normalize` folds it.** `boundRoleIDs`
+  compares it with `tenant.FromContext`, which is always normalized, so a
+  binding stored as `""` would never match a request. The request's slice is
+  copied, not edited.
+- **A non-system user's binding must name its own tenant.** RBAC's scope rule
+  refuses a non-system identity every request whose target is another tenant
+  before any binding is consulted, so a binding elsewhere is a grant that can
+  never apply. It is refused with `*user.RoleBindingTenantError`
+  (`InvalidArgument`, 400) rather than stored as one that reads as live. A
+  system-tenant user may hold bindings in any tenant: that is the cross-tenant
+  grant bindings exist to express.
+
 `AssignRole` and `UnassignRole` pass the same gate on every transport,
 embedded included: `AssignRole` is `AuthorizeRoleAssignmentWrite` with the
 one role being added (`roles:assign` in the user's tenant, and the role must

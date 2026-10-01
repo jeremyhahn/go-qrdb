@@ -68,7 +68,8 @@ are not reconstructed here — their history is in the git log.
   apply to bound roles as they do to held ones.
 - `embedded.WithAuthMiddleware`; `sdk/go/node` hands the embedded transport the same
   `AuthMiddleware` its network transports enforce with. The SDK re-exports
-  `RoleNotAssignableError`, `RoleServiceRequiredError` and `UserFactorLookupError`.
+  `RoleNotAssignableError`, `RoleServiceRequiredError`, `RoleBindingTenantError` and
+  `UserFactorLookupError`.
 - **The permitted-authentication-method rule is exported.**
   `CheckAuthMethod(user, method)` in `pkg/auth/middleware` is the function the
   authentication gate runs, re-exported as `sdk.CheckAuthMethod` together with
@@ -311,6 +312,15 @@ are not reconstructed here — their history is in the git log.
   volume-isolated create through it needs an identity in the context holding
   `databases:create_raft` / `databases:create_volume`, as on every other
   transport.
+- A `roleBindings` entry on a user outside the system tenant must name that user's own tenant;
+  any other is refused with `user.RoleBindingTenantError` (400 / `INVALID_ARGUMENT`), because
+  such a user is refused every request on another tenant before a binding is consulted and the
+  binding could never grant. A system-tenant user may hold bindings in any tenant. A binding's
+  tenant is stored normalized, so an empty tenant is stored as `system`.
+- MCP user records render `certBindings[].kind` as its string label (`spki_thumbprint`,
+  `full_cert_fingerprint`, `piv_attested`) instead of the numeric ordinal, matching REST, gRPC
+  and QUIC, and omit `certBindings[].notAfter` when the binding has no expiry instead of
+  sending the zero time.
 
 ### Changed
 

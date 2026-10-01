@@ -474,6 +474,9 @@ var identityRules = []rule{
 	as(&user.SystemUserAlreadyExistsError{}, AlreadyExists),
 	// The System flag asked for outside the system tenant: a bad field value.
 	as(&user.SystemTenantRequiredError{}, InvalidArgument),
+	// A RoleBinding naming another tenant on a non-system user, which could
+	// never grant: a bad field value in the write.
+	as(&user.RoleBindingTenantError{}, InvalidArgument),
 	// A thumbprint already bound to ANOTHER user: rebinding it silently would
 	// hand the caller that user's mTLS identity (go-qrdb#536).
 	as(&user.CertBindingConflictError{}, AlreadyExists),

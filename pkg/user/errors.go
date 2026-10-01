@@ -111,6 +111,26 @@ func (e *SystemTenantRequiredError) Error() string {
 	return "user: system flag requires the system tenant, got: " + e.TenantID
 }
 
+// RoleBindingTenantError is returned when a write would give a non-system
+// user a RoleBinding naming a tenant other than its own. A binding grants only
+// on a request whose target is the tenant it names, and RBAC refuses a
+// non-system identity every request outside its own tenant before any binding
+// is consulted, so such a binding could never grant anything. It is refused at
+// write rather than stored as a dead grant that reads as a live one.
+type RoleBindingTenantError struct {
+	UserID          uint64
+	UserTenantID    string
+	BindingTenantID string
+}
+
+// Error returns a human-readable description of the refused binding.
+func (e *RoleBindingTenantError) Error() string {
+	return "user: role binding in tenant " + e.BindingTenantID +
+		" can never apply to user " + strconv.FormatUint(e.UserID, 10) +
+		" of tenant " + e.UserTenantID +
+		": only a system-tenant user may hold a binding outside its own tenant"
+}
+
 // SystemUserAlreadyExistsError is returned when a caller asks to create or
 // promote a second System user. At most one such record may exist in the
 // store at any time -- the single, cluster-wide bootstrap admin.

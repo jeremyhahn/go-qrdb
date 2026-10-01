@@ -505,6 +505,7 @@ of its own, and the listing never contains one.
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
+| `roleBindings` entry naming a tenant other than a non-system user's own (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
 | The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
 | A user/role request whose body (REST) or payload (QUIC) names its tenant does not decode | 400 | `INVALID_ARGUMENT` |

@@ -117,6 +117,12 @@ func (u *BindingUsers) UpdateUser(ctx context.Context, req *user.UpdateUserReque
 	if err != nil {
 		return nil, err
 	}
+	// The store's own rule, applied before anything is recorded so a refused
+	// write leaves no trace, exactly as production refuses before writing.
+	bindings, berr := user.NormalizeRoleBindings(rec.ID, rec.TenantID, req.RoleBindings)
+	if berr != nil {
+		return nil, berr
+	}
 	u.mu.Lock()
 	u.updated = append(u.updated, req.ID)
 	u.mu.Unlock()
@@ -127,7 +133,7 @@ func (u *BindingUsers) UpdateUser(ctx context.Context, req *user.UpdateUserReque
 		rec.RoleIDs = append([]string(nil), req.RoleIDs...)
 	}
 	if req.RoleBindings != nil {
-		rec.RoleBindings = append([]user.RoleBinding(nil), req.RoleBindings...)
+		rec.RoleBindings = bindings
 	}
 	u.mu.Lock()
 	u.records[rec.ID] = rec

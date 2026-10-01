@@ -114,6 +114,12 @@ var ComputeSPKIThumbprint = user.ComputeSPKIThumbprint
 // It is returned instead of a user reported as having no second factor.
 type UserFactorLookupError = user.FactorLookupError
 
+// RoleBindingTenantError is returned when an UpdateUser write would give a
+// user outside the system tenant a RoleBinding naming another tenant, which
+// could never grant: such a user is refused every request on another tenant
+// before a binding is consulted.
+type RoleBindingTenantError = user.RoleBindingTenantError
+
 // UserValidationError is returned when a user request fails validation.
 type UserValidationError = user.ValidationError
 

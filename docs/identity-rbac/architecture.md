@@ -308,6 +308,15 @@ commits — whether or not RBAC is enabled. See
 [engineering.md](engineering.md#authorization-model) for the mechanism and
 its tests.
 
+The user store owns two invariants on `RoleBindings`, so they hold whatever
+path the write took. Each binding's `TenantID` is stored normalized (an empty
+tenant becomes `system`), because the read side matches it against the
+normalized target tenant. And a non-system user may hold a binding only in its
+own tenant: RBAC refuses such an identity every request outside that tenant
+before any binding is consulted, so a binding elsewhere could never grant, and
+the write is refused with `user.RoleBindingTenantError` instead of storing a
+grant that reads as live and is not.
+
 ### Alternatives rejected
 
 - **Passwords.** Rejected outright — the user model is passwordless. There is no

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -173,6 +174,42 @@ func TestAssignRole_GoesThroughTheRoleAssignmentGate(t *testing.T) {
 			assigned := slices.Contains(users.User(authtest.UserInBindingTenant).RoleIDs, tt.roleID)
 			if assigned != (tt.status == http.StatusOK) {
 				t.Fatalf("assigned = %v, want %v", assigned, tt.status == http.StatusOK)
+			}
+		})
+	}
+}
+
+// TestUpdateUser_DeadRoleBindingIsRefused writes RoleBindings through the
+// REST update route with no RBAC configured, so the only refusal left is the
+// store's: a binding outside a non-system user's own tenant could never grant
+// and is refused as a bad field, while the same binding on a system-tenant
+// user is the cross-tenant grant bindings exist for.
+func TestUpdateUser_DeadRoleBindingIsRefused(t *testing.T) {
+	globexAdmin := role.SystemRoleID(authtest.OtherTenant, role.RoleNameAdmin)
+	acmeUser := role.SystemRoleID(authtest.BindingTenant, role.RoleNameUser)
+	tests := []struct {
+		name    string
+		userID  uint64
+		binding string
+		status  int
+	}{
+		{name: "another tenant on a tenant user", userID: authtest.UserInBindingTenant, binding: `{"role_id":"` + globexAdmin + `","tenant_id":"` + authtest.OtherTenant + `"}`, status: http.StatusBadRequest},
+		{name: "own tenant on a tenant user", userID: authtest.UserInBindingTenant, binding: `{"role_id":"` + acmeUser + `","tenant_id":"` + authtest.BindingTenant + `"}`, status: http.StatusOK},
+		{name: "another tenant on a system user", userID: authtest.BindingOperatorID, binding: `{"role_id":"` + globexAdmin + `","tenant_id":"` + authtest.OtherTenant + `"}`, status: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := authtest.NewBindingUsers()
+			roles := authtest.BindingRoles(t)
+			srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+				WithUserService(users), WithRoleService(roles))
+			before := len(users.User(tt.userID).RoleBindings)
+			rec := serve(srv, http.MethodPut, "/users/"+strconv.FormatUint(tt.userID, 10), `{"role_bindings":[`+tt.binding+`]}`)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
+			}
+			if tt.status != http.StatusOK && len(users.User(tt.userID).RoleBindings) != before {
+				t.Fatalf("refused binding was stored: %+v", users.User(tt.userID).RoleBindings)
 			}
 		})
 	}

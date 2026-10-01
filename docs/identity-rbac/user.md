@@ -159,6 +159,12 @@ tenant's copy. A role that does not exist, or belongs to some other tenant —
 including the system tenant's built-ins — is refused before anything
 is written.
 
+Only a system-tenant user can hold a binding outside its own tenant. A user
+that belongs to tenant `acme` is refused every request on any other tenant
+before a binding is looked at, so a `globex` binding on it could never grant
+anything; it is refused with 400 rather than stored. An empty tenant in a
+binding means the system tenant and is stored as `system`.
+
 An attribute set with `--attribute` is visible to ABAC policies as
 `subject.user_attrs.<name>` (or the match key `user_attrs.<name>`), never as
 a certificate or token attribute: setting `--attribute organization=acme`

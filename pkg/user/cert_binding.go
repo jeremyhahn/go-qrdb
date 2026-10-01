@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -29,6 +30,34 @@ import (
 type RoleBinding struct {
 	RoleID   string `json:"roleID"`
 	TenantID string `json:"tenantID"`
+}
+
+// NormalizeRoleBindings returns bindings as they are stored on the user with
+// id userID in userTenant: each TenantID folded onto its canonical form with
+// tenant.Normalize, in a new slice so the caller's request is not mutated.
+// The read side compares a binding's TenantID with the normalized target
+// tenant, so a binding stored as "" would never match anything.
+//
+// A non-system user may hold a binding only in its own tenant, and any other
+// is refused with *RoleBindingTenantError: RBAC refuses such a user every
+// request outside its own tenant before a binding is consulted, so the
+// binding could never grant. A nil bindings is returned as nil, keeping the
+// leave-alone meaning UpdateUserRequest gives it.
+func NormalizeRoleBindings(userID uint64, userTenant string, bindings []RoleBinding) ([]RoleBinding, error) {
+	if bindings == nil {
+		return nil, nil
+	}
+	userTenant = tenant.Normalize(userTenant)
+	inSystem := tenant.IsSystemTenant(userTenant)
+	out := make([]RoleBinding, len(bindings))
+	for i, b := range bindings {
+		b.TenantID = tenant.Normalize(b.TenantID)
+		if !inSystem && b.TenantID != userTenant {
+			return nil, &RoleBindingTenantError{UserID: userID, UserTenantID: userTenant, BindingTenantID: b.TenantID}
+		}
+		out[i] = b
+	}
+	return out, nil
 }
 
 // CertBindingKind identifies how an mTLS certificate is matched to a user.

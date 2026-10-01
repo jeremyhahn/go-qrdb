@@ -1154,6 +1154,13 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		return nil, aerr
 	}
 
+	// Role bindings depend on the record's tenant, so they are checked here,
+	// once it is decoded, and still before the first index mutation.
+	roleBindings, rberr := NormalizeRoleBindings(existing.ID, existing.TenantID, req.RoleBindings)
+	if rberr != nil {
+		return nil, rberr
+	}
+
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
 	// guaranteed no-op. It is validated against the state as COMMITTED — the
@@ -1445,7 +1452,7 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		existing.RoleIDs = req.RoleIDs
 	}
 	if req.RoleBindings != nil {
-		existing.RoleBindings = req.RoleBindings
+		existing.RoleBindings = roleBindings
 	}
 	if req.Attributes != nil {
 		existing.Attributes = req.Attributes
