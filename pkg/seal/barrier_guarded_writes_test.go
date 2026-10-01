@@ -34,8 +34,13 @@ import (
 	"testing"
 )
 
-// nonGuardedBackend is a StorageBackend with no guarded verbs at all, so the
-// barrier's capability probe takes its unsupported branch.
+// nonGuardedBackend is a StorageBackend with no guarded SWAP of its own, so
+// the barrier's SWAP capability probe takes its unsupported branch. It is
+// NOT a backend with no guarded verbs at all: embedding StorageBackend means
+// it inherits CompareAndDelete by promotion, since StorageBackend declares
+// that verb unconditionally (guardedDeleteBackend in barrier.go). Only the
+// swap probe can ever be defeated through this type; the delete probe cannot
+// (storageBackendImpliesGuardedDelete below).
 type nonGuardedBackend struct{ StorageBackend }
 
 // failingGetBackend returns a non-ErrSecretNotFound error from Get, which the

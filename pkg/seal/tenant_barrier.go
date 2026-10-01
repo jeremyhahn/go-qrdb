@@ -210,6 +210,11 @@ func (n *NamespacedBackend) PutIfAbsent(ctx context.Context, key string, data []
 // CompareAndDelete removes the namespaced key only when its stored value
 // still equals expected.
 func (n *NamespacedBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	// n.base is typed StorageBackend, which guardedDeleteBackend's doc comment
+	// (and storageBackendImpliesGuardedDelete in barrier_guarded_writes_test.go)
+	// establishes it always satisfies, so !ok is unreachable here. Kept for
+	// symmetry with the genuinely-fallible CompareAndSwap probe below
+	// (go-qrdb#552).
 	guarded, ok := n.base.(guardedDeleteBackend)
 	if !ok {
 		return false, ErrGuardedDeleteUnsupported

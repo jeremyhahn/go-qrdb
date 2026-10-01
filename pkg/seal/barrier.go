@@ -875,23 +875,34 @@ func (b *StorageBarrier) PutIfAllAbsent(ctx context.Context, key string, value [
 // guardedDeleteBackend is the release half of the storage-backend contract:
 // a delete conditioned on the value the caller last observed.
 //
-// It is ASSERTED rather than required because seal.StorageBackend is a type
-// alias for go-quicraft's interface, which carries PutIfAbsent but not its
-// guarded delete. This module cannot add a method to an upstream interface,
-// so the capability is discovered and a backend genuinely lacking it refuses
-// with ErrGuardedDeleteUnsupported rather than degrading to a read followed
-// by an unguarded delete — which is precisely the window the operation
-// exists to close (go-qrdb#41). Every backend in this repository implements
-// it; the assertion exists for the upstream gap, not for a local one.
+// Unlike guardedSwapBackend below, this probe can never fail: go-quicraft's
+// StorageBackend interface already declares CompareAndDelete with this exact
+// signature (alongside PutIfAbsent), so every value satisfying StorageBackend
+// already satisfies guardedDeleteBackend. storageBackendImpliesGuardedDelete
+// in barrier_guarded_writes_test.go pins that as a compile-time fact. The
+// interface, the type assertion at each call site, and
+// ErrGuardedDeleteUnsupported are kept anyway — not to guard
+// against a gap that exists today, but so this verb keeps reading
+// symmetrically with guarded, and so that if a future go-quicraft release
+// ever narrows StorageBackend, the loss is caught by a failing test build
+// (storageBackendImpliesGuardedDelete) rather than by the probe silently
+// starting to fail closed (go-qrdb#552).
 type guardedDeleteBackend interface {
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
 }
 
 // guardedSwapBackend is the edit half of the same contract. It is a separate
-// interface from guardedDeleteBackend rather than one combined one so a
-// backend can offer either capability independently — a store may gain the
-// guarded swap without gaining the guarded delete, and a type assertion that
-// demanded both would refuse it for the wrong reason.
+// interface from guardedDeleteBackend rather than one combined one because
+// only ONE of the two is ever actually optional: StorageBackend guarantees
+// CompareAndDelete unconditionally (see guardedDeleteBackend above), but says
+// nothing about CompareAndSwap. A combined interface would make a type
+// assertion fail purely for lack of swap, yet read as though delete were
+// missing too.
+//
+// This probe, unlike guardedDeleteBackend's, is a real discriminator:
+// StorageBackend does NOT declare CompareAndSwap, so a backend can
+// legitimately fail this assertion and take the ErrGuardedSwapUnsupported
+// arm below.
 type guardedSwapBackend interface {
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
@@ -903,10 +914,13 @@ type guardedSwapBackend interface {
 // eliminate.
 var ErrGuardedSwapUnsupported = errors.New("seal: storage backend has no guarded swap")
 
-// ErrGuardedDeleteUnsupported is returned when a storage backend offers no
-// guarded delete. There is no safe fallback: a read followed by an
-// unguarded delete can remove a value another caller legitimately wrote in
-// between.
+// ErrGuardedDeleteUnsupported mirrors ErrGuardedSwapUnsupported for the
+// delete verb, but is unreachable today: see guardedDeleteBackend and
+// storageBackendImpliesGuardedDelete for why the probe that would return it
+// can never fail. It stays defined, and the arm that would return it stays
+// in place, purely so the two verbs keep reading symmetrically and so a
+// future go-quicraft release that narrows StorageBackend has a sentinel
+// already waiting for the arm it would make reachable (go-qrdb#552).
 var ErrGuardedDeleteUnsupported = errors.New("seal: storage backend has no guarded delete")
 
 // CompareAndDelete removes key only when the value stored there still
@@ -942,6 +956,10 @@ func (b *StorageBarrier) CompareAndDelete(ctx context.Context, key string, expec
 	if !bytes.Equal(plaintext, expected) {
 		return false, nil
 	}
+	// b.base is typed StorageBackend, which guardedDeleteBackend's doc comment
+	// (and storageBackendImpliesGuardedDelete) establishes it always
+	// satisfies, so !ok is unreachable here. Kept for symmetry with the
+	// genuinely-fallible CompareAndSwap probe below (go-qrdb#552).
 	guarded, ok := b.base.(guardedDeleteBackend)
 	if !ok {
 		return false, ErrGuardedDeleteUnsupported
