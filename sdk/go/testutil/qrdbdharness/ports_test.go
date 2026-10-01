@@ -59,6 +59,7 @@ func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
 		t.Fatalf("ReserveUDPPorts: %v", err)
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, with no arguments; the helper mode travels in a compile-time-literal environment entry. No shell is involved.
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), helperEnv+"="+reservePortsHelperMode)
 	var stderr strings.Builder

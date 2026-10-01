@@ -115,6 +115,7 @@ func TestSOPIN_RedirectToAnotherHostNeverCarriesThePIN(t *testing.T) {
 	foreign := httptest.NewTLSServer(probe.handler())
 	defer foreign.Close()
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// #nosec G710 -- the open redirect is the fixture: it sends the client to this test's own second httptest server to prove the SO PIN does not follow.
 		http.Redirect(w, r, foreign.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
