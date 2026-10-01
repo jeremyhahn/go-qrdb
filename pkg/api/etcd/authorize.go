@@ -94,24 +94,75 @@ func (s *Server) unaryAuthorize(ctx context.Context, req any, info *grpc.UnarySe
 	return handler(actx, req)
 }
 
+// StreamGuard is implemented by a RequestAuthorizer whose database can stop
+// serving while a stream is open. GuardStream returns a channel that closes
+// when the database stops serving -- it is sealed or dropped -- and the error
+// the stream then ends with, carrying its gRPC status.
+type StreamGuard interface {
+	GuardStream(ctx context.Context) (unserved <-chan struct{}, refusal func() error, err error)
+}
+
 // streamAuthorize is the stream interceptor every etcd stream passes
-// through. The authorization is made once, when the stream opens: a stream
-// already open when its database is sealed or dropped, or its caller loses
-// the permission, runs until it ends. That limit is documented in
-// docs/etcd-compatibility/engineering.md.
+// through. The authorization is made when the stream opens; when the
+// authorizer is a StreamGuard, the stream also ends -- with the database's
+// typed refusal -- the moment its database is sealed or dropped, instead of
+// running on over a database every new request is refused. A change to the
+// caller's roles takes effect on its next stream, not on one already open.
 func (s *Server) streamAuthorize(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	actx, err := s.authorizeRPC(ss.Context(), info.FullMethod)
 	if err != nil {
 		return err
 	}
-	return handler(srv, &authorizedStream{ServerStream: ss, ctx: actx})
+	stream := &authorizedStream{ServerStream: ss, ctx: actx}
+	if guard, ok := s.opts.authorizer.(StreamGuard); ok {
+		unserved, refusal, err := guard.GuardStream(actx)
+		if err != nil {
+			return err
+		}
+		stream.unserved, stream.refusal = unserved, refusal
+	}
+	return handler(srv, stream)
 }
 
-// authorizedStream carries the authorized context into a stream handler.
+// authorizedStream carries the authorized context into a stream handler and,
+// when guarded, ends the stream once its database stops serving.
 type authorizedStream struct {
 	grpc.ServerStream
-	ctx context.Context
+	ctx      context.Context
+	unserved <-chan struct{}
+	refusal  func() error
 }
 
 // Context returns the authorized context.
 func (a *authorizedStream) Context() context.Context { return a.ctx }
+
+// RecvMsg receives the next client message, or answers the database's
+// refusal as soon as the database stops serving -- a client that sends
+// nothing more must not hold a stream open on a sealed database. The pending
+// receive is released when the handler returns the refusal and gRPC ends the
+// stream.
+func (a *authorizedStream) RecvMsg(m any) error {
+	if a.unserved == nil {
+		return a.ServerStream.RecvMsg(m)
+	}
+	done := make(chan error, 1)
+	go func() { done <- a.ServerStream.RecvMsg(m) }()
+	select {
+	case err := <-done:
+		return err
+	case <-a.unserved:
+		return a.refusal()
+	}
+}
+
+// SendMsg sends m unless the database has stopped serving.
+func (a *authorizedStream) SendMsg(m any) error {
+	if a.unserved != nil {
+		select {
+		case <-a.unserved:
+			return a.refusal()
+		default:
+		}
+	}
+	return a.ServerStream.SendMsg(m)
+}

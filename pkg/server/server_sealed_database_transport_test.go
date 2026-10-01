@@ -59,6 +59,21 @@ func newSealedDBBarrierManager(t *testing.T) *database.DatabaseBarrierManager {
 // returns their KV clients scoped to db, keyed by transport name.
 func dialSealedDBTransports(t *testing.T, srv *Server, db string) map[string]transport.KVClient {
 	t.Helper()
+	out := make(map[string]transport.KVClient)
+	for name, scoped := range dialScopedTransports(t, srv, db) {
+		kv, ok := scoped.(transport.KVClient)
+		if !ok {
+			t.Fatalf("%s scoped transport does not implement transport.KVClient", name)
+		}
+		out[name] = kv
+	}
+	return out
+}
+
+// dialScopedTransports connects every network SDK transport to srv and
+// returns each scoped to db, keyed by transport name.
+func dialScopedTransports(t *testing.T, srv *Server, db string) map[string]transport.Transport {
+	t.Helper()
 	tlsOpt := testAutoProvisionClientTLSOption(t)
 	builders := map[string]func() (transport.Transport, error){
 		"rest": func() (transport.Transport, error) {
@@ -77,7 +92,7 @@ func dialSealedDBTransports(t *testing.T, srv *Server, db string) map[string]tra
 			return mcptransport.New(transport.WithAddress("https://"+srv.MCPAddr()+"/mcp"), tlsOpt)
 		},
 	}
-	out := make(map[string]transport.KVClient, len(builders))
+	out := make(map[string]transport.Transport, len(builders))
 	for name, build := range builders {
 		tr, err := build()
 		if err != nil {
@@ -95,11 +110,7 @@ func dialSealedDBTransports(t *testing.T, srv *Server, db string) map[string]tra
 		if err != nil {
 			t.Fatalf("%s WithDatabase(%q): %v", name, db, err)
 		}
-		kv, ok := scoped.(transport.KVClient)
-		if !ok {
-			t.Fatalf("%s scoped transport does not implement transport.KVClient", name)
-		}
-		out[name] = kv
+		out[name] = scoped
 	}
 	return out
 }

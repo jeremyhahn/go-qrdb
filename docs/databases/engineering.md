@@ -262,7 +262,9 @@ in `pkg/server/lifecycle` are deleted, not kept beside the new path.
   index, time series, vector, transaction, batch, table, sequence, privilege,
   lock and collection — with `service.BarrierSealedError{Database: <name>}` for
   a database the caller owns whose status is `sealed`. Another tenant naming it
-  gets the ordinary not-found answer. **The refusal is enforced per node.** A
+  gets the ordinary not-found answer. A watch or etcd stream already open ends
+  with the same refusal when the database is sealed, and with the not-found
+  when it is dropped (`database.Database.Unserved`). **The refusal is enforced per node.** A
   database's barrier and its `sealed` status live on the node that sealed it,
   not in replicated state: in a cluster, sealing a database on one node does
   not seal it on the others, and a node on which it is unsealed keeps serving

@@ -535,10 +535,9 @@ are not reconstructed here — their history is in the git log.
   no-op success and revokes nothing; a write attaching it is refused and
   writes nothing). It refuses to start without
   TLS and authentication (`etcd.AuthRequiredError`) or without a catalog and
-  registry to confine it (`etcd.ScopeUnavailableError`). Known limit: a
-  `Watch` or `LeaseKeepAlive` stream is authorized when it opens, so one
-  already open when its database is sealed or dropped, or its caller loses the
-  permission, keeps running until it ends; new RPCs and streams are refused.
+  registry to confine it (`etcd.ScopeUnavailableError`). An open `Watch` or
+  `LeaseKeepAlive` stream ends with the database's typed refusal the moment
+  the database is sealed or dropped, as every transport's watch stream does.
 - **SQL `DROP DATABASE` can no longer drop another tenant's database, and SQL
   `CREATE DATABASE` is owned, metered and authorized (critical).** Over the
   MySQL and PostgreSQL wire, `DROP DATABASE` called the database manager by
@@ -796,11 +795,9 @@ are not reconstructed here — their history is in the git log.
   raft database's, or a volume- or raft-isolated tenant's) fails closed while
   sealed, and once unsealed its data is served unencrypted from the store the
   barrier does not wrap.
-- **etcd streams are authorized when they open.** A `Watch` or
-  `LeaseKeepAlive` stream open when its database is sealed or dropped, or when
-  its caller loses the permission, keeps running until it ends; every new RPC
-  and stream is refused. gRPC and REST watch streams resolve their database
-  once when they open in the same way.
+- **A stream's permission is decided when it opens.** A change to the
+  caller's roles applies to its next etcd stream or watch, not to one already
+  open. (A seal or a drop does end open streams.)
 - **Database names are still one node-wide namespace.** Another tenant's
   database is answered as missing everywhere except creation: a create naming
   a database another tenant holds fails with `database.AlreadyExistsError`.

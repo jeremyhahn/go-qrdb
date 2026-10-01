@@ -96,22 +96,22 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Client presents no certificate | `UNAUTHENTICATED` on every RPC | **yes** |
 | Caller from another tenant | `PERMISSION_DENIED` with the generic `etcd.PermissionDeniedError` text; the detail (`etcd.TenantMismatchError`) is logged server-side only | **yes** |
 | Any RPC without a permission mapping, including `Auth.*` | `PERMISSION_DENIED` | **yes** — no fallback to password auth |
-| Database sealed or dropped after the listener started | `UNAVAILABLE` / `NOT_FOUND` on the next RPC or stream | **yes**, for new RPCs and streams; see the stream limit below |
+| Database sealed or dropped after the listener started | `UNAVAILABLE` / `NOT_FOUND` on the next RPC, and open streams end with it | **yes** |
 | Missing permission for the mapped operation | permission denied on the RPC | **yes** |
 | Compacted revision requested | etcd's compacted-revision error | **yes** |
 | Barrier sealed | requests refused | **yes** |
 
-**Known limit: streams are authorized when they open.** Authentication, the
-tenant check, the RPC's permission and the database resolution run once when a
-`Watch` or `LeaseKeepAlive` stream opens, not per message. A stream already
-open when its database is sealed or dropped, or when the caller's role loses
-the permission, keeps running until the client or the server ends it: a
-`Watch` keeps delivering events for the keys it watches, and a
-`LeaseKeepAlive` keeps renewing leases the database owns. Every new RPC and
-every new stream is refused. To cut existing streams, restart the listener's
-node or close the client connections. The watch streams of the other
-transports (gRPC `Watch`, REST watch) resolve their database once when they
-open in the same way.
+**Streams end when their database stops serving.** A `Watch` or
+`LeaseKeepAlive` stream is guarded by its database (`etcd.StreamGuard`): the
+moment the database is sealed or dropped, the stream ends with the sealed
+refusal (`UNAVAILABLE`) or the dropped database's `NOT_FOUND`, even when the
+client sends nothing more. The watch streams of the other transports (gRPC
+and Unix `Watch`, QUIC, REST) end the same way, because every watch on a
+catalogued database is opened through the service registry, which ties it to
+the database. *(Corrected: a stream used to run on over a sealed or dropped
+database until the client ended it.)* Authentication and the RPC's permission
+are decided when a stream opens: a change to the caller's roles applies to its
+next stream, not to one already open.
 
 Typed errors live in `pkg/api/etcd/errors.go`; configuration validation in
 `config.go`.

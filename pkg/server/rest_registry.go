@@ -714,7 +714,26 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 	if svcs.Watch == nil {
 		return nil, notImplemented("watch", "")
 	}
+	// A watch is a stream that outlives this resolution: one on a
+	// catalogued database ends when the database is sealed or dropped,
+	// rather than delivering its events after the refusal every new request
+	// gets.
+	if dbase, ok := r.ownedDatabase(tenantID, db); ok {
+		return newServedWatchService(svcs.Watch, dbase, func() error {
+			return databaseUnservedError(dbase, tenantID, db)
+		}), nil
+	}
 	return svcs.Watch, nil
+}
+
+// databaseUnservedError is the refusal a stream on dbase ends with once the
+// database stops serving: the sealed refusal for a sealed database, and the
+// not-found a dropped one answers every request with.
+func databaseUnservedError(dbase *database.Database, tenantID, db string) error {
+	if dbase.Status() == database.StatusSealed {
+		return &rest.BarrierSealedError{TenantID: tenantID, Database: db}
+	}
+	return &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 }
 
 // LeaseService returns the LeaseServicer for the given (tenant, db) scope.

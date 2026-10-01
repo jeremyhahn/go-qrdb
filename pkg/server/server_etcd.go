@@ -84,7 +84,7 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	}
 	opts = append(opts,
 		etcd.WithTLS(s.opts.tlsConfig),
-		etcd.WithRequestAuthorizer(&etcdRequestAuthorizer{mw: s.opts.authMW, reg: reg, owner: owner, db: dbName, logger: s.logger}),
+		etcd.WithRequestAuthorizer(&etcdRequestAuthorizer{mw: s.opts.authMW, reg: reg, mgr: s.opts.dbManager, owner: owner, db: dbName, logger: s.logger}),
 	)
 	if s.adminSvc != nil {
 		opts = append(opts, etcd.WithAdmin(s.adminSvc))
@@ -150,12 +150,31 @@ func isCapabilityRefusal(err error) bool {
 type etcdRequestAuthorizer struct {
 	mw     *authmw.AuthMiddleware
 	reg    service.Registry
+	mgr    *database.Manager
 	owner  string
 	db     string
 	logger *slog.Logger
 }
 
-var _ etcd.RequestAuthorizer = (*etcdRequestAuthorizer)(nil)
+var (
+	_ etcd.RequestAuthorizer = (*etcdRequestAuthorizer)(nil)
+	_ etcd.StreamGuard       = (*etcdRequestAuthorizer)(nil)
+)
+
+// GuardStream implements etcd.StreamGuard: a Watch or LeaseKeepAlive stream
+// ends, with the sealed refusal or the dropped database's not-found, the
+// moment the listener's database stops serving.
+func (a *etcdRequestAuthorizer) GuardStream(context.Context) (<-chan struct{}, func() error, error) {
+	dbase, err := a.mgr.Get(a.db)
+	if err != nil {
+		return nil, nil, status.Error(grpcapi.ServiceErrorCode(err), err.Error())
+	}
+	refusal := func() error {
+		e := databaseUnservedError(dbase, a.owner, a.db)
+		return status.Error(grpcapi.ServiceErrorCode(e), e.Error())
+	}
+	return dbase.Unserved(), refusal, nil
+}
 
 // AuthorizeRequest implements etcd.RequestAuthorizer.
 func (a *etcdRequestAuthorizer) AuthorizeRequest(ctx context.Context, perm permission.Permission) (context.Context, error) {
