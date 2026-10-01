@@ -1250,6 +1250,12 @@ Unified share holders. This release contains BREAKING changes; see the entries b
 
 ### Fixed
 
+- **Enable-encryption runs its migration on the request's context without
+  the request's cancellation** (`context.WithoutCancel`) on every transport
+  (REST, gRPC, Unix, QUIC, MCP, embedded), instead of `context.Background()`.
+  The migration still outlives the request, and now carries the caller's
+  identity and tenant, so the migration's own tenant-scope checks see the
+  real caller on every transport alike.
 - **A completed database rekey was reported as failed when its M-of-N could
   not be recorded.** The quorum's last submission had already retired every
   old share when the catalog write failed, and the holder was told the

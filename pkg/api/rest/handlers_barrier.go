@@ -297,9 +297,12 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// A background context is used because the request context is cancelled
-	// once the response returns, and the migration must continue independent
-	// of this request's lifetime.
+	// The migration runs on the request's context without its cancellation:
+	// the request context is cancelled once this call returns, and the
+	// migration must continue independent of its lifetime, while still
+	// carrying the request's values (the caller's identity and tenant), as
+	// on every transport.
+	migrationCtx := context.WithoutCancel(r.Context())
 	resultCh := make(chan error, 1)
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
@@ -307,7 +310,7 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		// passphrase out from under a running migration. The destroy
 		// belongs to the last reader, and that is this goroutine.
 		defer creds.Secret.Destroy()
-		resultCh <- s.encMigrator.EnableEncryption(context.Background(), scope, opts)
+		resultCh <- s.encMigrator.EnableEncryption(migrationCtx, scope, opts)
 	}()
 
 	select {

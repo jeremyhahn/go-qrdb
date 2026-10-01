@@ -170,12 +170,13 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
 		}
 
-		// A background context is used because the request context is
-		// cancelled once the tool result returns, and the migration must
-		// continue independent of this call's lifetime.
+		// The migration runs on the request's context without its cancellation:
+		// the request context is cancelled once this call returns, and the
+		// migration must continue independent of its lifetime, while still
+		// carrying the request's values (the caller's identity and tenant), as
+		// on every transport.
+		migrationCtx := context.WithoutCancel(ctx)
 		resultCh := make(chan error, 1)
-		// #nosec G118 -- detaching from the request context is the point: the
-		// migration must survive the tool result returning.
 		go func() {
 			// The migration OWNS the credential from here: it outlives this
 			// tool call, so destroying it in the handler would pull the
@@ -183,7 +184,7 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			// belongs to whoever the last reader is, and that is this
 			// goroutine.
 			defer creds.Secret.Destroy()
-			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+			resultCh <- migrator.EnableEncryption(migrationCtx, scope, opts)
 		}()
 
 		select {

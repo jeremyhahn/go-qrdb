@@ -885,12 +885,13 @@ type stubEmbeddedMigrator struct {
 }
 
 type embeddedMigrateCall struct {
+	ctx   context.Context // the context the migration runs on
 	scope service.BarrierScope
 	opts  seal.MigrationOptions
 }
 
-func (m *stubEmbeddedMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	m.ch <- embeddedMigrateCall{scope: scope, opts: opts}
+func (m *stubEmbeddedMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	m.ch <- embeddedMigrateCall{ctx: ctx, scope: scope, opts: opts}
 	return m.err
 }
 

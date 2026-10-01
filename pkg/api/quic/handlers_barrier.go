@@ -199,7 +199,7 @@ const quicMigrationAcceptWindow = 750 * time.Millisecond
 // "migration_started"; clients poll BarrierStatus. Forwards every field
 // including tenant, strategy, mechanism, availability, passphrase, and
 // Shamir threshold/total.
-func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte) ([]byte, error) {
+func (s *Server) handleBarrierEnableEncryption(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.encMigrator == nil {
 		return nil, &ServiceNotConfiguredError{Service: "encryption-migration"}
 	}
@@ -244,20 +244,21 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 		return nil, err
 	}
 
-	// A background context is used because the request context is cancelled
-	// once the response returns, and the migration must continue independent
-	// of this request's lifetime.
+	// The migration runs on the request's context without its cancellation:
+	// the request context is cancelled once this call returns, and the
+	// migration must continue independent of its lifetime, while still
+	// carrying the request's values (the caller's identity and tenant), as
+	// on every transport.
+	migrationCtx := context.WithoutCancel(ctx)
 	migrator := s.encMigrator
 	resultCh := make(chan error, 1)
-	// #nosec G118 -- detaching from the request context is the point: the
-	// migration must survive the response returning.
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
 		// request, so destroying it in the handler would pull the
 		// passphrase out from under a running migration. The destroy
 		// belongs to the last reader, and that is this goroutine.
 		defer creds.Secret.Destroy()
-		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+		resultCh <- migrator.EnableEncryption(migrationCtx, scope, opts)
 	}()
 
 	select {

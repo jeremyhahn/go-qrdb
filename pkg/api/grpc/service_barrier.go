@@ -157,7 +157,7 @@ const grpcMigrationAcceptWindow = 750 * time.Millisecond
 // denied, provider unavailable) is returned to the caller as a proper gRPC
 // status error, while a migration still running once the window elapses is
 // acknowledged with "migration_started"; clients poll BarrierStatus.
-func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
+func (s *qrdbServiceServer) BarrierEnableEncryption(ctx context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
 	if s.encMigrator == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "encryption-migration"})
 	}
@@ -197,20 +197,21 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 		return nil, mapServiceError(err)
 	}
 
-	// A background context is used because the request context is cancelled
-	// once the response returns, and the migration must continue independent
-	// of this request's lifetime.
+	// The migration runs on the request's context without its cancellation:
+	// the request context is cancelled once this call returns, and the
+	// migration must continue independent of its lifetime, while still
+	// carrying the request's values (the caller's identity and tenant), as
+	// on every transport.
+	migrationCtx := context.WithoutCancel(ctx)
 	migrator := s.encMigrator
 	resultCh := make(chan error, 1)
-	// #nosec G118 -- detaching from the request context is the point: the
-	// migration must survive the response returning.
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
 		// request, so destroying it in the handler would pull the
 		// passphrase out from under a running migration. The destroy
 		// belongs to the last reader, and that is this goroutine.
 		defer creds.Secret.Destroy()
-		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+		resultCh <- migrator.EnableEncryption(migrationCtx, scope, opts)
 	}()
 
 	select {

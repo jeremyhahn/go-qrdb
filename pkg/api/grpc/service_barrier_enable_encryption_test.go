@@ -35,16 +35,17 @@ type captureGRPCMigrator struct {
 }
 
 type grpcMigrateCall struct {
+	ctx    context.Context // the context the migration runs on
 	scope  service.BarrierScope
 	opts   seal.MigrationOptions
 	secret []byte // snapshot taken DURING the call; the handler destroys the credential after
 }
 
-func (m *captureGRPCMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+func (m *captureGRPCMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	// The credential is a borrow valid for this call only: the handler's
 	// goroutine destroys it when this returns, so an early destroy would
 	// surface here as a panic from Snapshot rather than pass unnoticed.
-	m.ch <- grpcMigrateCall{scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
+	m.ch <- grpcMigrateCall{ctx: ctx, scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
 	return m.err
 }
 

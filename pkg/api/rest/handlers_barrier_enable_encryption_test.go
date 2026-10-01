@@ -35,6 +35,7 @@ type captureMigrator struct {
 }
 
 type migrateCall struct {
+	ctx    context.Context // the context the migration runs on
 	scope  service.BarrierScope
 	opts   seal.MigrationOptions
 	secret []byte
@@ -45,8 +46,8 @@ type migrateCall struct {
 // it once the migration returns — so the plaintext is snapshotted here.
 // Recording the credential instead would hand the assertions an enclave that
 // is legitimately destroyed out from under them.
-func (m *captureMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	m.ch <- migrateCall{scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
+func (m *captureMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	m.ch <- migrateCall{ctx: ctx, scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
 	return m.err
 }
 
