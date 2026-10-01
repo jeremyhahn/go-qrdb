@@ -38,13 +38,18 @@ type partialReconcileSvc struct {
 
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
 	boom := errors.New("device busy")
-	return &tenant.ReconcileReport{
-			Inspected: 2,
-			Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
-			Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
-		}, &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{
-			{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
-		}}
+	// Bound to names, not returned as two literals: go1.27's gofmt and
+	// golangci-lint's gofmt indent a multi-value return of composite
+	// literals differently, so no layout of that form satisfies both.
+	report := &tenant.ReconcileReport{
+		Inspected: 2,
+		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
+		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
+	}
+	failures := &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{
+		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
+	}}
+	return report, failures
 }
 
 func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
