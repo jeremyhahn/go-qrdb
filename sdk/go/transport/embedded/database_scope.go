@@ -181,11 +181,14 @@ func (t *Transport) cloneShared() *Transport {
 		userAuthFactorSvc: t.userAuthFactorSvc,
 		loginResolver:     t.loginResolver,
 		sessionIssuer:     t.sessionIssuer,
-		identityHydrator:  t.identityHydrator,
-		loginSessions:     t.loginSessions,
-		poolManager:       t.poolManager,
-		poolStateStore:    t.poolStateStore,
-		nowFunc:           t.nowFunc,
+		// A database-scoped view of a standalone node serves no raft-only
+		// family either, and must refuse them with the same typed error.
+		standalone:       t.standalone,
+		identityHydrator: t.identityHydrator,
+		loginSessions:    t.loginSessions,
+		poolManager:      t.poolManager,
+		poolStateStore:   t.poolStateStore,
+		nowFunc:          t.nowFunc,
 	}
 	t.factorVerifierMu.RLock()
 	if t.factorVerifiers != nil {

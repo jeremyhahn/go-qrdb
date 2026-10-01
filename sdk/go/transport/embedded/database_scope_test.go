@@ -155,7 +155,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "lockSvc", "custodianGroupSvc", "shareSvc",
 		"authFactorSvc", "auditLogger", "encMigrator", "registry", "rbacAuthz", "authMW", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
-		"nowFunc"} {
+		"nowFunc", "standalone"} {
 		copied[n] = true
 	}
 	for i := 0; i < reflect.TypeOf((*Transport)(nil)).Elem().NumField(); i++ {
@@ -187,6 +187,8 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 			reflect.NewAt(f.Type(), f.Addr().UnsafePointer()).Elem().Set(reflect.MakeFunc(f.Type(), func([]reflect.Value) []reflect.Value {
 				return nil
 			}))
+		case reflect.Bool:
+			reflect.NewAt(f.Type(), f.Addr().UnsafePointer()).Elem().SetBool(true)
 		case reflect.Interface:
 			// Satisfied by a field-specific stand-in only when one exists;
 			// the non-nil check below is limited to fields that were set.
