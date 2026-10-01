@@ -684,8 +684,11 @@ Each gate is two steps with different conditions:
    this step, as every `AuthMiddleware` gate does.
 2. **Validation** — never skipped. `role.ValidateAssignable` confirms every
    `RoleIDs` entry exists and belongs to the target tenant, and every
-   binding's role to the binding's tenant (a system-tenant built-in role is
-   valid everywhere). A role reference with no role service to check it is
+   binding's role to the binding's tenant. There is no exception for
+   built-ins: every tenant seeds its own copy, and the role store resolves an
+   id only in the tenant that owns it, so a system-tenant built-in written
+   onto a tenant-A principal would make every later decision for it fail as
+   unavailable. A role reference with no role service to check it is
    `*role.ServiceRequiredError`: a refusal, never an unvalidated write.
 
 The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD

@@ -277,7 +277,8 @@ are not reconstructed here — their history is in the git log.
 - Writing `roleIDs` (`CreateUser`, `UpdateUser`) or `roleBindings` or `attributes`
   (`UpdateUser`) requires `roles:assign` in the user's tenant, and in the tenant of every
   binding written, on every transport including embedded. Every referenced role must exist
-  and belong to its tenant (400 / `INVALID_ARGUMENT`), whether or not RBAC is enabled; a node
+  and belong to that tenant itself -- the system tenant's built-in roles are not assignable in
+  other tenants, which seed their own (400 / `INVALID_ARGUMENT`) -- whether or not RBAC is enabled; a node
   with no role service refuses the write (501 / `UNIMPLEMENTED`).
 - User attributes reach ABAC policies only as `subject.user_attrs.<key>` (match key
   `user_attrs.<key>`), never as the authenticated `subject.attrs.<key>`, so an attribute

@@ -300,8 +300,9 @@ every transport including embedded, which authorizes through the node's own
 the record on update, the effective create tenant on create), and each
 `RoleBindings` entry additionally requires `roles:assign` in the tenant it
 names: writing a binding is itself an act of granting a role there. Every
-referenced role is validated to exist and to belong to its tenant (or be one
-of the system tenant's built-in roles, valid everywhere) before the write
+referenced role is validated to exist and to belong to that tenant itself
+(each tenant seeds its own built-in roles, and a role from another tenant —
+the system tenant's included — cannot be resolved there) before the write
 commits — whether or not RBAC is enabled. See
 [engineering.md](engineering.md#authorization-model) for the mechanism and
 its tests.

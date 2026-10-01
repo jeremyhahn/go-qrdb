@@ -50,10 +50,10 @@ func TestValidateAssignable_WrongTenant(t *testing.T) {
 	}
 }
 
-// TestValidateAssignable_SystemRoleFromSystemTenant asserts that the system
-// tenant's own copy of a built-in role IS assignable in any tenant: the
-// system tenant is structurally privileged, the same rule permission.ScopeSelf
-// already applies to the identity making the request.
+// TestValidateAssignable_SystemRoleFromSystemTenant asserts the system
+// tenant's own copy of a built-in role is NOT assignable in another tenant:
+// that tenant seeds its own copy, and the store cannot resolve the system
+// tenant's id for one of its principals.
 func TestValidateAssignable_SystemRoleFromSystemTenant(t *testing.T) {
 	svc := newTestStore(t)
 	seeded := seedBuiltIns(t, svc, tenant.SystemTenantID)
@@ -65,15 +65,17 @@ func TestValidateAssignable_SystemRoleFromSystemTenant(t *testing.T) {
 		t.Fatalf("seeded role %+v is not marked System", sysRole)
 	}
 
-	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, "acme"); err != nil {
-		t.Fatalf("ValidateAssignable(system role, foreign tenant) = %v, want nil", err)
+	var na *NotAssignableError
+	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, "acme"); !errors.As(err, &na) {
+		t.Fatalf("ValidateAssignable(system role, foreign tenant) = %v, want *NotAssignableError", err)
+	}
+	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, tenant.SystemTenantID); err != nil {
+		t.Fatalf("ValidateAssignable(system role, system tenant) = %v, want nil", err)
 	}
 }
 
-// TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid asserts the
-// negative half of the system-role rule: a TENANT's own copy of a built-in
-// role (System:true, but TenantID == that tenant, not the system tenant)
-// is NOT treated as globally assignable — only the system tenant's copy is.
+// TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid asserts a
+// TENANT's own copy of a built-in role is assignable in that tenant only.
 func TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid(t *testing.T) {
 	svc := newTestStore(t)
 	seeded := seedBuiltIns(t, svc, "acme")

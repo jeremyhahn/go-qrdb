@@ -153,9 +153,10 @@ the `users:update` permission the plain update needs. A `--role-binding`
 naming a tenant requires `roles:assign` in THAT tenant too: granting a role
 in tenant `acme` from an identity that only administers tenant `contoso`
 is refused even if the operator can otherwise update the target account. The
-named role must exist and belong to the binding's tenant (or be one of the
-system tenant's built-in roles, which every tenant may use); a role that
-does not exist, or belongs to some other tenant, is refused before anything
+named role must exist and belong to the binding's tenant: every tenant has
+its own copy of the built-in roles (`admin`, `operator`, `user`, ...), so use that
+tenant's copy. A role that does not exist, or belongs to some other tenant —
+including the system tenant's built-ins — is refused before anything
 is written.
 
 An attribute set with `--attribute` is visible to ABAC policies as

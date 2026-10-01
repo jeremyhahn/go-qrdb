@@ -455,9 +455,10 @@ from the tenant the check above authorizes: writing a binding that names
 tenant `acme` is itself an act of granting a role within `acme`, and is
 refused for an operator who cannot grant roles there even if they can
 otherwise update the account. Every referenced role — in `roleIDs` or in a
-binding — must exist and belong to the relevant tenant (or be a system
-tenant built-in role, valid everywhere); a role that does not exist, or
-belongs to the wrong tenant, is refused with a client error before anything
+binding — must exist and belong to the relevant tenant itself. Each tenant
+has its own copy of the built-in roles, so assign that tenant's copy: the
+system tenant's built-ins are not valid in other tenants. A role that does
+not exist, or belongs to another tenant, is refused with a client error before anything
 is written. The role check runs whether or not RBAC is enabled; only the
 `roles:assign` check depends on it. See
 [engineering.md](engineering.md#authorization-model) for the full mechanism.

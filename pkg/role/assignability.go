@@ -22,17 +22,17 @@ import (
 )
 
 // ValidateAssignable resolves roleID and confirms it may be granted within
-// tenantID: either the role was created in tenantID, or it is one of the
-// system tenant's built-in roles, which every tenant's ReconcileBuiltInRoles
-// seeds under its OWN identifier but which the system tenant's own copy is
-// treated as valid everywhere (the same "system tenant is structurally
-// privileged" rule permission.ScopeSelf already applies to the identity
-// checking this).
+// tenantID: the role must belong to tenantID itself. That holds for the
+// built-in roles too -- every tenant's ReconcileBuiltInRoles seeds its own
+// copy under its own identifier, and the role store resolves an id only in the
+// tenant that owns it, so another tenant's role (the system tenant's built-ins
+// included) is one the authorizer cannot resolve for a principal of tenantID.
+// Granting it would leave every later decision for that principal failing as
+// unavailable, not merely deny the one grant.
 //
 // A role that does not exist is a *ReferenceError wrapping the lookup's
 // *RoleNotFoundError; any other lookup failure is returned verbatim. A role
-// that exists but belongs to a tenant that is neither tenantID nor the system
-// tenant is a *NotAssignableError.
+// that exists in another tenant is a *NotAssignableError.
 func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID string) error {
 	r, err := svc.GetRole(ctx, roleID)
 	var notFound *RoleNotFoundError
@@ -47,10 +47,7 @@ func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID 
 		// reference is unresolved, so it is refused rather than dereferenced.
 		return &ReferenceError{RoleID: roleID, Err: &RoleNotFoundError{ID: roleID}}
 	}
-	if r.TenantID == tenantID {
-		return nil
-	}
-	if r.System && r.TenantID == tenant.SystemTenantID {
+	if tenant.Normalize(r.TenantID) == tenant.Normalize(tenantID) {
 		return nil
 	}
 	return &NotAssignableError{RoleID: roleID, TenantID: tenantID}
