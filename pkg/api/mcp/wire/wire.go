@@ -253,6 +253,13 @@ type ErrorPayload struct {
 	// Tool names the tool that failed, which the JSON-RPC error envelope
 	// cannot say.
 	Tool string `json:"tool,omitempty"`
+
+	// RetryAfterSeconds is how long the caller must wait before a retry can
+	// succeed, in whole seconds rounded up, when the failure says so: a
+	// throttled request or an SO PIN lockout. It is REST's Retry-After and
+	// gRPC's RetryInfo on this transport. Zero means the failure names no
+	// delay.
+	RetryAfterSeconds int64 `json:"retry_after_seconds,omitempty"`
 }
 
 // ErrorEnvelope is the shape of StructuredContent on a failed tool result.

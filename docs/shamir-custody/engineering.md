@@ -255,7 +255,10 @@ hardened against a caller who is not the holder:
   - the anonymous bucket gets 5 per second, burst 20.
 
   A refusal is `*ceremony.QuorumRateLimitedError`, carrying the retry
-  delay; REST sends it as `Retry-After`. An embedder that builds a ceremony
+  delay; REST sends it as `Retry-After`, gRPC and the Unix socket as a
+  `google.rpc.RetryInfo` status detail, MCP as `retry_after_seconds` in the
+  error envelope (`errclass.RetryAfter` decides, once, which refusals carry
+  one). QUIC's error frame carries the message only. An embedder that builds a ceremony
   service by hand and installs no limiter gets no throttling.
 - **No holder enumeration.** A name outside the roster, or a holder asked for
   a factor the policy does not admit, gets a decoy challenge. A decoy is

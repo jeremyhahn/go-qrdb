@@ -15,8 +15,10 @@
 package grpc
 
 import (
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 )
@@ -117,10 +119,18 @@ func ServiceErrorCode(err error) codes.Code {
 }
 
 // mapServiceError converts err into a gRPC status error carrying its class's
-// code and err's message. A nil error stays nil.
+// code and err's message. A refusal that says how long to wait before a retry
+// can succeed (errclass.RetryAfter) also carries a google.rpc.RetryInfo detail
+// with that delay -- the peer of REST's Retry-After. A nil error stays nil.
 func mapServiceError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return status.Error(ServiceErrorCode(err), err.Error())
+	st := status.New(ServiceErrorCode(err), err.Error())
+	if delay, ok := errclass.RetryAfter(err); ok {
+		if detailed, derr := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(delay)}); derr == nil {
+			st = detailed
+		}
+	}
+	return st.Err()
 }

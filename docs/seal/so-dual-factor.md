@@ -145,7 +145,8 @@ transports' checks for seal, recovery-key generation and initialization, and
 so all of them count against one counter and a guess costs the same on every
 operation and every transport. Rekey and revocation refuse while no SO PIN has been
 provisioned (`pin.ErrPINNotSet`, `412` / `FAILED_PRECONDITION`). A
-locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with `Retry-After` on
+locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with the wait as a
+gRPC / Unix `google.rpc.RetryInfo` detail, MCP `retry_after_seconds`, and `Retry-After` on
 REST. **Every network
 transport fills it from the bound PIN** when the request carries none, so a
 caller never sets `SOPin` by hand on any transport. A request whose own

@@ -129,6 +129,13 @@ are not reconstructed here — their history is in the git log.
   embedded.
 - **Test support:** `pkg/seal/sealtest.Custody` (in-memory distributor and
   verifier for code that sits on a Shamir barrier) and `pkg/pin/pintest`.
+- **The retry delay of a throttled quorum request or sign-csr, and of an SO
+  PIN lockout, reaches gRPC, Unix-socket and MCP callers.** It was sent only
+  as REST's `Retry-After`. gRPC and the Unix socket now attach a
+  `google.rpc.RetryInfo` status detail with the exact delay, and MCP sets
+  `retry_after_seconds` in the error envelope. One rule
+  (`errclass.RetryAfter`) decides which refusals carry a delay on every
+  transport. QUIC's error frame still carries only the message.
 
 ### Security
 

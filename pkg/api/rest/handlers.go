@@ -31,15 +31,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -1146,34 +1145,17 @@ func writeErrorJSON(w http.ResponseWriter, code int, err error) {
 }
 
 // setRetryAfter sets the standard Retry-After header (RFC 9110 §10.2.3,
-// delay-seconds) when err says how long the caller must wait: a throttled
-// ceremony-sign-csr (service.SignCSRThrottledError), a throttled
-// quorum-challenge request (ceremony.QuorumRateLimitedError), or an SO
-// PIN check locked out after repeated failures (pin.SOPINLockedError,
-// from a rekey or revocation). The delay
-// is rounded up, and never below one second, so a caller that honours it is
-// never early. It must run before the status is written: net/http drops
-// headers set after WriteHeader.
+// delay-seconds) when err says how long the caller must wait
+// (errclass.RetryAfter: a throttled ceremony-sign-csr, a throttled quorum
+// request, an SO PIN lockout). The delay is rounded up, and never below one
+// second, so a caller that honours it is never early. It must run before the
+// status is written: net/http drops headers set after WriteHeader.
 func setRetryAfter(w http.ResponseWriter, err error) {
-	var wait time.Duration
-	var signCSR *service.SignCSRThrottledError
-	var quorumBegin *ceremony.QuorumRateLimitedError
-	var soPINLocked *pin.SOPINLockedError
-	switch {
-	case errors.As(err, &signCSR):
-		wait = signCSR.RetryAfter
-	case errors.As(err, &quorumBegin):
-		wait = quorumBegin.RetryAfter
-	case errors.As(err, &soPINLocked):
-		wait = soPINLocked.RetryAfter
-	default:
+	wait, ok := errclass.RetryAfter(err)
+	if !ok {
 		return
 	}
-	seconds := int64((wait + time.Second - 1) / time.Second)
-	if seconds < 1 {
-		seconds = 1
-	}
-	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	w.Header().Set("Retry-After", strconv.FormatInt(errclass.RetryAfterSeconds(wait), 10))
 }
 
 // ---------------------------------------------------------------------------

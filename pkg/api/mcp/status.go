@@ -128,9 +128,18 @@ func toolErrorResult(tool string, code wire.Code, message string) *mcpgo.CallToo
 	return res
 }
 
-// classifiedToolError renders err as a coded tool result.
+// classifiedToolError renders err as a coded tool result. A refusal that
+// says how long to wait before a retry can succeed (errclass.RetryAfter)
+// carries the delay in the envelope's retry_after_seconds -- the peer of
+// REST's Retry-After and gRPC's RetryInfo.
 func classifiedToolError(tool string, err error) *mcpgo.CallToolResult {
-	return toolErrorResult(tool, ServiceErrorCode(err), err.Error())
+	res := toolErrorResult(tool, ServiceErrorCode(err), err.Error())
+	if delay, ok := errclass.RetryAfter(err); ok {
+		if env, isEnvelope := res.StructuredContent.(*wire.ErrorEnvelope); isEnvelope {
+			env.Error.RetryAfterSeconds = errclass.RetryAfterSeconds(delay)
+		}
+	}
+	return res
 }
 
 // errorCodeMiddleware is the ONE place a tool failure acquires its code.
