@@ -164,7 +164,7 @@ func TestQuorum_UnknownHolderIsIndistinguishable(t *testing.T) {
 	}
 }
 
-// recordingLimiter is a faithful QuorumBeginLimitFunc double: it admits
+// recordingLimiter is a faithful QuorumLimitFunc double: it admits
 // burst requests per key, then refuses, and records every key it saw.
 type recordingLimiter struct {
 	mu    sync.Mutex
@@ -192,7 +192,7 @@ func (l *recordingLimiter) allow(key string, anonymous bool) (bool, time.Duratio
 // including one for an unknown holder, passes the composer's limiter, keyed
 // per scope and per caller: an authenticated identity, else the TLS peer
 // certificate, else the one anonymous bucket of the scope. A refused request
-// is *QuorumBeginRateLimitedError carrying the retry delay, and issues
+// is *QuorumRateLimitedError carrying the retry delay, and issues
 // nothing.
 func TestQuorum_BeginIsRateLimitedPerCaller(t *testing.T) {
 	ctx := context.Background()
@@ -200,21 +200,27 @@ func TestQuorum_BeginIsRateLimitedPerCaller(t *testing.T) {
 	a, b := newHolder(t, "alice", ""), newHolder(t, "bob", "")
 	e.initShamir("", a, b)
 	lim := newRecordingLimiter(3)
-	e.svc.SetQuorumBeginLimiter(lim.allow)
+	e.svc.SetQuorumLimiter(lim.allow)
 
 	for i := 0; i < 3; i++ {
 		_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "mallory", "")
 		require.NoError(t, err)
 	}
 	_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
-	var limited *QuorumBeginRateLimitedError
+	var limited *QuorumRateLimitedError
 	require.ErrorAs(t, err, &limited, "the anonymous bucket is spent, for every holder name")
 	assert.Equal(t, time.Second, limited.RetryAfter)
 
-	// A caller presenting a certificate has a bucket of its own.
-	ch, err := e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
+	// A caller presenting a certificate has a bucket of its own, which its
+	// submission draws on too.
+	certCtx := withPeerCert(t, ctx, a)
+	ch, err := e.svc.BeginQuorum(certCtx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	require.NoError(t, err)
-	_, err = submitChallenge(t, e, ch, a)
+	_, err = e.barrier.SubmitHolderShare(certCtx, &seal.HolderSubmission{
+		Domain: ch.Domain, Op: ch.Op, Holder: a.username,
+		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: a.answer(t, ch)},
+		Share: a.openShare(t),
+	})
 	require.NoError(t, err)
 
 	// So does an authenticated identity.
@@ -239,7 +245,7 @@ func TestQuorum_ScopesHaveSeparateBuckets(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
 	e.initShamir("", newHolder(t, "alice", ""), newHolder(t, "bob", ""))
 	lim := newRecordingLimiter(100)
-	e.svc.SetQuorumBeginLimiter(lim.allow)
+	e.svc.SetQuorumLimiter(lim.allow)
 	_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	require.NoError(t, err)
 	// The recovery domain has no roster yet, so the request fails after the

@@ -215,6 +215,10 @@ func (v *testVerifier) issue(domain QuorumDomain, op QuorumOp, holder string, di
 
 var errTestProof = errors.New("test verifier: proof does not answer an issued challenge")
 
+// AdmitSubmission implements seal.HolderVerifier. The double throttles
+// nothing: it admits every submission to be examined.
+func (v *testVerifier) AdmitSubmission(context.Context, QuorumDomain) error { return nil }
+
 // VerifyHolder implements HolderVerifier.
 func (v *testVerifier) VerifyHolder(_ context.Context, domain QuorumDomain, op QuorumOp, holder string, roster *HolderRoster, digest []byte, proof HolderProof) error {
 	v.mu.Lock()

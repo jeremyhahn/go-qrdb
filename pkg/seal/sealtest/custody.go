@@ -215,6 +215,10 @@ func (v *Verifier) Issue(domain seal.QuorumDomain, op seal.QuorumOp, holder stri
 	return seal.HolderProof{ChallengeID: cid, Response: []byte(hex.EncodeToString(answer))}
 }
 
+// AdmitSubmission implements seal.HolderVerifier. The double throttles
+// nothing: it admits every submission to be examined.
+func (v *Verifier) AdmitSubmission(context.Context, seal.QuorumDomain) error { return nil }
+
 // VerifyHolder implements seal.HolderVerifier.
 func (v *Verifier) VerifyHolder(_ context.Context, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
 	v.mu.Lock()

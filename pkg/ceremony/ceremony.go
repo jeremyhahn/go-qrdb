@@ -168,13 +168,13 @@ func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry) {
 	s.deps.Factors = r
 }
 
-// SetQuorumBeginLimiter installs the throttle quorum-challenge requests pass
-// (HolderDeps.QuorumBeginLimiter). It is carried to every tenant and database
+// SetQuorumLimiter installs the throttle quorum-challenge requests pass
+// (HolderDeps.QuorumLimiter). It is carried to every tenant and database
 // holder authority built from HolderDeps.
-func (s *CeremonyService) SetQuorumBeginLimiter(l QuorumBeginLimitFunc) {
+func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.deps.QuorumBeginLimiter = l
+	s.deps.QuorumLimiter = l
 }
 
 // SetPINBackend installs the PIN backend. Without one, every PIN-gated
@@ -550,6 +550,20 @@ func (s *CeremonyService) Committed(ctx context.Context, roster *seal.HolderRost
 		return err
 	}
 	return h.committed(ctx, roster, removed)
+}
+
+// AdmitSubmission implements seal.HolderVerifier: a share submission draws on
+// the caller's quorum throttle bucket for domain's scope, as a challenge
+// request does.
+func (s *CeremonyService) AdmitSubmission(ctx context.Context, domain seal.QuorumDomain) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, err := s.scope(domain)
+	if err != nil {
+		return err
+	}
+	_, err = h.throttle(ctx, &s.deps)
+	return err
 }
 
 // VerifyHolder implements seal.HolderVerifier.

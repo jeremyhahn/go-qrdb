@@ -59,7 +59,7 @@ func TestWriteErrorJSON_SignCSRThrottledSetsRetryAfter(t *testing.T) {
 // A throttled quorum-challenge request is a 429 with the same Retry-After.
 func TestWriteErrorJSON_QuorumBeginThrottledSetsRetryAfter(t *testing.T) {
 	rec := httptest.NewRecorder()
-	err := &ceremony.QuorumBeginRateLimitedError{RetryAfter: 1500 * time.Millisecond}
+	err := &ceremony.QuorumRateLimitedError{RetryAfter: 1500 * time.Millisecond}
 	writeErrorJSON(rec, mapHTTPError(err), err)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", rec.Code)

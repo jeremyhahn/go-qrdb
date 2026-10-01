@@ -326,6 +326,12 @@ func (b *StorageBarrier) SubmitHolderShare(ctx context.Context, sub *HolderSubmi
 	if err := b.checkOpState(sub.Op); err != nil {
 		return nil, err
 	}
+	if b.holderVerifier == nil {
+		return nil, ErrHolderVerifierNotConfigured
+	}
+	if err := b.holderVerifier.AdmitSubmission(ctx, sub.Domain); err != nil {
+		return nil, err
+	}
 	_, roster, digest, err := b.loadWrapped(ctx, sub.Domain)
 	if err != nil {
 		return nil, err
@@ -377,6 +383,14 @@ func (b *StorageBarrier) refuseStaleRosterLocked(ctx context.Context, key quorum
 // admitLocked runs the admission checks and adds the share. When the round
 // reaches its threshold it is detached and returned for finishing. Must be
 // called with quorumMu held.
+//
+// The proof is verified FIRST. The sealed window admits submissions
+// anonymously, so nothing about the holder or the round may be revealed to a
+// caller who cannot authenticate as the holder: a name outside the roster, a
+// holder being revoked and a holder who has already submitted all answer an
+// unverified proof exactly as any holder does, with *HolderAuthenticationError
+// carrying the verifier's error. Only a proof that verifies learns that its
+// holder is revoked or has already submitted.
 func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission, roster *HolderRoster, digest []byte) (*quorumRound, *QuorumOutcome, error) {
 	if b.holderVerifier == nil {
 		return nil, nil, ErrHolderVerifierNotConfigured
@@ -385,6 +399,14 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 	round, err := b.roundLocked(key, roster, digest)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := b.holderVerifier.VerifyHolder(ctx, sub.Domain, sub.Op, sub.Holder, round.roster, round.rosterDigest, sub.Proof); err != nil {
+		b.logger.Warn("share holder authentication refused",
+			slog.String("domain", string(sub.Domain)), slog.String("op", string(sub.Op)),
+			slog.String("holder", sub.Holder), slog.String("error", err.Error()))
+		emitAudit(b.config.AuditLogger, "quorum-share", "barrier", b.config.RootKeyPath, "deny",
+			map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder})
+		return nil, nil, &HolderAuthenticationError{Holder: sub.Holder, Err: err}
 	}
 	holder, ok := round.roster.Holder(sub.Holder)
 	if !ok {
@@ -399,14 +421,6 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 	}
 	if round.contributors[sub.Holder] {
 		return nil, nil, &HolderAlreadySubmittedError{Holder: sub.Holder}
-	}
-	if err := b.holderVerifier.VerifyHolder(ctx, sub.Domain, sub.Op, sub.Holder, round.roster, round.rosterDigest, sub.Proof); err != nil {
-		b.logger.Warn("share holder authentication refused",
-			slog.String("domain", string(sub.Domain)), slog.String("op", string(sub.Op)),
-			slog.String("holder", sub.Holder), slog.String("error", err.Error()))
-		emitAudit(b.config.AuditLogger, "quorum-share", "barrier", b.config.RootKeyPath, "deny",
-			map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder})
-		return nil, nil, &HolderAuthenticationError{Holder: sub.Holder, Err: err}
 	}
 
 	// NewProtectedShare wipes the value on success and leaves it on a

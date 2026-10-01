@@ -146,6 +146,18 @@ func (t *ScopedCeremonyService) Committed(ctx context.Context, roster *seal.Hold
 	return t.holder.committed(ctx, roster, removed)
 }
 
+// AdmitSubmission implements seal.HolderVerifier: a share submission draws on
+// the caller's quorum throttle bucket, as a challenge request does.
+func (t *ScopedCeremonyService) AdmitSubmission(ctx context.Context, domain seal.QuorumDomain) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if domain != seal.DomainUnseal {
+		return &seal.QuorumOpInvalidError{Domain: domain}
+	}
+	_, err := t.holder.throttle(ctx, &t.deps)
+	return err
+}
+
 // VerifyHolder implements seal.HolderVerifier.
 func (t *ScopedCeremonyService) VerifyHolder(ctx context.Context, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
 	t.mu.Lock()

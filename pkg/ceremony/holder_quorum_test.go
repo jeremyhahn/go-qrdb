@@ -224,7 +224,8 @@ func TestQuorum_AuthenticationRefusals(t *testing.T) {
 // TestQuorum_PendingChallengesAreBounded pins that no caller can grow the
 // challenge table without limit: once every slot a holder has for an
 // operation is bound to the holder's certificate, a request that does not
-// present it is refused rather than evicting one.
+// present it is answered with a challenge that is not stored, rather than
+// evicting one.
 func TestQuorum_PendingChallengesAreBounded(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
@@ -234,8 +235,10 @@ func TestQuorum_PendingChallengesAreBounded(t *testing.T) {
 		_, err := e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
 		require.NoError(t, err)
 	}
-	_, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
-	assert.ErrorIs(t, err, ErrTooManyPendingChallenges)
+	unstored, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
+	require.NoError(t, err)
+	assert.NotContains(t, e.svc.system.quorum, unstored.ChallengeID)
+	assert.Len(t, e.svc.system.quorum, maxPendingPerHolderOp)
 	_, err = e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
 	assert.NoError(t, err, "the holder's own certificate evicts its oldest challenge")
 	assert.LessOrEqual(t, len(e.svc.system.quorum), maxPendingPerHolderOp)
@@ -309,7 +312,11 @@ func TestRevoke_QuorumOfRemainingHoldersRedistributes(t *testing.T) {
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: c.answer(t, ch)},
 		Share: c.openShare(t),
 	})
-	assert.True(t, errorAs[*seal.HolderNotInRosterError](err), err)
+	// The decoy was never stored, so the submission fails authentication
+	// exactly as any holder's would; roster membership is not revealed.
+	assert.True(t, errorAs[*seal.HolderAuthenticationError](err), err)
+	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
+	assert.False(t, errorAs[*seal.HolderNotInRosterError](err), err)
 	_, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, a, "")
 	require.NoError(t, err)
 	out, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, b, "")

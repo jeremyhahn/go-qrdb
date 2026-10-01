@@ -979,7 +979,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	// idempotent, so a backend that arrives decorated keeps its one counter,
 	// and one that does not is never left without a lockout.
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
-	svc.SetQuorumBeginLimiter(QuorumBeginLimit)
+	svc.SetQuorumLimiter(QuorumLimit)
 	return svc, nil
 }
 

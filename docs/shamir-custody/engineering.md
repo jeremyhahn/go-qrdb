@@ -24,7 +24,7 @@ func (b *StorageBarrier) HolderRoster(ctx, domain QuorumDomain) (*HolderRoster, 
 ```
 
 `CeremonyDistributor` (`PrepareRoster`, `Distribute`, `Committed`) and
-`HolderVerifier` (`VerifyHolder`) are consumer-side interfaces; `pkg/ceremony`
+`HolderVerifier` (`AdmitSubmission`, `VerifyHolder`) are consumer-side interfaces; `pkg/ceremony`
 implements both. `SubmitHolderShare` is the **only** way a share reaches a
 quorum: there is no string-share unseal, seal-vote, root-token or recovery
 entry point.
@@ -172,11 +172,20 @@ roster is re-read under the lock:
 1. a holder verifier is installed (`ErrHolderVerifierNotConfigured`);
 2. the op is valid in the domain and the barrier's state
    (`QuorumOpInvalidError`);
-3. the holder is in the roster (`HolderNotInRosterError`) and not being removed
-   (`HolderRevokedError`);
-4. the holder has not contributed (`HolderAlreadySubmittedError`);
-5. the verifier accepts the proof (`HolderAuthenticationError`,
-   `FactorNotAdmittedError`) — the challenge is consumed either way;
+3. the verifier admits the submission at all (`HolderVerifier.AdmitSubmission`):
+   pkg/ceremony throttles it on the caller's quorum bucket, the one its
+   challenge requests draw on, and the refusal
+   (`*ceremony.QuorumRateLimitedError`) is returned before anything in the
+   submission is looked at;
+4. the verifier accepts the proof (`HolderAuthenticationError`, wrapping e.g.
+   `ErrQuorumChallengeNotFound` or `FactorNotAdmittedError`) — the challenge is
+   consumed either way. This comes **before** any check that would say
+   something about the holder or the round, so a stranger's name, a holder
+   being revoked and a holder who has already submitted all answer an
+   unverified proof exactly as any holder does;
+5. only then, the holder is in the roster (`HolderNotInRosterError`), not
+   being removed (`HolderRevokedError`), and has not contributed
+   (`HolderAlreadySubmittedError`);
 6. the share's x-coordinate is the holder's share index
    (`ShareIndexMismatchError`).
 
@@ -199,33 +208,47 @@ Each challenge expires on the factor's own deadline.
 The sealed window admits a challenge request anonymously, so `BeginQuorum` is
 hardened against a caller who is not the holder:
 
-- **Throttled per caller.** Every request passes
-  `HolderDeps.QuorumBeginLimiter` before anything else, including a request
-  for an unknown holder. The key names the scope instance and the caller: an
+- **Throttled per caller.** Every request -- a challenge request, and a share
+  submission through `AdmitSubmission` -- passes `HolderDeps.QuorumLimiter`
+  before anything else, including a request for an unknown holder. Both draw
+  on the caller's one bucket. The key names the scope instance and the caller: an
   authenticated identity, else the certificate the TLS connection presented,
   else the scope's single anonymous bucket. The node's composer installs the
   shared `pkg/ratelimit` engine:
   - each identified caller gets 2 requests per second, burst 10;
   - the anonymous bucket gets 5 per second, burst 20.
 
-  A refusal is `*ceremony.QuorumBeginRateLimitedError`, carrying the retry
+  A refusal is `*ceremony.QuorumRateLimitedError`, carrying the retry
   delay; REST sends it as `Retry-After`. An embedder that builds a ceremony
   service by hand and installs no limiter gets no throttling.
 - **No holder enumeration.** A name outside the roster, or a holder asked for
   a factor the policy does not admit, gets a decoy challenge. A decoy is
-  shaped like an mtls challenge to a real holder: a fresh nonce, the public
-  key and thumbprint of a key generated for it, and the same lifetime. It is
-  never stored, so a submission against it fails with
+  shaped like an mtls challenge to a real holder: a fresh nonce, a public key
+  and certificate thumbprint, and the same lifetime. A real holder's key and
+  thumbprint are the same on every request, so a decoy's are too: both are
+  derived from a random per-scope seed and the name (thumbprint =
+  HMAC-SHA256(seed, name); key scalar = HKDF-SHA256(seed, domain ‖ name)), on
+  the key type the roster's holders predominantly use (P-256, P-384, P-521 or
+  Ed25519). The seed lives as long as the scope, which is the life of the
+  process; a restart draws a new one. Every request derives the decoy for the
+  name it asks about, holder or not, so a real and a decoy answer cost the
+  same work. A decoy is never stored, so a submission against it fails with
   `ErrQuorumChallengeNotFound`, as an expired or evicted challenge does. The
   decoy names the requested factor, or mtls when none was requested. A holder
   whose designated factor is not mtls, asked for without a factor, therefore
-  answers with that factor's name.
+  answers with that factor's name. A roster whose holders' keys are RSA gets
+  P-256 decoys: no RSA key can be derived per name at a cost that does not
+  itself reveal the decoy, so on such a roster the key type distinguishes a
+  decoy from a holder.
 - **Bounded per holder and operation.** A holder keeps at most 2 pending
   challenges per operation, and a further request evicts the oldest. A
   challenge requested over a connection presenting the holder's own enrolled
   certificate is *bound*. A request that does not present the holder's
-  certificate never evicts a bound challenge. Such a request is refused with
-  `ErrTooManyPendingChallenges` when every slot is bound. A holder who
+  certificate never evicts a bound challenge. When every slot is bound, such
+  a request is answered with the challenge it would have got -- the holder's
+  own key and thumbprint, a fresh nonce -- but not stored, so it never
+  verifies; it is not refused, because a refusal is an answer no stranger's
+  name could produce. The same holds when the scope's table is full. A holder who
   connects with their certificate therefore cannot be locked out by a caller
   naming them.
 - **Bounded per scope.** Challenges issued against a replaced roster are
@@ -287,7 +310,7 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
 | `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
 | `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
-| `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `ErrTooManyPendingChallenges`, `*QuorumBeginRateLimitedError` | challenge refusals |
+| `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `*QuorumRateLimitedError` | challenge refusals (`ErrTooManyPendingChallenges` is internal: a request it would refuse gets an unstored challenge) |
 | `ceremony.ErrShareEnvelopeMalformed`, `ShareEnvelopeError` | envelope parse/open failures |
 
 Every one is classified by the `holderRules` block of `pkg/api/errclass`;

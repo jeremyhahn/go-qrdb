@@ -172,22 +172,35 @@ are not reconstructed here — their history is in the git log.
   only holders storage does not have, and fails with
   `ceremony.HolderRecordConflictError` on a different identity under a
   persisted name.
-- **The quorum-challenge request could be used to deny an unseal, and to
-  enumerate holders.** The sealed window admits a quorum challenge request
+- **The quorum-challenge request and the share submission could be used to
+  deny an unseal, and to enumerate holders.** The sealed window admits both
   anonymously. Naming real holders filled a scope's 256-challenge table, so
-  no holder could get one, and a name outside the roster was refused
-  differently from a real one. Now:
+  no holder could get one; a name outside the roster was refused differently
+  from a real one; and a submission said whether its holder was in the
+  roster, being revoked or had already submitted before checking its proof.
+  Now:
   - a holder keeps at most 2 challenges per operation, the oldest evicted
     first;
   - a challenge requested over a connection presenting the holder's own
     certificate can never be evicted by a request that does not present it;
+    a request that finds every slot bound gets an unstored challenge (the
+    holder's own key and thumbprint, never verifying) rather than an error;
   - the table is capped at what the roster can use;
   - an unknown holder, or a factor the policy does not admit, gets a decoy
-    challenge of the same shape that never verifies;
-  - every request passes a per-caller throttle on the shared rate-limit
-    engine: 2/s burst 10 per identity or certificate, 5/s burst 20 for the
-    anonymous bucket. A refusal is `ceremony.QuorumBeginRateLimitedError`,
-    `RESOURCE_EXHAUSTED`, sent with `Retry-After` on REST.
+    challenge of the same shape that never verifies. Its key and thumbprint
+    are derived from a per-scope seed and the name, on the roster's
+    predominant key type, so -- like a real holder's -- they are the same on
+    every request; every request derives one, holder or not, so both cost
+    the same;
+  - a submission's proof is verified before anything about the holder or
+    the round is checked, so an unverified submission answers
+    `HolderAuthenticationError` whoever it names; only a verified one learns
+    `HolderRevokedError` or `HolderAlreadySubmittedError`;
+  - every request and every submission passes a per-caller throttle on the
+    shared rate-limit engine (one bucket for both): 2/s burst 10 per
+    identity or certificate, 5/s burst 20 for the anonymous bucket. A
+    refusal is `ceremony.QuorumRateLimitedError`, `RESOURCE_EXHAUSTED`, sent
+    with `Retry-After` on REST.
 - **A late share submission destroyed a newer quorum round.** A submission
   read the roster before taking the quorum lock. If a rekey replaced the
   roster in between and a round had opened on the new one, the late
@@ -436,6 +449,9 @@ are not reconstructed here — their history is in the git log.
   `*pin.SoftwareBackend`. A composer that hands a PIN backend to the ceremony
   without going through `lifecycle` or `server.WithPINBackend` must decorate
   it with `pin.NewLockoutBackend` itself.
+- **`seal.HolderVerifier` gains `AdmitSubmission(ctx, domain) error`.** The
+  barrier asks it before examining a share submission at all; pkg/ceremony
+  throttles there. Implementations of the interface must add it.
 - **`service.BarrierServicer` gains `BarrierInitialized(ctx) (bool, error)`.**
   The initialize paths use it to refuse an initialized barrier before any PIN
   is compared. Implementations of the interface must add it.

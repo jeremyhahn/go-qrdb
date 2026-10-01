@@ -27,35 +27,35 @@ import (
 // policies leave room for that many holders retrying at once while bounding
 // what one caller can make the node do.
 var (
-	// quorumBeginCallerPolicy throttles one identified caller of one scope:
+	// quorumCallerPolicy throttles one identified caller of one scope:
 	// an authenticated identity, or the TLS certificate a connection
 	// presented.
-	quorumBeginCallerPolicy = ratelimit.Policy{RatePerSecond: 2, Burst: 10}
+	quorumCallerPolicy = ratelimit.Policy{RatePerSecond: 2, Burst: 10}
 
-	// quorumBeginAnonymousPolicy throttles everything a scope receives from
+	// quorumAnonymousPolicy throttles everything a scope receives from
 	// callers that identify themselves neither way. They share one bucket,
 	// so it is wider than one caller's.
-	quorumBeginAnonymousPolicy = ratelimit.Policy{RatePerSecond: 5, Burst: 20}
+	quorumAnonymousPolicy = ratelimit.Policy{RatePerSecond: 5, Burst: 20}
 )
 
-// quorumBeginLimiter is the token-bucket engine behind every node's
+// quorumLimiter is the token-bucket engine behind every node's
 // quorum-challenge throttle. It is the shared pkg/ratelimit engine, and it
 // lives as long as the process: ceremony services are carried across
 // in-process data-plane restarts, and its keys name the scope instance, so
 // nodes in one process never share a bucket. Idle buckets are reaped.
-var quorumBeginLimiter = sync.OnceValue(func() ratelimit.Limiter {
+var quorumLimiter = sync.OnceValue(func() ratelimit.Limiter {
 	return ratelimit.NewTokenBucketLimiter()
 })
 
-// QuorumBeginLimit is the ceremony.QuorumBeginLimitFunc every composer
-// installs: the anonymous bucket under quorumBeginAnonymousPolicy, every
-// identified caller under quorumBeginCallerPolicy.
-func QuorumBeginLimit(key string, anonymous bool) (bool, time.Duration) {
-	policy := quorumBeginCallerPolicy
+// QuorumLimit is the ceremony.QuorumLimitFunc every composer
+// installs: the anonymous bucket under quorumAnonymousPolicy, every
+// identified caller under quorumCallerPolicy.
+func QuorumLimit(key string, anonymous bool) (bool, time.Duration) {
+	policy := quorumCallerPolicy
 	if anonymous {
-		policy = quorumBeginAnonymousPolicy
+		policy = quorumAnonymousPolicy
 	}
-	return quorumBeginLimiter().Allow(key, policy)
+	return quorumLimiter().Allow(key, policy)
 }
 
-var _ ceremony.QuorumBeginLimitFunc = QuorumBeginLimit
+var _ ceremony.QuorumLimitFunc = QuorumLimit

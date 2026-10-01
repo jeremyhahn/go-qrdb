@@ -65,16 +65,17 @@ var (
 	ErrRegistrationWhileSealed = errors.New("ceremony: share holders cannot be registered while the initialized barrier is sealed")
 )
 
-// QuorumBeginRateLimitedError is returned when a quorum-challenge request is
-// refused by the scope's throttle. Nothing was issued.
-type QuorumBeginRateLimitedError struct {
+// QuorumRateLimitedError is returned when a quorum request -- a challenge
+// request or a share submission -- is refused by the scope's throttle.
+// Nothing was issued and nothing in the submission was examined.
+type QuorumRateLimitedError struct {
 	// RetryAfter is the delay before a retry can succeed.
 	RetryAfter time.Duration
 }
 
 // Error returns a human-readable description.
-func (e *QuorumBeginRateLimitedError) Error() string {
-	return "ceremony: too many quorum challenge requests; retry after " + e.RetryAfter.String()
+func (e *QuorumRateLimitedError) Error() string {
+	return "ceremony: too many quorum requests; retry after " + e.RetryAfter.String()
 }
 
 // HolderRecordConflictError is returned when a holder record enrolled while

@@ -73,6 +73,14 @@ type CeremonyDistributor interface {
 // barrier is sealed, so it may rely on nothing but the roster it is handed
 // and state it holds in memory.
 type HolderVerifier interface {
+	// AdmitSubmission decides whether a share submission to domain may be
+	// examined at all. It runs before anything in the submission is looked
+	// at -- the holder's name, the proof, the round -- and its refusal is
+	// returned to the caller unchanged, so a throttled caller learns nothing
+	// about the roster. pkg/ceremony throttles here with the same per-caller
+	// bucket its quorum-challenge requests draw on.
+	AdmitSubmission(ctx context.Context, domain QuorumDomain) error
+
 	// VerifyHolder checks proof authenticates holder for op in domain against
 	// the roster whose digest is rosterDigest. The challenge the proof answers
 	// must have been issued for exactly that (domain, op, holder, digest)

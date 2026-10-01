@@ -30,30 +30,30 @@ import (
 func TestQuorumBeginLimit_PoliciesByCaller(t *testing.T) {
 	anon := t.Name() + "\x00anonymous"
 	for i := 0; i < 20; i++ {
-		if ok, _ := lifecycle.QuorumBeginLimit(anon, true); !ok {
+		if ok, _ := lifecycle.QuorumLimit(anon, true); !ok {
 			t.Fatalf("anonymous request %d refused inside the burst", i+1)
 		}
 	}
-	ok, retry := lifecycle.QuorumBeginLimit(anon, true)
+	ok, retry := lifecycle.QuorumLimit(anon, true)
 	if ok || retry <= 0 {
 		t.Fatalf("anonymous request past the burst = %v, retry %v", ok, retry)
 	}
 
 	caller := t.Name() + "\x00tls\x00aa"
 	for i := 0; i < 10; i++ {
-		if ok, _ := lifecycle.QuorumBeginLimit(caller, false); !ok {
+		if ok, _ := lifecycle.QuorumLimit(caller, false); !ok {
 			t.Fatalf("identified request %d refused inside the burst", i+1)
 		}
 	}
-	if ok, _ := lifecycle.QuorumBeginLimit(caller, false); ok {
+	if ok, _ := lifecycle.QuorumLimit(caller, false); ok {
 		t.Fatal("identified request past the burst admitted")
 	}
 }
 
-// TestBuildSealServicesOnly_InstallsQuorumBeginLimiter pins that the
+// TestBuildSealServicesOnly_InstallsQuorumLimiter pins that the
 // composer gives the ceremony service, and so every holder authority built
 // from its HolderDeps, the quorum-challenge throttle.
-func TestBuildSealServicesOnly_InstallsQuorumBeginLimiter(t *testing.T) {
+func TestBuildSealServicesOnly_InstallsQuorumLimiter(t *testing.T) {
 	barrier, registry, credSvc := newTestBarrier(t)
 	node, err := lifecycle.BuildSealServicesOnly(context.Background(), lifecycle.Infra{
 		DataDir:           t.TempDir(),
@@ -71,7 +71,7 @@ func TestBuildSealServicesOnly_InstallsQuorumBeginLimiter(t *testing.T) {
 	if !ok {
 		t.Fatal("core ceremony service not exposed")
 	}
-	if core.HolderDeps().QuorumBeginLimiter == nil {
+	if core.HolderDeps().QuorumLimiter == nil {
 		t.Fatal("no quorum-challenge throttle installed")
 	}
 }

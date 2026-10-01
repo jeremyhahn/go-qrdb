@@ -17,8 +17,6 @@ package ceremony
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
@@ -56,19 +54,19 @@ type HolderDeps struct {
 	// is used.
 	Factors *authfactors.FactorRegistry
 
-	// QuorumBeginLimiter throttles quorum-challenge requests, which the
+	// QuorumLimiter throttles quorum-challenge requests, which the
 	// sealed window admits anonymously. Nil applies no throttling; the
 	// node's composer always installs one (lifecycle wires the shared
 	// pkg/ratelimit engine).
-	QuorumBeginLimiter QuorumBeginLimitFunc
+	QuorumLimiter QuorumLimitFunc
 }
 
-// QuorumBeginLimitFunc decides whether one quorum-challenge request may
+// QuorumLimitFunc decides whether one quorum-challenge request may
 // proceed. key names the scope and the caller -- an authenticated identity,
 // else the TLS peer certificate, else the scope's one anonymous bucket --
 // and anonymous reports the last case, so the composer can apply a separate
 // policy to it. A refusal carries the delay before a retry can succeed.
-type QuorumBeginLimitFunc func(key string, anonymous bool) (allowed bool, retryAfter time.Duration)
+type QuorumLimitFunc func(key string, anonymous bool) (allowed bool, retryAfter time.Duration)
 
 // factor resolves a factor name.
 func (d *HolderDeps) factor(name string) (authfactors.Factor, error) {
@@ -128,7 +126,11 @@ type holderScope struct {
 	// so two instances of one scope (a test's second node, a re-created
 	// tenant authority) never share a bucket.
 	limitID string
-	sealed  func() bool
+	// decoySeed keys the decoy challenges answered for names outside the
+	// roster (quorum_decoy.go), so each name's decoy is stable for the life
+	// of the scope.
+	decoySeed []byte
+	sealed    func() bool
 	// roster reads the domain's roster in force from the backing barrier,
 	// whose blob it is bound to. A backend that is not a barrier has none.
 	roster func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error)
@@ -158,6 +160,7 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		claims:      make(map[string]*ChallengeResponse),
 		quorum:      make(map[string]*pendingQuorumChallenge),
 		limitID:     scope.String() + "#" + randomHex(8),
+		decoySeed:   randomBytes(32),
 		sealed:      sealed,
 		roster:      rosterProbe(backend),
 		initialized: initializedProbe(backend),
@@ -716,26 +719,33 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 // against a caller who is not the holder:
 //
 //   - every request passes the composer's throttle first, keyed by scope and
-//     caller (see quorumCaller);
+//     caller (see throttle);
 //   - a name outside the roster, or a holder asked for a factor the policy
-//     does not admit, gets a decoy challenge of the same shape as a real one
-//     (decoyQuorumChallenge), which is never stored and never verifies, so
-//     the request does not reveal which holders exist;
+//     does not admit, gets a decoy challenge (decoyQuorumChallenge): the same
+//     shape as a real one, with a key and thumbprint derived from the name
+//     that stay the same from one request to the next, as a real holder's
+//     do. It is never stored and never verifies, so the request does not
+//     reveal which holders exist. The decoy is derived on every request,
+//     real or not, so the two cost the same;
 //   - a holder has at most maxPendingPerHolderOp challenges per operation,
 //     the oldest evicted first, and a challenge requested over a connection
 //     presenting the holder's own certificate is never evicted by one that
-//     did not (admitQuorumChallenge).
+//     did not (admitQuorumChallenge). A request that cannot be admitted is
+//     answered with the challenge it would have got, unstored, rather than
+//     an error a stranger's name could never produce.
 func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *seal.StorageBarrier, op seal.QuorumOp, username, factorName string) (*QuorumChallenge, error) {
 	if !op.ValidIn(h.domain) {
 		return nil, &seal.QuorumOpInvalidError{Domain: h.domain, Op: op}
 	}
-	caller, peerThumb, anonymous := quorumCaller(ctx)
-	if d.QuorumBeginLimiter != nil {
-		if ok, retry := d.QuorumBeginLimiter(h.limitID+"\x00"+caller, anonymous); !ok {
-			return nil, &QuorumBeginRateLimitedError{RetryAfter: retry}
-		}
+	peerThumb, err := h.throttle(ctx, d)
+	if err != nil {
+		return nil, err
 	}
 	roster, digest, err := barrier.HolderRoster(ctx, h.domain)
+	if err != nil {
+		return nil, err
+	}
+	decoy, err := h.decoyIdentityFor(username, rosterDecoyKind(roster))
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +754,10 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 		var notInRoster *seal.HolderNotInRosterError
 		var notAdmitted *seal.FactorNotAdmittedError
 		if errors.As(err, &notInRoster) || errors.As(err, &notAdmitted) {
-			return decoyQuorumChallenge(ctx, h.domain, op, username, factorName)
+			if factorName == "" {
+				factorName = mtls.Name
+			}
+			return h.decoyQuorumChallenge(ctx, op, username, factorName, decoy)
 		}
 		return nil, err
 	}
@@ -765,24 +778,42 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if err != nil {
 		return nil, err
 	}
-	if err := h.admitQuorumChallenge(roster, digest, op, username, bound); err != nil {
-		return nil, err
-	}
-	h.quorum[ch.ChallengeID] = &pendingQuorumChallenge{
-		domain: h.domain, op: op, holder: username, digest: digest, factor: rf.Name, challenge: ch,
-		issued: time.Now(), bound: bound,
-	}
-	methodData := stringMethodData(ch.MethodData)
-	return &QuorumChallenge{
+	out := &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
 		Domain:      h.domain,
 		Op:          op,
 		Holder:      username,
 		Factor:      rf.Name,
 		Nonce:       ch.Nonce,
-		MethodData:  methodData,
+		MethodData:  stringMethodData(ch.MethodData),
 		ExpiresAt:   ch.ExpiresAt,
-	}, nil
+	}
+	if err := h.admitQuorumChallenge(roster, digest, op, username, bound); err != nil {
+		if errors.Is(err, ErrTooManyPendingChallenges) {
+			return out, nil
+		}
+		return nil, err
+	}
+	h.quorum[ch.ChallengeID] = &pendingQuorumChallenge{
+		domain: h.domain, op: op, holder: username, digest: digest, factor: rf.Name, challenge: ch,
+		issued: time.Now(), bound: bound,
+	}
+	return out, nil
+}
+
+// throttle passes one quorum request -- a challenge request or a share
+// submission -- through the composer's throttle, keyed by this scope instance
+// and the caller (quorumCaller), and returns the thumbprint of the
+// certificate the caller's TLS connection presented, if any. Both kinds of
+// request draw on the caller's one bucket.
+func (h *holderScope) throttle(ctx context.Context, d *HolderDeps) (string, error) {
+	caller, peerThumb, anonymous := quorumCaller(ctx)
+	if d.QuorumLimiter != nil {
+		if ok, retry := d.QuorumLimiter(h.limitID+"\x00"+caller, anonymous); !ok {
+			return "", &QuorumRateLimitedError{RetryAfter: retry}
+		}
+	}
+	return peerThumb, nil
 }
 
 // pruneQuorumChallenges drops expired challenges.
@@ -802,7 +833,8 @@ func (h *holderScope) pruneQuorumChallenges() {
 // maxPendingPerHolderOp challenges for op: beyond that the oldest one not
 // bound to the holder's certificate is evicted, and a bound one only to make
 // room for another bound request. An unbound request that finds every slot
-// bound is refused with ErrTooManyPendingChallenges. The scope's whole table
+// bound is refused with ErrTooManyPendingChallenges (beginQuorum answers it
+// with an unstored challenge, never the error). The scope's whole table
 // is capped at what its roster can legitimately use -- every holder, every
 // operation of the domain, maxPendingPerHolderOp each -- and never above
 // maxPendingQuorumChallenges.
@@ -876,40 +908,28 @@ func quorumCaller(ctx context.Context) (key, peerThumb string, anonymous bool) {
 // decoyQuorumChallenge returns a challenge for a holder that cannot answer
 // one -- a name outside the roster, or a factor the policy does not admit --
 // shaped exactly like an mtls challenge to a real holder: a fresh nonce, the
-// public key and thumbprint of a key generated for it, the same lifetime. It
-// is not stored, so a submission against it is ErrQuorumChallengeNotFound,
-// as for any expired or evicted challenge.
+// name's decoy public key and thumbprint (see quorum_decoy.go), the same
+// lifetime. It is not stored, so a submission against it is
+// ErrQuorumChallengeNotFound, as for any expired or evicted challenge.
 //
-// The factor it names is the one requested, or mtls when none was: a holder
-// whose designated factor is not mtls, asked for with no factor, would answer
-// with that factor's name, so such a holder is distinguishable to a caller
-// who omits the factor. Every built-in holder is designated mtls by default.
-func decoyQuorumChallenge(ctx context.Context, domain seal.QuorumDomain, op seal.QuorumOp, username, factorName string) (*QuorumChallenge, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, ErrInitFailed
-	}
-	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		return nil, ErrInitFailed
-	}
-	thumb := randomHex(32)
+// factorName is the factor requested, or mtls when none was: a holder whose
+// designated factor is not mtls, asked for with no factor, would answer with
+// that factor's name, so such a holder is distinguishable to a caller who
+// omits the factor. Every built-in holder is designated mtls by default.
+func (h *holderScope) decoyQuorumChallenge(ctx context.Context, op seal.QuorumOp, username, factorName string, decoy *decoyIdentity) (*QuorumChallenge, error) {
 	ch, err := mtls.New().Challenge(ctx, &authfactors.Enrollment{
-		EnrollmentID: mtls.Name + ":" + thumb,
+		EnrollmentID: mtls.Name + ":" + decoy.thumbprint,
 		UserID:       username,
 		FactorName:   mtls.Name,
-		PublicKey:    spki,
-		Metadata:     map[string]string{mtls.MetaThumbprint: thumb},
+		PublicKey:    decoy.spki,
+		Metadata:     map[string]string{mtls.MetaThumbprint: decoy.thumbprint},
 	})
 	if err != nil {
 		return nil, err
 	}
-	if factorName == "" {
-		factorName = mtls.Name
-	}
 	return &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
-		Domain:      domain,
+		Domain:      h.domain,
 		Op:          op,
 		Holder:      username,
 		Factor:      factorName,
@@ -932,9 +952,14 @@ func stringMethodData(in map[string]any) map[string]string {
 
 // randomHex returns n random bytes, hex encoded.
 func randomHex(n int) string {
+	return hex.EncodeToString(randomBytes(n))
+}
+
+// randomBytes returns n random bytes.
+func randomBytes(n int) []byte {
 	b := make([]byte, n)
 	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24+).
-	return hex.EncodeToString(b)
+	return b
 }
 
 // verifyHolder implements seal.HolderVerifier for the scope. The challenge is
