@@ -76,12 +76,17 @@ type (
 // set: trimmed, LOWERCASED, de-duplicated, first-seen order preserved. Case is
 // folded because these are protocol names from a closed vocabulary, and a list
 // holding both "WebAuthn" and "webauthn" is a policy that will eventually deny
-// what it meant to allow. Every entry must be in the vocabulary (AuthMethods:
-// mtls, piv, webauthn, plus the name of every authenticator in a configured
-// chain); anything else fails closed with *UserUnknownAuthMethodError. It is
-// what CreateUser applies to a policy being written; UpdateUser additionally
-// lets an edit keep an entry the replaced policy already held. A stored policy
-// is never re-validated on read.
+// what it meant to allow.
+//
+// It checks against the BUILT-IN tokens only (BuiltinAuthMethods: mtls, piv,
+// webauthn): it has no node, so it cannot know a chain. Anything else fails
+// closed with *UserUnknownAuthMethodError. A node's user store validates
+// against more: the built-in tokens plus the names of the authenticators in
+// that node's chain (an authenticator passed to the node's WithAuthenticators,
+// say "oauth"), so a policy this function refuses may still be accepted by a
+// node that can authenticate with it. The store also lets an update keep an
+// entry the replaced policy already held. A stored policy is never
+// re-validated on read.
 var NormalizeAuthMethods = user.NormalizeAuthMethods
 
 const (

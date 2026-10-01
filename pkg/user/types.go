@@ -85,7 +85,10 @@ type User struct {
 	//
 	// Empty means qrdb states no restriction — the layer performing the
 	// ceremony decides. Values are lowercased, de-duplicated tokens of the
-	// vocabulary (auth.AuthMethods), enforced when the policy is written.
+	// node's method vocabulary — the built-in tokens (auth.BuiltinAuthMethods)
+	// plus the names of the authenticators in the node's chain
+	// (middleware.AuthMiddleware.AuthMethods) — enforced when the policy is
+	// written.
 	AuthMethods []string `json:"authMethods,omitempty"`
 
 	// LastAuth records the last successful authentication (UTC). Nil for an
