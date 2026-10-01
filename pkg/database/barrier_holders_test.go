@@ -284,3 +284,21 @@ func TestShamirDatabase_InitializeNeedsEveryHolder(t *testing.T) {
 		t.Fatalf("InitializeShamir with 2 of 3 holders = %v, want HolderCountMismatchError", err)
 	}
 }
+
+// TestShamirDatabase_CreatedSealed verifies a Shamir database reports itself
+// sealed from its create until its custody is initialized: its barrier holds
+// no key yet, so nothing on it is usable, and an "open" status would say
+// otherwise.
+func TestShamirDatabase_CreatedSealed(t *testing.T) {
+	ctx := context.Background()
+	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
+	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(holderBarrierManager(t, ca)))
+
+	db, err := mgr.CreateWithCredentials(ctx, shamirDBConfig(t, "vault"), seal.Credentials{})
+	if err != nil {
+		t.Fatalf("CreateWithCredentials: %v", err)
+	}
+	if got := db.Status(); got != StatusSealed {
+		t.Fatalf("a created shamir database reports %q, want %q", got, StatusSealed)
+	}
+}

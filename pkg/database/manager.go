@@ -389,6 +389,11 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		db.SetBarrierEnabled(true)
+		// A Shamir barrier holds no key until its holders' custody is
+		// initialized: the database is sealed, not open, until then.
+		if isShamir(cfg.Barrier) {
+			db.SetStatus(StatusSealed)
+		}
 	}
 	db.incarnation = incarnation
 
