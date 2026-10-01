@@ -741,8 +741,10 @@ func (s *Server) Start() error {
 	//     initialize or tools/list is answered anonymously. A request that
 	//     authenticates proceeds with its identity bound into the request
 	//     context, where authHTTPContext reuses it;
-	//   - the request-body bound, on every request.
-	mcpHandler := boundedBodyHandler(maxRequestBodyBytes, streamHandler)
+	//   - the request-body bound, on every request: 1 MiB when the caller is
+	//     anonymous (no authentication, or the sealed-window listener), the
+	//     batch-import bound otherwise.
+	mcpHandler := boundedBodyHandler(s.requestBodyLimit(), streamHandler)
 	if s.authMW != nil {
 		mcpHandler = s.authenticateHandler(mcpHandler)
 	}

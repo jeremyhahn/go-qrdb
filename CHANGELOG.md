@@ -661,8 +661,11 @@ are not reconstructed here — their history is in the git log.
   anonymous callers, and `tools/list` enumerates the whole admin tool surface.
   mcp-go also parsed bodies of any size. Every request to `/mcp` is now
   authenticated at the HTTP layer and refused with `401` if it fails, with
-  `WWW-Authenticate` when a bearer challenge is configured. Every body is
-  bounded at the batch-import limit plus 1 MiB of envelope.
+  `WWW-Authenticate` when a bearer challenge is configured. An authenticated
+  caller's body is bounded at the batch-import limit plus 1 MiB of envelope.
+  On a listener without authentication (the boot-time sealed-window
+  listener, or a node with authentication off), every caller is anonymous,
+  and the bound is 1 MiB.
 - **gRPC server reflection is no longer exempt from authentication (low).**
   The gRPC and Unix interceptors let `/grpc.reflection.*` through with no
   credentials. qrdb registers no reflection service, but a composer that

@@ -287,6 +287,7 @@ over the same services, not a seventh transport.
 | Client offering 0-RTT early data on a resumed session, on the native QUIC listener or REST's HTTP/3 listener | refused. Neither listener allows 0-RTT, because early data is replayable, so the client completes a full handshake before any request is accepted. HTTP/3 sets this through an explicit `QUICConfig`, because quic-go's `http3.Server` allows 0-RTT by default | **yes** |
 | MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
 | MCP request body over `maxRequestBodyBytes` (the base64 batch-import bound plus 1 MiB) | the read fails with `*http.MaxBytesError` and the request is refused | **yes** |
+| MCP request body over 1 MiB (`maxAnonymousRequestBodyBytes`) on a listener without authentication -- the boot-time sealed-window listener, or a node with authentication off | refused the same way. Its callers are anonymous, and everything it serves them is a small JSON-RPC document | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |

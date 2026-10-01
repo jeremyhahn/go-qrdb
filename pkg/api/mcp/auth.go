@@ -146,6 +146,21 @@ func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 // runs, so the bound has to be applied here, at the HTTP layer.
 var maxRequestBodyBytes = int64(maxEncodedImportFileSize) + 1<<20
 
+// maxAnonymousRequestBodyBytes bounds an MCP request body on a listener with
+// no authentication: the boot-time sealed-window listener, or a node with
+// authentication off. Its callers are anonymous, and everything it serves
+// them -- initialize, tools/list and the sealed-window tools -- is a small
+// JSON-RPC document, so they get 1 MiB, not the batch-import bound.
+const maxAnonymousRequestBodyBytes = int64(1 << 20)
+
+// requestBodyLimit is the body bound for this server's MCP endpoint.
+func (s *Server) requestBodyLimit() int64 {
+	if s.authMW == nil || s.sealedWindowListener != nil {
+		return maxAnonymousRequestBodyBytes
+	}
+	return maxRequestBodyBytes
+}
+
 // boundedBodyHandler caps every request body at limit before next reads it.
 // A body over the cap fails the read with *http.MaxBytesError, which mcp-go
 // answers as a malformed request, and the connection is closed.
