@@ -27,6 +27,7 @@ import (
 
 type fakeSealProbe struct {
 	sealed, enrollment atomic.Bool
+	sealedwindow.Admission
 }
 
 func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }

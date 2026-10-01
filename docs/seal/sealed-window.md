@@ -83,6 +83,22 @@ only through the sealed-window listener: officers must be registered
 (and able to claim their shares) before and immediately after
 `InitializeShamir` runs, while the barrier is still sealed.
 
+### No request runs across the unseal (`Transition`, `Admission`)
+
+The gate checks the barrier when a request arrives. Without more than that, a
+request admitted while sealed could still be running when another request
+unseals the barrier, and would finish anonymously against an unsealed
+barrier. The verbs that can take the barrier out of the sealed state are
+marked `Transition`: `barrier-initialize`, `barrier-unseal`,
+`shamir-initialize`, `shamir-unseal-share`, `shamir-unseal-shares`,
+`recovery-recover`, `ceremony-initialize` and
+`ceremony-submit-unseal-share`. Every request on the boot-time listener
+holds the listener's `sealedwindow.Admission` for its whole duration. A
+`Transition` request holds it exclusively and every other request holds it
+shared, on all transports together. So an unsealing request waits for the
+requests already in flight, none starts while it runs, and every request
+admitted after it sees the barrier unsealed and is refused.
+
 ### Officer enrollment closes (`PreOperationalOnly`)
 
 `officer-register` and `recovery-officer-register` are the two

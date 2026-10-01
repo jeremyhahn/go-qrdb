@@ -27,7 +27,10 @@ import (
 )
 
 // fakeMCPSealedProbe is a deterministic sealedWindowProbe test double.
-type fakeMCPSealedProbe struct{ sealed, enrollment bool }
+type fakeMCPSealedProbe struct {
+	sealed, enrollment bool
+	sealedwindow.Admission
+}
 
 func (f *fakeMCPSealedProbe) EnrollmentOpen() bool { return f.enrollment }
 

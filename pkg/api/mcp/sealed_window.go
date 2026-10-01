@@ -52,6 +52,12 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 			name := req.Params.Name
+			if s.sealedWindowListener != nil {
+				// Held until the tool call completes; see
+				// sealedwindow.Admission.
+				_, transition := sealedWindowTransition[name]
+				defer s.sealedWindowListener.Admit(transition)()
+			}
 			_, allowlisted := SealedWindowAllowlist[name]
 			decision := sealedwindow.Request{
 				Sealed:      s.sealedWindowSealed(),
@@ -80,6 +86,10 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 		}
 	}
 }
+
+// sealedWindowTransition holds the MCP tools of the Transition verbs
+// (initialize and unseal), which run alone on the boot-time listener.
+var sealedWindowTransition = sealedwindow.MCPTransition()
 
 // sealedWindowPreOperationalOnly holds the MCP tools of the
 // PreOperationalOnly verbs (officer and recovery-officer registration).

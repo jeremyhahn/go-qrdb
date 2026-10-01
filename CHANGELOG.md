@@ -178,6 +178,8 @@ are not reconstructed here — their history is in the git log.
   `qrdb database update-sql --concurrency` and `qrdb database create
   --sql-concurrency`, and `databases[].sql.concurrency` in the configuration
   file. The in-process driver takes a `concurrency=` DSN parameter.
+- `sealedwindow.Admission`, `Names.Transition` and the per-transport
+  `*Transition` derivations; `ListenerProbe.Admit`.
 
 ### Changed — BREAKING
 
@@ -787,6 +789,14 @@ are not reconstructed here — their history is in the git log.
   `secure.HardenProcess` before the GUI/CLI branch, honours the same
   `QRDB_SECURE_ALLOW_PROCESS_INSPECTION` opt-out, and exits 1 on a refusal. Its
   warning goes to standard error so it never mixes into a command's output.
+- **No anonymous request on the boot-time sealed-window listener runs across
+  the unseal (medium).** The listener's gate checked the barrier when a
+  request arrived, so a request admitted while sealed could finish after
+  another request had unsealed the barrier, running anonymously against an
+  unsealed barrier. Requests now hold the listener's `sealedwindow.Admission`
+  until they complete. The verbs that can initialize or unseal the barrier
+  (`sealedwindow.Names.Transition`) hold it exclusively, so they wait for
+  the requests in flight, and every later request is refused.
 
 ### Known limits
 

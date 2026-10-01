@@ -122,6 +122,10 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
+	// sealedWindowAdmission is the boot-time sealed-window listener's
+	// Admission, shared by all of its transports (see listenerProbe).
+	sealedWindowAdmission sealedwindow.Admission
+
 	config      *config.Config
 	kvSvc       service.KVServicer
 	adminSvc    service.AdminServicer
@@ -449,6 +453,7 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 // no enrollment to keep open, so it reports closed.
 type sealedWindowListenerProbe struct {
 	SealedWindowProbe
+	*sealedwindow.Admission
 	ceremony *ceremony.CeremonyService
 }
 
@@ -462,7 +467,7 @@ var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
 // listenerProbe returns the boot-time sealed-window listener's probe over
 // this server's barrier probe and ceremony service.
 func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
-	p := sealedWindowListenerProbe{SealedWindowProbe: s.opts.sealedWindowProbe}
+	p := sealedWindowListenerProbe{SealedWindowProbe: s.opts.sealedWindowProbe, Admission: &s.sealedWindowAdmission}
 	if s.opts.ceremonySvc != nil {
 		if core, ok := service.CeremonyServiceCore(s.opts.ceremonySvc); ok {
 			p.ceremony = core

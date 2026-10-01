@@ -51,6 +51,10 @@ const closedResponseBody = `{"error":"` + sealedwindow.ClosedMessage + `","code"
 // enrollment has closed.
 const enrollmentClosedResponseBody = `{"error":"` + sealedwindow.EnrollmentClosedMessage + `","code":"ENROLLMENT_CLOSED"}`
 
+// sealedWindowTransition holds the REST entries of the Transition verbs
+// (initialize and unseal), which run alone on the boot-time listener.
+var sealedWindowTransition = sealedwindow.RESTTransition()
+
 // sealedWindowPreOperationalOnly holds the REST entries of the
 // PreOperationalOnly verbs (officer and recovery-officer registration).
 var sealedWindowPreOperationalOnly = sealedwindow.RESTPreOperationalOnly()
@@ -109,6 +113,10 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if listener != nil {
+				// Held until the request completes; see sealedwindow.Admission.
+				defer listener.Admit(requestInAllowlist(r, sealedWindowTransition))()
+			}
 			req := sealedwindow.Request{
 				Sealed:      barrier != nil && barrier.IsSealed(),
 				Allowlisted: requestInAllowlist(r, allowlist),

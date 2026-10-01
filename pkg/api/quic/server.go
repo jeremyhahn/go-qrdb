@@ -850,6 +850,11 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// admin.Status) over the native QUIC transport. On the boot-time
 	// sealed-window listener every method is rejected once the barrier is
 	// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
+	if s.sealedWindowListener != nil {
+		// Held until this request completes; see sealedwindow.Admission.
+		_, transition := sealedWindowTransition[method]
+		defer s.sealedWindowListener.Admit(transition)()
+	}
 	if refusal, refused := s.sealedWindowRefusal(method); refused {
 		_ = s.writeResponse(stream, requestID, refusal.status, []byte(refusal.msg))
 		s.logRequest(method, requestID, refusal.status, start)

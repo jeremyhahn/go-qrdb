@@ -20,12 +20,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // fakeProbe is a deterministic sdk.SealedWindowProbe.
 type fakeProbe struct {
 	sealed, enrollment bool
+	sealedwindow.Admission
 }
 
 func (p *fakeProbe) IsSealed() bool       { return p.sealed }

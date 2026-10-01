@@ -36,6 +36,10 @@ func sealedWindowAllowed(method string) bool {
 	return ok
 }
 
+// sealedWindowTransition holds the native QUIC methods of the Transition
+// verbs (initialize and unseal), which run alone on the boot-time listener.
+var sealedWindowTransition = sealedwindow.QUICTransition()
+
 // sealedWindowPreOperationalOnly holds the native QUIC methods of the
 // PreOperationalOnly verbs (officer and recovery-officer registration).
 var sealedWindowPreOperationalOnly = sealedwindow.QUICPreOperationalOnly()

@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
@@ -495,5 +496,66 @@ func TestAnonymous(t *testing.T) {
 	defer cancel()
 	if !sealedwindow.Anonymous(child) {
 		t.Fatal("the mark must survive a derived context")
+	}
+}
+
+// TestTransitionDerivations: the Transition verbs are exactly the ones that
+// initialize or unseal the barrier, on every transport.
+func TestTransitionDerivations(t *testing.T) {
+	rest := sealedwindow.RESTTransition()
+	want := []string{
+		"/v1/barrier/initialize", "/v1/barrier/unseal", "/v1/barrier/shamir/initialize",
+		"/v1/barrier/shamir/unseal-share", "/v1/barrier/shamir/unseal-shares",
+		"/v1/barrier/recovery/recover", "/v1/ceremony/initialize", "/v1/barrier/unseal-share",
+	}
+	if len(rest) != len(want) {
+		t.Fatalf("RESTTransition = %v, want %v", rest, want)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Errorf("RESTTransition[%d] = %q, want %q", i, rest[i], want[i])
+		}
+	}
+	if got := sealedwindow.GRPCFullMethodTransition("qrdb.v1.QRDBService"); len(got) != 8 {
+		t.Errorf("GRPCFullMethodTransition has %d entries, want 8", len(got))
+	}
+	if _, ok := sealedwindow.QUICTransition()["barrier.Unseal"]; !ok || len(sealedwindow.QUICTransition()) != 8 {
+		t.Errorf("QUICTransition = %v", sealedwindow.QUICTransition())
+	}
+	if _, ok := sealedwindow.MCPTransition()["qrdb_barrier_unseal"]; !ok || len(sealedwindow.MCPTransition()) != 8 {
+		t.Errorf("MCPTransition = %v", sealedwindow.MCPTransition())
+	}
+}
+
+// TestAdmission: shared admissions run together; a transition waits for them
+// and excludes new ones until it is released.
+func TestAdmission(t *testing.T) {
+	var a sealedwindow.Admission
+	r1 := a.Admit(false)
+	r2 := a.Admit(false)
+	acquired := make(chan func(), 1)
+	go func() { acquired <- a.Admit(true) }()
+	select {
+	case <-acquired:
+		t.Fatal("a transition was admitted while shared admissions were held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	r1()
+	r2()
+	release := <-acquired
+	shared := make(chan func(), 1)
+	go func() { shared <- a.Admit(false) }()
+	select {
+	case <-shared:
+		t.Fatal("a shared admission was granted while a transition held the admission")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	(<-shared)()
+
+	if r := sealedwindow.OrFailClosed(nil).Admit(true); r == nil {
+		t.Fatal("the fail-closed probe must return a release")
+	} else {
+		r()
 	}
 }

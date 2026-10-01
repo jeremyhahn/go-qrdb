@@ -101,6 +101,10 @@ func SealedWindowListenerStreamInterceptor(probe sealedwindow.ListenerProbe, all
 func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener sealedwindow.ListenerProbe) grpc.UnaryServerInterceptor {
 	allowSet := sealedWindowAllowSet(allowlist)
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if listener != nil {
+			// Held until the call completes; see sealedwindow.Admission.
+			defer listener.Admit(methodAllowed(info.FullMethod, sealedWindowTransition))()
+		}
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
 			return nil, err
 		}
@@ -115,6 +119,10 @@ func sealedWindowUnary(barrier sealedWindowProbe, allowlist []string, listener s
 func sealedWindowStream(barrier sealedWindowProbe, allowlist []string, listener sealedwindow.ListenerProbe) grpc.StreamServerInterceptor {
 	allowSet := sealedWindowAllowSet(allowlist)
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if listener != nil {
+			// Held until the stream completes; see sealedwindow.Admission.
+			defer listener.Admit(methodAllowed(info.FullMethod, sealedWindowTransition))()
+		}
 		if err := sealedWindowAdmit(barrier, info.FullMethod, allowSet, listener); err != nil {
 			return err
 		}
@@ -155,6 +163,10 @@ var sealedWindowRefusals = map[sealedwindow.Decision]error{
 	sealedwindow.RefuseClosed:           status.Error(codes.Unavailable, sealedwindow.ClosedMessage),
 	sealedwindow.RefuseEnrollmentClosed: status.Error(codes.PermissionDenied, sealedwindow.EnrollmentClosedMessage),
 }
+
+// sealedWindowTransition holds the QRDBService methods of the Transition
+// verbs (initialize and unseal), which run alone on the boot-time listener.
+var sealedWindowTransition = sealedwindow.GRPCFullMethodTransition(pb.QRDBService_ServiceDesc.ServiceName)
 
 // sealedWindowPreOperationalOnly holds the QRDBService methods of the
 // PreOperationalOnly verbs (officer and recovery-officer registration).

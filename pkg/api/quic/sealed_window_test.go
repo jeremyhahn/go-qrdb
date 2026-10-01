@@ -105,7 +105,10 @@ func TestSealedWindowAllowed_NonAllowlistedMethods(t *testing.T) {
 }
 
 // fakeSealedProbe is a deterministic sealedWindowProbe test double.
-type fakeSealedProbe struct{ sealed, enrollment bool }
+type fakeSealedProbe struct {
+	sealed, enrollment bool
+	sealedwindow.Admission
+}
 
 func (f *fakeSealedProbe) EnrollmentOpen() bool { return f.enrollment }
 

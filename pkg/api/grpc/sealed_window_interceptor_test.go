@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -26,7 +27,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
-type fakeSealProbe struct{ sealed, enrollment atomic.Bool }
+type fakeSealProbe struct {
+	sealed, enrollment atomic.Bool
+	sealedwindow.Admission
+}
 
 func (f *fakeSealProbe) IsSealed() bool       { return f.sealed.Load() }
 func (f *fakeSealProbe) EnrollmentOpen() bool { return f.enrollment.Load() }
@@ -373,3 +377,53 @@ type ctxServerStream struct {
 }
 
 func (s *ctxServerStream) Context() context.Context { return s.ctx }
+
+// TestSealedWindowListener_NoCallInFlightAcrossUnseal is the gRPC twin of the
+// REST in-flight test: an unsealing call waits for the anonymous calls
+// already in flight, and calls after it are refused.
+func TestSealedWindowListener_NoCallInFlightAcrossUnseal(t *testing.T) {
+	probe := newProbe(true)
+	unary := SealedWindowListenerUnaryInterceptor(probe, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var sealedAtEnd atomic.Bool
+	slow := func(context.Context, any) (any, error) {
+		close(entered)
+		<-release
+		sealedAtEnd.Store(probe.IsSealed())
+		return nil, nil
+	}
+	unseal := func(context.Context, any) (any, error) {
+		probe.unseal()
+		return nil, nil
+	}
+	slowDone := make(chan error, 1)
+	go func() {
+		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}, slow)
+		slowDone <- err
+	}()
+	<-entered
+	unsealDone := make(chan error, 1)
+	go func() {
+		_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierUnseal"}, unseal)
+		unsealDone <- err
+	}()
+	select {
+	case <-unsealDone:
+		close(release)
+		<-slowDone
+		t.Fatal("the barrier unsealed while an anonymous call admitted under seal was still in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-slowDone; err != nil || !sealedAtEnd.Load() {
+		t.Fatalf("in-flight call: err %v, sealed at end %v", err, sealedAtEnd.Load())
+	}
+	if err := <-unsealDone; err != nil {
+		t.Fatalf("unseal: %v", err)
+	}
+	_, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierStatus"}, dummyHandler)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("a call after the unseal: %v, want Unavailable", err)
+	}
+}

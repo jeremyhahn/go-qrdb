@@ -50,6 +50,7 @@ package sealedwindow
 import (
 	"context"
 	"strings"
+	"sync"
 )
 
 // Verb is a transport-neutral identifier for one sealed-window operation.
@@ -128,6 +129,14 @@ type Names struct {
 	// unseal must remain reachable without a token because a sealed IAM
 	// plane cannot validate one.
 	PreOperationalOnly bool
+
+	// Transition marks a verb that can move the barrier out of the sealed
+	// state -- initialize it or unseal it. On the boot-time sealed-window
+	// listener such a request runs alone: it waits for every anonymous
+	// request already in flight, and none starts while it runs, so no request
+	// admitted under seal is still running when the barrier unseals (see
+	// Admission).
+	Transition bool
 }
 
 // PreOperationalOnly reports whether verb v's sealed-window authentication
@@ -184,14 +193,14 @@ var Table = map[Verb]Names{
 	VerbStatus: {REST: []string{"/status"}, GRPC: "Status", QUIC: "admin.Status", MCP: "qrdb_status"},
 
 	VerbBarrierStatus:     {REST: []string{"/v1/barrier/status"}, GRPC: "BarrierStatus", QUIC: "barrier.Status", MCP: "qrdb_barrier_status"},
-	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize"},
-	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal"},
+	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Transition: true},
+	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal", Transition: true},
 
-	VerbShamirInitialize:   {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize"},
-	VerbShamirUnsealShare:  {REST: []string{"/v1/barrier/shamir/unseal-share"}, GRPC: "BarrierShamirUnsealShare", QUIC: "barrier.ShamirUnsealShare", MCP: "qrdb_barrier_shamir_unseal_share"},
-	VerbShamirUnsealShares: {REST: []string{"/v1/barrier/shamir/unseal-shares"}, GRPC: "BarrierShamirUnsealShares", QUIC: "barrier.ShamirUnsealShares", MCP: "qrdb_barrier_shamir_unseal_shares"},
+	VerbShamirInitialize:   {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Transition: true},
+	VerbShamirUnsealShare:  {REST: []string{"/v1/barrier/shamir/unseal-share"}, GRPC: "BarrierShamirUnsealShare", QUIC: "barrier.ShamirUnsealShare", MCP: "qrdb_barrier_shamir_unseal_share", Transition: true},
+	VerbShamirUnsealShares: {REST: []string{"/v1/barrier/shamir/unseal-shares"}, GRPC: "BarrierShamirUnsealShares", QUIC: "barrier.ShamirUnsealShares", MCP: "qrdb_barrier_shamir_unseal_shares", Transition: true},
 
-	VerbRecoveryRecover: {REST: []string{"/v1/barrier/recovery/recover"}, GRPC: "BarrierRecoveryRecover", QUIC: "barrier.RecoveryRecover", MCP: "qrdb_barrier_recovery_recover"},
+	VerbRecoveryRecover: {REST: []string{"/v1/barrier/recovery/recover"}, GRPC: "BarrierRecoveryRecover", QUIC: "barrier.RecoveryRecover", MCP: "qrdb_barrier_recovery_recover", Transition: true},
 
 	VerbRootToken: {REST: []string{"/v1/barrier/root-token"}, GRPC: "BarrierRootToken", QUIC: "barrier.RootToken", MCP: "qrdb_barrier_root_token"},
 
@@ -216,7 +225,7 @@ var Table = map[Verb]Names{
 	VerbRecoveryShareClaimBegin:    {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
 	VerbRecoveryShareClaimComplete: {REST: []string{"/v1/barrier/recovery/officers/"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
 
-	VerbCeremonyInitialize:        {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize"},
+	VerbCeremonyInitialize:        {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Transition: true},
 	VerbCeremonyStatus:            {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status"},
 	VerbCeremonyClaimCertBegin:    {REST: []string{"/v1/ceremony/claim-cert/begin"}, GRPC: "CeremonyClaimCertBegin", QUIC: "ceremony.ClaimCertBegin", MCP: "qrdb_ceremony_claim_cert_begin"},
 	VerbCeremonyClaimCertComplete: {REST: []string{"/v1/ceremony/claim-cert/complete"}, GRPC: "CeremonyClaimCertComplete", QUIC: "ceremony.ClaimCertComplete", MCP: "qrdb_ceremony_claim_cert_complete"},
@@ -228,7 +237,7 @@ var Table = map[Verb]Names{
 	VerbCeremonySignCSR:              {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr"},
 	VerbCeremonyClaimShareBegin:      {REST: []string{"/v1/ceremony/claim-share/begin"}, GRPC: "CeremonyClaimShareBegin", QUIC: "ceremony.ClaimShareBegin", MCP: "qrdb_ceremony_claim_share_begin"},
 	VerbCeremonyClaimShareEnd:        {REST: []string{"/v1/ceremony/claim-share/complete"}, GRPC: "CeremonyClaimShareComplete", QUIC: "ceremony.ClaimShareComplete", MCP: "qrdb_ceremony_claim_share_complete"},
-	VerbCeremonySubmitUnsealShare:    {REST: []string{"/v1/barrier/unseal-share"}, GRPC: "CeremonySubmitUnsealShare", QUIC: "ceremony.SubmitUnsealShare", MCP: "qrdb_ceremony_submit_unseal_share"},
+	VerbCeremonySubmitUnsealShare:    {REST: []string{"/v1/barrier/unseal-share"}, GRPC: "CeremonySubmitUnsealShare", QUIC: "ceremony.SubmitUnsealShare", MCP: "qrdb_ceremony_submit_unseal_share", Transition: true},
 }
 
 // RESTExtra lists REST-only allowlist entries that have no
@@ -400,6 +409,78 @@ func MCPPreOperationalOnly() map[string]struct{} {
 	return out
 }
 
+// RESTTransition derives the REST entries of the Transition verbs.
+func RESTTransition() []string {
+	var out []string
+	for _, v := range Verbs {
+		if Table[v].Transition {
+			out = append(out, Table[v].REST...)
+		}
+	}
+	return out
+}
+
+// GRPCFullMethodTransition derives the fully-qualified gRPC methods of the
+// Transition verbs on serviceName.
+func GRPCFullMethodTransition(serviceName string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.Transition && n.GRPC != "" {
+			out["/"+serviceName+"/"+n.GRPC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// QUICTransition derives the native QUIC methods of the Transition verbs.
+func QUICTransition() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.Transition && n.QUIC != "" {
+			out[n.QUIC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// MCPTransition derives the MCP tools of the Transition verbs.
+func MCPTransition() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.Transition && n.MCP != "" {
+			out[n.MCP] = struct{}{}
+		}
+	}
+	return out
+}
+
+// Admission closes the window between the boot-time sealed-window listener's
+// check of the barrier and the request it admits. A gate samples the barrier
+// when a request arrives; without Admission a request admitted while sealed
+// could still be running when another request unseals the barrier, and would
+// then run anonymously against an unsealed barrier.
+//
+// Every request on that listener holds Admission for its whole duration:
+// a Transition request exclusively, every other request shared. A Transition
+// request therefore waits for the requests already in flight, none starts
+// while it runs, and a request admitted after it samples the new state and is
+// refused. One Admission is shared by all of a listener's transports. The
+// zero value is ready to use.
+type Admission struct {
+	mu sync.RWMutex
+}
+
+// Admit holds the admission for one request and returns its release, which
+// the caller must call when the request has completed.
+func (a *Admission) Admit(transition bool) (release func()) {
+	if transition {
+		a.mu.Lock()
+		return a.mu.Unlock
+	}
+	a.mu.RLock()
+	return a.mu.RUnlock
+}
+
 // ListenerProbe is what the boot-time sealed-window listener's gate reads for
 // every request: whether the barrier is sealed, and whether officer
 // enrollment is still open to an unauthenticated caller (see
@@ -408,6 +489,8 @@ func MCPPreOperationalOnly() map[string]struct{} {
 type ListenerProbe interface {
 	IsSealed() bool
 	EnrollmentOpen() bool
+	// Admit holds the listener's Admission for one request; see Admission.
+	Admit(transition bool) (release func())
 }
 
 // OrFailClosed returns p, or when p is nil a ListenerProbe that reports the
@@ -425,6 +508,7 @@ type failClosed struct{}
 
 func (failClosed) IsSealed() bool       { return false }
 func (failClosed) EnrollmentOpen() bool { return false }
+func (failClosed) Admit(bool) func()    { return func() {} }
 
 // anonymousKey is the context key WithAnonymous sets.
 type anonymousKey struct{}
