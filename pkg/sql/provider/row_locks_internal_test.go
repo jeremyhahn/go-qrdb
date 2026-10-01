@@ -221,15 +221,15 @@ func TestLockRowForUpdate_RefusesARowThatChangedSinceItWasRead(t *testing.T) {
 
 	// A row read elsewhere (a cascade) that still matches is accepted and
 	// is now held.
-	require.NoError(t, tbl.lockRowForUpdate(ctx, rowKey, stored))
+	require.NoError(t, tbl.lockMatchedRow(ctx, rowKey, stored))
 	_, ws := lockState(ctx)
 	assert.True(t, ws.lockOwner().Holds(rowKey, rowlock.ModeExclusive))
-	require.NoError(t, tbl.lockRowForUpdate(ctx, rowKey, stored), "a held row is not re-checked")
+	require.NoError(t, tbl.lockMatchedRow(ctx, rowKey, stored), "a held row is not re-checked")
 
 	// One computed from a different version is refused, retryably.
 	otherKey := string(kvs[1].Key)
 	stale := sqle.Row{stored[0], int64(-1)}
-	err = tbl.lockRowForUpdate(ctx, otherKey, stale)
+	err = tbl.lockMatchedRow(ctx, otherKey, stale)
 	assert.Equal(t, mysql.ERLockDeadlock, sqlErrorNumber(err))
 	var conflict *TransactionConflictError
 	assert.True(t, service.AsCause(err, &conflict))

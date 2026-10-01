@@ -131,8 +131,17 @@ func analyze(ctx context.Context, query string, opts ast.ParserOptions) *Intent 
 		addTables(in.targets, s.TableExprs, nil)
 	case *ast.Delete:
 		if len(s.Targets) > 0 {
+			// A multi-table DELETE names its targets by alias as often as by
+			// table (DELETE a FROM accounts a ...): resolve each to the base
+			// table its FROM clause binds it to, which is the name the
+			// storage layer asks about.
+			bases := aliasBases(s.TableExprs)
 			for _, t := range s.Targets {
-				in.targets[strings.ToLower(t.Name.String())] = true
+				name := strings.ToLower(t.Name.String())
+				if base, ok := bases[name]; ok {
+					name = base
+				}
+				in.targets[name] = true
 			}
 		} else {
 			addTables(in.targets, s.TableExprs, nil)
@@ -237,6 +246,36 @@ func addTables(out map[string]bool, exprs ast.TableExprs, of map[string]bool) {
 			addTables(out, t.Exprs, of)
 		}
 	}
+}
+
+// aliasBases maps every alias bound by exprs to its base table, lowercased.
+// A table without an alias maps to itself. Derived tables bind no base
+// table and are skipped.
+func aliasBases(exprs ast.TableExprs) map[string]string {
+	out := map[string]string{}
+	var walk func(ast.TableExprs)
+	walk = func(exprs ast.TableExprs) {
+		for _, e := range exprs {
+			switch t := e.(type) {
+			case *ast.AliasedTableExpr:
+				name, ok := t.Expr.(ast.TableName)
+				if !ok {
+					continue
+				}
+				base := strings.ToLower(name.Name.String())
+				out[base] = base
+				if alias := strings.ToLower(t.As.String()); alias != "" {
+					out[alias] = base
+				}
+			case *ast.JoinTableExpr:
+				walk(ast.TableExprs{t.LeftExpr, t.RightExpr})
+			case *ast.ParenTableExpr:
+				walk(t.Exprs)
+			}
+		}
+	}
+	walk(exprs)
+	return out
 }
 
 // setOpSelects flattens a set operation into its SELECT arms.

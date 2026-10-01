@@ -321,13 +321,16 @@ func (t *RelationalTable) lockForWrite(ctx *sqle.Context, keys []string) error {
 	return nil
 }
 
-// lockRowForUpdate is pessimistic mode's guard on the row an UPDATE
-// rewrites. A row the statement already read under its lock is the row the
-// update was computed from. A row that reached Update without that -- a
-// foreign-key cascade's own read -- is locked here and compared with the
-// row the update was computed from; a row that changed in between fails
-// the statement with ER_LOCK_DEADLOCK rather than overwrite the change.
-func (t *RelationalTable) lockRowForUpdate(ctx *sqle.Context, rowKey string, old sqle.Row) error {
+// lockMatchedRow is pessimistic mode's guard on the row an UPDATE rewrites
+// or a DELETE removes. A row the transaction already read under its lock is
+// the row the statement matched. A row that reached the write without that
+// -- a foreign-key cascade's own read, or any read that took no lock -- is
+// locked here and its latest committed version compared with the row the
+// statement matched. A row that changed in between, or was deleted, fails
+// the statement with ER_LOCK_DEADLOCK rather than overwrite or delete a
+// change the statement never saw: waiting for a writer must not turn into
+// losing its update.
+func (t *RelationalTable) lockMatchedRow(ctx *sqle.Context, rowKey string, old sqle.Row) error {
 	_, ws := lockState(ctx)
 	if ws == nil {
 		return nil
@@ -358,10 +361,10 @@ func (t *RelationalTable) lockRowForUpdate(ctx *sqle.Context, rowKey string, old
 	return rowChangedError(rowKey)
 }
 
-// rowChangedError reports that a row changed between the read an UPDATE
-// was computed from and the write, as the same retryable ER_LOCK_DEADLOCK a
-// lost commit is.
+// rowChangedError reports that a row changed between the read an UPDATE or
+// DELETE matched it in and the write, as the same retryable ER_LOCK_DEADLOCK
+// a lost commit is.
 func rowChangedError(key string) error {
 	conflict := &TransactionConflictError{Key: key, Err: &service.TransactionConflictError{Key: key}}
-	return sqle.ErrLockDeadlock.Wrap(conflict, "a row this statement updates changed after it was read")
+	return sqle.ErrLockDeadlock.Wrap(conflict, "a row this statement writes changed after it was read")
 }

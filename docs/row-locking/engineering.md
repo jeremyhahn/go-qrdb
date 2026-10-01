@@ -227,8 +227,18 @@ transaction's write set as that key's baseline:
 - the key's commit precondition is `ModRevision == baseline` (or
   `Version == 0` when the key was absent), not the snapshot's state;
 - in autocommit, the statement's own compare-and-swap carries the same
-  precondition, so an autocommit pessimistic `UPDATE` is guarded against a
-  writer that took no lock (1213 instead of a lost update).
+  precondition, so an autocommit pessimistic `UPDATE` or `DELETE` is guarded
+  against a writer that took no lock (1213 instead of a lost update).
+
+A row an `UPDATE` rewrites or a `DELETE` removes that the transaction did
+**not** read under its lock — a foreign-key cascade's child rows, found by the
+cascade's own unlocked read — is locked at the write, current-read, and
+compared with the row the statement matched. A row that changed or was deleted
+in between fails the statement with 1213 (undone whole inside a transaction):
+waiting for a writer never turns into deleting or overwriting the change it
+made. A multi-table `DELETE` that names its targets by alias
+(`DELETE a FROM accounts a ...`) has each alias resolved to its base table, so
+its read of the target is a locking read like any other.
 
 ## Configuration
 

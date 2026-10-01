@@ -179,6 +179,10 @@ are not reconstructed here — their history is in the git log.
     session scope only -- `SET GLOBAL` is refused, since the engine's globals
     are shared by every tenant on the node) and PostgreSQL `lock_timeout`, failing the statement with MySQL 1205 /
     SQLSTATE 55P03. `NOWAIT` is 3572 / 55P03.
+  - A pessimistic `UPDATE` or `DELETE` never writes a row that changed while it
+    waited: a row it did not read under its lock (a cascade's child rows) is
+    compared with what it matched once the lock is granted, and a mismatch or
+    a vanished row fails the statement with 1213.
   - Deadlocks are detected at enqueue; the victim's whole transaction is rolled
     back with 1213 / 40P01, and its later statements fail (25P02 on PostgreSQL)
     until the client ends it. `SKIP LOCKED` is refused (1235 / 0A000).

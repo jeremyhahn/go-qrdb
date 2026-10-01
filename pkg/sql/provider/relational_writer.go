@@ -964,10 +964,15 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		actions = append(actions, indexAction{key: key, delete: true})
 	}
 
-	// A row the statement read under its lock is already held; one that
-	// reached Delete another way (a foreign-key cascade) is locked here.
-	if err := t.lockForWrite(ctx, []string{rowKey}); err != nil {
-		return err
+	// Pessimistic mode holds the row being deleted. A row the transaction
+	// read under its lock is the row the statement matched; one that reached
+	// Delete another way (a foreign-key cascade, or a read that took no
+	// lock) is locked here and must still be the row the statement matched
+	// -- see lockMatchedRow.
+	if _, pessimistic := t.writeLock(ctx); pessimistic {
+		if err := t.lockMatchedRow(ctx, rowKey, row); err != nil {
+			return err
+		}
 	}
 
 	ws, err := t.activeWriteSet(ctx)
@@ -978,8 +983,15 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		return applyActionsToWriteSet(ctx, ws, actions)
 	}
 
+	// As in Update: a row read under a lock was read at a known revision,
+	// and the autocommit delete is guarded on it, so a writer that took no
+	// lock cannot have its change deleted.
+	rowGuard, guarded := t.lockedRowGuard(ctx, rowKey)
 	ops, _ := actionsToOpsAndCompares(actions)
 	compares := t.resolutionCompares(g)
+	if guarded {
+		compares = append(compares, rowGuard)
+	}
 	if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
 		return err
 	}
@@ -994,9 +1006,18 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
 		return staleErr
 	}
-	// The generation compare is the only precondition this proposal carries,
-	// so a failure that is not a stale generation should not happen; report
-	// it as a conflict rather than silently treating it as success.
+	if guarded {
+		moved, gerr := t.rowGuardFailed(ctx, rowGuard)
+		if gerr != nil {
+			return gerr
+		}
+		if moved {
+			return rowChangedError(rowKey)
+		}
+	}
+	// The generation compare and the row guard are the only preconditions
+	// this proposal carries, so a failure that is neither should not happen;
+	// report it as a conflict rather than silently treating it as success.
 	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
 }
 
@@ -1069,9 +1090,9 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 	}
 
 	// Pessimistic mode holds the row being rewritten and the keys it moves
-	// to; see lockRowForUpdate for a row that was not read under its lock.
+	// to; see lockMatchedRow for a row that was not read under its lock.
 	if _, pessimistic := t.writeLock(ctx); pessimistic {
-		if err := t.lockRowForUpdate(ctx, oldRowKey, old); err != nil {
+		if err := t.lockMatchedRow(ctx, oldRowKey, old); err != nil {
 			return err
 		}
 		if err := t.lockForWrite(ctx, candidateKeys(candidates)); err != nil {

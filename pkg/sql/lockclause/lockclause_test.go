@@ -121,7 +121,10 @@ func TestAnalyze_DMLTargets(t *testing.T) {
 		{"UPDATE users SET n = n + 1 WHERE id = 1", "users", "accounts"},
 		{"UPDATE users u JOIN accounts a ON u.id = a.uid SET u.n = 1", "accounts", "orders"},
 		{"DELETE FROM users WHERE id IN (SELECT uid FROM orders)", "users", "orders"},
-		{"DELETE u FROM users u JOIN orders o ON u.id = o.uid", "u", "orders"},
+		{"DELETE u FROM users u JOIN orders o ON u.id = o.uid", "users", "orders"},
+		{"DELETE a FROM accounts a WHERE a.balance >= 100", "accounts", "a"},
+		{"DELETE users FROM users JOIN orders o ON users.id = o.uid", "users", "orders"},
+		{"DELETE o FROM users u JOIN (orders o) ON u.id = o.uid", "orders", "users"},
 	}
 	for _, c := range cases {
 		t.Run(c.q, func(t *testing.T) {
