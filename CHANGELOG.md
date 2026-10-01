@@ -11,6 +11,41 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.24.0-alpha] - 2026-10-01
+
+Merge train 3. This release contains BREAKING changes; see the "Changed — BREAKING" entries below before upgrading. Highlights:
+
+- **Optimistic or pessimistic SQL concurrency.** A per-database `sql.concurrency` setting and a `SET qrdb_concurrency` session override choose between them. Row locks are replicated and lease-bound, and requests wait in FIFO order. Deadlock detection, lock-wait timeouts, `SELECT … FOR UPDATE` / `FOR SHARE` and `NOWAIT` follow InnoDB semantics, and a failed statement inside a transaction is undone as a whole. See docs/row-locking/.
+- **Security hardening across every transport:**
+  - per-database barriers only on the data path; sealed databases fail closed and their open streams end;
+  - etcd confinement;
+  - tenant-owned SQL CREATE/DROP;
+  - RAG confinement;
+  - `databases:create_raft` / `create_volume`;
+  - lease ownership on writes;
+  - the boot-time sealed window refuses requests after unseal;
+  - 0-RTT refused on QUIC and HTTP/3;
+  - the SO PIN is held in protected memory and sent only over TLS;
+  - node-barrier SO operations are system-tenant only;
+  - route checks read the same request values as the handlers.
+- **Identity:** role bindings and attributes take effect, and there is one source of truth for factors.
+- **SDK surface:**
+  - auth-method tokens;
+  - typed atomic-write refusal;
+  - MCP tool-error contract;
+  - per-node auth-method vocabulary;
+  - the SO PIN set with `WithSOPIN` covers every SO-gated call on every transport.
+- **Process hardening** against same-user memory reads at start.
+- **SQL sequences:** an epoch fence for sequence blocks; MySQL `TRUNCATE` resets `AUTO_INCREMENT`.
+- **Release governance:**
+  - the Release workflow is the only tag creator;
+  - VERSION is authoritative;
+  - the public-releasability gate loads its patterns from outside the tree.
+- **Test reliability:**
+  - a cross-process port lock;
+  - the bootstrap-admin guard race is fixed;
+  - stale integration tests are corrected.
+
 ### Changed — BREAKING
 
 - **New interface methods.** `service.DatabaseServicer` gains `UpdateSQL` and
