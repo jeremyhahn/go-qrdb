@@ -13,6 +13,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **New interface methods.** `service.DatabaseServicer` gains `UpdateSQL` and
+  `UpdateSQLForTenant`, and the Go SDK's `transport.DatabaseClient` interface
+  gains `UpdateDatabaseSQL` (which `transport.TenantDatabaseClient` forwards).
+  Every
+  implementation outside this repository — a composer's own service, a test
+  double, a custom transport — must add them to keep compiling.
 - **TypeScript SDK (`@qrdb/sdk`): the wire-protocol names now match the Go
   SDK, and the old names carry the SQL settings.** `DatabaseClient.updateSQL`
   is renamed `updateProtocol`, `DatabaseSQLConfig` (`{mysql, postgresql}`) is
@@ -27,6 +33,17 @@ are not reconstructed here — their history is in the git log.
   call to `updateProtocol`. The desktop client's binding call is fixed with it:
   the protocol toggle invoked a `DatabaseBinding.UpdateSQL` the binding did not
   have.
+- **MySQL error 1235 (`ER_NOT_SUPPORTED_YET`) is classified `Unimplemented`**
+  by `pkg/api/errclass` (501 / `UNIMPLEMENTED` / `StatusUnimplemented`). It
+  was unclassified, so each transport answered with its internal-error
+  fallback. `SKIP LOCKED` is what raises it.
+- **PostgreSQL wire: `SET qrdb_<name>` reaches the engine.** It was accepted
+  and ignored, whatever the name; an unknown `qrdb_*` setting, or an invalid
+  value for a known one, is now an error. `SET LOCAL lock_timeout` and `SET
+  LOCAL qrdb_*` are refused with SQLSTATE 0A000 instead of succeeding as a
+  no-op.
+- **`SET GLOBAL innodb_lock_wait_timeout` is refused**; the variable is
+  session-scoped (see Added).
 
 ### Added
 

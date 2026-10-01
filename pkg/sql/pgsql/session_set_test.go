@@ -81,6 +81,16 @@ func TestPGWire_MultiStatementSimpleQuery_SplitsEverySet(t *testing.T) {
 	assert.EqualValues(t, 4, c.sessionValue(provider.LockWaitTimeoutVariable))
 }
 
+// A qrdb_* SET reaches the engine, so an unknown name or an invalid value is
+// an error the client sees -- not the silent success every SET used to be.
+func TestPGWire_SetUnknownQrdbSetting_IsAnError(t *testing.T) {
+	h := newPGLockHandler(t)
+	c := h.lockConn(t)
+	require.Error(t, c.exec("SET qrdb_no_such_setting = 'x'"))
+	require.Error(t, c.exec("SET qrdb_concurrency = 'eager'"))
+	assert.Equal(t, provider.ConcurrencyDatabase, c.sessionValue(provider.ConcurrencyVariable))
+}
+
 func TestRouteSessionSet_RefusesMoreThanOneStatement(t *testing.T) {
 	_, ok, err := routeSessionSet("SET qrdb_concurrency = 'pessimistic'; SELECT $1")
 	assert.True(t, ok)
