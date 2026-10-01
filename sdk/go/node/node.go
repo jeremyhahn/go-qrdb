@@ -1249,7 +1249,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		return err
 	}
 
-	host, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS, n.logger)
+	var systemBarrier *seal.EpochBarrier
+	if barrier != nil {
+		systemBarrier = barrier.EpochBarrier()
+	}
+	host, walMux, err := buildClusteredHost(ctx, pending.cfg, pending.members, createFn, pending.raftMTLS, systemBarrier, n.logger)
 	if err != nil {
 		return &HostCreateError{Err: err}
 	}
@@ -1362,10 +1366,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			// reattachRaftTenants so clustered embedded nodes gain full
 			// IsolationRaft parity with the daemon. PlacementStore comes from
 			// the just-built svcNode so shard placement is replicated into the
-			// system KV. MultiplexLogDB is intentionally nil: the embedded node
-			// has no WAL mux; dedicated-raft DBs fall back to the shared system
-			// WAL (Option A from 4d Option C).
+			// system KV. MultiplexLogDB is the host's WAL multiplex when it
+			// has one (a cluster whose system barrier encrypts; see
+			// buildClusteredHost), so dedicated-raft databases get their own
+			// tenant-barrier WAL as on qrdbd; otherwise nil and they use the
+			// shared system WAL.
 			Host:           host,
+			MultiplexLogDB: walMux,
 			Manager:        dbManager,
 			ReplicaID:      pending.cfg.Raft.ReplicaID,
 			RaftAddr:       pending.cfg.Raft.RaftAddress,
@@ -1981,7 +1988,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 
-	host, err := buildClusteredHost(ctx, cfg, members, createFn, nOpts.raftMTLS, n.logger)
+	// Seal disabled: no system barrier, so the WAL is written
+	// WithoutEncryption and there is no multiplex.
+	host, _, err := buildClusteredHost(ctx, cfg, members, createFn, nOpts.raftMTLS, nil, n.logger)
 	if err != nil {
 		return nil, &HostCreateError{Err: err}
 	}
@@ -3050,22 +3059,44 @@ func waitSystemShardReady(host *quicraft.Host, shardID uint64) error {
 // members is passed directly to host.StartShard as the initial member set.
 // mtls provides the PEM-encoded mTLS certificate material for multi-node
 // clusters; it is ignored for single-node (WithoutTransport) clusters.
+//
+// systemBarrier is the unsealed system barrier, or nil when seal is disabled.
+// The Raft WAL is configured from it by database.NewRaftWAL, exactly as qrdbd
+// configures its own: encrypted under the barrier, the multiplex on a cluster
+// whose barrier encrypts, and WithoutEncryption only with seal disabled. The
+// returned multiplex is nil unless the host uses it. Before this node shared
+// that path it always wrote its WAL WithoutEncryption, so an unmarked WAL is
+// judged plaintext, and one found under a barrier is refused with
+// *database.RaftWALFormatError rather than replayed as ciphertext.
 func buildClusteredHost(
 	_ context.Context,
 	cfg *qrdbconfig.Config,
 	members map[uint64]string,
 	createFn sm.CreateFunc,
 	mtls *quicraftconfig.MTLSConfig,
+	systemBarrier *seal.EpochBarrier,
 	log *slog.Logger,
-) (*quicraft.Host, error) {
+) (*quicraft.Host, *database.MultiplexLogDB, error) {
 	hostCfg, shardCfg, hostOpts, err := buildClusteredRaftConfigs(cfg, members, mtls)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	wal, err := database.NewRaftWAL(database.RaftWALConfig{
+		Dir:            hostCfg.WALDir,
+		SystemBarrier:  systemBarrier,
+		SingleNode:     len(members) == 1,
+		UnmarkedFormat: database.WALFormatPlaintext,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	hostOpts = append(hostOpts, wal.Options...)
 
 	host, err := quicraft.NewHost(hostCfg, hostOpts...)
 	if err != nil {
-		return nil, err
+		_ = wal.Close()
+		return nil, nil, err
 	}
 	if identity := host.NodeIdentity(); identity != "" {
 		// Safe to log: a hash of a public key. It is the value every other
@@ -3077,10 +3108,10 @@ func buildClusteredHost(
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
 		_ = host.Close()
-		return nil, err
+		return nil, nil, err
 	}
 
-	return host, nil
+	return host, wal.Multiplex, nil
 }
 
 // buildClusteredRaftConfigs derives the quicraft host configuration, KV shard
@@ -3143,11 +3174,10 @@ func buildClusteredRaftConfigs(
 		NoSyncWAL: os.Getenv("QRDB_NOSYNC_WRITES") == "1",
 	}
 
-	// The embedded node does not encrypt the Raft log: at-rest encryption of
-	// the state machine is the seal barrier's job (the MVCC store's
-	// encryptor), and go-quicraft >= 0.14 requires that choice to be stated
-	// rather than defaulted.
-	hostOpts := []quicraft.HostOption{quicraft.WithoutEncryption()}
+	// The Raft log's at-rest options are not decided here: buildClusteredHost
+	// adds them from database.NewRaftWAL, the path qrdbd shares, because they
+	// depend on the system barrier.
+	var hostOpts []quicraft.HostOption
 	transportless := len(members) == 1
 	if transportless {
 		hostOpts = append(hostOpts, quicraft.WithoutTransport())

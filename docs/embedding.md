@@ -227,6 +227,23 @@ n, err := node.NewStandaloneNode(ctx, cfg, nil,
 The barrier is auto-unsealed during construction. All on-disk data is encrypted
 at rest via the storage barrier.
 
+#### The Raft WAL
+
+A sealed clustered node writes its Raft WAL under the same system barrier,
+through `database.NewRaftWAL`, the code path qrdbd uses:
+
+| Posture | WAL |
+|---|---|
+| Seal disabled | written `WithoutEncryption` (plaintext, like every other byte) |
+| Single-member cluster, or system protection `none` | go-quicraft's own WAL `WithBarrier`; encrypts once encryption is enabled |
+| Multi-member cluster whose system barrier encrypts | the multiplex: shared system-barrier WAL plus per-tenant dedicated WALs for `dedicatedWal` databases |
+
+The WAL directory records its format in `<data-dir>/wal/.qrdb-wal-format`.
+Before v0.25.1-alpha the SDK node wrote its WAL `WithoutEncryption` even when
+sealed. Such a WAL is **refused, not converted**: unsealing a node over it
+fails with `*database.RaftWALFormatError`. Start the node from an empty WAL
+directory, and a cluster replica re-syncs from its peers.
+
 ### Tenant-scoped enable-encryption (with isolation enabled)
 
 Migrate a tenant's barrier from plaintext or auto-unseal to a keyed strategy:

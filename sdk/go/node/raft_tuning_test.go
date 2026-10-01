@@ -66,8 +66,8 @@ func TestBuildClusteredRaftConfigs_MultiMemberKeepsQuicraftDefaults(t *testing.T
 		t.Fatalf("buildClusteredRaftConfigs: %v", err)
 	}
 
-	if len(opts) != 1 {
-		t.Fatalf("host options = %d, want 1 (WithoutEncryption only: a clustered host keeps its transport)", len(opts))
+	if len(opts) != 0 {
+		t.Fatalf("host options = %d, want 0 (a clustered host keeps its transport; the WAL options come from database.NewRaftWAL)", len(opts))
 	}
 	// Zero means "let go-quicraft apply its own default". A clustered host has
 	// a real network, and the multi-node lease margin must not be shortened.
@@ -110,8 +110,8 @@ func TestBuildClusteredRaftConfigs_SingleMemberPassesQuicraftValidation(t *testi
 		t.Fatalf("buildClusteredRaftConfigs: %v", err)
 	}
 
-	if len(opts) != 2 {
-		t.Fatalf("host options = %d, want 2 (WithoutEncryption + WithoutTransport) for a single-member cluster", len(opts))
+	if len(opts) != 1 {
+		t.Fatalf("host options = %d, want 1 (WithoutTransport) for a single-member cluster", len(opts))
 	}
 
 	hostCfg.TransportConfig.TransportDisabled = true // models WithoutTransport

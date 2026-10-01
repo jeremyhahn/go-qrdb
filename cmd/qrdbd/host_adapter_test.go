@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -649,94 +648,4 @@ func TestHostAdapter_ReadWithConsistency_FollowerRead_Error(t *testing.T) {
 	_, err := adapter.ReadWithConsistency(context.Background(), 1, "q", opts)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, sentinel))
-}
-
-// ---------------------------------------------------------------------------
-// initializeNode: walBarrier non-nil path (start.go:1888-1891)
-//
-// When f.walBarrier is non-nil, initializeNode appends quicraft.WithBarrier
-// to hostOpts and logs the info message at lines 1888-1891. The test blocks
-// the WAL directory so quicraft.NewHost fails after that point, giving us
-// coverage of the wiring without requiring a full running node.
-// ---------------------------------------------------------------------------
-
-// mockQuicraftBarrier is a no-op implementation of quicraft.Barrier used to
-// cover the walBarrier != nil branch in initializeNode without requiring a
-// real storage barrier.
-type mockQuicraftBarrier struct{}
-
-func (m *mockQuicraftBarrier) IsSealed() bool                                 { return false }
-func (m *mockQuicraftBarrier) Seal() error                                    { return nil }
-func (m *mockQuicraftBarrier) Encrypt(dst, plaintext []byte) ([]byte, error)  { return plaintext, nil }
-func (m *mockQuicraftBarrier) Decrypt(dst, ciphertext []byte) ([]byte, error) { return ciphertext, nil }
-func (m *mockQuicraftBarrier) DecryptWithContext(dst, ciphertext, contextAAD []byte) ([]byte, error) {
-	return ciphertext, nil
-}
-func (m *mockQuicraftBarrier) EncryptWithEpoch(dst, plaintext []byte) ([]byte, uint64, error) {
-	return plaintext, 0, nil
-}
-func (m *mockQuicraftBarrier) EncryptWithEpochContext(dst, plaintext, contextAAD []byte) ([]byte, uint64, error) {
-	return plaintext, 0, nil
-}
-func (m *mockQuicraftBarrier) EncryptWithEpochPinnedContext(dst, plaintext, contextAAD []byte) ([]byte, uint64, error) {
-	return plaintext, 0, nil
-}
-
-// IsHardwareMode reports false: this double seals nothing itself and
-// delegates to no external encryptor.
-func (m *mockQuicraftBarrier) IsHardwareMode() bool { return false }
-
-// SupportsContextAAD reports true so that callers exercise the
-// context-binding code paths under test. The double is a passthrough and does
-// not actually authenticate the context — it stands in for a software barrier,
-// which does.
-func (m *mockQuicraftBarrier) SupportsContextAAD() bool { return true }
-func (m *mockQuicraftBarrier) DecryptForEpoch(dst, ciphertext []byte, epoch uint64) ([]byte, error) {
-	return ciphertext, nil
-}
-func (m *mockQuicraftBarrier) Rotate() (uint64, error)                        { return 0, nil }
-func (m *mockQuicraftBarrier) PurgeEpochsBefore(minEpoch uint64) (int, error) { return 0, nil }
-func (m *mockQuicraftBarrier) RegisterInFlightEpoch(epoch uint64)             {}
-func (m *mockQuicraftBarrier) DeregisterInFlightEpoch(epoch uint64)           {}
-func (m *mockQuicraftBarrier) CurrentEpoch() uint64                           { return 0 }
-func (m *mockQuicraftBarrier) ShouldRotateKey() bool                          { return false }
-
-// Compile-time assertion that mockQuicraftBarrier satisfies quicraft.Barrier.
-var _ quicraft.Barrier = (*mockQuicraftBarrier)(nil)
-
-// TestInitializeNode_WalBarrierNonNil_CoversBranchLines verifies that
-// initializeNode appends quicraft.WithBarrier to hostOpts (start.go:1889)
-// and logs the info message (start.go:1890) when f.walBarrier is non-nil.
-// The WAL path is blocked by a regular file so quicraft.NewHost fails
-// immediately after the barrier branch, letting the test remain a fast
-// unit test.
-func TestInitializeNode_WalBarrierNonNil_CoversBranchLines(t *testing.T) {
-	dir := t.TempDir()
-
-	// Block the WAL directory so quicraft.NewHost fails at directory
-	// creation after executing the walBarrier branch at lines 1888-1891.
-	walPath := dir + "/wal"
-	require.NoError(t, os.WriteFile(walPath, []byte("x"), 0o600))
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{"1=127.0.0.1:19001"},
-		listen:          "127.0.0.1:19001",
-		raftAddress:     "127.0.0.1:19001",
-		shardID:         1,
-		replicaID:       1,
-		// Set a non-nil walBarrier to cover start.go:1888-1891.
-		walBarrier: &mockQuicraftBarrier{},
-		host:       testBindHost,
-	}
-
-	// initializeNode reaches the walBarrier branch (lines 1888-1891) and
-	// then fails at quicraft.NewHost because the WAL directory is blocked.
-	_, initErr := initializeNode(context.Background(), f, bundle)
-	require.Error(t, initErr, "initializeNode must fail when WAL dir is blocked")
 }
