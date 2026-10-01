@@ -94,6 +94,20 @@ func (e *HolderRevokedError) Error() string {
 	return "qrdb/seal: " + e.Holder + " is being revoked and cannot contribute to this quorum"
 }
 
+// StaleRosterError is returned when a submission or a rekey was prepared
+// against a roster the domain has since replaced, while a quorum round is
+// open on the newer one. The newer round is left as it is. Retrying reads the
+// current roster.
+type StaleRosterError struct {
+	// Domain is the quorum domain whose roster changed.
+	Domain QuorumDomain
+}
+
+// Error returns a human-readable description.
+func (e *StaleRosterError) Error() string {
+	return "qrdb/seal: the " + string(e.Domain) + " roster changed while the request was prepared; retry"
+}
+
 // HolderAlreadySubmittedError is returned when a holder submits a second
 // share to the same round. It matches ErrShamirDuplicateShare.
 type HolderAlreadySubmittedError struct {

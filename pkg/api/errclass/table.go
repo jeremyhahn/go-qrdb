@@ -782,6 +782,9 @@ var holderRules = []rule{
 	as(&seal.ShareIndexMismatchError{}, PermissionDenied),
 	as(&seal.FactorNotAdmittedError{}, PermissionDenied),
 	as(&seal.HolderAlreadySubmittedError{}, AlreadyExists),
+	// A submission or rekey prepared against a roster replaced meanwhile;
+	// retrying reads the current one.
+	as(&seal.StaleRosterError{}, Aborted),
 	as(&seal.RevocationBreaksQuorumError{}, FailedPrecondition),
 	as(&seal.HolderCountMismatchError{}, FailedPrecondition),
 	as(&seal.QuorumOpInvalidError{}, InvalidArgument),

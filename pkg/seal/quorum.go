@@ -286,6 +286,9 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 	b.quorumMu.Lock()
 	defer b.quorumMu.Unlock()
 	key := quorumRoundKey{domain: domain, op: OpRekey}
+	if err := b.refuseStaleRosterLocked(ctx, key, digest); err != nil {
+		return nil, err
+	}
 	if r, ok := b.rounds[key]; ok {
 		if time.Now().Before(r.expiresAt) && bytes.Equal(r.rosterDigest, digest) {
 			return nil, ErrQuorumRoundInProgress
@@ -327,8 +330,17 @@ func (b *StorageBarrier) SubmitHolderShare(ctx context.Context, sub *HolderSubmi
 	if err != nil {
 		return nil, err
 	}
+	return b.submitAgainst(ctx, sub, roster, digest)
+}
 
+// submitAgainst admits sub against roster, the domain's roster as read at
+// digest, and finishes the round when it completes.
+func (b *StorageBarrier) submitAgainst(ctx context.Context, sub *HolderSubmission, roster *HolderRoster, digest []byte) (*QuorumOutcome, error) {
 	b.quorumMu.Lock()
+	if err := b.refuseStaleRosterLocked(ctx, quorumRoundKey{domain: sub.Domain, op: sub.Op}, digest); err != nil {
+		b.quorumMu.Unlock()
+		return nil, err
+	}
 	round, outcome, err := b.admitLocked(ctx, sub, roster, digest)
 	b.quorumMu.Unlock()
 	if err != nil || !outcome.Complete {
@@ -338,6 +350,28 @@ func (b *StorageBarrier) SubmitHolderShare(ctx context.Context, sub *HolderSubmi
 	// be slow and must not hold other submissions up.
 	defer round.destroy()
 	return b.finishRound(ctx, round, outcome)
+}
+
+// refuseStaleRosterLocked settles which roster is current when the round open
+// for key was opened on a different roster from digest, the one the caller
+// read before taking the lock. The roster is re-read: if digest is no longer
+// current the caller's read is the stale one, and it is refused with
+// *StaleRosterError so the newer round and the shares counted in it survive.
+// Otherwise the open round is the stale one, and roundLocked replaces it as
+// before. Must be called with quorumMu held.
+func (b *StorageBarrier) refuseStaleRosterLocked(ctx context.Context, key quorumRoundKey, digest []byte) error {
+	r, ok := b.rounds[key]
+	if !ok || bytes.Equal(r.rosterDigest, digest) {
+		return nil
+	}
+	_, _, current, err := b.loadWrapped(ctx, key.domain)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, digest) {
+		return &StaleRosterError{Domain: key.domain}
+	}
+	return nil
 }
 
 // admitLocked runs the admission checks and adds the share. When the round

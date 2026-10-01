@@ -146,7 +146,14 @@ holders, the unclaimed envelopes and the pending challenges.
 A round is keyed by (domain, op) and opened on demand for every op except
 `rekey`, which only `StartRekey` opens. The round pins the roster digest in
 force when it opens; a round whose roster has since been replaced is
-discarded. Admission (`admitLocked`) requires, in order:
+discarded. A submission, and `StartRekey`, read the roster before they take
+the quorum lock. When the open round's digest differs from the one read, the
+roster is re-read under the lock:
+
+- If the caller's read is no longer current, the caller is the stale one. It
+  is refused with `*seal.StaleRosterError` (Aborted, retryable), and the newer
+  round keeps the shares already counted.
+- Only a round that is itself stale is replaced. Admission (`admitLocked`) requires, in order:
 
 1. a holder verifier is installed (`ErrHolderVerifierNotConfigured`);
 2. the op is valid in the domain and the barrier's state

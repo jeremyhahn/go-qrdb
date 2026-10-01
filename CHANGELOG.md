@@ -160,6 +160,13 @@ are not reconstructed here — their history is in the git log.
     engine: 2/s burst 10 per identity or certificate, 5/s burst 20 for the
     anonymous bucket. A refusal is `ceremony.QuorumBeginRateLimitedError`,
     `RESOURCE_EXHAUSTED`, sent with `Retry-After` on REST.
+- **A late share submission destroyed a newer quorum round.** A submission
+  read the roster before taking the quorum lock. If a rekey replaced the
+  roster in between and a round had opened on the new one, the late
+  submission discarded that round as stale, with the shares in it, and was
+  counted against the old roster. The roster is now re-read under the lock
+  when the digests differ. A stale submission, or `StartRekey`, is refused
+  with `seal.StaleRosterError` (`ABORTED`, retryable).
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading
