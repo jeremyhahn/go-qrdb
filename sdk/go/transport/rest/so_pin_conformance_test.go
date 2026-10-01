@@ -32,7 +32,7 @@ func TestSOPINConformance(t *testing.T) {
 		t.Helper()
 		srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 			restserver.WithTLS(f.ServerTLS), restserver.WithAuthMiddleware(f.MW),
-			restserver.WithRoleService(f.Roles), restserver.WithBarrierService(f.Barrier),
+			restserver.WithRoleService(f.Roles), restserver.WithBarrierService(f.Barrier), restserver.WithPINBackend(f.PINs),
 			restserver.WithSOAuthenticator(f.Verifier), restserver.WithSODualFactor())
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)

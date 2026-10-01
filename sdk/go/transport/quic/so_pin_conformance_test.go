@@ -37,7 +37,7 @@ func startSOConformance(t *testing.T, f *sotest.Fixture) *Transport {
 	t.Helper()
 	srv := quicserver.NewServer(nil, soConformanceAdmin{}, "127.0.0.1:0",
 		quicserver.WithTLS(f.ServerTLS), quicserver.WithAuthMiddleware(f.MW),
-		quicserver.WithBarrierService(f.Barrier), quicserver.WithSOGate(f.Gate))
+		quicserver.WithBarrierService(f.Barrier), quicserver.WithPINBackend(f.PINs), quicserver.WithSOGate(f.Gate))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

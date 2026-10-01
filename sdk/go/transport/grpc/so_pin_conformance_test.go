@@ -32,7 +32,7 @@ func TestSOPINConformance(t *testing.T) {
 		t.Helper()
 		srv := grpcserver.NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 			grpcserver.WithTLS(f.ServerTLS), grpcserver.WithAuthMiddleware(f.MW),
-			grpcserver.WithBarrierService(f.Barrier), grpcserver.WithSOGate(f.Gate))
+			grpcserver.WithBarrierService(f.Barrier), grpcserver.WithPINBackend(f.PINs), grpcserver.WithSOGate(f.Gate))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

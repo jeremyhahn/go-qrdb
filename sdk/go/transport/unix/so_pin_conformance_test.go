@@ -33,7 +33,7 @@ func TestSOPINConformance(t *testing.T) {
 		socketPath := tempSocketPath(t)
 		srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath,
 			unixserver.WithTLS(f.ServerTLS), unixserver.WithAuthMiddleware(f.MW),
-			unixserver.WithBarrierService(f.Barrier), unixserver.WithSOGate(f.Gate))
+			unixserver.WithBarrierService(f.Barrier), unixserver.WithPINBackend(f.PINs), unixserver.WithSOGate(f.Gate))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
