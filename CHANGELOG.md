@@ -111,6 +111,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **A database named like a tenant reached that tenant's barrier.** The
+  per-database barrier manager kept its barriers in the seal subsystem's
+  tenant registry, keyed by database name, so sealing, unsealing or reading
+  the barrier status of one's own database named `acme` acted on tenant
+  `acme`'s barrier when the database had none of its own. Database barriers
+  now live in a registry of the manager's own over the system barrier;
+  `database.NewDatabaseBarrierManager` takes the system barrier and returns an
+  error (**BREAKING** for direct callers).
 - **Share submissions are authenticated and counted once per holder.** The
   unauthenticated string-share unseal, seal-vote, root-token and recovery
   entry points are gone; one person who has seen M shares can no longer act

@@ -23,22 +23,31 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// DatabaseBarrierManager wraps a seal.BarrierRegistry and manages
-// per-database encryption barriers. Each database with barrier encryption
-// enabled gets its own tenant barrier in the registry, providing
+// DatabaseBarrierManager manages per-database encryption barriers. Each
+// database with barrier encryption enabled gets its own barrier, providing
 // cryptographic isolation between databases.
+//
+// The barriers live in a registry of the manager's own, keyed by database
+// name, never in the seal subsystem's tenant registry: a database named like
+// a tenant would otherwise resolve to that tenant's barrier, so sealing or
+// reading the status of one's own database would seal or describe another
+// tenant's barrier.
 type DatabaseBarrierManager struct {
 	logger   *slog.Logger
 	registry *seal.BarrierRegistry
 }
 
-// NewDatabaseBarrierManager creates a new DatabaseBarrierManager that
-// delegates barrier lifecycle operations to the given registry.
-func NewDatabaseBarrierManager(logger *slog.Logger, registry *seal.BarrierRegistry) *DatabaseBarrierManager {
+// NewDatabaseBarrierManager creates a DatabaseBarrierManager whose barriers
+// live in a registry of its own over system, the node's system barrier.
+func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier) (*DatabaseBarrierManager, error) {
+	registry, err := seal.NewBarrierRegistry(logger, system)
+	if err != nil {
+		return nil, err
+	}
 	return &DatabaseBarrierManager{
 		logger:   logger,
 		registry: registry,
-	}
+	}, nil
 }
 
 // EnsureBarrier creates and initializes an encryption barrier for the

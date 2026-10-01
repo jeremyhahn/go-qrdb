@@ -875,7 +875,10 @@ func newTestDatabaseServiceWithBarrier(t *testing.T) (*DatabaseService, *databas
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	reg, _ := initNoneSystemRegistry(t)
-	bm := database.NewDatabaseBarrierManager(logger, reg)
+	bm, err := database.NewDatabaseBarrierManager(logger, reg.SystemBarrier())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Wire the same barrier manager into both the Manager (Create/Open call
 	// EnsureBarrier/RegisterBarrier through it) and the DatabaseService
 	// (Seal/Unseal/Status read it directly) -- mirroring how

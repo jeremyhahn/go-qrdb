@@ -160,6 +160,22 @@ func (e *UserServiceError) Unwrap() error {
 	return e.Err
 }
 
+// DatabaseBarrierManagerError is returned when the per-database barrier
+// manager cannot be built over the system barrier.
+type DatabaseBarrierManagerError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseBarrierManagerError) Error() string {
+	return "lifecycle: database barrier manager initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DatabaseBarrierManagerError) Unwrap() error {
+	return e.Err
+}
+
 // RoleServiceError is returned when the role store fails to initialize.
 type RoleServiceError struct {
 	Err error

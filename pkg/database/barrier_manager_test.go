@@ -56,12 +56,11 @@ func newTestSystemBarrier(t *testing.T) *seal.StorageBarrier {
 // registry for testing.
 func newTestBarrierManager(t *testing.T) *DatabaseBarrierManager {
 	t.Helper()
-	system := newTestSystemBarrier(t)
-	registry, err := seal.NewBarrierRegistry(testBarrierLogger(), system)
+	mgr, err := NewDatabaseBarrierManager(testBarrierLogger(), newTestSystemBarrier(t))
 	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
+		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-	return NewDatabaseBarrierManager(testBarrierLogger(), registry)
+	return mgr
 }
 
 // testCreds returns standard test credentials.
@@ -87,17 +86,18 @@ func TestDatabaseBarrierManager_New_Success(t *testing.T) {
 func TestDatabaseBarrierManager_New_Fields(t *testing.T) {
 	logger := testBarrierLogger()
 	system := newTestSystemBarrier(t)
-	registry, err := seal.NewBarrierRegistry(logger, system)
+	mgr, err := NewDatabaseBarrierManager(logger, system)
 	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
+		t.Fatalf("NewDatabaseBarrierManager: %v", err)
 	}
-
-	mgr := NewDatabaseBarrierManager(logger, registry)
 	if mgr.logger != logger {
 		t.Error("logger mismatch")
 	}
-	if mgr.registry != registry {
-		t.Error("registry mismatch")
+	if mgr.registry == nil || mgr.registry.SystemBarrier() != system {
+		t.Error("the manager's registry is not over the system barrier it was given")
+	}
+	if _, err := NewDatabaseBarrierManager(logger, nil); err == nil {
+		t.Error("a manager was built without a system barrier")
 	}
 }
 

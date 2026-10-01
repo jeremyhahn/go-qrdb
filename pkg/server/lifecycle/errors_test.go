@@ -114,6 +114,17 @@ func TestRoleServiceError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
+func TestDatabaseBarrierManagerError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("no system barrier")
+	err := &lifecycle.DatabaseBarrierManagerError{Err: inner}
+	if !strings.Contains(err.Error(), "database barrier manager") {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}
+
 // ErrorsAs checks for each wrapped error type.
 func TestLockServiceError_ErrorsAs(t *testing.T) {
 	inner := errors.New("cause")
