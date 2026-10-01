@@ -101,9 +101,7 @@ func runHardenScenario(t *testing.T, optOut string) hardenOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	// #nosec G204 -- re-exec of this test binary: argv[0] is os.Args[0], the
-	// path `go test` invoked, and every other argument is a compile-time
-	// literal. No shell is involved.
+	// #nosec G204 G702 -- re-exec of this test binary; argv[0] is os.Args[0], other args are literals, no shell
 	cmd := exec.CommandContext(ctx, os.Args[0], hardenSubprocessArgs("TestHardenProcess_ReaderHelper")...)
 	cmd.Env = append(os.Environ(),
 		hardenRoleEnv+"="+hardenRoleRead,
@@ -212,6 +210,7 @@ func runHardenTarget() error {
 	if err != nil {
 		return err
 	}
+	// #nosec G103 -- the target prints its marker's address so the reader subprocess can attempt /proc/<pid>/mem at it
 	fmt.Fprintf(os.Stdout, "TARGET dumpable=%d addr=%d len=%d\n", dumpable, uintptr(unsafe.Pointer(&marker[0])), len(marker))
 	_, _ = io.Copy(io.Discard, os.Stdin) // hold until READER is done
 	runtime.KeepAlive(marker)
@@ -232,7 +231,7 @@ func runHardenReader() error {
 	if _, err := rand.Read(marker); err != nil {
 		return err
 	}
-	// #nosec G204 -- re-exec of this test binary, as above.
+	// #nosec G204 G702 -- re-exec of this test binary; argv[0] is os.Args[0], other args are literals, no shell
 	target := exec.Command(os.Args[0], hardenSubprocessArgs("TestHardenProcess_TargetHelper")...)
 	target.Env = append(os.Environ(),
 		hardenRoleEnv+"="+hardenRoleTgt,
