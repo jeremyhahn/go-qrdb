@@ -1775,8 +1775,10 @@ export interface TenantClient {
      * Initializes the encryption barrier for a tenant. Must be called once
      * before the tenant can store encrypted data. For the "shamir" strategy the
      * response carries the threshold and shareCount but NO share bytes — shares
-     * are distributed to Security Officers via the officer claim flow
-     * (OfficerClient.registerTenantOfficer, tenantClaimBegin, tenantClaimComplete).
+     * are sealed to the tenant's share holders, enrolled beforehand with
+     * OfficerClient.registerTenantOfficer. Each holder claims its envelope from
+     * the CLI (`qrdb tenant barrier-officer claim`) or the desktop app, where
+     * its private key stays; this SDK never handles share material.
      * For "none" and "passphrase" strategies the response carries only the
      * tenant id and strategy.
      *
