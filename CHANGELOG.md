@@ -13,21 +13,41 @@ are not reconstructed here — their history is in the git log.
 
 ## [0.25.1-alpha] - 2026-10-01
 
-Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15.
+Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15, and encrypts the SDK clustered node's Raft WAL. BREAKING (on disk): a sealed SDK clustered node refuses a WAL written by an earlier release; start it from an empty WAL directory.
+
+### Changed — BREAKING
+
+- **The SDK clustered node encrypts its Raft WAL, through the same code path
+  as qrdbd.** `node.NewClusteredNode` built its host `WithoutEncryption`
+  whatever the seal, so every committed key and value sat in cleartext in the
+  WAL until compaction. qrdbd and the SDK node now both configure the WAL with
+  `database.NewRaftWAL`:
+  - seal disabled: `WithoutEncryption`;
+  - a single member, or system protection `none`: go-quicraft's own WAL
+    `WithBarrier`, which encrypts once encryption is enabled;
+  - a cluster whose system barrier encrypts: the multiplex (shared
+    system-barrier WAL plus per-tenant dedicated WALs).
+
+  The SDK node now hands the multiplex to its tenant infrastructure, so
+  `dedicatedWal` databases get their own tenant-barrier WAL as on qrdbd. The
+  WAL directory records its format in `.qrdb-wal-format`. A WAL in the other
+  format, including an SDK node's unmarked pre-0.25.1 plaintext WAL under a
+  barrier, is refused with `*database.RaftWALFormatError` and never converted.
+  Start such a node from an empty WAL directory; a replica re-syncs from its
+  peers. qrdbd's own unmarked WALs are adopted, because its format did not
+  change.
 
 ### Fixed
 
 - **A cluster booting under system protection `none` starts again.**
   go-quicraft 0.15 accepts a caller-supplied LogDB beside `WithBarrier` only
-  if it declares itself encrypted at rest. The multiplex WAL's shared route
+  if it declares itself encrypted at rest. The multiplex's shared waldb
   truthfully reports unprotected while the system barrier is in plaintext
-  mode, so every node of such a cluster was refused at host creation. A
-  clustered node whose system barrier does not yet encrypt now takes the
-  default-WAL path a single node takes: the same `<data-dir>/wal` under the
-  same barrier, encrypting once `EnableEncryption` flips it. Dedicated-WAL
-  shards use the shared WAL until the next boot after encryption is enabled.
-  `TestClusterEnableEncryption_SystemScope_RF3` and `_TenantScope_RF3` pass
-  again.
+  mode, so every node of such a cluster was refused at host creation. Such a
+  node now takes go-quicraft's own WAL under the barrier, which is the same
+  directory and format. Dedicated-WAL shards use the shared WAL until the
+  next boot after encryption is enabled. `TestClusterEnableEncryption_SystemScope_RF3`
+  and `_TenantScope_RF3` pass again.
 - **The auth CLI integration test assigns the auditor role by id.** `--roles`
   takes role ids. The fixture passed the name `auditor`, which role-reference
   validation correctly refuses. This was a test defect, not replication: the
