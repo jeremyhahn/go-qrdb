@@ -15,56 +15,31 @@
 package quic
 
 import (
-	"bytes"
 	"encoding/json"
-	"strconv"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
-// payloadField decodes a JSON frame payload and returns field's value.
-func payloadField(payload []byte, field string) (any, bool) {
-	dec := json.NewDecoder(bytes.NewReader(payload))
-	dec.UseNumber()
-	var obj map[string]any
-	if dec.Decode(&obj) != nil {
-		return nil, false
-	}
-	v, ok := obj[field]
-	return v, ok
-}
-
-// jsonTenant targets the tenant named by the payload's field.
-func jsonTenant(field string) authmw.QUICTargetFunc {
-	return func(payload []byte) authmw.Target {
-		v, _ := payloadField(payload, field)
-		s, _ := v.(string)
-		return authmw.TenantTarget(s)
-	}
-}
-
-// jsonUser targets the user whose numeric id is the payload's field.
-func jsonUser(field string) authmw.QUICTargetFunc {
-	return func(payload []byte) authmw.Target {
-		v, _ := payloadField(payload, field)
-		n, ok := v.(json.Number)
-		if !ok {
-			return authmw.SelfTarget()
+// payload targets what get reads from a JSON frame payload unmarshalled into
+// T, which must be the HANDLER'S OWN wire request type: json.Unmarshal into
+// it is exactly the decode the handler performs, so the route check
+// authorizes the value the handler acts on. A field read out of a generic map
+// would not be the same value -- a struct field matches its key
+// case-insensitively and the last occurrence wins.
+//
+// An empty payload names the caller's own tenant (the handler then answers
+// for it itself); one that does not decode is *authmw.TargetBodyInvalidError,
+// refused as a bad request instead of authorized against the caller.
+func payload[T any](get func(*T) authmw.Target) authmw.QUICTargetFunc {
+	return func(p []byte) (authmw.Target, error) {
+		if len(p) == 0 {
+			return authmw.SelfTarget(), nil
 		}
-		id, err := strconv.ParseUint(n.String(), 10, 64)
-		if err != nil {
-			return authmw.SelfTarget()
+		var req T
+		if err := json.Unmarshal(p, &req); err != nil {
+			return authmw.SelfTarget(), &authmw.TargetBodyInvalidError{Err: err}
 		}
-		return authmw.UserTarget(id)
-	}
-}
-
-// jsonRole targets the role whose id is the payload's field.
-func jsonRole(field string) authmw.QUICTargetFunc {
-	return func(payload []byte) authmw.Target {
-		v, _ := payloadField(payload, field)
-		s, _ := v.(string)
-		return authmw.RoleTarget(s)
+		return get(&req), nil
 	}
 }
 
@@ -74,33 +49,33 @@ func jsonRole(field string) authmw.QUICTargetFunc {
 // the same resolution every other transport uses (see authmw.Target).
 func identityTargets() map[string]authmw.QUICTargetFunc {
 	return map[string]authmw.QUICTargetFunc{
-		"user.Create":            jsonTenant("tenantID"),
-		"user.Get":               jsonUser("id"),
-		"user.GetByUsername":     jsonTenant("tenantID"),
-		"user.GetByEmail":        jsonTenant("tenantID"),
-		"user.AddCertBinding":    jsonUser("userID"),
-		"user.RemoveCertBinding": jsonUser("userID"),
-		"user.Update":            jsonUser("id"),
-		"user.Delete":            jsonUser("id"),
-		"user.List":              jsonTenant("tenantID"),
-		"user.Enable":            jsonUser("id"),
-		"user.Disable":           jsonUser("id"),
+		"user.Create":            payload(func(r *createUserWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"user.Get":               payload(func(r *getUserWireRequest) authmw.Target { return authmw.UserTarget(r.ID) }),
+		"user.GetByUsername":     payload(func(r *getUserByUsernameWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"user.GetByEmail":        payload(func(r *getUserByEmailWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"user.AddCertBinding":    payload(func(r *addCertBindingWireRequest) authmw.Target { return authmw.UserTarget(r.UserID) }),
+		"user.RemoveCertBinding": payload(func(r *removeCertBindingWireRequest) authmw.Target { return authmw.UserTarget(r.UserID) }),
+		"user.Update":            payload(func(r *updateUserWireRequest) authmw.Target { return authmw.UserTarget(r.ID) }),
+		"user.Delete":            payload(func(r *deleteUserWireRequest) authmw.Target { return authmw.UserTarget(r.ID) }),
+		"user.List":              payload(func(r *listUsersWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"user.Enable":            payload(func(r *enableUserWireRequest) authmw.Target { return authmw.UserTarget(r.ID) }),
+		"user.Disable":           payload(func(r *disableUserWireRequest) authmw.Target { return authmw.UserTarget(r.ID) }),
 
-		"role.Create":           jsonTenant("tenantID"),
-		"role.Get":              jsonRole("id"),
-		"role.GetByName":        jsonTenant("tenantID"),
-		"role.Update":           jsonRole("id"),
-		"role.Delete":           jsonRole("id"),
-		"role.List":             jsonTenant("tenantID"),
-		"role.Assign":           jsonUser("userID"),
-		"role.Unassign":         jsonUser("userID"),
-		"role.ReconcileBuiltIn": jsonTenant("tenantID"),
+		"role.Create":           payload(func(r *createRoleWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"role.Get":              payload(func(r *getRoleWireRequest) authmw.Target { return authmw.RoleTarget(r.ID) }),
+		"role.GetByName":        payload(func(r *getRoleByNameWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"role.Update":           payload(func(r *updateRoleWireRequest) authmw.Target { return authmw.RoleTarget(r.ID) }),
+		"role.Delete":           payload(func(r *deleteRoleWireRequest) authmw.Target { return authmw.RoleTarget(r.ID) }),
+		"role.List":             payload(func(r *listRolesWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"role.Assign":           payload(func(r *assignRoleWireRequest) authmw.Target { return authmw.UserTarget(r.UserID) }),
+		"role.Unassign":         payload(func(r *assignRoleWireRequest) authmw.Target { return authmw.UserTarget(r.UserID) }),
+		"role.ReconcileBuiltIn": payload(func(r *reconcileRolesWireRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
 
-		"tenant.BarrierSeal":               jsonTenant("tenant_id"),
-		"tenant.BarrierOfficerRegister":    jsonTenant("tenant_id"),
-		"tenant.BarrierOfficerList":        jsonTenant("tenant_id"),
-		"tenant.BarrierOfficerClaimStatus": jsonTenant("tenant_id"),
-		"tenant.BarrierShamirSealVote":     jsonTenant("tenant_id"),
+		"tenant.BarrierSeal":               payload(func(r *quicTenantBarrierSealRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"tenant.BarrierOfficerRegister":    payload(func(r *quicTenantOfficerRegisterRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"tenant.BarrierOfficerList":        payload(func(r *quicTenantOfficerListRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"tenant.BarrierOfficerClaimStatus": payload(func(r *quicTenantOfficerListRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
+		"tenant.BarrierShamirSealVote":     payload(func(r *quicTenantSealVoteRequest) authmw.Target { return authmw.TenantTarget(r.TenantID) }),
 	}
 }
 

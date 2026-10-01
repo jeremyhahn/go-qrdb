@@ -15,16 +15,16 @@
 package mcp
 
 import (
-	"strconv"
+	"github.com/mark3labs/mcp-go/mcp"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
-// argString returns the string argument name, or "" when it is absent or not
-// a string.
+// argString reads argument name exactly as the tool handlers do, through
+// mcp.ParseString: a JSON number reads as its decimal string, so the check
+// and the handler see the same value whichever JSON type the caller sent.
 func argString(args map[string]any, name string) string {
-	s, _ := args[name].(string)
-	return s
+	return mcp.ParseString(mcp.CallToolRequest{Params: mcp.CallToolParams{Arguments: args}}, name, "")
 }
 
 // argTenant targets the tenant named by the string argument name.
@@ -37,7 +37,7 @@ func argTenant(name string) authmw.MCPTargetFunc {
 // argUser targets the user whose decimal id is the string argument name.
 func argUser(name string) authmw.MCPTargetFunc {
 	return func(args map[string]any) authmw.Target {
-		id, err := strconv.ParseUint(argString(args, name), 10, 64)
+		id, err := parseUint64(argString(args, name))
 		if err != nil {
 			return authmw.SelfTarget()
 		}

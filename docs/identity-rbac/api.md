@@ -506,6 +506,8 @@ of its own, and the listing never contains one.
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
 | The user's auth factors could not be listed while building the response | 503 | `UNAVAILABLE` |
+| A user/role request whose body (REST) or payload (QUIC) names its tenant does not decode | 400 | `INVALID_ARGUMENT` |
+| That body is larger than 1 MiB (REST) | 413 | — |
 
 ## Pagination
 

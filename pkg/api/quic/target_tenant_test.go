@@ -74,16 +74,39 @@ func TestRouteCheck_BindingGrantsInItsOwnTenantOnly(t *testing.T) {
 	}
 }
 
-// TestIdentityTargets_ReadThePayload asserts the payload readers fall back to
-// the caller's own tenant on a payload they cannot read.
+// TestIdentityTargets_ReadThePayload asserts the payload readers decode the
+// handler's own types: a valid payload names its target, an empty one the
+// caller's own tenant, and one that does not decode -- including an id of the
+// wrong JSON type, which the handler's type refuses too -- is an error.
 func TestIdentityTargets_ReadThePayload(t *testing.T) {
 	targets := identityTargets()
-	for _, method := range []string{"user.Update", "user.Create", "role.Get", "tenant.BarrierSeal"} {
-		if got := targets[method]([]byte("not json")); got != authmw.SelfTarget() {
-			t.Errorf("%s on an unreadable payload = %+v, want the caller's own tenant", method, got)
-		}
+	tests := []struct {
+		method  string
+		payload string
+		want    authmw.Target
+		wantErr bool
+	}{
+		{method: "user.Update", payload: `{"id":7}`, want: authmw.UserTarget(7)},
+		{method: "user.Create", payload: `{"tenantID":"acme"}`, want: authmw.TenantTarget("acme")},
+		{method: "role.Get", payload: `{"id":"r"}`, want: authmw.RoleTarget("r")},
+		{method: "tenant.BarrierSeal", payload: `{"tenant_id":"acme"}`, want: authmw.TenantTarget("acme")},
+		{method: "role.ReconcileBuiltIn", payload: ``, want: authmw.SelfTarget()},
+		{method: "user.Update", payload: `not json`, wantErr: true},
+		{method: "user.Update", payload: `{"id":"7"}`, wantErr: true},
 	}
-	if got := jsonUser("id")([]byte(`{"id":"7"}`)); got != authmw.SelfTarget() {
-		t.Errorf("a string id = %+v, want the caller's own tenant", got)
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.payload, func(t *testing.T) {
+			got, err := targets[tt.method]([]byte(tt.payload))
+			if tt.wantErr {
+				var invalid *authmw.TargetBodyInvalidError
+				if !errors.As(err, &invalid) {
+					t.Fatalf("err = %v, want *authmw.TargetBodyInvalidError", err)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("target = (%+v, %v), want %+v", got, err, tt.want)
+			}
+		})
 	}
 }

@@ -65,6 +65,8 @@ type BindingUsers struct {
 	mu      sync.Mutex
 	records map[uint64]*user.User
 	updated []uint64
+	created []string
+	nextID  uint64
 }
 
 // NewBindingUsers returns the fixture's user store, the operator's record
@@ -76,7 +78,7 @@ func NewBindingUsers() *BindingUsers {
 	}
 	op := rec(BindingOperatorID, BindingOperatorName, tenant.SystemTenantID)
 	op.RoleBindings = []user.RoleBinding{{RoleID: role.SystemRoleID(BindingTenant, role.RoleNameAdmin), TenantID: BindingTenant}}
-	return &BindingUsers{records: map[uint64]*user.User{
+	return &BindingUsers{nextID: 1000, records: map[uint64]*user.User{
 		BindingOperatorID:   op,
 		UserInBindingTenant: rec(UserInBindingTenant, "alice", BindingTenant),
 		UserInOtherTenant:   rec(UserInOtherTenant, "bob", OtherTenant),
@@ -121,7 +123,72 @@ func (u *BindingUsers) UpdateUser(ctx context.Context, req *user.UpdateUserReque
 	if req.Name != "" {
 		rec.Name = req.Name
 	}
-	return rec, nil
+	if req.RoleIDs != nil {
+		rec.RoleIDs = append([]string(nil), req.RoleIDs...)
+	}
+	if req.RoleBindings != nil {
+		rec.RoleBindings = append([]user.RoleBinding(nil), req.RoleBindings...)
+	}
+	u.mu.Lock()
+	u.records[rec.ID] = rec
+	u.mu.Unlock()
+	cp := *rec
+	return &cp, nil
+}
+
+// CreateUser records a user in the tenant the request names (the caller's
+// own tenant when it names none) and returns it.
+func (u *BindingUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = tenant.FromContext(ctx)
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.nextID++
+	rec := &user.User{ID: u.nextID, Username: req.Username, TenantID: tenantID, RoleIDs: append([]string{}, req.RoleIDs...), Lifecycle: user.LifecycleActive}
+	u.records[rec.ID] = rec
+	u.created = append(u.created, tenantID)
+	cp := *rec
+	return &cp, nil
+}
+
+// ListUsers lists the users of the tenant the request names.
+func (u *BindingUsers) ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = tenant.FromContext(ctx)
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	resp := &user.ListUsersResponse{}
+	for _, r := range u.records {
+		if r.TenantID == tenantID {
+			cp := *r
+			resp.Users = append(resp.Users, &cp)
+		}
+	}
+	resp.Total = len(resp.Users)
+	return resp, nil
+}
+
+// Created returns the tenant of every user CreateUser recorded, in order.
+func (u *BindingUsers) Created() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.created...)
+}
+
+// User returns a copy of the stored record for id, bypassing visibility.
+func (u *BindingUsers) User(id uint64) *user.User {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	r, ok := u.records[id]
+	if !ok {
+		return nil
+	}
+	cp := *r
+	return &cp
 }
 
 // Updated returns the ids of every update that reached the store.

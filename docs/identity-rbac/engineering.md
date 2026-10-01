@@ -737,11 +737,24 @@ transport extracts from its own request shape:
 
 | Transport | Where the extractor is declared |
 |---|---|
-| REST | `routeTarget`/`routeIfTarget` beside the route (`RESTPathUser`, `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, `RESTBodyTenant`, `RESTBodyUser`) |
+| REST | `routeTarget`/`routeIfTarget` beside the route (`RESTPathUser`, `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, and `RESTBody` over the handler's own request type, in `pkg/api/rest/targets.go`) |
 | gRPC and unix | `grpc.IdentityTargets`, registered on the shared middleware with `RegisterGRPCTargets` by both listeners |
-| QUIC | `identityTargets` in `pkg/api/quic/targets.go`, attached to the method registry |
+| QUIC | `identityTargets` in `pkg/api/quic/targets.go`, each decoding the handler's own wire request type, attached to the method registry |
 | MCP | `identityTargets` in `pkg/api/mcp/targets.go`, attached to the tool registry |
 | embedded | no route-level check of its own; its role-assignment gate authorizes against the record's tenant, and `AuthMiddleware.AuthorizeTarget` is the entry point for a typed call's target |
+
+**A body is read the way its handler reads it.** A target named in a request
+body is decoded into the handler's OWN request type with the handler's own
+decoder (`encoding/json`), never looked up in a generic map: a struct field
+matches its key case-insensitively and the last occurrence wins, so a body
+carrying both `user_id` and `USER_ID` would otherwise be authorized on one
+value and acted on with the other. MCP reads an argument with the same
+`mcp.ParseString` its tools use, so an id sent as a JSON number and one sent
+as a string name the same user. A targeted REST body that does not decode is
+refused with 400, and one past `RESTTargetBodyLimit` (1 MiB) with 413; an
+undecodable QUIC payload is refused as `InvalidArgument`. Neither is ever
+authorized against the caller's own tenant instead. An empty body names the
+caller's own tenant, as every targeted handler treats it.
 
 A `UserTarget` or `RoleTarget` is resolved by reading the record through the
 same routed user or role service the handler uses, with the caller's own

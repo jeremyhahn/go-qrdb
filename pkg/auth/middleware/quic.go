@@ -57,5 +57,9 @@ func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, methods *QUICMethodR
 		}
 	}
 
-	return m.authorizeTarget(ctx, identity, perm, methods.target(method, payload))
+	target, err := methods.target(method, payload)
+	if err != nil {
+		return err
+	}
+	return m.authorizeTarget(ctx, identity, perm, target)
 }

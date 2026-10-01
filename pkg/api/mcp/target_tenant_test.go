@@ -31,11 +31,15 @@ import (
 func TestRouteCheck_BindingGrantsInItsOwnTenantOnly(t *testing.T) {
 	tests := []struct {
 		name  string
-		id    uint64
+		id    any
 		allow bool
 	}{
-		{name: "user in the bound tenant", id: authtest.UserInBindingTenant, allow: true},
-		{name: "user in another tenant", id: authtest.UserInOtherTenant, allow: false},
+		{name: "user in the bound tenant", id: strconv.FormatUint(authtest.UserInBindingTenant, 10), allow: true},
+		{name: "user in another tenant", id: strconv.FormatUint(authtest.UserInOtherTenant, 10), allow: false},
+		// The handler reads the id with mcp.ParseString, which accepts a JSON
+		// number as readily as a string; the check must read it the same way.
+		{name: "bound-tenant user as a number", id: float64(authtest.UserInBindingTenant), allow: true},
+		{name: "other-tenant user as a number", id: float64(authtest.UserInOtherTenant), allow: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,7 +52,7 @@ func TestRouteCheck_BindingGrantsInItsOwnTenantOnly(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Authenticate: %v", err)
 			}
-			req := makeReq(map[string]any{"id": strconv.FormatUint(tt.id, 10), "name": "renamed"})
+			req := makeReq(map[string]any{"id": tt.id, "name": "renamed"})
 			req.Params.Name = "qrdb_user_update"
 
 			handler := srv.toolAuthzMiddleware()(handleUserUpdate(users, nil, mw, nil))
@@ -66,17 +70,27 @@ func TestRouteCheck_BindingGrantsInItsOwnTenantOnly(t *testing.T) {
 	}
 }
 
-// TestIdentityTargets_ReadTheArguments asserts the argument readers fall back
-// to the caller's own tenant on arguments they cannot read.
+// TestIdentityTargets_ReadTheArguments asserts the argument readers read an
+// argument the way the tool handlers do (mcp.ParseString), whatever its JSON
+// type, and fall back to the caller's own tenant only for an id that does not
+// parse -- which the handler then refuses itself.
 func TestIdentityTargets_ReadTheArguments(t *testing.T) {
 	targets := identityTargets()
-	bad := map[string]any{"id": 7, "user_id": "x", "tenant_id": 3}
-	for _, tool := range []string{"qrdb_user_update", "qrdb_role_assign", "qrdb_user_list", "qrdb_role_get"} {
-		if got := targets[tool](bad); got != authmw.SelfTarget() {
-			t.Errorf("%s on unreadable arguments = %+v, want the caller's own tenant", tool, got)
-		}
+	tests := []struct {
+		tool string
+		args map[string]any
+		want authmw.Target
+	}{
+		{"qrdb_user_update", map[string]any{"id": float64(7)}, authmw.UserTarget(7)},
+		{"qrdb_user_update", map[string]any{"id": "7"}, authmw.UserTarget(7)},
+		{"qrdb_role_assign", map[string]any{"user_id": "x"}, authmw.SelfTarget()},
+		{"qrdb_user_list", map[string]any{"tenant_id": "acme"}, authmw.TenantTarget("acme")},
+		{"qrdb_user_list", map[string]any{}, authmw.SelfTarget()},
+		{"qrdb_role_get", map[string]any{"id": "r"}, authmw.RoleTarget("r")},
 	}
-	if got := targets["qrdb_role_get"](map[string]any{"id": "r"}); got != authmw.RoleTarget("r") {
-		t.Errorf("qrdb_role_get = %+v, want the role target", got)
+	for _, tt := range tests {
+		if got := targets[tt.tool](tt.args); got != tt.want {
+			t.Errorf("%s %v = %+v, want %+v", tt.tool, tt.args, got, tt.want)
+		}
 	}
 }

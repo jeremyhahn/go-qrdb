@@ -457,6 +457,10 @@ var backupRules = []rule{
 
 // identityRules are the user, role and certificate conditions.
 var identityRules = []rule{
+	// A targeted request whose body names the tenant it acts on could not be
+	// read: refused rather than authorized against the caller's own tenant.
+	as(&authmw.TargetBodyInvalidError{}, InvalidArgument),
+	as(&authmw.TargetBodyTooLargeError{}, TooLarge),
 	as(&user.UserNotFoundError{}, NotFound),
 	// A withdrawal naming a binding the account does not hold.
 	as(&user.CertBindingNotFoundError{}, NotFound),

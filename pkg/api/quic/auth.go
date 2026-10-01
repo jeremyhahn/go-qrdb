@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 
 	quicgo "github.com/quic-go/quic-go"
 
@@ -141,6 +142,13 @@ var quicStatusByClass = map[authmw.AuthFailureClass]uint16{
 func authzStatus(err error) uint16 {
 	if st, ok := quicStatusByClass[authmw.ClassifyAuthError(err)]; ok {
 		return st
+	}
+	// Not an authorization outcome at all -- the request's own payload could
+	// not be read to find the tenant it acts on. The one classification
+	// table every transport renders answers it (a bad request), so QUIC says
+	// the same as REST and gRPC rather than calling it a denial.
+	if errclass.Classify(err) != errclass.Unclassified {
+		return ServiceErrorStatus(err)
 	}
 	return wire.StatusPermissionDenied
 }

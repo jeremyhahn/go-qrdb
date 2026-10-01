@@ -76,9 +76,10 @@ type QUICMethodRegistry struct {
 }
 
 // QUICTargetFunc extracts the Target a QUIC frame's payload names. A payload
-// it cannot read names the caller's own tenant; the handler then rejects the
-// malformed payload itself.
-type QUICTargetFunc func(payload []byte) Target
+// it cannot read is an error (*TargetBodyInvalidError), and AuthorizeQUIC
+// refuses the request rather than authorizing it against the caller's own
+// tenant.
+type QUICTargetFunc func(payload []byte) (Target, error)
 
 // SetTarget declares how method's payload names the tenant it acts on, so
 // AuthorizeQUIC authorizes the method's permission against that tenant (see
@@ -96,13 +97,13 @@ func (r *QUICMethodRegistry) SetTarget(method string, fn QUICTargetFunc) {
 
 // target returns the Target payload names under method's extractor, or the
 // caller's own tenant when the method declares none.
-func (r *QUICMethodRegistry) target(method string, payload []byte) Target {
+func (r *QUICMethodRegistry) target(method string, payload []byte) (Target, error) {
 	if r == nil {
-		return SelfTarget()
+		return SelfTarget(), nil
 	}
 	fn, ok := r.targets[method]
 	if !ok {
-		return SelfTarget()
+		return SelfTarget(), nil
 	}
 	return fn(payload)
 }

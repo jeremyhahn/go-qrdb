@@ -60,7 +60,11 @@ are not reconstructed here — their history is in the git log.
   tenant of the user or role it names, or the tenant a per-tenant barrier operation names —
   before the route-level permission check and authorize against it, so a binding for tenant A
   works on every route that acts on A. Tenant administration (a tenant's record, quotas and
-  entitlements) stays checked against the caller's own tenant. The FIPS 140-3 Security Officer deny-list and strict separation of duties
+  entitlements) stays checked against the caller's own tenant. A tenant named in a request body
+  or payload is read by decoding it into the handler's own request type, so the check authorizes
+  exactly the value the handler acts on; a body that does not decode is refused with 400 (QUIC
+  `StatusInvalidArgument`) and one over 1 MiB with 413. MCP reads an id argument the way its tools
+  do, a JSON number or a string. The FIPS 140-3 Security Officer deny-list and strict separation of duties
   apply to bound roles as they do to held ones.
 - `embedded.WithAuthMiddleware`; `sdk/go/node` hands the embedded transport the same
   `AuthMiddleware` its network transports enforce with. The SDK re-exports

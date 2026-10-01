@@ -1612,7 +1612,7 @@ func (s *Server) registerRoutes() {
 
 	// User management routes.
 	userOn := s.userSvc != nil
-	s.routeIfTarget(userOn, http.MethodPost, "/users", permission.UsersCreate, authmw.RESTBodyTenant("tenant_id"), s.handleCreateUser)
+	s.routeIfTarget(userOn, http.MethodPost, "/users", permission.UsersCreate, createUserTarget, s.handleCreateUser)
 	s.routeIfTarget(userOn, http.MethodGet, "/users/list", permission.UsersList, authmw.RESTQueryTenant("tenantID"), s.handleListUsers)
 
 	// User path-param routes (the handler nil-checks the user service).
@@ -1625,11 +1625,11 @@ func (s *Server) registerRoutes() {
 	s.routeTarget(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, authmw.RESTPathUser("id"), s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
 	s.routeTarget(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, authmw.RESTQueryTenant("tenantID"), s.handleUser)
-	s.routeTarget(http.MethodPost, "/users/lookup", permission.UsersRead, authmw.RESTBodyTenant("tenant_id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/lookup", permission.UsersRead, lookupUserTarget, s.handleUser)
 
 	// Role management routes.
 	rolesOn := s.roleSvc != nil
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, authmw.RESTBodyTenant("tenant_id"), s.handleCreateRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, createRoleTarget, s.handleCreateRole)
 	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, authmw.RESTQueryTenant("tenantID"), s.handleListRoles)
 	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, authmw.RESTQueryTenant("tenant_id"), s.handleGetRoleByName)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/resolve-permissions", permission.PermissionsResolve, s.handleResolvePermissions)
@@ -1637,9 +1637,9 @@ func (s *Server) registerRoutes() {
 	// the seeding operation applied to an existing tenant, and a dedicated
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, authmw.RESTBodyTenant("tenant_id"), s.handleReconcileRoles)
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, authmw.RESTBodyUser("user_id"), s.handleAssignRole)
-	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, authmw.RESTBodyUser("user_id"), s.handleUnassignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, reconcileRolesTarget, s.handleReconcileRoles)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, assignRoleTarget, s.handleAssignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, assignRoleTarget, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
 
 	// Role path-param routes (the handler nil-checks the role service).
